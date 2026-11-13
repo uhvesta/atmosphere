@@ -396,7 +396,11 @@ private struct SyncSection: View {
 
     var body: some View {
         Section {
-            LabeledContent("Status", value: SyncStatusText.status(store.sync))
+            LabeledContent("Status") {
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(SyncStatusText.status(store.sync, now: context.date))
+                }
+            }
             Toggle(
                 "Sync continuously",
                 isOn: Binding(
@@ -431,9 +435,44 @@ private struct SyncSection: View {
 }
 
 /// Where sync is, in a few words: in Settings, the Mac's sidebar and its
-/// menu bar.
+/// menu bar, and the iPhone's bars when it needs the person.
 package enum SyncStatusText {
-    package static func status(_ sync: SyncState) -> String {
+    /// Whether to tell the person without being asked: sync failed, other
+    /// than in a build with no iCloud or with no iCloud account, which
+    /// keeps tasks on this device by choice.
+    package static func needsAttention(_ sync: SyncState) -> Bool {
+        guard case .failed(let error) = sync.status else { return false }
+        return error != .notSetUp && error != .noAccount
+    }
+
+    /// Whether Settings can help: a failure other than being offline, which
+    /// clears by itself once the network is back.
+    package static func needsFix(_ sync: SyncState) -> Bool {
+        guard needsAttention(sync), case .failed(let error) = sync.status else { return false }
+        if case .unreachable = error { return false }
+        return true
+    }
+
+    /// Why sync failed, in full, or nil when it didn't.
+    package static func reason(_ sync: SyncState) -> String? {
+        guard case .failed(let error) = sync.status else { return nil }
+        return error.description
+    }
+
+    /// The SF Symbol beside the status.
+    package static func symbol(_ sync: SyncState) -> String {
+        switch sync.status {
+        case .syncing: "arrow.triangle.2.circlepath.icloud"
+        case .idle: "checkmark.icloud"
+        case .failed(.notSetUp): "icloud"
+        case .failed(.unreachable): "icloud.slash"
+        case .failed: "exclamationmark.icloud"
+        }
+    }
+
+    /// The status as of `now`; a last sync reads as how long ago it was, so
+    /// a view that shows it redraws as time passes.
+    package static func status(_ sync: SyncState, now: Date = .now) -> String {
         switch sync.status {
         case .syncing: return String(localized: "Syncing…")
         // Not a failure to retry: this build has no iCloud, or the device
@@ -449,7 +488,10 @@ package enum SyncStatusText {
             return String(localized: "Didn't finish, \(waiting(sync.pending))")
         case .idle:
             guard let last = sync.lastSynced else { return String(localized: "Not synced yet") }
-            return String(localized: "Synced \(last.formatted(date: .abbreviated, time: .shortened))")
+            guard now.timeIntervalSince(last) >= 60 else { return String(localized: "Synced just now") }
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .short
+            return String(localized: "Synced \(formatter.localizedString(for: last, relativeTo: now))")
         }
     }
 

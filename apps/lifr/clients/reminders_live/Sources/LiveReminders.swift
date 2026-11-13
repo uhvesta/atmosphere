@@ -28,6 +28,8 @@ extension RemindersClient {
     /// The user info key holding the task ID, so opening a notification can
     /// show its task.
     package static let taskIDKey = "taskID"
+    /// The user info key that marks the notification asking for a review.
+    package static let reviewKey = "review"
 
     /// Schedules through the system's notification center.
     package static func live(center: UNUserNotificationCenter = .current()) -> Self {
@@ -79,7 +81,16 @@ extension RemindersClient {
                 if let firstError { throw LiveRemindersError.scheduleFailed(titles: failed, underlying: firstError) }
                 last.withLock { $0 = reminders }
             },
-            setBadge: { count in try? await center.setBadgeCount(count) }
+            setBadge: { count in try? await center.setBadgeCount(count) },
+            notifyReview: { device in
+                let content = UNMutableNotificationContent()
+                content.title = String(localized: "A change from \(device) needs your review")
+                content.body = String(
+                    localized: "It was made here and there at once. Choose which to keep in Lifr.")
+                content.userInfo = [reviewKey: true]
+                // Under one identifier, so a later one replaces it.
+                try? await center.add(UNNotificationRequest(identifier: "lifr.review", content: content, trigger: nil))
+            }
         )
     }
 

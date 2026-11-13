@@ -488,4 +488,17 @@ extension DependencyValues {
         get { self[StoreClient.self] }
         set { self[StoreClient.self] = newValue }
     }
+
+    /// This device's name as its changes' history names it, so a change
+    /// from another device can say where it came from.
+    package var thisDevice: String {
+        get { self[ThisDeviceKey.self] }
+        set { self[ThisDeviceKey.self] = newValue }
+    }
+}
+
+private enum ThisDeviceKey: DependencyKey {
+    static let liveValue = ""
+    /// The in-memory store's own device.
+    static let testValue = "This device"
 }

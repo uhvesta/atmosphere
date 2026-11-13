@@ -758,7 +758,8 @@ package struct RootFeature {
                 // A window hears its own saves too, already shown.
                 guard update.number > state.saves.latest || !update.fixes.isEmpty else { return .none }
                 if !update.fixes.isEmpty {
-                    state.syncBanner = SyncBanner(update.fixes, in: update.workspace)
+                    let banner = SyncBanner(update.fixes, in: update.workspace)
+                    state.syncBanner = state.syncBanner.map { $0.adding(banner) } ?? banner
                 }
                 if let before = state.workspace, let closed = Announcement.closed(from: before, to: update.workspace) {
                     state.announce(closed)
@@ -1115,6 +1116,12 @@ package struct RootFeature {
                 return .none
 
             case .syncChanged(let sync):
+                // One notification per batch: the first review item while
+                // Lifr is away, and none while it's locked, which would name
+                // the device to whoever holds this one.
+                let notifies =
+                    state.sync.review.isEmpty && state.awayAt != nil && !state.locksApp && !state.isWindow
+                let reviewFrom = notifies ? sync.review.first?.device : nil
                 state.sync = sync
                 state.settings.sync = sync
                 state.onboarding?.sync = sync
@@ -1136,8 +1143,11 @@ package struct RootFeature {
                     state.dismissedSyncFailure = nil
                     if state.syncBanner?.isFailure == true { state.syncBanner = nil }
                 }
-                guard state.syncReview != nil else { return .none }
-                return .send(.syncReview(.presented(.show(sync.review, state.workspace ?? Workspace()))))
+                let notice: Effect<Action> =
+                    reviewFrom.map { device in .run { [reminders] _ in await reminders.notifyReview(device) } } ?? .none
+                guard state.syncReview != nil else { return notice }
+                return .merge(
+                    notice, .send(.syncReview(.presented(.show(sync.review, state.workspace ?? Workspace())))))
 
             case .foregrounded:
                 let away = state.awayAt

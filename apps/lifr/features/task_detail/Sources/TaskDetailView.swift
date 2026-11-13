@@ -64,6 +64,11 @@ package struct TaskDetailView: View {
                 .focused($titleFocused)
                 .onSubmit { store.send(.titleSubmitted) }
                 .submitLabel(.done)
+            if let updatedBy = store.updatedBy {
+                Text(updatedBy)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             StackedPicker(
                 "Status", value: store.row.status.title,
                 selection: Binding(get: { store.row.status }, set: { store.send(.statusPicked($0)) })

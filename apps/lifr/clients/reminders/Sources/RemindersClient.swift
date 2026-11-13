@@ -94,6 +94,9 @@ package struct RemindersClient: Sendable {
     package var schedule: @Sendable (_ reminders: [ScheduledReminder]) async throws -> Void
     /// Shows `count` on the app icon; 0 hides it.
     package var setBadge: @Sendable (_ count: Int) async -> Void = { _ in }
+    /// Says, now, that a change from `device` needs the person's review;
+    /// a tap opens the review. A later one replaces it.
+    package var notifyReview: @Sendable (_ device: String) async -> Void = { _ in }
 }
 
 extension RemindersClient: TestDependencyKey {
@@ -111,11 +114,15 @@ extension RemindersClient {
 /// Reminders kept in memory. `requestPermission` allows them unless
 /// `permission` is `.denied`.
 package final class InMemoryReminders: Sendable {
-    private let state: LockIsolated<(permission: ReminderPermission, scheduled: [ScheduledReminder], badge: Int)>
+    private let state:
+        LockIsolated<(permission: ReminderPermission, scheduled: [ScheduledReminder], badge: Int, reviews: [String])>
 
     init(permission: ReminderPermission) {
-        state = LockIsolated((permission, [], 0))
+        state = LockIsolated((permission, [], 0, []))
     }
+
+    /// The devices each review notification named, oldest first.
+    package var reviewNotices: [String] { state.value.reviews }
 
     /// What's scheduled now.
     package var scheduled: [ScheduledReminder] { state.value.scheduled }
@@ -133,7 +140,8 @@ package final class InMemoryReminders: Sendable {
                 }
             },
             schedule: { [state] reminders in state.withValue { $0.scheduled = reminders } },
-            setBadge: { [state] count in state.withValue { $0.badge = count } }
+            setBadge: { [state] count in state.withValue { $0.badge = count } },
+            notifyReview: { [state] device in state.withValue { $0.reviews.append(device) } }
         )
     }
 }

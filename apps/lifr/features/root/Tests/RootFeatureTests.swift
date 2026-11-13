@@ -160,7 +160,7 @@ final class RootFeatureTests: XCTestCase {
             let store = makeStore(.phone)
             store.dependencies.reminders = RemindersClient(
                 permission: { permission }, requestPermission: { false }, schedule: { _ in throw Refused() },
-                setBadge: { _ in })
+                setBadge: { _ in }, notifyReview: { _ in })
 
             let task = await store.send(.task)
             await store.receive(\.loaded)
@@ -441,6 +441,18 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.syncBannerDismissed)
         XCTAssertNil(store.state.syncBanner)
         await task.cancel()
+    }
+
+    func testFixesFromALaterSyncJoinTheUnreadOnesAndManySumUp() {
+        let ids = (0..<4).map { _ in UUID() }
+        let first = SyncBanner([.reopenedParent(task: ids[0])], in: records.workspace)
+        let later = SyncBanner(ids.dropFirst().map { .reopenedParent(task: $0) }, in: records.workspace)
+        XCTAssertNil(first.summary, "a few are listed")
+
+        let both = first.adding(later)
+        XCTAssertEqual(both.messages.count, 4)
+        XCTAssertNotNil(both.summary)
+        XCTAssertEqual(SyncBanner(failure: "Offline").adding(first), first, "fixes take a failure's place")
     }
 
     func testASyncThatFixedNothingShowsNoBanner() async {
@@ -2019,6 +2031,33 @@ final class RootFeatureTests: XCTestCase {
         await store.skipReceivedActions()
         await task.cancel()
         XCTAssertGreaterThanOrEqual(syncs.value, 100)
+    }
+
+    func testAReviewWhileAwayNotifiesOncePerBatch() async {
+        let review = Review.sample(now: now, timeZone: .gmt).items
+        let reminders = RemindersClient.inMemory()
+        let store = makeStore(.phone, reminders: reminders)
+        await store.send(.syncChanged(SyncState(review: review)))
+        XCTAssertEqual(reminders.reviewNotices, [], "in front, the banner says it")
+
+        await store.send(.syncChanged(SyncState()))
+        await store.send(.backgrounded)
+        await store.send(.syncChanged(SyncState(review: review)))
+        await store.send(.syncChanged(SyncState(review: review + review)))
+        await store.finish()
+        XCTAssertEqual(reminders.reviewNotices.count, 1, "a second batch before the first is reviewed")
+    }
+
+    func testAReviewWhileAwayAndLockedNotifiesNothing() async {
+        let review = Review.sample(now: now, timeZone: .gmt).items
+        let reminders = RemindersClient.inMemory()
+        @Shared(.locksApp) var locksApp
+        $locksApp.withLock { $0 = true }
+        let store = makeStore(.phone, reminders: reminders)
+        await store.send(.backgrounded)
+        await store.send(.syncChanged(SyncState(review: review)))
+        await store.finish()
+        XCTAssertEqual(reminders.reviewNotices, [])
     }
 
     func testReviewOpensTheSheetAndDoneClosesIt() async {

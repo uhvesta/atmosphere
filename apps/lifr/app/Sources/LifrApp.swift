@@ -169,6 +169,7 @@ private enum Storage {
     static let notifications = ReminderNotifications(
         open: { root.send(.reminderOpened($0)) },
         changeStatus: { root.send(.reminderStatusRequested($0)) },
+        review: { root.send(.syncReviewTapped) },
         shortcuts: { shortcuts })
 
     #if os(macOS)
@@ -217,6 +218,7 @@ private enum Storage {
 
     private static func dependencies(_ values: inout DependencyValues) {
         values.store = client
+        values.thisDevice = deviceName
         values.reminders = .live()
         values.assistant = .live(runtime: { use, choice in models.runtime(for: use, choice: choice) })
         values.relatedWords = .live(
@@ -371,15 +373,18 @@ private enum Storage {
 private final class ReminderNotifications: NSObject, UNUserNotificationCenterDelegate, Sendable {
     private let open: @MainActor @Sendable (UUID) -> Void
     private let changeStatus: @MainActor @Sendable (UUID) -> Void
+    private let review: @MainActor @Sendable () -> Void
     private let shortcuts: @MainActor @Sendable () -> Shortcuts
 
     init(
         open: @escaping @MainActor @Sendable (UUID) -> Void,
         changeStatus: @escaping @MainActor @Sendable (UUID) -> Void,
+        review: @escaping @MainActor @Sendable () -> Void,
         shortcuts: @escaping @MainActor @Sendable () -> Shortcuts
     ) {
         self.open = open
         self.changeStatus = changeStatus
+        self.review = review
         self.shortcuts = shortcuts
     }
 
@@ -390,6 +395,10 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        if response.notification.request.content.userInfo[RemindersClient.reviewKey] != nil {
+            await review()
+            return
+        }
         guard let raw = response.notification.request.content.userInfo[RemindersClient.taskIDKey] as? String,
             let id = UUID(uuidString: raw)
         else { return }

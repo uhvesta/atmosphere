@@ -40,6 +40,30 @@ final class TaskDetailFeatureTests: XCTestCase {
         return store
     }
 
+    func testAChangeFromAnotherDeviceSaysWhereItCameFromUntilOneIsMadeHere() throws {
+        let stretch = records.task("Stretch", in: health)
+        var state = try XCTUnwrap(
+            TaskDetailFeature.State(id: stretch.id, workspace: records.workspace, now: now, timeZone: .gmt))
+
+        // The records' changes are made on "iPhone".
+        records.setStatus(.inProgress, of: stretch)
+        withDependencies {
+            $0.thisDevice = "Mac"
+        } operation: {
+            _ = state.refresh(from: Snapshot(records.workspace, number: 1), now: now, timeZone: .gmt)
+        }
+        XCTAssertNotNil(state.updatedBy)
+        XCTAssertEqual(state.row.status, .inProgress)
+
+        records.setStatus(.done, of: stretch)
+        withDependencies {
+            $0.thisDevice = "iPhone"
+        } operation: {
+            _ = state.refresh(from: Snapshot(records.workspace, number: 2), now: now, timeZone: .gmt)
+        }
+        XCTAssertNil(state.updatedBy, "a change made here clears it")
+    }
+
     func testPickingAStatusSavesItAndTellsTheList() async throws {
         let stretch = records.task("Stretch", in: health)
         let store = try makeStore(stretch)

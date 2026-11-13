@@ -245,9 +245,22 @@ private struct PhoneRootView: View {
                             Button {
                                 store.isSettingsShown = true
                             } label: {
-                                Label("Settings", systemImage: "gear")
+                                Label {
+                                    Text("Settings")
+                                } icon: {
+                                    Image(systemName: "gear")
+                                        .overlay(alignment: .topTrailing) {
+                                            if SyncStatusText.needsAttention(store.sync) {
+                                                Circle().fill(.red).frame(width: 7, height: 7)
+                                            }
+                                        }
+                                }
                             }
+                            .accessibilityValue(
+                                SyncStatusText.needsAttention(store.sync)
+                                    ? String(localized: "Sync needs attention") : "")
                         }
+                        syncTrouble
                         newTask
                     }
                 }
@@ -284,6 +297,7 @@ private struct PhoneRootView: View {
                             }
                             .pickerStyle(.segmented)
                         }
+                        syncTrouble
                         newTask
                     }
                 }
@@ -337,6 +351,7 @@ private struct PhoneRootView: View {
                         }
                     }
                     .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                    .toolbar { syncTrouble }
                     .navigationDestination(isPresented: $store.isTrashShown) {
                         TrashView(store: store.scope(state: \.trash, action: \.trash))
                     }
@@ -352,12 +367,14 @@ private struct PhoneRootView: View {
                 NavigationStack {
                     ConversationsView(store: store.scope(state: \.conversations, action: \.conversations))
                         .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                        .toolbar { syncTrouble }
                 }
             }
             Tab("Search", systemImage: "magnifyingglass", value: RootFeature.Tab.search, role: .search) {
                 NavigationStack {
                     SearchView(store: store.scope(state: \.search, action: \.search))
                         .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                        .toolbar { syncTrouble }
                 }
             }
         }
@@ -375,6 +392,80 @@ private struct PhoneRootView: View {
         ToolbarItem(placement: .primaryAction) {
             AddMenu(store: store)
         }
+    }
+
+    /// Nothing while sync is healthy; when it isn't, a cloud in the bar
+    /// that says why.
+    @ToolbarContentBuilder private var syncTrouble: some ToolbarContent {
+        if SyncStatusText.needsAttention(store.sync) {
+            ToolbarItem(placement: .navigation) {
+                SyncTroubleButton(store: store)
+            }
+        }
+    }
+}
+
+/// The iPhone's cloud while sync needs the person: a tap shows why, and
+/// Sync Now.
+private struct SyncTroubleButton: View {
+    let store: StoreOf<RootFeature>
+    @State private var isShown = false
+
+    var body: some View {
+        Button {
+            isShown = true
+        } label: {
+            Label(SyncStatusText.status(store.sync), systemImage: SyncStatusText.symbol(store.sync))
+        }
+        .accessibilityLabel(Text("Sync: \(SyncStatusText.status(store.sync))"))
+        .popover(isPresented: $isShown) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(SyncStatusText.status(store.sync))
+                    .font(.headline)
+                if let reason = SyncStatusText.reason(store.sync) {
+                    Text(reason)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Button("Sync Now") { store.send(.syncNowTapped) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.sync.status == .syncing)
+            }
+            .padding()
+            .frame(idealWidth: 320)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
+/// The Mac sidebar's line about sync: where it is as of `now`, a click to
+/// sync now, and Fix, which opens Settings, when sync needs the person.
+private struct SyncFooter: View {
+    let store: StoreOf<RootFeature>
+    let now: Date
+
+    var body: some View {
+        let status = SyncStatusText.status(store.sync, now: now)
+        HStack(spacing: 6) {
+            Button {
+                store.send(.syncNowTapped)
+            } label: {
+                Label(status, systemImage: SyncStatusText.symbol(store.sync))
+                    .lineLimit(2)
+            }
+            .buttonStyle(.borderless)
+            .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
+            .help(Text("Sync Now"))
+            .accessibilityLabel(Text("Sync: \(status)"))
+            .accessibilityHint(Text("Syncs now"))
+            #if os(macOS)
+                if SyncStatusText.needsFix(store.sync) {
+                    SettingsLink { Text("Fix") }
+                        .buttonStyle(.borderless)
+                }
+            #endif
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -607,10 +698,9 @@ private struct Sidebar: View {
                     Label("New Avenue", systemImage: "plus")
                 }
                 .buttonStyle(.borderless)
-                Text(SyncStatusText.status(store.sync))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel(Text("Sync: \(SyncStatusText.status(store.sync))"))
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    SyncFooter(store: store, now: context.date)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
@@ -804,12 +894,18 @@ private struct SyncBannerView: View {
     var banner: SyncBanner
     var syncNow: () -> Void
     var dismiss: () -> Void
+    @State private var isExpanded = false
 
     var body: some View {
         HStack(alignment: .top) {
             Image(systemName: banner.isFailure ? "exclamationmark.icloud" : "arrow.triangle.2.circlepath")
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(banner.messages, id: \.self) { Text($0) }
+                if let summary = banner.summary, !isExpanded {
+                    Text(summary)
+                    Button("Show") { isExpanded = true }
+                } else {
+                    ForEach(Array(banner.messages.enumerated()), id: \.offset) { Text($0.element) }
+                }
                 if banner.isFailure {
                     Button("Sync Now", action: syncNow)
                 }
@@ -822,7 +918,7 @@ private struct SyncBannerView: View {
         .padding()
         .background(.thinMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
-        .accessibilityElement(children: banner.isFailure ? .contain : .combine)
+        .accessibilityElement(children: banner.isFailure || banner.summary != nil ? .contain : .combine)
     }
 }
 

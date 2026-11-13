@@ -73,6 +73,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             RootFeature()
         } withDependencies: { [time, widgets, bugReports, copied, library] in
             $0.store = client
+            $0.thisDevice = "Mac"
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync

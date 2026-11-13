@@ -63,6 +63,10 @@ package struct TaskDetailFeature {
         /// reminders won't ring here.
         package var notificationsDenied = false
         package var timeline: [TimelineEntry]
+        /// Who last changed the task while it was open here, such as
+        /// "Updated from MacBook Pro", when that wasn't this device; nil once
+        /// the person changes it here.
+        package var updatedBy: String?
         package var showsCommentsOnly = false
         /// Whether the timeline shows every entry, not just the latest.
         package var showsWholeTimeline = false
@@ -218,6 +222,10 @@ package struct TaskDetailFeature {
             adopt(\.isSubtask, from: shown)
             adopt(\.subtasks, from: shown)
             adopt(\.reminders, from: shown)
+            if shown.timeline != timeline {
+                let updatedBy = Self.updatedBy(in: snapshot.workspace, of: id, after: timeline)
+                if self.updatedBy != updatedBy { self.updatedBy = updatedBy }
+            }
             adopt(\.timeline, from: shown)
             if let editingCommentID, !timeline.contains(where: { $0.id == editingCommentID }) {
                 self.editingCommentID = nil
@@ -228,6 +236,23 @@ package struct TaskDetailFeature {
             if statusPicker != nil { statusPicker = nil }
             if subtask?.refresh(from: snapshot, now: now, timeZone: timeZone) == false { subtask = nil }
             return true
+        }
+
+        /// Who made the task's newest change not in `shown`, when it was
+        /// another device or an agent; nil when it was this device.
+        private static func updatedBy(in workspace: Workspace, of id: UUID, after shown: [TimelineEntry]) -> String? {
+            @Dependency(\.thisDevice) var thisDevice
+            let seen = Set(shown.map(\.id))
+            let newest = workspace.history
+                .filter { $0.taskID == id && !seen.contains($0.id) }
+                .max { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
+            guard let actor = newest?.actor else { return nil }
+            switch actor.kind {
+            case .agent:
+                return String(localized: "Updated by \(actor.client ?? String(localized: "an agent"))")
+            case .user, .system:
+                return actor.device == thisDevice ? nil : String(localized: "Updated from \(actor.device)")
+            }
         }
 
         /// Sets `field` to `other`'s value only when it differs, so the

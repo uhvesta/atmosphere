@@ -77,6 +77,7 @@ class PhoneFlowTestCase: XCTestCase {
             RootFeature()
         } withDependencies: { [time, widgets, bugReports, copied, clock, library] in
             $0.store = client
+            $0.thisDevice = "iPhone"
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync

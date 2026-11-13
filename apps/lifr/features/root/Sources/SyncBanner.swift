@@ -9,6 +9,27 @@ package struct SyncBanner: Equatable, Sendable {
     /// a sync fixed.
     package var isFailure = false
 
+    /// How many fixes the banner lists before it sums them up instead.
+    package static let listed = 3
+
+    /// The sum of what the fixes changed when there are too many to list,
+    /// with the list a tap away; nil when they're listed.
+    package var summary: String? {
+        guard !isFailure, messages.count > Self.listed else { return nil }
+        return String(
+            AttributedString(localized: "^[\(messages.count) change](inflect: true) were adjusted while syncing")
+                .characters)
+    }
+
+    /// This banner with `later`'s messages after its own, so fixes from a
+    /// sync that came before the person read them stay.
+    package func adding(_ later: SyncBanner) -> SyncBanner {
+        guard !isFailure, !later.isFailure else { return later }
+        var banner = self
+        banner.messages += later.messages
+        return banner
+    }
+
     package init(failure reason: String) {
         messages = [reason]
         isFailure = true
