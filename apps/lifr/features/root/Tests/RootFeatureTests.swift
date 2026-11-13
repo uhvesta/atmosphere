@@ -1361,6 +1361,20 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAStatusShortcutChangesTheRowTheKeyboardIsOnWhenNoTaskIsOpen() async {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.cursorMoved(up: false, extending: false))))
+        XCTAssertNil(store.state.openTaskID)
+        await store.send(.statusShortcut(.wontDo))
+        await store.receive(\.today.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .wontDo)
+        await task.cancel()
+    }
+
     func testRedoPutsBackWhatUndoTookAndUndoTakesItAgain() async throws {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

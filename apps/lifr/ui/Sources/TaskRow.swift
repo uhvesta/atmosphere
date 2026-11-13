@@ -2,19 +2,22 @@ import LifrCore
 import SwiftUI
 
 /// One task in a list: status, title, code, due date, Sub task progress and
-/// priority. VoiceOver reads it as one element, with Change Status as an
-/// action.
+/// priority. VoiceOver reads it as one element, with an action named for
+/// each status the task can move to, or Change Status when it can't pick
+/// one directly.
 package struct TaskRow: View {
     package var row: TaskRowData
     package var toggle: () -> Void
+    package var pick: ((TaskStatus) -> Void)?
 
     @Environment(\.locale) private var locale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    package init(_ row: TaskRowData, toggle: @escaping () -> Void) {
+    package init(_ row: TaskRowData, toggle: @escaping () -> Void, pick: ((TaskStatus) -> Void)? = nil) {
         self.row = row
         self.toggle = toggle
+        self.pick = pick
     }
 
     package var body: some View {
@@ -65,7 +68,21 @@ package struct TaskRow: View {
         .accessibilityValue(row.accessibilityValue(locale))
         .accessibilityIdentifier(row.code)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction(named: Text("Change Status"), toggle)
+        .accessibilityActions {
+            if let pick {
+                // Each names its status, so it acts at once, as a swipe does.
+                ForEach(TaskStatus.pickOrder.filter { $0 != row.status }, id: \.self) { status in
+                    Button(statusActionName(status)) { pick(status) }
+                }
+            } else {
+                Button("Change Status", action: toggle)
+            }
+        }
+    }
+
+    private func statusActionName(_ status: TaskStatus) -> LocalizedStringKey {
+        if status == .inProgress, row.status == .procrastinated { return "Restart" }
+        return "Mark \(status.title)"
     }
 
     /// The code, due date, repeat, Sub task progress and priority. Each stays on one

@@ -5,6 +5,9 @@ import LifrCore
 // (//apps/lifr/app:strings).
 
 extension TaskStatus {
+    /// The order a status picker lists statuses in.
+    package static let pickOrder: [TaskStatus] = [.done, .inProgress, .todo, .procrastinated, .wontDo]
+
     package var title: String {
         switch self {
         case .todo: String(localized: "To Do")

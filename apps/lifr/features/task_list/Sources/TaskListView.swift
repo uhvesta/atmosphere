@@ -237,7 +237,11 @@ package struct TaskListRow: View {
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                TaskRow(row) { store.send(.toggled(row.id)) }
+                TaskRow(row) {
+                    store.send(.toggled(row.id))
+                } pick: {
+                    store.send(.rowAction(row.id, .status($0)))
+                }
                 if let note {
                     Text(note)
                         .font(.caption)

@@ -103,7 +103,7 @@ package struct RootCommands: Commands {
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
                 }
             }
-            .disabled(store.openTaskID == nil)
+            .disabled(store.statusTaskID == nil)
             Menu("Priority") {
                 ForEach(Array(Priority.shortcuts.enumerated()), id: \.offset) { index, priority in
                     Button(priority.title ?? String(localized: "None")) { store.send(.priorityShortcut(priority)) }

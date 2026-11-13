@@ -309,10 +309,14 @@ package struct TaskDetailView: View {
     private var subtasks: some View {
         Section {
             ForEach(store.subtasks) { row in
-                TaskRow(row) { store.send(.subtaskToggled(row.id)) }
-                    .contentShape(Rectangle())
-                    .onTapGesture { store.send(.subtaskTapped(row.id)) }
-                    .accessibilityAction(named: "Open") { store.send(.subtaskTapped(row.id)) }
+                TaskRow(row) {
+                    store.send(.subtaskToggled(row.id))
+                } pick: {
+                    store.send(.subtaskStatusNamed(row.id, $0))
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { store.send(.subtaskTapped(row.id)) }
+                .accessibilityAction(named: "Open") { store.send(.subtaskTapped(row.id)) }
             }
             TextField("Add Sub task", text: $store.newSubtaskTitle)
                 .onSubmit { store.send(.addSubtaskSubmitted) }

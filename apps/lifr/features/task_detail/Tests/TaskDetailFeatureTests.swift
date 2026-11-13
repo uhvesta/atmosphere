@@ -120,6 +120,17 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subtasks.first?.status, .wontDo)
     }
 
+    func testASubtaskStatusNamedByVoiceOverSavesWithoutAPicker() async throws {
+        let review = records.task("Review", in: health)
+        let read = records.task("Read", in: health, parent: review)
+        let store = try makeStore(review)
+
+        await store.send(.subtaskStatusNamed(read.id, .inProgress))
+        await store.receive(\.delegate.saved)
+        XCTAssertNil(store.state.statusPicker)
+        XCTAssertEqual(store.state.subtasks.first?.status, .inProgress)
+    }
+
     func testAddingASubtaskToADoneTaskReopensItUntilUndone() async throws {
         let shoes = records.task("Buy running shoes", in: health, status: .done)
         let store = try makeStore(shoes)

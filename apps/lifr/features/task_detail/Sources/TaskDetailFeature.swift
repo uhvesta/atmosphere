@@ -268,6 +268,8 @@ package struct TaskDetailFeature {
         case subtaskLoaded(UUID, Workspace)
         indirect case subtask(PresentationAction<Action>)
         case subtaskToggled(UUID)
+        /// A status named by a VoiceOver action, so it needs no picker.
+        case subtaskStatusNamed(UUID, TaskStatus)
         /// Shows the statuses for this task, as Change Status… on its
         /// reminder asks.
         case statusPickerRequested
@@ -442,6 +444,9 @@ package struct TaskDetailFeature {
 
             case .statusPicker(.presented(let pick)):
                 return setStatus(pick.status, pick.task)
+
+            case .subtaskStatusNamed(let id, let status):
+                return setStatus(status, id)
 
             case .addSubtaskSubmitted:
                 let title = state.newSubtaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)

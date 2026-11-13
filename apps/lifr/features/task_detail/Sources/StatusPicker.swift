@@ -15,18 +15,17 @@ package struct StatusPick: Equatable, Sendable {
 }
 
 extension ConfirmationDialogState where Action == StatusPick {
-    /// Every status but the task's own: for an open task, the closing ones
-    /// first; for a closed one, those that open it.
+    /// Every status but the task's own, always in the same order so the
+    /// hand learns where each one is. A Procrastinated task offers Restart
+    /// in place of In Progress, as its swipe does.
     package static func statuses(for task: UUID, title: String, status: TaskStatus) -> Self {
-        let order: [TaskStatus] =
-            status.isClosed
-            ? [.todo, .inProgress, .procrastinated, .done, .wontDo]
-            : [.done, .wontDo, .inProgress, .todo, .procrastinated]
-        return ConfirmationDialogState(titleVisibility: .visible) {
+        ConfirmationDialogState(titleVisibility: .visible) {
             TextState(title)
         } actions: {
-            for next in order where next != status {
-                ButtonState(action: StatusPick(task: task, status: next)) { TextState(next.title) }
+            for next in TaskStatus.pickOrder where next != status {
+                ButtonState(action: StatusPick(task: task, status: next)) {
+                    next == .inProgress && status == .procrastinated ? TextState("Restart") : TextState(next.title)
+                }
             }
             ButtonState(role: .cancel) { TextState("Cancel") }
         } message: {

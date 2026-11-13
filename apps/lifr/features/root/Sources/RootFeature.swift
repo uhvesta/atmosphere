@@ -359,6 +359,12 @@ package struct RootFeature {
             currentList.flatMap { self[list: $0]?.detail?.id }
         }
 
+        /// The task a status shortcut changes: the open one, or else the
+        /// row the keyboard is on.
+        package var statusTaskID: UUID? {
+            openTaskID ?? currentList.flatMap { self[list: $0]?.cursor }
+        }
+
         /// Where the person is now.
         package var here: Place {
             platform == .phone
@@ -890,8 +896,11 @@ package struct RootFeature {
                 return .none
 
             case .statusShortcut(let status):
-                guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
-                return .send(list(slot, .detail(.presented(.statusPicked(status)))))
+                guard let slot = state.currentList, let rows = state[list: slot] else { return .none }
+                if rows.detail != nil { return .send(list(slot, .detail(.presented(.statusPicked(status))))) }
+                // The shortcut names the status, so it acts on the row at once.
+                guard let cursor = rows.cursor else { return .none }
+                return .send(list(slot, .rowAction(cursor, .status(status))))
 
             case .priorityShortcut(let priority):
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
