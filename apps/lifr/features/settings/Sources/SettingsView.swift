@@ -55,6 +55,11 @@ package struct SettingsView: View {
             } footer: {
                 Text("Shows the tips about swiping a task and dragging one onto a day again.")
             }
+            Section {
+                PushButton("Data") { store.send(.dataTapped) }
+            } footer: {
+                Text("Export your tasks, import a file, or bring back a daily backup.")
+            }
             AboutSection(version: store.appVersion)
             Section {
                 Button("Delete All Data…", role: .destructive) { store.send(.eraseTapped) }
@@ -112,6 +117,11 @@ package struct SettingsView: View {
             item: shows(.general) ? $store.scope(state: \.bugReports, action: \.bugReports) : .constant(nil)
         ) { store in
             BugReportsView(store: store)
+        }
+        .navigationDestination(
+            item: shows(.general) ? $store.scope(state: \.data, action: \.data) : .constant(nil)
+        ) { store in
+            DataView(store: store)
         }
         .sheet(item: shows(.general) ? $store.scope(state: \.erase, action: \.erase) : .constant(nil)) { store in
             EraseView(store: store)

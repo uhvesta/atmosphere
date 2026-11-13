@@ -630,6 +630,9 @@
     "A few choices" : {
 
     },
+    "A file Lifr exported, or a CSV file with a column of titles. You see what it adds before anything changes, and only what isn't here already is added." : {
+
+    },
     "A larger window keeps more of a conversation and uses more memory." : {
 
     },
@@ -646,6 +649,9 @@
 
     },
     "A new task with a due date gets this reminder on every device. The badge is per device." : {
+
+    },
+    "A newer Lifr made this file. Update Lifr, then import it again. Nothing was imported." : {
 
     },
     "A part of your life, like Home" : {
@@ -857,6 +863,9 @@
     "Allowed" : {
 
     },
+    "Already here" : {
+
+    },
     "Also searched for %@" : {
 
     },
@@ -1026,6 +1035,9 @@
 
     },
     "Back to Latest" : {
+
+    },
+    "Backups" : {
 
     },
     "Batch" : {
@@ -1209,6 +1221,9 @@
 
     },
     "Color" : {
+
+    },
+    "Columns" : {
 
     },
     "Command line" : {
@@ -1519,6 +1534,9 @@
     "Daily summary" : {
 
     },
+    "Data" : {
+
+    },
     "Date Added" : {
 
     },
@@ -1717,6 +1735,12 @@
     "Due Tomorrow" : {
 
     },
+    "Due date" : {
+
+    },
+    "Due dates are read as YYYY-MM-DD, and Avenues by name or key." : {
+
+    },
     "Due today and overdue" : {
 
     },
@@ -1877,6 +1901,9 @@
     "Everything due today is closed." : {
 
     },
+    "Everything in this file is here already, so importing it changes nothing." : {
+
+    },
     "Experiments" : {
 
     },
@@ -1886,7 +1913,19 @@
     "Expires after" : {
 
     },
+    "Export" : {
+
+    },
+    "Export Everything makes one file with every task, comment and change, which Lifr can import again. Markdown makes a file per Avenue, for reading anywhere." : {
+
+    },
+    "Export Everything…" : {
+
+    },
     "Export Plan Prompt" : {
+
+    },
+    "Export as Markdown…" : {
 
     },
     "Face ID" : {
@@ -1946,6 +1985,9 @@
     "Finished %@." : {
 
     },
+    "First rows" : {
+
+    },
     "First word" : {
 
     },
@@ -1968,6 +2010,9 @@
 
     },
     "For quick tasks" : {
+
+    },
+    "For rows that don't name an Avenue." : {
 
     },
     "Forest" : {
@@ -2130,6 +2175,12 @@
 
     },
     "If this keeps happening, share these details in a bug report." : {
+
+    },
+    "Import" : {
+
+    },
+    "Import…" : {
 
     },
     "In 1 hour" : {
@@ -2298,6 +2349,12 @@
     "Lifr" : {
 
     },
+    "Lifr Avenues" : {
+
+    },
+    "Lifr backs up this device's records once a day and keeps the last seven days. Importing one adds back only what's missing since." : {
+
+    },
     "Lifr bug report" : {
 
     },
@@ -2444,6 +2501,26 @@
     },
     "Lifr, an app is connected" : {
 
+    },
+    "Line %lld %@. Fix that line, or pick other columns, then import again. Nothing was imported." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Line %1$lld %2$@. Fix that line, or pick other columns, then import again. Nothing was imported."
+          }
+        }
+      }
+    },
+    "Line %lld of the file can't be read (%@). Check it's a file Lifr exported, then try again. Nothing was imported." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Line %1$lld of the file can't be read (%2$@). Check it's a file Lifr exported, then try again. Nothing was imported."
+          }
+        }
+      }
     },
     "List" : {
 
@@ -2885,6 +2962,9 @@
     "No archived conversations" : {
 
     },
+    "No backups yet. The first is made the next time Lifr opens." : {
+
+    },
     "No bug reports. Choose Help › Report a Bug to make one." : {
 
     },
@@ -2982,6 +3062,9 @@
 
     },
     "Note for %@" : {
+
+    },
+    "Notes" : {
 
     },
     "Nothing" : {
@@ -3355,6 +3438,26 @@
     "Record" : {
 
     },
+    "Record %lld %@. Fix or remove that record in the file, then import it again. Nothing was imported." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Record %1$lld %2$@. Fix or remove that record in the file, then import it again. Nothing was imported."
+          }
+        }
+      }
+    },
+    "Record %lld (“%@”) %@. Fix or remove that record in the file, then import it again. Nothing was imported." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Record %1$lld (“%2$@”) %3$@. Fix or remove that record in the file, then import it again. Nothing was imported."
+          }
+        }
+      }
+    },
     "Record Steps" : {
 
     },
@@ -3374,6 +3477,12 @@
 
     },
     "Recording…" : {
+
+    },
+    "Records added" : {
+
+    },
+    "Records that are here already are left as they are." : {
 
     },
     "Redo" : {
@@ -3591,6 +3700,9 @@
     "Revoke %@?" : {
 
     },
+    "Rows" : {
+
+    },
     "Runs each setup below on a short test, one after another: about a minute each. The model that's loaded now is unloaded first." : {
 
     },
@@ -3645,6 +3757,9 @@
 
     },
     "Saved Filters" : {
+
+    },
+    "Saved filters" : {
 
     },
     "Says how many tasks are due today or overdue, and names them unless Lifr's lock is on." : {
@@ -4106,6 +4221,16 @@
     "The assistant stopped without replying. Send the message again." : {
 
     },
+    "The backup of %@ can't be read (%@). Pick another day's backup, or import a file you exported." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The backup of %1$@ can't be read (%2$@). Pick another day's backup, or import a file you exported."
+          }
+        }
+      }
+    },
     "The clipboard has no lines to add. Copy a list, one task a line." : {
 
     },
@@ -4116,6 +4241,12 @@
 
     },
     "The draft fills in the fields below on this device. Check it before you save." : {
+
+    },
+    "The export couldn't be written (%@). Free some space, then try again." : {
+
+    },
+    "The file can't be read (%@). Check it's a file Lifr exported, then try again. Nothing was imported." : {
 
     },
     "The first message" : {
@@ -4314,6 +4445,9 @@
     "To Do, In Progress, Procrastinated, Done, Won't Do" : {
 
     },
+    "To add" : {
+
+    },
     "Today" : {
 
     },
@@ -4324,6 +4458,9 @@
 
     },
     "Today's Count" : {
+
+    },
+    "Today's backup couldn't be written (%@). Free some space on this device; Lifr tries again when it next opens." : {
 
     },
     "Tomorrow" : {
@@ -4415,6 +4552,12 @@
 
     },
     "Undo Changes" : {
+
+    },
+    "Undo Import" : {
+
+    },
+    "Undo Import in Settings › Data takes them out again." : {
 
     },
     "Undo changes" : {
@@ -4745,6 +4888,12 @@
     "batch %lld" : {
 
     },
+    "belongs to a task that's neither here nor in the file" : {
+
+    },
+    "can't be read: %@" : {
+
+    },
     "due today" : {
 
     },
@@ -4752,6 +4901,18 @@
 
     },
     "flash on" : {
+
+    },
+    "has a due date, “%@”, that isn't YYYY-MM-DD" : {
+
+    },
+    "has a quote that isn't closed" : {
+
+    },
+    "has no column %lld" : {
+
+    },
+    "has no title" : {
 
     },
     "iCloud" : {
@@ -4766,7 +4927,19 @@
     "idle ^[%lld day](inflect: true)" : {
 
     },
+    "is in a Project that's neither here nor in the file" : {
+
+    },
+    "is in an Avenue that's neither here nor in the file" : {
+
+    },
     "micro-batch %lld" : {
+
+    },
+    "names a status, “%@”, Lifr doesn't have" : {
+
+    },
+    "names an Avenue, “%@”, that isn't here" : {
 
     },
     "none" : {
@@ -4813,6 +4986,19 @@
     },
     "“%@” has open Sub tasks" : {
 
+    },
+    "“%@” is missing" : {
+
+    },
+    "“%@”: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "“%1$@”: %2$@"
+          }
+        }
+      }
     },
     "⇧⌘Space" : {
 

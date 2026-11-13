@@ -22,4 +22,5 @@ await runSuites([
     ("Quick entry", quickEntryTests()),
     ("Duplicating", duplicateTests()),
     ("Focus", focusTests()),
+    ("Export and import", backupTests()),
 ])

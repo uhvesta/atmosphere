@@ -348,8 +348,8 @@ final class RootFlowTests: XCTestCase {
         await task.cancel()
     }
 
-    /// Search lists every task but those in the Trash, and none while the
-    /// lock is on.
+    /// Search lists every task but those in the Trash, and nothing while
+    /// the lock is on.
     func testSearchListsTasksOutOfTheTrashAndNoneWhileLocked() async throws {
         let run = records.task("Long run", in: health, due: 0)
         _ = records.task("Stretch", in: health, status: .done)
@@ -360,7 +360,8 @@ final class RootFlowTests: XCTestCase {
         let (phone, task) = await app(.phone, client, lock: .always(), spotlight: spotlight)
         await phone.receive(\.remindersScheduled)
 
-        XCTAssertEqual(Set(indexed.value?.map(\.title) ?? []), ["Long run", "Stretch"])
+        let tasks = indexed.value?.filter { $0.kind == .task }
+        XCTAssertEqual(Set(tasks?.map(\.title) ?? []), ["Long run", "Stretch"])
         XCTAssertEqual(indexed.value?.first { $0.id == run.id }?.detail.hasSuffix("Health"), true)
 
         await phone.send(.settings(.lockToggled(true)))
@@ -371,7 +372,7 @@ final class RootFlowTests: XCTestCase {
         await phone.send(.settings(.lockToggled(false)))
         await phone.receive(\.settings.lockConfirmed)
         await phone.receive(\.remindersScheduled)
-        XCTAssertEqual(indexed.value?.count, 2)
+        XCTAssertEqual(indexed.value?.filter { $0.kind == .task }.count, 2)
         await task.cancel()
     }
 

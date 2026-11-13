@@ -1,0 +1,46 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The automatic daily backups, kept on this device for a week, which
+# Settings › Data lists and imports.
+swift_library(
+    name = "backup",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrBackupClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/features/root:__pkg__",
+        "//apps/lifr/features/settings:__pkg__",
+    ],
+    deps = [
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# Tests for the backups in a folder.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":backup",
+        "//apps/lifr/core",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

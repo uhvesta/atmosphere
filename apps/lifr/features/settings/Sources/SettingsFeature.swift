@@ -86,6 +86,7 @@ package struct SettingsFeature {
         @Presents package var models: ModelsFeature.State?
         @Presents package var bugReports: BugReportsFeature.State?
         @Presents package var erase: EraseFeature.State?
+        @Presents package var data: DataFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
         /// Why the settings couldn't be loaded, until they load. Until then
@@ -104,6 +105,7 @@ package struct SettingsFeature {
             self.workspace = workspace
             activity?.show(snapshot)
             labels?.show(snapshot)
+            data?.show(snapshot)
             procrastinatedAfterDays = workspace.settings.procrastinatedAfterDays
             avenues = workspace.avenues.values
                 .filter { $0.archivedAt == nil }
@@ -154,6 +156,8 @@ package struct SettingsFeature {
         case bugReportsTapped
         case bugReports(PresentationAction<BugReportsFeature.Action>)
         case eraseTapped
+        case dataTapped
+        case data(PresentationAction<DataFeature.Action>)
         /// Shows each gesture tip again, once.
         case resetTipsTapped
         case erase(PresentationAction<EraseFeature.Action>)
@@ -385,6 +389,15 @@ package struct SettingsFeature {
                 state.erase = EraseFeature.State()
                 return .none
 
+            case .dataTapped:
+                state.page = .general
+                state.data = DataFeature.State(workspace: state.workspace)
+                return .none
+
+            case .data(.presented(.delegate(.saved(let snapshot)))):
+                state.show(snapshot)
+                return .send(.delegate(.saved(snapshot)))
+
             case .erase(.presented(.delegate(.erased(let snapshot)))):
                 state.show(snapshot)
                 return .send(.delegate(.saved(snapshot)))
@@ -432,7 +445,7 @@ package struct SettingsFeature {
                 return .none
 
             case .sessionChanged(.success), .activity, .labels, .skills, .instructions, .models, .bugReports, .erase,
-                .revoke, .alert, .delegate:
+                .data, .revoke, .alert, .delegate:
                 return .none
             }
         }
@@ -443,6 +456,7 @@ package struct SettingsFeature {
         .ifLet(\.$models, action: \.models) { ModelsFeature() }
         .ifLet(\.$bugReports, action: \.bugReports) { BugReportsFeature() }
         .ifLet(\.$erase, action: \.erase) { EraseFeature() }
+        .ifLet(\.$data, action: \.data) { DataFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }

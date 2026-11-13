@@ -97,7 +97,7 @@ class PhoneFlowTestCase: XCTestCase {
             $0.date = DateGenerator { time.value }
             $0.lock = lock
             $0.glance = GlanceClient(
-                write: { [widgets] glance in await widgets.show(glance) }, takeMarked: { [] })
+                write: { [widgets] glance in await widgets.show(glance) }, takeMarked: { [] }, takeShared: { [] })
             $0.timeZone = .gmt
             $0.bugRecorder = BugRecorder(now: { time.value })
             $0.bugReports = bugReports

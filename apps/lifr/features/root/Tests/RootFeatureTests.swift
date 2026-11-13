@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrAPI
 import LifrAvenue
+import LifrBackupClient
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
@@ -1981,7 +1982,8 @@ final class RootFeatureTests: XCTestCase {
     func testLinksReadBackWhatTheyName() throws {
         let id = UUID()
         let links: [DeepLink] = [
-            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id), .project(id), .filter(id),
+            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id), .project(id),
+            .filter(id),
             .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
         ]
         for link in links {
@@ -2154,6 +2156,33 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(showing.value[run.id]?.title, "")
         XCTAssertEqual(showing.value[run.id]?.closed, 1)
         XCTAssertEqual(showing.value[run.id]?.total, 2)
+    }
+
+    func testLifrBacksUpOnceADayWhenItsRecordsLoad() async throws {
+        records.task("Run", in: health)
+        let days = LockIsolated<[CalendarDate]>([])
+        let store = makeStore(.phone, store: .inMemory(records.workspace))
+        store.dependencies.backups = BackupClient(
+            save: { export, day in
+                XCTAssertEqual(export.records.count { if case .task = $0 { true } else { false } }, 1)
+                days.withValue { $0.append(day) }
+            },
+            list: { [] },
+            read: { day throws(BackupError) in throw .unreadable(day: day, "none") })
+
+        await store.send(.focusChanged)
+        await store.receive(\.loaded)
+        await store.receive(\.backedUp)
+        await store.send(.focusChanged)
+        await store.receive(\.loaded)
+        store.dependencies.date.now = now + 24 * 60 * 60
+        await store.send(.focusChanged)
+        await store.receive(\.loaded)
+        await store.receive(\.backedUp)
+        await store.finish()
+
+        let today = CalendarDate(now, in: .gmt)
+        XCTAssertEqual(days.value, [today, CalendarDate(now + 24 * 60 * 60, in: .gmt)])
     }
 
     func testStartingTwiceSyncsOnOneTimer() async throws {

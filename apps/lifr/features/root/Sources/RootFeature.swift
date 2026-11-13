@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrAPI
 import LifrAvenue
+import LifrBackupClient
 import LifrBoard
 import LifrBugReport
 import LifrCalendar
@@ -210,6 +211,8 @@ package struct RootFeature {
         @Shared(.focusAvenues) package var focusAvenues
         /// When this device sums up the day, if it does.
         @Shared(.dailySummary) package var dailySummary
+        /// The day of this device's last automatic backup, as YYYY-MM-DD.
+        @Shared(.lastBackup) package var lastBackup
         /// This device's copy of the synced default reminder, for Quick Add,
         /// widgets and Shortcuts.
         @Shared(.defaultReminder) package var defaultReminder
@@ -453,6 +456,8 @@ package struct RootFeature {
         /// The app launched: load the records and listen for changes.
         case task
         case loaded(Result<Snapshot, any Error>)
+        /// Today's automatic backup is written.
+        case backedUp(CalendarDate)
         /// Another device or process changed the records.
         case updated(Update)
         case appsLoaded([ConnectedApp])
@@ -646,6 +651,7 @@ package struct RootFeature {
     @Dependency(\.bugRecorder) private var bugRecorder
     @Dependency(\.uuid) private var uuid
     @Dependency(\.pasteboard) private var pasteboard
+    @Dependency(\.backups) private var backups
 
     package init() {}
 
@@ -755,7 +761,7 @@ package struct RootFeature {
 
             case .loaded(.success(let snapshot)):
                 introduce(snapshot.workspace, in: &state)
-                var shown = show(snapshot, in: &state)
+                var shown = Effect.merge(show(snapshot, in: &state), backUp(snapshot.workspace, state))
                 if !state.isLocked, let link = state.pendingLink {
                     // A link that came before the records: follow it now.
                     state.pendingLink = nil
@@ -831,6 +837,10 @@ package struct RootFeature {
 
             case .loaded(.failure):
                 // Each screen loads on its own too, and says what failed.
+                return .none
+
+            case .backedUp(let day):
+                state.$lastBackup.withLock { $0 = day.description }
                 return .none
 
             case .updated(let update):
@@ -1661,6 +1671,17 @@ package struct RootFeature {
 
     /// Shows `snapshot` in every list, except `sender`: the list that
     /// saved it shows it already.
+    /// Today's backup of the records, the first time they load each day.
+    /// One that fails is tried again the next time they load.
+    private func backUp(_ workspace: Workspace, _ state: State) -> Effect<Action> {
+        let today = CalendarDate(now, in: timeZone)
+        guard !state.isWindow, state.lastBackup != today.description else { return .none }
+        return .run { [backups, now] send in
+            let export = workspace.exported(at: now)
+            if (try? await backups.save(export, today)) != nil { await send(.backedUp(today)) }
+        }
+    }
+
     private func show(_ snapshot: Snapshot, from sender: ShownList? = nil, in state: inout State) -> Effect<Action> {
         guard state.saves.isLatest(snapshot) else { return .none }
         let workspace = snapshot.workspace
@@ -1834,8 +1855,8 @@ package struct RootFeature {
             _ = await Self.schedule(
                 workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted,
                 summary: summary, focus: focus)
-            if let today = Self.glance(of: workspace.focused(on: focus), now: now, timeZone: timeZone, locked: locked)
-            {
+            let focused = workspace.focused(on: focus)
+            if let today = Self.glance(of: focused, now: now, timeZone: timeZone, locked: locked) {
                 await glance.write(today)
             }
         }
@@ -2258,6 +2279,13 @@ extension RootFeature.Action {
         default:
             false
         }
+    }
+}
+
+extension SharedKey where Self == AppStorageKey<String>.Default {
+    /// The day of this device's last automatic backup.
+    package static var lastBackup: Self {
+        Self[.appStorage("lifrLastBackup"), default: ""]
     }
 }
 

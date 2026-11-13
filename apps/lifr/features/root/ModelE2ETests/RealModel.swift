@@ -55,7 +55,7 @@ final class RealModel {
             $0.models = InMemoryModelLibrary(installed: [model.spec]).client
             $0.date = .constant(Self.now)
             $0.lock = .always()
-            $0.glance = GlanceClient(write: { _ in }, takeMarked: { [] })
+            $0.glance = GlanceClient(write: { _ in }, takeMarked: { [] }, takeShared: { [] })
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
             $0.uuid = UUIDGenerator {

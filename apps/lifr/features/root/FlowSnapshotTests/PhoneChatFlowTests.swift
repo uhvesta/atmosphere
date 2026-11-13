@@ -358,6 +358,14 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         store.settings.$compares.withLock { $0 = true }
         await flow.step("settings", image: false)
         flow.scrollToEnd()
+        // The list loads only the rows on the screen, so each scroll brings
+        // the row above it into view for the next.
+        for row in [
+            "Apple's model doesn't count tokens, so its counts are guessed from the text and marked ≈.", "Compare",
+            "Prompt", "Speed",
+        ] {
+            flow.scroll(to: row)
+        }
         await flow.step("settings-experiments")
         store.isSettingsShown = false
         store.tab = .conversations
