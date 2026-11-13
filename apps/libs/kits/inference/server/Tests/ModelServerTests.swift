@@ -189,6 +189,19 @@ final class ModelServerTests: XCTestCase {
         XCTAssertNil(field(list, "data", "1", "inputs"))
     }
 
+    func testTheListSaysHowMuchEachModelReads() async throws {
+        let wide = ContextBudget(window: 32_768, reservedForAnswer: 4_096)
+        let base = try await serve([
+            ServedModel(id: "wide", runtime: ScriptedRuntime(budget: wide, steps: [])),
+            ServedModel(id: "small", runtime: ScriptedRuntime(steps: [])),
+        ])
+        let (data, _) = try await URLSession.shared.data(from: base.appending(path: "models"))
+        let list = try Wire.decoder.decode(JSONValue.self, from: data)
+        XCTAssertEqual(field(list, "data", "0", "context_length"), .number(32_768))
+        XCTAssertEqual(
+            field(list, "data", "1", "context_length"), .number(Double(ContextBudget.appleOnDevice.window)))
+    }
+
     func testAModelItDoesNotHaveIsNotFound() async throws {
         let base = try await serve([ServedModel(id: "m", runtime: ScriptedRuntime(steps: []))])
         let (status, data) = try await post(base, ["model": "other", "messages": [user("Hi")], "stream": true])

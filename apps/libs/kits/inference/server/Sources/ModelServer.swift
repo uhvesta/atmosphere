@@ -118,6 +118,9 @@ public final class ModelServer: Sendable {
                     // OpenAI's list doesn't have.
                     let inputs = model.runtime.inputs.map(\.rawValue).sorted()
                     if !inputs.isEmpty { fields["inputs"] = .array(inputs.map { .string($0) }) }
+                    // How many tokens it reads and writes in all, so a client
+                    // can size what it sends; the field llama.cpp and others use.
+                    fields["context_length"] = .number(Double(model.runtime.budget.window))
                     return .object(fields)
                 })
             try? await channel.respond(200, json: ["object": "list", "data": data])
