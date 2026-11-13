@@ -56,6 +56,9 @@ package struct SessionFeature {
         /// Whether the history has come since the session opened, so the
         /// chat shows it's loading until then.
         package var historyLoaded = false
+        /// How much of a history kept on disk is read, while it's read
+        /// before the history comes.
+        package var historyLoading: HistoryLoading?
         /// The streamed parts of the reply taken in, so the history sent
         /// again on a reconnect doesn't add them twice.
         var streamed: Set<String> = []
@@ -398,6 +401,8 @@ package struct SessionFeature {
         /// Events that came together, such as the history when watching
         /// starts.
         case receivedAll([SessionEvent])
+        /// The history is read from disk first: `read` bytes of `total`.
+        case historyLoading(read: UInt64, total: UInt64)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
         /// The message wasn't sent; it goes back in the box if that is empty.
@@ -722,7 +727,13 @@ package struct SessionFeature {
                         let batches = EventBatches()
                         let reader = Task {
                             do {
-                                for try await event in await daemon.watch(session) { await batches.add(event) }
+                                for try await item in await daemon.watch(session) {
+                                    switch item {
+                                    case .event(let event): await batches.add(event)
+                                    case .loading(let read, let total):
+                                        await send(.historyLoading(read: read, total: total))
+                                    }
+                                }
                                 await batches.end(failure: nil)
                             } catch is CancellationError {
                             } catch {
@@ -754,10 +765,16 @@ package struct SessionFeature {
 
             case .receivedAll(let events):
                 state.historyLoaded = true
+                state.historyLoading = nil
                 return received(events, &state)
+
+            case .historyLoading(let read, let total):
+                state.historyLoading = HistoryLoading(read: read, total: total)
+                return .none
 
             case .watchEnded:
                 state.historyLoaded = true
+                state.historyLoading = nil
                 // The daemon restarted or the host dropped; watch again, less
                 // often the longer it stays away. The notice says so and
                 // lets the person try at once.
@@ -1237,5 +1254,18 @@ private actor EventBatches {
     private func wake() {
         waiter?.resume()
         waiter = nil
+    }
+}
+
+/// How much of a session's history kept on disk is read as it opens.
+package struct HistoryLoading: Equatable, Sendable {
+    package var read: UInt64
+    /// 0 when its size isn't known.
+    package var total: UInt64
+
+    /// How far along it is, or nil when its size isn't known.
+    package var fraction: Double? {
+        guard total > 0 else { return nil }
+        return min(Double(read) / Double(total), 1)
     }
 }

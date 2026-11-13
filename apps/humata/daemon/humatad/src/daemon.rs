@@ -1285,10 +1285,17 @@ impl Daemon {
                             if let Some(from) = streaming.take() {
                                 let tail = events.split_off(from);
                                 events.extend(tail.into_iter().filter(|kept| {
-                                    !matches!(
+                                    let part = matches!(
                                         kept.kind,
                                         Some(pb::session_event::Kind::AssistantDelta(_))
-                                    )
+                                    );
+                                    // The host's history drops the parts of
+                                    // a whole reply, so a replay never sends
+                                    // them again: they needn't be kept.
+                                    if part {
+                                        sent.remove(&kept.id);
+                                    }
+                                    !part
                                 }));
                             }
                         }

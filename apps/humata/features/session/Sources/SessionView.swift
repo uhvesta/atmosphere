@@ -316,9 +316,15 @@ package struct SessionView: View {
             .defaultScrollAnchor(.bottom)
             .overlay {
                 if !store.historyLoaded, store.items.isEmpty {
-                    ProgressView("Loading the chat…")
-                        .controlSize(.small)
-                        .accessibilityIdentifier("chat.loading")
+                    if let fraction = store.historyLoading?.fraction {
+                        ProgressView("Opening the chat…", value: fraction)
+                            .frame(maxWidth: 240)
+                            .accessibilityIdentifier("chat.loading")
+                    } else {
+                        ProgressView("Loading the chat…")
+                            .controlSize(.small)
+                            .accessibilityIdentifier("chat.loading")
+                    }
                 }
             }
             .onChange(of: store.highlightedItem, initial: true) { _, item in

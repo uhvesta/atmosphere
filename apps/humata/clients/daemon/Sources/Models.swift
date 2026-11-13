@@ -1147,6 +1147,14 @@ package struct ImageAttachment: Hashable, Sendable {
     }
 }
 
+/// What watching a session sends: how much of a history kept on disk is read
+/// while it's read, then the history's events and each new one.
+package enum WatchItem: Hashable, Sendable {
+    /// `read` bytes of `total`; a total of 0 means its size isn't known.
+    case loading(read: UInt64, total: UInt64)
+    case event(SessionEvent)
+}
+
 /// One thing that happened in a session. Its id stays the same for the life
 /// of the session, and a fork's copies keep it.
 package struct SessionEvent: Identifiable, Hashable, Sendable {
