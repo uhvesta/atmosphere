@@ -32,7 +32,12 @@ package struct SettingsView: View {
     private func shows(_ part: SettingsPage) -> Bool { page == .all || page == part }
 
     @ViewBuilder private var sections: some View {
-        if shows(.general) { general }
+        if shows(.general) {
+            general
+            #if os(macOS)
+                quickAddKeys
+            #endif
+        }
         if shows(.sync) {
             SyncSection(store: store)
             LockSection(store: store)
@@ -118,6 +123,24 @@ package struct SettingsView: View {
         .confirmationDialog(page == .all ? $store.scope(state: \.revoke, action: \.revoke) : .constant(nil))
         .alert(page == .all ? $store.scope(state: \.alert, action: \.alert) : .constant(nil))
     }
+
+    #if os(macOS)
+        private var quickAddKeys: some View {
+            Section {
+                Picker(
+                    "Quick Add from any app",
+                    selection: Binding(
+                        get: { store.quickAddHotKey }, set: { store.send(.quickAddHotKeyPicked($0)) })
+                ) {
+                    ForEach(QuickAddHotKey.allCases, id: \.self) { Text($0.title) }
+                }
+            } footer: {
+                Text(
+                    "Opens a small Quick Add over whatever you're working in, even with no Lifr window open. "
+                        + "If nothing opens, the system or another app uses those keys: pick others.")
+            }
+        }
+    #endif
 
     @ViewBuilder private var general: some View {
         Section {

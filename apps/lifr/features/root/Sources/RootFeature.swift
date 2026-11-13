@@ -178,6 +178,8 @@ package struct RootFeature {
         /// Why turning the local API on or off failed, until it next works.
         package var apiSwitchError: String?
         @Presents package var quickAdd: QuickAddFeature.State?
+        /// Quick Add opened over another app by the Mac's hotkey.
+        @Presents package var capture: QuickAddFeature.State?
         @Presents package var approval: ApprovalFeature.State?
         @Presents package var syncReview: SyncReviewFeature.State?
         /// A short message: why Undo or Redo couldn't, or that a link
@@ -373,6 +375,11 @@ package struct RootFeature {
             currentList.flatMap { self[list: $0]?.detail?.id }
         }
 
+        /// The list on screen, for the View menu's Sort By.
+        package var currentRows: TaskListFeature.State? {
+            currentList.flatMap { self[list: $0] }
+        }
+
         /// The open task, for the Task menu.
         package var openDetail: TaskDetailFeature.State? {
             currentList.flatMap { self[list: $0]?.detail }
@@ -407,6 +414,7 @@ package struct RootFeature {
     /// What the Edit and Task menus do to the list on screen.
     package enum ListShortcut: Hashable, Sendable {
         case duplicate, trash, selectAll, moveUp, moveDown
+        case sort(TaskSort)
     }
 
     /// What the Task menu sets on the open task.
@@ -589,6 +597,9 @@ package struct RootFeature {
         case board(BoardFeature.Action)
         case settings(SettingsFeature.Action)
         case quickAdd(PresentationAction<QuickAddFeature.Action>)
+        /// The Mac's hotkey was pressed.
+        case captureOpened
+        case capture(PresentationAction<QuickAddFeature.Action>)
         case approval(PresentationAction<ApprovalFeature.Action>)
     }
 
@@ -983,6 +994,8 @@ package struct RootFeature {
                 case .moveUp, .moveDown:
                     guard let cursor = rows.cursor else { return .none }
                     return .send(list(slot, .movedOnePlace(cursor, up: shortcut == .moveUp)))
+                case .sort(let sort):
+                    return .send(list(slot, .sortPicked(sort)))
                 }
 
             case .priorityShortcut(let priority):
@@ -1323,8 +1336,14 @@ package struct RootFeature {
                 .board(.list(.delegate(.saved(let snapshot)))),
                 .settings(.delegate(.saved(let snapshot))),
                 .conversations(.delegate(.saved(let snapshot))),
-                .quickAdd(.presented(.delegate(.saved(let snapshot)))):
+                .quickAdd(.presented(.delegate(.saved(let snapshot)))),
+                .capture(.presented(.delegate(.saved(let snapshot)))):
                 return show(snapshot, from: ShownList(action), in: &state)
+
+            case .captureOpened:
+                guard state.capture == nil, let workspace = state.workspace else { return .none }
+                state.capture = QuickAddFeature.State(workspace: workspace, now: now, timeZone: timeZone)
+                return .none
 
             case .avenues(.avenue(.presented(.addTaskTapped))):
                 guard let scope = state.avenues.avenue?.scope else { return .none }
@@ -1378,7 +1397,7 @@ package struct RootFeature {
 
             case .binding, .remindersScheduled, .today, .upcoming, .calendar, .trash, .procrastinated, .avenues,
                 .search, .savedFilter, .anytime, .later, .logbook,
-                .avenue, .board, .conversations, .settings, .quickAdd, .approval, .notice, .syncReview,
+                .avenue, .board, .conversations, .settings, .quickAdd, .capture, .approval, .notice, .syncReview,
                 .lockAlert:
                 return .none
             }
@@ -1387,6 +1406,7 @@ package struct RootFeature {
         .ifLet(\.board, action: \.board) { BoardFeature() }
         .ifLet(\.$savedFilter, action: \.savedFilter) { SearchFeature() }
         .ifLet(\.$quickAdd, action: \.quickAdd) { QuickAddFeature() }
+        .ifLet(\.$capture, action: \.capture) { QuickAddFeature() }
         .ifLet(\.$approval, action: \.approval) { ApprovalFeature() }
         .ifLet(\.$syncReview, action: \.syncReview) { SyncReviewFeature() }
         .ifLet(\.$notice, action: \.notice)
@@ -2047,7 +2067,7 @@ extension RootFeature.Action {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
             .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped,
             .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped,
-            .backTapped, .forwardTapped, .listShortcut, .detailShortcut:
+            .backTapped, .forwardTapped, .listShortcut, .detailShortcut, .captureOpened:
             true
         default:
             false

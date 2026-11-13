@@ -65,6 +65,8 @@ package struct SettingsFeature {
         @Shared(.defaultReminder) package var defaultReminder
         /// When this device sums up the day, if it does.
         @Shared(.dailySummary) package var dailySummary
+        /// The keys that open Quick Add over any app, on the Mac.
+        @Shared(.quickAddHotKey) package var quickAddHotKey
         /// The chat's experiments, kept on this device and off until turned
         /// on.
         @Shared(.chatShowsSpeed) package var showsSpeed
@@ -129,6 +131,7 @@ package struct SettingsFeature {
         case defaultReminderPicked(DefaultReminder)
         /// The daily summary turned on at a time, moved, or turned off.
         case dailySummarySet(TimeOfDay?)
+        case quickAddHotKeyPicked(QuickAddHotKey)
         case agentAccessPicked(UUID, AgentAccess)
         case writePicked(String, Bool)
         case renewTapped(String)
@@ -276,6 +279,10 @@ package struct SettingsFeature {
                 guard wasOff, time != nil else { return .none }
                 // Turning it on is the moment to ask, as for a reminder.
                 return .run { [reminders] _ in _ = try? await reminders.requestPermission() }
+
+            case .quickAddHotKeyPicked(let keys):
+                state.$quickAddHotKey.withLock { $0 = keys }
+                return .none
 
             case .agentAccessPicked(let id, let access):
                 return .run { [store] send in

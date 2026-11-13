@@ -62,6 +62,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "No tasks yet"
       [StaticText] "" value: "Tasks you add here, or move here, show up in this list."
+      [Button] "Add a Task"
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
     [Button] "Hide Sidebar"

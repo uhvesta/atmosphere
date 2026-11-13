@@ -56,7 +56,10 @@ struct LifrApp: App {
         #if os(macOS)
             // The Mac keeps syncing and scheduling reminders from the menu
             // bar with every window closed, so the work outlives windows.
-            if case .success = Storage.opened { Storage.start() }
+            if case .success = Storage.opened {
+                Storage.start()
+                Storage.capture.start()
+            }
             NSApplication.shared.servicesProvider = Storage.services
         #else
             Storage.scheduleRefresh()
@@ -245,6 +248,11 @@ private enum Storage {
     } withDependencies: {
         dependencies(&$0)
     }
+
+    #if os(macOS)
+        /// Quick Add over any app, from the keys picked in Settings.
+        static let capture = CapturePanel(store: root)
+    #endif
 
     /// Another Mac window's own store, which shares the records.
     static func window(at place: Place) -> StoreOf<RootFeature> {

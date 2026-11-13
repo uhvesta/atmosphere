@@ -1601,6 +1601,40 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testTheQuickAddHotKeyOpensItsOwnQuickAddOnlyWhileUnlocked() async throws {
+        _ = health
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.captureOpened)
+        XCTAssertNotNil(store.state.capture)
+        XCTAssertNil(store.state.quickAdd)
+        await store.send(.capture(.dismiss))
+        XCTAssertNil(store.state.capture)
+
+        await store.send(.lockMirrored(true))
+        await store.skipReceivedActions(strict: false)
+        await store.send(.captureOpened)
+        XCTAssertNil(store.state.capture)
+        await task.cancel()
+    }
+
+    func testSortByOrdersTheListOnScreen() async throws {
+        _ = records.task("Run", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.goTo(.anytime))
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.listShortcut(.sort(.title)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentRows?.sort, .title)
+        await task.cancel()
+    }
+
     func testGoToShowsTheListOnEitherPlatform() async {
         let mac = makeStore(.mac)
         await mac.send(.goTo(.calendar))

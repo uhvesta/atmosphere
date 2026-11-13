@@ -1,9 +1,11 @@
 import ComposableArchitecture
+import LifrAvenue
 import LifrConversations
 import LifrCore
 import LifrLockClient
 import LifrSettings
 import LifrTaskDetail
+import LifrTaskList
 import LifrUI
 import SwiftUI
 
@@ -23,6 +25,28 @@ package struct RootCommands: Commands {
 
     /// The window in front's store.
     private var store: StoreOf<RootFeature> { focused ?? main }
+
+    /// The order of the list on screen, and how an Avenue or Project
+    /// groups it.
+    @ViewBuilder private var sortAndGroup: some View {
+        let rows = store.state.currentRows
+        Picker(
+            "Sort By",
+            selection: Binding(
+                get: { rows?.sort ?? .smart }, set: { store.send(.listShortcut(.sort($0))) })
+        ) {
+            ForEach(rows?.sorts ?? TaskSort.allCases, id: \.self) { Text($0.title) }
+        }
+        .disabled(rows == nil || store.content == .board)
+        Picker(
+            "Group By",
+            selection: Binding(
+                get: { store.avenue?.grouping ?? .status }, set: { store.send(.avenue(.groupingPicked($0))) })
+        ) {
+            ForEach(store.avenue?.groupings ?? Grouping.allCases, id: \.self) { Text($0.title) }
+        }
+        .disabled(store.avenue == nil || store.content == .board)
+    }
 
     /// Repeat, reminders, Avenue and labels for the open task, as its
     /// detail offers them.
@@ -152,6 +176,7 @@ package struct RootCommands: Commands {
                 ForEach(RootFeature.Content.allCases, id: \.self) { Text($0.title) }
             }
             .disabled(!store.state.showsScope)
+            sortAndGroup
             Divider()
             Button("Back") { store.send(.backTapped) }
                 .keyboardShortcut("[")
