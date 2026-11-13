@@ -233,6 +233,9 @@ package struct TaskListFeature {
         /// ⌫ on the Mac: the picked tasks, or the row the keyboard is on,
         /// to the Trash.
         case trashKeyPressed
+        /// ⌘D on the Mac: a copy of the picked tasks, or of the row the
+        /// keyboard is on or the open task.
+        case duplicateTapped
         /// A change to every picked task.
         case bulk(BulkEdit)
         /// Due in this many days from today, or no due date, for every
@@ -357,7 +360,8 @@ package struct TaskListFeature {
                 }
 
             case .selectTapped, .selectionToggled, .selectionExtended, .selectAllTapped, .bulk, .bulkDue, .bulkSaved,
-                .bulkPrompt(.presented), .cursorMoved, .openCursorTapped, .cursorStatusTapped, .trashKeyPressed:
+                .bulkPrompt(.presented), .cursorMoved, .openCursorTapped, .cursorStatusTapped, .trashKeyPressed,
+                .duplicateTapped:
                 return picking(&state, action)
 
             case .toggled(let id):
@@ -610,6 +614,11 @@ package struct TaskListFeature {
             let ids = state.isSelecting ? state.selectedIDs : state.cursor.map { [$0] } ?? []
             guard !ids.isEmpty else { return .none }
             return bulk(.trash, ids)
+
+        case .duplicateTapped:
+            let ids = state.isSelecting ? state.selectedIDs : (state.cursor ?? state.detail?.id).map { [$0] } ?? []
+            guard !ids.isEmpty else { return .none }
+            return save { try await $0.duplicate(tasks: ids) }
 
         case .bulk(let edit):
             return bulk(edit, state.selectedIDs)

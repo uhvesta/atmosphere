@@ -111,7 +111,16 @@ package struct TaskDetailView: View {
                 if store.details.isEmpty {
                     Button("Add a description") { store.send(.editDetailsTapped) }
                 } else {
-                    Text(LocalizedStringKey(store.details))
+                    ForEach(Array(store.details.descriptionParts.enumerated()), id: \.offset) { _, part in
+                        switch part {
+                        case .text(let text):
+                            Text(LocalizedStringKey(text))
+                        case .item(let line, let title, let checked):
+                            ChecklistItem(title: title, checked: checked) {
+                                store.send(.checklistItemToggled(line: line))
+                            }
+                        }
+                    }
                     Button("Edit description") { store.send(.editDetailsTapped) }
                 }
             }
@@ -334,6 +343,7 @@ package struct TaskDetailView: View {
                 .onTapGesture { store.send(.subtaskTapped(row.id)) }
                 .accessibilityAction(named: "Open") { store.send(.subtaskTapped(row.id)) }
             }
+            .onMove { store.send(.subtasksMoved($0, $1)) }
             TextField("Add Sub task", text: $store.newSubtaskTitle)
                 .onSubmit { store.send(.addSubtaskSubmitted) }
                 .submitLabel(.done)
@@ -568,5 +578,27 @@ private struct StackedPicker<Selection: Hashable, Content: View>: View {
         } else {
             Picker(title, selection: $selection, content: content)
         }
+    }
+}
+
+/// A checklist item from a description: tapping it checks or unchecks it.
+private struct ChecklistItem: View {
+    let title: String
+    let checked: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            Label {
+                Text(LocalizedStringKey(title))
+                    .strikethrough(checked)
+                    .foregroundStyle(checked ? .secondary : .primary)
+            } icon: {
+                Image(systemName: checked ? "checkmark.square.fill" : "square")
+                    .contentTransition(.symbolEffect(.replace))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(checked ? Text("Checked") : Text("Not checked"))
     }
 }

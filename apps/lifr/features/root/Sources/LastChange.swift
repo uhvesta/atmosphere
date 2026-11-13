@@ -244,7 +244,7 @@ extension Change.Added {
 
 /// Where a due date shortcut puts the open task.
 package enum DueShortcut: Hashable, Sendable {
-    case today, tomorrow, none
+    case today, tomorrow, nextWeek, none
 
     func date(now: Date, in timeZone: TimeZone) -> CalendarDate? {
         var calendar = Calendar(identifier: .gregorian)
@@ -252,6 +252,7 @@ package enum DueShortcut: Hashable, Sendable {
         switch self {
         case .today: return CalendarDate(now, in: timeZone)
         case .tomorrow: return calendar.date(byAdding: .day, value: 1, to: now).map { CalendarDate($0, in: timeZone) }
+        case .nextWeek: return calendar.date(byAdding: .day, value: 7, to: now).map { CalendarDate($0, in: timeZone) }
         case .none: return nil
         }
     }

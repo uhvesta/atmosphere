@@ -173,6 +173,40 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.status, .done)
     }
 
+    func testDraggingASubtaskSavesItsNewPlace() async throws {
+        let review = records.task("Review", in: health)
+        records.task("Read", in: health, parent: review)
+        records.task("Reply", in: health, parent: review)
+        records.task("File", in: health, parent: review)
+        let store = try makeStore(review)
+        let before = store.state.subtasks.map(\.title)
+
+        await store.send(.subtasksMoved([2], 0))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.subtasks.map(\.title), [before[2], before[0], before[1]])
+    }
+
+    func testTappingAChecklistItemInTheDescriptionChecksItAndAgainUnchecksIt() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let store = try makeStore(stretch)
+        await store.send(.editDetailsTapped)
+        await store.send(.binding(.set(\.detailsDraft, "Warm up first.\n- [ ] Hips\n- [x] Back")))
+        await store.send(.detailsSaved)
+        await store.receive(\.delegate.saved)
+
+        await store.send(.checklistItemToggled(line: 1))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.details, "Warm up first.\n- [x] Hips\n- [x] Back")
+
+        await store.send(.checklistItemToggled(line: 2))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.details, "Warm up first.\n- [x] Hips\n- [ ] Back")
+
+        // A line that isn't an item changes nothing.
+        await store.send(.checklistItemToggled(line: 0))
+        XCTAssertEqual(store.state.details, "Warm up first.\n- [x] Hips\n- [ ] Back")
+    }
+
     func testARefusedSubtaskTitleIsBackInItsField() async throws {
         let shoes = records.task("Buy running shoes", in: health)
         let store = try makeStore(shoes)

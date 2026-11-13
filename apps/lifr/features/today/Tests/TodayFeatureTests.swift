@@ -44,6 +44,22 @@ final class TodayFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.list.emptyMessage, TaskQuery.today.finished)
     }
 
+    func testAnEmptyTodayOffersAnytimeOnlyWhenItHasTasks() async {
+        records.task("Due tomorrow", in: health, due: 1)
+        var store = await load()
+        XCTAssertFalse(store.state.canPlanFromAnytime)
+
+        records.task("Someday", in: health)
+        store = await load()
+        XCTAssertTrue(store.state.canPlanFromAnytime)
+        await store.send(.planFromAnytimeTapped)
+        await store.receive(\.delegate.planFromAnytime)
+
+        records.task("Stretch", in: health, due: 0)
+        store = await load()
+        XCTAssertFalse(store.state.canPlanFromAnytime)
+    }
+
     func testShowsOverdueAndDueTodayOpenTasksOnly() async {
         records.task("Stretch", in: health, due: 0)
         records.task("Book physio", in: health, due: -2)

@@ -31,6 +31,7 @@ package struct RootCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            Button("New Avenue") { store.send(.newAvenueTapped) }
             #if os(macOS)
                 Divider()
                 Button("New Window") {
@@ -58,6 +59,17 @@ package struct RootCommands: Commands {
                 .disabled(store.state.printable == nil)
             }
         #endif
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Duplicate") { store.send(.listShortcut(.duplicate)) }
+                .keyboardShortcut("d")
+                .disabled(store.statusTaskID == nil)
+            // ⌫ in the list; a menu key would take it from text fields.
+            Button("Move to Trash") { store.send(.listShortcut(.trash)) }
+                .disabled(store.statusTaskID == nil)
+            Button("Select All Tasks") { store.send(.listShortcut(.selectAll)) }
+                .disabled(store.currentList == nil)
+        }
         CommandGroup(after: .textEditing) {
             Divider()
             Button("Find") { store.send(.goTo(.search)) }
@@ -87,6 +99,13 @@ package struct RootCommands: Commands {
             // Only status groups show closed tasks, and the board always
             // has a column for each status.
             .disabled(store.avenue?.grouping != .status || store.content == .board)
+            Picker(
+                "Show As",
+                selection: Binding(get: { store.content }, set: { store.send(.binding(.set(\.content, $0))) })
+            ) {
+                ForEach(RootFeature.Content.allCases, id: \.self) { Text($0.title) }
+            }
+            .disabled(!store.state.showsScope)
             Divider()
             Button("Back") { store.send(.backTapped) }
                 .keyboardShortcut("[")
@@ -118,8 +137,17 @@ package struct RootCommands: Commands {
             Button("Due Tomorrow") { store.send(.dueShortcut(.tomorrow)) }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(store.openTaskID == nil)
+            Button("Due Next Week") { store.send(.dueShortcut(.nextWeek)) }
+                .disabled(store.openTaskID == nil)
             Button("No Due Date") { store.send(.dueShortcut(.none)) }
                 .disabled(store.openTaskID == nil)
+            Divider()
+            // ⌘↑ and ⌘↓ in the list; menu keys would take them from text
+            // fields.
+            Button("Move Up") { store.send(.listShortcut(.moveUp)) }
+                .disabled(!store.state.canMoveCursorRow)
+            Button("Move Down") { store.send(.listShortcut(.moveDown)) }
+                .disabled(!store.state.canMoveCursorRow)
         }
         CommandMenu("Assistant") {
             Button("Export Plan Prompt") { store.send(.chatCommandChosen(.export)) }

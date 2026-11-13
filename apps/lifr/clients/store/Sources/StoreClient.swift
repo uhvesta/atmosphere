@@ -149,6 +149,16 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.duplicate(task:)` for each task, as one change: one Undo
+    /// removes every copy.
+    package func duplicate(tasks ids: [UUID]) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            var change = Change()
+            for id in ids { change.merge(try workspace.duplicate(task: id, in: context)) }
+            return change
+        }
+    }
+
     /// Reverts a change made earlier, such as a parent reopened by its Sub task.
     package func undo(_ change: Change) async throws -> Saved {
         try await save { workspace, context in workspace.undo(change, in: context) }

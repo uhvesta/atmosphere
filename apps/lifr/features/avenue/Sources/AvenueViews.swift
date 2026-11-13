@@ -195,6 +195,8 @@ package struct AvenueView: View {
                     isOn: Binding(get: { store.showsCompleted }, set: { store.send(.showsCompletedToggled($0)) }))
             }
         }
+        .emptyAction("Add a Task") { store.send(.addTaskTapped) }
+        .emptyAction(store.canGroupByProject ? "Add a Project" : nil) { store.send(.newProjectTapped) }
         .emptyBelowHeader(store.project != nil)
         .navigationTitle(store.title)
         .toolbar {

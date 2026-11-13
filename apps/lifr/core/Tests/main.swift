@@ -20,4 +20,5 @@ await runSuites([
     ("Bulk edits", bulkEditTests()),
     ("Recurrence", recurrenceTests()),
     ("Quick entry", quickEntryTests()),
+    ("Duplicating", duplicateTests()),
 ])

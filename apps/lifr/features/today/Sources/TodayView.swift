@@ -34,6 +34,7 @@ package struct TodayView: View {
             }
         }
         .emptyAction(add.map { _ in "Add a Task for Today" }) { add?() }
+        .emptyAction(store.canPlanFromAnytime ? "Plan from Anytime" : nil) { store.send(.planFromAnytimeTapped) }
         .navigationTitle("Today")
         .navigationDestination(item: $store.scope(state: \.procrastinated, action: \.procrastinated)) { store in
             ProcrastinatedView(store: store)

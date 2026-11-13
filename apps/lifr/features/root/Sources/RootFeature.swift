@@ -373,6 +373,19 @@ package struct RootFeature {
             currentList.flatMap { self[list: $0]?.detail?.id }
         }
 
+        /// Whether an Avenue or Project is on screen, which can show as a
+        /// list or a board.
+        package var showsScope: Bool {
+            if case .scope = selection { platform == .mac } else { false }
+        }
+
+        /// Whether Move Up and Move Down apply: a row the keyboard is on, in
+        /// a list in manual order.
+        package var canMoveCursorRow: Bool {
+            guard let slot = currentList, let rows = self[list: slot] else { return false }
+            return rows.canReorder && rows.cursor != nil
+        }
+
         /// The task a status shortcut changes: the open one, or else the
         /// row the keyboard is on.
         package var statusTaskID: UUID? {
@@ -384,6 +397,11 @@ package struct RootFeature {
             platform == .phone
                 ? Place(tab: tab, task: openTaskID) : Place(sidebar: selection, task: openTaskID)
         }
+    }
+
+    /// What the Edit and Task menus do to the list on screen.
+    package enum ListShortcut: Hashable, Sendable {
+        case duplicate, trash, selectAll, moveUp, moveDown
     }
 
     /// Where a task list lives in `State`.
@@ -438,6 +456,8 @@ package struct RootFeature {
         case redone(String, Result<Saved, any Error>)
         /// A menu's Go to: Today, Upcoming, Calendar and the like.
         case goTo(SidebarItem)
+        /// Edit and Task menu items for the list on screen.
+        case listShortcut(ListShortcut)
         /// A priority shortcut, for the open task.
         case priorityShortcut(Priority)
         /// A due date shortcut, for the open task: today, tomorrow or none.
@@ -939,6 +959,20 @@ package struct RootFeature {
                 guard let cursor = rows.cursor else { return .none }
                 return .send(list(slot, .rowAction(cursor, .status(status))))
 
+            case .listShortcut(let shortcut):
+                guard let slot = state.currentList, let rows = state[list: slot] else { return .none }
+                switch shortcut {
+                case .duplicate:
+                    return .send(list(slot, .duplicateTapped))
+                case .trash:
+                    return .send(list(slot, .trashKeyPressed))
+                case .selectAll:
+                    return .send(list(slot, .selectAllTapped))
+                case .moveUp, .moveDown:
+                    guard let cursor = rows.cursor else { return .none }
+                    return .send(list(slot, .movedOnePlace(cursor, up: shortcut == .moveUp)))
+                }
+
             case .priorityShortcut(let priority):
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
                 return .send(list(slot, .detail(.presented(.priorityPicked(priority)))))
@@ -1274,6 +1308,12 @@ package struct RootFeature {
             case .avenue(.addTaskTapped):
                 guard let scope = state.avenue?.scope else { return .none }
                 return .send(.newTaskInTapped(scope))
+
+            case .today(.delegate(.planFromAnytime)):
+                if state.platform == .mac { return .send(.selected(.anytime)) }
+                state.tab = .avenues
+                state.shownShelf = .anytime
+                return .none
 
             case .board(.addTapped):
                 guard let scope = state.board?.scope else { return .none }
@@ -1982,7 +2022,7 @@ extension RootFeature.Action {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
             .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped,
             .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped,
-            .backTapped, .forwardTapped:
+            .backTapped, .forwardTapped, .listShortcut:
             true
         default:
             false

@@ -1560,6 +1560,10 @@ final class RootFeatureTests: XCTestCase {
         await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.dueDate, CalendarDate(now + 86_400, in: .gmt))
 
+        await store.send(.dueShortcut(.nextWeek))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.dueDate, CalendarDate(now + 7 * 86_400, in: .gmt))
+
         await store.send(.dueShortcut(.none))
         await store.skipReceivedActions(strict: false)
         XCTAssertNil(store.state.workspace?.tasks[run.id]?.dueDate)

@@ -293,6 +293,10 @@ package struct TaskDetailFeature {
         case subtaskLoaded(UUID, Workspace)
         indirect case subtask(PresentationAction<Action>)
         case subtaskToggled(UUID)
+        /// A Sub task dragged to another place among its siblings.
+        case subtasksMoved(IndexSet, Int)
+        /// A checklist item in the description checked or unchecked.
+        case checklistItemToggled(line: Int)
         /// A status named by a VoiceOver action, so it needs no picker.
         case subtaskStatusNamed(UUID, TaskStatus)
         /// Shows the statuses for this task, as Change Status… on its
@@ -457,6 +461,26 @@ package struct TaskDetailFeature {
             case .subtask(.presented(.delegate(.saved(let snapshot)))):
                 _ = state.refresh(from: snapshot, now: now, timeZone: timeZone)
                 return .send(.delegate(.saved(snapshot)))
+
+            case .subtasksMoved(let source, let destination):
+                guard source.count == 1, let from = source.first, state.subtasks.indices.contains(from) else {
+                    return .none
+                }
+                var rows = state.subtasks
+                let row = rows.remove(at: from)
+                let to = min(destination > from ? destination - 1 : destination, rows.count)
+                guard to != from else { return .none }
+                rows.insert(row, at: to)
+                // Shown at once; the save's reply confirms it.
+                state.subtasks = rows
+                let lower = to > 0 ? rows[to - 1].id : nil
+                let upper = to + 1 < rows.count ? rows[to + 1].id : nil
+                return save { try await $0.reorder(task: row.id, after: lower, before: upper) }
+
+            case .checklistItemToggled(let line):
+                guard state.detailsDraft == nil, let details = state.details.togglingChecklistItem(atLine: line)
+                else { return .none }
+                return save { [id = state.id] in try await $0.edit(id, Workspace.TaskEdit(details: details)) }
 
             case .subtaskToggled(let id):
                 guard let subtask = state.subtasks.first(where: { $0.id == id }) else { return .none }

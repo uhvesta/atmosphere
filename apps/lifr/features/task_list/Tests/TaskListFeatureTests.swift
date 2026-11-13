@@ -221,6 +221,21 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(reloaded.rows.map(\.title), ["Three", "One", "Two"])
     }
 
+    func testDuplicatingTheRowTheKeyboardIsOnPutsTheCopyRightAfterIt() async throws {
+        for title in ["One", "Two"] { records.task(title, in: health) }
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(reordering: true, client: client)
+        store.dependencies.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+        await store.send(.sortPicked(.manual))
+        await store.send(.cursorMoved(up: false, extending: false))
+
+        await store.send(.duplicateTapped)
+        await store.receive(\.saved)
+        XCTAssertEqual(store.state.rows.map(\.title), ["One", "One", "Two"])
+        XCTAssertEqual(store.state.rows.map(\.status), [.todo, .todo, .todo])
+        XCTAssertEqual(store.state.cursor, store.state.rows.first?.id)
+    }
+
     func testMovingARowOnePlaceDownAndBackUpWithoutDragging() async {
         for title in ["One", "Two", "Three"] { records.task(title, in: health) }
         let store = await load(reordering: true)

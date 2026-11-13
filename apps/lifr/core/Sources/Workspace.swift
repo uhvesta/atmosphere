@@ -691,6 +691,52 @@ package struct Workspace: Hashable, Codable, Sendable {
         return change
     }
 
+    /// A copy of a task, open, right after it among its siblings: the same
+    /// title, description, priority, dates, labels, repeat, and reminders
+    /// still to come, with copies of its open Sub tasks. History, comments
+    /// and closed Sub tasks stay with the original.
+    package mutating func duplicate(task id: UUID, in context: Context) throws(LifrError) -> Change {
+        let original = try liveTask(id)
+        var change = try createTask(copy(of: original, parentID: original.parentID, now: context.now), in: context)
+        guard let copyID = change.previous.first(where: { $0.value == nil })?.key, var made = tasks[copyID] else {
+            return change
+        }
+        let next = tasks.values
+            .filter {
+                $0.deletedAt == nil && $0.id != copyID && $0.parentID == original.parentID
+                    && $0.avenueID == original.avenueID && $0.sortOrder > original.sortOrder
+            }
+            .map(\.sortOrder).min()
+        made.sortOrder = Self.key(after: original.sortOrder, before: next)
+        tasks[copyID] = made
+        for subtask in subtasks(of: id) where subtask.isOpen {
+            change.merge(try createTask(copy(of: subtask, parentID: copyID, now: context.now), in: context))
+        }
+        return change
+    }
+
+    /// What `duplicate` creates for `task`.
+    private func copy(of task: LifrTask, parentID: UUID?, now: Date) -> NewTask {
+        var new = NewTask(title: task.title, avenueID: task.avenueID, projectID: task.projectID, parentID: parentID)
+        new.details = task.details
+        new.priority = task.priority
+        new.startDate = task.startDate
+        new.dueDate = task.dueDate
+        new.dueTime = task.dueTime
+        new.labelIDs = task.labelIDs
+        new.repeats = task.recurrence?.rule
+        new.repeatInterval = task.recurrence?.interval ?? 1
+        new.reminders = reminders.values
+            .filter { reminder in
+                guard reminder.taskID == task.id, !reminder.isOneOff else { return false }
+                if case .at(let date) = reminder.trigger { return date > now }
+                return true
+            }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+            .map(\.trigger)
+        return new
+    }
+
     /// Puts an Avenue between two others in the sidebar's order.
     package mutating func reorder(avenue id: UUID, after lower: UUID?, before upper: UUID?) throws(LifrError) {
         var avenue = try avenue(id)

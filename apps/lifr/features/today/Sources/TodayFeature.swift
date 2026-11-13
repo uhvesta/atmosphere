@@ -56,6 +56,9 @@ package struct TodayFeature {
         package var list: TaskListFeature.State
         /// How many tasks are stalled, shown on the way into Procrastinated.
         package var procrastinatedCount = 0
+        /// Whether an empty Today can offer the open tasks with no due date
+        /// to plan the day from.
+        package var canPlanFromAnytime = false
         @Presents package var procrastinated: ProcrastinatedFeature.State?
 
         package init() {
@@ -73,6 +76,7 @@ package struct TodayFeature {
     package enum Action {
         case list(TaskListFeature.Action)
         case procrastinatedTapped
+        case planFromAnytimeTapped
         case procrastinated(PresentationAction<ProcrastinatedFeature.Action>)
         case delegate(Delegate)
 
@@ -80,6 +84,8 @@ package struct TodayFeature {
         package enum Delegate {
             /// Today or the review changed the records.
             case saved(Snapshot)
+            /// Shows Anytime, to pick tasks for today.
+            case planFromAnytime
         }
     }
 
@@ -113,6 +119,9 @@ package struct TodayFeature {
                 state.procrastinated = ProcrastinatedFeature.State(workspace: workspace, now: now, timeZone: timeZone)
                 return .none
 
+            case .planFromAnytimeTapped:
+                return .send(.delegate(.planFromAnytime))
+
             case .procrastinated(.presented(.list(.delegate(.saved(let snapshot))))):
                 state.list.show(snapshot, now: now, timeZone: timeZone)
                 countProcrastinated(&state)
@@ -130,5 +139,13 @@ package struct TodayFeature {
     private func countProcrastinated(_ state: inout State) {
         guard let workspace = state.list.workspace else { return }
         state.procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
+        // Only an empty Today offers it, so a full one skips the search.
+        let today = CalendarDate(now, in: timeZone)
+        state.canPlanFromAnytime =
+            state.list.isEmpty
+            && workspace.listedTasks.contains {
+                $0.isOpen && !$0.isSubtask && $0.dueDate == nil && ($0.startDate.map { $0 <= today } ?? true)
+                    && workspace.avenues[$0.avenueID]?.archivedAt == nil
+            }
     }
 }

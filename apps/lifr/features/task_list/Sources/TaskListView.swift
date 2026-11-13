@@ -19,7 +19,7 @@ package struct TaskListView<Header: View>: View {
     /// leaves the list instead of jumping to the top.
     @AccessibilityFocusState private var focusedRow: UUID?
     private let header: Header
-    private var emptyAction: (title: LocalizedStringKey, perform: () -> Void)?
+    private var emptyActions: [(title: LocalizedStringKey, perform: () -> Void)] = []
     private var emptyBelowHeader = false
 
     package init(store: StoreOf<TaskListFeature>, @ViewBuilder header: () -> Header) {
@@ -28,10 +28,11 @@ package struct TaskListView<Header: View>: View {
     }
 
     /// A button under the empty list's message, such as Clear Filters, or
-    /// none when `title` is nil.
+    /// none when `title` is nil. Each one adds a button below the last.
     package func emptyAction(_ title: LocalizedStringKey?, perform: @escaping () -> Void) -> Self {
+        guard let title else { return self }
         var view = self
-        view.emptyAction = title.map { ($0, perform) }
+        view.emptyActions.append((title, perform))
         return view
     }
 
@@ -122,7 +123,13 @@ package struct TaskListView<Header: View>: View {
             .onChange(of: store.syncs) { AccessibilityNotification.Announcement(String(localized: "Synced")).post() }
         #else
             .onKeyPress(keys: [.upArrow, .downArrow]) { press in
-                store.send(.cursorMoved(up: press.key == .upArrow, extending: press.modifiers.contains(.shift)))
+                let up = press.key == .upArrow
+                // ⌘↑ and ⌘↓ move the row itself, in manual order.
+                if press.modifiers.contains(.command) {
+                    if let cursor = store.cursor { store.send(.movedOnePlace(cursor, up: up)) }
+                } else {
+                    store.send(.cursorMoved(up: up, extending: press.modifiers.contains(.shift)))
+                }
                 return .handled
             }
             .onKeyPress(.return) {
@@ -191,8 +198,13 @@ extension TaskListView {
         } description: {
             Text(store.emptyMessage.description)
         } actions: {
-            if let emptyAction {
-                Button(emptyAction.title, action: emptyAction.perform)
+            ForEach(emptyActions.indices, id: \.self) { index in
+                let action = emptyActions[index]
+                if index == 0 {
+                    Button(action.title, action: action.perform).buttonStyle(.borderedProminent)
+                } else {
+                    Button(action.title, action: action.perform)
+                }
             }
         }
     }
