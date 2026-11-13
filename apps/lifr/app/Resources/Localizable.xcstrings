@@ -1638,7 +1638,68 @@
     "Every Friday, show what I finished and what's overdue" : {
 
     },
+    "Every ^[%lld day](inflect: true)" : {
+
+    },
+    "Every ^[%lld month](inflect: true)" : {
+
+    },
+    "Every ^[%lld month](inflect: true) %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Every ^[%1$lld month](inflect: true) %2$@"
+          }
+        }
+      }
+    },
+    "Every ^[%lld month](inflect: true) on day %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Every ^[%1$lld month](inflect: true) on day %2$lld"
+          }
+        }
+      }
+    },
+    "Every ^[%lld week](inflect: true)" : {
+
+    },
+    "Every ^[%lld week](inflect: true) on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Every ^[%1$lld week](inflect: true) on %2$@"
+          }
+        }
+      }
+    },
+    "Every ^[%lld year](inflect: true)" : {
+
+    },
+    "Every ^[%lld year](inflect: true) on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Every ^[%1$lld year](inflect: true) on %2$@"
+          }
+        }
+      }
+    },
     "Every change, who made it, and from where. Any of them can be reverted." : {
+
+    },
+    "Every day" : {
+
+    },
+    "Every month %@" : {
+
+    },
+    "Every month on day %lld" : {
 
     },
     "Every point to go back or forward to" : {
@@ -1651,6 +1712,15 @@
 
     },
     "Every version you save is kept on this device only. Tap one to use it again." : {
+
+    },
+    "Every week on %@" : {
+
+    },
+    "Every weekday" : {
+
+    },
+    "Every year on %@" : {
 
     },
     "Everything due today is closed." : {
@@ -4157,7 +4227,22 @@
     "^[%lld change](inflect: true) waiting" : {
 
     },
+    "^[%lld day](inflect: true)" : {
+
+    },
+    "^[%lld day](inflect: true) after closing" : {
+
+    },
     "^[%lld filter](inflect: true)" : {
+
+    },
+    "^[%lld hour](inflect: true)" : {
+
+    },
+    "^[%lld minute](inflect: true)" : {
+
+    },
+    "^[%lld month](inflect: true) after closing" : {
 
     },
     "^[%lld task](inflect: true)" : {
@@ -4167,6 +4252,12 @@
 
     },
     "^[%lld task](inflect: true) picked" : {
+
+    },
+    "^[%lld week](inflect: true) after closing" : {
+
+    },
+    "^[%lld year](inflect: true) after closing" : {
 
     },
     "another device" : {
@@ -4200,6 +4291,21 @@
 
     },
     "nothing due" : {
+
+    },
+    "on the first %@" : {
+
+    },
+    "on the fourth %@" : {
+
+    },
+    "on the last %@" : {
+
+    },
+    "on the second %@" : {
+
+    },
+    "on the third %@" : {
 
     },
     "set by hand" : {

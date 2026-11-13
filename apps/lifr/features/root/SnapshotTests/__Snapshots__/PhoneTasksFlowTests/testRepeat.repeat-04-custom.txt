@@ -8,10 +8,10 @@
 [button] "After closing"
 [button] "Status, Procrastinated"
 [button] "Priority, Low"
-[button] "Every 1, Decrement" value: "1" id: Decrement
-[button] "Every 1, Increment" value: "1" id: Increment
+[button] "Every 1 week, Decrement" value: "1" id: Decrement
+[button] "Every 1 week, Increment" value: "1" id: Increment
 [text] "Created, Nov 3, 2026"
-[button] "Unit, Week"
+[button] "Unit, Weeks"
 [header, text] "On"
 [header, text] "Description"
 [button, toggle] "Mon" value: "0"

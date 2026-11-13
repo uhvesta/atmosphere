@@ -1,2 +1,2 @@
-[text] "Today, 5, tasks, 1 overdue"
+[text] "Today, 5 tasks, 1 overdue"
 [text] "Unlock Lifr to see them"

@@ -218,10 +218,9 @@ package struct JournalWords {
         case .actor(let actor): author(actor)
         case .trigger(.at(let date)): date.formatted(date: .abbreviated, time: .shortened)
         case .trigger(.beforeDue(let seconds)):
-            Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
-                + " before due"
+            String(localized: "\(ahead(seconds)) before due")
         case .filter(let filter): filter.summary
-        case .recurrence(let recurrence): recurrence.description
+        case .recurrence(let recurrence): recurrence.title()
         }
     }
 
@@ -263,4 +262,9 @@ extension TaskFilter {
         if words.isEmpty { return filters }
         return filterCount == 0 ? "“\(words)”" : "“\(words)”, \(filters)"
     }
+}
+
+/// How long before the due time, such as "2 hours".
+private func ahead(_ seconds: Int) -> String {
+    Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
 }

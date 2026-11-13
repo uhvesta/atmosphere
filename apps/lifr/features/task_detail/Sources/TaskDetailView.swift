@@ -10,6 +10,7 @@ import SwiftUI
 package struct TaskDetailView: View {
     @Bindable package var store: StoreOf<TaskDetailFeature>
     @Environment(\.timeZone) private var timeZone
+    @Environment(\.locale) private var locale
     @Environment(\.openURL) private var openURL
     @FocusState private var titleFocused: Bool
 
@@ -160,7 +161,7 @@ package struct TaskDetailView: View {
 
     /// What the task repeats on, with the usual choices and a custom one.
     private var repeatRow: some View {
-        let value = store.recurrence?.description ?? String(localized: "Never")
+        let value = store.recurrence?.title(locale) ?? String(localized: "Never")
         return Group {
             #if os(macOS)
                 // A Mac menu button shows only its label, so the value is the

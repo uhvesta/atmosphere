@@ -105,6 +105,16 @@ struct RepeatEditor: View {
     let save: () -> Void
     let cancel: () -> Void
 
+    /// Such as "Every 3 weeks".
+    private static func every(_ count: Int, _ unit: Recurrence.Unit) -> AttributedString {
+        switch unit {
+        case .day: AttributedString(localized: "Every ^[\(count) day](inflect: true)")
+        case .week: AttributedString(localized: "Every ^[\(count) week](inflect: true)")
+        case .month: AttributedString(localized: "Every ^[\(count) month](inflect: true)")
+        case .year: AttributedString(localized: "Every ^[\(count) year](inflect: true)")
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -114,14 +124,16 @@ struct RepeatEditor: View {
                 }
                 .pickerStyle(.segmented)
                 Section {
+                    // The number and its unit read together, so they agree
+                    // in any language.
                     Stepper(value: $draft.interval, in: 1...99) {
-                        Text("Every \(draft.interval)")
+                        Text(Self.every(draft.interval, draft.unit))
                     }
                     Picker("Unit", selection: $draft.unit) {
-                        Text(draft.interval == 1 ? "Day" : "Days").tag(Recurrence.Unit.day)
-                        Text(draft.interval == 1 ? "Week" : "Weeks").tag(Recurrence.Unit.week)
-                        Text(draft.interval == 1 ? "Month" : "Months").tag(Recurrence.Unit.month)
-                        Text(draft.interval == 1 ? "Year" : "Years").tag(Recurrence.Unit.year)
+                        Text("Days").tag(Recurrence.Unit.day)
+                        Text("Weeks").tag(Recurrence.Unit.week)
+                        Text("Months").tag(Recurrence.Unit.month)
+                        Text("Years").tag(Recurrence.Unit.year)
                     }
                 }
                 if draft.kind == .schedule, draft.unit == .week {

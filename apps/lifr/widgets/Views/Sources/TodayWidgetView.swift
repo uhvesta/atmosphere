@@ -86,19 +86,26 @@ package struct TodayWidgetView: View {
         }
     }
 
+    /// Such as "3 tasks", the number large, read as one phrase so the
+    /// word agrees with it and sits where the language puts it.
+    private func counted(_ count: Int) -> AttributedString {
+        var text = AttributedString(localized: "^[\(count) task](inflect: true)")
+        if let number = text.range(of: count.formatted()) {
+            text[number].font = .system(size: size == .small ? 40 : 28, weight: .semibold, design: .rounded)
+            text[number].foregroundColor = .primary
+        }
+        return text
+    }
+
     private func count(_ glance: TodayGlance) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Label("Today", systemImage: "sun.max.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(glance.count, format: .number)
-                    .font(.system(size: size == .small ? 40 : 28, weight: .semibold, design: .rounded))
-                    .contentTransition(.numericText())
-                Text(glance.count == 1 ? "task" : "tasks")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Text(counted(glance.count))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
             if glance.overdue > 0 {
                 Text("\(glance.overdue) overdue")
                     .font(.caption.weight(.medium))

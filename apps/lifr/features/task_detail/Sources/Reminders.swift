@@ -125,6 +125,15 @@ struct ReminderEditor: View {
     let save: () -> Void
     let cancel: () -> Void
 
+    /// Such as "2 hours", the number and unit agreeing in any language.
+    private static func amount(_ count: Int, _ unit: ReminderDraft.Unit) -> AttributedString {
+        switch unit {
+        case .minutes: AttributedString(localized: "^[\(count) minute](inflect: true)")
+        case .hours: AttributedString(localized: "^[\(count) hour](inflect: true)")
+        case .days: AttributedString(localized: "^[\(count) day](inflect: true)")
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -141,7 +150,7 @@ struct ReminderEditor: View {
                 case .beforeDue:
                     Section {
                         Stepper(value: $draft.amount, in: 0...999) {
-                            Text("\(draft.amount)")
+                            Text(Self.amount(draft.amount, draft.unit))
                         }
                         Picker("Unit", selection: $draft.unit) {
                             Text("Minutes").tag(ReminderDraft.Unit.minutes)

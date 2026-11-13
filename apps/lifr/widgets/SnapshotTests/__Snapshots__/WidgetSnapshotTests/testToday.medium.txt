@@ -1,4 +1,4 @@
-[text] "Today, 5, tasks, 1 overdue"
+[text] "Today, 5 tasks, 1 overdue"
 [button, link] "Add a Task"
 [button, link] "Renew passport, overdue"
 [button, link] "Change Status of Renew passport"
