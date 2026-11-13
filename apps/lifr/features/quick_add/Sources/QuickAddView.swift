@@ -43,11 +43,16 @@ package struct QuickAddView: View {
                     }
                 }
             } footer: {
-                if store.entry?.parts.isEmpty == false || store.error != nil {
+                let entry = store.entry
+                if entry?.parts.isEmpty == false || store.error != nil {
                     VStack(alignment: .leading, spacing: 8) {
-                        if let entry = store.entry, !entry.parts.isEmpty {
-                            // The title as it will be saved, without the
-                            // words the chips stand for.
+                        if let entry, !entry.parts.isEmpty {
+                            // The line as typed, the words read tinted, so
+                            // it's clear which ones the chips stand for.
+                            // The chips say the same to VoiceOver.
+                            Text(Self.highlighted(store.title, entry.parts))
+                                .accessibilityHidden(true)
+                            // The title as it will be saved, without them.
                             Text("Adds “\(store.finalTitle)”")
                             PartChips(entry: entry, workspace: store.workspace) { store.send(.partIgnored($0)) }
                         }
@@ -91,6 +96,19 @@ package struct QuickAddView: View {
             }
         }
         .onAppear { titleFocused = true }
+    }
+
+    /// `line` with the words of `parts` tinted and bold.
+    static func highlighted(_ line: String, _ parts: [QuickEntry.Part]) -> AttributedString {
+        var text = AttributedString(line)
+        let characters = text.characters
+        for part in parts where part.range.lowerBound >= 0 && part.range.upperBound <= characters.count {
+            let start = characters.index(characters.startIndex, offsetBy: part.range.lowerBound)
+            let end = characters.index(characters.startIndex, offsetBy: part.range.upperBound)
+            text[start..<end].foregroundColor = .accentColor
+            text[start..<end].inlinePresentationIntent = .stronglyEmphasized
+        }
+        return text
     }
 
     private var fieldTitle: LocalizedStringKey {
