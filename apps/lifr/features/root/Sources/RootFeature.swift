@@ -1155,7 +1155,7 @@ package struct RootFeature {
                 .settings(.delegate(.saved(let snapshot))),
                 .conversations(.delegate(.saved(let snapshot))),
                 .quickAdd(.presented(.delegate(.saved(let snapshot)))):
-                return show(snapshot, in: &state)
+                return show(snapshot, from: ShownList(action), in: &state)
 
             case .avenues(.avenue(.presented(.addTaskTapped))):
                 guard let scope = state.avenues.avenue?.scope else { return .none }
@@ -1386,23 +1386,43 @@ package struct RootFeature {
         .run { [store] send in await send(.loaded(Result { try await store.snapshot() })) }
     }
 
-    private func show(_ snapshot: Snapshot, in state: inout State) -> Effect<Action> {
+    /// Shows `snapshot` in every list, except `sender`: the list that
+    /// saved it shows it already.
+    private func show(_ snapshot: Snapshot, from sender: ShownList? = nil, in state: inout State) -> Effect<Action> {
         guard state.saves.isLatest(snapshot) else { return .none }
         let workspace = snapshot.workspace
         state.workspace = workspace
-        let effects: [Effect<Action>] = [
-            TodayFeature().reduce(into: &state.today, action: .list(.show(snapshot))).map(Action.today),
-            UpcomingFeature().reduce(into: &state.upcoming, action: .list(.show(snapshot))).map(Action.upcoming),
-            CalendarFeature().reduce(into: &state.calendar, action: .list(.show(snapshot))).map(Action.calendar),
-            TrashFeature().reduce(into: &state.trash, action: .show(snapshot)).map(Action.trash),
-            ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(snapshot)))
-                .map(Action.procrastinated),
-            TaskListFeature().reduce(into: &state.anytime, action: .show(snapshot)).map(Action.anytime),
-            TaskListFeature().reduce(into: &state.later, action: .show(snapshot)).map(Action.later),
-            TaskListFeature().reduce(into: &state.logbook, action: .show(snapshot)).map(Action.logbook),
-            AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues),
-            SearchFeature().reduce(into: &state.search, action: .list(.show(snapshot))).map(Action.search),
-        ]
+        var effects: [Effect<Action>] = []
+        if sender != .today {
+            effects.append(TodayFeature().reduce(into: &state.today, action: .list(.show(snapshot))).map(Action.today))
+        }
+        if sender != .upcoming {
+            effects.append(
+                UpcomingFeature().reduce(into: &state.upcoming, action: .list(.show(snapshot))).map(Action.upcoming))
+        }
+        if sender != .calendar {
+            effects.append(
+                CalendarFeature().reduce(into: &state.calendar, action: .list(.show(snapshot))).map(Action.calendar))
+        }
+        if sender != .trash {
+            effects.append(TrashFeature().reduce(into: &state.trash, action: .show(snapshot)).map(Action.trash))
+        }
+        if sender != .procrastinated {
+            effects.append(
+                ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(snapshot)))
+                    .map(Action.procrastinated))
+        }
+        if sender != .anytime {
+            effects.append(TaskListFeature().reduce(into: &state.anytime, action: .show(snapshot)).map(Action.anytime))
+        }
+        if sender != .later {
+            effects.append(TaskListFeature().reduce(into: &state.later, action: .show(snapshot)).map(Action.later))
+        }
+        if sender != .logbook {
+            effects.append(TaskListFeature().reduce(into: &state.logbook, action: .show(snapshot)).map(Action.logbook))
+        }
+        effects.append(AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues))
+        effects.append(SearchFeature().reduce(into: &state.search, action: .list(.show(snapshot))).map(Action.search))
         var savedFilterShown = Effect<Action>.none
         if let id = state.savedFilter?.savedFilterID, workspace.savedFilters[id] == nil {
             // Deleted here or on another device.
@@ -1728,5 +1748,25 @@ extension SharedKey where Self == AppStorageKey<Bool>.Default {
     /// only; the list unless the person picks the calendar.
     package static var upcomingShowsCalendar: Self {
         Self[.appStorage("lifrUpcomingShowsCalendar"), default: false]
+    }
+}
+
+/// A list that saves and shows its own snapshot, so root needn't show it
+/// that snapshot again.
+private enum ShownList {
+    case today, upcoming, calendar, trash, procrastinated, anytime, later, logbook
+
+    init?(_ action: RootFeature.Action) {
+        switch action {
+        case .today: self = .today
+        case .upcoming: self = .upcoming
+        case .calendar: self = .calendar
+        case .trash: self = .trash
+        case .procrastinated: self = .procrastinated
+        case .anytime: self = .anytime
+        case .later: self = .later
+        case .logbook: self = .logbook
+        default: return nil
+        }
     }
 }

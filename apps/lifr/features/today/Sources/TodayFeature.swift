@@ -95,6 +95,9 @@ package struct TodayFeature {
                 return .none
 
             case .list(.delegate(.saved(let snapshot))):
+                // Root shows the rest of Lifr this save, not Today, which
+                // shows it already.
+                state.procrastinated?.list.show(snapshot, now: now, timeZone: timeZone)
                 countProcrastinated(&state)
                 return .send(.delegate(.saved(snapshot)))
 
