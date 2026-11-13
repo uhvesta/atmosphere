@@ -17,6 +17,11 @@ struct LandView: View {
             } else {
                 form
             }
+            if store.landed == nil, !store.landing, let why = store.cantLand {
+                Text(why)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             if let error = store.error {
                 Text(error)
                     .font(.callout)
@@ -36,6 +41,12 @@ struct LandView: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .buttonStyle(.borderedProminent)
                     .disabled(!store.canLand)
+                    .help(
+                        store.cantLand
+                            ?? (store.landing
+                                ? String(localized: "Landing…")
+                                : String(
+                                    localized: "Commit the work onto the branch, then push it or open pull requests")))
                 } else {
                     Button("Done") { store.send(.doneTapped) }
                         .keyboardShortcut(.defaultAction)

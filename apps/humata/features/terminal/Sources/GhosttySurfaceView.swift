@@ -30,6 +30,8 @@ final class GhosttySurfaceView: NSView {
     private var keyTextAccumulator: [String]?
     /// The screen's text as last read for accessibility, and when.
     private var screen: (text: String, read: TimeInterval)?
+    /// The clipboard reads asked about and not answered yet.
+    private var clipboardAlerts: [NSAlert] = []
 
     init(runtime: GhosttyRuntime, command: TerminalCommand) {
         line = CText(command.line)
@@ -101,6 +103,120 @@ final class GhosttySurfaceView: NSView {
         guard let surface else { return }
         self.surface = nil
         ghostty_surface_free(surface)
+        // Their requests went with the surface: nothing is left to answer.
+        let alerts = clipboardAlerts
+        clipboardAlerts = []
+        for alert in alerts { alert.window.sheetParent?.endSheet(alert.window) }
+    }
+
+    // MARK: - Clipboard
+
+    /// A clipboard read Ghostty wants confirmed, copied out of its request.
+    struct ClipboardRead {
+        struct Content {
+            var mime: String
+            var data: Data
+        }
+
+        /// What the read gets, if it's allowed.
+        var contents: [Content]
+        /// The kinds of content on the clipboard, when a program asked for those.
+        var available: [String]
+        /// Who asks, as Ghostty names them.
+        var program: String?
+        /// A paste Ghostty distrusts, rather than a program reading.
+        var paste: Bool
+    }
+
+    /// Ghostty's request, answered once from the sheet.
+    private struct ClipboardRequest: @unchecked Sendable {
+        let state: UnsafeMutableRawPointer?
+    }
+
+    /// Asks in a sheet on the window whether `read` may go on, and answers
+    /// Ghostty with the choice; denied when there's no window to ask in.
+    func confirmClipboardRead(_ read: ClipboardRead, state: UnsafeMutableRawPointer?) {
+        guard let surface else { return }
+        guard let window else {
+            ghostty_surface_deny_clipboard_request(surface, state)
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if read.paste {
+            let text =
+                read.contents.first { $0.mime == "text/plain" }.map { String(decoding: $0.data, as: UTF8.self) } ?? ""
+            let shown = text.count > 300 ? String(text.prefix(300)) + "…" : text
+            alert.messageText = String(localized: "Paste text that could run commands?")
+            alert.informativeText = String(
+                localized: """
+                    What you’re pasting has line breaks or control characters, so the shell may run it as soon \
+                    as it’s typed. Paste only if you’ve read it and trust it:
+
+                    \(shown)
+                    """)
+            alert.addButton(withTitle: String(localized: "Don’t Paste"))
+            alert.addButton(withTitle: String(localized: "Paste"))
+        } else {
+            let who = read.program.map { "“\($0)”" } ?? String(localized: "A program in this terminal")
+            alert.messageText = String(localized: "Let the terminal read the clipboard?")
+            alert.informativeText = String(
+                localized: """
+                    \(who) asks for what you last copied, which could be a password or other private text. \
+                    Allow it only if you started that program and trust it; Deny leaves the clipboard unread.
+                    """)
+            alert.addButton(withTitle: String(localized: "Deny"))
+            alert.addButton(withTitle: String(localized: "Allow"))
+        }
+        let request = ClipboardRequest(state: state)
+        clipboardAlerts.append(alert)
+        alert.beginSheetModal(for: window) { [weak self] response in
+            MainActor.assumeIsolated {
+                guard let self, self.clipboardAlerts.contains(where: { $0 === alert }) else { return }
+                self.clipboardAlerts.removeAll { $0 === alert }
+                self.answerClipboardRead(read, allowed: response == .alertSecondButtonReturn, request: request)
+            }
+        }
+    }
+
+    /// Completes Ghostty's request with what it would read, or denies it.
+    private func answerClipboardRead(_ read: ClipboardRead, allowed: Bool, request: ClipboardRequest) {
+        guard let surface else { return }
+        guard allowed else {
+            ghostty_surface_deny_clipboard_request(surface, request.state)
+            return
+        }
+        // C copies that last through the call, which copies them in turn.
+        let mimes = read.contents.map { strdup($0.mime) }
+        let datas = read.contents.map { content -> UnsafeMutablePointer<CChar> in
+            let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: max(content.data.count, 1))
+            content.data.withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                buffer.update(from: base.assumingMemoryBound(to: CChar.self), count: bytes.count)
+            }
+            return buffer
+        }
+        let available = read.available.map { strdup($0) }
+        defer {
+            mimes.forEach { free($0) }
+            datas.forEach { $0.deallocate() }
+            available.forEach { free($0) }
+        }
+        let contents = read.contents.indices.map { index in
+            ghostty_clipboard_content_s(
+                mime: UnsafePointer(mimes[index]), data: UnsafePointer(datas[index]),
+                len: read.contents[index].data.count)
+        }
+        let names: [UnsafePointer<CChar>?] = available.map { $0.map { UnsafePointer($0) } }
+        contents.withUnsafeBufferPointer { contents in
+            names.withUnsafeBufferPointer { names in
+                var complete = ghostty_clipboard_complete_s(
+                    contents: contents.baseAddress, contents_len: contents.count,
+                    available: names.baseAddress, available_len: names.count,
+                    confirmed: true, remember: false)
+                ghostty_surface_complete_clipboard_request(surface, &complete, request.state)
+            }
+        }
     }
 
     /// The command ended, or Ghostty asked to close the surface after it.

@@ -18,6 +18,9 @@ struct Echo {
     finished: Mutex<Option<oneshot::Sender<()>>>,
 }
 
+/// Events a "flood" watch sends: more than a stream holds unread.
+const FLOOD: usize = 4096;
+
 fn event(id: &str) -> pb::StreamItem {
     pb::StreamItem {
         kind: Some(pb::stream_item::Kind::SessionEvent(pb::SessionEvent {
@@ -54,8 +57,17 @@ impl Service for Echo {
                 pb::request::Kind::WatchSession(watch) => {
                     let (sender, items) = mpsc::channel(8);
                     let cancelled = self.cancelled.lock().await.take();
+                    let finished = self.finished.lock().await.take();
                     tokio::spawn(async move {
                         match watch.session_id.as_str() {
+                            "flood" => {
+                                for index in 0..FLOOD {
+                                    let _ = sender.send(Ok(event(&index.to_string()))).await;
+                                }
+                                if let Some(finished) = finished {
+                                    let _ = finished.send(());
+                                }
+                            }
                             "three" => {
                                 for id in ["a", "b", "c"] {
                                     let _ = sender.send(Ok(event(id))).await;
@@ -199,6 +211,42 @@ async fn a_stream_that_fails_ends_with_its_error() {
         "{end:?}"
     );
     assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn a_stream_that_ends_normally_did_not_fall_behind() {
+    let client = connected(Arc::default()).await;
+    let Ok((_, mut stream)) = client.stream(watch("three")).await else {
+        panic!("the watch was refused")
+    };
+    while stream.next().await.is_some() {}
+    assert!(!stream.fell_behind());
+}
+
+#[tokio::test]
+async fn a_stream_whose_reader_falls_too_far_behind_says_so() {
+    let (finished, sent) = oneshot::channel();
+    let service = Arc::new(Echo {
+        finished: Mutex::new(Some(finished)),
+        ..Echo::default()
+    });
+    let client = connected(service).await;
+    let Ok((_, mut stream)) = client.stream(watch("flood")).await else {
+        panic!("the watch was refused")
+    };
+    let sent = tokio::time::timeout(Duration::from_secs(5), sent).await;
+    assert!(matches!(sent, Ok(Ok(()))), "the flood wasn't sent");
+    // A round trip after the flood, so its items have been read.
+    assert!(client.call(send("known")).await.is_ok());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut read = 0;
+    while stream.next().await.is_some() {
+        read += 1;
+    }
+    assert!(read < FLOOD);
+    assert!(stream.fell_behind());
+    // The connection still answers.
+    assert!(client.call(send("known")).await.is_ok());
 }
 
 #[tokio::test]

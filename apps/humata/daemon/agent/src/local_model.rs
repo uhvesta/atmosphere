@@ -79,6 +79,9 @@ impl ModelServer {
 const MAX_STEPS: usize = 32;
 /// A tool's output beyond this is cut, to keep the model's context small.
 const MAX_OUTPUT: usize = 16 * 1024;
+/// Kept free of a file's lines for the notes after them: which lines they
+/// are, where to go on, and that a long line was cut.
+const LINES_NOTE_ROOM: usize = 256;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The server and model a session uses, from its backend config, as JSON:
@@ -1369,10 +1372,23 @@ fn lines(contents: &str, offset: Option<usize>, limit: Option<usize>) -> String 
             all.len()
         );
     }
+    // The lines leave room for the note after them, which says where to
+    // go on, so cutting the whole to MAX_OUTPUT never cuts that note.
+    let room = MAX_OUTPUT - LINES_NOTE_ROOM;
     let mut text = String::new();
     let mut last = first - 1;
     for line in all.iter().skip(first - 1).take(limit.unwrap_or(usize::MAX)) {
-        if text.len() + line.len() + 1 > MAX_OUTPUT && last >= first {
+        if text.len() + line.len() + 1 > room {
+            if last < first {
+                // One line longer than fits: its start, said to be cut.
+                let mut end = room;
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.push_str(&line[..end]);
+                text.push_str(&format!("\n(line {first} is cut off here)\n"));
+                last += 1;
+            }
             break;
         }
         text.push_str(line);
@@ -2536,6 +2552,26 @@ mod tests {
         assert!(part.contains("offset 5"));
         assert_eq!(lines(&contents, None, None).matches("line ").count(), 10);
         assert!(!lines(&contents, Some(20), None).contains("line 1"));
+    }
+
+    #[test]
+    fn a_file_too_long_to_read_at_once_still_says_where_to_go_on() {
+        let contents: String = (1..=4000).map(|line| format!("line {line}\n")).collect();
+        let part = lines(&contents, None, None);
+        assert!(part.len() <= MAX_OUTPUT);
+        let next = part
+            .rsplit("offset ")
+            .next()
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|number| number.parse::<usize>().ok())
+            .expect("the read says which offset goes on");
+        assert!(part.contains(&format!("line {}\n", next - 1)));
+        assert!(!part.contains(&format!("line {next}\n")));
+
+        let long = format!("{}\nshort\n", "x".repeat(MAX_OUTPUT * 2));
+        let part = lines(&long, None, None);
+        assert!(part.len() <= MAX_OUTPUT);
+        assert!(part.contains("offset 2"));
     }
 
     #[tokio::test]

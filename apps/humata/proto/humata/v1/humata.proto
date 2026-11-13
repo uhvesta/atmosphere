@@ -1558,6 +1558,9 @@ message Sessions {
 
 message AbortTurn {
   string session_id = 1;
+  // Drops what's queued too, so no turn starts after this one: as before
+  // archiving.
+  bool drop_queued = 2;
 }
 
 message TurnAborted {}
@@ -2737,6 +2740,9 @@ message PullRequest {
   ChecksState checks = 12;
   // When it was last read from GitHub.
   int64 read_unix_ms = 13;
+  // Why it couldn't be read from GitHub last time, and how to fix it; the
+  // rest is as last read. Empty when it could be.
+  string problem = 14;
 }
 
 message ListPullRequests {

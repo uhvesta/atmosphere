@@ -412,6 +412,13 @@ const MIGRATIONS: &[&str] = &["
     -- A remote session's history is kept once, in its recovery copy: the
     -- offline copy beside it is dropped where there is one.
     DELETE FROM remote_histories WHERE id IN (SELECT session_id FROM recoveries);
+", "
+    -- Why a pull request couldn't be read last time, shown on it until it
+    -- is; and GitHub's ETags of it and of its head's checks, so reading
+    -- them again unchanged is answered without them.
+    ALTER TABLE pull_requests ADD COLUMN problem TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pull_requests ADD COLUMN pull_etag TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pull_requests ADD COLUMN checks_etag TEXT NOT NULL DEFAULT '';
 "];
 
 /// What reverting a board change did.
@@ -775,6 +782,21 @@ impl Store {
             .map_err(self.failed())
     }
 
+    /// The projects of the sessions the daemon has on `host`, each once.
+    pub fn projects_on(&self, host: &str) -> Result<Vec<String>, StoreError> {
+        let connection = self.lock();
+        let read = (|| {
+            let mut statement = connection.prepare_cached(
+                "SELECT DISTINCT project_id FROM sessions
+                 WHERE host = ?1 AND project_id IS NOT NULL
+                 ORDER BY project_id",
+            )?;
+            let rows = statement.query_map([host], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()
+        })();
+        read.map_err(self.failed())
+    }
+
     /// What the daemon knows of `session`, in one read, as each listing of
     /// sessions reads it for every session; None if it isn't placed.
     pub fn known(&self, session: &str) -> Result<Option<Known>, StoreError> {
@@ -861,6 +883,20 @@ impl Store {
 
     /// Forgets everything kept of `session`, which was deleted.
     pub fn forget_session(&self, session: &str) -> Result<(), StoreError> {
+        self.forget(session, false)
+    }
+
+    /// Forgets everything kept of `session`, which was deleted, but where
+    /// it was: its recovery mirrors are cleaned after, and a delete tried
+    /// again once that failed finds them by it. It's taken off its item,
+    /// which can then be deleted.
+    pub fn forget_all_but_placement(&self, session: &str) -> Result<(), StoreError> {
+        self.forget(session, true)
+    }
+
+    fn forget(&self, session: &str, keep_placement: bool) -> Result<(), StoreError> {
+        const FORGET_PLACEMENT: &str = "DELETE FROM sessions WHERE id = ?1";
+        const OFF_ITS_ITEM: &str = "UPDATE sessions SET item_id = NULL WHERE id = ?1";
         const FORGET: &[&str] = &[
             "DELETE FROM review_comments WHERE thread_id IN
                 (SELECT id FROM review_threads WHERE session_id = ?1)",
@@ -880,12 +916,18 @@ impl Store {
             "DELETE FROM spec_notes WHERE session_id = ?1",
             "DELETE FROM remote_sessions WHERE id = ?1",
             "DELETE FROM remote_histories WHERE id = ?1",
-            "DELETE FROM sessions WHERE id = ?1",
         ];
+        let last = if keep_placement {
+            OFF_ITS_ITEM
+        } else {
+            FORGET_PLACEMENT
+        };
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
         let forgotten = FORGET
             .iter()
+            .copied()
+            .chain([last])
             .try_for_each(|sql| transaction.execute(sql, [session]).map(drop));
         forgotten
             .and_then(|()| transaction.commit())

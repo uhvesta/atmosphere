@@ -24,6 +24,10 @@ struct Hub {
     head: String,
     opened: u32,
     bodies: Vec<String>,
+    /// Reading the pull request's reviews fails while set.
+    reviews_fail: bool,
+    /// The paths read, in order.
+    read: Vec<String>,
 }
 
 fn head(hub: &Hub) -> &str {
@@ -49,14 +53,24 @@ fn pull_json(hub: &Hub) -> String {
     )
 }
 
+/// The ETag the stand-in gives the pull request as it is.
+fn pull_etag(hub: &Hub) -> String {
+    format!("\"pull-{}-{}\"", hub.merged, head(hub))
+}
+
 /// Answers GitHub's API for the one repository `acme/widgets`, at the
-/// address it returns.
+/// address it returns. The pull request and its checks are answered
+/// unchanged when asked with their ETag, and its open issues come in two
+/// pages.
 fn stand_in(hub: Arc<Mutex<Hub>>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|error| panic!("{error}"));
     let address = listener
         .local_addr()
         .unwrap_or_else(|error| panic!("{error}"));
+    let base = format!("http://{address}");
+    let served = base.clone();
     std::thread::spawn(move || {
+        let base = served;
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let mut reader = BufReader::new(&mut stream);
@@ -68,25 +82,49 @@ fn stand_in(hub: Arc<Mutex<Hub>>) -> String {
             let method = parts.next().unwrap_or_default().to_owned();
             let target = parts.next().unwrap_or_default().to_owned();
             let mut length = 0;
+            let mut if_none_match = String::new();
             loop {
                 let mut header = String::new();
                 if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
                     break;
                 }
-                if let Some((name, value)) = header.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse().unwrap_or(0);
+                if let Some((name, value)) = header.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap_or(0);
+                    } else if name.eq_ignore_ascii_case("if-none-match") {
+                        value.trim().clone_into(&mut if_none_match);
+                    }
                 }
             }
             let mut body = vec![0; length];
             let _ = reader.read_exact(&mut body);
-            let path = target.split('?').next().unwrap_or_default();
+            let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+            let checks =
+                |hub: &Hub| format!("/repos/acme/widgets/commits/{}/check-runs", head(hub));
+            let mut status = "200 OK";
+            let mut headers = String::new();
             let reply = {
                 let mut hub = hub
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if method == "GET" {
+                    hub.read.push(path.to_owned());
+                }
+                let etag = if path == "/repos/acme/widgets/pulls/7" {
+                    pull_etag(&hub)
+                } else if path == checks(&hub) {
+                    format!("\"checks-{}\"", head(&hub))
+                } else {
+                    String::new()
+                };
+                if !etag.is_empty() {
+                    headers = format!("ETag: {etag}\r\n");
+                }
                 match (method.as_str(), path) {
+                    ("GET", _) if !etag.is_empty() && if_none_match == etag => {
+                        status = "304 Not Modified";
+                        String::new()
+                    }
                     ("GET", "/repos/acme/widgets/pulls") => "[]".to_owned(),
                     ("POST", "/repos/acme/widgets/pulls") => {
                         hub.opened += 1;
@@ -97,13 +135,25 @@ fn stand_in(hub: Arc<Mutex<Hub>>) -> String {
                         pull_json(&hub)
                     }
                     ("GET", "/repos/acme/widgets/pulls/7") => pull_json(&hub),
+                    ("GET", "/repos/acme/widgets/pulls/7/reviews") if hub.reviews_fail => {
+                        status = "500 Internal Server Error";
+                        r#"{"message": "Server Error"}"#.to_owned()
+                    }
                     ("GET", "/repos/acme/widgets/pulls/7/reviews") => {
                         r#"[{"user": {"login": "sam"}, "state": "APPROVED"}]"#.to_owned()
                     }
-                    ("GET", path)
-                        if path
-                            == format!("/repos/acme/widgets/commits/{}/check-runs", head(&hub)) =>
-                    {
+                    ("GET", "/repos/acme/widgets/issues") if query.contains("page=2") => {
+                        r#"[{"number": 3, "title": "Third", "body": "Later."}]"#.to_owned()
+                    }
+                    ("GET", "/repos/acme/widgets/issues") => {
+                        headers = format!(
+                            "Link: <{base}/repos/acme/widgets/issues?state=open&per_page=100&page=2>; rel=\"next\", <{base}/repos/acme/widgets/issues?state=open&per_page=100&page=2>; rel=\"last\"\r\n"
+                        );
+                        r#"[{"number": 1, "title": "First", "body": "Soon."},
+                            {"number": 2, "title": "A pull request", "pull_request": {}}]"#
+                            .to_owned()
+                    }
+                    ("GET", path) if path == checks(&hub) => {
                         r#"{"check_runs": [{"status": "completed", "conclusion": "success"}]}"#
                             .to_owned()
                     }
@@ -111,27 +161,20 @@ fn stand_in(hub: Arc<Mutex<Hub>>) -> String {
                         "path": "notes.txt", "line": 1, "body": "say more",
                         "user": {"login": "sam"}, "diff_hunk": "@@ -0,0 +1 @@\n+kept"}]"#
                         .to_owned(),
-                    _ => String::new(),
+                    _ => {
+                        status = "404 Not Found";
+                        "{}".to_owned()
+                    }
                 }
-            };
-            let status = if reply.is_empty() {
-                "404 Not Found"
-            } else {
-                "200 OK"
-            };
-            let reply = if reply.is_empty() {
-                "{}".to_owned()
-            } else {
-                reply
             };
             let _ = write!(
                 stream,
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                "HTTP/1.1 {status}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
             );
         }
     });
-    format!("http://{address}")
+    base
 }
 
 fn git(directory: &Path, arguments: &[&str]) -> String {
@@ -431,4 +474,95 @@ async fn landing_as_pull_requests_without_a_token_lands_nothing() {
         git(repository.path(), &["branch", "--list", "keep-notes"]),
         ""
     );
+}
+
+/// How often the stand-in GitHub was asked for `path`.
+fn reads(hub: &Mutex<Hub>, path: &str) -> usize {
+    hub.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .read
+        .iter()
+        .filter(|read| *read == path)
+        .count()
+}
+
+#[tokio::test]
+async fn a_pull_request_that_cant_be_read_shows_why_and_the_list_still_comes() {
+    let landed = land_a_task().await;
+    let Landed {
+        hub, client, task, ..
+    } = &landed;
+    hub.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reviews_fail = true;
+    let failing = pulls_of(client, &task.id, true).await;
+    assert_eq!(failing.len(), 1);
+    assert!(!failing[0].problem.is_empty());
+    // The rest is as it was last read.
+    assert_eq!(failing[0].state(), pb::PullRequestState::Open);
+    assert_eq!(failing[0].review(), pb::ReviewStanding::None);
+    // Listed without reading, it still says why.
+    assert!(
+        !pulls_of(client, &task.id, false).await[0]
+            .problem
+            .is_empty()
+    );
+
+    hub.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reviews_fail = false;
+    let read = pulls_of(client, &task.id, true).await;
+    assert!(read[0].problem.is_empty());
+    assert_eq!(read[0].review(), pb::ReviewStanding::Approved);
+}
+
+#[tokio::test]
+async fn a_pull_request_as_it_was_isnt_read_again_but_its_checks_are() {
+    let landed = land_a_task().await;
+    let Landed {
+        hub, client, task, ..
+    } = &landed;
+    let reviews = "/repos/acme/widgets/pulls/7/reviews";
+    let comments = "/repos/acme/widgets/pulls/7/comments";
+    let checks = "/repos/acme/widgets/commits/abc/check-runs";
+    pulls_of(client, &task.id, true).await;
+    assert_eq!((reads(hub, reviews), reads(hub, comments)), (1, 1));
+
+    let unchanged = pulls_of(client, &task.id, true).await;
+    assert_eq!((reads(hub, reviews), reads(hub, comments)), (1, 1));
+    assert_eq!(reads(hub, checks), 2);
+    assert_eq!(unchanged[0].review(), pb::ReviewStanding::Approved);
+    assert_eq!(unchanged[0].checks(), pb::ChecksState::Passing);
+
+    // Changed, it is read again.
+    merge(&landed);
+    let merged = pulls_of(client, &task.id, true).await;
+    assert_eq!(merged[0].state(), pb::PullRequestState::Merged);
+    assert_eq!(reads(hub, reviews), 2);
+}
+
+#[tokio::test]
+async fn every_page_of_open_issues_is_imported_once() {
+    let landed = land_a_task().await;
+    let import = || {
+        landed
+            .client
+            .call(pb::request::Kind::ImportIssues(pb::ImportIssues {
+                project_id: landed.project.id.clone(),
+            }))
+    };
+    let first = import().await;
+    let Ok(pb::response::Kind::IssuesImported(first)) = first else {
+        panic!("{first:?}")
+    };
+    let titles: Vec<&str> = first.items.iter().map(|item| item.title.as_str()).collect();
+    assert_eq!(titles, ["First", "Third"]);
+    assert_eq!(first.skipped, 0);
+
+    let again = import().await;
+    let Ok(pb::response::Kind::IssuesImported(again)) = again else {
+        panic!("{again:?}")
+    };
+    assert!(again.items.is_empty());
+    assert_eq!(again.skipped, 2);
 }

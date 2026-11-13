@@ -579,6 +579,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_turn_stopped_with_its_queue_dropped_starts_nothing_after() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        wait_for(&fixture.agent, &id, |events| !queued_ids(events).is_empty()).await;
+        fixture.agent.drop_queue(&id).await.expect("dropped");
+        fixture.agent.abort(&id).await.expect("stopped");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let events = wait_for(&fixture.agent, &id, ended_turns(1)).await;
+        assert_eq!(user_messages(&events), vec!["first"]);
+    }
+
+    #[tokio::test]
     async fn an_edited_queued_message_runs_as_edited() {
         let fixture = fixture(vec![
             rule("first", vec![write_file("a.txt", "one")]),

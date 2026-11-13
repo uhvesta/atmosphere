@@ -31,8 +31,9 @@ pub enum Merged {
 
 /// Commits each checkout's changes on `branch`, with `message`. A checkout
 /// with changes moves onto the branch first; one without is left out unless
-/// it was landed on the branch before, so a repository the session didn't
-/// change gets no branch. Nothing is changed unless every checkout can land.
+/// it's on the branch already or has commits its base doesn't, as one landed
+/// before under another name has, so a repository the session didn't change
+/// gets no branch. Nothing is changed unless every checkout can land.
 pub async fn land(
     checkouts: &[Checkout],
     branch: &str,
@@ -65,7 +66,10 @@ pub async fn land(
         let current = branch_of(&checkout.path)
             .await
             .unwrap_or_else(|| checkout.branch.clone());
-        if !changed && current != branch {
+        // A land tried again under a new name still takes a repository
+        // the last one committed in, whose commit may not be pushed or
+        // have its pull request yet.
+        if !changed && current != branch && !ahead_of_base(checkout).await {
             continue;
         }
         if current != branch && has_branch(&checkout.path, branch).await {
@@ -237,6 +241,20 @@ pub async fn delete_branch(repository: &Path, branch: &str) -> Result<(), Worksp
     }
     git(repository, &["branch", "-D", branch]).await?;
     Ok(())
+}
+
+/// Whether `checkout` has commits that what it's merged into doesn't;
+/// false when that can't be told.
+async fn ahead_of_base(checkout: &Checkout) -> bool {
+    let Ok(upstream) = upstream(checkout).await else {
+        return false;
+    };
+    git(
+        &checkout.path,
+        &["rev-list", "--count", &format!("{upstream}..HEAD")],
+    )
+    .await
+    .is_ok_and(|count| count.trim() != "0")
 }
 
 async fn has_branch(directory: &Path, branch: &str) -> bool {

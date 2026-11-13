@@ -162,6 +162,19 @@ final class InMemoryDaemonTests: XCTestCase {
         XCTAssertNotNil(waiting(history))
     }
 
+    func testStoppingEverythingRunsNothingQueued() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "one", .enqueue)
+        try await daemon.client.send(session.id, "two", .enqueue)
+
+        try await daemon.client.stopAll(session.id)
+
+        let history = daemon.history(session.id)
+        XCTAssertEqual(said(history), ["user: one"])
+        XCTAssertEqual(history.last?.kind, .idle)
+    }
+
     func testASessionInAProjectWorksInItsOwnCopy() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("Humata", [Repository(path: "/code/humata")], "")

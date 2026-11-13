@@ -24,6 +24,14 @@ package struct PullRequestRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let problem = pull.problem {
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                        .help("Shown as last read from GitHub. It's read again every few minutes.")
+                }
             }
             Spacer()
             Text(standing)

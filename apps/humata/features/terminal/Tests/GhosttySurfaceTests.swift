@@ -98,4 +98,74 @@ final class GhosttySurfaceTests: XCTestCase {
         view.close()
         window.close()
     }
+
+    func testAProgramReadingTheClipboardIsAskedAboutFirst() throws {
+        let pasteboard = NSPasteboard.general
+        let kept = pasteboard.string(forType: .string)
+        defer {
+            pasteboard.clearContents()
+            if let kept { pasteboard.setString(kept, forType: .string) }
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("copied", forType: .string)
+        let runtime = try GhosttyRuntime.shared.get()
+        // OSC 52 asks for the clipboard.
+        let line = "printf '\\033]52;c;?\\007'; exec cat"
+        let view = GhosttySurfaceView(runtime: runtime, command: TerminalCommand(line: line))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+
+        spin(for: 5) { window.attachedSheet != nil }
+
+        XCTAssertNotNil(window.attachedSheet, "screen: \(text(view))")
+        if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .alertFirstButtonReturn) }
+        spin(for: 0.5) { false }
+        XCTAssertNil(window.attachedSheet)
+        view.close()
+        window.close()
+    }
+
+    /// A terminal's host, as its tab shows it, put in a window.
+    private func shownTab(_ search: TerminalSearch, findBarUp: Bool) -> (TerminalSurfaceHost, NSWindow) {
+        let host = TerminalSurfaceHost(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        host.show(TerminalCommand(line: "exec cat"), generation: 0, search: search) { _ in }
+        if findBarUp {
+            // As ⌘F does: Ghostty starts the search and tells the find bar.
+            _ = host.surface?.perform("start_search")
+            spin(for: 2) { search.shown }
+        }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.borderless],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        return (host, window)
+    }
+
+    func testAShownTerminalTakesTheKeys() throws {
+        _ = try GhosttyRuntime.shared.get()
+        let (host, window) = shownTab(TerminalSearch(), findBarUp: false)
+        spin(for: 2) { host.surface.map { window.firstResponder === $0 } ?? false }
+
+        XCTAssertNotNil(host.surface)
+        XCTAssertTrue(host.surface.map { window.firstResponder === $0 } ?? false)
+        host.close()
+        window.close()
+    }
+
+    func testAShownTerminalLeavesTheKeysWithItsFindBar() throws {
+        _ = try GhosttyRuntime.shared.get()
+        let search = TerminalSearch()
+        let (host, window) = shownTab(search, findBarUp: true)
+        spin(for: 0.5) { false }
+
+        XCTAssertNotNil(host.surface)
+        XCTAssertTrue(search.shown)
+        XCTAssertFalse(host.surface.map { window.firstResponder === $0 } ?? true)
+        host.close()
+        window.close()
+    }
 }

@@ -446,6 +446,31 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.archived, [])
     }
 
+    func testStopAndArchiveEndsTheTurnThenArchives() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: "")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "build it", .enqueue)
+        // What's queued goes too, rather than starting and holding the archive.
+        try await daemon.client.send(session.id, "then test it", .enqueue)
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.stopAndArchiveTapped(session.id))
+        XCTAssertTrue(store.state.busy.contains(session.id))
+        await store.receive(\.updated)
+        XCTAssertFalse(store.state.busy.contains(session.id))
+        XCTAssertEqual(store.state.archived.map(\.id), [session.id])
+        let history = try await daemon.client.history(session.id)
+        XCTAssertTrue(history.contains { $0.kind == .turnEnded(aborted: true) })
+    }
+
     func testRenamingASessionShowsTheNewName() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(
@@ -648,6 +673,52 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.blockedCount, 1, "replies wait on nobody")
         await store.finish()
         XCTAssertEqual(badges.value, [1])
+    }
+
+    func testHumataOpensOnTheInboxWhenSomethingIsBlocked() async throws {
+        let daemon = InMemoryDaemon { message in
+            message == "build" ? [.run(command: "make", output: ""), .say("Built.")] : [.say("Done.")]
+        }
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        let building = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/build"))
+        try await daemon.client.send(building.id, "build", .enqueue)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.selection, .inbox)
+
+        // Picked later, another session stays picked.
+        await store.send(.selected(.session(building.id)))
+        await store.receive(\.delegate.openSession)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.selection, .session(building.id))
+    }
+
+    func testHumataOpensOnNothingWhenOnlyRepliesWait() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertFalse(store.state.inbox.isEmpty)
+        XCTAssertNil(store.state.selection)
     }
 
     func testAReplyIsMarkedAsReadFromTheInbox() async throws {

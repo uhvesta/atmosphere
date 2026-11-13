@@ -24,6 +24,13 @@ use crate::ports::Ports;
 use crate::relay::Relay;
 use crate::terminals::{Attached, Chunk, Opening, Terminals};
 
+/// How long a session here is idle before its history is sealed, as the
+/// Mac's daily cleanup does with its own.
+const SEAL_IDLE: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 60 * 60);
+
+/// How often a host puts its old histories to rest.
+const REST_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, HostError>> + Send + 'a>>;
 
 /// [`Agent`] with its futures boxed, so the host can hold different backends.
@@ -48,6 +55,7 @@ trait Backend: Send + Sync {
         mode: ApprovalMode,
     ) -> BoxFuture<'a, ()>;
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
+    fn drop_queue<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
     fn rewind<'a>(
         &'a self,
         session: &'a SessionId,
@@ -183,6 +191,9 @@ where
     }
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
         Box::pin(async move { Agent::abort(self, session).await.map_err(Into::into) })
+    }
+    fn drop_queue<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
+        Box::pin(async move { Agent::drop_queue(self, session).await.map_err(Into::into) })
     }
     fn rewind<'a>(
         &'a self,
@@ -556,6 +567,44 @@ impl Host {
             start += counted.load(std::sync::atomic::Ordering::Relaxed);
         }
         Ok(sealed)
+    }
+
+    /// Rests this host's histories, sealing those of sessions archived or
+    /// idle since `before` (in Unix milliseconds). Says how many it sealed.
+    pub(crate) async fn rest_idle_since(&self, before: i64) -> Result<usize, HostError> {
+        let mut seal = HashSet::new();
+        for (backend, agent) in &self.backends {
+            for record in agent.sessions().await? {
+                let info = self.info(*backend, agent.as_ref(), &record).await?;
+                if info.archived || info.last_active_unix_ms < before {
+                    seal.insert(info.id);
+                }
+            }
+        }
+        self.rest(&seal, Arc::new(|_: usize, _: usize| {})).await
+    }
+
+    /// Once a day, rests this host's histories and seals the old ones, as
+    /// the Mac's daemon does for the sessions on the Mac: a host serves
+    /// sessions on its own, so it does this itself.
+    pub(crate) fn rest_on_schedule(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(REST_EVERY).await;
+                let Some(host) = me.upgrade() else {
+                    return;
+                };
+                let idle = i64::try_from(SEAL_IDLE.as_millis()).unwrap_or(i64::MAX);
+                let before = crate::store::now_unix_ms().saturating_sub(idle);
+                if let Err(error) = host.rest_idle_since(before).await {
+                    eprintln!(
+                        "humatad: couldn't seal this host's old session histories; they stay as they were, and it tries again in a day: {}",
+                        describe(&error)
+                    );
+                }
+            }
+        });
     }
 
     /// Marks this host as serving on `socket`, which a [`pb::StopHost`]
@@ -1003,7 +1052,11 @@ impl Host {
             }
             Request::AbortTurn(abort) => {
                 let session = SessionId::new(abort.session_id);
-                self.owner(&session)?.1.abort(&session).await?;
+                let owner = self.owner(&session)?.1;
+                if abort.drop_queued {
+                    owner.drop_queue(&session).await?;
+                }
+                owner.abort(&session).await?;
                 Response::TurnAborted(pb::TurnAborted {})
             }
             Request::RewindSession(rewind) => {

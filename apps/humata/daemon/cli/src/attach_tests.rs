@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use humata_wire::{Client, Reply, Service, ServiceFuture, WireError, pb, serve};
@@ -71,6 +72,8 @@ struct Running {
     attached: mpsc::UnboundedReceiver<Items>,
     typed: mpsc::UnboundedReceiver<Vec<u8>>,
     resized: mpsc::UnboundedReceiver<(u32, u32)>,
+    /// How many connections the attach made.
+    connections: Arc<AtomicUsize>,
 }
 
 fn start(terminal: &str) -> Running {
@@ -92,10 +95,15 @@ fn start(terminal: &str) -> Running {
         host: String::new(),
         terminal: terminal.to_owned(),
     };
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counted = connections.clone();
     let ended = tokio::spawn(async move {
         attach(
             &target,
-            || connected(host.clone()),
+            || {
+                counted.fetch_add(1, Ordering::Relaxed);
+                connected(host.clone())
+            },
             input,
             output,
             sizes_receiver,
@@ -111,6 +119,7 @@ fn start(terminal: &str) -> Running {
         attached: attached_receiver,
         typed: typed_receiver,
         resized: resized_receiver,
+        connections,
     }
 }
 
@@ -224,6 +233,45 @@ async fn reattaches_after_the_connection_drops() {
         last_reset.map(|start| &shown[start + RESET.len()..]),
         Some(&b"after"[..])
     );
+}
+
+#[tokio::test]
+async fn falling_behind_attaches_again_on_the_same_connection() {
+    let mut running = start("shell");
+    let first = next(&mut running.attached).await;
+    // The screen isn't read while the host prints far more than the attach
+    // can hold, so it falls behind.
+    let line = vec![b'x'; 1024];
+    for _ in 0..4096 {
+        let _ = first.send(output(&line, false)).await;
+    }
+    let Running {
+        ended,
+        mut screen,
+        mut attached,
+        connections,
+        ..
+    } = running;
+    let shown = tokio::spawn(async move {
+        let mut shown = Vec::new();
+        let _ = screen.read_to_end(&mut shown).await;
+        shown
+    });
+    let second = next(&mut attached).await;
+    send(&second, output(b"after", true)).await;
+    send(&second, exit(0)).await;
+    let ended = match tokio::time::timeout(Duration::from_secs(5), ended).await {
+        Ok(Ok(ended)) => ended,
+        Ok(Err(error)) => panic!("the attach panicked: {error}"),
+        Err(_) => panic!("the attach didn't end"),
+    };
+    assert!(matches!(ended, Ok(Ended::Exited(0))));
+    assert_eq!(connections.load(Ordering::Relaxed), 1);
+    let shown = match shown.await {
+        Ok(shown) => shown,
+        Err(error) => panic!("couldn't read what was shown: {error}"),
+    };
+    assert!(shown.ends_with(&[RESET, b"after"].concat()));
 }
 
 #[tokio::test]

@@ -22,6 +22,11 @@ const OUTPUT_KEPT: usize = 8 * 1024;
 /// How long a setup script may run.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// How long a first clone may take: long enough for a large repository on
+/// a slow link, but bounded, so a remote that stops answering doesn't hold
+/// the session's start forever.
+const CLONE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// How long `copilot --version` may take.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -237,6 +242,15 @@ impl Machine {
         &self,
         clone: pb::CloneRepositories,
     ) -> Result<pb::RepositoriesCloned, HostError> {
+        self.clone_within(clone, CLONE_TIMEOUT).await
+    }
+
+    /// As [`Machine::clone`], giving each first clone `patience` to finish.
+    async fn clone_within(
+        &self,
+        clone: pb::CloneRepositories,
+        patience: Duration,
+    ) -> Result<pb::RepositoriesCloned, HostError> {
         let folder = self.state.join("repos").join(plain(&clone.folder)?);
         let mut cloned = Vec::new();
         let mut notices = Vec::new();
@@ -252,6 +266,9 @@ impl Machine {
         };
         for repository in clone.repositories {
             let path = folder.join(plain(&repository.name)?);
+            // Held while it's cloned or updated, so a session starting from
+            // it at the same time waits for this one rather than racing it.
+            let _preparing = fresh::preparing(&path).await;
             if path.join(".git").exists() {
                 let kind = fresh::Kind::Clone;
                 let notice =
@@ -268,13 +285,26 @@ impl Machine {
                 path: folder.clone(),
                 source,
             })?;
-            let output = git()
+            let cloning = git()
                 .arg("clone")
                 .arg(&repository.url)
                 .arg(&path)
-                .output()
-                .await
-                .map_err(|source| HostError::RunGit { source })?;
+                .env("GIT_TERMINAL_PROMPT", "0")
+                // Dropping it when time is up stops git.
+                .kill_on_drop(true)
+                .output();
+            let output = match tokio::time::timeout(patience, cloning).await {
+                Ok(output) => output.map_err(|source| HostError::RunGit { source })?,
+                Err(_) => {
+                    // What it cloned so far would be taken for a clone.
+                    let _ = std::fs::remove_dir_all(&path);
+                    return Err(HostError::CloneTimedOut {
+                        url: repository.url,
+                        path,
+                        minutes: patience.as_secs().div_ceil(60),
+                    });
+                }
+            };
             if !output.status.success() {
                 return Err(HostError::Clone {
                     url: repository.url,
@@ -626,5 +656,34 @@ mod tests {
             machine.clone(request("../escape")).await,
             Err(HostError::NotAName { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_clone_that_takes_too_long_is_stopped_and_leaves_nothing_behind() {
+        let state = scratch();
+        // A git server that takes the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|error| panic!("couldn't listen: {error}"));
+        let port = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .port();
+        let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+        let machine = machine(&state.path().join("host"));
+        let request = pb::CloneRepositories {
+            folder: "project".to_owned(),
+            repositories: vec![pb::RemoteRepository {
+                name: "app".to_owned(),
+                url: format!("git://127.0.0.1:{port}/app.git"),
+            }],
+        };
+
+        let cloned = machine.clone_within(request, Duration::from_secs(1)).await;
+
+        let Err(HostError::CloneTimedOut { path, .. }) = cloned else {
+            panic!("the clone wasn't stopped: {cloned:?}");
+        };
+        assert!(!path.exists());
+        drop(silent);
     }
 }

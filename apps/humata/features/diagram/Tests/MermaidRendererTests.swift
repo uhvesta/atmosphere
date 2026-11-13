@@ -61,6 +61,20 @@ final class MermaidRendererTests: XCTestCase {
         }
     }
 
+    func testAHugeDrawingsBitmapIsCappedInPixels() {
+        let (width, height, scale, backing) = (4096.0, 2048.0, 3.0, 2.0)
+        let points = MermaidRenderer.snapshotWidth(width: width, height: height, scale: scale, backing: backing)
+        XCTAssertLessThanOrEqual(points * backing, MermaidRenderer.largestPixels + 0.5)
+        XCTAssertLessThanOrEqual(points * height / width * backing, MermaidRenderer.largestPixels + 0.5)
+        let tall = MermaidRenderer.snapshotWidth(width: 100, height: 4096, scale: scale, backing: backing)
+        XCTAssertLessThanOrEqual(tall * 4096 / 100 * backing, MermaidRenderer.largestPixels + 0.5)
+    }
+
+    func testASmallDrawingKeepsItsScale() {
+        XCTAssertEqual(MermaidRenderer.snapshotWidth(width: 300, height: 200, scale: 3, backing: 2), 900)
+        XCTAssertEqual(MermaidRenderer.snapshotWidth(width: 300, height: 200, scale: 1, backing: 2), 300)
+    }
+
     func testWithoutMermaidNothingCanBeDrawn() async {
         let empty = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let renderer = MermaidRenderer(resources: empty)

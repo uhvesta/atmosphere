@@ -823,7 +823,7 @@ extension PullRequest {
             sessionID: pull.sessionID, itemID: pull.itemID.isEmpty ? nil : pull.itemID, repository: pull.repository,
             githubRepository: pull.githubRepository, number: pull.number, url: pull.url, title: pull.title,
             branch: pull.branch, base: pull.base, state: state, review: review, checks: checks,
-            read: date(pull.readUnixMs))
+            read: date(pull.readUnixMs), problem: pull.problem.isEmpty ? nil : pull.problem)
     }
 }
 

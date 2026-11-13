@@ -44,6 +44,9 @@ package struct BoardFeature {
         /// What agents outside Humata proposed through `humata mcp`, which
         /// reaches the board only once the person applies it here.
         package var proposals: ProposalsFeature.State
+        /// Spec comments not sent yet, by item, kept when its page closes
+        /// so opening it again shows them.
+        var keptComments: [Item.ID: SpecCommentsFeature.State] = [:]
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
@@ -66,6 +69,27 @@ package struct BoardFeature {
 
         package func sessions(on item: Item) -> [Session] {
             item.sessionIDs.compactMap { sessions[id: $0] }
+        }
+
+        /// `item`'s page, with the spec comments it was closed with.
+        func page(of item: Item) -> ItemFeature.State {
+            var page = ItemFeature.State(
+                project: project, item: item, parent: parent(of: item), subtasks: subtasks(of: item),
+                sessions: sessions(on: item))
+            if var kept = keptComments[item.id] {
+                kept.title = item.title
+                page.comments = kept
+            }
+            return page
+        }
+
+        /// Keeps what was written on `page`'s spec once it closes. Comments
+        /// being sent aren't kept: the session may have them already.
+        mutating func keepComments(of page: ItemFeature.State) {
+            var comments = page.comments
+            comments.alert = nil
+            let unsent = !comments.drafts.isEmpty || !comments.comment.isEmpty
+            keptComments[page.item.id] = unsent && !comments.sending ? comments : nil
         }
 
         /// The board to keep while something else shows in its place. What it
@@ -168,6 +192,20 @@ package struct BoardFeature {
     package init() {}
 
     package var body: some ReducerOf<Self> {
+        Reduce { state, action in
+            // However a task's page closes, or another opens in its place,
+            // its unsent spec comments stay for when it opens again.
+            let open = state.destination?.item
+            let effect = core.reduce(into: &state, action: action)
+            if let open, state.destination?.item?.item.id != open.item.id {
+                state.keepComments(of: open)
+            }
+            return effect
+        }
+    }
+
+    @ReducerBuilder<State, Action>
+    private var core: some ReducerOf<Self> {
         Scope(state: \.proposals, action: \.proposals) { ProposalsFeature() }
         Reduce { state, action in
             switch action {
@@ -267,6 +305,10 @@ package struct BoardFeature {
                 }
                 state.items = items
                 state.sessions = sessions
+                // A deleted item's comments have nothing to go on.
+                if !state.keptComments.isEmpty {
+                    state.keptComments = state.keptComments.filter { items[id: $0.key] != nil }
+                }
                 if case .item(var page) = state.destination, let item = state.items[id: page.item.id] {
                     let before = page
                     page.item = item
@@ -331,10 +373,7 @@ package struct BoardFeature {
 
             case .cardTapped(let id):
                 guard let item = state.items[id: id] else { return .none }
-                state.destination = .item(
-                    ItemFeature.State(
-                        project: state.project, item: item, parent: state.parent(of: item),
-                        subtasks: state.subtasks(of: item), sessions: state.sessions(on: item)))
+                state.destination = .item(state.page(of: item))
                 return .none
 
             case .startWorkTapped(let id):
@@ -360,9 +399,7 @@ package struct BoardFeature {
 
             case .startNeedsModel(let id, let settings):
                 guard let item = state.items[id: id] else { return .none }
-                var page = ItemFeature.State(
-                    project: state.project, item: item, parent: state.parent(of: item),
-                    subtasks: state.subtasks(of: item), sessions: state.sessions(on: item))
+                var page = state.page(of: item)
                 page.destination = .newSession(settings)
                 state.destination = .item(page)
                 return .none
@@ -410,6 +447,7 @@ package struct BoardFeature {
                 }
 
             case .destination(.presented(.item(.delegate(.deleted)))):
+                // Its kept comments go once the board reads it's gone.
                 state.destination = nil
                 return .merge(.send(.refresh), .send(.changedHere))
 

@@ -337,6 +337,52 @@ final class DocsFocusAndVersionsTests: XCTestCase {
         XCTAssertNotNil(store.state.alert)
     }
 
+    func testAReadBegunBeforeARestoreDoesntShowOverIt() async throws {
+        let (daemon, session) = try await chat()
+        try await daemon.client.send(session.id, "Change", .enqueue)
+        // The next read holds the file as it is now until let go.
+        let holding = LockIsolated(false)
+        let (started, readStarted) = AsyncStream<Void>.makeStream()
+        let (release, letGo) = AsyncStream<Void>.makeStream()
+        var client = daemon.client
+        let readFile = client.readFile
+        client.readFile = { session, path in
+            let contents = try await readFile(session, path)
+            if holding.value {
+                readStarted.yield()
+                for await _ in release { break }
+            }
+            return contents
+        }
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.read)
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsListed)
+        await store.send(.versionPicked(1))
+        await store.receive(\.versionRead)
+
+        holding.setValue(true)
+        await store.send(.refresh)
+        for await _ in started { break }
+        holding.setValue(false)
+
+        await store.send(.restoreTapped)
+        await store.send(.alert(.presented(.restore(path: "plan.md", turn: 1))))
+        await store.receive(\.restored)
+        XCTAssertEqual(store.state.lines?[2], "Ship the reader.")
+
+        letGo.finish()
+        await store.receive(\.read)
+        XCTAssertEqual(store.state.lines?[2], "Ship the reader.", "The late read is of the file before the restore")
+    }
+
     func testVersionsThatCantBeReadShowAnAlert() async throws {
         let daemon = InMemoryDaemon()
         var state = DocsFeature.State(sessionID: "gone")

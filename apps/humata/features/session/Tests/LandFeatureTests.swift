@@ -61,6 +61,37 @@ final class LandFeatureTests: XCTestCase {
         XCTAssertNil(store.state.error)
     }
 
+    func testASessionLandsAndUpdatesOnlyBetweenTurns() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await session(daemon)
+        let at = Date(timeIntervalSince1970: 0)
+        var state = SessionFeature.State(session: session)
+        state.events = [SessionEvent(id: "e1", time: at, kind: .turnStarted)]
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        XCTAssertTrue(store.state.isWorking)
+        await store.send(.landTapped)
+        XCTAssertNil(store.state.land)
+        await store.send(.updateFromBaseTapped)
+        XCTAssertFalse(store.state.updating)
+
+        await store.send(.received(SessionEvent(id: "e2", time: at, kind: .turnEnded(aborted: false))))
+        await store.send(.landTapped)
+        XCTAssertEqual(store.state.land?.canLand, true)
+
+        // A turn starting with the sheet open holds the landing until it ends.
+        await store.send(.received(SessionEvent(id: "e3", time: at, kind: .turnStarted)))
+        XCTAssertEqual(store.state.land?.canLand, false)
+        await store.send(\.land.landTapped)
+        XCTAssertEqual(store.state.land?.landing, false)
+        XCTAssertNil(store.state.land?.landed)
+    }
+
     func testOnlyAProjectsSessionShips() async throws {
         let daemon = InMemoryDaemon()
         let chat = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))

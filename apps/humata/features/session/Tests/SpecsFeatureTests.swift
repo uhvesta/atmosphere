@@ -121,6 +121,16 @@ final class SpecsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.versions?.list?.count, 3, "The restore is a version of its own")
     }
 
+    func testASpecsVersionsLeaveOutOtherTasksChanges() async throws {
+        let (daemon, task, store) = try await focusedTask()
+        let other = try await daemon.client.createItem(task.projectID, ItemFields(title: "Logout", spec: "Sign out."))
+        _ = try await daemon.client.updateItem(other.id, ItemUpdate(spec: "Sign out everywhere."))
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsListed)
+        XCTAssertEqual(
+            store.state.versions?.list?.map(\.text), ["# Login\n\nSign in with a passkey.", "# Login\n\nSign in."])
+    }
+
     func testProjectInstructionsHaveNoVersions() async throws {
         let (_, _, store) = try await focusedTask()
         let project = try XCTUnwrap(store.state.pages.first { $0.kind == .project })
@@ -135,7 +145,7 @@ final class SpecsFeatureTests: XCTestCase {
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
         let task = try await daemon.client.createItem(project.id, ItemFields(title: "Login", spec: "Sign in."))
         var client = daemon.client
-        client.boardLog = { _ in throw DaemonError.unexpected("no journal") }
+        client.itemLog = { _, _ in throw DaemonError.unexpected("no journal") }
         let store = TestStore(initialState: SpecsFeature.State(projectID: project.id, itemID: task.id)) {
             SpecsFeature()
         } withDependencies: {

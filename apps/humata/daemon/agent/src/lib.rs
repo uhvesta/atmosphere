@@ -152,6 +152,12 @@ pub trait Agent: Send + Sync {
         text: String,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Takes every queued message out, so none starts after the turn.
+    fn drop_queue(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Stops the running turn, if any. Queued messages still run.
     fn abort(&self, session: &SessionId) -> impl Future<Output = Result<(), Self::Error>> + Send;
 

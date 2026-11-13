@@ -16,6 +16,9 @@ package struct LandFeature {
         /// Only push, without pull requests.
         package var push = false
         package var landing = false
+        /// The session's turn is running, so its work isn't done to land:
+        /// what's committed could be half of an edit.
+        package var turnRunning = false
         package var landed: Landed?
         package var error: String?
 
@@ -33,9 +36,22 @@ package struct LandFeature {
         }
 
         package var canLand: Bool {
-            !landing && landed == nil
-                && !branch.trimmingCharacters(in: .whitespaces).isEmpty
-                && !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            !landing && landed == nil && cantLand == nil
+        }
+
+        /// Why landing can't start yet, and what to do about it; nil when
+        /// it can, or while it lands.
+        var cantLand: String? {
+            if turnRunning {
+                return String(localized: "The agent is still working. Wait for its turn to end, or stop it, then land.")
+            }
+            if branch.trimmingCharacters(in: .whitespaces).isEmpty {
+                return String(localized: "Name the branch to land on.")
+            }
+            if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return String(localized: "Write the commit message.")
+            }
+            return nil
         }
     }
 

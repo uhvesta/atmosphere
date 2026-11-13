@@ -152,10 +152,9 @@ impl Daemon {
         only_if_held: bool,
     ) -> Result<bool, DaemonError> {
         let sessions = self.list("").await?.sessions;
-        let session = sessions
-            .iter()
-            .find(|session| session.id == id)
-            .ok_or_else(|| StoreError::UnknownSession { id: id.to_owned() })?;
+        let Some(session) = sessions.iter().find(|session| session.id == id) else {
+            return self.finish_delete(id).await.map(|()| true);
+        };
         let name = session.name.clone();
         if !session.archived {
             return Err(DaemonError::DeleteUnarchived { name });
@@ -173,15 +172,55 @@ impl Daemon {
             session_id: id.to_owned(),
             only_if_held,
         });
-        match self.ask(&session.host, request).await? {
-            pb::response::Kind::SessionDeleted(deleted) if deleted.kept => return Ok(false),
-            pb::response::Kind::SessionDeleted(_) => {}
-            _ => return Err(unexpected(&session.host, "the session deleted")),
+        match self.ask(&session.host, request).await {
+            Ok(pb::response::Kind::SessionDeleted(deleted)) if deleted.kept => return Ok(false),
+            Ok(pb::response::Kind::SessionDeleted(_)) => {}
+            // Deleted there already, by a delete whose answer was lost.
+            Err(error) if error.code() == pb::ErrorCode::UnknownSession => {}
+            Err(error) => return Err(error),
+            Ok(_) => return Err(unexpected(&session.host, "the session deleted")),
         }
-        // Gone from its host, so forgotten first: a mirror left behind
-        // mustn't offer it back as a recovery copy.
-        self.store.forget_session(id)?;
-        let folder = self.mirrors(id, project.as_deref());
+        self.clean_up_deleted(id, project.as_deref()).await?;
+        Ok(true)
+    }
+
+    /// Finishes deleting `id`, which its host no longer lists: a delete
+    /// whose recovery mirrors couldn't be cleaned left where it was, so
+    /// they're cleaned now. Unknown if the daemon has no such session, or
+    /// its host lost it and its recovery copy is still kept.
+    async fn finish_delete(&self, id: &str) -> Result<(), DaemonError> {
+        let unknown = || DaemonError::from(StoreError::UnknownSession { id: id.to_owned() });
+        let Some(placement) = self.store.placement(id)? else {
+            return Err(unknown());
+        };
+        if self.store.recovery_turns(id)?.is_some() {
+            return Err(unknown());
+        }
+        // Not listed may only mean its host didn't answer in time.
+        let listed = match self
+            .ask(
+                &placement.host,
+                pb::request::Kind::ListSessions(pb::ListSessions::default()),
+            )
+            .await?
+        {
+            pb::response::Kind::Sessions(listed) => listed.sessions,
+            _ => return Err(unexpected(&placement.host, "its sessions")),
+        };
+        if listed.iter().any(|session| session.id == id) {
+            return Err(unknown());
+        }
+        self.clean_up_deleted(id, placement.project.as_deref())
+            .await
+    }
+
+    /// Forgets `id`, deleted from its host, and cleans its recovery mirrors.
+    async fn clean_up_deleted(&self, id: &str, project: Option<&str>) -> Result<(), DaemonError> {
+        // Gone from its host, so its copy is forgotten first: a mirror left
+        // behind mustn't offer it back as a recovery copy. Where it was is
+        // kept until the mirrors are clean, so trying again cleans them.
+        self.store.forget_all_but_placement(id)?;
+        let folder = self.mirrors(id, project);
         if project.is_some() {
             for (_, mirror) in mirrors_in(&folder) {
                 humata_agent::forget(&mirror, id)
@@ -199,7 +238,8 @@ impl Daemon {
                 source,
             })?;
         }
-        Ok(true)
+        self.store.forget_session(id)?;
+        Ok(())
     }
 
     /// Takes `session`'s backup from `host`, its new commits into the
@@ -319,6 +359,7 @@ impl Daemon {
             .map(|session| ((session.id.as_str(), session.host.as_str()), session))
             .collect();
         let failures = self.lock_backup_failures();
+        let removals = self.lock_copy_removals();
         let mut recoveries: Vec<pb::Recovery> = self
             .store
             .recoveries()?
@@ -328,10 +369,15 @@ impl Daemon {
                 pb::Recovery {
                     turns: found.map_or(recovery.turns, |session| session.turns),
                     on_host: found.is_some(),
-                    problem: failures
-                        .problem(&recovery.session)
-                        .unwrap_or_default()
-                        .to_owned(),
+                    problem: failures.problem(&recovery.session).map_or_else(
+                        || {
+                            removals
+                                .problem(&recovery.session)
+                                .map(|(host, problem)| copy_left_behind(host, problem))
+                                .unwrap_or_default()
+                        },
+                        str::to_owned,
+                    ),
                     session_id: recovery.session,
                     name: recovery.name,
                     host: recovery.host,
@@ -511,8 +557,44 @@ impl Daemon {
     }
 
     /// Deletes the copy of `session` that `host` holds, which moved away.
-    /// One that can't be deleted stays left out of the list.
+    /// One that can't be deleted stays left out of the list, and listing
+    /// tries again later, waiting longer after each failure; its recovery
+    /// copy says why while it keeps failing.
     async fn remove_copy(&self, host: &str, session: &str) {
+        if self.lock_copy_removals().starts(host, session) {
+            self.try_removing_copy(host, session).await;
+        }
+    }
+
+    /// [`Daemon::remove_copy`] in the background, if it's time to try.
+    pub(super) fn remove_copy_soon(&self, host: &str, session: &str) {
+        if !self.lock_copy_removals().due(host, session, Instant::now()) {
+            return;
+        }
+        let Some(daemon) = self.me.upgrade() else {
+            self.lock_copy_removals().stopped(host, session);
+            return;
+        };
+        let (host, session) = (host.to_owned(), session.to_owned());
+        tokio::spawn(async move { daemon.try_removing_copy(&host, &session).await });
+    }
+
+    /// Tries deleting `host`'s copy of `session` once, keeping why if it
+    /// can't be.
+    async fn try_removing_copy(&self, host: &str, session: &str) {
+        match self.delete_copy(host, session).await {
+            Ok(()) => self.lock_copy_removals().succeeded(host, session),
+            Err(error) => {
+                let problem = humata_wire::describe(&error);
+                self.lock_copy_removals()
+                    .failed(host, session, problem, Instant::now());
+            }
+        }
+    }
+
+    /// Archives and deletes `host`'s copy of `session`; one it doesn't
+    /// have is deleted already.
+    async fn delete_copy(&self, host: &str, session: &str) -> Result<(), DaemonError> {
         let archive = pb::request::Kind::UpdateSession(pb::UpdateSession {
             session_id: session.to_owned(),
             archived: Some(true),
@@ -522,17 +604,23 @@ impl Daemon {
             session_id: session.to_owned(),
             only_if_held: false,
         });
-        let removed = match self.ask(host, archive).await {
-            Ok(_) => self.ask(host, delete).await.map(drop),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = removed {
-            eprintln!(
-                "humatad: couldn't delete the copy of session {session} left on {}: {}",
-                if host.is_empty() { "this Mac" } else { host },
-                humata_wire::describe(&error)
-            );
+        let gone = |error: &DaemonError| error.code() == pb::ErrorCode::UnknownSession;
+        match self.ask(host, archive).await {
+            Err(error) if gone(&error) => return Ok(()),
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
+        match self.ask(host, delete).await {
+            Err(error) if gone(&error) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Ok(()),
+        }
+    }
+
+    fn lock_copy_removals(&self) -> std::sync::MutexGuard<'_, CopyRemovals> {
+        self.copy_removals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Restores every session `host` lost onto it again.
@@ -586,6 +674,17 @@ fn record_name(record: &[u8]) -> String {
         .ok()
         .and_then(|record| record.get("name")?.as_str().map(str::to_owned))
         .unwrap_or_default()
+}
+
+/// What a recovery copy says while the copy its move left behind can't
+/// be deleted.
+fn copy_left_behind(host: &str, problem: &str) -> String {
+    let host = if host.is_empty() { "this Mac" } else { host };
+    format!(
+        "The copy this session's move left on {host} couldn't be deleted: {problem}. \
+         It stays hidden there, still taking room, and is tried again on its own, \
+         waiting longer each time; fix what stops it on {host} and it goes at the next try."
+    )
 }
 
 fn unexpected(host: &str, expected: &'static str) -> DaemonError {
@@ -661,9 +760,126 @@ impl BackupFailures {
     }
 }
 
+/// How long a copy that couldn't be deleted is left before the first try
+/// again; each failure after doubles it, up to [`COPY_RETRY_MOST`].
+const COPY_RETRY_FIRST: Duration = Duration::from_secs(30);
+const COPY_RETRY_MOST: Duration = Duration::from_secs(60 * 60);
+
+/// Failures in a row after which a copy left behind says why on its
+/// session's recovery copy.
+const COPY_KEEPS_FAILING: u32 = 2;
+
+/// Copies left on a host by a move, being deleted or waiting to be tried
+/// again, by host and session.
+#[derive(Default)]
+pub(super) struct CopyRemovals(HashMap<(String, String), CopyRemoval>);
+
+#[derive(Default)]
+struct CopyRemoval {
+    running: bool,
+    failures: u32,
+    next: Option<Instant>,
+    problem: String,
+}
+
+impl CopyRemovals {
+    /// Starts deleting `host`'s copy of `session` now, unless that's
+    /// running already.
+    fn starts(&mut self, host: &str, session: &str) -> bool {
+        let removal = self
+            .0
+            .entry((host.to_owned(), session.to_owned()))
+            .or_default();
+        !std::mem::replace(&mut removal.running, true)
+    }
+
+    /// Starts deleting `host`'s copy of `session` if it isn't running and
+    /// the wait after its last failure is over.
+    fn due(&mut self, host: &str, session: &str, now: Instant) -> bool {
+        let removal = self
+            .0
+            .entry((host.to_owned(), session.to_owned()))
+            .or_default();
+        if removal.running || removal.next.is_some_and(|next| now < next) {
+            return false;
+        }
+        removal.running = true;
+        true
+    }
+
+    /// Stops a try that never ran, leaving its wait as it was.
+    fn stopped(&mut self, host: &str, session: &str) {
+        if let Some(removal) = self.0.get_mut(&(host.to_owned(), session.to_owned())) {
+            removal.running = false;
+        }
+    }
+
+    fn failed(&mut self, host: &str, session: &str, problem: String, now: Instant) {
+        let removal = self
+            .0
+            .entry((host.to_owned(), session.to_owned()))
+            .or_default();
+        removal.running = false;
+        removal.failures = removal.failures.saturating_add(1);
+        let doublings = removal.failures.saturating_sub(1).min(16);
+        let wait = COPY_RETRY_FIRST
+            .saturating_mul(1 << doublings)
+            .min(COPY_RETRY_MOST);
+        removal.next = Some(now + wait);
+        removal.problem = problem;
+    }
+
+    fn succeeded(&mut self, host: &str, session: &str) {
+        self.0.remove(&(host.to_owned(), session.to_owned()));
+    }
+
+    /// Why a copy of `session` left behind keeps failing to be deleted,
+    /// with the host it's on.
+    fn problem(&self, session: &str) -> Option<(&str, &str)> {
+        self.0.iter().find_map(|((host, of), removal)| {
+            (of == session && removal.failures >= COPY_KEEPS_FAILING)
+                .then_some((host.as_str(), removal.problem.as_str()))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_left_behind_is_tried_again_ever_later_and_says_why_once_it_keeps_failing() {
+        let mut removals = CopyRemovals::default();
+        let now = Instant::now();
+        assert!(removals.due("old", "s", now));
+        // One try at a time.
+        assert!(!removals.due("old", "s", now));
+        assert!(!removals.starts("old", "s"));
+
+        removals.failed("old", "s", "unreachable".to_owned(), now);
+        assert_eq!(removals.problem("s"), None);
+        assert!(!removals.due("old", "s", now + COPY_RETRY_FIRST / 2));
+        assert!(removals.due("old", "s", now + COPY_RETRY_FIRST));
+
+        removals.failed("old", "s", "still unreachable".to_owned(), now);
+        assert_eq!(removals.problem("s"), Some(("old", "still unreachable")));
+        assert!(!removals.due("old", "s", now + COPY_RETRY_FIRST));
+        assert!(removals.due("old", "s", now + COPY_RETRY_FIRST * 2));
+
+        for _ in 0..40 {
+            removals.failed("old", "s", "down".to_owned(), now);
+            removals.stopped("old", "s");
+        }
+        assert!(removals.due("old", "s", now + COPY_RETRY_MOST));
+        // A move tries at once, whatever the wait.
+        removals.failed("old", "s", "down".to_owned(), now);
+        assert!(removals.starts("old", "s"));
+
+        removals.succeeded("old", "s");
+        assert_eq!(removals.problem("s"), None);
+        assert!(removals.due("old", "s", now));
+        assert!(removals.due("other", "s", now));
+    }
 
     #[test]
     fn a_failed_backup_waits_for_the_next_turn_or_ten_minutes() {

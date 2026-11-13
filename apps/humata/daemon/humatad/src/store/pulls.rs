@@ -25,6 +25,12 @@ pub struct PullRequest {
     pub read_unix_ms: i64,
     /// The commit its branch was at on GitHub when last read.
     pub head: String,
+    /// Why it couldn't be read from GitHub last time; empty if it could.
+    pub problem: String,
+    /// GitHub's ETag of it as last read, to ask whether it changed since.
+    pub pull_etag: String,
+    /// GitHub's ETag of the check runs of `head` as last read.
+    pub checks_etag: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,7 +101,8 @@ named!(Standing {
 named!(Checks { None => "none", Pending => "pending", Passing => "passing", Failing => "failing" });
 
 const PULL_COLUMNS: &str = "SELECT session_id, repository, github, number, url, title, branch,
-    base, state, review, checks, read_unix_ms, head FROM pull_requests";
+    base, state, review, checks, read_unix_ms, head, problem, pull_etag, checks_etag
+    FROM pull_requests";
 
 fn pull(row: &Row<'_>) -> rusqlite::Result<PullRequest> {
     Ok(PullRequest {
@@ -112,6 +119,9 @@ fn pull(row: &Row<'_>) -> rusqlite::Result<PullRequest> {
         checks: Checks::named(&row.get::<_, String>(10)?),
         read_unix_ms: row.get(11)?,
         head: row.get(12)?,
+        problem: row.get(13)?,
+        pull_etag: row.get(14)?,
+        checks_etag: row.get(15)?,
     })
 }
 
@@ -122,13 +132,16 @@ impl Store {
         self.lock()
             .execute(
                 "INSERT INTO pull_requests (session_id, repository, github, number, url, title,
-                     branch, base, state, review, checks, read_unix_ms, head)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                     branch, base, state, review, checks, read_unix_ms, head, problem,
+                     pull_etag, checks_etag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                  ON CONFLICT (session_id, repository) DO UPDATE SET
                      github = excluded.github, number = excluded.number, url = excluded.url,
                      title = excluded.title, branch = excluded.branch, base = excluded.base,
                      state = excluded.state, review = excluded.review, checks = excluded.checks,
-                     read_unix_ms = excluded.read_unix_ms, head = excluded.head",
+                     read_unix_ms = excluded.read_unix_ms, head = excluded.head,
+                     problem = excluded.problem, pull_etag = excluded.pull_etag,
+                     checks_etag = excluded.checks_etag",
                 params![
                     pull.session,
                     pull.repository,
@@ -143,7 +156,27 @@ impl Store {
                     pull.checks.name(),
                     pull.read_unix_ms,
                     pull.head,
+                    pull.problem,
+                    pull.pull_etag,
+                    pull.checks_etag,
                 ],
+            )
+            .map(drop)
+            .map_err(self.failed())
+    }
+
+    /// Keeps why the session's pull request in `repository` couldn't be
+    /// read, leaving what was last read of it as it was.
+    pub fn pull_problem(
+        &self,
+        session: &str,
+        repository: &str,
+        problem: &str,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "UPDATE pull_requests SET problem = ?3 WHERE session_id = ?1 AND repository = ?2",
+                params![session, repository, problem],
             )
             .map(drop)
             .map_err(self.failed())
@@ -290,6 +323,9 @@ mod tests {
             checks: Checks::None,
             read_unix_ms: 1,
             head: String::new(),
+            problem: String::new(),
+            pull_etag: String::new(),
+            checks_etag: String::new(),
         }
     }
 
@@ -312,6 +348,30 @@ mod tests {
         );
         assert_eq!(store.open_pulls().expect("read").len(), 1);
         assert!(store.pulls("other").expect("read").is_empty());
+    }
+
+    #[test]
+    fn a_problem_reading_a_pull_request_stays_on_it_until_it_is_read() {
+        let (_dir, store) = store();
+        let mut read = pull("s", "app", PullState::Open);
+        read.review = Standing::Approved;
+        read.pull_etag = "\"tag\"".into();
+        store.keep_pull(&read).expect("kept");
+        store
+            .keep_pull(&pull("s", "lib", PullState::Open))
+            .expect("kept");
+
+        store
+            .pull_problem("s", "app", "GitHub couldn't be reached")
+            .expect("kept");
+        let pulls = store.pulls("s").expect("read");
+        assert!(!pulls[0].problem.is_empty());
+        assert_eq!(pulls[0].review, Standing::Approved);
+        assert_eq!(pulls[0].pull_etag, "\"tag\"");
+        assert!(pulls[1].problem.is_empty());
+
+        store.keep_pull(&read).expect("kept");
+        assert!(store.pulls("s").expect("read")[0].problem.is_empty());
     }
 
     #[test]

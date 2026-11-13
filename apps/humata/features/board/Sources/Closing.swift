@@ -75,7 +75,7 @@ extension AlertState where Action == BoardAlert {
 /// Stops each of `sessions` in a turn, then archives them all.
 func stopAndArchive(_ sessions: [Session], with daemon: DaemonClient) async throws {
     for session in sessions where session.state == .working || session.state == .waitingForApproval {
-        try await daemon.abort(session.id)
+        try await daemon.stopAll(session.id)
     }
     for session in sessions {
         _ = try await daemon.update(session.id, SessionUpdate(archived: true))

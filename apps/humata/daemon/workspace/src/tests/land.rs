@@ -232,3 +232,36 @@ async fn a_land_that_failed_part_way_lands_again_on_the_same_name() {
         assert_eq!(git_in(&checkout.path, &["status", "--porcelain"]), "");
     }
 }
+
+#[tokio::test]
+async fn a_land_tried_again_under_a_new_name_takes_the_repository_committed_in_before() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (repositories, checkouts) = session(dir.path()).await;
+    std::fs::write(checkouts[0].path.join("README.md"), "changed\n").expect("wrote");
+    std::fs::write(checkouts[1].path.join("README.md"), "changed\n").expect("wrote");
+    // `app` is committed on the first name before `docs` fails.
+    let hook = refuse_commits(&repositories[1].path);
+    land(&checkouts, "humata/fix-it", "Fix it")
+        .await
+        .expect_err("the hook refuses the commit");
+    std::fs::remove_file(hook).expect("removed");
+    let committed = head(&checkouts[0].path);
+
+    let landed = land(&checkouts, "humata/fixed", "Fix it")
+        .await
+        .expect("landed under the new name");
+
+    let names: Vec<&str> = landed
+        .iter()
+        .map(|landed| landed.checkout.name.as_str())
+        .collect();
+    assert_eq!(names, ["app", "docs"]);
+    assert_eq!(landed[0].commit, None);
+    for checkout in &checkouts {
+        assert_eq!(
+            branch_of(&checkout.path).await.as_deref(),
+            Some("humata/fixed")
+        );
+    }
+    assert_eq!(head(&checkouts[0].path), committed);
+}

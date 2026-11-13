@@ -284,17 +284,41 @@ private func ghosttyReadClipboard(
     return started ? GHOSTTY_CLIPBOARD_READ_STARTED : GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
 }
 
-/// Ghostty asks whether a read it holds unsafe may go on: never, so a
-/// program can't read the clipboard and a paste Ghostty distrusts isn't
-/// typed.
+/// Ghostty asks whether a read it holds unsafe may go on: a program
+/// reading the clipboard, or a paste that could run commands. The surface
+/// asks the person, and answers once they've chosen.
 private func ghosttyConfirmReadClipboard(
     _ userdata: UnsafeMutableRawPointer?, _ confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
     _ state: UnsafeMutableRawPointer?, _ request: ghostty_clipboard_request_e
 ) {
     guard Thread.isMainThread else { return }
     MainActor.assumeIsolated {
-        guard let surface = surfaceView(userdata)?.surface else { return }
-        ghostty_surface_deny_clipboard_request(surface, state)
+        guard let view = surfaceView(userdata), let surface = view.surface else { return }
+        guard let confirm = confirm?.pointee else {
+            ghostty_surface_deny_clipboard_request(surface, state)
+            return
+        }
+        // Ghostty's pointers last only for this call: the answer comes later.
+        var contents: [GhosttySurfaceView.ClipboardRead.Content] = []
+        if let entries = confirm.contents {
+            for index in 0..<confirm.contents_len {
+                let entry = entries[index]
+                guard let mime = entry.mime else { continue }
+                let data = entry.data.map { Data(bytes: $0, count: entry.len) } ?? Data()
+                contents.append(.init(mime: String(cString: mime), data: data))
+            }
+        }
+        var available: [String] = []
+        if let mimes = confirm.available {
+            for index in 0..<confirm.available_len {
+                if let mime = mimes[index] { available.append(String(cString: mime)) }
+            }
+        }
+        view.confirmClipboardRead(
+            GhosttySurfaceView.ClipboardRead(
+                contents: contents, available: available, program: confirm.name.map { String(cString: $0) },
+                paste: request == GHOSTTY_CLIPBOARD_REQUEST_PASTE),
+            state: state)
     }
 }
 

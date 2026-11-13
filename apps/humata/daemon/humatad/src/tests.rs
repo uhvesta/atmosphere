@@ -151,6 +151,36 @@ async fn a_session_plays_its_script_on_the_host() {
 }
 
 #[tokio::test]
+async fn a_host_seals_only_the_histories_of_sessions_idle_long_enough_and_still_reads_them() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let host = match Host::open(state.path(), &state.path().join("worktrees"), None).await {
+        Ok(host) => Arc::new(host),
+        Err(error) => panic!("couldn't open the host: {error}"),
+    };
+    let client = client_of(host.clone()).await;
+    let session = started(&client, start(state.path(), "")).await.id;
+    send(&client, &session, "hello").await;
+    let before = said(&after_turns(&client, &session, 1).await);
+
+    let recent = host.rest_idle_since(0).await;
+    assert!(matches!(recent, Ok(0)), "{recent:?}");
+    // The watch just ended lets go of the history soon after.
+    let mut sealed = 0;
+    for _ in 0..100 {
+        match host.rest_idle_since(i64::MAX).await {
+            Ok(count) => sealed += count,
+            Err(error) => panic!("couldn't rest: {error}"),
+        }
+        if sealed > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(sealed, 1);
+    assert_eq!(said(&after_turns(&client, &session, 1).await), before);
+}
+
+#[tokio::test]
 async fn a_watch_marks_the_end_of_the_history_before_anything_new() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let client = host(state.path()).await;
@@ -2491,6 +2521,17 @@ async fn a_hosts_agents_reach_only_the_boards_and_sessions_of_that_host() {
             }
         }
     };
+    // What an agent asks of one session reaches only a session on its host.
+    let threads = |id: &str| {
+        Some(pb::request::Kind::ListThreads(pb::ListThreads {
+            session_id: id.to_owned(),
+        }))
+    };
+    assert!(allowed(&daemon.tool_call("", threads(&session.id)).await));
+    assert!(!allowed(
+        &daemon.tool_call("other", threads(&session.id)).await
+    ));
+    assert!(!allowed(&daemon.tool_call("", threads("unknown")).await));
     assert_eq!(sessions("").await, vec![session.id]);
     assert!(sessions("other").await.is_empty());
 }
@@ -3535,7 +3576,7 @@ async fn a_fork_knows_which_of_its_parents_proposals_were_decided() {
 }
 
 #[tokio::test]
-async fn a_delete_that_cant_clean_up_still_forgets_the_session() {
+async fn a_delete_that_cant_clean_up_still_forgets_the_session_and_cleans_up_when_tried_again() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let client = daemon(state.path(), Hosts::default()).await;
@@ -3555,12 +3596,13 @@ async fn a_delete_that_cant_clean_up_still_forgets_the_session() {
     std::fs::create_dir_all(&mirrors).unwrap_or_else(|error| panic!("{error}"));
     std::fs::write(mirrors.join(&session.id), "").unwrap_or_else(|error| panic!("{error}"));
 
-    let deleted = client
-        .call(pb::request::Kind::DeleteSession(pb::DeleteSession {
+    let delete = || {
+        client.call(pb::request::Kind::DeleteSession(pb::DeleteSession {
             session_id: session.id.clone(),
             only_if_held: false,
         }))
-        .await;
+    };
+    let deleted = delete().await;
     assert!(deleted.is_err(), "{deleted:?}");
     let listed = client
         .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
@@ -3587,6 +3629,23 @@ async fn a_delete_that_cant_clean_up_still_forgets_the_session() {
             .recoveries
             .iter()
             .all(|recovery| recovery.session_id != session.id)
+    );
+
+    // Tried again once the folder can go, the delete cleans it up; and
+    // after, the session is unknown.
+    std::fs::remove_file(mirrors.join(&session.id)).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::create_dir_all(mirrors.join(&session.id).join("code.git"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let again = delete().await;
+    assert!(
+        matches!(again, Ok(pb::response::Kind::SessionDeleted(_))),
+        "{again:?}"
+    );
+    assert!(!mirrors.join(&session.id).exists());
+    let unknown = delete().await;
+    assert!(
+        refused_with(&unknown, pb::ErrorCode::UnknownSession),
+        "{unknown:?}"
     );
 }
 

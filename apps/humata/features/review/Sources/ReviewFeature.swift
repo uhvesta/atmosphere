@@ -76,6 +76,36 @@ package struct ReviewFeature {
             self.turns = turns
         }
 
+        /// What's kept of a review looked away from while Humata runs: the
+        /// file and range it showed, and the comment and replies not sent yet.
+        /// The changes themselves are read again when it next appears.
+        package struct Kept: Equatable, Sendable {
+            var range: ChangeRange
+            var selected: FileRef?
+            var wholeFile: Bool
+            var rendered: Bool
+            var commenting: Commenting?
+            var comment: String
+            var replies: [ReviewThread.ID: String]
+        }
+
+        package var kept: Kept {
+            get {
+                Kept(
+                    range: range, selected: selected, wholeFile: wholeFile, rendered: rendered,
+                    commenting: commenting, comment: comment, replies: replies)
+            }
+            set {
+                range = newValue.range
+                selected = newValue.selected
+                wholeFile = newValue.wholeFile
+                rendered = newValue.rendered
+                commenting = newValue.commenting
+                comment = newValue.comment
+                replies = newValue.replies
+            }
+        }
+
         package var rangeKind: RangeKind {
             switch range {
             case .session: .session

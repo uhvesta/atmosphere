@@ -82,6 +82,9 @@ pub struct Daemon {
     backing_up: std::sync::Mutex<HashMap<String, bool>>,
     /// Backups that failed, left alone for a while.
     backup_failures: std::sync::Mutex<recovery::BackupFailures>,
+    /// Copies left on a host by a move that are still to be deleted, with
+    /// when to try again and why the last try failed.
+    copy_removals: std::sync::Mutex<recovery::CopyRemovals>,
     /// The ports forwarded to hosts, by id.
     forwards: std::sync::Mutex<BTreeMap<String, forwards::Forwarding>>,
     next_forward: std::sync::atomic::AtomicU64,
@@ -144,6 +147,7 @@ impl Daemon {
             clones,
             backing_up: std::sync::Mutex::default(),
             backup_failures: std::sync::Mutex::default(),
+            copy_removals: std::sync::Mutex::default(),
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
             indexing: tokio::sync::Mutex::new(()),
@@ -469,6 +473,10 @@ impl Daemon {
                 .map(Reply::Response)
                 .or_else(failed);
         }
+        // A terminal's attach starts with a replay of its screen, so one
+        // that fell behind is asked for again rather than ended as lost.
+        let again =
+            matches!(request, pb::request::Kind::AttachTerminal(_)).then(|| request.clone());
         let (response, mut stream) = match client.stream(request).await {
             Ok(answer) => answer,
             Err(source) => return failed(source),
@@ -480,7 +488,20 @@ impl Daemon {
                     next = stream.next() => next,
                     () = items.closed() => return,
                 };
-                let Some(item) = next else { return };
+                let Some(item) = next else {
+                    match &again {
+                        Some(request) if stream.fell_behind() => {
+                            match client.stream(request.clone()).await {
+                                Ok((_, resumed)) => {
+                                    stream = resumed;
+                                    continue;
+                                }
+                                Err(_) => return,
+                            }
+                        }
+                        _ => return,
+                    }
+                };
                 if items.send(item).await.is_err() {
                     return;
                 }
@@ -982,29 +1003,44 @@ impl Daemon {
     }
 
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
+        self.list_on(project, None).await
+    }
+
+    /// [`Daemon::list`], of only `host`'s sessions when one is named.
+    async fn list_on(
+        &self,
+        project: &str,
+        only: Option<&str>,
+    ) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
         // Every host at once, each given a little while: a slow one shows
         // as it last was, offline, and its connection goes on meanwhile,
         // so the next list may have it.
         let mut asking = Vec::new();
         for host in self.remote_names() {
+            if only.is_some_and(|only| only != host) {
+                continue;
+            }
             let listing = self.listing(&host)?;
             asking.push((host, listing));
         }
         let deadline = tokio::time::Instant::now() + HOST_LIST_WAIT;
-        let local = self
-            .forward(
-                "",
-                pb::request::Kind::ListSessions(pb::ListSessions::default()),
-            )
-            .await;
-        let mut answers = vec![(
-            String::new(),
-            match local {
-                Ok(Reply::Response(kind)) => Some(kind),
-                _ => None,
-            },
-        )];
+        let mut answers = Vec::new();
+        if only.is_none_or(str::is_empty) {
+            let local = self
+                .forward(
+                    "",
+                    pb::request::Kind::ListSessions(pb::ListSessions::default()),
+                )
+                .await;
+            answers.push((
+                String::new(),
+                match local {
+                    Ok(Reply::Response(kind)) => Some(kind),
+                    _ => None,
+                },
+            ));
+        }
         for (host, mut listing) in asking {
             let answer = tokio::time::timeout_at(deadline, listing.wait_for(Option::is_some))
                 .await
@@ -1061,6 +1097,10 @@ impl Daemon {
             let moved = moved.remove(&host).unwrap_or_default();
             for mut session in sessions {
                 if moved.contains(&session.id) {
+                    // Left out, and deleted once it can be.
+                    if !session.host_offline {
+                        self.remove_copy_soon(&host, &session.id);
+                    }
                     continue;
                 }
                 if !host.is_empty() && !session.host_offline {
@@ -1983,53 +2023,41 @@ impl Daemon {
             host: host.to_owned(),
             asked,
         };
-        let mut sessions = self.list("").await?;
-        let every = sessions.sessions.clone();
-        sessions.sessions.retain(|session| session.host == host);
-        let here = |id: &str| sessions.sessions.iter().any(|session| session.id == id);
-        let in_project = |project: &str| {
-            !project.is_empty()
-                && sessions
-                    .sessions
-                    .iter()
-                    .any(|session| session.project_id == project)
-        };
+        // Only what the tool asks about is looked up: the daemon's record
+        // of where a session is, and the host's own list when that has
+        // nothing, as for a session started there since it was last listed.
         let allowed = match &request {
             Some(Request::ListSessions(_)) => {
-                return Ok(pb::response::Kind::Sessions(sessions));
+                return Ok(pb::response::Kind::Sessions(
+                    self.list_on("", Some(host)).await?,
+                ));
             }
-            Some(Request::ListItems(list)) => in_project(&list.project_id),
-            Some(Request::ListThreads(list)) => sessions
-                .sessions
-                .iter()
-                .any(|session| session.id == list.session_id),
-            Some(Request::AskPerson(ask)) => sessions
-                .sessions
-                .iter()
-                .any(|session| session.id == ask.session_id),
-            Some(Request::RequestMove(asked)) => sessions
-                .sessions
-                .iter()
-                .any(|session| session.id == asked.session_id),
-            Some(Request::ReadSpec(read)) => here(&read.session_id),
-            Some(Request::ReadSkill(read)) => here(&read.session_id),
+            Some(Request::ListItems(list)) => self.has_project(host, &list.project_id).await?,
+            Some(Request::ListThreads(list)) => self.is_on(host, &list.session_id).await?,
+            Some(Request::AskPerson(ask)) => self.is_on(host, &ask.session_id).await?,
+            Some(Request::RequestMove(asked)) => self.is_on(host, &asked.session_id).await?,
+            Some(Request::ReadSpec(read)) => self.is_on(host, &read.session_id).await?,
+            Some(Request::ReadSkill(read)) => self.is_on(host, &read.session_id).await?,
             // A session another host runs, in a project of this host's, as
             // search finds them.
-            Some(Request::ReadHistory(read)) => every
-                .iter()
-                .any(|session| session.id == read.session_id && in_project(&session.project_id)),
-            Some(Request::Search(search)) => {
-                if !search.project_id.is_empty() && !in_project(&search.project_id) {
-                    return Err(out_of_scope("another project's sessions"));
+            Some(Request::ReadHistory(read)) => {
+                let project = self
+                    .store
+                    .placement(&read.session_id)?
+                    .and_then(|placement| placement.project);
+                match project {
+                    Some(project) => self.has_project(host, &project).await?,
+                    None => false,
                 }
-                let mut scope: Vec<String> = sessions
-                    .sessions
-                    .iter()
-                    .map(|session| session.project_id.clone())
-                    .filter(|project| !project.is_empty())
-                    .collect();
-                scope.sort();
-                scope.dedup();
+            }
+            Some(Request::Search(search)) => {
+                let mut scope = self.store.projects_on(host)?;
+                if !search.project_id.is_empty() && !scope.contains(&search.project_id) {
+                    if !self.has_project(host, &search.project_id).await? {
+                        return Err(out_of_scope("another project's sessions"));
+                    }
+                    scope.push(search.project_id.clone());
+                }
                 let results = self.search(search.clone(), Some(scope)).await?;
                 return Ok(pb::response::Kind::SearchResults(results));
             }
@@ -2042,6 +2070,43 @@ impl Daemon {
             Reply::Response(response) => Ok(response),
             Reply::Stream { .. } => Err(out_of_scope("a stream")),
         }
+    }
+}
+
+impl Daemon {
+    /// Whether `session` is on `host`: where the daemon has it, or else in
+    /// what `host` lists.
+    async fn is_on(&self, host: &str, session: &str) -> Result<bool, DaemonError> {
+        let placed = self
+            .store
+            .placement(session)?
+            .is_some_and(|placement| placement.host == host);
+        if placed {
+            return Ok(true);
+        }
+        Ok(self
+            .list_on("", Some(host))
+            .await?
+            .sessions
+            .iter()
+            .any(|listed| listed.id == session))
+    }
+
+    /// Whether a session on `host` is in `project`: as the daemon has them,
+    /// or else in what `host` lists.
+    async fn has_project(&self, host: &str, project: &str) -> Result<bool, DaemonError> {
+        if project.is_empty() {
+            return Ok(false);
+        }
+        if self.store.projects_on(host)?.iter().any(|on| on == project) {
+            return Ok(true);
+        }
+        Ok(self
+            .list_on("", Some(host))
+            .await?
+            .sessions
+            .iter()
+            .any(|listed| listed.project_id == project))
     }
 }
 

@@ -556,6 +556,7 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
         "stop_turn" => {
             let request = Request::AbortTurn(pb::AbortTurn {
                 session_id: arguments.required("session_id")?,
+                drop_queued: false,
             });
             match ask(client, request).await? {
                 Response::TurnAborted(_) => Ok("Stopped its turn.".to_owned()),

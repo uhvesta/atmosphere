@@ -10,7 +10,7 @@ use humata_wire::{Reply, pb};
 use super::Daemon;
 use crate::board::{Author, ItemFields, ItemPatch, Priority, Status};
 use crate::error::DaemonError;
-use crate::github::{self, GitHub, GitHubError, Pull, Repo, ReviewComment};
+use crate::github::{self, Fetched, GitHub, GitHubError, Pull, Repo, ReviewComment};
 use crate::store::{Checks, NewThread, PullRequest, PullState, Standing, now_unix_ms};
 
 use pb::request::Kind as Request;
@@ -26,7 +26,7 @@ const API_VARIABLE: &str = "HUMATA_GITHUB_API";
 impl Daemon {
     /// GitHub, with This Mac's token, and whether it is another server
     /// standing in for github.com.
-    fn github(&self) -> Result<(GitHub, bool), GitHubError> {
+    async fn github(&self) -> Result<(GitHub, bool), GitHubError> {
         let env = self
             .coordinator_env
             .lock()
@@ -43,7 +43,7 @@ impl Daemon {
         // Without one, the GitHub command line's, which only github.com takes.
         let token = match given {
             Some(token) => token,
-            None if other.is_none() => github::cli_token().ok_or(GitHubError::NoToken)?,
+            None if other.is_none() => github::cli_token().await.ok_or(GitHubError::NoToken)?,
             None => return Err(GitHubError::NoToken),
         };
         let api = other.as_deref().unwrap_or(github::API);
@@ -57,7 +57,7 @@ impl Daemon {
         // Without a token, nothing is landed: the person fixes that first.
         let github = if land.open_pull_requests {
             land.push = true;
-            Some(self.github()?)
+            Some(self.github().await?)
         } else {
             None
         };
@@ -148,6 +148,9 @@ impl Daemon {
                 checks: Checks::None,
                 read_unix_ms: now_unix_ms(),
                 head: pull.head.sha.clone(),
+                problem: String::new(),
+                pull_etag: String::new(),
+                checks_etag: String::new(),
             };
             self.store.keep_pull(&kept)?;
             pulls.push(wire(&kept, item.as_deref()));
@@ -167,27 +170,22 @@ impl Daemon {
             self.store.item(&list.item_id)?.session_ids
         };
         if list.refresh {
-            let (github, _) = self.github()?;
-            // Every pull request is read even when one fails, so the ones
-            // that could be read are fresh; the first failure is shown.
-            let mut failed = None;
+            let mut open = Vec::new();
             for session in &sessions {
-                for pull in self.store.pulls(session)? {
-                    if pull.state == PullState::Open
-                        && let Err(error) = self.read_pull(&github, pull).await
-                    {
-                        if stops_reading(&error) {
-                            return Err(error);
-                        }
-                        failed.get_or_insert(error);
-                    }
-                }
+                open.extend(
+                    self.store
+                        .pulls(session)?
+                        .into_iter()
+                        .filter(|pull| pull.state == PullState::Open),
+                );
+            }
+            // One that can't be read shows why on itself; the rest are
+            // shown as read.
+            self.read_pulls(open).await?;
+            for session in &sessions {
                 // A clean-up that fails is tried again by the follower; it
                 // doesn't hide the pull requests.
                 let _ = self.finish_if_merged(session).await;
-            }
-            if let Some(error) = failed {
-                return Err(error);
             }
         }
         let mut pull_requests = Vec::new();
@@ -205,25 +203,20 @@ impl Daemon {
 
     /// Reads every open pull request again, and finishes the sessions whose
     /// pull requests have all merged, trying again those whose host
-    /// couldn't be reached before. One that fails doesn't stop the others;
-    /// the first failure is returned at the end.
+    /// couldn't be reached before. A pull request that can't be read keeps
+    /// why; a clean-up that fails doesn't stop the others, and the first
+    /// such failure is returned at the end.
     async fn follow_pulls(&self) -> Result<(), DaemonError> {
         let open = self.store.open_pulls()?;
         let mut sessions = self.store.cleanups_pending()?;
-        let mut failed = None;
-        if !open.is_empty() {
-            let (github, _) = self.github()?;
-            for pull in open {
-                if !sessions.contains(&pull.session) {
-                    sessions.push(pull.session.clone());
-                }
-                if let Err(error) = self.read_pull(&github, pull).await {
-                    if stops_reading(&error) {
-                        return Err(error);
-                    }
-                    failed.get_or_insert(error);
-                }
+        for pull in &open {
+            if !sessions.contains(&pull.session) {
+                sessions.push(pull.session.clone());
             }
+        }
+        let mut failed = None;
+        if let Err(error) = self.read_pulls(open).await {
+            failed.get_or_insert(error);
         }
         for session in &sessions {
             if let Err(error) = self.finish_if_merged(session).await {
@@ -233,26 +226,86 @@ impl Daemon {
         failed.map_or(Ok(()), Err)
     }
 
+    /// Reads each of `open` again. One that can't be read keeps why, shown
+    /// on it until it is; a failure that would fail the rest the same way,
+    /// such as no token or the rate limit, is kept on each of them unread.
+    /// Fails only when what went wrong couldn't be kept.
+    async fn read_pulls(&self, open: Vec<PullRequest>) -> Result<(), DaemonError> {
+        if open.is_empty() {
+            return Ok(());
+        }
+        // GitHub, or why none of them can be read.
+        let mut reading = self
+            .github()
+            .await
+            .map(|(github, _)| github)
+            .map_err(|error| error.to_string());
+        for pull in open {
+            let github = match &reading {
+                Ok(github) => github.clone(),
+                Err(problem) => {
+                    self.store
+                        .pull_problem(&pull.session, &pull.repository, problem)?;
+                    continue;
+                }
+            };
+            let (session, repository) = (pull.session.clone(), pull.repository.clone());
+            if let Err(error) = self.read_pull(&github, pull).await {
+                let problem = error.to_string();
+                self.store.pull_problem(&session, &repository, &problem)?;
+                if stops_reading(&error) {
+                    reading = Err(problem);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Reads `pull`'s state, reviews, checks and review comments, and keeps
-    /// them.
+    /// them. Only its checks are read again when GitHub says the pull
+    /// request is as it was, since a review or comment would change it.
     async fn read_pull(&self, github: &GitHub, pull: PullRequest) -> Result<(), DaemonError> {
         let Some(repo) = Repo::of(&pull.github, true) else {
             return Ok(());
         };
-        let read = github.pull(&repo, pull.number).await?;
-        let reviews = github.reviews(&repo, pull.number).await?;
-        let checks = github.checks(&repo, &read.head.sha).await?;
-        let comments = github.review_comments(&repo, pull.number).await?;
-        self.bring_comments(&pull, comments)?;
-        self.store.keep_pull(&PullRequest {
-            state: state(&read),
-            review: review(&github::standing(&reviews)),
-            checks: checks_state(&checks),
-            url: read.html_url,
+        let read = match github
+            .pull_since(&repo, pull.number, &pull.pull_etag)
+            .await?
+        {
+            Fetched::Changed { value, etag } => Some((value, etag.unwrap_or_default())),
+            Fetched::Unchanged => None,
+        };
+        let head = read
+            .as_ref()
+            .map_or(pull.head.as_str(), |(read, _)| read.head.sha.as_str())
+            .to_owned();
+        // A new head's checks are new.
+        let checks_etag = if head == pull.head {
+            pull.checks_etag.as_str()
+        } else {
+            ""
+        };
+        let checks = github.checks_since(&repo, &head, checks_etag).await?;
+        let mut kept = PullRequest {
             read_unix_ms: now_unix_ms(),
-            head: read.head.sha,
+            problem: String::new(),
             ..pull
-        })?;
+        };
+        if let Fetched::Changed { value, etag } = checks {
+            kept.checks = checks_state(&value);
+            kept.checks_etag = etag.unwrap_or_default();
+        }
+        if let Some((read, etag)) = read {
+            let reviews = github.reviews(&repo, kept.number).await?;
+            let comments = github.review_comments(&repo, kept.number).await?;
+            self.bring_comments(&kept, comments)?;
+            kept.state = state(&read);
+            kept.review = review(&github::standing(&reviews));
+            kept.url = read.html_url;
+            kept.head = read.head.sha;
+            kept.pull_etag = etag;
+        }
+        self.store.keep_pull(&kept)?;
         Ok(())
     }
 
@@ -366,9 +419,9 @@ impl Daemon {
         &self,
         project_id: &str,
     ) -> Result<pb::IssuesImported, DaemonError> {
-        let (github, other) = self.github()?;
+        let (github, other) = self.github().await?;
         let project = self.store.project(project_id)?;
-        let mut items = Vec::new();
+        let mut made = Vec::new();
         let mut skipped = 0;
         for repository in &project.repositories {
             let url = match project.urls.get(&repository.name) {
@@ -400,9 +453,19 @@ impl Daemon {
                     &Author::on(pb::ChangeSurface::Humata),
                 )?;
                 self.store.record_issue(project_id, &key, &item.id)?;
-                items.push(self.shown_item(&item).await?);
+                made.push(item.id);
             }
         }
+        // Shown together, as listing the project's sessions for each would
+        // take as long again per issue.
+        let items = if made.is_empty() {
+            Vec::new()
+        } else {
+            let mut shown = self.shown_items(project_id).await?;
+            shown.retain(|item| made.contains(&item.id));
+            shown.sort_by_key(|item| made.iter().position(|id| *id == item.id));
+            shown
+        };
         Ok(pb::IssuesImported { items, skipped })
     }
 }
@@ -579,6 +642,7 @@ fn wire(pull: &PullRequest, item: Option<&str>) -> pb::PullRequest {
         }
         .into(),
         read_unix_ms: pull.read_unix_ms,
+        problem: pull.problem.clone(),
     }
 }
 

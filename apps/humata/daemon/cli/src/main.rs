@@ -1438,6 +1438,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Abort { session } => {
             let request = Request::AbortTurn(pb::AbortTurn {
                 session_id: session,
+                drop_queued: false,
             });
             expect_ok(
                 client.call(request).await?,

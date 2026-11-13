@@ -40,7 +40,8 @@ package struct InboxView: View {
             let toLookOver = entries.filter { !$0.reason.blocks }
             ForEach(askers, id: \.self) { asker in
                 AdminApprovalsSection(
-                    asker: asker, approvals: approvals.filter { $0.asker == asker }, now: now, decide: decide)
+                    asker: asker, approvals: approvals.filter { $0.asker == asker }, now: now,
+                    shortcuts: shortcutApproval, decide: decide)
             }
             if !blocked.isEmpty {
                 Section("Blocked on You") {
@@ -73,6 +74,23 @@ package struct InboxView: View {
         }
     }
 
+    /// The admin action ⇧⌘A and ⇧⌘D answer, as they do in a session: the
+    /// first, which is shown first.
+    private var shortcutApproval: AdminApproval.ID? {
+        approvals.first.map(\.id)
+    }
+
+    /// The row ⇧⌘A and ⇧⌘D answer when no admin action waits: the first
+    /// blocked one that can be answered from its row.
+    private var shortcutEntry: InboxEntry.ID? {
+        guard approvals.isEmpty else { return nil }
+        return entries.first { entry in
+            guard entry.reason.blocks else { return false }
+            if case .move? = entry.request?.kind { return true }
+            return entry.reason == .approval && !entry.session.hostOffline && !entry.session.pending.isEmpty
+        }?.id
+    }
+
     /// The programs that asked for admin actions, in the order they first asked.
     private var askers: [String] {
         var seen = Set<String>()
@@ -84,6 +102,7 @@ package struct InboxView: View {
         if let request = entry.request {
             RequestRow(
                 entry: entry, request: request, now: now,
+                shortcuts: entry.id == shortcutEntry,
                 reply: Binding(
                     get: { store.drafts[request.id] ?? "" }, set: { store.send(.draftChanged(request.id, $0)) }),
                 open: { open(entry.session.id) }, openChanges: { store.send(.changesTapped(entry.session.id)) },
@@ -107,11 +126,21 @@ package struct InboxView: View {
                     .foregroundStyle(.secondary)
                     .help("Its host isn't answering; you can answer once it's back")
             } else if entry.reason == .approval, let request = entry.session.pending.first {
-                Button("Deny") { answer(entry.session.id, request.requestID, false) }
-                    .help("Deny: \(request.summary)")
-                Button("Approve") { answer(entry.session.id, request.requestID, true) }
-                    .buttonStyle(.borderedProminent)
-                    .help("Approve: \(request.summary)")
+                if entry.id == shortcutEntry {
+                    Button("Deny") { answer(entry.session.id, request.requestID, false) }
+                        .keyboardShortcut("d", modifiers: [.command, .shift])
+                        .help("Deny (⇧⌘D): \(request.summary)")
+                    Button("Approve") { answer(entry.session.id, request.requestID, true) }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut("a", modifiers: [.command, .shift])
+                        .help("Approve (⇧⌘A): \(request.summary)")
+                } else {
+                    Button("Deny") { answer(entry.session.id, request.requestID, false) }
+                        .help("Deny: \(request.summary)")
+                    Button("Approve") { answer(entry.session.id, request.requestID, true) }
+                        .buttonStyle(.borderedProminent)
+                        .help("Approve: \(request.summary)")
+                }
                 Menu {
                     if request.kind == .write {
                         Button("Allow Edits from Now On") { widen(entry.session.id, .allowEdits) }
@@ -148,6 +177,8 @@ private struct RequestRow: View {
     var entry: InboxEntry
     var request: AgentRequest
     var now: Date?
+    /// Whether ⇧⌘A moves it as asked.
+    var shortcuts: Bool
     @Binding var reply: String
     var open: () -> Void
     var openChanges: () -> Void
@@ -176,8 +207,15 @@ private struct RequestRow: View {
                         }
                     }
                     .fixedSize()
-                    Button("Move to \(status.title)") { answer(.approve) }
-                        .buttonStyle(.borderedProminent)
+                    if shortcuts {
+                        Button("Move to \(status.title)") { answer(.approve) }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut("a", modifiers: [.command, .shift])
+                            .help("Move it as the agent asks (⇧⌘A)")
+                    } else {
+                        Button("Move to \(status.title)") { answer(.approve) }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     Button("Dismiss") { answer(.dismiss) }
                 }

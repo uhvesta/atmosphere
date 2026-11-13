@@ -49,6 +49,9 @@ package struct DaemonClient: Sendable {
     package var setApprovalMode: @Sendable (_ session: String, _ mode: ApprovalMode) async throws -> Void
     /// Stops the running turn.
     package var abort: @Sendable (_ session: String) async throws -> Void
+    /// Stops the running turn and drops what's queued, so no turn starts
+    /// after it: as before archiving.
+    package var stopAll: @Sendable (_ session: String) async throws -> Void
     /// Stops the turn, drops what's queued and cuts the chat back to
     /// before the person's message `before`; with `files`, the code too.
     package var rewind: @Sendable (_ session: String, _ before: String, _ files: Bool) async throws -> Void
@@ -133,6 +136,10 @@ package struct DaemonClient: Sendable {
     package var deleteItem: @Sendable (_ item: String) async throws -> Void
     /// The project's board changes, newest first.
     package var boardLog: @Sendable (_ project: String) async throws -> [BoardChange]
+    /// One item's board changes, newest first. The daemon has no request
+    /// for one item's, so the board's are read and the others dropped
+    /// before they're converted.
+    package var itemLog: @Sendable (_ project: String, _ item: String) async throws -> [BoardChange]
     /// Puts an item back as it was before the change, keeping each field
     /// changed again since.
     package var revert: @Sendable (_ change: UInt64) async throws -> Reverted

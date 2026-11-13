@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -27,6 +27,8 @@ enum Pending {
     Stream {
         response: Option<oneshot::Sender<pb::response::Kind>>,
         items: mpsc::Sender<Result<pb::StreamItem, pb::Error>>,
+        /// Set when the reader fell too far behind and the stream was let go.
+        lagged: Arc<AtomicBool>,
     },
 }
 
@@ -95,12 +97,14 @@ impl Client {
     ) -> Result<(pb::response::Kind, Stream), ClientError> {
         let (answer, answered) = oneshot::channel();
         let (items, receiver) = mpsc::channel(STREAM_BUFFER);
+        let lagged = Arc::new(AtomicBool::new(false));
         let id = self
             .send(
                 request,
                 Pending::Stream {
                     response: Some(answer),
                     items,
+                    lagged: lagged.clone(),
                 },
             )
             .await?;
@@ -111,6 +115,7 @@ impl Client {
                 id,
                 items: receiver,
                 outgoing: self.outgoing.clone(),
+                lagged,
             },
         ))
     }
@@ -174,6 +179,7 @@ async fn read_answers<R: AsyncRead + Unpin>(
                 Some(Pending::Stream {
                     response: Some(answer),
                     items,
+                    lagged,
                 }) => {
                     let failed = matches!(response, pb::response::Kind::Error(_));
                     let _ = answer.send(response);
@@ -183,6 +189,7 @@ async fn read_answers<R: AsyncRead + Unpin>(
                             Pending::Stream {
                                 response: None,
                                 items,
+                                lagged,
                             },
                         );
                     }
@@ -193,11 +200,19 @@ async fn read_answers<R: AsyncRead + Unpin>(
                 None => {}
             },
             Some(pb::envelope::Body::Item(item)) => {
-                if let Some(Pending::Stream { items, .. }) = pending.get(&id) {
+                if let Some(Pending::Stream { items, lagged, .. }) = pending.get(&id) {
                     // A full stream would hold up every other answer, so a
-                    // reader that falls this far behind loses the stream.
-                    if items.try_send(Ok(item)).is_err() {
-                        pending.remove(&id);
+                    // reader that falls this far behind loses the stream,
+                    // and is told it fell behind rather than was cut off.
+                    match items.try_send(Ok(item)) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            lagged.store(true, Ordering::Relaxed);
+                            pending.remove(&id);
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            pending.remove(&id);
+                        }
                     }
                 }
             }
@@ -222,6 +237,7 @@ pub struct Stream {
     id: u64,
     items: mpsc::Receiver<Result<pb::StreamItem, pb::Error>>,
     outgoing: mpsc::Sender<pb::Envelope>,
+    lagged: Arc<AtomicBool>,
 }
 
 impl Stream {
@@ -229,6 +245,13 @@ impl Stream {
     /// connection closed.
     pub async fn next(&mut self) -> Option<Result<pb::StreamItem, pb::Error>> {
         self.items.recv().await
+    }
+
+    /// Whether the stream ended because its reader fell too far behind,
+    /// rather than because it ended or the connection closed. Asking again
+    /// starts it over, which for a terminal replays what it missed.
+    pub fn fell_behind(&self) -> bool {
+        self.lagged.load(Ordering::Relaxed)
     }
 }
 

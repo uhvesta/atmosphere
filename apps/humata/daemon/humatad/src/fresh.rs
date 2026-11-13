@@ -2,10 +2,13 @@
 //! from it, on this Mac or on a host, and what the session is told when it
 //! can't be.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::process::Command;
+use tokio::sync::OwnedMutexGuard;
 
 /// How a git command in a repository failed.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +24,31 @@ enum GitError {
 /// How long a fetch may take before the session starts without it: a
 /// remote that doesn't answer mustn't hold up the session.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A lock for each repository being cloned or brought up to date, so two
+/// sessions starting from one at once take turns rather than run git in it
+/// together, which fails on git's own locks or leaves a half-made clone.
+static PREPARING: LazyLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(Mutex::default);
+
+/// Waits until no one else is cloning or updating the repository at `path`,
+/// and keeps others out while the guard is held.
+pub(crate) async fn preparing(path: &Path) -> OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = PREPARING.lock().unwrap_or_else(PoisonError::into_inner);
+        // Those no one holds or waits for are let go, so the map stays small.
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        match locks.get(path).and_then(Weak::upgrade) {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(path.to_owned(), Arc::downgrade(&lock));
+                lock
+            }
+        }
+    };
+    lock.lock_owned().await
+}
 
 /// What a session's repository is, which decides what fetching does to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,6 +276,25 @@ mod tests {
         )
         .await;
         sh(dir, &["rev-parse", "HEAD"]).await
+    }
+
+    #[tokio::test]
+    async fn one_repository_is_prepared_by_one_session_at_a_time() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (one, other) = (root.path().join("one"), root.path().join("other"));
+        let held = preparing(&one).await;
+        let waiting = tokio::spawn({
+            let one = one.clone();
+            async move { drop(preparing(&one).await) }
+        });
+        let short = Duration::from_millis(50);
+        // Another repository isn't held up.
+        assert!(tokio::time::timeout(short, preparing(&other)).await.is_ok());
+        tokio::time::sleep(short).await;
+        assert!(!waiting.is_finished());
+        drop(held);
+        let done = tokio::time::timeout(Duration::from_secs(5), waiting).await;
+        assert!(matches!(done, Ok(Ok(()))));
     }
 
     #[tokio::test]

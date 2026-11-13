@@ -26,7 +26,7 @@ struct TerminalSurface: NSViewRepresentable {
 /// command or generation changes, or a note when Ghostty couldn't start.
 final class TerminalSurfaceHost: NSView {
     private var shown: (command: TerminalCommand, generation: Int)?
-    private var surface: GhosttySurfaceView?
+    private(set) var surface: GhosttySurfaceView?
 
     func show(
         _ command: TerminalCommand, generation: Int, search: TerminalSearch, exited: @escaping (Int32?) -> Void
@@ -38,6 +38,7 @@ final class TerminalSurfaceHost: NSView {
             return
         }
         let hadKeys = surface.map { window?.firstResponder === $0 } ?? false
+        let first = shown == nil
         close()
         shown = (command, generation)
         switch GhosttyRuntime.shared {
@@ -50,11 +51,28 @@ final class TerminalSurfaceHost: NSView {
             search.view = view
             fill(with: view)
             surface = view
-            if hadKeys { window?.makeFirstResponder(view) }
+            if hadKeys || first { takeKeys() }
         case .failure(let error):
             let note = NSTextField(wrappingLabelWithString: error.localizedDescription)
             note.textColor = .secondaryLabelColor
             fill(with: note)
+        }
+    }
+
+    /// Shown, as when its tab is picked, the terminal takes the keys.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        takeKeys()
+    }
+
+    /// Gives the surface the keys, after SwiftUI has placed the view,
+    /// unless the find bar is up: it keeps them then.
+    private func takeKeys() {
+        Task { @MainActor [weak self] in
+            guard let self, let window, let surface, surface.search?.shown != true,
+                window.firstResponder !== surface
+            else { return }
+            window.makeFirstResponder(surface)
         }
     }
 

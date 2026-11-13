@@ -229,6 +229,8 @@ package struct SessionFeature {
         /// again.
         private mutating func derive() {
             if isWorking != chat.working { isWorking = chat.working }
+            let working = isWorking
+            if let land, land.turnRunning != working { self.land?.turnRunning = working }
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
             if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
             if !lastTurnFailed, retrying { retrying = false }
@@ -269,17 +271,26 @@ package struct SessionFeature {
         var turnsEnded: Int { chat.turnsEnded }
 
         /// What's kept of a session looked away from while Humata runs:
-        /// the view it showed and the file comments not sent yet.
+        /// the view it showed, the file comments not sent yet, the review
+        /// comment half written and the message being edited.
         package struct Left: Equatable, Sendable {
             package var tab: Tab
-            package var drafts: IdentifiedArrayOf<DocsFeature.Draft>
+            var drafts: IdentifiedArrayOf<DocsFeature.Draft>
+            var review: ReviewFeature.State.Kept
+            var editing: String?
+            var edited: String
         }
 
         package var left: Left {
-            get { Left(tab: tab, drafts: docs.drafts) }
+            get {
+                Left(tab: tab, drafts: docs.drafts, review: review.kept, editing: editing, edited: edited)
+            }
             set {
                 tab = newValue.tab
                 docs.drafts = newValue.drafts
+                review.kept = newValue.review
+                editing = newValue.editing
+                edited = newValue.edited
             }
         }
 
@@ -668,12 +679,13 @@ package struct SessionFeature {
                 return .none
 
             case .landTapped:
-                guard state.ships else { return .none }
+                guard state.ships, !state.isWorking else { return .none }
                 state.land = LandFeature.State(sessionID: state.session.id, title: state.session.name)
                 return .none
 
             case .updateFromBaseTapped:
-                guard state.ships, !state.updating else { return .none }
+                // Merging into files the agent is editing would mix the two.
+                guard state.ships, !state.updating, !state.isWorking else { return .none }
                 state.updating = true
                 let session = state.session.id
                 return .run { send in

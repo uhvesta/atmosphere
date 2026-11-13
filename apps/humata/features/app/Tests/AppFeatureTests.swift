@@ -4,6 +4,7 @@ import HumataBoard
 import HumataDaemonClient
 import HumataHosts
 import HumataProjects
+import HumataReview
 import HumataSearch
 import HumataSession
 import XCTest
@@ -56,6 +57,40 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.sidebar.delegate.openSession)
         XCTAssertEqual(store.state.session?.tab, .files)
         XCTAssertEqual(store.state.session?.docs.drafts.map(\.text), ["Not yet."])
+    }
+
+    func testAReviewCommentAndAnEditedMessageSurviveLookingAtTheInbox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let file = FileRef(repository: "work", path: "main.swift")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        var open = SessionFeature.State(session: session)
+        open.tab = .review
+        open.review.selected = file
+        open.review.commenting = ReviewFeature.Commenting(file: file, startLine: 3, endLine: 4)
+        open.review.comment = "Why this?"
+        open.editing = "e1"
+        open.edited = "Try again, smaller"
+        state.session = open
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .inbox)
+        await store.receive(\.sidebar.delegate.openInbox)
+        XCTAssertNil(store.state.session)
+        await store.send(\.sidebar.selected, .session(session.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.tab, .review)
+        XCTAssertEqual(store.state.session?.review.commenting?.file, file)
+        XCTAssertEqual(store.state.session?.review.comment, "Why this?")
+        XCTAssertEqual(store.state.session?.editing, "e1")
+        XCTAssertEqual(store.state.session?.edited, "Try again, smaller")
     }
 
     func testAnOpenSessionShowsItsMoveRequestUntilItIsAnswered() async throws {

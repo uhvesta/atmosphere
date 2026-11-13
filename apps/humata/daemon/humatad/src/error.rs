@@ -116,6 +116,15 @@ pub enum HostError {
     },
 
     #[error(
+        "git didn't finish cloning {url} into {path} on this host within {minutes} minutes and was stopped. Check that the host can reach the remote and that its network isn't slow, then start the session again; a very large repository may need cloning by hand into that folder first"
+    )]
+    CloneTimedOut {
+        url: String,
+        path: PathBuf,
+        minutes: u64,
+    },
+
+    #[error(
         "couldn't push the branch {branch} of {repository} to its origin (git said: {output}). Check that the host's GitHub token can write to the repository. If the branch is on the remote already with other commits, don't force-push over them: land on a new branch name instead"
     )]
     Push {
@@ -272,6 +281,7 @@ impl HostError {
             Self::FellBehind { .. }
             | Self::RunGit { .. }
             | Self::Clone { .. }
+            | Self::CloneTimedOut { .. }
             | Self::Push { .. }
             | Self::Fetch { .. }
             | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,

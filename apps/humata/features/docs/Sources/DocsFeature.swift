@@ -95,6 +95,9 @@ package struct DocsFeature {
         package var sending = false
         /// Why the selected file couldn't be read, until it is.
         package var readFailure: String?
+        /// Counts restores started and finished, so a read begun before
+        /// one, which may hold the file as it was, doesn't show over it.
+        var readGeneration = 0
         @Presents package var alert: AlertState<Alert>?
 
         package init(sessionID: String) {
@@ -144,8 +147,9 @@ package struct DocsFeature {
         /// The view appeared, or the chat's turn ended; lists and reads again.
         case refresh
         case listed(ChatFiles)
-        /// A file read, with the lines that changed since it was read last.
-        case read(FileContents, changed: Set<Int>)
+        /// A file read, with the lines that changed since it was read last,
+        /// and the `readGeneration` it was started in.
+        case read(FileContents, changed: Set<Int>, generation: Int)
         case failed(Doing, String)
         case fileSelected(String)
         case renderedToggled
@@ -239,8 +243,8 @@ package struct DocsFeature {
                 if state.versions != nil { state.versions = state.selected.map(Versions.init) }
                 return .merge(read(state), listVersions(state))
 
-            case .read(let contents, let changed):
-                guard contents.path == state.selected else { return .none }
+            case .read(let contents, let changed, let generation):
+                guard contents.path == state.selected, generation == state.readGeneration else { return .none }
                 state.readFailure = nil
                 guard contents != state.contents else { return .none }
                 // Read again unchanged, the file keeps its marks.
@@ -395,6 +399,7 @@ package struct DocsFeature {
             case .alert(.presented(.restore(let path, let turn))):
                 guard state.versions?.path == path else { return .none }
                 state.versions?.restoring = true
+                state.readGeneration += 1
                 let session = state.sessionID
                 let old = state.contents?.path == path ? state.lines : nil
                 return .run { send in
@@ -408,6 +413,8 @@ package struct DocsFeature {
                 }
 
             case .restored(let contents, let changed):
+                // Reads begun while it was restoring may hold the file as it was.
+                state.readGeneration += 1
                 state.versions?.restoring = false
                 state.versions?.selected = nil
                 state.versions?.lines = nil
@@ -480,17 +487,19 @@ package struct DocsFeature {
         guard let path = state.selected else { return .none }
         let session = state.sessionID
         let old = state.contents?.path == path ? state.lines : nil
+        let generation = state.readGeneration
         return .run { send in
             let contents = try await daemon.readFile(session, path)
             // Off the main thread: a long file's diff takes a moment.
             let changed = old.map { MarkdownComparison.changedLines(from: $0, to: Self.lines(contents.text ?? "")) }
-            await send(.read(contents, changed: changed ?? []))
+            await send(.read(contents, changed: changed ?? [], generation: generation))
         } catch: { error, send in
             await send(.failed(.reading(path: path), error.localizedDescription))
         }
         // Not cancelled by the next read: effects start out of the order
         // they're asked in, so an older read could cancel a newer one.
-        // `.read` drops what's for a file no longer picked.
+        // `.read` drops what's for a file no longer picked, or was begun
+        // before a restore.
     }
 
     /// The selected file's versions listed, while they're shown.

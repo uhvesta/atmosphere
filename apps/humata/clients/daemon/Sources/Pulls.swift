@@ -90,12 +90,16 @@ package struct PullRequest: Identifiable, Hashable, Sendable {
     package var review: Review
     package var checks: Checks
     package var read: Date
+    /// Why it couldn't be read from GitHub last time; nil once it was.
+    /// What's shown is as it was last read.
+    package var problem: String?
 
     package init(
         sessionID: String, itemID: String? = nil, repository: String, githubRepository: String, number: UInt64,
         url: String, title: String, branch: String, base: String, state: State = .open, review: Review = .none,
-        checks: Checks = .none, read: Date
+        checks: Checks = .none, read: Date, problem: String? = nil
     ) {
+        self.problem = problem
         self.sessionID = sessionID
         self.itemID = itemID
         self.repository = repository

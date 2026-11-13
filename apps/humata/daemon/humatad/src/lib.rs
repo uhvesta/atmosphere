@@ -128,6 +128,8 @@ async fn open_host(state: &Path, cache: &Path) -> Result<Arc<Host>, StartError> 
     };
     let mcp = listener.as_ref().and_then(|_| mcp_server(&socket));
     let host = Arc::new(Host::open(state, &cache.join("worktrees"), mcp).await?);
+    // The Mac's daemon seals only its own sessions' histories.
+    host.rest_on_schedule();
     if let Some(listener) = listener {
         let relay = host.relay();
         let build = build();

@@ -170,7 +170,7 @@ where
             host: self.target.host.clone(),
             terminal_id: self.target.terminal.clone(),
         });
-        let mut stream = match self.client.stream(request).await {
+        let mut stream = match self.client.stream(request.clone()).await {
             Ok((_, stream)) => stream,
             Err(error) => return self.refused(error),
         };
@@ -187,8 +187,13 @@ where
         let mut resize_at: Option<Instant> = None;
         let mut sizes_open = true;
         loop {
+            // Set when this side read too slowly and the stream was let go:
+            // the connection is fine, so attaching again on it replays the
+            // screen with what was missed.
+            let mut behind = false;
             tokio::select! {
                 item = stream.next() => match item {
+                    None if stream.fell_behind() => behind = true,
                     None => return Ok(Outcome::Lost("humatad stopped sending its output".to_owned())),
                     Some(Err(error)) if error.code() == pb::ErrorCode::UnknownTerminal => {
                         return Err(self.gone());
@@ -242,6 +247,12 @@ where
                         return Ok(lost);
                     }
                 },
+            }
+            if behind {
+                stream = match self.client.stream(request.clone()).await {
+                    Ok((_, stream)) => stream,
+                    Err(error) => return self.refused(error),
+                };
             }
         }
     }

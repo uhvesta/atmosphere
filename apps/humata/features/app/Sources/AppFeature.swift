@@ -75,9 +75,11 @@ package struct AppFeature {
                 left[open.session.id] = open.left
             }
             var next = next
-            if let id = next?.session.id, let kept = left.removeValue(forKey: id) {
-                // A search hit opens on the chat, at what was found.
-                if next?.highlighted == nil { next?.left = kept } else { next?.docs.drafts = kept.drafts }
+            if let id = next?.session.id, var kept = left.removeValue(forKey: id) {
+                // A search hit opens on the chat, at what was found, but
+                // keeps what was being written.
+                if next?.highlighted != nil, let tab = next?.tab { kept.tab = tab }
+                next?.left = kept
             }
             session = next
         }

@@ -495,6 +495,10 @@ package final class InMemoryDaemon: Sendable {
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
             abort: { session in try self.abort(session) },
+            stopAll: { session in
+                try self.dropQueue(session)
+                try self.abort(session)
+            },
             rewind: { session, before, files in try self.rewind(session, before: before, files: files) },
             undoRewind: { session in try self.undoRewind(session) },
             unqueue: { session, queueID in try self.unqueue(session, queueID) },
@@ -559,6 +563,13 @@ package final class InMemoryDaemon: Sendable {
                     return state.changes.reversed().filter { change in
                         all.first { $0.id == change.itemID }?.projectID == project
                     }
+                }
+            },
+            itemLog: { project, item in
+                self.state.withValue { state in
+                    let all = state.items + state.removed.values
+                    guard all.first(where: { $0.id == item })?.projectID == project else { return [] }
+                    return state.changes.reversed().filter { $0.itemID == item }
                 }
             },
             revert: { change in try self.revert(change) },
@@ -993,12 +1004,16 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func rewind(_ session: String, before: String, files: Bool) throws {
+    private func dropQueue(_ session: String) throws {
         try known(session)
         let dropped = state.withValue { state in state.queues.removeValue(forKey: session) ?? [] }
         for queued in dropped {
             append(.dequeued(queueID: queued.id, dropped: true), to: session)
         }
+    }
+
+    private func rewind(_ session: String, before: String, files: Bool) throws {
+        try dropQueue(session)
         try abort(session)
         let history = state.value.histories[session] ?? []
         guard let index = history.firstIndex(where: { $0.id == before }) else {

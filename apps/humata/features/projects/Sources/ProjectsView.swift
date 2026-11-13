@@ -195,7 +195,9 @@ package struct ProjectsView: View {
     }
 
     private func row(_ session: Session) -> some View {
-        SessionRow(session: session, now: store.now, busy: store.busy.contains(session.id))
+        let busy = store.busy.contains(session.id)
+        let inTurn = session.state == .working || session.state == .waitingForApproval
+        return SessionRow(session: session, now: store.now, busy: busy)
             .tag(SidebarItem.session(session.id))
             .contextMenu {
                 Button("Rename…") { store.send(.renameTapped(session.id)) }
@@ -204,9 +206,13 @@ package struct ProjectsView: View {
                 }
                 if !session.archived {
                     Button("Move to Host…") { store.send(.moveToHostTapped(session.id)) }
-                        .disabled(
-                            session.state == .working || session.state == .waitingForApproval
-                                || store.busy.contains(session.id))
+                        .disabled(inTurn || busy)
+                        .help(
+                            busy
+                                ? "Wait for the change being made to it to finish"
+                                : inTurn
+                                    ? "Its turn is running; stop it or wait for it to end, then move it"
+                                    : "Run it on this Mac or one of your hosts")
                 }
                 Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
                     store.send(.keeperTapped(session.id, keeper: !session.keeper))
@@ -226,10 +232,26 @@ package struct ProjectsView: View {
                     Button("Delete…", role: .destructive) { store.send(.deleteSessionTapped(session.id)) }
                         .disabled(store.busy.contains(session.id))
                 } else {
+                    if inTurn {
+                        // Says why Archive and Move to Host are greyed out.
+                        Text("Its turn is running: stop it to archive or move it")
+                    }
                     Button("Archive") { store.send(.archiveTapped(session.id, archived: true)) }
-                        .disabled(
-                            session.state == .working || session.state == .waitingForApproval
-                                || store.busy.contains(session.id))
+                        .disabled(inTurn || busy)
+                        .help(
+                            busy
+                                ? "Wait for the change being made to it to finish"
+                                : inTurn
+                                    ? "Its turn is running; use Stop and Archive, or wait for it to end"
+                                    : "Put it away under Archived; its copy of the code stays until it's deleted")
+                    if inTurn {
+                        Button("Stop and Archive") { store.send(.stopAndArchiveTapped(session.id)) }
+                            .disabled(busy)
+                            .help(
+                                busy
+                                    ? "Wait for the change being made to it to finish"
+                                    : "End its turn now, then archive it")
+                    }
                 }
             }
     }

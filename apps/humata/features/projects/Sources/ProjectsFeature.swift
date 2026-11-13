@@ -200,6 +200,8 @@ package struct ProjectsFeature {
         case renameTapped(Session.ID)
         case moveTapped(Session.ID)
         case archiveTapped(Session.ID, archived: Bool)
+        /// Stops the session's turn, then archives it.
+        case stopAndArchiveTapped(Session.ID)
         /// Asks before deleting an archived session for good, or says what
         /// to do first.
         case deleteSessionTapped(Session.ID)
@@ -331,7 +333,12 @@ package struct ProjectsFeature {
                 // the person.
                 let blocked = inbox.count(where: \.reason.blocks) + approvals.count
                 let badge = !state.loadedOnce || blocked != state.blockedCount ? blocked : nil
-                if !state.loadedOnce { state.loadedOnce = true }
+                if !state.loadedOnce {
+                    state.loadedOnce = true
+                    // Humata opens on what waits on the person, if anything
+                    // does and nothing else was picked yet.
+                    if blocked > 0, state.selection == nil { state.selection = .inbox }
+                }
                 // Times show to the minute; a new `now` each read would draw
                 // every row again.
                 let now = date.now.toTheMinute
@@ -488,6 +495,15 @@ package struct ProjectsFeature {
             case .archiveTapped(let id, let archived):
                 guard state.busy.insert(id).inserted else { return .none }
                 return update(id, SessionUpdate(archived: archived))
+
+            case .stopAndArchiveTapped(let id):
+                guard state.busy.insert(id).inserted else { return .none }
+                return .run { send in
+                    try await daemon.stopAll(id)
+                    await send(.updated(try await daemon.update(id, SessionUpdate(archived: true))))
+                } catch: { error, send in
+                    await send(.updateFailed(id, error.localizedDescription))
+                }
 
             case .deleteSessionTapped(let id):
                 guard let session = state.sessions[id: id] else { return .none }
@@ -848,7 +864,7 @@ package struct ProjectsFeature {
             }
             await send(.requestAnswerSent(id))
             for session in sessions where session.state == .working || session.state == .waitingForApproval {
-                try await daemon.abort(session.id)
+                try await daemon.stopAll(session.id)
             }
             for session in sessions {
                 _ = try await daemon.update(session.id, SessionUpdate(archived: true))

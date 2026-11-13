@@ -203,6 +203,12 @@ extension DaemonClient {
                 abort.sessionID = session
                 _ = try await daemon.call(.abortTurn(abort))
             },
+            stopAll: { session in
+                var abort = Humata_V1_AbortTurn()
+                abort.sessionID = session
+                abort.dropQueued = true
+                _ = try await daemon.call(.abortTurn(abort))
+            },
             rewind: { session, before, files in
                 var rewind = Humata_V1_RewindSession()
                 rewind.sessionID = session
@@ -504,6 +510,14 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the board's changes")
                 }
                 return log.changes.map(BoardChange.init)
+            },
+            itemLog: { project, item in
+                var read = Humata_V1_ReadBoardLog()
+                read.projectID = project
+                guard case .boardLog(let log) = try await daemon.call(.readBoardLog(read)) else {
+                    throw DaemonError.unexpected("something other than the board's changes")
+                }
+                return log.changes.filter { $0.itemID == item }.map(BoardChange.init)
             },
             revert: { change in
                 var revert = Humata_V1_RevertBoardChange()

@@ -68,7 +68,7 @@ package struct TerminalStyle: Equatable, Sendable {
             "shell-integration = none",
             "confirm-close-surface = false",
             "macos-option-as-alt = true",
-            "clipboard-read = deny",
+            "clipboard-read = ask",
             "clipboard-write = allow",
             "copy-on-select = false",
             "window-padding-x = 4",

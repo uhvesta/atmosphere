@@ -390,8 +390,8 @@ package struct SpecsFeature {
         }
         return .run { [daemon] send in
             do {
-                let versions = try await daemon.boardLog(projectID).compactMap { change -> Version? in
-                    guard change.itemID == pageID, let after = change.after, after.spec != change.before?.spec
+                let versions = try await daemon.itemLog(projectID, pageID).compactMap { change -> Version? in
+                    guard let after = change.after, after.spec != change.before?.spec
                     else { return nil }
                     return Version(id: change.id, time: change.time, author: change.author, text: after.spec)
                 }

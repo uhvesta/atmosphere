@@ -32,6 +32,17 @@ package final class MermaidRenderer {
     /// The largest side of a drawing, in points, so a huge diagram can't
     /// take all the memory.
     static let largest = 4096.0
+    /// The largest side of a drawing's bitmap, in pixels: a drawing at a
+    /// scale, on a Retina screen, is cut down to it.
+    static let largestPixels = 8192.0
+
+    /// The width, in points, to snapshot a `width` by `height` drawing at
+    /// to get it `scale` times its size, cut down so neither side of the
+    /// bitmap passes `largestPixels` at `backing` pixels a point.
+    static func snapshotWidth(width: Double, height: Double, scale: Double, backing: Double) -> Double {
+        let side = max(width, height) * scale * max(backing, 1)
+        return width * scale * (side > largestPixels ? largestPixels / side : 1)
+    }
 
     private struct Key: Hashable {
         var source: String
@@ -249,7 +260,11 @@ private final class Page: NSObject, WKNavigationDelegate {
         let snapshot = WKSnapshotConfiguration()
         snapshot.rect = CGRect(x: 0, y: 0, width: width, height: height)
         snapshot.afterScreenUpdates = true
-        if scale != 1 { snapshot.snapshotWidth = NSNumber(value: width * scale) }
+        // The snapshot is in points, each `backing` pixels; the screen with
+        // the most is assumed, as the page is on none.
+        let backing = web.window?.backingScaleFactor ?? NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
+        snapshot.snapshotWidth = NSNumber(
+            value: MermaidRenderer.snapshotWidth(width: width, height: height, scale: scale, backing: backing))
         do {
             let image = try await web.takeSnapshot(configuration: snapshot)
             // Points, whatever the scale it was drawn at.

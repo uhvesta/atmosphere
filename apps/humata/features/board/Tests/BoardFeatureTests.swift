@@ -2,6 +2,7 @@ import ComposableArchitecture
 import HumataBoard
 import HumataDaemonClient
 import HumataProjects
+import HumataReview
 import HumataSession
 import XCTest
 
@@ -362,6 +363,35 @@ final class BoardFeatureTests: XCTestCase {
         await store.send(\.destination.item.itemTapped, board.task.id)
         await store.receive(\.cardTapped)
         XCTAssertEqual(store.state.destination?.item?.item.id, board.task.id)
+    }
+
+    func testUnsentSpecCommentsAreThereWhenTheTasksPageOpensAgain() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let block = MarkdownBlock(kind: .paragraph, startLine: 1, endLine: 1, text: "Email and password.")
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(\.destination.item.comments.blockTapped, block)
+        await store.send(\.destination.item.comments.binding.comment, "And a magic link.")
+        await store.send(\.destination.item.comments.commentSaved)
+        await store.send(.destination(.dismiss))
+        XCTAssertNil(store.state.destination)
+
+        // Another page opened in between has none of them.
+        await store.send(.cardTapped(board.subtask.id))
+        XCTAssertEqual(store.state.destination?.item?.comments.drafts.isEmpty, true)
+        await store.send(.destination(.dismiss))
+
+        await store.send(.cardTapped(board.task.id))
+        XCTAssertEqual(store.state.destination?.item?.comments.drafts.map(\.text), ["And a magic link."])
     }
 
     func testSpecCommentsGoOnlyToSessionsStillWorking() async throws {

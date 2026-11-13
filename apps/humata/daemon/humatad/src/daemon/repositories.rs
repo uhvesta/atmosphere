@@ -68,6 +68,9 @@ impl Daemon {
     async fn clone_of(&self, url: &str) -> Result<PathBuf, DaemonError> {
         let name = clone_name(url);
         let path = self.clones.dir.join(&name);
+        // Held while it's cloned, so two projects adding it at once clone
+        // it once.
+        let _preparing = fresh::preparing(&path).await;
         if path.join(".git").exists() {
             return Ok(path);
         }
@@ -131,6 +134,8 @@ impl Daemon {
                 };
                 let (path, name) = (repository.path.clone(), repository.name.clone());
                 tokio::spawn(async move {
+                    // Two sessions starting from it at once take turns.
+                    let _preparing = fresh::preparing(&path).await;
                     let git = || tokio::process::Command::new("git");
                     fresh::update(&git, &path, &name, kind, "on this Mac").await
                 })

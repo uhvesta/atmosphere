@@ -220,9 +220,24 @@ package struct SessionView: View {
             .help("Try something else from here, while this session stays as it is")
             if store.ships {
                 Menu {
+                    if store.isWorking {
+                        // Says why the two below are greyed out.
+                        Text("Wait for the turn to end, or stop it, to land or update")
+                    }
                     Button("Land…") { store.send(.landTapped) }
+                        .disabled(store.isWorking)
+                        .help(
+                            store.isWorking
+                                ? "The agent is still working; land once its turn ends, or stop it first"
+                                : "Commit the work onto a new branch, and push it or open pull requests")
                     Button("Update from the Base Branch") { store.send(.updateFromBaseTapped) }
                         .disabled(store.updating || store.isWorking)
+                        .help(
+                            store.isWorking
+                                ? "The agent is still working; merging the base in now would mix with its edits"
+                                : store.updating
+                                    ? "Already merging the base branch in"
+                                    : "Merge the base branch's new commits into the session's copy")
                 } label: {
                     Label("Ship", systemImage: "shippingbox")
                 }

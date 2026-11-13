@@ -813,6 +813,12 @@ impl<R: Runner> Agent for LocalAgent<R> {
         Ok(())
     }
 
+    async fn drop_queue(&self, id: &SessionId) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        drop_queued(&session);
+        Ok(())
+    }
+
     async fn edit_queued(
         &self,
         id: &SessionId,
@@ -1051,21 +1057,15 @@ impl<R: Runner> Agent for LocalAgent<R> {
     ) -> Result<(), AgentError> {
         let session = self.session(id)?;
         {
-            let mut control = session.lock();
+            let control = session.lock();
             if control.record.archived {
                 return Err(AgentError::Archived {
                     session: id.clone(),
                 });
             }
-            // What waits to be sent goes with what is cut.
-            let queued: Vec<String> = control.queue.drain(..).map(|queued| queued.id).collect();
-            for queue_id in queued {
-                session.note(EventKind::Dequeued {
-                    queue_id,
-                    dropped: true,
-                });
-            }
         }
+        // What waits to be sent goes with what is cut.
+        drop_queued(&session);
         self.abort(id).await?;
         let events = session.log.events()?;
         let index = events
@@ -1827,6 +1827,18 @@ fn reads_only(tool: &str) -> bool {
         "find_files",
     ];
     READING.contains(&tool)
+}
+
+/// Takes every queued message out of `session`, saying each was dropped.
+fn drop_queued(session: &Session) {
+    let mut control = session.lock();
+    let queued: Vec<String> = control.queue.drain(..).map(|queued| queued.id).collect();
+    for queue_id in queued {
+        session.note(EventKind::Dequeued {
+            queue_id,
+            dropped: true,
+        });
+    }
 }
 
 fn checkpoints(events: &[Event]) -> usize {

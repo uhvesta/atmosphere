@@ -14,12 +14,14 @@ struct AdminApprovalsSection: View {
     var asker: String
     var approvals: [AdminApproval]
     var now: Date?
+    /// The approval answered by ⇧⌘A and ⇧⌘D, if it's one of these.
+    var shortcuts: AdminApproval.ID?
     var decide: ([AdminApproval.ID], _ approve: Bool, ApprovalGrantAsked?) -> Void
 
     var body: some View {
         Section {
             ForEach(approvals) { approval in
-                AdminApprovalRow(approval: approval, now: now) { approve, grant in
+                AdminApprovalRow(approval: approval, now: now, shortcuts: approval.id == shortcuts) { approve, grant in
                     decide([approval.id], approve, grant)
                 }
             }
@@ -52,13 +54,25 @@ private struct DecideButtons: View {
     var deny: String
     var approve: String
     var scopes: [ApprovalScope]
+    /// Whether ⇧⌘A and ⇧⌘D answer it.
+    var shortcuts = false
     var decide: (_ approve: Bool, ApprovalGrantAsked?) -> Void
 
     var body: some View {
         HStack {
-            Button(deny) { decide(false, nil) }
-            Button(approve) { decide(true, nil) }
-                .buttonStyle(.borderedProminent)
+            if shortcuts {
+                Button(deny) { decide(false, nil) }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .help("\(deny) (⇧⌘D)")
+                Button(approve) { decide(true, nil) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .help("\(approve) (⇧⌘A)")
+            } else {
+                Button(deny) { decide(false, nil) }
+                Button(approve) { decide(true, nil) }
+                    .buttonStyle(.borderedProminent)
+            }
             Menu {
                 Section("Approve, and Allow \(scopeNames) Without Asking For") {
                     ForEach(grantDurations, id: \.title) { choice in
@@ -85,6 +99,7 @@ private struct DecideButtons: View {
 private struct AdminApprovalRow: View {
     var approval: AdminApproval
     var now: Date?
+    var shortcuts: Bool
     var decide: (_ approve: Bool, ApprovalGrantAsked?) -> Void
 
     var body: some View {
@@ -115,7 +130,7 @@ private struct AdminApprovalRow: View {
                 Spacer()
                 DecideButtons(
                     deny: String(localized: "Deny"), approve: String(localized: "Approve"), scopes: [approval.scope],
-                    decide: decide)
+                    shortcuts: shortcuts, decide: decide)
             }
         }
         .padding(.vertical, 4)
