@@ -76,3 +76,5 @@
     [StaticText] "" value: "Key"
     [TextField] "Key"
     [StaticText] "" value: "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters."
+    [Button] "Cancel"
+    [Button, disabled] "Add"

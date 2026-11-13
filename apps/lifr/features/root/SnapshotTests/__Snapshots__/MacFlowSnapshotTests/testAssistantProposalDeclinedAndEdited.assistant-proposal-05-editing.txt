@@ -96,3 +96,5 @@
     [TextField] "Due"
     [StaticText] "" value: "Move to"
     [PopUpButton] "" value: "Unchanged"
+    [Button] "Cancel"
+    [Button] "Done"

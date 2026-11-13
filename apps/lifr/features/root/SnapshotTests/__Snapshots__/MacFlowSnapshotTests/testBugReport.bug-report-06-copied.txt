@@ -85,3 +85,5 @@
     [StaticText] "" value: "apple"
     [Button] "Copied"
     [Button] "Share"
+    [Button] "Cancel"
+    [Button] "Save"

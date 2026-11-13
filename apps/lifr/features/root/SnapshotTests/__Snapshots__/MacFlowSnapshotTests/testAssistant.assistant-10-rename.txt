@@ -74,3 +74,5 @@
     [StaticText] "" value: "Model"
     [PopUpButton] "" value: "Default (Apple Intelligence)"
     [Button] "Suggest with Apple Intelligence"
+    [Button] "Cancel"
+    [Button] "Save"

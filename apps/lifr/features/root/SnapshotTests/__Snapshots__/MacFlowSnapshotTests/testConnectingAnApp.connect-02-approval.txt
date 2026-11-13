@@ -80,3 +80,5 @@
     [StaticText] "" value: "Hidden Avenues aren't listed; agents never see them."
     [StaticText] "" value: "Expires after"
     [PopUpButton] "" value: "30 days"
+    [Button] "Deny"
+    [Button] "Approve"

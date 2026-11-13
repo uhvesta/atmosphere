@@ -343,69 +343,111 @@ private struct BulkBar: View {
 
     var body: some View {
         let picked = store.selection.count
-        let none = picked == 0
-        VStack(spacing: 8) {
-            HStack {
-                Text(picked == 1 ? "1 task" : "\(picked) tasks")
-                    .font(.subheadline.weight(.semibold))
-                    .accessibilityLabel(picked == 1 ? "1 task picked" : "\(picked) tasks picked")
-                Spacer()
-                Button(store.selection.count == store.rows.count ? "Deselect All" : "Select All") {
-                    store.send(.selectAllTapped)
+        #if os(macOS)
+            // One row like a Mac's toolbar: titled menus while they fit,
+            // icons when the list is narrow.
+            HStack(spacing: 14) {
+                count(picked).fixedSize()
+                Divider().frame(height: 16)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) { actions }.labelStyle(.titleAndIcon).fixedSize()
+                    HStack(spacing: 10) { actions }.labelStyle(.iconOnly).fixedSize()
                 }
-                Button("Done Selecting") { store.send(.selectTapped) }
-                    .bold()
+                .menuStyle(.borderlessButton)
+                .disabled(picked == 0)
+                Spacer(minLength: 0)
+                pickAll.fixedSize()
+                done.fixedSize()
             }
-            HStack {
-                Menu("Status", systemImage: "circle.dashed") {
-                    ForEach(TaskStatus.allCases, id: \.self) { status in
-                        Button(status.title) { store.send(.bulk(.status(status))) }
-                    }
+            .buttonStyle(.borderless)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .background(.bar)
+        #else
+            VStack(spacing: 8) {
+                HStack {
+                    count(picked)
+                    Spacer()
+                    pickAll
+                    done
                 }
-                Spacer()
-                Menu("Due", systemImage: "calendar") {
-                    Button("Today") { store.send(.bulkDue(days: 0)) }
-                    Button("Tomorrow") { store.send(.bulkDue(days: 1)) }
-                    Button("In a Week") { store.send(.bulkDue(days: 7)) }
-                    Divider()
-                    Button("No Due Date") { store.send(.bulkDue(days: nil)) }
-                }
-                Spacer()
-                Menu("Priority", systemImage: "flag") {
-                    ForEach(Priority.allCases, id: \.self) { priority in
-                        Button(priority.title ?? String(localized: "None")) { store.send(.bulk(.priority(priority))) }
-                    }
-                }
-                Spacer()
-                Menu("Label", systemImage: "tag") {
-                    ForEach(labels) { label in
-                        Button("#\(label.name)") { store.send(.bulk(.addLabel(label.id))) }
-                    }
-                }
-                .disabled(labels.isEmpty)
-                Spacer()
-                Menu("Move", systemImage: "folder") {
-                    ForEach(places, id: \.avenue.id) { place in
-                        Button(place.avenue.name) {
-                            store.send(.bulk(.move(avenue: place.avenue.id, project: nil)))
-                        }
-                        ForEach(place.projects) { project in
-                            Button("\(place.avenue.name) › \(project.name)") {
-                                store.send(.bulk(.move(avenue: place.avenue.id, project: project.id)))
-                            }
-                        }
-                    }
-                }
-                Spacer()
-                Button("Move to Trash", systemImage: "trash", role: .destructive) { store.send(.bulk(.trash)) }
+                HStack { actions }
+                    .labelStyle(.iconOnly)
+                    .disabled(picked == 0)
             }
-            .labelStyle(.iconOnly)
-            .disabled(none)
+            .buttonStyle(.borderless)
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+            .background(.bar)
+        #endif
+    }
+
+    private func count(_ picked: Int) -> some View {
+        Text(picked == 1 ? "1 task" : "\(picked) tasks")
+            .font(.subheadline.weight(.semibold))
+            .accessibilityLabel(picked == 1 ? "1 task picked" : "\(picked) tasks picked")
+    }
+
+    private var pickAll: some View {
+        Button(store.selection.count == store.rows.count ? "Deselect All" : "Select All") {
+            store.send(.selectAllTapped)
         }
-        .buttonStyle(.borderless)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.bar)
+    }
+
+    private var done: some View {
+        Button("Done Selecting") { store.send(.selectTapped) }
+            .bold()
+    }
+
+    /// Spreads the actions across the iPhone's bar; the Mac's sit together.
+    @ViewBuilder private var gap: some View {
+        #if os(iOS)
+            Spacer()
+        #endif
+    }
+
+    @ViewBuilder private var actions: some View {
+        Menu("Status", systemImage: "circle.dashed") {
+            ForEach(TaskStatus.allCases, id: \.self) { status in
+                Button(status.title) { store.send(.bulk(.status(status))) }
+            }
+        }
+        gap
+        Menu("Due", systemImage: "calendar") {
+            Button("Today") { store.send(.bulkDue(days: 0)) }
+            Button("Tomorrow") { store.send(.bulkDue(days: 1)) }
+            Button("In a Week") { store.send(.bulkDue(days: 7)) }
+            Divider()
+            Button("No Due Date") { store.send(.bulkDue(days: nil)) }
+        }
+        gap
+        Menu("Priority", systemImage: "flag") {
+            ForEach(Priority.allCases, id: \.self) { priority in
+                Button(priority.title ?? String(localized: "None")) { store.send(.bulk(.priority(priority))) }
+            }
+        }
+        gap
+        Menu("Label", systemImage: "tag") {
+            ForEach(labels) { label in
+                Button("#\(label.name)") { store.send(.bulk(.addLabel(label.id))) }
+            }
+        }
+        .disabled(labels.isEmpty)
+        gap
+        Menu("Move", systemImage: "folder") {
+            ForEach(places, id: \.avenue.id) { place in
+                Button(place.avenue.name) {
+                    store.send(.bulk(.move(avenue: place.avenue.id, project: nil)))
+                }
+                ForEach(place.projects) { project in
+                    Button("\(place.avenue.name) › \(project.name)") {
+                        store.send(.bulk(.move(avenue: place.avenue.id, project: project.id)))
+                    }
+                }
+            }
+        }
+        gap
+        Button("Move to Trash", systemImage: "trash", role: .destructive) { store.send(.bulk(.trash)) }
     }
 
     private var labels: [LifrCore.Label] {

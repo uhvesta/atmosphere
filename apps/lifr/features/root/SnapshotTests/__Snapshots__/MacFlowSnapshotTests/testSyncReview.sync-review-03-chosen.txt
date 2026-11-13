@@ -51,6 +51,7 @@
   [Button/MinimizeButton] ""
   [StaticText] "" value: "Today"
   [Sheet] ""
+    [StaticText] "" value: "Review Changes"
     [StaticText] "" value: "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change."
     [Heading] "Task “Buy race gels and salt”"
     [RadioGroup] ""

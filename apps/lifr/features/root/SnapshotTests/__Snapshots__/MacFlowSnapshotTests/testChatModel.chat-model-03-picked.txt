@@ -78,3 +78,4 @@
     [StaticText] "" value: "Pick a skill automatically"
     [CheckBox/Switch] "" value: "1"
     [StaticText] "" value: "Only for this chat. When it's off, a message uses a skill only if you pick one."
+    [Button] "Close" id: xmark
