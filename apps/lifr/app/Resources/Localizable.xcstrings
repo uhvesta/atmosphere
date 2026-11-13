@@ -527,10 +527,16 @@
     "ABC-1" : {
 
     },
+    "About" : {
+
+    },
     "Accent color" : {
 
     },
     "Access" : {
+
+    },
+    "Acknowledgements" : {
 
     },
     "Active" : {
@@ -1338,7 +1344,7 @@
 
     },
     "Delete" : {
-
+      "comment" : "The word typed to delete all data"
     },
     "Delete %lld Tasks" : {
 
@@ -1347,6 +1353,12 @@
 
     },
     "Delete All" : {
+
+    },
+    "Delete All Data" : {
+
+    },
+    "Delete All Data…" : {
 
     },
     "Delete Filter" : {
@@ -1377,6 +1389,9 @@
 
     },
     "Deleted tomorrow" : {
+
+    },
+    "Deletes your tasks here, in iCloud and, once they sync, on your other devices." : {
 
     },
     "Deny" : {
@@ -1533,6 +1548,9 @@
 
     },
     "Every %lld" : {
+
+    },
+    "Every Avenue, Project, task, label, comment and reminder is deleted from this device and from your iCloud, and your settings go back to their defaults. It can't be undone." : {
 
     },
     "Every Friday, show what I finished and what's overdue" : {
@@ -2521,6 +2539,9 @@
 
     },
     "Nothing used yet" : {
+
+    },
+    "Nothing was deleted: %@. Try again; if it keeps failing, restart Lifr." : {
 
     },
     "Notifications are off" : {
@@ -3691,6 +3712,9 @@
     "Turn skills on or off, or write your own." : {
 
     },
+    "Type %@ to confirm" : {
+
+    },
     "Type a code, such as 7K2Q, or words from a title" : {
 
     },
@@ -3764,6 +3788,9 @@
 
     },
     "Uses about %@ of memory. A larger window keeps more of a conversation." : {
+
+    },
+    "Version" : {
 
     },
     "Version %lld of %lld" : {
@@ -3901,6 +3928,9 @@
     "You on %@" : {
 
     },
+    "Your other devices keep their copies until they next sync, then delete them too. One that's offline deletes them when it's back. Past changes in Activity stay, since that record is never rewritten. Conversations aren't affected." : {
+
+    },
     "Your skills sync through iCloud, encrypted end to end." : {
 
     },
@@ -3908,6 +3938,9 @@
 
     },
     "Your tasks stay as they are. Activity in Settings can bring the filter back." : {
+
+    },
+    "Your tasks stay on your devices and in your iCloud, encrypted end to end. To see or remove what iCloud keeps, open System Settings, click your name, then iCloud › Manage." : {
 
     },
     "Yours" : {

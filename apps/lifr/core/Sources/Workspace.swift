@@ -879,6 +879,24 @@ package struct Workspace: Hashable, Codable, Sendable {
         purge(tasks.values.filter { $0.deletedAt != nil })
     }
 
+    /// Deletes every Avenue, Project, task, label, comment, reminder, saved
+    /// filter and history event, and puts the settings back to their
+    /// defaults, leaving an empty Inbox. Sync sends the deletions. Journal
+    /// entries stay: they're written once and never removed. It can't be
+    /// undone.
+    package mutating func eraseAll(in context: Context) {
+        avenues = [:]
+        projects = [:]
+        tasks = [:]
+        labels = [:]
+        comments = [:]
+        reminders = [:]
+        savedFilters = [:]
+        history = []
+        settings = Settings()
+        _ = ensureInbox(in: context)
+    }
+
     private mutating func purge(_ expired: [LifrTask]) {
         let ids = Set(expired.map(\.id))
         let purged = ids.union(tasks.values.filter { $0.parentID.map(ids.contains) ?? false }.map(\.id))

@@ -43,6 +43,12 @@ package struct SettingsView: View {
             } footer: {
                 Text(bugReportsFooter)
             }
+            AboutSection()
+            Section {
+                Button("Delete All Data…", role: .destructive) { store.send(.eraseTapped) }
+            } footer: {
+                Text("Deletes your tasks here, in iCloud and, once they sync, on your other devices.")
+            }
         }
         if shows(.agents) && store.showsAgents {
             avenueAccess
@@ -94,6 +100,9 @@ package struct SettingsView: View {
             item: shows(.general) ? $store.scope(state: \.bugReports, action: \.bugReports) : .constant(nil)
         ) { store in
             BugReportsView(store: store)
+        }
+        .sheet(item: shows(.general) ? $store.scope(state: \.erase, action: \.erase) : .constant(nil)) { store in
+            EraseView(store: store)
         }
         .task {
             guard page == .all else { return }
@@ -501,5 +510,59 @@ private struct PushButton: View {
         // A form tints a button and, on the Mac, draws it as a push button;
         // this is a row that opens a screen.
         .buttonStyle(.plain)
+    }
+}
+
+/// The version, what happens to your data, and the open source Lifr is
+/// built on.
+private struct AboutSection: View {
+    /// Each library Lifr ships, and its license.
+    private static let libraries: [(name: String, license: String)] = [
+        ("The Composable Architecture, Dependencies, Sharing and their companions", "MIT"),
+        ("MLX Swift and MLX Swift LM", "MIT"),
+        ("Swift Transformers, Swift Hugging Face and Swift Jinja", "Apache 2.0"),
+        ("Swift Collections, Swift Numerics, Swift Crypto and Swift Argument Parser", "Apache 2.0"),
+        ("EventSource", "MIT"),
+        ("SwiftTerm", "MIT"),
+        ("yyjson", "MIT"),
+    ]
+
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "–"
+        let build = info?["CFBundleVersion"] as? String ?? "–"
+        return "\(short) (\(build))"
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent("Version", value: version)
+            DisclosureGroup("Acknowledgements") {
+                ForEach(Self.libraries, id: \.name) { library in
+                    LabeledContent(library.name, value: library.license)
+                        .font(.footnote)
+                }
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            Text(manageFooter)
+        }
+    }
+
+    private var manageFooter: String {
+        #if os(iOS)
+            String(
+                localized: """
+                    Your tasks stay on your devices and in your iCloud, encrypted end to end. To see or remove \
+                    what iCloud keeps, open the Settings app, tap your name, then iCloud › Manage Account Storage.
+                    """)
+        #else
+            String(
+                localized: """
+                    Your tasks stay on your devices and in your iCloud, encrypted end to end. To see or remove \
+                    what iCloud keeps, open System Settings, click your name, then iCloud › Manage.
+                    """)
+        #endif
     }
 }

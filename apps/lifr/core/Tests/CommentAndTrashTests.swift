@@ -100,6 +100,18 @@ func commentAndTrashTests() -> [TestCase] {
             try expect(fixture.workspace.comments.isEmpty)
             try expect(fixture.workspace.trash().isEmpty)
         },
+        TestCase("given everything is erased, then only an empty Inbox and default settings are left") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent")
+            _ = try fixture.task("Sub task", parent: parent)
+            _ = try fixture.workspace.addComment("Bye", to: parent.id, in: fixture.context)
+            fixture.workspace.settings.procrastinatedAfterDays = 3
+            fixture.workspace.eraseAll(in: fixture.context)
+            try expect(fixture.workspace.tasks.isEmpty && fixture.workspace.comments.isEmpty)
+            try expect(fixture.workspace.projects.isEmpty && fixture.workspace.history.isEmpty)
+            try expectEqual(fixture.workspace.avenues.keys.map { $0 }, [Avenue.inboxID])
+            try expectEqual(fixture.workspace.settings, Settings())
+        },
         TestCase("given a task trashed 31 days ago, then purging deletes it with its comments and history") {
             let fixture = try Fixture()
             let kept = try fixture.task("Kept")

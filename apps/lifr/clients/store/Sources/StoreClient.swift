@@ -383,6 +383,14 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.eraseAll`: deletes every record, leaving an empty Inbox.
+    package func eraseAll() async throws -> Saved {
+        try await save { workspace, context in
+            workspace.eraseAll(in: context)
+            return Change()
+        }
+    }
+
     /// `Workspace.reorder(task:after:before:)`: puts a task between two
     /// others in manual order.
     package func reorder(task id: UUID, after lower: UUID?, before upper: UUID?) async throws -> Saved {

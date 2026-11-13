@@ -100,6 +100,31 @@ final class SettingsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testDeletingAllDataNeedsTheWordTypedThenLeavesOnlyAnEmptyInbox() async throws {
+        _ = health
+        let store = await settings(InMemorySession())
+
+        let before = try await store.dependencies.store.load()
+        await store.send(.eraseTapped)
+        await store.send(\.erase.binding.typed, "Del")
+        await store.send(\.erase.eraseTapped)
+        let untouched = try await store.dependencies.store.load()
+        XCTAssertEqual(untouched, before)
+
+        await store.send(\.erase.binding.typed, " delete ")
+        await store.send(\.erase.eraseTapped)
+        await store.receive(\.erase.erased)
+        await store.receive(\.erase.delegate.erased)
+        await store.receive(\.delegate.saved)
+        await store.receive(\.erase.dismiss)
+
+        let erased = try await store.dependencies.store.load()
+        XCTAssertEqual(erased.avenues.keys.map { $0 }, [Avenue.inboxID])
+        XCTAssertTrue(store.state.avenues.allSatisfy { $0.id == Avenue.inboxID })
+        XCTAssertNil(store.state.erase)
+        await store.skipInFlightEffects()
+    }
+
     func testChangesWhenTasksCountAsProcrastinated() async {
         let store = await settings(InMemorySession())
 

@@ -75,6 +75,7 @@ package struct SettingsFeature {
         @Presents package var instructions: InstructionsFeature.State?
         @Presents package var models: ModelsFeature.State?
         @Presents package var bugReports: BugReportsFeature.State?
+        @Presents package var erase: EraseFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
         /// Why the settings couldn't be loaded, until they load. Until then
@@ -139,6 +140,8 @@ package struct SettingsFeature {
         case models(PresentationAction<ModelsFeature.Action>)
         case bugReportsTapped
         case bugReports(PresentationAction<BugReportsFeature.Action>)
+        case eraseTapped
+        case erase(PresentationAction<EraseFeature.Action>)
         case loginItemFailed(any Error)
         case cliInstallFailed(any Error)
         case saved(Result<Saved, any Error>)
@@ -340,6 +343,15 @@ package struct SettingsFeature {
                 state.models = ModelsFeature.State()
                 return .none
 
+            case .eraseTapped:
+                state.page = .general
+                state.erase = EraseFeature.State()
+                return .none
+
+            case .erase(.presented(.delegate(.erased(let snapshot)))):
+                state.show(snapshot)
+                return .send(.delegate(.saved(snapshot)))
+
             case .bugReportsTapped:
                 state.page = .general
                 state.bugReports = BugReportsFeature.State()
@@ -382,8 +394,8 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .activity, .labels, .skills, .instructions, .models, .bugReports, .revoke,
-                .alert, .delegate:
+            case .sessionChanged(.success), .activity, .labels, .skills, .instructions, .models, .bugReports, .erase,
+                .revoke, .alert, .delegate:
                 return .none
             }
         }
@@ -393,6 +405,7 @@ package struct SettingsFeature {
         .ifLet(\.$instructions, action: \.instructions) { InstructionsFeature() }
         .ifLet(\.$models, action: \.models) { ModelsFeature() }
         .ifLet(\.$bugReports, action: \.bugReports) { BugReportsFeature() }
+        .ifLet(\.$erase, action: \.erase) { EraseFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }
