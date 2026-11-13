@@ -12,6 +12,8 @@ final class GhosttySurfaceView: NSView {
     /// Called once when the command ended, with its exit code if Ghostty
     /// told it.
     var exited: ((Int32?) -> Void)?
+    /// The find bar's state, told what Ghostty's search finds.
+    weak var search: TerminalSearch?
     private var reported = false
     private var focused = false
     private var cursor = NSCursor.iBeam
@@ -22,6 +24,8 @@ final class GhosttySurfaceView: NSView {
     /// What `insertText` gave during the key press being handled; nil
     /// outside one.
     private var keyTextAccumulator: [String]?
+    /// The screen's text as last read for accessibility, and when.
+    private var screen: (text: String, read: TimeInterval)?
 
     init(runtime: GhosttyRuntime, command: TerminalCommand) {
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
@@ -34,7 +38,12 @@ final class GhosttySurfaceView: NSView {
 
         // C copies of the environment, freed once Ghostty has taken its own.
         let copies = command.environment.sorted { $0.key < $1.key }.map { (strdup($0.key), strdup($0.value)) }
-        defer { copies.forEach { free($0.0); free($0.1) } }
+        defer {
+            copies.forEach {
+                free($0.0)
+                free($0.1)
+            }
+        }
         var variables = copies.map { ghostty_env_var_s(key: $0.0, value: $0.1) }
         surface = command.line.withCString { line in
             variables.withUnsafeMutableBufferPointer { variables in
@@ -84,6 +93,14 @@ final class GhosttySurfaceView: NSView {
         guard !reported else { return }
         reported = true
         exited?(code)
+    }
+
+    /// Does one of Ghostty's binding actions, such as `search:needle`, as
+    /// if a key bound to it was pressed; false when Ghostty didn't.
+    @discardableResult
+    func perform(_ action: String) -> Bool {
+        guard let surface else { return false }
+        return action.withCString { ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count)) }
     }
 
     // MARK: - Size, scale and visibility
@@ -454,7 +471,8 @@ final class GhosttySurfaceView: NSView {
     }
 
     /// Takes a ⌘ key only when the terminal's config binds it, which is
-    /// copy, paste and select all; every other shortcut stays Humata's.
+    /// copy, paste, select all and find; every other shortcut stays
+    /// Humata's.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.type == .keyDown, focused, let surface else { return false }
         var key = Self.key(event, GHOSTTY_ACTION_PRESS)
@@ -489,8 +507,64 @@ final class GhosttySurfaceView: NSView {
     override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
     override func accessibilityLabel() -> String? { "Terminal" }
 
-    /// What the terminal shows now, read when asked for.
-    override func accessibilityValue() -> Any? {
+    /// What the terminal shows now, for VoiceOver and the flows' trees.
+    override func accessibilityValue() -> Any? { screenText() }
+
+    override func accessibilityNumberOfCharacters() -> Int {
+        (screenText() as NSString).length
+    }
+
+    /// All of it: the value is only what's on screen.
+    override func accessibilityVisibleCharacterRange() -> NSRange {
+        NSRange(location: 0, length: (screenText() as NSString).length)
+    }
+
+    override func accessibilityString(for range: NSRange) -> String? {
+        let text = screenText() as NSString
+        guard range.location >= 0, range.length >= 0, range.location + range.length <= text.length else { return nil }
+        return text.substring(with: range)
+    }
+
+    /// The line a character is on, counted from 0, so VoiceOver can read
+    /// line by line.
+    override func accessibilityLine(for index: Int) -> Int {
+        let text = screenText() as NSString
+        let before = text.substring(to: min(max(index, 0), text.length))
+        return before.components(separatedBy: .newlines).count - 1
+    }
+
+    override func accessibilityRange(forLine line: Int) -> NSRange {
+        let text = screenText() as NSString
+        var (start, number) = (0, 0)
+        while start <= text.length {
+            let range = text.lineRange(for: NSRange(location: start, length: 0))
+            if number == line { return range }
+            guard NSMaxRange(range) > start else { break }
+            start = NSMaxRange(range)
+            number += 1
+        }
+        return NSRange(location: NSNotFound, length: 0)
+    }
+
+    override func accessibilitySelectedText() -> String? {
+        guard let surface, ghostty_surface_has_selection(surface) else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &text) else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        return Self.string(text)
+    }
+
+    /// What's on screen, read at most twice a second: VoiceOver asks many
+    /// times over for one reading.
+    private func screenText() -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let screen, now - screen.read < 0.5 { return screen.text }
+        let text = readScreen()
+        screen = (text, now)
+        return text
+    }
+
+    private func readScreen() -> String {
         guard let surface else { return "" }
         let corner = { (coord: ghostty_point_coord_e) in
             ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: coord, x: 0, y: 0)
@@ -501,6 +575,10 @@ final class GhosttySurfaceView: NSView {
         var text = ghostty_text_s()
         guard ghostty_surface_read_text(surface, all, &text) else { return "" }
         defer { ghostty_surface_free_text(surface, &text) }
+        return Self.string(text)
+    }
+
+    private static func string(_ text: ghostty_text_s) -> String {
         guard let start = text.text else { return "" }
         return String(decoding: UnsafeRawBufferPointer(start: start, count: Int(text.text_len)), as: UTF8.self)
     }

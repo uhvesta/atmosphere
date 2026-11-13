@@ -47,6 +47,8 @@ macos_application(
         # code, which the Linux builds aren't.
         "//apps/humata/daemon/humatad:builds": "Resources",
         ":daemon_plist": "Library/LaunchAgents",
+        # The licenses of what's linked in or adapted, shipped with the app.
+        "THIRD_PARTY_NOTICES.md": "Resources",
     },
     bundle_id = HUMATA_BUNDLE_ID,
     bundle_name = "Humata",

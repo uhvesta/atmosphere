@@ -7,12 +7,14 @@ import SwiftUI
 struct TerminalSurface: NSViewRepresentable {
     let command: TerminalCommand
     let generation: Int
+    /// The find bar's state, which ⌘F in the terminal brings up.
+    let search: TerminalSearch
     let exited: (Int32?) -> Void
 
     func makeNSView(context: Context) -> TerminalSurfaceHost { TerminalSurfaceHost() }
 
     func updateNSView(_ host: TerminalSurfaceHost, context: Context) {
-        host.show(command, generation: generation, exited: exited)
+        host.show(command, generation: generation, search: search, exited: exited)
     }
 
     static func dismantleNSView(_ host: TerminalSurfaceHost, coordinator: ()) {
@@ -26,9 +28,13 @@ final class TerminalSurfaceHost: NSView {
     private var shown: (command: TerminalCommand, generation: Int)?
     private var surface: GhosttySurfaceView?
 
-    func show(_ command: TerminalCommand, generation: Int, exited: @escaping (Int32?) -> Void) {
+    func show(
+        _ command: TerminalCommand, generation: Int, search: TerminalSearch, exited: @escaping (Int32?) -> Void
+    ) {
         if let shown, shown.command == command, shown.generation == generation {
             surface?.exited = exited
+            surface?.search = search
+            search.view = surface
             return
         }
         let hadKeys = surface.map { window?.firstResponder === $0 } ?? false
@@ -38,6 +44,10 @@ final class TerminalSurfaceHost: NSView {
         case .success(let runtime):
             let view = GhosttySurfaceView(runtime: runtime, command: command)
             view.exited = exited
+            // A new surface has no search going.
+            search.ended()
+            view.search = search
+            search.view = view
             fill(with: view)
             surface = view
             if hadKeys { window?.makeFirstResponder(view) }
@@ -50,6 +60,7 @@ final class TerminalSurfaceHost: NSView {
 
     /// Ends the surface and its command, and shows nothing.
     func close() {
+        surface?.search?.ended()
         surface?.close()
         surface = nil
         shown = nil

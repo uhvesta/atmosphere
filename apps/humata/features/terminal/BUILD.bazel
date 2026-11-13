@@ -27,7 +27,10 @@ swift_library(
     name = "tests_lib",
     package_name = "humata",
     testonly = True,
-    srcs = glob(["Tests/*.swift"]),
+    srcs = glob(
+        ["Tests/*.swift"],
+        exclude = ["Tests/GhosttySurfaceTests.swift"],
+    ),
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":terminal",
@@ -42,6 +45,31 @@ macos_unit_test(
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
     deps = [":tests_lib"],
+)
+
+# A real Ghostty surface running commands. Ghostty starts every command
+# through login(1), which is setuid and can't run inside a sandbox, so this
+# runs outside Bazel's, and only when asked:
+# `bazel test --config=xcode //apps/humata/features/terminal:surface_tests`
+# from a terminal that isn't itself sandboxed.
+swift_library(
+    name = "surface_tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = ["Tests/GhosttySurfaceTests.swift"],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":terminal"],
+)
+
+macos_unit_test(
+    name = "surface_tests",
+    minimum_os_version = "15.0",
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":surface_tests_lib"],
 )
 
 filegroup(

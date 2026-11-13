@@ -162,7 +162,7 @@ original spec; lettered ones were added since.
 | U2 UX papercuts | Done |
 | S2 Compression | In progress: a remote session's text is still kept twice |
 | S3 Daemon speed | Done |
-| G1 Ghostty terminal | Planned |
+| G1 Ghostty terminal | In progress |
 | X Admin mode, gated by approvals | Done |
 | F2 Fresh clones | Done |
 
@@ -1120,10 +1120,10 @@ reads only the config Humata writes from Settings, never
 
 #### G1 Ghostty terminal
 
-- [ ] GhosttyKit v1.4.0 built from its release tarball and pinned
+- [x] GhosttyKit v1.4.0 built from its release tarball and pinned
   dependencies by Bazel with the repo's Zig; Ghostty's MIT and boss's
   Apache-2.0 notices are listed
-- [ ] `humata terminal attach <terminal> [--host <host>]` pipes a terminal
+- [x] `humata terminal attach <terminal> [--host <host>]` pipes a terminal
   both ways: keys in order, replay on attach clearing what was drawn, the
   pty's size sent on change, the shell's exit code as its own, and
   reconnecting after a dropped connection
@@ -1137,10 +1137,10 @@ reads only the config Humata writes from Settings, never
 - [ ] Select with the mouse, copy with ⌘C, paste with ⌘V (bracketed when
   the program asks), and mouse reporting for programs like vim and htop
 - [ ] Scroll back with the wheel or trackpad; ⌘F finds text in it
-- [ ] Settings › Terminal: the font and size, and a color theme with light
+- [x] Settings › Terminal: the font and size, and a color theme with light
   and dark palettes; Ghostty's own config files are never read
 - [ ] VoiceOver reads the screen
-- [ ] SwiftTerm removed
+- [x] SwiftTerm removed
 
 ### Composer, rewind, skills, plugins and models
 

@@ -102,12 +102,17 @@ private struct TerminalTab: View {
 /// was closed elsewhere, and Reattach when only the pipe to it ended.
 private struct TerminalPane: View {
     let store: StoreOf<TerminalFeature>
+    /// The find bar's, which only this view and its surface share.
+    @State private var search = TerminalSearch()
 
     var body: some View {
         VStack(spacing: 0) {
             if let command = store.command {
-                TerminalSurface(command: command, generation: store.generation) { _ in
+                TerminalSurface(command: command, generation: store.generation, search: search) { _ in
                     store.send(.surfaceExited)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if search.shown { TerminalFindBar(search: search) }
                 }
             } else {
                 Color.clear

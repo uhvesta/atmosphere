@@ -13,6 +13,9 @@ To update, change `_GHOSTTY_VERSION` and `_GHOSTTY_SHA256` (`curl -sL
 https://release.files.ghostty.org/<version>/ghostty-<version>.tar.gz), and
 `_ZIG_*` if the new release needs another Zig, then build
 //apps/humata/features/terminal:tests.
+
+Modelled on how boss (https://github.com/spinyfin/mono, Apache-2.0) pins and
+builds GhosttyKit; its notice is in //apps/humata/app:THIRD_PARTY_NOTICES.md.
 """
 
 _GHOSTTY_VERSION = "1.4.0"

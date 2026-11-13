@@ -10,6 +10,7 @@ import HumataProjects
 import HumataReview
 import HumataSearch
 import HumataSession
+import HumataTerminal
 import ImageIO
 import SwiftUI
 import XCTest
@@ -1002,6 +1003,8 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
             $0.continuousClock = TestClock()
+            // What the terminals draw: a fixed screen, not a shell's.
+            $0.terminalCommand = TerminalCommandClient { Self.transcript(for: $0) }
         }
         let flow = FlowRecorder("terminals", AppView(store: store))
 
@@ -1668,6 +1671,40 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.approvals.approvals.grants.count == 1 }
         await settings.step("grants")
         settings.finish()
+    }
+
+    /// A command that draws the same screen every run and stays open: a
+    /// build's output for a session's terminal, and logs for any other,
+    /// with colors, a wide character and emoji. It clears whatever was
+    /// printed before it and hides the cursor, which blinks.
+    nonisolated private static func transcript(for terminal: Terminal) -> TerminalCommand {
+        let prompt = "\\033[1;34mbuild-box\\033[0m:\\033[36m~/humata\\033[0m$ "
+        let lines =
+            terminal.sessionID != nil
+            ? [
+                prompt + "echo hello from build-box",
+                "hello from build-box",
+                prompt + "cargo test",
+                "\\033[1;32m   Compiling\\033[0m humatad v0.1.0",
+                "\\033[1;32m    Finished\\033[0m test profile in 4.2s",
+                "test host::tests::reconnects ... \\033[32mok\\033[0m",
+                "test store::tests::keeps_history ... \\033[32mok\\033[0m",
+                "test wire::tests::round_trips ... \\033[33mignored\\033[0m",
+                "\\033[38;2;255;120;80mtrue color\\033[0m  \\033[7m reversed \\033[0m  \\033[4munderlined\\033[0m",
+                "wide: 日本語  emoji: 🚀 ✅  combining: e\u{301}",
+                prompt,
+            ]
+            : [
+                prompt + "echo tailing the build logs",
+                "tailing the build logs",
+                "\\033[2m09:30:01\\033[0m \\033[32mINFO\\033[0m  cache warmed 📦",
+                "\\033[2m09:30:04\\033[0m \\033[33mWARN\\033[0m  slow action: 12s",
+                "\\033[2m09:30:09\\033[0m \\033[31mERROR\\033[0m linker: 未定義のシンボル",
+                prompt,
+            ]
+        // The words are the format itself: none has a quote or a percent sign.
+        let screen = "\\033[H\\033[2J\\033[3J\\033[?25l" + lines.joined(separator: "\\r\\n")
+        return TerminalCommand(line: "printf '\(screen)'; exec cat")
     }
 
     private func sidebarShows(

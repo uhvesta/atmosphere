@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import HumataHosts
 import HumataProjects
+import HumataTerminal
 import SwiftUI
 
 /// Humata's Settings window (⌘,).
@@ -33,6 +34,9 @@ package struct SettingsView: View {
             ModelDefaultsView(store: store.scope(state: \.models, action: \.models))
                 .tabItem { Label("Models", systemImage: "cpu") }
                 .tag(SettingsTab.models)
+            TerminalSettingsView()
+                .tabItem { Label("Terminal", systemImage: "terminal") }
+                .tag(SettingsTab.terminal)
         }
         .frame(minWidth: 760, minHeight: 480)
     }

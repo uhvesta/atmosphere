@@ -20,6 +20,7 @@ swift_library(
         "//apps/humata/features/projects",
         "//apps/humata/features/search",
         "//apps/humata/features/session",
+        "//apps/humata/features/terminal",
         "//apps/libs/kits/chatui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
@@ -71,6 +72,7 @@ flow_snapshot_test(
         "//apps/humata/features/review",
         "//apps/humata/features/search",
         "//apps/humata/features/session",
+        "//apps/humata/features/terminal",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

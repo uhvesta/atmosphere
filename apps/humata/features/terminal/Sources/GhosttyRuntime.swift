@@ -54,7 +54,7 @@ final class GhosttyRuntime {
         let code = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
         guard code == 0 else { return .failure(.notInitialized(code: code)) }
 
-        let style = TerminalStyle()
+        let style = TerminalStyle(defaults: .standard)
         let config: ghostty_config_t
         switch loadConfig(style) {
         case .success(let loaded): config = loaded
@@ -106,15 +106,24 @@ final class GhosttyRuntime {
         ghostty_app_tick(app)
     }
 
-    /// Gives every terminal the style's config again, for the appearance
-    /// the app has now. A config that can't be written leaves them as they
+    /// Gives every terminal the config of the style Settings keeps, for the
+    /// appearance the app has now. A config that can't be written leaves them as they
     /// are.
     func updateConfig() {
+        let style = TerminalStyle(defaults: .standard)
         guard case .success(let new) = Self.loadConfig(style) else { return }
+        self.style = style
         ghostty_app_update_config(app, new)
         ghostty_app_set_color_scheme(app, Self.dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
         ghostty_config_free(config)
         config = new
+    }
+
+    /// Settings may have changed the style: every terminal follows it. The
+    /// app's defaults change for much else too, which is left alone.
+    private func defaultsChanged() {
+        guard TerminalStyle(defaults: .standard) != style else { return }
+        updateConfig()
     }
 
     private func observe() {
@@ -133,6 +142,11 @@ final class GhosttyRuntime {
                 forName: NSTextInputContext.keyboardSelectionDidChangeNotification, object: nil, queue: .main
             ) { _ in
                 MainActor.assumeIsolated { GhosttyRuntime.running { ghostty_app_keyboard_changed($0.app) } }
+            },
+            center.addObserver(
+                forName: UserDefaults.didChangeNotification, object: UserDefaults.standard, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { GhosttyRuntime.running { $0.defaultsChanged() } }
             },
         ]
         appearance = app.observe(\.effectiveAppearance) { _, _ in
@@ -186,6 +200,22 @@ private func ghosttyAction(_ app: ghostty_app_t?, _ target: ghostty_target_s, _ 
         case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
             view?.processExited(code: Int32(truncatingIfNeeded: action.action.child_exited.exit_code))
             return view != nil
+        case GHOSTTY_ACTION_START_SEARCH:
+            let needle = action.action.start_search.needle.map { String(cString: $0) }
+            view?.search?.started(needle: needle)
+            return view?.search != nil
+        case GHOSTTY_ACTION_END_SEARCH:
+            view?.search?.ended()
+            return view?.search != nil
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            // Below zero while Ghostty can't say.
+            let total = action.action.search_total.total
+            view?.search?.counted(total >= 0 ? Int(total) : nil)
+            return view?.search != nil
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            let selected = action.action.search_selected.selected
+            view?.search?.moved(to: selected >= 0 ? Int(selected) : nil)
+            return view?.search != nil
         case GHOSTTY_ACTION_SET_TITLE, GHOSTTY_ACTION_SET_TAB_TITLE, GHOSTTY_ACTION_PWD, GHOSTTY_ACTION_RING_BELL,
             GHOSTTY_ACTION_CELL_SIZE, GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_MOUSE_OVER_LINK,
             GHOSTTY_ACTION_COLOR_CHANGE, GHOSTTY_ACTION_CONFIG_CHANGE, GHOSTTY_ACTION_RENDERER_HEALTH,
