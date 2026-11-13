@@ -74,8 +74,10 @@ package enum SessionEvent: Hashable, Sendable {
 package enum SessionError: Error, Equatable, CustomStringConvertible {
     case unknownApp(String)
     case unknownRequest(UUID)
-    /// Touch ID or the password was cancelled or failed.
+    /// Touch ID or the password was cancelled.
     case notAuthenticated
+    /// Touch ID or the password couldn't ask, such as when locked out.
+    case authenticationFailed(reason: String)
     case installFailed(path: String, reason: String)
     /// The Keychain refused to keep the grants.
     case grantsNotSaved(reason: String)
@@ -92,6 +94,9 @@ package enum SessionError: Error, Equatable, CustomStringConvertible {
             "That request is gone, because the app that asked stopped waiting. Run its command again to ask anew."
         case .notAuthenticated:
             "Approving needs Touch ID or your password. Nothing was granted; try again."
+        case .authenticationFailed(let reason):
+            "Touch ID and the password couldn't confirm it: \(reason). Nothing was granted. If Touch ID is locked "
+                + "out, unlock the Mac with your password, then try again."
         case .installFailed(let path, let reason):
             "Couldn't link lifr at \(path): \(reason). Check that the folder exists and you can write to it, "
                 + "or add the app's bundled lifr to your PATH yourself."

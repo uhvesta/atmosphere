@@ -18,8 +18,8 @@
             var peers: PeerCheck
             var grants: GrantStorage
             /// Touch ID or the password, with what it's for: "Lifr is trying to
-            /// <reason>". `true` when the person agreed.
-            var authenticate: @Sendable (_ reason: String) async -> Bool
+            /// <reason>".
+            var authenticate: @Sendable (_ reason: String) async -> Authentication
             var store: StoreClient
             /// This Mac's name, for history.
             var device: String
@@ -74,9 +74,17 @@
                     peers: .codeSigning(cli: helper, team: LocalSocket.team, identifier: LocalSocket.cliIdentifier),
                     grants: .keychain(service: "\(Bundle.main.bundleIdentifier ?? "Lifr").grants"),
                     authenticate: { reason in
-                        let context = LAContext()
-                        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason))
-                            ?? false
+                        do {
+                            let agreed = try await LAContext().evaluatePolicy(
+                                .deviceOwnerAuthentication, localizedReason: reason)
+                            return agreed ? .agreed : .declined
+                        } catch let error as LAError
+                            where [LAError.Code.userCancel, .appCancel, .systemCancel].contains(error.code)
+                        {
+                            return .declined
+                        } catch {
+                            return .failed(reason: error.localizedDescription)
+                        }
                     },
                     store: store, device: device, now: { Date() },
                     log: AccessLog(file: support.appendingPathComponent("access.log")),
@@ -104,7 +112,7 @@
                 revoke: { try await self.revoke($0) },
                 cliInstallation: { self.environment.cli.installation() },
                 installCLI: { try self.environment.cli.install() },
-                isAPIEnabled: { await self.isAPIEnabled },
+                isAPIEnabled: { await self.isListening },
                 setAPIEnabled: { try await self.setAPIEnabled($0) },
                 launchesAtLogin: { self.environment.loginItem.isEnabled() },
                 setLaunchesAtLogin: { try self.environment.loginItem.setEnabled($0) })
@@ -114,6 +122,13 @@
 
         private var isAPIEnabled: Bool {
             !FileManager.default.fileExists(atPath: environment.disabledMarker.path)
+        }
+
+        /// Whether the API is on and answering: on, but with a socket that
+        /// couldn't open at launch, it reads as off, so turning it on tries
+        /// again and says why it can't.
+        private var isListening: Bool {
+            isAPIEnabled && (!started || listener != nil)
         }
 
         private func listen() throws(SessionError) {
@@ -351,8 +366,16 @@
             ).handle(request, in: &copy)
             let approved = asked.withLock { $0 }
             if let approved {
-                guard await environment.authenticate(reason(for: approved, peer.launcher)) else {
-                    return .failure(id: request.id, .confirmationDenied)
+                switch await environment.authenticate(reason(for: approved, peer.launcher)) {
+                case .agreed: break
+                case .declined: return .failure(id: request.id, .confirmationDenied)
+                case .failed(let reason):
+                    return .failure(
+                        id: request.id,
+                        APIError(
+                            .confirmationDenied,
+                            "Touch ID or the password couldn't confirm the change on the Mac: \(reason). Nothing "
+                                + "changed; once the person can confirm it there, run the command again."))
                 }
             } else if first.error != nil || copy == loaded {
                 return first
@@ -450,9 +473,7 @@
 
         private func approve(_ id: UUID, _ grant: Grant) async throws(SessionError) {
             guard let request = pending[id]?.request else { throw .unknownRequest(id) }
-            guard await environment.authenticate("approve \(request.client) to use your tasks") else {
-                throw .notAuthenticated
-            }
+            try await authenticate("approve \(request.client) to use your tasks")
             // The app may have stopped waiting during Touch ID.
             guard let answered = pending.removeValue(forKey: id) else { throw .unknownRequest(id) }
             let previous = grants[answered.launcher.identity]
@@ -469,6 +490,15 @@
             appsChanged()
         }
 
+        /// Asks for Touch ID or the password, throwing unless the person agreed.
+        private func authenticate(_ reason: String) async throws(SessionError) {
+            switch await environment.authenticate(reason) {
+            case .agreed: return
+            case .declined: throw .notAuthenticated
+            case .failed(let reason): throw .authenticationFailed(reason: reason)
+            }
+        }
+
         private func deny(_ id: UUID) throws(SessionError) {
             guard let answered = pending.removeValue(forKey: id) else { throw .unknownRequest(id) }
             for waiter in answered.waiters.values { waiter.resume(returning: .denied) }
@@ -476,9 +506,7 @@
 
         private func update(_ app: String, _ grant: Grant) async throws(SessionError) {
             guard let name = grants[app]?.grant.client else { throw .unknownApp(app) }
-            guard await environment.authenticate("change \(name)'s access to your tasks") else {
-                throw .notAuthenticated
-            }
+            try await authenticate("change \(name)'s access to your tasks")
             guard let previous = grants[app] else { throw .unknownApp(app) }
             grants[app]?.grant = grant
             do {
@@ -540,5 +568,14 @@
         private func send(_ event: SessionEvent) {
             for listener in listeners.values { listener.yield(event) }
         }
+    }
+
+    /// What Touch ID or the password answered.
+    enum Authentication: Equatable, Sendable {
+        case agreed
+        /// The person cancelled.
+        case declined
+        /// It couldn't ask, such as with Touch ID locked out.
+        case failed(reason: String)
     }
 #endif

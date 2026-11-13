@@ -60,9 +60,29 @@ final class SessionServerTests: XCTestCase {
         XCTAssertEqual(try harness.grants.load().map(\.identity), ["com.anthropic.claude-code"])
     }
 
+    func testTouchIDThatCantAskIsToldApartFromDeclining() async throws {
+        let harness = try await Harness()
+        harness.touchID.withLock { $0.answer = .failed(reason: "Biometry is locked out.") }
+        let events = await harness.server.client.events()
+        let client = try harness.connect()
+        async let answer = background { try client.call(.listAvenues) }
+        let request = try await next(events) {
+            if case .approvalRequested(let request) = $0 { request } else { nil }
+        }
+        do {
+            try await harness.server.client.approve(
+                request.id, Grant(client: "Claude Code", scopes: [.read], expiresAt: harness.now + 86_400))
+            XCTFail("Approved without Touch ID.")
+        } catch {
+            XCTAssertEqual(error as? SessionError, .authenticationFailed(reason: "Biometry is locked out."))
+        }
+        try await harness.server.client.deny(request.id)
+        _ = try? await answer
+    }
+
     func testApprovingNeedsTouchID() async throws {
         let harness = try await Harness()
-        harness.touchID.withLock { $0.answer = false }
+        harness.touchID.withLock { $0.answer = .declined }
         let events = await harness.server.client.events()
         let client = try harness.connect()
         async let answer = background { try client.call(.listAvenues) }
@@ -184,13 +204,13 @@ final class SessionServerTests: XCTestCase {
         }
         let code = try XCTUnwrap(created.result?.decode(ChangeResult.self).task.code)
 
-        harness.touchID.withLock { $0.answer = false }
+        harness.touchID.withLock { $0.answer = .declined }
         let refused = try await background { try client.call(.trashTask, ["task": .string(code)]) }
         XCTAssertEqual(refused.error?.data.code, .confirmationDenied)
         var tasks = try await harness.store.load().tasks.values
         XCTAssertNil(tasks.first?.deletedAt)
 
-        harness.touchID.withLock { $0.answer = true }
+        harness.touchID.withLock { $0.answer = .agreed }
         let trashed = try await background { try client.call(.trashTask, ["task": .string(code)]) }
         XCTAssertNil(trashed.error)
         tasks = try await harness.store.load().tasks.values

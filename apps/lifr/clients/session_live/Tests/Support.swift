@@ -20,7 +20,7 @@ final class Harness: Sendable {
     /// Who the next connection is, or why it's refused.
     let peer: OSAllocatedUnfairLock<Result<Peer, APIError>>
     /// Touch ID's answer, and every reason it was asked for.
-    let touchID: OSAllocatedUnfairLock<(answer: Bool, reasons: [String])>
+    let touchID: OSAllocatedUnfairLock<(answer: Authentication, reasons: [String])>
     let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     static let claude = Peer(
@@ -56,7 +56,7 @@ final class Harness: Sendable {
         self.grants = storage ?? .inMemory(grants)
         let peer = OSAllocatedUnfairLock<Result<Peer, APIError>>(initialState: .success(peer))
         self.peer = peer
-        let touchID = OSAllocatedUnfairLock(initialState: (answer: true, reasons: [String]()))
+        let touchID = OSAllocatedUnfairLock(initialState: (answer: Authentication.agreed, reasons: [String]()))
         self.touchID = touchID
         server = SessionServer(
             SessionServer.Environment(
