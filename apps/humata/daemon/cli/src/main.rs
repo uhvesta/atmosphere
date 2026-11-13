@@ -1369,6 +1369,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 .into(),
                 planning,
                 plugins: Vec::new(),
+                // The daemon's to fill in.
+                notices: Vec::new(),
                 effort,
                 experimental,
             });

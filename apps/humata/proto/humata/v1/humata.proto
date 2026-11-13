@@ -444,6 +444,10 @@ message StartSession {
   // Copilot only: runs with its experimental features, such as local
   // models in Fusion. Off unless this or the project's default says so.
   bool experimental = 16;
+  // What the session is told before its first turn, as notices: set by the
+  // daemon when a repository couldn't be fetched or a folder is behind its
+  // remote.
+  repeated string notices = 17;
 }
 
 // What New Session starts from, for every project or for one; a project's
@@ -2404,6 +2408,9 @@ message RepositoriesCloned {
   // The commits each clone's refs point at, by name, so what is sent to it
   // can leave out what it has.
   repeated RepositoryCommits tips = 2;
+  // What a session started from them should be told, as that a clone
+  // couldn't be fetched and is used as last fetched.
+  repeated string notices = 3;
 }
 
 // A shell on a host, opened in a session's folder, a folder named, or the

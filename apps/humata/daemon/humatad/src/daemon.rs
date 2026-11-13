@@ -1152,16 +1152,18 @@ impl Daemon {
         // A planning session gets an empty folder of its own from its host.
         let checkout = !start.planning;
         if checkout && start.working_directory.is_empty() && start.repositories.is_empty() {
-            start.repositories = if start.host.is_empty() {
-                self.refresh(&project).await;
-                project
+            if start.host.is_empty() {
+                start.notices = self.refresh(&project).await;
+                start.repositories = project
                     .repositories
                     .iter()
                     .map(convert::wire_repository)
-                    .collect()
+                    .collect();
             } else {
-                self.clone_on(&start.host, &project).await?.repositories
-            };
+                let cloned = self.clone_on(&start.host, &project).await?;
+                start.notices = cloned.notices;
+                start.repositories = cloned.repositories;
+            }
         }
         let parent = match (
             item.as_ref()

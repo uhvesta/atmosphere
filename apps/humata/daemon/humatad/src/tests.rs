@@ -1346,6 +1346,9 @@ async fn a_project_from_a_url_checks_out_whats_there_when_each_session_starts() 
     assert!(!folder.join("LATER.md").exists());
 
     commit(upstream.path(), "LATER.md");
+    // The clone's own branch moves off its upstream, so a fast-forward
+    // would fail; the session starts from the remote all the same.
+    commit(Path::new(&repository.path), "LOCAL.md");
     let second = started(&client, start_in(&project.id)).await;
     send(&client, &second.id, "hello").await;
     after_turns(&client, &second.id, 1).await;
@@ -1354,6 +1357,23 @@ async fn a_project_from_a_url_checks_out_whats_there_when_each_session_starts() 
         folder.join("LATER.md").is_file(),
         "the clone wasn't fetched"
     );
+    assert!(!folder.join("LOCAL.md").exists());
+    let notices = |events: &[pb::SessionEvent]| {
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, Some(pb::session_event::Kind::Notice(_))))
+            .count()
+    };
+    assert_eq!(notices(&history_of(&client, &second.id).await), 0);
+
+    // With the remote gone, it starts from what was fetched, and says so.
+    drop(upstream);
+    let third = started(&client, start_in(&project.id)).await;
+    send(&client, &third.id, "hello").await;
+    after_turns(&client, &third.id, 1).await;
+    let folder = PathBuf::from(&third.working_directory);
+    assert!(folder.join("LATER.md").is_file());
+    assert_eq!(notices(&history_of(&client, &third.id).await), 1);
 }
 
 #[tokio::test]

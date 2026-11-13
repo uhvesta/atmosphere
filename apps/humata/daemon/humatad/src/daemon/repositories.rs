@@ -3,7 +3,7 @@
 //! fetched before each session here. Hosts clone from the URL themselves.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use humata_agent::Repository;
@@ -22,6 +22,7 @@ pub struct Clones {
     pub old: Option<PathBuf>,
 }
 use crate::error::DaemonError;
+use crate::fresh;
 use crate::store::Project;
 
 impl Daemon {
@@ -112,21 +113,30 @@ impl Daemon {
         }
     }
 
-    /// Brings the Mac's clones of `project`'s repositories added by URL up
-    /// to date with where they came from. One that can't be fetched, as
-    /// while offline, is used as last fetched.
-    pub(super) async fn refresh(&self, project: &Project) {
+    /// Fetches `project`'s repositories on this Mac: its clones of those
+    /// added by URL move to their remote's newest code, and folders keep
+    /// their checkouts. Returns what a session started from them should be
+    /// told, as that one couldn't be fetched and is used as last fetched.
+    pub(super) async fn refresh(&self, project: &Project) -> Vec<String> {
+        let mut notices = Vec::new();
         for repository in &project.repositories {
-            let Some(url) = project.urls.get(&repository.name) else {
-                continue;
+            let kind = if project.urls.contains_key(&repository.name) {
+                fresh::Kind::Clone
+            } else {
+                fresh::Kind::Folder
             };
-            if let Err(problem) = fetch(&repository.path).await {
-                eprintln!(
-                    "humatad: couldn't fetch {url} into {}, so sessions start from what was fetched before: {problem}",
-                    repository.path.display()
-                );
-            }
+            let git = || tokio::process::Command::new("git");
+            let notice = fresh::update(
+                &git,
+                &repository.path,
+                &repository.name,
+                kind,
+                "on this Mac",
+            )
+            .await;
+            notices.extend(notice);
         }
+        notices
     }
 }
 
@@ -144,28 +154,6 @@ fn folder(path: PathBuf) -> Result<PathBuf, DaemonError> {
         return Err(not_a_folder(None));
     }
     Ok(path)
-}
-
-/// Fetches the clone's remote and fast-forwards its branch to it.
-async fn fetch(path: &Path) -> Result<(), String> {
-    for args in [
-        &["fetch", "--quiet", "--prune", "origin"][..],
-        &["merge", "--ff-only", "--quiet"][..],
-    ] {
-        let output = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .stdin(Stdio::null())
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .await
-            .map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
-    }
-    Ok(())
 }
 
 /// The clone's folder name: the repository's name and a hash of the URL,

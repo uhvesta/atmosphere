@@ -100,6 +100,13 @@ package struct Project: Identifiable, Hashable, Sendable {
         self.created = created
     }
 
+    /// What a session starting in it, from a copy of its repositories, waits
+    /// on: fetching them first.
+    package var startingStatus: String {
+        guard !repositories.isEmpty else { return "Starting…" }
+        return "Fetching \(repositories.map(\.name).formatted(.list(type: .and)))…"
+    }
+
     /// The project's choice for a plugin; nil goes by its CLI.
     package func plugin(_ agent: Plugin.Agent, _ id: String) -> Bool? {
         plugins.first { $0.agent == agent && $0.id == id }?.enabled

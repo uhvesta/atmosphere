@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 use crate::error::HostError;
+use crate::fresh;
 use crate::hex;
 
 /// The most of a setup script's or git's output kept, from its end.
@@ -238,26 +239,39 @@ impl Machine {
     ) -> Result<pb::RepositoriesCloned, HostError> {
         let folder = self.state.join("repos").join(plain(&clone.folder)?);
         let mut cloned = Vec::new();
-        for repository in clone.repositories {
-            let path = folder.join(plain(&repository.name)?);
+        let mut notices = Vec::new();
+        let vars = self.env.vars();
+        let signed_in = vars.iter().any(|(name, _)| TOKENS.contains(&name.as_str()));
+        let git = || {
             let mut git = Command::new("git");
-            let vars = self.env.vars();
-            if vars.iter().any(|(name, _)| TOKENS.contains(&name.as_str())) {
+            if signed_in {
                 git.args(GITHUB_CREDENTIALS);
             }
-            git.envs(vars).stdin(Stdio::null());
+            git.envs(vars.iter().cloned()).stdin(Stdio::null());
+            git
+        };
+        for repository in clone.repositories {
+            let path = folder.join(plain(&repository.name)?);
             if path.join(".git").exists() {
-                git.arg("-C")
-                    .arg(&path)
-                    .args(["pull", "--ff-only", "--quiet"]);
-            } else {
-                std::fs::create_dir_all(&folder).map_err(|source| HostError::CreateFolder {
-                    path: folder.clone(),
-                    source,
-                })?;
-                git.arg("clone").arg(&repository.url).arg(&path);
+                let kind = fresh::Kind::Clone;
+                let notice =
+                    fresh::update(&git, &path, &repository.name, kind, "on this host").await;
+                notices.extend(notice);
+                cloned.push(pb::Repository {
+                    name: repository.name,
+                    path: path.display().to_string(),
+                    url: String::new(),
+                });
+                continue;
             }
-            let output = git
+            std::fs::create_dir_all(&folder).map_err(|source| HostError::CreateFolder {
+                path: folder.clone(),
+                source,
+            })?;
+            let output = git()
+                .arg("clone")
+                .arg(&repository.url)
+                .arg(&path)
                 .output()
                 .await
                 .map_err(|source| HostError::RunGit { source })?;
@@ -286,6 +300,7 @@ impl Machine {
         Ok(pb::RepositoriesCloned {
             repositories: cloned,
             tips,
+            notices,
         })
     }
 

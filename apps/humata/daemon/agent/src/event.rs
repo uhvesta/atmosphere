@@ -365,6 +365,9 @@ pub struct StartOptions {
     pub effort: Option<String>,
     /// Copilot's experimental features, such as local models in Fusion.
     pub experimental: bool,
+    /// What the session shows before its first turn, as notices: such as
+    /// that its code couldn't be fetched.
+    pub notices: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]

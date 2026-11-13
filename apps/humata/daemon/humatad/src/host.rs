@@ -836,6 +836,7 @@ impl Host {
                         plugins: plugin_choices(backend, &start.plugins),
                         effort: convert::optional(start.effort),
                         experimental: start.experimental,
+                        notices: start.notices,
                     })
                     .await?;
                 self.owners

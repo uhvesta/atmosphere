@@ -602,7 +602,13 @@ package struct NewSessionView: View {
             }
             if store.starting {
                 ToolbarItem(placement: .status) {
-                    ProgressView().controlSize(.small)
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(store.startingStatus)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
             }
             ToolbarItem(placement: .confirmationAction) {

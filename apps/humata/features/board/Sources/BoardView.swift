@@ -185,7 +185,7 @@ package struct BoardView: View {
         BoardCard(id: item.id) {
             ItemCard(
                 item: item, parent: store.state.parent(of: item), sessions: store.state.sessions(on: item),
-                starting: store.starting.contains(item.id))
+                starting: store.starting.contains(item.id), startingStatus: store.project.startingStatus)
         } menu: {
             ForEach(ItemStatus.allCases.filter { $0 != item.status }, id: \.self) { status in
                 Button("Move to \(status.title)") { store.send(.dropped(item.id, on: status)) }
@@ -212,6 +212,7 @@ private struct ItemCard: View {
     var parent: Item?
     var sessions: [Session]
     var starting = false
+    var startingStatus = "Starting…"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -233,7 +234,7 @@ private struct ItemCard: View {
             if starting {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.mini)
-                    Text("Starting…")
+                    Text(startingStatus).lineLimit(1).truncationMode(.middle)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -428,7 +429,7 @@ struct ItemView: View {
                     .buttonStyle(.plain)
                 }
                 HStack {
-                    Button(store.startingWork ? "Starting…" : "Start Work", systemImage: "play.fill") {
+                    Button(store.startingWork ? store.project.startingStatus : "Start Work", systemImage: "play.fill") {
                         store.send(.startWorkTapped)
                     }
                     .help("Start a session with your last New Session settings, told to do what the spec says")

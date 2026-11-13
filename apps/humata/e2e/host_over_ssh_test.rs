@@ -169,6 +169,54 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
         pairs(&[("user", "hello"), ("assistant", "hi there")])
     );
 
+    // The next session on the host starts from what origin has now, even
+    // once the host's clone has moved off its upstream.
+    let identity = ["-c", "user.name=Test", "-c", "user.email=test@localhost"];
+    let commit = |path: &Path, file: &str| {
+        std::fs::write(path.join(file), "new\n").unwrap_or_else(|error| panic!("{error}"));
+        git(path, &["add", file]);
+        git(
+            path,
+            &[&identity[..], &["commit", "--quiet", "-m", file]].concat(),
+        );
+    };
+    commit(&code, "LATER.md");
+    git(&code, &["push", "--quiet", "origin", "HEAD"]);
+    let host_clone = folder.join("state/repos").join(project).join("code");
+    commit(&host_clone, "LOCAL.md");
+    let start_on_host = || {
+        let started = humata.run(&[
+            "start",
+            "--backend",
+            "scripted",
+            "--project",
+            project,
+            "--host",
+            "far",
+            "--approval",
+            "everything",
+            "--backend-config",
+            &script.display().to_string(),
+        ]);
+        started.trim().to_owned()
+    };
+    let fresh = start_on_host();
+    humata.said(&["send", &fresh, "hello", "--wait"]);
+    let worked_in = humata.working_directory(&fresh);
+    assert!(
+        worked_in.join("LATER.md").exists(),
+        "the host's clone wasn't fetched"
+    );
+    assert!(!worked_in.join("LOCAL.md").exists());
+
+    // With origin gone, a session still starts, from what was fetched.
+    let gone = root.join("origin-gone.git");
+    std::fs::rename(&origin, &gone).unwrap_or_else(|error| panic!("{error}"));
+    let offline = start_on_host();
+    humata.said(&["send", &offline, "hello", "--wait"]);
+    assert!(humata.working_directory(&offline).join("LATER.md").exists());
+    std::fs::rename(&gone, &origin).unwrap_or_else(|error| panic!("{error}"));
+
     // A turn going when the connection drops keeps going on the host, and a
     // watch from before the drop sees it through once the daemon reconnects.
     let mut waiting = humata.spawn(&["send", session, "wait", "--wait"]);

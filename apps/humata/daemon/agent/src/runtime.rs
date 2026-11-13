@@ -730,7 +730,12 @@ impl<R: Runner> Agent for LocalAgent<R> {
             effort: options.effort.filter(|effort| !effort.is_empty()),
             experimental: options.experimental,
         };
-        self.create(record.clone(), Vec::new())?;
+        let notices = options
+            .notices
+            .into_iter()
+            .map(|text| Event::now(EventKind::Notice { text }))
+            .collect();
+        self.create(record.clone(), notices)?;
         Ok(record)
     }
 

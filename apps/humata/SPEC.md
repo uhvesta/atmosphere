@@ -145,7 +145,7 @@ original spec; lettered ones were added since.
 | J Agents ask, and a board journal | Done |
 | V Second review pass | Done |
 | P Performance pass | Done |
-| K Signed releases | Done: humata-v0.1.0 published |
+| K Signed releases | Done: humata-v0.3.0 is the latest |
 | S1 Storage: safe places, cleanup, opt-in auto-delete | Done |
 | Q1 Queue and composer: edit, merge, cancel, pastes, images | Done |
 | Q2 Rewind and checkpoints | Done |
@@ -160,11 +160,11 @@ original spec; lettered ones were added since.
 | D2 Focus view for Markdown | Done |
 | D3 Versions of a Markdown file | Done |
 | U2 UX papercuts | Done |
-| S2 Compression | Done but a backend's text kept once |
+| S2 Compression | In progress: a remote session's text is still kept twice |
 | S3 Daemon speed | Done |
 | G1 Ghostty terminal | Planned |
 | X Admin mode, gated by approvals | Done |
-| F2 Fresh clones | Planned |
+| F2 Fresh clones | Done |
 
 ## Done milestones
 
@@ -439,10 +439,10 @@ branch has moved off its upstream. Folders are never fetched. Worktrees start
 from the clone's own `HEAD`, so any of these leaves a session on an old
 commit without a word.
 
-- [ ] Fetch `origin` with `--prune` before each session, on this Mac and on hosts, and start the session's worktrees from the remote's default branch (`origin/HEAD`, set with `git remote set-head origin --auto` when missing), not the clone's local branch; nothing is merged, so a clone's branch can't block it
-- [ ] A folder repository is fetched too, without touching the folder's checkout; its sessions start from the folder's `HEAD` as now, and the new session says how many commits that is behind the remote's default branch when it is
-- [ ] Show "Fetching <repository>…" with a spinner on the starting session while it fetches, off the main thread, and the session starts when it's done
-- [ ] A fetch that fails, as offline or with a token that has expired, starts the session from what was fetched before and shows the session a notice: what failed, how old the starting commit is, and how to fix it (sign in again with `gh auth login` on that host, or reconnect)
+- [x] Fetch `origin` with `--prune` before each session, on this Mac and on hosts, and start the session's worktrees from the remote's default branch (`origin/HEAD`, set with `git remote set-head origin --auto` when missing), not the clone's local branch; nothing is merged, so a clone's branch can't block it
+- [x] A folder repository is fetched too, without touching the folder's checkout; its sessions start from the folder's `HEAD` as now, and the new session says how many commits that is behind the remote's default branch when it is
+- [x] Show "Fetching <repository>…" with a spinner where the session is starting (New Session's sheet, the item's Start Work, its card) while it fetches, off the main thread, and the session starts when it's done
+- [x] A fetch that fails, as offline or with a token that has expired, starts the session from what was fetched before and shows the session a notice: what failed, how old the starting commit is, and how to fix it (sign in again with `gh auth login` on that host, or reconnect)
 
 **Done when:** a test pushes a commit to a `file://` remote after the clone is
 made, moves the clone's branch off its upstream, and the next session on this

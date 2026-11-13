@@ -1120,6 +1120,13 @@ package struct NewSessionFeature {
         package var needsModel: Bool { backend == .local && model.trimmed.isEmpty }
         package var canStart: Bool { !starting && !needsModel }
 
+        /// What starting waits on: fetching the project's repositories,
+        /// which a planning session or a chat doesn't.
+        package var startingStatus: String {
+            guard let project, !planning else { return "Starting…" }
+            return project.startingStatus
+        }
+
         /// The model picked, if the backend lists it.
         package var pickedModel: ModelChoice? { models.first { $0.id == model.trimmed } }
         /// Copilot Fusion, which takes a tier for its effort.
