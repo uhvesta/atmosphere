@@ -353,6 +353,11 @@ pub struct StartOptions {
     /// Plugins turned on (true) or off for it, by its CLI's name for them,
     /// over how the CLI has them.
     pub plugins: BTreeMap<String, bool>,
+    /// How hard the model thinks, as its [`crate::Model::efforts`] name it;
+    /// None for its default.
+    pub effort: Option<String>,
+    /// Copilot's experimental features, such as local models in Fusion.
+    pub experimental: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -380,6 +385,10 @@ pub struct SessionUpdate {
     pub archived: Option<bool>,
     /// Marks the session whose changes are the ones to keep.
     pub keeper: Option<bool>,
+    /// From the next turn; `Some(None)` goes back to the model's default.
+    pub effort: Option<Option<String>>,
+    /// Copilot's experimental features, from the next turn.
+    pub experimental: Option<bool>,
 }
 
 /// Where a fork came from.
@@ -416,4 +425,10 @@ pub struct SessionRecord {
     /// over how the CLI has them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, bool>,
+    /// How hard the model thinks; None for its default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Copilot's experimental features.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub experimental: bool,
 }

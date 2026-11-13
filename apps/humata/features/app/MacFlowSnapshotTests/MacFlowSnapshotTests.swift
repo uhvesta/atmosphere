@@ -1280,6 +1280,70 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Settings › Models: every project starts with Claude Code on Opus at
+    /// high effort, one project goes with Copilot Fusion at its max tier
+    /// and experimental features on, and its New Session starts there,
+    /// saying Fusion needs them for local models.
+    func testSettingsModels() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setModels(
+            [
+                ModelChoice(
+                    id: "claude-opus-4-7", name: "Opus 4.7", efforts: ["low", "medium", "high", "xhigh", "max"],
+                    defaultEffort: "medium"),
+                ModelChoice(id: "haiku", name: "Haiku 4.5"),
+            ], for: .claude)
+        daemon.setModels(
+            [
+                ModelChoice(id: "gpt-5.2", name: "GPT-5.2", efforts: ["low", "medium", "high"]),
+                ModelChoice(
+                    id: ModelChoice.fusion, name: "Copilot Fusion", detail: "Billed as the models it picks",
+                    efforts: ["standard", "high", "max"], defaultEffort: "standard"),
+            ], for: .copilot)
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        _ = try await daemon.client.createProject("site", [Repository(path: "/code/site")], "")
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = ImmediateClock()
+        }
+        let flow = FlowRecorder("models", ModelDefaultsView(store: store.scope(state: \.models, action: \.models)))
+        store.send(.models(.task))
+        try await until { !store.models.loading }
+        store.send(.models(.backendPicked(.claude)))
+        store.send(.models(.modelTyped("claude-opus-4-7")))
+        try await until { !store.models.models.isEmpty }
+        store.send(.models(.effortPicked("high")))
+        try await until { !store.models.saving }
+        await flow.step("every-project")
+
+        store.send(.models(.projectPicked(project.id)))
+        store.send(.models(.ownToggled(true)))
+        store.send(.models(.backendPicked(.copilot)))
+        store.send(.models(.modelTyped(ModelChoice.fusion)))
+        try await until { store.models.models.contains { $0.id == ModelChoice.fusion } }
+        store.send(.models(.effortPicked("max")))
+        store.send(.models(.experimentalToggled(true)))
+        try await until { !store.models.saving }
+        await flow.step("project-fusion")
+        flow.finish()
+
+        let saved = try await daemon.client.projects().first { $0.id == project.id }
+        let starting = Store(initialState: NewSessionFeature.State(project: saved)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        let sheet = FlowRecorder("models-new-session", NewSessionView(store: starting))
+        starting.send(.task)
+        try await until { starting.pickedModel?.id == ModelChoice.fusion }
+        await sheet.step("fusion")
+        sheet.finish()
+    }
+
     /// An agent's `humata mcp`, in a dev build, asks to change a spec and
     /// delete a task as the person, and a command asks to add one: all wait
     /// in the inbox, by who asked. The person approves the agent's both,

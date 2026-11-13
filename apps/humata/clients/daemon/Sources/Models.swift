@@ -81,11 +81,14 @@ package struct Project: Identifiable, Hashable, Sendable {
     package var skills: [Skill]
     /// Plugins turned on or off for its sessions, over how each CLI has them.
     package var plugins: [PluginChoice]
+    /// What New Session starts from in it, over every project's; nil for
+    /// none of its own.
+    package var defaults: SessionDefaults?
     package var created: Date
 
     package init(
         id: String, name: String, repositories: [Repository], instructions: String = "", skills: [Skill] = [],
-        plugins: [PluginChoice] = [], created: Date
+        plugins: [PluginChoice] = [], defaults: SessionDefaults? = nil, created: Date
     ) {
         self.id = id
         self.name = name
@@ -93,12 +96,46 @@ package struct Project: Identifiable, Hashable, Sendable {
         self.instructions = instructions
         self.skills = skills
         self.plugins = plugins
+        self.defaults = defaults
         self.created = created
     }
 
     /// The project's choice for a plugin; nil goes by its CLI.
     package func plugin(_ agent: Plugin.Agent, _ id: String) -> Bool? {
         plugins.first { $0.agent == agent && $0.id == id }?.enabled
+    }
+}
+
+/// What New Session starts from, for every project or for one.
+package struct SessionDefaults: Hashable, Sendable {
+    /// Nil for none.
+    package var backend: Backend?
+    /// Nil for the backend's default.
+    package var model: String?
+    /// Nil for the model's default.
+    package var effort: String?
+    /// Copilot's experimental features.
+    package var experimental: Bool
+
+    package init(backend: Backend? = nil, model: String? = nil, effort: String? = nil, experimental: Bool = false) {
+        self.backend = backend
+        self.model = model
+        self.effort = effort
+        self.experimental = experimental
+    }
+
+    /// These, with `over`'s where it sets them: a project's over every
+    /// project's. Every project's model and effort count only for their
+    /// own backend.
+    package func under(_ over: SessionDefaults?) -> SessionDefaults {
+        guard let over else { return self }
+        guard let backend = over.backend, backend != self.backend else {
+            return SessionDefaults(
+                backend: backend, model: over.model ?? model, effort: over.effort ?? effort,
+                experimental: over.experimental || experimental)
+        }
+        return SessionDefaults(
+            backend: backend, model: over.model, effort: over.effort, experimental: over.experimental)
     }
 }
 
@@ -230,6 +267,10 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var asking: Bool
     /// What it last said or why it failed, cut short; nil when it hasn't yet.
     package var lastMessage: String?
+    /// How hard the model thinks; nil for its default.
+    package var effort: String?
+    /// Copilot's experimental features.
+    package var experimental: Bool
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
@@ -237,7 +278,8 @@ package struct Session: Identifiable, Hashable, Sendable {
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
         pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil, planning: Bool = false,
-        asking: Bool = false, lastMessage: String? = nil, itemTitle: String? = nil
+        asking: Bool = false, lastMessage: String? = nil, itemTitle: String? = nil, effort: String? = nil,
+        experimental: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -262,6 +304,8 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.asking = asking
         self.lastMessage = lastMessage
         self.itemTitle = itemTitle
+        self.effort = effort
+        self.experimental = experimental
     }
 }
 
@@ -280,12 +324,21 @@ package struct SessionUpdate: Hashable, Sendable {
     package var keeper: Bool?
     /// Moves it to another item in its project.
     package var placement: Placement?
+    /// Copilot's experimental features, from the next turn.
+    package var experimental: Bool?
+    /// How hard the model thinks, from the next turn; "" for its default.
+    package var effort: String?
 
-    package init(name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil, placement: Placement? = nil) {
+    package init(
+        name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil, placement: Placement? = nil,
+        experimental: Bool? = nil, effort: String? = nil
+    ) {
         self.name = name
         self.archived = archived
         self.keeper = keeper
         self.placement = placement
+        self.experimental = experimental
+        self.effort = effort
     }
 }
 
@@ -1164,6 +1217,11 @@ package struct StartRequest: Hashable, Sendable {
     /// Nil for this Mac.
     package var host: String?
     package var model: String?
+    /// How hard the model thinks; nil for its default. For Copilot Fusion,
+    /// its tier.
+    package var effort: String?
+    /// Copilot's experimental features, such as local models in Fusion.
+    package var experimental: Bool
     package var instructions: String?
     /// Settings only the backend reads, as JSON; the scripted backend's script.
     package var backendConfig: String?
@@ -1180,15 +1238,17 @@ package struct StartRequest: Hashable, Sendable {
 
     package init(
         backend: Backend, workingDirectory: String? = nil, name: String = "", host: String? = nil,
-        model: String? = nil, instructions: String? = nil, backendConfig: String? = nil,
-        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, itemID: String? = nil,
-        specs: SpecScope = .item, planning: Bool = false
+        model: String? = nil, effort: String? = nil, experimental: Bool = false, instructions: String? = nil,
+        backendConfig: String? = nil, approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil,
+        itemID: String? = nil, specs: SpecScope = .item, planning: Bool = false
     ) {
         self.backend = backend
         self.workingDirectory = workingDirectory
         self.name = name
         self.host = host
         self.model = model
+        self.effort = effort
+        self.experimental = experimental
         self.instructions = instructions
         self.backendConfig = backendConfig
         self.approvalMode = approvalMode
@@ -1520,13 +1580,26 @@ package struct ModelChoice: Equatable, Identifiable, Sendable {
     package var detail: String?
     /// Whether it can see images sent with a message.
     package var readsImages: Bool
+    /// The efforts it takes, least first; empty when it takes none. For
+    /// Copilot Fusion, its tiers.
+    package var efforts: [String]
+    /// The effort it uses when none is given; nil when unknown.
+    package var defaultEffort: String?
 
-    package init(id: String, name: String, detail: String? = nil, readsImages: Bool = true) {
+    package init(
+        id: String, name: String, detail: String? = nil, readsImages: Bool = true, efforts: [String] = [],
+        defaultEffort: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.detail = detail
         self.readsImages = readsImages
+        self.efforts = efforts
+        self.defaultEffort = defaultEffort
     }
+
+    /// Copilot Fusion's id, which takes a tier as its effort.
+    package static let fusion = "fusion"
 }
 
 package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {

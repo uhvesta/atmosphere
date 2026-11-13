@@ -628,6 +628,7 @@ mod tests {
                 text: "Tag it.".into(),
             }],
             plugins: Vec::new(),
+            defaults: None,
         };
         let task = item("login", None, "Let people sign in.");
         let subtask = item("form", Some("login"), "The form.");

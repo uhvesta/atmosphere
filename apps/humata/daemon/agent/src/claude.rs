@@ -190,6 +190,9 @@ impl ClaudeRunner {
         if let Some(model) = &record.model {
             command.args(["--model", model]);
         }
+        if let Some(effort) = &record.effort {
+            command.args(["--effort", effort]);
+        }
         if let Some(instructions) = &record.instructions {
             command.args(["--append-system-prompt", instructions]);
         }
@@ -228,6 +231,9 @@ impl ClaudeRunner {
     }
 }
 
+/// The efforts Claude Code's `--effort` takes, least first.
+const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
 /// Claude Code's model aliases, which follow the newest of each.
 const CLAUDE_MODELS: [(&str, &str, &str); 4] = [
     ("opus", "Opus", "The most capable"),
@@ -251,6 +257,16 @@ impl Runner for ClaudeRunner {
                 name: (*name).to_owned(),
                 detail: Some((*detail).to_owned()),
                 reads_images: true,
+                // Haiku thinks as hard as it does; the others take an effort.
+                efforts: if *id == "haiku" {
+                    Vec::new()
+                } else {
+                    CLAUDE_EFFORTS
+                        .iter()
+                        .map(|&effort| effort.to_owned())
+                        .collect()
+                },
+                default_effort: None,
             })
             .collect())
     }

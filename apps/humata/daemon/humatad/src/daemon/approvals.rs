@@ -201,11 +201,27 @@ impl Daemon {
                     )),
                 };
             };
-            let reply = RUNNING_UNDER.scope(via, self.answer(request)).await;
-            let kind = match reply {
-                Ok(Reply::Response(response)) => response,
-                Ok(Reply::Stream { response, .. }) => response,
-                Err(failure) => error(failure.code(), describe(&failure)),
+            // On a task of its own: a stack of its own, rather than on top
+            // of the request that decided it, and it finishes even if
+            // whoever asked goes away.
+            let Some(daemon) = self.me.upgrade() else {
+                return pb::Response {
+                    kind: Some(error(
+                        pb::ErrorCode::HostUnavailable,
+                        "humatad is shutting down, so the approved action didn't run; ask for it again once it's back",
+                    )),
+                };
+            };
+            let running =
+                tokio::spawn(RUNNING_UNDER.scope(via, async move { daemon.answer(request).await }));
+            let kind = match running.await {
+                Ok(Ok(Reply::Response(response))) => response,
+                Ok(Ok(Reply::Stream { response, .. })) => response,
+                Ok(Err(failure)) => error(failure.code(), describe(&failure)),
+                Err(_) => error(
+                    pb::ErrorCode::StorageFailed,
+                    "the approved action stopped before it finished; check the board and ask for it again if it's missing",
+                ),
             };
             pb::Response { kind: Some(kind) }
         })

@@ -214,6 +214,10 @@ message Request {
     // Turns a plugin on or off for a project's sessions, or back to how
     // its CLI has it.
     SetProjectPlugin set_project_plugin = 105;
+    // The defaults New Session starts from, for every project.
+    GetSessionDefaults get_session_defaults = 106;
+    // Sets the defaults for every project, or for one, which go over them.
+    SetSessionDefaults set_session_defaults = 107;
   }
 }
 
@@ -320,6 +324,7 @@ message Response {
     SkillPicked skill_picked = 95;
     PluginsScanned plugins_scanned = 96;
     PluginList plugin_list = 97;
+    SessionDefaults session_defaults = 98;
   }
 }
 
@@ -423,6 +428,35 @@ message StartSession {
   // Plugins turned on or off for this session, over how its CLI has them;
   // only those of its backend's agent apply.
   repeated PluginChoice plugins = 14;
+  // How hard the model thinks, as the model's choices name it, such as
+  // `high`; for Copilot Fusion, its tier: `standard`, `high` or `max`.
+  // Empty for the model's default, or the project's.
+  string effort = 15;
+  // Copilot only: runs with its experimental features, such as local
+  // models in Fusion. Off unless this or the project's default says so.
+  bool experimental = 16;
+}
+
+// What New Session starts from, for every project or for one; a project's
+// go over every project's, field by field.
+message SessionDefaults {
+  // UNSPECIFIED for none.
+  Backend backend = 1;
+  // Empty for the backend's default.
+  string model = 2;
+  // Empty for the model's default.
+  string effort = 3;
+  // Copilot's experimental mode.
+  bool experimental = 4;
+}
+
+message GetSessionDefaults {}
+
+message SetSessionDefaults {
+  // Empty for every project's; else replies with the project updated.
+  string project_id = 1;
+  // Unset to remove a project's, going back to every project's.
+  SessionDefaults defaults = 2;
 }
 
 enum SpecScope {
@@ -484,6 +518,9 @@ message Project {
   repeated Skill skills = 7;
   // Plugins its sessions have on or off, over how each CLI has them.
   repeated PluginChoice plugins = 8;
+  // What New Session starts from in it, over every project's; unset for
+  // none of its own.
+  SessionDefaults defaults = 9;
 }
 
 // A named piece of know-how, such as how to cut a release, in Markdown.
@@ -715,6 +752,11 @@ message ModelChoice {
   string detail = 3;
   // Whether it can see images sent with a message.
   bool reads_images = 4;
+  // The efforts it takes, least first; empty when it takes none. For
+  // Copilot Fusion, its tiers.
+  repeated string efforts = 5;
+  // The effort it uses when none is given; empty when unknown.
+  string default_effort = 6;
 }
 
 message ImportableSession {
@@ -955,6 +997,10 @@ message UpdateSession {
   // Moves the session to this task or subtask of its project; empty moves
   // it to the project itself. Only the daemon keeps this.
   optional string item_id = 5;
+  // Copilot's experimental mode, from the next turn.
+  optional bool experimental = 6;
+  // How hard the model thinks, from the next turn; empty for its default.
+  optional string effort = 7;
 }
 
 message SessionUpdated {
@@ -1552,6 +1598,10 @@ message SessionInfo {
   // The title of the task or subtask it works on; empty for none. The
   // daemon fills it in.
   string item_title = 24;
+  // How hard the model thinks; empty for its default.
+  string effort = 25;
+  // Copilot's experimental mode.
+  bool experimental = 26;
 }
 
 // A session's git worktree of one repository.

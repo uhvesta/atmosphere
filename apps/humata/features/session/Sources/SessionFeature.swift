@@ -406,6 +406,9 @@ package struct SessionFeature {
         case approvalModePicked(ApprovalMode)
         /// The daemon refused the new mode, so the session keeps `previous`.
         case approvalModeRefused(previous: ApprovalMode, message: String)
+        /// Copilot's experimental features on or off, from the next turn.
+        case experimentalToggled(Bool)
+        case experimentalRefused(previous: Bool, message: String)
         case thinkingToggled(id: String)
         /// Forks the session before `event`, or with all of it if nil. A
         /// chat-only fork keeps working in this session's copy of the code.
@@ -908,7 +911,8 @@ package struct SessionFeature {
                             : "")
                             + "Everything after it leaves the chat, and the message goes back in the box to edit. "
                             + (files
-                                ? "Rewinding files too puts the code back as it was then, uncommitted changes included. "
+                                ? "Rewinding files too puts the code back as it was then, "
+                                    + "uncommitted changes included. "
                                 : "")
                             + "Undo brings it all back until you send another message.")
                 }
@@ -991,6 +995,22 @@ package struct SessionFeature {
 
             case .approvalModeRefused(let previous, let message):
                 state.session.approvalMode = previous
+                state.alert = Self.alert(message)
+                return .none
+
+            case .experimentalToggled(let on):
+                let previous = state.session.experimental
+                guard on != previous else { return .none }
+                state.session.experimental = on
+                let session = state.session.id
+                return .run { _ in
+                    _ = try await daemon.update(session, SessionUpdate(experimental: on))
+                } catch: { error, send in
+                    await send(.experimentalRefused(previous: previous, message: error.localizedDescription))
+                }
+
+            case .experimentalRefused(let previous, let message):
+                state.session.experimental = previous
                 state.alert = Self.alert(message)
                 return .none
 

@@ -587,6 +587,8 @@ fn list_models(
                 reads_images: model["inputs"]
                     .as_array()
                     .is_some_and(|inputs| inputs.iter().any(|input| input == "image")),
+                efforts: Vec::new(),
+                default_effort: None,
             })
         })
         .collect();

@@ -401,6 +401,11 @@ pub enum DaemonError {
     )]
     BadPluginChoice,
 
+    #[error(
+        "{model} is one of Humata's on-device models, which run only on the Mac, so a session on {host} can't use a model server on {host} for it. Leave base_url out of the session's backend config so it reaches the Mac's model server, or pick a model the server on {host} serves"
+    )]
+    OnDeviceOnHost { host: String, model: String },
+
     #[error(transparent)]
     Commands(#[from] crate::commands::CommandsError),
 
@@ -819,7 +824,9 @@ impl DaemonError {
             | Self::ModelServerPort { .. } => pb::ErrorCode::InvalidRequest,
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
             Self::SkillClash { .. } => pb::ErrorCode::SkillClash,
-            Self::BadSkillPick | Self::BadPluginChoice => pb::ErrorCode::InvalidRequest,
+            Self::BadSkillPick | Self::BadPluginChoice | Self::OnDeviceOnHost { .. } => {
+                pb::ErrorCode::InvalidRequest
+            }
             Self::SaveHosts { .. } | Self::Mirror { .. } => pb::ErrorCode::StorageFailed,
             Self::BadRepositoryName { .. } | Self::NoRecovery { .. } => {
                 pb::ErrorCode::InvalidRequest

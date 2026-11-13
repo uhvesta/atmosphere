@@ -30,6 +30,9 @@ package struct SettingsView: View {
             PluginsView(store: store.scope(state: \.plugins, action: \.plugins))
                 .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
                 .tag(SettingsTab.plugins)
+            ModelDefaultsView(store: store.scope(state: \.models, action: \.models))
+                .tabItem { Label("Models", systemImage: "cpu") }
+                .tag(SettingsTab.models)
         }
         .frame(minWidth: 760, minHeight: 480)
     }

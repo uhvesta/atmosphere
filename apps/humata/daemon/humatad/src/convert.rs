@@ -180,6 +180,8 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
         keeper: record.keeper,
         item_id: String::new(),
         item_title: String::new(),
+        effort: record.effort.clone().unwrap_or_default(),
+        experimental: record.experimental,
         turns: summary.turns,
         seen_turns: 0,
         pending: summary
@@ -269,6 +271,7 @@ pub fn project(project: Project) -> pb::Project {
             })
             .collect(),
         plugins: project.plugins,
+        defaults: project.defaults,
     }
 }
 

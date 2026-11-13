@@ -39,27 +39,25 @@ final class BoardFeatureTests: XCTestCase {
 
     private func titles(_ items: [Item]) -> [String] { items.map(\.title) }
 
-    /// The board, remembering `backend` and `model` as the last New Session
-    /// settings.
-    private func store(_ board: Board, lastBackend backend: Backend, model: String = "") throws
+    /// The board, with `backend` and `model` as every project's New Session
+    /// defaults.
+    private func store(_ board: Board, defaultBackend backend: Backend, model: String = "") async throws
         -> TestStoreOf<BoardFeature>
     {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "board-tests-\(UUID())"))
-        defaults.set(backend.rawValue, forKey: "newSessionBackend")
-        defaults.set(model, forKey: "newSessionModel")
+        _ = try await board.daemon.client.setSessionDefaults(
+            nil, SessionDefaults(backend: backend, model: model.isEmpty ? nil : model))
         let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
             BoardFeature()
         } withDependencies: {
             $0.daemon = board.daemon.client
-            $0.defaultAppStorage = defaults
         }
         store.exhaustivity = .off
         return store
     }
 
-    func testStartWorkStartsASessionOnTheCardWithTheLastSettingsAndStaysOnTheBoard() async throws {
+    func testStartWorkStartsASessionOnTheCardWithTheDefaultsAndStaysOnTheBoard() async throws {
         let board = try await board()
-        let store = try store(board, lastBackend: .scripted)
+        let store = try await store(board, defaultBackend: .scripted)
         await store.send(.refresh)
         await store.receive(\.loaded)
 
@@ -79,7 +77,7 @@ final class BoardFeatureTests: XCTestCase {
 
     func testTappingStartWorkTwiceStartsOneSession() async throws {
         let board = try await board()
-        let store = try store(board, lastBackend: .scripted)
+        let store = try await store(board, defaultBackend: .scripted)
         await store.send(.refresh)
         await store.receive(\.loaded)
 
@@ -164,13 +162,14 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(page.sortedSessions.map(\.id), ["blocked", "failed", "busy", "idle", "old"])
     }
 
-    func testStartWorkAsksForAModelWhenTheLastAgentWasALocalOneWithNone() async throws {
+    func testStartWorkAsksForAModelWhenTheDefaultAgentIsALocalOneWithNone() async throws {
         let board = try await board()
-        let store = try store(board, lastBackend: .local)
+        let store = try await store(board, defaultBackend: .local)
         await store.send(.refresh)
         await store.receive(\.loaded)
 
         await store.send(.startWorkTapped(board.subtask.id))
+        await store.receive(\.startNeedsModel)
 
         XCTAssertTrue(board.daemon.sessions.isEmpty)
         guard case .item(let page) = store.state.destination, case .newSession = page.destination else {

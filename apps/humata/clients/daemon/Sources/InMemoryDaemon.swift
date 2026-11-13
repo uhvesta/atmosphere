@@ -57,6 +57,7 @@ package final class InMemoryDaemon: Sendable {
         var rewinds: [String: [[SessionEvent]]] = [:]
         var skills = SkillList()
         var plugins = PluginList()
+        var sessionDefaults = SessionDefaults()
         var nextQueued = 1
         /// Images sent to each session, by session id then name.
         var images: [String: [String: ImageAttachment]] = [:]
@@ -579,6 +580,8 @@ package final class InMemoryDaemon: Sendable {
             setProjectPlugin: { project, agent, id, enabled in
                 try self.setProjectPlugin(project, agent, id, enabled)
             },
+            sessionDefaults: { self.state.value.sessionDefaults },
+            setSessionDefaults: { project, defaults in try self.setSessionDefaults(project, defaults) },
             answerRequest: { request, answer in try self.answerRequest(request, answer) },
             history: { session in
                 try self.known(session)
@@ -735,7 +738,7 @@ package final class InMemoryDaemon: Sendable {
                 id: id, name: request.name, backend: request.backend,
                 workingDirectory: folder, model: request.model, host: request.host,
                 approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID,
-                planning: request.planning)
+                planning: request.planning, effort: request.effort, experimental: request.experimental)
             state.nextSession += 1
             state.sessions.append(session)
             state.histories[session.id] = []
@@ -1160,6 +1163,8 @@ package final class InMemoryDaemon: Sendable {
             if let name = update.name { state.sessions[index].name = name }
             if let archived = update.archived { state.sessions[index].archived = archived }
             if let keeper = update.keeper { state.sessions[index].keeper = keeper }
+            if let experimental = update.experimental { state.sessions[index].experimental = experimental }
+            if let effort = update.effort { state.sessions[index].effort = effort.isEmpty ? nil : effort }
             switch update.placement {
             case .item(let itemID):
                 guard let item = state.items.first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }

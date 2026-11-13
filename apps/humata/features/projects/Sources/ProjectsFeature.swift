@@ -987,6 +987,14 @@ package struct NewSessionFeature {
         package var backend = Backend.copilot
         /// Empty for the backend's default.
         package var model = ""
+        /// How hard the model thinks; empty for its default. For Copilot
+        /// Fusion, its tier.
+        package var effort = ""
+        /// Copilot's experimental features, such as local models in Fusion.
+        package var experimental = false
+        /// Changed by the person, so the defaults, once read, leave the
+        /// agent, model and effort as they are.
+        package var picked = false
         package var approvalMode = ApprovalMode.askEveryTime
         /// An OpenAI-compatible server, such as Ollama's, for Copilot or a
         /// local model to use instead of a paid one; empty for none, or the
@@ -1001,13 +1009,15 @@ package struct NewSessionFeature {
         package var models: [ModelChoice] = []
         /// Why they couldn't be listed; a typed model name still works.
         package var modelsUnavailable: String?
+        /// Numbers each listing asked for, so only the latest one's list
+        /// shows: effects can start out of the order they were asked in.
+        var modelsRequest = 0
         @Presents package var alert: AlertState<Never>?
         /// Why the session waits on a pick between skills of one name, made
         /// in Settings › Skills.
         package var skillClash: String?
-        /// What the last session started with, for the next to start from.
-        @Shared(.appStorage("newSessionBackend")) var lastBackend = Backend.copilot
-        @Shared(.appStorage("newSessionModel")) var lastModel = ""
+        /// What the last session started with, for the next to start from;
+        /// the agent, model and effort come from the defaults instead.
         @Shared(.appStorage("newSessionApprovalMode")) var lastApprovalMode = ApprovalMode.askEveryTime
         @Shared(.appStorage("newSessionHost")) var lastHost: String?
         @Shared(.appStorage("newSessionModelServer")) var lastModelServer = ""
@@ -1016,13 +1026,19 @@ package struct NewSessionFeature {
         package var needsModel: Bool { backend == .local && model.trimmed.isEmpty }
         package var canStart: Bool { !starting && !needsModel }
 
+        /// The model picked, if the backend lists it.
+        package var pickedModel: ModelChoice? { models.first { $0.id == model.trimmed } }
+        /// Copilot Fusion, which takes a tier for its effort.
+        package var fusion: Bool { backend == .copilot && model.trimmed == ModelChoice.fusion }
+
         /// What starting the session asks of the daemon.
         package var request: StartRequest {
             let model = model.trimmed
             return StartRequest(
                 backend: backend, workingDirectory: project == nil ? folder : nil,
                 name: name.trimmed, host: host,
-                model: model.isEmpty ? nil : model, backendConfig: backendConfig,
+                model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort,
+                experimental: backend == .copilot && experimental, backendConfig: backendConfig,
                 approvalMode: approvalMode, projectID: project?.id, itemID: item?.id,
                 specs: item?.parentID == nil ? .item : specs,
                 planning: planning && project != nil && item == nil)
@@ -1048,11 +1064,24 @@ package struct NewSessionFeature {
             self.item = item
             self.planning = planning && project != nil && item == nil
             self.name = item?.title ?? (self.planning ? "Plan" : "")
-            backend = lastBackend
-            model = lastModel
+            if let defaults = project?.defaults { apply(defaults) }
             approvalMode = lastApprovalMode
             host = lastHost
             modelServer = lastModelServer
+        }
+
+        /// Starts from `defaults`: every project's, with the project's over.
+        /// Starts from every project's defaults with the project's over them,
+        /// as New Session does once they're read.
+        package mutating func applyDefaults(_ every: SessionDefaults) {
+            apply(every.under(project?.defaults))
+        }
+
+        mutating func apply(_ defaults: SessionDefaults) {
+            if let backend = defaults.backend { self.backend = backend }
+            model = defaults.model ?? ""
+            effort = defaults.effort ?? ""
+            experimental = defaults.experimental
         }
     }
 
@@ -1060,8 +1089,11 @@ package struct NewSessionFeature {
         case binding(BindingAction<State>)
         /// The sheet appeared: reads the hosts to pick from.
         case task
+        /// Every project's defaults, to start from with the project's over.
+        case defaultsLoaded(SessionDefaults)
         case hostsLoaded([RemoteHost])
-        case modelsLoaded(Result<[ModelChoice], any Error>)
+        case modelsDue(request: Int)
+        case modelsLoaded(request: Int, Result<[ModelChoice], any Error>)
         case startTapped
         case failed(String)
         /// Two skills it would get share a name, and none is picked.
@@ -1078,8 +1110,6 @@ package struct NewSessionFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case models }
-
     package init() {}
 
     package var body: some ReducerOf<Self> {
@@ -1088,7 +1118,9 @@ package struct NewSessionFeature {
             switch action {
             case .binding(\.backend):
                 // One agent's model means nothing to another.
+                state.picked = true
                 state.model = ""
+                state.effort = ""
                 if !ApprovalMode.offered(for: state.backend).contains(state.approvalMode) {
                     state.approvalMode = .askEveryTime
                 }
@@ -1101,16 +1133,40 @@ package struct NewSessionFeature {
                 // Typed a letter at a time; asks once it settles.
                 return loadModels(&state, after: .milliseconds(500))
 
+            case .binding(\.model):
+                state.picked = true
+                // Another model's effort may not be one this one takes.
+                if let picked = state.pickedModel, !picked.efforts.contains(state.effort) {
+                    state.effort = ""
+                }
+                return .none
+
+            case .binding(\.effort):
+                state.picked = true
+                return .none
+
             case .binding, .alert, .delegate:
                 return .none
 
             case .task:
                 return .merge(
                     .run { send in
+                        // Without them, the session starts from the project's.
+                        if let defaults = try? await daemon.sessionDefaults() {
+                            await send(.defaultsLoaded(defaults))
+                        }
+                    },
+                    .run { send in
                         // Without them, the session runs on this Mac.
                         await send(.hostsLoaded((try? await daemon.hosts()) ?? []))
                     },
                     loadModels(&state))
+
+            case .defaultsLoaded(let defaults):
+                guard !state.picked else { return .none }
+                let backend = state.backend
+                state.applyDefaults(defaults)
+                return state.backend == backend ? .none : loadModels(&state)
 
             case .hostsLoaded(let hosts):
                 state.hosts = hosts
@@ -1120,7 +1176,15 @@ package struct NewSessionFeature {
                 }
                 return .none
 
-            case .modelsLoaded(.success(let models)):
+            case .modelsDue(let request):
+                guard request == state.modelsRequest else { return .none }
+                return fetchModels(state)
+
+            case .modelsLoaded(let request, _) where request != state.modelsRequest:
+                // Asked for another agent or host than the one picked now.
+                return .none
+
+            case .modelsLoaded(_, .success(let models)):
                 state.models = models
                 state.modelsUnavailable = nil
                 // Others take a typed name their list lacks; a local server
@@ -1132,7 +1196,7 @@ package struct NewSessionFeature {
                 }
                 return .none
 
-            case .modelsLoaded(.failure(let error)):
+            case .modelsLoaded(_, .failure(let error)):
                 state.models = []
                 state.modelsUnavailable = error.localizedDescription
                 return .none
@@ -1140,8 +1204,6 @@ package struct NewSessionFeature {
             case .startTapped:
                 guard state.canStart else { return .none }
                 state.starting = true
-                state.$lastBackend.withLock { $0 = state.backend }
-                state.$lastModel.withLock { $0 = state.model }
                 state.$lastApprovalMode.withLock { $0 = state.approvalMode }
                 state.$lastHost.withLock { $0 = state.host }
                 state.$lastModelServer.withLock { $0 = state.modelServer }
@@ -1180,13 +1242,22 @@ package struct NewSessionFeature {
     private func loadModels(_ state: inout State, after delay: Duration? = nil) -> Effect<Action> {
         state.models = []
         state.modelsUnavailable = nil
-        guard state.backend != .scripted else { return .cancel(id: CancelID.models) }
-        let (host, backend, config) = (state.host, state.backend, state.backendConfig)
+        state.modelsRequest += 1
+        guard state.backend != .scripted else { return .none }
+        guard let delay else { return fetchModels(state) }
+        let request = state.modelsRequest
         return .run { send in
-            if let delay { try await clock.sleep(for: delay) }
-            await send(.modelsLoaded(Result { try await daemon.models(host, backend, config) }))
+            try await clock.sleep(for: delay)
+            await send(.modelsDue(request: request))
         }
-        .cancellable(id: CancelID.models, cancelInFlight: true)
+    }
+
+    private func fetchModels(_ state: State) -> Effect<Action> {
+        let (request, host, backend, config) = (state.modelsRequest, state.host, state.backend, state.backendConfig)
+        return .run { send in
+            let models = await Result { try await daemon.models(host, backend, config) }
+            await send(.modelsLoaded(request: request, models))
+        }
     }
 }
 

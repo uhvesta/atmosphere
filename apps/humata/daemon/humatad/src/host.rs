@@ -728,6 +728,8 @@ impl Host {
                             .map(convert::repository)
                             .collect(),
                         plugins: plugin_choices(backend, &start.plugins),
+                        effort: convert::optional(start.effort),
+                        experimental: start.experimental,
                     })
                     .await?;
                 self.owners
@@ -827,7 +829,9 @@ impl Host {
             | Request::ListSkills(_)
             | Request::PickSkill(_)
             | Request::ListPlugins(_)
-            | Request::SetProjectPlugin(_) => {
+            | Request::SetProjectPlugin(_)
+            | Request::GetSessionDefaults(_)
+            | Request::SetSessionDefaults(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::SetSpecs(set) => {
@@ -962,6 +966,8 @@ impl Host {
                             name: model.name,
                             detail: model.detail.unwrap_or_default(),
                             reads_images: model.reads_images,
+                            efforts: model.efforts,
+                            default_effort: model.default_effort.unwrap_or_default(),
                         })
                         .collect(),
                 })
@@ -1014,6 +1020,8 @@ impl Host {
                     name: update.name,
                     archived: update.archived,
                     keeper: update.keeper,
+                    effort: update.effort.map(convert::optional),
+                    experimental: update.experimental,
                 };
                 let record = agent.update(&session, changes).await?;
                 Response::SessionUpdated(pb::SessionUpdated {

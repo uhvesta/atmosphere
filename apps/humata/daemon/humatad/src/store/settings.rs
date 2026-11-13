@@ -89,6 +89,49 @@ impl Store {
         set.map(drop).map_err(self.failed())
     }
 
+    /// What New Session starts from, for every project with `project`
+    /// empty, else for it; None for none set.
+    pub fn session_defaults(
+        &self,
+        project: &str,
+    ) -> Result<Option<humata_wire::pb::SessionDefaults>, StoreError> {
+        session_defaults(&self.lock(), project).map_err(self.failed())
+    }
+
+    /// Sets what New Session starts from, for every project with `project`
+    /// empty, else for it; None takes them out.
+    pub fn set_session_defaults(
+        &self,
+        project: &str,
+        defaults: Option<&humata_wire::pb::SessionDefaults>,
+    ) -> Result<(), StoreError> {
+        if !project.is_empty() {
+            self.project(project)?;
+        }
+        let connection = self.lock();
+        let set = match defaults {
+            Some(defaults) => connection.execute(
+                "INSERT INTO session_defaults (project_id, backend, model, effort, experimental)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (project_id) DO UPDATE SET backend = excluded.backend,
+                     model = excluded.model, effort = excluded.effort,
+                     experimental = excluded.experimental",
+                params![
+                    project,
+                    defaults.backend,
+                    defaults.model,
+                    defaults.effort,
+                    defaults.experimental
+                ],
+            ),
+            None => connection.execute(
+                "DELETE FROM session_defaults WHERE project_id = ?1",
+                [project],
+            ),
+        };
+        set.map(drop).map_err(self.failed())
+    }
+
     /// Keeps the newest `kept` board changes of each project, so older
     /// ones can't be undone, then gives the space freed back to the disk.
     pub fn compact(&self, kept: u32) -> Result<(), StoreError> {
@@ -167,4 +210,26 @@ pub(super) fn project_plugins(
         })
     })?;
     rows.collect()
+}
+
+/// What New Session starts from in `project`, or in every project when
+/// it's empty.
+pub(super) fn session_defaults(
+    connection: &rusqlite::Connection,
+    project: &str,
+) -> rusqlite::Result<Option<humata_wire::pb::SessionDefaults>> {
+    connection
+        .prepare_cached(
+            "SELECT backend, model, effort, experimental FROM session_defaults
+             WHERE project_id = ?1",
+        )?
+        .query_row([project], |row| {
+            Ok(humata_wire::pb::SessionDefaults {
+                backend: row.get(0)?,
+                model: row.get(1)?,
+                effort: row.get(2)?,
+                experimental: row.get(3)?,
+            })
+        })
+        .optional()
 }

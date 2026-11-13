@@ -705,6 +705,15 @@ enum Command {
         host: String,
         #[arg(long, default_value = "")]
         model: String,
+        /// How hard the model thinks, such as `low`, `high` or `max`; for
+        /// Copilot Fusion, its tier: `standard`, `high` or `max`. The
+        /// model's default if unset.
+        #[arg(long, default_value = "")]
+        effort: String,
+        /// Copilot only: run with its experimental features on, such as
+        /// local models in Fusion.
+        #[arg(long)]
+        experimental: bool,
         #[arg(long, default_value = "")]
         instructions: String,
         /// A file of settings only the backend reads, such as the scripted
@@ -1268,6 +1277,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             name,
             host,
             model,
+            effort,
+            experimental,
             instructions,
             backend_config,
             planning,
@@ -1299,6 +1310,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 .into(),
                 planning,
                 plugins: Vec::new(),
+                effort,
+                experimental,
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {

@@ -54,6 +54,72 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.approvalMode, .askEveryTime)
     }
 
+    func testANewSessionStartsFromTheProjectsDefaultsOverEveryProjects() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setModels(
+            [ModelChoice(id: "opus", name: "Opus", efforts: ["low", "high"], defaultEffort: "high")], for: .claude)
+        _ = try await daemon.client.setSessionDefaults(
+            nil, SessionDefaults(backend: .claude, model: "opus", effort: "low"))
+        var project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let updated = try await daemon.client.setSessionDefaults(project.id, SessionDefaults(effort: "high"))
+        project = try XCTUnwrap(updated)
+        let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.defaultsLoaded)
+        XCTAssertEqual(store.state.backend, .claude)
+        XCTAssertEqual(store.state.model, "opus")
+        XCTAssertEqual(store.state.effort, "high")
+
+        await store.send(.startTapped)
+        await store.receive(\.delegate.started)
+        XCTAssertEqual(daemon.sessions.first?.model, "opus")
+        XCTAssertEqual(daemon.sessions.first?.effort, "high")
+    }
+
+    func testWhatThePersonPicksBeforeTheDefaultsArriveStays() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.setSessionDefaults(nil, SessionDefaults(backend: .claude, model: "opus"))
+        let store = TestStore(initialState: NewSessionFeature.State(project: nil)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.backend, .copilot)
+        await store.send(.defaultsLoaded(SessionDefaults(backend: .claude, model: "opus")))
+        XCTAssertEqual(store.state.backend, .copilot)
+        XCTAssertEqual(store.state.model, "")
+    }
+
+    func testAnEffortTheNewModelDoesntTakeGoesBackToItsDefault() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setModels(
+            [
+                ModelChoice(id: "opus", name: "Opus", efforts: ["low", "max"]),
+                ModelChoice(id: "haiku", name: "Haiku"),
+            ], for: .claude)
+        let store = TestStore(initialState: NewSessionFeature.State(project: nil)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.backend, .claude)
+        await store.receive(\.modelsLoaded)
+        await store.send(\.binding.model, "opus")
+        await store.send(\.binding.effort, "max")
+        await store.send(\.binding.model, "haiku")
+        XCTAssertEqual(store.state.effort, "")
+    }
+
     func testANewChatWorksInTheFolderPickedOrOneOfItsOwn() async throws {
         let daemon = InMemoryDaemon()
         let store = TestStore(initialState: ProjectsFeature.State()) {
@@ -748,7 +814,9 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.sessions.first?.model, "claude-next")
     }
 
-    func testTheNextSessionStartsFromWhatTheLastOneDid() async throws {
+    /// The approval mode carries over; the agent and model come from the
+    /// defaults instead.
+    func testTheNextSessionKeepsTheLastApprovalModeButNotItsAgent() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
         let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
@@ -766,8 +834,7 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.receive(\.delegate.started)
 
         let next = NewSessionFeature.State(project: nil)
-        XCTAssertEqual(next.backend, .claude)
-        XCTAssertEqual(next.model, "opus")
+        XCTAssertEqual(next.model, "")
         XCTAssertEqual(next.approvalMode, .allowEdits)
     }
 

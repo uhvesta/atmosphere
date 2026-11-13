@@ -102,6 +102,7 @@ extension Project {
             id: project.id, name: project.name, repositories: project.repositories.map(Repository.init),
             instructions: project.instructions, skills: project.skills.map(Skill.init),
             plugins: project.plugins.compactMap(PluginChoice.init),
+            defaults: project.hasDefaults ? SessionDefaults(project.defaults) : nil,
             created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
     }
 }
@@ -163,7 +164,25 @@ extension Session {
             },
             hostOffline: info.hostOffline,
             lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs), planning: info.planning,
-            asking: info.asking, lastMessage: optional(info.lastMessage), itemTitle: optional(info.itemTitle))
+            asking: info.asking, lastMessage: optional(info.lastMessage), itemTitle: optional(info.itemTitle),
+            effort: optional(info.effort), experimental: info.experimental)
+    }
+}
+
+extension SessionDefaults {
+    init(_ defaults: Humata_V1_SessionDefaults) {
+        self.init(
+            backend: Backend(defaults.backend), model: optional(defaults.model), effort: optional(defaults.effort),
+            experimental: defaults.experimental)
+    }
+
+    var proto: Humata_V1_SessionDefaults {
+        var defaults = Humata_V1_SessionDefaults()
+        if let backend { defaults.backend = backend.proto }
+        defaults.model = model ?? ""
+        defaults.effort = effort ?? ""
+        defaults.experimental = experimental
+        return defaults
     }
 }
 

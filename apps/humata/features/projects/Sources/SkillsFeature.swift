@@ -11,6 +11,7 @@ package enum SettingsTab {
     package static let storage = "storage"
     package static let skills = "skills"
     package static let plugins = "plugins"
+    package static let models = "models"
 }
 
 /// Settings › Skills: every skill on the Mac and each host, in the agents'

@@ -1,7 +1,7 @@
 //! A client for the Copilot CLI's server mode: JSON-RPC 2.0 over its stdin
 //! and stdout, each message framed by a `Content-Length` header.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,19 +39,21 @@ struct Shared {
     pending: HashMap<u64, oneshot::Sender<Answer>>,
     /// Each Copilot session's events, to whoever is playing its turn.
     subscribers: HashMap<String, mpsc::UnboundedSender<Value>>,
-    /// Copilot sessions this process has created or resumed.
-    live: HashSet<String>,
+    /// Copilot sessions this process has created or resumed, with what
+    /// they were opened with.
+    live: HashMap<String, String>,
 }
 
 impl Cli {
     /// Starts `program` in server mode and checks that it speaks our protocol.
     pub(super) async fn start(
         program: &Path,
+        experimental: &str,
         env: &[(String, String)],
         running: &Path,
     ) -> Result<Arc<Self>, CopilotError> {
         let mut child = Command::new(program)
-            .args(["--server", "--stdio", "--no-auto-update"])
+            .args(["--server", "--stdio", "--no-auto-update", experimental])
             .env("COPILOT_AUTO_UPDATE", "false")
             .envs(env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
@@ -97,12 +99,16 @@ impl Cli {
         !self.lock().closed
     }
 
-    pub(super) fn is_live(&self, session: &str) -> bool {
-        self.lock().live.contains(session)
+    /// Whether `session` is open here, opened with `with`.
+    pub(super) fn is_live(&self, session: &str, with: &str) -> bool {
+        self.lock()
+            .live
+            .get(session)
+            .is_some_and(|opened| opened == with)
     }
 
-    pub(super) fn set_live(&self, session: &str) {
-        self.lock().live.insert(session.to_owned());
+    pub(super) fn set_live(&self, session: &str, with: &str) {
+        self.lock().live.insert(session.to_owned(), with.to_owned());
     }
 
     /// The events of `session` from now on, replacing any earlier subscriber.

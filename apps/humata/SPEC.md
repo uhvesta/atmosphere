@@ -151,7 +151,7 @@ original spec; lettered ones were added since.
 | Q2 Rewind and checkpoints | Done |
 | Q3 Skills from the agents' folders | Done |
 | Q4 Plugins | Done |
-| Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Next |
+| Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Done |
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
 | T1 Tokens and agent tools | Planned |
@@ -1163,16 +1163,34 @@ parent's copies shares its parent's file.
 
 #### Q5 Models
 
-- [ ] A default backend, model and effort, for all projects and per project,
+- [x] A default backend, model and effort, for all projects and per project,
   that New Session starts from; the last choice no longer overrides it
-- [ ] Copilot's experimental mode, a switch per project and per session
+- [x] Copilot's experimental mode, a switch per project and per session
   (`--experimental`), off by default
-- [ ] Copilot Fusion in the model picker, with its tier (standard, high,
+- [x] Copilot Fusion in the model picker, with its tier (standard, high,
   max); its cost per turn shown as for any model; local models in Fusion
   need experimental mode, and say so
-- [ ] On-device models run only on the Mac: a session on a host uses the
+- [x] On-device models run only on the Mac: a session on a host uses the
   Mac's model server through the forward, and a `base_url` that points at
   the host itself is refused for Humata's on-device models
+
+Settings › Models holds every project's defaults and, over them, a
+project's own: the agent, the model, its effort, and for Copilot its
+experimental features. New Session and Start Work start from them; the
+approval mode, host and model server still come from the last session.
+The daemon keeps them, but only the app applies them, so `humata start`
+and the MCP tools still take what they're given (`--effort`,
+`--experimental`). Each model says the efforts it takes: Claude Code's
+from low to max, none for Haiku; Copilot's from its `models.list`. Copilot
+Fusion's tier is its effort, written as `fusionTier` into the same
+`.github/copilot/settings.local.json` as the plugin choices, so like them it
+reaches only sessions with copies of the repositories. Fusion is added to
+Copilot's list when the CLI doesn't list it, so it shows before it's
+confirmed there. Copilot runs as two CLIs, with and without
+`--experimental`; a session switched mid-way opens again on the other at
+its next message. A host session whose model server is at the host's own
+loopback address, on a port other than the forward's, is refused when its
+model is one of the Mac's own, since that server isn't the Mac's.
 
 #### Fixes from the owner, 2026-11-12
 

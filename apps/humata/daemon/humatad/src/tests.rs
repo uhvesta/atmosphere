@@ -906,6 +906,7 @@ async fn an_archived_session_is_put_away_and_refuses_messages() {
             archived: Some(true),
             keeper: None,
             item_id: None,
+            ..Default::default()
         },
     )
     .await
@@ -1979,6 +1980,7 @@ async fn a_task_is_deleted_once_its_sessions_are_archived_and_comes_back_on_reve
             archived: Some(true),
             keeper: None,
             item_id: None,
+            ..Default::default()
         },
     )
     .await
@@ -3584,4 +3586,62 @@ async fn a_projects_plugin_choice_holds_until_set_back_to_the_clis() {
         }))
         .await;
     assert!(nameless.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_projects_session_defaults_go_over_every_projects_until_taken_out() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let every = pb::SessionDefaults {
+        backend: pb::Backend::Claude.into(),
+        model: "opus".to_owned(),
+        effort: "high".to_owned(),
+        experimental: false,
+    };
+    let ours = pb::SessionDefaults {
+        backend: pb::Backend::Copilot.into(),
+        model: "fusion".to_owned(),
+        effort: "max".to_owned(),
+        experimental: true,
+    };
+    let set = |project_id: &str, defaults: Option<pb::SessionDefaults>| {
+        pb::request::Kind::SetSessionDefaults(pb::SetSessionDefaults {
+            project_id: project_id.to_owned(),
+            defaults,
+        })
+    };
+    let get = || pb::request::Kind::GetSessionDefaults(pb::GetSessionDefaults {});
+
+    assert!(matches!(
+        client.call(get()).await,
+        Ok(pb::response::Kind::SessionDefaults(none)) if none == pb::SessionDefaults::default()
+    ));
+    assert!(client.call(set("", Some(every.clone()))).await.is_ok());
+    let Ok(pb::response::Kind::ProjectUpdated(pb::ProjectUpdated {
+        project: Some(set_one),
+    })) = client.call(set(&project.id, Some(ours.clone()))).await
+    else {
+        panic!("not set")
+    };
+    assert_eq!(set_one.defaults, Some(ours));
+    assert!(matches!(
+        client.call(get()).await,
+        Ok(pb::response::Kind::SessionDefaults(kept)) if kept == every
+    ));
+
+    let Ok(pb::response::Kind::ProjectUpdated(pb::ProjectUpdated {
+        project: Some(back),
+    })) = client.call(set(&project.id, None)).await
+    else {
+        panic!("not taken out")
+    };
+    assert_eq!(back.defaults, None);
+    assert!(
+        client
+            .call(set("no such project", Some(every)))
+            .await
+            .is_err()
+    );
 }

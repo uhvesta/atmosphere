@@ -373,8 +373,10 @@ extension NewProjectView {
 }
 
 /// The models the agent offers, to fill the model in from.
-private struct ModelMenu: View {
+struct ModelMenu: View {
     let models: [ModelChoice]
+    /// The model typed or picked, named on the button when it's listed.
+    var picked: String = ""
     let pick: (String) -> Void
 
     var body: some View {
@@ -390,7 +392,7 @@ private struct ModelMenu: View {
                 }
             }
         } label: {
-            Text("Models")
+            Text(models.first { $0.id == picked.trimmingCharacters(in: .whitespaces) }?.name ?? "Models")
         }
         .fixedSize()
         .help("Pick one of the models the agent offers")
@@ -433,8 +435,13 @@ package struct NewSessionView: View {
                             TextField("Model", text: $store.model, prompt: Text("The agent's default"))
                                 .labelsHidden()
                             if !store.models.isEmpty {
-                                ModelMenu(models: store.models) { store.model = $0 }
+                                ModelMenu(models: store.models, picked: store.model) { store.model = $0 }
                             }
+                        }
+                        if let detail = store.pickedModel?.detail {
+                            Text(detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         if let reason = store.modelsUnavailable {
                             Text(reason)
@@ -448,6 +455,19 @@ package struct NewSessionView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                    }
+                }
+                if let picked = store.pickedModel, !picked.efforts.isEmpty {
+                    EffortPicker(model: picked, fusion: store.fusion, effort: $store.effort)
+                }
+                if store.backend == .copilot {
+                    Toggle(isOn: $store.experimental) {
+                        Text("Experimental Features")
+                        Text(
+                            store.fusion
+                                ? "Copilot's features still being tried out. Fusion needs them to pick local models."
+                                : "Copilot's features still being tried out, which may change or break."
+                        )
                     }
                 }
                 if store.takesModelServer {

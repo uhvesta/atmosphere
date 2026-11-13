@@ -226,6 +226,17 @@ package struct SessionView: View {
             .modifier(HidesLabel(hidden: !names))
             .fixedSize()
             .help("What the agent may do without asking")
+            if store.session.backend == .copilot {
+                Toggle(
+                    "Experimental", systemImage: "flask",
+                    isOn: Binding(get: { store.session.experimental }, set: { store.send(.experimentalToggled($0)) })
+                )
+                .toggleStyle(.button)
+                .fixedSize()
+                .help(
+                    "Copilot's features still being tried out, from the next message. Fusion needs them to pick "
+                        + "local models.")
+            }
         }
         .modifier(IconsOnly(enabled: !names))
     }

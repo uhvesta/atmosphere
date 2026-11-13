@@ -2,7 +2,8 @@
 //! person's own settings, from a repository's
 //! `.github/copilot/settings.local.json`, so a session's choices are
 //! written there in each of its copies of the code, which are Humata's,
-//! and kept out of git so they never show in a review or a commit.
+//! and kept out of git so they never show in a review or a commit. Fusion's
+//! tier is set there too.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,27 +23,50 @@ pub struct OverlayError {
     source: std::io::Error,
 }
 
-/// Sets `plugins` on or off in each of `checkouts`, keeping any other
-/// local settings there.
+/// Sets `plugins` on or off in each of `checkouts`, and Fusion's tier,
+/// keeping any other local settings there.
 pub(crate) fn write_copilot(
     checkouts: &[PathBuf],
     plugins: &BTreeMap<String, bool>,
+    fusion_tier: Option<&str>,
 ) -> Result<(), OverlayError> {
-    if plugins.is_empty() {
-        return Ok(());
-    }
     for checkout in checkouts {
         let path = checkout.join(LOCAL_SETTINGS);
-        let failed = |source| OverlayError {
-            path: path.clone(),
-            source,
-        };
-        // A file someone else wrote that isn't an object is replaced, as
-        // Copilot couldn't read it either.
-        let mut settings = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Map<String, Value>>(&bytes).ok())
-            .unwrap_or_default();
+        // Nothing to set, and no tier of an earlier turn's to take out.
+        if plugins.is_empty() && fusion_tier.is_none() && !path.exists() {
+            continue;
+        }
+        write_one(checkout, &path, plugins, fusion_tier)?;
+    }
+    Ok(())
+}
+
+fn write_one(
+    checkout: &Path,
+    path: &Path,
+    plugins: &BTreeMap<String, bool>,
+    fusion_tier: Option<&str>,
+) -> Result<(), OverlayError> {
+    let failed = |source| OverlayError {
+        path: path.to_owned(),
+        source,
+    };
+    // A file someone else wrote that isn't an object is replaced, as
+    // Copilot couldn't read it either.
+    let mut settings = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Map<String, Value>>(&bytes).ok())
+        .unwrap_or_default();
+    let before = settings.clone();
+    match fusion_tier {
+        Some(tier) => {
+            settings.insert("fusionTier".to_owned(), json!(tier));
+        }
+        None => {
+            settings.remove("fusionTier");
+        }
+    }
+    if !plugins.is_empty() {
         let enabled = settings
             .entry("enabledPlugins")
             .or_insert_with(|| json!({}));
@@ -54,14 +78,16 @@ pub(crate) fn write_copilot(
                 enabled.insert(plugin.clone(), json!(on));
             }
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(failed)?;
-        }
-        let text = serde_json::to_vec_pretty(&settings).map_err(|error| failed(error.into()))?;
-        std::fs::write(&path, text).map_err(failed)?;
-        exclude(checkout).map_err(failed)?;
     }
-    Ok(())
+    if settings == before && path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(failed)?;
+    }
+    let text = serde_json::to_vec_pretty(&settings).map_err(|error| failed(error.into()))?;
+    std::fs::write(path, text).map_err(failed)?;
+    exclude(checkout).map_err(failed)
 }
 
 /// Keeps the local settings out of git in the repository `checkout` is a
@@ -129,8 +155,8 @@ mod tests {
         .expect("seed");
         let plugins = BTreeMap::from([("lint@m".to_owned(), false), ("docs@m".to_owned(), true)]);
 
-        write_copilot(std::slice::from_ref(&checkout), &plugins).expect("written");
-        write_copilot(std::slice::from_ref(&checkout), &plugins).expect("again");
+        write_copilot(std::slice::from_ref(&checkout), &plugins, None).expect("written");
+        write_copilot(std::slice::from_ref(&checkout), &plugins, None).expect("again");
 
         assert_eq!(
             read(&checkout.join(LOCAL_SETTINGS)),
@@ -165,6 +191,7 @@ mod tests {
         write_copilot(
             &[checkout.clone()],
             &BTreeMap::from([("lint@m".to_owned(), false)]),
+            None,
         )
         .expect("written");
 
@@ -174,9 +201,28 @@ mod tests {
     }
 
     #[test]
+    fn a_fusion_tier_is_set_and_taken_out_again() {
+        let folder = tempfile::tempdir().expect("temp");
+        let checkout = folder.path().to_owned();
+        write_copilot(
+            std::slice::from_ref(&checkout),
+            &BTreeMap::new(),
+            Some("high"),
+        )
+        .expect("tier");
+        assert_eq!(
+            read(&checkout.join(LOCAL_SETTINGS))["fusionTier"],
+            json!("high")
+        );
+
+        write_copilot(std::slice::from_ref(&checkout), &BTreeMap::new(), None).expect("none");
+        assert_eq!(read(&checkout.join(LOCAL_SETTINGS)).get("fusionTier"), None);
+    }
+
+    #[test]
     fn no_choices_write_nothing() {
         let folder = tempfile::tempdir().expect("temp");
-        write_copilot(&[folder.path().to_owned()], &BTreeMap::new()).expect("nothing");
+        write_copilot(&[folder.path().to_owned()], &BTreeMap::new(), None).expect("nothing");
         assert!(!folder.path().join(LOCAL_SETTINGS).exists());
     }
 }

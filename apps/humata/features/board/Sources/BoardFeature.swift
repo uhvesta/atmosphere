@@ -88,6 +88,9 @@ package struct BoardFeature {
         /// Starts a session on the item with the last New Session settings,
         /// and has it start, staying on the board.
         case startWorkTapped(Item.ID)
+        /// Start Work's defaults leave a local model to pick; the item's page
+        /// asks.
+        case startNeedsModel(Item.ID, NewSessionFeature.State)
         case dropped(Item.ID, on: ItemStatus)
         case moved(Item)
         /// Asks to delete the item, then does.
@@ -291,26 +294,33 @@ package struct BoardFeature {
 
             case .startWorkTapped(let id):
                 guard let item = state.items[id: id], !state.starting.contains(id) else { return .none }
-                let settings = NewSessionFeature.State(project: state.project, item: item)
-                guard !settings.needsModel else {
-                    // A local model must be picked; the item's page asks.
-                    var page = ItemFeature.State(
-                        project: state.project, item: item, parent: state.parent(of: item),
-                        subtasks: state.subtasks(of: item), sessions: state.sessions(on: item))
-                    page.destination = .newSession(settings)
-                    state.destination = .item(page)
-                    return .none
-                }
-                let project = state.project.id
+                let project = state.project
                 state.starting.insert(id)
                 return .run { send in
+                    var settings = NewSessionFeature.State(project: project, item: item)
+                    // Every project's, with the project's over them.
+                    if let every = try? await daemon.sessionDefaults() { settings.applyDefaults(every) }
+                    guard !settings.needsModel else {
+                        await send(.startFinished(id))
+                        await send(.startNeedsModel(id, settings))
+                        return
+                    }
                     _ = try await daemon.startWork(settings.request)
                     await send(.startFinished(id))
-                    await send(await load(project))
+                    await send(await load(project.id))
                 } catch: { error, send in
                     await send(.startFinished(id))
                     await send(.actionFailed("Couldn't start work on \(item.title): \(error.localizedDescription)"))
                 }
+
+            case .startNeedsModel(let id, let settings):
+                guard let item = state.items[id: id] else { return .none }
+                var page = ItemFeature.State(
+                    project: state.project, item: item, parent: state.parent(of: item),
+                    subtasks: state.subtasks(of: item), sessions: state.sessions(on: item))
+                page.destination = .newSession(settings)
+                state.destination = .item(page)
+                return .none
 
             case .dropped(let id, let status):
                 guard let item = state.items[id: id], item.fields.status != status else { return .none }

@@ -350,6 +350,16 @@ const MIGRATIONS: &[&str] = &["
         enabled INTEGER NOT NULL,
         PRIMARY KEY (project_id, agent, plugin)
     );
+", "
+    -- What New Session starts from: for every project where `project_id`
+    -- is empty, else for that one. `backend` is the proto's Backend.
+    CREATE TABLE session_defaults (
+        project_id TEXT PRIMARY KEY,
+        backend INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        effort TEXT NOT NULL,
+        experimental INTEGER NOT NULL
+    );
 "];
 
 /// What reverting a board change did.
@@ -376,6 +386,8 @@ pub struct Project {
     pub skills: Vec<Skill>,
     /// Plugins its sessions have on or off, over how each CLI has them.
     pub plugins: Vec<pb::PluginChoice>,
+    /// What New Session starts from in it, over every project's.
+    pub defaults: Option<pb::SessionDefaults>,
 }
 
 /// What the daemon knows of a session, beyond what its host says.
@@ -461,6 +473,7 @@ impl Store {
             created_unix_ms: now_unix_ms(),
             skills,
             plugins: Vec::new(),
+            defaults: None,
         };
         let mut connection = self.lock();
         let added = (|| {
@@ -571,6 +584,7 @@ impl Store {
                 [id],
             )?;
             transaction.execute("DELETE FROM project_plugins WHERE project_id = ?1", [id])?;
+            transaction.execute("DELETE FROM session_defaults WHERE project_id = ?1", [id])?;
             transaction.execute("DELETE FROM projects WHERE id = ?1", [id])?;
             Ok(())
         })();
@@ -1555,6 +1569,7 @@ fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         created_unix_ms: row.get(3)?,
         skills: Vec::new(),
         plugins: Vec::new(),
+        defaults: None,
     })
 }
 
@@ -1579,11 +1594,13 @@ fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Res
     let repositories = rows.into_iter().map(|(repository, _)| repository).collect();
     let skills = planning::skills(connection, &project.id)?;
     let plugins = settings::project_plugins(connection, &project.id)?;
+    let defaults = settings::session_defaults(connection, &project.id)?;
     Ok(Project {
         repositories,
         urls,
         skills,
         plugins,
+        defaults,
         ..project
     })
 }

@@ -65,6 +65,11 @@ pub struct Model {
     pub detail: Option<String>,
     /// Whether it can see images sent with a message.
     pub reads_images: bool,
+    /// The efforts it takes, least first; empty when it takes none. For
+    /// Copilot Fusion, its tiers.
+    pub efforts: Vec<String>,
+    /// The effort it uses when none is given, if known.
+    pub default_effort: Option<String>,
 }
 
 /// A session's history so far, and every event after it.

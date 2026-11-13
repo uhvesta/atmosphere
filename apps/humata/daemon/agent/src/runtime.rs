@@ -673,6 +673,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
             archived: false,
             keeper: false,
             plugins: options.plugins,
+            effort: options.effort.filter(|effort| !effort.is_empty()),
+            experimental: options.experimental,
         };
         self.create(record.clone(), Vec::new())?;
         Ok(record)
@@ -1220,6 +1222,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
             archived: false,
             keeper: false,
             plugins: Default::default(),
+            effort: None,
+            experimental: false,
         };
         self.create(record.clone(), imported.events)?;
         Ok(record)
@@ -1334,6 +1338,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 name: update.name.unwrap_or(from.name.clone()),
                 archived: update.archived.unwrap_or(from.archived),
                 keeper: update.keeper.unwrap_or(from.keeper),
+                effort: match update.effort {
+                    Some(effort) => effort.filter(|effort| !effort.is_empty()),
+                    None => from.effort.clone(),
+                },
+                experimental: update.experimental.unwrap_or(from.experimental),
                 ..from
             };
             save(&session.dir, &record)?;

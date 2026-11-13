@@ -107,4 +107,18 @@ extension InMemoryDaemon {
             return state.projects[index]
         }
     }
+
+    func setSessionDefaults(_ projectID: String?, _ defaults: SessionDefaults?) throws -> Project? {
+        try state.withValue { state in
+            guard let projectID else {
+                state.sessionDefaults = defaults ?? SessionDefaults()
+                return nil
+            }
+            guard let index = state.projects.firstIndex(where: { $0.id == projectID }) else {
+                throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
+            }
+            state.projects[index].defaults = defaults
+            return state.projects[index]
+        }
+    }
 }

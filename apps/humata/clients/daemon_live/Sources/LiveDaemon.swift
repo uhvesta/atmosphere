@@ -86,6 +86,8 @@ extension DaemonClient {
                 start.name = request.name
                 start.host = request.host ?? ""
                 start.model = request.model ?? ""
+                start.effort = request.effort ?? ""
+                start.experimental = request.experimental
                 start.instructions = request.instructions ?? ""
                 start.backendConfig = request.backendConfig ?? ""
                 start.itemID = request.itemID ?? ""
@@ -126,7 +128,8 @@ extension DaemonClient {
                 return found.models.map {
                     ModelChoice(
                         id: $0.id, name: $0.name.isEmpty ? $0.id : $0.name, detail: $0.detail.isEmpty ? nil : $0.detail,
-                        readsImages: $0.readsImages)
+                        readsImages: $0.readsImages, efforts: $0.efforts,
+                        defaultEffort: $0.defaultEffort.isEmpty ? nil : $0.defaultEffort)
                 }
             },
             skipped: { host in
@@ -286,6 +289,8 @@ extension DaemonClient {
                 if let name = update.name { request.name = name }
                 if let archived = update.archived { request.archived = archived }
                 if let keeper = update.keeper { request.keeper = keeper }
+                if let experimental = update.experimental { request.experimental = experimental }
+                if let effort = update.effort { request.effort = effort }
                 switch update.placement {
                 case .item(let item): request.itemID = item
                 case .project: request.itemID = ""
@@ -571,6 +576,24 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the project")
                 }
                 return Project(updated.project)
+            },
+            sessionDefaults: {
+                let request = Humata_V1_GetSessionDefaults()
+                guard case .sessionDefaults(let defaults) = try await daemon.call(.getSessionDefaults(request))
+                else {
+                    throw DaemonError.unexpected("something other than the session defaults")
+                }
+                return SessionDefaults(defaults)
+            },
+            setSessionDefaults: { project, defaults in
+                var set = Humata_V1_SetSessionDefaults()
+                set.projectID = project ?? ""
+                if let defaults { set.defaults = defaults.proto }
+                switch try await daemon.call(.setSessionDefaults(set)) {
+                case .projectUpdated(let updated): return Project(updated.project)
+                case .sessionDefaults: return nil
+                default: throw DaemonError.unexpected("something other than the session defaults")
+                }
             },
             answerRequest: { request, answer in
                 var asked = Humata_V1_AnswerRequest()

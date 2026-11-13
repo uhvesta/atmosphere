@@ -1350,6 +1350,12 @@ impl Daemon {
                     self.list_plugins().await?,
                 )));
             }
+            Request::GetSessionDefaults(_) => {
+                return Ok(Reply::Response(self.get_session_defaults()?));
+            }
+            Request::SetSessionDefaults(set) => {
+                return Ok(Reply::Response(self.set_session_defaults(set)?));
+            }
             Request::SetProjectPlugin(set) => {
                 let project = self.set_project_plugin(set)?;
                 return Ok(Reply::Response(Response::ProjectUpdated(
@@ -1463,6 +1469,7 @@ impl Daemon {
                 )));
             }
             Request::StartSession(start) => {
+                Box::pin(self.refuse_on_device_on_host(start)).await?;
                 (project, item) = self.from_project(start).await?;
                 // The host runs it on itself; only the daemon knows hosts by
                 // name.

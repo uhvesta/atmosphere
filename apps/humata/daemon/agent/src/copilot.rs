@@ -152,10 +152,18 @@ const SESSION_STATE: &str = "session-state";
 /// stops.
 /// The folder under the state one where the running CLI is noted.
 const RUNNING: &str = "running";
+/// Where the CLI running with its experimental features is noted.
+const RUNNING_EXPERIMENTAL: &str = "running-experimental";
+
+/// Copilot Fusion, which picks the models for each turn, by its id.
+const FUSION: &str = "fusion";
+/// Fusion's tiers, least first; it takes them in place of an effort.
+const FUSION_TIERS: [&str; 3] = ["standard", "high", "max"];
 
 pub struct CopilotRunner {
     options: CopilotOptions,
-    cli: tokio::sync::Mutex<Option<Arc<Cli>>>,
+    /// The CLI, and the one running with its experimental features.
+    cli: [tokio::sync::Mutex<Option<Arc<Cli>>>; 2],
     /// Aborts sent for stopped turns, by Copilot session, so its next turn
     /// starts after the last one has stopped.
     aborting: Mutex<HashMap<String, JoinHandle<()>>>,
@@ -164,9 +172,10 @@ pub struct CopilotRunner {
 impl CopilotRunner {
     pub fn new(options: CopilotOptions) -> Self {
         crate::children::stop_left(&options.state.join(RUNNING));
+        crate::children::stop_left(&options.state.join(RUNNING_EXPERIMENTAL));
         Self {
             options,
-            cli: tokio::sync::Mutex::new(None),
+            cli: [tokio::sync::Mutex::new(None), tokio::sync::Mutex::new(None)],
             aborting: Mutex::new(HashMap::new()),
         }
     }
@@ -177,15 +186,22 @@ impl CopilotRunner {
             .map(|home| home.join("session-state"))
     }
 
-    async fn cli(&self) -> Result<Arc<Cli>, CopilotError> {
-        let mut cli = self.cli.lock().await;
+    /// The CLI, or the one with its experimental features on.
+    async fn cli(&self, experimental: bool) -> Result<Arc<Cli>, CopilotError> {
+        let mut cli = self.cli[usize::from(experimental)].lock().await;
         if let Some(running) = cli.as_ref().filter(|cli| cli.is_running()) {
             return Ok(running.clone());
         }
+        let (flag, running) = if experimental {
+            ("--experimental", RUNNING_EXPERIMENTAL)
+        } else {
+            ("--no-experimental", RUNNING)
+        };
         let started = Cli::start(
             &self.options.program,
+            flag,
             &self.options.env.vars(),
-            &self.options.state.join(RUNNING),
+            &self.options.state.join(running),
         )
         .await?;
         *cli = Some(started.clone());
@@ -202,26 +218,28 @@ impl CopilotRunner {
         links: &mut Links,
         path: &std::path::Path,
     ) -> Result<String, CopilotError> {
+        let record = turn.record();
+        // What the session was opened with; opened again when it changes.
+        let opened_with = format!("{:?}|{:?}", record.model, record.effort);
         // Copilot reads them as it opens the session.
         if !links
             .session
             .as_ref()
-            .is_some_and(|session| cli.is_live(session))
+            .is_some_and(|session| cli.is_live(session, &opened_with))
         {
-            let record = turn.record();
             let checkouts: Vec<_> = record
                 .checkouts
                 .iter()
                 .map(|checkout| checkout.path.clone())
                 .collect();
-            crate::plugins::write_copilot(&checkouts, &record.plugins)?;
+            crate::plugins::write_copilot(&checkouts, &record.plugins, fusion_tier(&record))?;
         }
         if let Some(session) = &links.session {
-            if !cli.is_live(session) {
+            if !cli.is_live(session, &opened_with) {
                 let params =
                     session_params(turn, provider, self.options.mcp.as_ref(), Some(session));
                 cli.call("session.resume", params).await?;
-                cli.set_live(session);
+                cli.set_live(session, &opened_with);
             }
             return Ok(session.clone());
         }
@@ -254,7 +272,7 @@ impl CopilotRunner {
                 string(&created, "session.create", "sessionId")?
             }
         };
-        cli.set_live(&session);
+        cli.set_live(&session, &opened_with);
         links.session = Some(session.clone());
         links.save(path)?;
         Ok(session)
@@ -316,10 +334,28 @@ async fn fork_at(cli: &Cli, source: &str, links: &Links) -> Result<Option<String
     string(&forked, "sessions.fork", "sessionId").map(Some)
 }
 
+/// The tier a Fusion session runs at, if it's one.
+fn fusion_tier(record: &SessionRecord) -> Option<&str> {
+    (record.model.as_deref() == Some(FUSION))
+        .then(|| record.effort.as_deref().unwrap_or(FUSION_TIERS[0]))
+}
+
+/// The strings in `value`, an array of them.
+fn strings(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
 /// The models in Copilot's answer to `models.list`: those the account may
-/// use, each with what it costs in premium requests.
+/// use, each with what it costs in premium requests, and Fusion with its
+/// tiers.
 fn copilot_models(listed: &Value) -> Vec<crate::Model> {
-    listed["models"]
+    let mut models: Vec<crate::Model> = listed["models"]
         .as_array()
         .into_iter()
         .flatten()
@@ -343,9 +379,31 @@ fn copilot_models(listed: &Value) -> Vec<crate::Model> {
                 reads_images: model["capabilities"]["supports"]["vision"]
                     .as_bool()
                     .unwrap_or(true),
+                efforts: if id == FUSION {
+                    FUSION_TIERS.iter().map(|&tier| tier.to_owned()).collect()
+                } else {
+                    strings(&model["supportedReasoningEfforts"])
+                },
+                default_effort: if id == FUSION {
+                    Some(FUSION_TIERS[0].to_owned())
+                } else {
+                    model["defaultReasoningEffort"].as_str().map(str::to_owned)
+                },
             })
         })
-        .collect()
+        .collect();
+    // Fusion bills as the models it picks; the CLI may not list it.
+    if !models.is_empty() && !models.iter().any(|model| model.id == FUSION) {
+        models.push(crate::Model {
+            id: FUSION.to_owned(),
+            name: "Copilot Fusion".to_owned(),
+            detail: Some("Billed as the models it picks".to_owned()),
+            reads_images: true,
+            efforts: FUSION_TIERS.iter().map(|&tier| tier.to_owned()).collect(),
+            default_effort: Some(FUSION_TIERS[0].to_owned()),
+        });
+    }
+    models
 }
 
 fn session_params(
@@ -366,6 +424,14 @@ fn session_params(
     }
     if let Some(model) = &record.model {
         params["model"] = json!(model);
+    }
+    // Fusion takes its tier from the local settings instead.
+    if let Some(effort) = record
+        .effort
+        .as_ref()
+        .filter(|_| fusion_tier(&record).is_none())
+    {
+        params["reasoningEffort"] = json!(effort);
     }
     if let Some(provider) = provider {
         let mut server = json!({"type": provider.kind, "baseUrl": provider.base_url});
@@ -444,7 +510,11 @@ impl Runner for CopilotRunner {
             )
             .await?);
         }
-        let listed = self.cli().await?.call("models.list", json!({})).await?;
+        let listed = self
+            .cli(false)
+            .await?
+            .call("models.list", json!({}))
+            .await?;
         Ok(copilot_models(&listed))
     }
 
@@ -520,7 +590,7 @@ impl Runner for CopilotRunner {
         let provider = config.provider.or_else(|| self.options.provider.clone());
         let path = Links::path(&self.options.state, turn.record().id.as_str());
         let mut links = Links::load(&path)?;
-        let cli = self.cli().await?;
+        let cli = self.cli(turn.record().experimental).await?;
         let session = self
             .open(&cli, &turn, provider.as_ref(), &mut links, &path)
             .await?;
@@ -834,9 +904,23 @@ mod tests {
         ]});
         let models = copilot_models(&listed);
         let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
-        assert_eq!(ids, ["gpt-5", "mini"]);
+        assert_eq!(ids, ["gpt-5", "mini", "fusion"]);
         assert_eq!(models[1].name, "mini");
         assert!(models.iter().all(|model| model.detail.is_some()));
+        assert_eq!(models[2].efforts, ["standard", "high", "max"]);
+    }
+
+    #[test]
+    fn each_model_says_the_efforts_it_takes() {
+        let listed = json!({"models": [
+            {"id": "gpt-5", "supportedReasoningEfforts": ["low", "high"], "defaultReasoningEffort": "low"},
+            {"id": "fusion", "name": "Fusion"},
+        ]});
+        let models = copilot_models(&listed);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].efforts, ["low", "high"]);
+        assert_eq!(models[0].default_effort.as_deref(), Some("low"));
+        assert_eq!(models[1].efforts, ["standard", "high", "max"]);
     }
 
     #[test]

@@ -158,6 +158,13 @@ package struct DaemonClient: Sendable {
     /// how its CLI has it.
     package var setProjectPlugin:
         @Sendable (_ projectID: String, _ agent: Plugin.Agent, _ id: String, _ enabled: Bool?) async throws -> Project
+    /// What New Session starts from in every project.
+    package var sessionDefaults: @Sendable () async throws -> SessionDefaults
+    /// Sets what New Session starts from in every project, with `projectID`
+    /// nil, or in one, over every project's; nil takes a project's out.
+    /// Returns the project, for one.
+    package var setSessionDefaults:
+        @Sendable (_ projectID: String?, _ defaults: SessionDefaults?) async throws -> Project?
     /// Answers an agent's question or move; it leaves the inbox.
     package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]
