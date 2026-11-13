@@ -20,6 +20,14 @@ package struct CalendarView: View {
             Section {
                 MonthGrid(store: store)
             }
+            if store.showsDragTip {
+                GestureTipCard(
+                    symbol: "hand.point.up.left", title: "Drag a task onto a day",
+                    message: "Drag a task from the list below and drop it on a day to make it due then."
+                ) {
+                    store.send(.dragTipClosed, animation: .default)
+                }
+            }
         }
         .emptyAction("Add a Task", perform: add)
         .emptyBelowHeader()

@@ -4,6 +4,7 @@ import LifrCore
 import LifrFeedbackClient
 import LifrStoreClient
 import LifrTaskList
+import LifrUI
 
 /// A month of tasks by the day they're due, and the selected day's tasks
 /// as a list under it. A task dropped on a day is due that day.
@@ -23,6 +24,12 @@ package struct CalendarFeature {
         /// The months on one long page, to scroll through and pick a day
         /// from, while it's open.
         package var months: [CalendarMonth]?
+        /// Whether this device saw the tip about dragging a task onto a
+        /// day, closed or used.
+        @Shared(.appStorage(GestureTip.calendarDrag.storageKey)) package var dragTipSeen = false
+
+        /// Whether to show the drag tip now: once the day has tasks to drag.
+        package var showsDragTip: Bool { !dragTipSeen && list.workspace != nil && !list.isEmpty }
 
         package init() {}
     }
@@ -41,6 +48,8 @@ package struct CalendarFeature {
         /// on today when it's this month and its first day otherwise.
         case monthPicked(CalendarDate)
         case monthsDismissed
+        /// The drag tip's close button.
+        case dragTipClosed
     }
 
     /// How many months the long page shows either side of the one open.
@@ -104,7 +113,12 @@ package struct CalendarFeature {
                 layOut(&state)
                 return .none
 
+            case .dragTipClosed:
+                state.$dragTipSeen.withLock { $0 = true }
+                return .none
+
             case .dropped(let id, let day):
+                state.$dragTipSeen.withLock { $0 = true }
                 guard let task = state.list.workspace?.tasks[id], let edit = Workspace.TaskEdit.due(day, for: task)
                 else { return .none }
                 return .run { [store, edit, feedback] send in

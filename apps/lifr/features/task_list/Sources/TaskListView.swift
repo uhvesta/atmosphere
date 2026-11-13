@@ -44,6 +44,16 @@ package struct TaskListView<Header: View>: View {
     package var body: some View {
         List {
             header
+            #if os(iOS)
+                if store.showsSwipeTip {
+                    GestureTipCard(
+                        symbol: "hand.draw", title: "Swipe a task",
+                        message: "Swipe right to start it, or left to close it or pick another status."
+                    ) {
+                        store.send(.swipeTipClosed, animation: .default)
+                    }
+                }
+            #endif
             if emptyBelowHeader, store.workspace != nil, store.isEmpty {
                 empty.listRowBackground(Color.clear)
             }

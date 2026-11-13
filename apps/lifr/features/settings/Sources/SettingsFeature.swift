@@ -11,6 +11,7 @@ import LifrSkills
 import LifrStoreClient
 import LifrSyncClient
 import LifrTaskDetail
+import LifrUI
 import ModelsFeatures
 
 /// One Avenue's agent access, as Settings shows it.
@@ -51,6 +52,10 @@ package struct SettingsFeature {
         package var launchesAtLogin = false
         /// What the lock confirms with on this device.
         package var biometry = Biometry.faceID
+        /// This build's version, for About.
+        package var appVersion = ""
+        /// Whether Reset Tips was tapped, so it says the tips come back.
+        package var tipsReset = false
         /// Whether Lifr locks when it opens. Changed only once the person
         /// confirms it's them.
         @Shared(.locksApp) package var locksApp
@@ -141,6 +146,8 @@ package struct SettingsFeature {
         case bugReportsTapped
         case bugReports(PresentationAction<BugReportsFeature.Action>)
         case eraseTapped
+        /// Shows each gesture tip again, once.
+        case resetTipsTapped
         case erase(PresentationAction<EraseFeature.Action>)
         case loginItemFailed(any Error)
         case cliInstallFailed(any Error)
@@ -161,6 +168,7 @@ package struct SettingsFeature {
     @Dependency(\.sync) private var sync
     @Dependency(\.date.now) private var now
     @Dependency(\.lock) private var lock
+    @Dependency(\.deviceInfo) private var deviceInfo
 
     package init() {}
 
@@ -169,6 +177,7 @@ package struct SettingsFeature {
             switch action {
             case .task:
                 state.biometry = lock.biometry()
+                state.appVersion = deviceInfo.current().appVersion
                 let loadStore: Effect<Action> = .run { [store] send in
                     await send(.loaded(Result { try await store.load() }))
                 }
@@ -341,6 +350,14 @@ package struct SettingsFeature {
             case .modelsTapped:
                 state.page = .assistant
                 state.models = ModelsFeature.State()
+                return .none
+
+            case .resetTipsTapped:
+                for tip in GestureTip.allCases {
+                    let seen = Shared(wrappedValue: false, .appStorage(tip.storageKey))
+                    seen.withLock { $0 = false }
+                }
+                state.tipsReset = true
                 return .none
 
             case .eraseTapped:

@@ -167,6 +167,26 @@ final class CalendarFeatureTests: XCTestCase {
         XCTAssertEqual(dueCount(store, on: try day("2026-11-10")), 1)
     }
 
+    func testTheDragTipShowsUnderADayWithTasksUntilClosed() async {
+        records.task("Run", in: health, due: 0)
+        let store = await load()
+        XCTAssertTrue(store.state.showsDragTip)
+
+        await store.send(.dragTipClosed)
+
+        XCTAssertFalse(store.state.showsDragTip)
+    }
+
+    func testDroppingATaskCountsAsSeeingTheDragTip() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let store = await load()
+
+        await store.send(.dropped(run.id, on: try day("2026-11-10")))
+        await store.receive(\.list.saved)
+
+        XCTAssertFalse(store.state.showsDragTip)
+    }
+
     func testDroppingATaskOnItsOwnDaySavesNothing() async throws {
         let run = records.task("Run", in: health, due: 0)
         let store = await load()

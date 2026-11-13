@@ -59,10 +59,12 @@ package struct TodayFeature {
 
         package init() {
             list = TaskListFeature.State(query: .today)
+            list.offersSwipeTip = true
         }
 
         package init(workspace: Workspace, now: Date, timeZone: TimeZone) {
             list = TaskListFeature.State(query: .today, workspace: workspace, now: now, timeZone: timeZone)
+            list.offersSwipeTip = true
             procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
         }
     }

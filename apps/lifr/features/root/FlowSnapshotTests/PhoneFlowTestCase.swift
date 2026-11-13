@@ -20,6 +20,7 @@ import LifrSessionClient
 import LifrShortcuts
 import LifrStoreClient
 import LifrSyncClient
+import LifrUI
 import LifrWidgetViews
 import SwiftUI
 import XCTest
@@ -54,8 +55,12 @@ class PhoneFlowTestCase: XCTestCase {
         inputs: Set<ModelInput> = [], readsPhotos: Bool = false, lock: LockClient = .always(),
         assistant: AssistantClient? = nil,
         photos: PhotoLibraryClient = .denied, files: [String: PickedFile] = [:],
-        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory
+        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory, tips: Bool = false
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
+        // The gesture tips show only in a flow about them.
+        for tip in GestureTip.allCases {
+            Shared(wrappedValue: false, .appStorage(tip.storageKey)).withLock { $0 = !tips }
+        }
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
         let library = InMemoryModelLibrary(

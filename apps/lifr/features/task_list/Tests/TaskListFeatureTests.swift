@@ -41,12 +41,14 @@ final class TaskListFeatureTests: XCTestCase {
     }
 
     private func load(
-        reordering: Bool = false, searching: Bool = false, client: StoreClient? = nil
+        reordering: Bool = false, searching: Bool = false, client: StoreClient? = nil, swipeTip: Bool = false
     ) async -> TestStoreOf<TaskListFeature> {
         var query = open
         query.reorders = reordering
         query.searches = searching
-        let store = TestStore(initialState: TaskListFeature.State(query: query)) {
+        var state = TaskListFeature.State(query: query)
+        state.offersSwipeTip = swipeTip
+        let store = TestStore(initialState: state) {
             TaskListFeature()
         } withDependencies: { [now, records] in
             $0.store = client ?? .inMemory(records.workspace)
@@ -58,6 +60,33 @@ final class TaskListFeatureTests: XCTestCase {
         await store.send(.task)
         await store.receive(\.loaded)
         return store
+    }
+
+    func testTheSwipeTipShowsOnAListWithTasksUntilClosed() async {
+        records.task("Stretch", in: health)
+        let store = await load(swipeTip: true)
+        XCTAssertTrue(store.state.showsSwipeTip)
+
+        await store.send(.swipeTipClosed)
+
+        XCTAssertFalse(store.state.showsSwipeTip)
+        XCTAssertTrue(store.state.swipeTipSeen)
+    }
+
+    func testActingOnATaskCountsAsSeeingTheSwipeTip() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = await load(swipeTip: true)
+
+        await store.send(.rowAction(stretch.id, .status(.inProgress)))
+
+        XCTAssertFalse(store.state.showsSwipeTip)
+    }
+
+    func testAListThatDoesntOfferTheSwipeTipNeverShowsIt() async {
+        records.task("Stretch", in: health)
+        let store = await load()
+
+        XCTAssertFalse(store.state.showsSwipeTip)
     }
 
     func testShowsOnlySectionsWithRows() async {

@@ -20,6 +20,7 @@ import LifrSettings
 import LifrShortcuts
 import LifrStoreClient
 import LifrSyncClient
+import LifrUI
 import LifrWidgetViews
 import ModelsFeatures
 import SwiftUI
@@ -54,8 +55,12 @@ final class MacFlowSnapshotTests: XCTestCase {
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], readsPhotos: Bool = false, lock: LockClient = .always(),
         session: InMemorySession = InMemorySession(), assistant: AssistantClient? = nil,
-        files: [String: PickedFile] = [:], settings: Bool = false, speech: SpeechClient = .inMemory
+        files: [String: PickedFile] = [:], settings: Bool = false, speech: SpeechClient = .inMemory, tips: Bool = false
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
+        // The gesture tips show only in a flow about them.
+        for tip in GestureTip.allCases {
+            Shared(wrappedValue: false, .appStorage(tip.storageKey)).withLock { $0 = !tips }
+        }
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
         let library = InMemoryModelLibrary(

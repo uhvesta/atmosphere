@@ -1030,6 +1030,9 @@
     "Close Them as Won't Do" : {
 
     },
+    "Close Tip" : {
+
+    },
     "Close its %lld open Sub tasks too?" : {
 
     },
@@ -1500,6 +1503,12 @@
 
     },
     "Drafting…" : {
+
+    },
+    "Drag a task from the list below and drop it on a day to make it due then." : {
+
+    },
+    "Drag a task onto a day" : {
 
     },
     "Due" : {
@@ -3014,6 +3023,9 @@
     "Reschedule…" : {
 
     },
+    "Reset Tips" : {
+
+    },
     "Restart" : {
 
     },
@@ -3295,6 +3307,9 @@
 
     },
     "Shows the thinking" : {
+
+    },
+    "Shows the tips about swiping a task and dragging one onto a day again." : {
 
     },
     "Shows this month" : {
@@ -3752,6 +3767,9 @@
 
     },
     "Time" : {
+
+    },
+    "Tips Will Show Again" : {
 
     },
     "Title" : {

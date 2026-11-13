@@ -10,6 +10,7 @@ import LifrRemindersClient
 import LifrSessionClient
 import LifrSkills
 import LifrSyncClient
+import LifrUI
 import SwiftUI
 
 /// Settings, or one page of them. Only `.all` starts the settings' work and
@@ -43,7 +44,13 @@ package struct SettingsView: View {
             } footer: {
                 Text(bugReportsFooter)
             }
-            AboutSection()
+            Section {
+                Button(store.tipsReset ? "Tips Will Show Again" : "Reset Tips") { store.send(.resetTipsTapped) }
+                    .disabled(store.tipsReset)
+            } footer: {
+                Text("Shows the tips about swiping a task and dragging one onto a day again.")
+            }
+            AboutSection(version: store.appVersion)
             Section {
                 Button("Delete All Data…", role: .destructive) { store.send(.eraseTapped) }
             } footer: {
@@ -527,12 +534,7 @@ private struct AboutSection: View {
         ("yyjson", "MIT"),
     ]
 
-    private var version: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "–"
-        let build = info?["CFBundleVersion"] as? String ?? "–"
-        return "\(short) (\(build))"
-    }
+    let version: String
 
     var body: some View {
         Section {

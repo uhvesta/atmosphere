@@ -1,5 +1,5 @@
 [Window/StandardWindow] "Today"
-  [Button] "2 changes need review, Review"
+  [Button] "2 changes to review, Review"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Today"

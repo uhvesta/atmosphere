@@ -53,6 +53,11 @@ package struct TaskListFeature {
         package var selectionAnchor: UUID?
         /// Asks before closing picked tasks' open Sub tasks.
         @Presents package var bulkPrompt: AlertState<BulkAnswer>?
+        /// Whether this list offers the tip about swiping a task, as Today
+        /// does.
+        package var offersSwipeTip = false
+        /// Whether this device saw the swipe tip, closed or used.
+        @Shared(.appStorage(GestureTip.swipeRow.storageKey)) package var swipeTipSeen = false
 
         package init(query: TaskQuery) {
             self.query = query
@@ -73,6 +78,11 @@ package struct TaskListFeature {
         package var canReorder: Bool { query.reorders && sort == .manual }
 
         package var isEmpty: Bool { sections.allSatisfy(\.rows.isEmpty) }
+
+        /// Whether to show the swipe tip now: once there are tasks to swipe.
+        package var showsSwipeTip: Bool {
+            offersSwipeTip && !swipeTipSeen && !isSelecting && workspace != nil && !isEmpty
+        }
 
         /// What the empty list says: that the day's work is done, once
         /// tasks were closed today, where the list says so.
@@ -226,6 +236,8 @@ package struct TaskListFeature {
         case bulkPrompt(PresentationAction<BulkAnswer>)
         case toggled(UUID)
         case rowAction(UUID, RowAction)
+        /// The swipe tip's close button.
+        case swipeTipClosed
         case saved(Result<Saved, any Error>)
         case bannerUndoTapped
         case sortPicked(TaskSort)
@@ -272,7 +284,16 @@ package struct TaskListFeature {
 
     private var core: some ReducerOf<Self> {
         Reduce { state, action in
+            // Swiping a task, or acting on it another way, shows the tip was
+            // learned.
+            if case .rowAction = action, state.offersSwipeTip, !state.swipeTipSeen {
+                state.$swipeTipSeen.withLock { $0 = true }
+            }
             switch action {
+            case .swipeTipClosed:
+                state.$swipeTipSeen.withLock { $0 = true }
+                return .none
+
             case .task:
                 guard state.workspace == nil else { return .none }
                 return .run { [store] send in

@@ -37,6 +37,19 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// The tips on a new device: swiping on Today until closed, then
+    /// dragging onto a day in the calendar.
+    func testTips() async {
+        let (store, flow) = app("tips", tips: true)
+        await flow.step("swipe-tip")
+        store.send(.today(.list(.swipeTipClosed)))
+        await flow.step("swipe-tip-closed")
+        store.tab = .upcoming
+        store.send(.upcomingCalendarShown(true))
+        await flow.step("drag-tip")
+        flow.finish()
+    }
+
     /// Upcoming.
     func testUpcoming() async {
         let (store, flow) = app("upcoming")

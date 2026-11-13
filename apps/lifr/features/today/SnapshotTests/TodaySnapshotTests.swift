@@ -19,8 +19,12 @@ final class TodaySnapshotTests: XCTestCase {
 
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
+    /// Today as someone who already saw the swipe tip sees it; the tips
+    /// flow shows it.
     private var state: TodayFeature.State {
-        TodayFeature.State(workspace: .sample(now: now, timeZone: .gmt), now: now, timeZone: .gmt)
+        var state = TodayFeature.State(workspace: .sample(now: now, timeZone: .gmt), now: now, timeZone: .gmt)
+        state.list.offersSwipeTip = false
+        return state
     }
 
     private func screen(_ state: TodayFeature.State) -> some View {

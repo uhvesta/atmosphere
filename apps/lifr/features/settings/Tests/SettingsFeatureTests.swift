@@ -7,6 +7,7 @@ import LifrLockClient
 import LifrSessionClient
 import LifrSettings
 import LifrStoreClient
+import LifrUI
 import XCTest
 
 @MainActor
@@ -266,6 +267,23 @@ final class SettingsFeatureTests: XCTestCase {
         await store.receive(\.loaded)
         XCTAssertNil(store.state.loadError)
         await store.finish()
+    }
+
+    func testResetTipsShowsEveryTipAgain() async {
+        for tip in GestureTip.allCases {
+            Shared(wrappedValue: false, .appStorage(tip.storageKey)).withLock { $0 = true }
+        }
+        let store = TestStore(initialState: SettingsFeature.State(showsAgents: false)) {
+            SettingsFeature()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.resetTipsTapped)
+
+        for tip in GestureTip.allCases {
+            XCTAssertFalse(Shared(wrappedValue: true, .appStorage(tip.storageKey)).wrappedValue)
+        }
+        XCTAssertTrue(store.state.tipsReset)
     }
 
     func testOnIPhoneLeavesAgentsOut() async {
