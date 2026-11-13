@@ -34,6 +34,7 @@ extension ErrorCode {
             case .github: .github
             case .appOnly: .appOnly
             case .unknownApproval: .unknownApproval
+            case .skillClash: .skillClash
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -830,5 +831,34 @@ extension BaseUpdate {
                     conflicts: repository.conflicts)
             },
             sentToAgent: updated.sentToAgent)
+    }
+}
+
+extension FoundSkill {
+    init(_ skill: Humata_V1_FoundSkill) {
+        let origin: Origin =
+            switch skill.origin {
+            case .claudeUser: .claudeUser
+            case .copilotUser: .copilotUser
+            case .claudeRepository: .claudeRepository
+            case .githubRepository: .githubRepository
+            case .project, .unspecified, .UNRECOGNIZED: .project
+            }
+        self.init(
+            name: skill.name, description: skill.description_p, path: skill.path, origin: origin,
+            projectID: skill.projectID, repository: skill.repository, hash: skill.hash, host: skill.host)
+    }
+}
+
+extension SkillList {
+    init(_ list: Humata_V1_SkillList) {
+        self.init(
+            skills: list.skills.map(FoundSkill.init),
+            clashes: list.clashes.map {
+                SkillClash(
+                    name: $0.name, candidates: $0.candidates.map(FoundSkill.init),
+                    winner: $0.winner.isEmpty ? nil : $0.winner)
+            },
+            unreachable: list.unreachable)
     }
 }

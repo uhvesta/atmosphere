@@ -1398,6 +1398,8 @@ package enum ErrorCode: Hashable, Sendable {
     case appOnly
     /// The approval or grant isn't one the daemon keeps.
     case unknownApproval
+    /// Two skills one session would get share a name, and none is picked.
+    case skillClash
     case unknown
 }
 
@@ -1736,5 +1738,82 @@ package struct TerminalOutput: Equatable, Sendable {
         self.data = data
         self.replay = replay
         self.exitCode = exitCode
+    }
+}
+
+/// A skill in an agent's folder on the Mac or a host, or a project's own.
+package struct FoundSkill: Hashable, Identifiable, Sendable {
+    package enum Origin: Hashable, Sendable {
+        /// `~/.claude/skills` on its host.
+        case claudeUser
+        /// `~/.copilot/skills` on its host.
+        case copilotUser
+        /// A repository's `.claude/skills`.
+        case claudeRepository
+        /// A repository's `.github/skills`.
+        case githubRepository
+        /// One of the project's own, kept by Humata.
+        case project
+    }
+
+    package var name: String
+    package var description: String
+    /// Its SKILL.md on its host; empty for a project's own.
+    package var path: String
+    package var origin: Origin
+    /// The project, for a repository's or a project's own.
+    package var projectID: String
+    /// The repository's name in its project, for a repository's.
+    package var repository: String
+    /// A hash of its file; a pick holds while the files are the same.
+    package var hash: String
+    /// "" for the Mac.
+    package var host: String
+
+    package init(
+        name: String, description: String = "", path: String = "", origin: Origin, projectID: String = "",
+        repository: String = "", hash: String, host: String = ""
+    ) {
+        self.name = name
+        self.description = description
+        self.path = path
+        self.origin = origin
+        self.projectID = projectID
+        self.repository = repository
+        self.hash = hash
+        self.host = host
+    }
+
+    package var id: String { "\(host)|\(projectID)|\(path.isEmpty ? name : path)" }
+}
+
+/// Two or more different files of one name that one session would get.
+package struct SkillClash: Hashable, Identifiable, Sendable {
+    package var name: String
+    /// One of each file.
+    package var candidates: [FoundSkill]
+    /// The hash of the one picked; nil until someone picks.
+    package var winner: String?
+
+    package init(name: String, candidates: [FoundSkill], winner: String? = nil) {
+        self.name = name
+        self.candidates = candidates
+        self.winner = winner
+    }
+
+    package var id: String { "\(name)|\(candidates.map(\.hash).sorted().joined(separator: ","))" }
+}
+
+/// Every skill on the Mac and the hosts that answered, and the clashes.
+package struct SkillList: Hashable, Sendable {
+    package var skills: [FoundSkill]
+    package var clashes: [SkillClash]
+    /// Hosts that couldn't be reached, whose skills aren't listed.
+    package var unreachable: [String]
+
+    package init(skills: [FoundSkill] = [], clashes: [SkillClash] = [], unreachable: [String] = []) {
+        self.skills = skills
+        self.clashes = clashes
+        self.unreachable = unreachable
     }
 }

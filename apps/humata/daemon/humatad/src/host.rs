@@ -822,7 +822,9 @@ impl Host {
             | Request::GetStorage(_)
             | Request::SetStorageSettings(_)
             | Request::CleanUpStorage(_)
-            | Request::SetModelServer(_) => {
+            | Request::SetModelServer(_)
+            | Request::ListSkills(_)
+            | Request::PickSkill(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::SetSpecs(set) => {
@@ -844,6 +846,9 @@ impl Host {
             }
             Request::CloneRepositories(clone) => {
                 Response::RepositoriesCloned(self.machine.clone(clone).await?)
+            }
+            Request::ScanSkills(scan) => {
+                Response::SkillsScanned(self.machine.scan_skills(scan).await?)
             }
             Request::Unqueue(unqueue) => {
                 let session = SessionId::new(unqueue.session_id);

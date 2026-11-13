@@ -146,6 +146,14 @@ pub enum HostError {
     NoClone { name: String },
 
     #[error(
+        "looking for skills on this host stopped part way, which is a bug in humatad; report it with the host's log, and start the session again"
+    )]
+    ScanSkills {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error(
         "couldn't move the snapshots of the repository {name} on this host. Check that git works there and the disk has room, then try again"
     )]
     Snapshots {
@@ -239,7 +247,7 @@ impl HostError {
             | Self::Push { .. }
             | Self::Fetch { .. }
             | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,
-            Self::EncodeBackup { .. } => pb::ErrorCode::StorageFailed,
+            Self::EncodeBackup { .. } | Self::ScanSkills { .. } => pb::ErrorCode::StorageFailed,
             Self::SaveSetup { .. }
             | Self::CreateFolder { .. }
             | Self::CreateChatFolder { .. }
@@ -366,6 +374,17 @@ pub enum StoreError {
 pub enum DaemonError {
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    #[error(
+        "this session would get more than one skill named {}, with different files, and nobody has picked which wins. Pick one in Settings › Skills, or with `humata skills` and `humata pick-skill`, then start the session again; the pick holds for every project and host until either file changes",
+        names.join(", ")
+    )]
+    SkillClash { names: Vec<String> },
+
+    #[error(
+        "say which skill wins: give its name, the hashes of every file of that name, and the hash of the one to keep, as `humata skills` lists them"
+    )]
+    BadSkillPick,
 
     #[error(transparent)]
     Commands(#[from] crate::commands::CommandsError),
@@ -784,6 +803,8 @@ impl DaemonError {
             | Self::NoReply
             | Self::ModelServerPort { .. } => pb::ErrorCode::InvalidRequest,
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
+            Self::SkillClash { .. } => pb::ErrorCode::SkillClash,
+            Self::BadSkillPick => pb::ErrorCode::InvalidRequest,
             Self::SaveHosts { .. } | Self::Mirror { .. } => pb::ErrorCode::StorageFailed,
             Self::BadRepositoryName { .. } | Self::NoRecovery { .. } => {
                 pb::ErrorCode::InvalidRequest

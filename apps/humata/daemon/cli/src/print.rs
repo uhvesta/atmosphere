@@ -633,3 +633,40 @@ pub fn grant(grant: &pb::Grant) -> String {
         grant.used
     )
 }
+
+/// A skill: where it is, its name and hash, then what it's for.
+pub fn skill(skill: &pb::FoundSkill) -> String {
+    let host = if skill.host.is_empty() {
+        "mac"
+    } else {
+        &skill.host
+    };
+    let origin = match skill.origin() {
+        pb::SkillOrigin::ClaudeUser => "claude",
+        pb::SkillOrigin::CopilotUser => "copilot",
+        pb::SkillOrigin::ClaudeRepository => "repo-claude",
+        pb::SkillOrigin::GithubRepository => "repo-github",
+        pb::SkillOrigin::Project => "project",
+        pb::SkillOrigin::Unspecified => "unknown",
+    };
+    let at = if skill.path.is_empty() {
+        format!("project {}", skill.project_id)
+    } else {
+        skill.path.clone()
+    };
+    format!(
+        "skill\t{}\t{host}\t{origin}\t{}\t{at}\t{}",
+        skill.name, skill.hash, skill.description
+    )
+}
+
+/// A clash: its name, the winner's hash or "unpicked", then every file's.
+pub fn skill_clash(clash: &pb::SkillClash) -> String {
+    let winner = if clash.winner.is_empty() {
+        "unpicked"
+    } else {
+        &clash.winner
+    };
+    let hashes: Vec<&str> = clash.candidates.iter().map(|c| c.hash.as_str()).collect();
+    format!("clash\t{}\t{winner}\t{}", clash.name, hashes.join(" "))
+}

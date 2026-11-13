@@ -744,6 +744,20 @@ enum Command {
     },
     /// Undo a session's last rewind, if no message was sent since.
     UndoRewind { session: String },
+    /// List the skills on this Mac and each host, then each clash: two or
+    /// more files with one name that one session would get, with the
+    /// hashes to pick between.
+    Skills,
+    /// Pick which skill of a clash wins, for every project and host, until
+    /// either file changes.
+    PickSkill {
+        name: String,
+        /// The hash of the file to keep, as `skills` prints it.
+        winner: String,
+        /// The hashes of every file of that name, as `skills` prints them.
+        #[arg(required = true)]
+        candidates: Vec<String>,
+    },
     /// Take a queued message out before its turn starts; its id is in the
     /// `queued` event.
     Unqueue { session: String, queue_id: String },
@@ -1340,6 +1354,36 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 client.call(request).await?,
                 |response| matches!(response, Response::SessionRewound(_)),
                 "SessionRewound",
+            )?;
+        }
+        Command::Skills => match client.call(Request::ListSkills(pb::ListSkills {})).await? {
+            Response::SkillList(list) => {
+                for skill in &list.skills {
+                    println!("{}", print::skill(skill));
+                }
+                for clash in &list.clashes {
+                    println!("{}", print::skill_clash(clash));
+                }
+                for host in &list.unreachable {
+                    println!("unreachable\t{host}");
+                }
+            }
+            other => return Err(unexpected("the skills", &other)),
+        },
+        Command::PickSkill {
+            name,
+            winner,
+            candidates,
+        } => {
+            let request = Request::PickSkill(pb::PickSkill {
+                name,
+                candidates,
+                winner,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::SkillPicked(_)),
+                "SkillPicked",
             )?;
         }
         Command::UndoRewind { session } => {

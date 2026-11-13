@@ -3437,3 +3437,104 @@ async fn a_chat_in_no_folder_gets_a_folder_of_its_own_on_the_host_it_moves_to() 
     assert!(folder.starts_with(dir.path().join("second")), "{folder:?}");
     assert!(folder.is_dir(), "{folder:?}");
 }
+
+#[tokio::test]
+async fn a_session_waits_for_a_pick_between_two_skills_of_one_name() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let skill = repository.path().join(".claude/skills/humata-test-release");
+    std::fs::create_dir_all(&skill).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: humata-test-release\ndescription: Tags a release\n---\nRun the tag script.",
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let mut create = create_project(repository.path());
+    if let pb::request::Kind::CreateProject(create) = &mut create {
+        create.skills.push(pb::Skill {
+            name: "humata-test-release".to_owned(),
+            text: "Tag it by hand.".to_owned(),
+        });
+    }
+    let Ok(pb::response::Kind::ProjectCreated(pb::ProjectCreated {
+        project: Some(project),
+    })) = client.call(create).await
+    else {
+        panic!("not created")
+    };
+
+    let refused = client.call(start_in(&project.id)).await;
+    assert!(
+        matches!(
+            refused,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::SkillClash,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+
+    let listed = client
+        .call(pb::request::Kind::ListSkills(pb::ListSkills {}))
+        .await;
+    let Ok(pb::response::Kind::SkillList(list)) = listed else {
+        panic!("{listed:?}")
+    };
+    let clash = list
+        .clashes
+        .iter()
+        .find(|clash| clash.name == "humata-test-release")
+        .unwrap_or_else(|| panic!("no clash in {list:?}"));
+    assert!(clash.winner.is_empty());
+    let hashes: Vec<String> = clash.candidates.iter().map(|c| c.hash.clone()).collect();
+    let repositorys = clash
+        .candidates
+        .iter()
+        .find(|c| c.origin() == pb::SkillOrigin::ClaudeRepository)
+        .unwrap_or_else(|| panic!("{clash:?}"))
+        .hash
+        .clone();
+    let picked = client
+        .call(pb::request::Kind::PickSkill(pb::PickSkill {
+            name: clash.name.clone(),
+            candidates: hashes.clone(),
+            winner: repositorys.clone(),
+        }))
+        .await;
+    assert!(
+        matches!(picked, Ok(pb::response::Kind::SkillPicked(_))),
+        "{picked:?}"
+    );
+
+    started(&client, start_in(&project.id)).await;
+    let listed = client
+        .call(pb::request::Kind::ListSkills(pb::ListSkills {}))
+        .await;
+    let Ok(pb::response::Kind::SkillList(list)) = listed else {
+        panic!("{listed:?}")
+    };
+    let winners: Vec<&str> = list
+        .clashes
+        .iter()
+        .filter(|clash| clash.name == "humata-test-release")
+        .map(|clash| clash.winner.as_str())
+        .collect();
+    assert_eq!(winners, [repositorys.as_str()]);
+
+    // Once the file changes, the pick no longer holds.
+    std::fs::write(skill.join("SKILL.md"), "Tag it twice.")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let refused = client.call(start_in(&project.id)).await;
+    assert!(
+        matches!(
+            refused,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::SkillClash,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+}

@@ -38,6 +38,32 @@ impl Store {
             .map_err(self.failed())
     }
 
+    /// Every pick of which skill wins: (name, candidates) to the winner's
+    /// hash, the candidates' hashes sorted and joined by commas.
+    pub fn skill_picks(
+        &self,
+    ) -> Result<std::collections::HashMap<(String, String), String>, StoreError> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("SELECT name, candidates, winner FROM skill_picks")
+            .map_err(self.failed())?;
+        let rows = statement
+            .query_map([], |row| Ok(((row.get(0)?, row.get(1)?), row.get(2)?)))
+            .map_err(self.failed())?;
+        rows.collect::<Result<_, _>>().map_err(self.failed())
+    }
+
+    pub fn pick_skill(&self, name: &str, candidates: &str, winner: &str) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO skill_picks (name, candidates, winner) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (name, candidates) DO UPDATE SET winner = excluded.winner",
+                params![name, candidates, winner],
+            )
+            .map(drop)
+            .map_err(self.failed())
+    }
+
     /// Keeps the newest `kept` board changes of each project, so older
     /// ones can't be undone, then gives the space freed back to the disk.
     pub fn compact(&self, kept: u32) -> Result<(), StoreError> {

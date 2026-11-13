@@ -289,6 +289,31 @@ impl Machine {
         })
     }
 
+    /// The skills in the agents' folders in the home folder and in each
+    /// repository, read on a background thread; a repository with no path
+    /// is this host's clone of it, if there is one.
+    pub async fn scan_skills(&self, scan: pb::ScanSkills) -> Result<pb::SkillsScanned, HostError> {
+        let mut repositories = Vec::new();
+        for folder in scan.repositories {
+            let path = if folder.path.is_empty() {
+                self.state
+                    .join("repos")
+                    .join(plain(&folder.project_id)?)
+                    .join(plain(&folder.name)?)
+            } else {
+                PathBuf::from(&folder.path)
+            };
+            repositories.push((folder, path));
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let skills = tokio::task::spawn_blocking(move || {
+            crate::skills::scan(home.as_deref(), &repositories)
+        })
+        .await
+        .map_err(|source| HostError::ScanSkills { source })?;
+        Ok(pb::SkillsScanned { skills })
+    }
+
     /// Pushes `branch` from the worktree at `directory` to its `origin`,
     /// setting it as the branch's upstream.
     pub async fn push(

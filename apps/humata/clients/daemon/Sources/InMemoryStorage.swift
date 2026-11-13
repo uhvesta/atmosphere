@@ -64,3 +64,24 @@ extension InMemoryDaemon {
         }
     }
 }
+
+extension InMemoryDaemon {
+    /// The skills the Mac and hosts have, as the daemon would list them.
+    package func setSkills(_ skills: SkillList) {
+        state.withValue { $0.skills = skills }
+    }
+
+    func pickSkill(_ name: String, _ candidates: [String], _ winner: String) throws {
+        try state.withValue { state in
+            guard
+                let index = state.skills.clashes.firstIndex(where: {
+                    $0.name == name && Set($0.candidates.map(\.hash)) == Set(candidates)
+                }), candidates.contains(winner)
+            else {
+                throw DaemonError.refused(
+                    .invalidRequest, message: "There's no such clash of skills named \(name); list the skills again.")
+            }
+            state.skills.clashes[index].winner = winner
+        }
+    }
+}

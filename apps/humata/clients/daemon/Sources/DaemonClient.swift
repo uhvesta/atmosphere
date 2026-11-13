@@ -145,6 +145,12 @@ package struct DaemonClient: Sendable {
     /// Starts a cleanup in the background, doing the parts of `cleanup`
     /// asked for. `storage` shows how far it is.
     package var cleanUpStorage: @Sendable (_ cleanup: Storage.Cleanup) async throws -> Storage
+    /// Every skill on the Mac and each host that answers, with the clashes
+    /// among those one session would get.
+    package var skills: @Sendable () async throws -> SkillList
+    /// Picks which of the skills named `name` wins, for every project and
+    /// host, while the files are `candidates`, by hash.
+    package var pickSkill: @Sendable (_ name: String, _ candidates: [String], _ winner: String) async throws -> Void
     /// Answers an agent's question or move; it leaves the inbox.
     package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]

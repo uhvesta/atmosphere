@@ -35,6 +35,7 @@ pub use repositories::Clones;
 pub use storage::Places;
 mod review;
 mod search;
+mod skills;
 mod storage;
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
@@ -1031,9 +1032,18 @@ impl Daemon {
             (Some(parent), pb::SpecScope::WithParents) => Some(self.store.item(parent)?),
             _ => None,
         };
+        let skills = self
+            .session_skills(
+                &project,
+                &start.host,
+                &start.repositories,
+                &start.working_directory,
+            )
+            .await?;
         start.instructions = planning::instructions(
             &project,
             &start.instructions,
+            &skills,
             item.as_ref(),
             parent.as_ref(),
         );
@@ -1324,6 +1334,15 @@ impl Daemon {
                     },
                 ))));
             }
+            Request::ListSkills(_) => {
+                return Ok(Reply::Response(Response::SkillList(
+                    self.list_skills().await?,
+                )));
+            }
+            Request::PickSkill(pick) => {
+                self.pick_skill(pick)?;
+                return Ok(Reply::Response(Response::SkillPicked(pb::SkillPicked {})));
+            }
             Request::ListApprovals(_) => {
                 return Ok(Reply::Response(Response::Approvals(self.list_approvals()?)));
             }
@@ -1545,6 +1564,7 @@ impl Daemon {
             Request::ConfigureHost(_)
             | Request::ReadHostStatus(_)
             | Request::CloneRepositories(_)
+            | Request::ScanSkills(_)
             | Request::WatchToolCalls(_)
             | Request::AnswerToolCall(_)
             | Request::StopHost(_)

@@ -540,6 +540,21 @@ extension DaemonClient {
                 }
                 return Storage(storage)
             },
+            skills: {
+                guard case .skillList(let list) = try await daemon.call(.listSkills(Humata_V1_ListSkills())) else {
+                    throw DaemonError.unexpected("something other than the skills")
+                }
+                return SkillList(list)
+            },
+            pickSkill: { name, candidates, winner in
+                var pick = Humata_V1_PickSkill()
+                pick.name = name
+                pick.candidates = candidates
+                pick.winner = winner
+                guard case .skillPicked = try await daemon.call(.pickSkill(pick)) else {
+                    throw DaemonError.unexpected("something other than the skill picked")
+                }
+            },
             answerRequest: { request, answer in
                 var asked = Humata_V1_AnswerRequest()
                 asked.requestID = request

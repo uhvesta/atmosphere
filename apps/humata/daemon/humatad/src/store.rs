@@ -331,6 +331,15 @@ const MIGRATIONS: &[&str] = &["
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
+", "
+    -- Which of the skills sharing a name wins, while the files are these:
+    -- `candidates` is their hashes, sorted and joined by commas.
+    CREATE TABLE skill_picks (
+        name TEXT NOT NULL,
+        candidates TEXT NOT NULL,
+        winner TEXT NOT NULL,
+        PRIMARY KEY (name, candidates)
+    );
 "];
 
 /// What reverting a board change did.

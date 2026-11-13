@@ -149,8 +149,8 @@ original spec; lettered ones were added since.
 | S1 Storage: safe places, cleanup, opt-in auto-delete | Done |
 | Q1 Queue and composer: edit, merge, cancel, pastes, images | Done |
 | Q2 Rewind and checkpoints | Done |
-| Q3 Skills from the agents' folders | Next |
-| Q4 Plugins | Planned |
+| Q3 Skills from the agents' folders | Done |
+| Q4 Plugins | Next |
 | Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Planned |
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
@@ -1122,14 +1122,23 @@ the Mac. Built after S1, before T1.
 
 #### Q3 Skills from the agents' folders
 
-- [ ] Skills from `~/.claude/skills`, `~/.copilot/skills` and each
+- [x] Skills from `~/.claude/skills`, `~/.copilot/skills` and each
   repository's `.claude/skills` and `.github/skills`, on each host, listed
   in Settings › Skills beside the project's own, and given to every
   backend
-- [ ] Two with one name: a new session can't start until the person picks
+- [x] Two with one name: a new session can't start until the person picks
   which wins; the pick is remembered for every project and host, shown
   and changed in Settings › Skills, and asked again only when either
   file changes
+
+To save tokens, a session's instructions list each skill from a folder by
+its name, description and path, for the agent to read when it needs it;
+only the project's own are written out in full. Two copies with the same
+text aren't a clash. A host's skills are read from its clone of each
+repository, not the session's copy, and Settings lists a host that
+doesn't answer in 10 seconds as unreachable. A backend that loads a
+folder's skills itself still sees one that lost a pick; its instructions
+say to use the listed one.
 
 #### Q4 Plugins
 

@@ -402,6 +402,7 @@ private struct ModelMenu: View {
 package struct NewSessionView: View {
     @Bindable var store: StoreOf<NewSessionFeature>
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsTab.key) private var settingsTab = SettingsTab.environments
 
     package init(store: StoreOf<NewSessionFeature>) {
         self.store = store
@@ -513,6 +514,21 @@ package struct NewSessionView: View {
                 Text(footer)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            if let clash = store.skillClash {
+                Section {
+                    Label {
+                        Text(clash)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                    }
+                    SettingsLink {
+                        Text("Pick in Settings › Skills…")
+                    }
+                    .simultaneousGesture(TapGesture().onEnded { settingsTab = SettingsTab.skills })
+                } header: {
+                    Text("Skills to Pick Between")
+                }
             }
         }
         .formStyle(.grouped)

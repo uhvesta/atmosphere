@@ -416,9 +416,10 @@ package struct SessionView: View {
         case .compacted:
             Label(
                 "Context compacted: the agent summed up what came before to make room",
-                systemImage: "rectangle.compress.vertical")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                systemImage: "rectangle.compress.vertical"
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         case .notice(_, let text):
             Label(text, systemImage: "info.circle")
                 .font(.footnote)

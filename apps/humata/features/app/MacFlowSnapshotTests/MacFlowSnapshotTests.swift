@@ -1178,6 +1178,64 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Settings › Skills lists the skills on the Mac and a host, and each
+    /// project's; two files named alike that one session would get must be
+    /// picked between before a session starts, and New Session says so.
+    func testSettingsSkills() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let mine = FoundSkill(
+            name: "release", description: "Tags and publishes a release",
+            path: "/Users/you/.claude/skills/release/SKILL.md", origin: .claudeUser, hash: "a1")
+        let theirs = FoundSkill(
+            name: "release", description: "Cuts a release branch for the app",
+            path: "/code/humata/.github/skills/release/SKILL.md", origin: .githubRepository, projectID: project.id,
+            repository: "humata", hash: "b2")
+        daemon.setSkills(
+            SkillList(
+                skills: [
+                    mine,
+                    FoundSkill(
+                        name: "notes", description: "Keeps notes as it works",
+                        path: "/Users/you/.copilot/skills/notes/SKILL.md", origin: .copilotUser, hash: "c3"),
+                    FoundSkill(
+                        name: "lint", description: "Runs the linters on what changed",
+                        path: "/home/you/.claude/skills/lint/SKILL.md", origin: .claudeUser,
+                        hash: "d4", host: "devbox"),
+                    theirs,
+                    FoundSkill(name: "spec-style", origin: .project, projectID: project.id, hash: "e5"),
+                ],
+                clashes: [SkillClash(name: "release", candidates: [mine, theirs])]))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+        }
+        let flow = FlowRecorder("skills", SkillsView(store: store.scope(state: \.skills, action: \.skills)))
+        store.send(.skills(.task))
+        try await until { store.skills.list != nil }
+        await flow.step("clash")
+
+        let starting = Store(initialState: NewSessionFeature.State(project: project)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        let sheet = FlowRecorder("skills-new-session", NewSessionView(store: starting))
+        starting.send(.binding(.set(\.backend, .scripted)))
+        starting.send(.startTapped)
+        try await until { starting.skillClash != nil }
+        await sheet.step("waits")
+        sheet.finish()
+
+        store.send(.skills(.picked(SkillClash(name: "release", candidates: [mine, theirs]).id, winner: "b2")))
+        try await until { store.skills.saving.isEmpty && store.skills.unpicked == 0 }
+        await flow.step("picked")
+        flow.finish()
+    }
+
     /// An agent's `humata mcp`, in a dev build, asks to change a spec and
     /// delete a task as the person, and a command asks to add one: all wait
     /// in the inbox, by who asked. The person approves the agent's both,

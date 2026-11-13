@@ -18,6 +18,7 @@ mod old_clones;
 mod peer;
 mod ports;
 mod relay;
+mod skills;
 mod socket;
 mod store;
 mod terminals;

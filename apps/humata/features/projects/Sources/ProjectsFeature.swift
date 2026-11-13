@@ -1002,6 +1002,9 @@ package struct NewSessionFeature {
         /// Why they couldn't be listed; a typed model name still works.
         package var modelsUnavailable: String?
         @Presents package var alert: AlertState<Never>?
+        /// Why the session waits on a pick between skills of one name, made
+        /// in Settings › Skills.
+        package var skillClash: String?
         /// What the last session started with, for the next to start from.
         @Shared(.appStorage("newSessionBackend")) var lastBackend = Backend.copilot
         @Shared(.appStorage("newSessionModel")) var lastModel = ""
@@ -1061,6 +1064,8 @@ package struct NewSessionFeature {
         case modelsLoaded(Result<[ModelChoice], any Error>)
         case startTapped
         case failed(String)
+        /// Two skills it would get share a name, and none is picked.
+        case skillsClash(String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -1140,12 +1145,22 @@ package struct NewSessionFeature {
                 state.$lastApprovalMode.withLock { $0 = state.approvalMode }
                 state.$lastHost.withLock { $0 = state.host }
                 state.$lastModelServer.withLock { $0 = state.modelServer }
+                state.skillClash = nil
                 let request = state.request
                 return .run { send in
                     await send(.delegate(.started(try await daemon.start(request))))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    if case DaemonError.refused(.skillClash, let message) = error {
+                        await send(.skillsClash(message))
+                    } else {
+                        await send(.failed(error.localizedDescription))
+                    }
                 }
+
+            case .skillsClash(let message):
+                state.starting = false
+                state.skillClash = message
+                return .none
 
             case .failed(let message):
                 state.starting = false

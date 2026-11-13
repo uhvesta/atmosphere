@@ -203,6 +203,9 @@ message Request {
     // message.
     RewindSession rewind_session = 98;
     UndoRewind undo_rewind = 99;
+    ScanSkills scan_skills = 100;
+    ListSkills list_skills = 101;
+    PickSkill pick_skill = 102;
   }
 }
 
@@ -304,6 +307,9 @@ message Response {
     ImageData image_data = 90;
     SessionRewound session_rewound = 91;
     RewindUndone rewind_undone = 92;
+    SkillsScanned skills_scanned = 93;
+    SkillList skill_list = 94;
+    SkillPicked skill_picked = 95;
   }
 }
 
@@ -356,6 +362,9 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_APPROVAL = 27;
   // No such image in the session; it went with the session's files.
   ERROR_CODE_UNKNOWN_IMAGE = 28;
+  // Two skills a new session would get share a name, and nobody has picked
+  // which wins; pick in Settings › Skills, or with `humata pick-skill`.
+  ERROR_CODE_SKILL_CLASH = 29;
 }
 
 enum Backend {
@@ -2637,3 +2646,83 @@ message BranchesDeleted {
   // archived, and no branch deleted.
   bool kept = 1;
 }
+
+// Where a skill was found.
+enum SkillOrigin {
+  SKILL_ORIGIN_UNSPECIFIED = 0;
+  // ~/.claude/skills on its host.
+  SKILL_ORIGIN_CLAUDE_USER = 1;
+  // ~/.copilot/skills on its host.
+  SKILL_ORIGIN_COPILOT_USER = 2;
+  // A repository's .claude/skills.
+  SKILL_ORIGIN_CLAUDE_REPOSITORY = 3;
+  // A repository's .github/skills.
+  SKILL_ORIGIN_GITHUB_REPOSITORY = 4;
+  // One of the project's own, kept by Humata.
+  SKILL_ORIGIN_PROJECT = 5;
+}
+
+// A repository to look for skills in, on the host asked.
+message SkillFolder {
+  string project_id = 1;
+  // Its name in the project.
+  string name = 2;
+  // Its folder on the host; empty for the host's clone of it, if it has one.
+  string path = 3;
+}
+
+// For hosts: the skills in the agents' folders in the home folder, and in
+// each of `repositories`.
+message ScanSkills {
+  repeated SkillFolder repositories = 1;
+}
+
+message FoundSkill {
+  string name = 1;
+  string description = 2;
+  // The SKILL.md on its host; empty for a project's own.
+  string path = 3;
+  SkillOrigin origin = 4;
+  // The project, for a repository's or the project's own.
+  string project_id = 5;
+  // The repository's name in the project, for a repository's.
+  string repository = 6;
+  // A SHA-256 of the file, hex; a pick holds only while the files are the
+  // same.
+  string hash = 7;
+  // "" for the Mac.
+  string host = 8;
+}
+
+message SkillsScanned {
+  repeated FoundSkill skills = 1;
+}
+
+// Every skill on the Mac and the hosts that answer, and every clash among
+// those one session would get.
+message ListSkills {}
+
+message SkillClash {
+  string name = 1;
+  // Each different file of that name, by hash; one session would get all.
+  repeated FoundSkill candidates = 2;
+  // The hash of the one picked; empty until someone picks.
+  string winner = 3;
+}
+
+message SkillList {
+  repeated FoundSkill skills = 1;
+  repeated SkillClash clashes = 2;
+  // Hosts that couldn't be reached, whose skills aren't listed.
+  repeated string unreachable = 3;
+}
+
+// Picks which of the skills named `name` wins, for every project and host,
+// while the files are the ones in `candidates`, by hash.
+message PickSkill {
+  string name = 1;
+  repeated string candidates = 2;
+  string winner = 3;
+}
+
+message SkillPicked {}

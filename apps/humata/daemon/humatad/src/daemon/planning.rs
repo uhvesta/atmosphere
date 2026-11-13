@@ -318,7 +318,16 @@ impl Daemon {
             Some(parent) => Some(self.store.item(parent)?),
             None => None,
         };
-        fork.instructions = Some(instructions(&project, "", Some(&item), parent.as_ref()));
+        let skills = self
+            .session_skills(&project, host, &fork.repositories, "")
+            .await?;
+        fork.instructions = Some(instructions(
+            &project,
+            "",
+            &skills,
+            Some(&item),
+            parent.as_ref(),
+        ));
         Ok(project.id)
     }
 
@@ -440,11 +449,13 @@ fn spec(item: &Item) -> pb::Spec {
 }
 
 /// What a session's instructions are made of, in order: its project's
-/// instructions, its own, its project's skills, then the specs it reads,
+/// instructions, its own, its project's own skills in full, the other
+/// skills it gets by name, description and path, then the specs it reads,
 /// its task's before its subtask's.
 pub(super) fn instructions(
     project: &Project,
     own: &str,
+    skills: &[pb::FoundSkill],
     item: Option<&Item>,
     parent: Option<&Item>,
 ) -> String {
@@ -462,8 +473,34 @@ pub(super) fn instructions(
     if own.trim() != project.instructions.trim() {
         section(own);
     }
-    for skill in &project.skills {
-        section(&format!("# Skill: {}\n\n{}", skill.name, skill.text.trim()));
+    let projects = pb::SkillOrigin::Project as i32;
+    for skill in skills.iter().filter(|skill| skill.origin == projects) {
+        if let Some(text) = project
+            .skills
+            .iter()
+            .find(|own| own.name == skill.name)
+            .map(|own| own.text.trim())
+        {
+            section(&format!("# Skill: {}\n\n{text}", skill.name));
+        }
+    }
+    let listed: Vec<String> = skills
+        .iter()
+        .filter(|skill| skill.origin != projects)
+        .map(|skill| {
+            let about = skill.description.trim();
+            if about.is_empty() {
+                format!("- {} ({})", skill.name, skill.path)
+            } else {
+                format!("- {}: {about} ({})", skill.name, skill.path)
+            }
+        })
+        .collect();
+    if !listed.is_empty() {
+        section(&format!(
+            "# Skills\n\nBefore work one of these covers, read its file. Where another skill has the same name, use the one here.\n\n{}",
+            listed.join("\n")
+        ));
     }
     if let Some(parent) = parent {
         section(&spec_section("The task this is part of", parent));
@@ -593,19 +630,28 @@ mod tests {
         };
         let task = item("login", None, "Let people sign in.");
         let subtask = item("form", Some("login"), "The form.");
-        let text = instructions(&project, "Be brief.", Some(&subtask), Some(&task));
+        let mut skills = crate::skills::own(&project);
+        skills.push(pb::FoundSkill {
+            name: "lint".into(),
+            description: "Lints the code".into(),
+            path: ".claude/skills/lint/SKILL.md".into(),
+            origin: pb::SkillOrigin::ClaudeRepository.into(),
+            ..Default::default()
+        });
+        let text = instructions(&project, "Be brief.", &skills, Some(&subtask), Some(&task));
         let at = |part: &str| text.find(part).unwrap_or(usize::MAX);
         let order = [
             at("Use tabs."),
             at("Be brief."),
             at("Tag it."),
+            at(".claude/skills/lint/SKILL.md"),
             at("Let people sign in."),
             at("The form."),
         ];
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
         assert!(order.iter().all(|at| *at != usize::MAX), "{text}");
 
-        let alone = instructions(&project, "", Some(&subtask), None);
+        let alone = instructions(&project, "", &[], Some(&subtask), None);
         assert!(!alone.contains("Let people sign in."), "{alone}");
     }
 

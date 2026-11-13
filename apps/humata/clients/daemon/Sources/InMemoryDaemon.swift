@@ -55,6 +55,7 @@ package final class InMemoryDaemon: Sendable {
         var queues: [String: [Queued]] = [:]
         /// Each session's histories before its rewinds, the last last.
         var rewinds: [String: [[SessionEvent]]] = [:]
+        var skills = SkillList()
         var nextQueued = 1
         /// Images sent to each session, by session id then name.
         var images: [String: [String: ImageAttachment]] = [:]
@@ -571,6 +572,8 @@ package final class InMemoryDaemon: Sendable {
                 }
             },
             cleanUpStorage: { cleanup in self.cleanUp(cleanup) },
+            skills: { self.state.value.skills },
+            pickSkill: { name, candidates, winner in try self.pickSkill(name, candidates, winner) },
             answerRequest: { request, answer in try self.answerRequest(request, answer) },
             history: { session in
                 try self.known(session)
@@ -694,6 +697,15 @@ package final class InMemoryDaemon: Sendable {
 
     private func startSession(_ request: StartRequest) throws -> Session {
         try reachable(request.host)
+        let unpicked = state.value.skills.clashes.filter { $0.winner == nil }.map(\.name)
+        if !unpicked.isEmpty {
+            throw DaemonError.refused(
+                .skillClash,
+                message:
+                    "This session would get more than one skill named \(unpicked.joined(separator: ", ")); "
+                    + "pick which wins in Settings › Skills, then start it again."
+            )
+        }
         return try state.withValue { state in
             let id = "s\(state.nextSession)"
             var directory = request.workingDirectory
