@@ -39,11 +39,15 @@ ios_xctestrun_runner(
 sh_binary(
     name = "lend_simulator",
     srcs = ["simulators/lend.sh"],
+    # For runners that add a pre_action, such as the calendar's touch tests.
+    visibility = ["//apps/lifr/features/calendar:__pkg__"],
 )
 
 sh_binary(
     name = "return_simulator",
     srcs = ["simulators/return.sh"],
+    # For runners that add a pre_action, such as the calendar's touch tests.
+    visibility = ["//apps/lifr/features/calendar:__pkg__"],
 )
 
 # The empty app flow_host_app builds.

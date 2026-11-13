@@ -1,4 +1,8 @@
+load("@lifr_identity//:defs.bzl", "FLOW_HOST_BUNDLE_ID")
+load("@rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test")
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # Calendar: a month of tasks by the day they're due, the selected day's
@@ -42,6 +46,83 @@ macos_unit_test(
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
     deps = [":tests_lib"],
+)
+
+# The calendar alone over sample tasks, for the touch tests to drive.
+swift_library(
+    name = "touch_host_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["TouchHost/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":calendar",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+_TOUCH_HOST_BUNDLE_ID = FLOW_HOST_BUNDLE_ID + ".calendar"
+
+# Only installed on simulators, so it needs no signing.
+ios_application(
+    name = "touch_host",
+    testonly = True,
+    bundle_id = _TOUCH_HOST_BUNDLE_ID,
+    families = ["iphone"],
+    infoplists = ["//apps/libs/kits/flow:Host/Info.plist"],
+    minimum_os_version = "18.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":touch_host_lib"],
+)
+
+swift_library(
+    name = "touch_tests_lib",
+    testonly = True,
+    srcs = glob(["UITests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+# Removes the host app from the lent simulator before the tests install it.
+# Bazel dates every file in the app 1980, so a rebuilt app of the same size
+# looks unchanged and the simulator would keep running the old one.
+genrule(
+    name = "uninstall_touch_host_script",
+    testonly = True,
+    outs = ["uninstall_touch_host.sh"],
+    cmd = "printf '#!/bin/bash\\nxcrun simctl uninstall \"$$SIMULATOR_UDID\" %s || true\\n' > $@" % (
+        _TOUCH_HOST_BUNDLE_ID
+    ),
+)
+
+sh_binary(
+    name = "uninstall_touch_host",
+    testonly = True,
+    srcs = [":uninstall_touch_host_script"],
+)
+
+# The snapshot tests' simulator, with the host app installed fresh.
+ios_xctestrun_runner(
+    name = "touch_runner",
+    testonly = True,
+    clean_up_simulator_action = "//apps/libs/kits/flow:return_simulator",
+    create_simulator_action = "//apps/libs/kits/flow:lend_simulator",
+    device_type = "iPhone 17",
+    os_version = "26.2",
+    pre_action = ":uninstall_touch_host",
+)
+
+# Taps on the months page with a finger.
+ios_ui_test(
+    name = "touch_test",
+    # A busy simulator takes minutes to drive a few taps.
+    timeout = "long",
+    minimum_os_version = "18.0",
+    runner = ":touch_runner",
+    target_compatible_with = ["//bazel/xcode"],
+    test_host = ":touch_host",
+    deps = [":touch_tests_lib"],
 )
 
 filegroup(
