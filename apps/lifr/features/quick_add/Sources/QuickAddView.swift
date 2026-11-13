@@ -23,11 +23,19 @@ package struct QuickAddView: View {
                 }
             }
             Section {
-                TextField(fieldTitle, text: $store.title, prompt: Text(fieldTitle))
-                    .titleField()
+                if #available(iOS 26, macOS 26, *) {
+                    EntryField(
+                        title: fieldTitle, line: store.title, parts: store.entry?.parts ?? [],
+                        changed: { store.title = $0 }, submitted: { store.send(.addTapped) }
+                    )
                     .focused($titleFocused)
-                    .onSubmit { store.send(.addTapped) }
-                    .submitLabel(.done)
+                } else {
+                    TextField(fieldTitle, text: $store.title, prompt: Text(fieldTitle))
+                        .titleField()
+                        .focused($titleFocused)
+                        .onSubmit { store.send(.addTapped) }
+                        .submitLabel(.done)
+                }
                 if store.parent == nil, store.kind == .task {
                     // The system's button reads the clipboard without
                     // asking, as the person pressed it.
@@ -47,12 +55,14 @@ package struct QuickAddView: View {
                 if entry?.parts.isEmpty == false || store.error != nil {
                     VStack(alignment: .leading, spacing: 8) {
                         if let entry, !entry.parts.isEmpty {
-                            // The line as typed, the words read tinted, so
-                            // it's clear which ones the chips stand for.
-                            // The chips say the same to VoiceOver.
-                            Text(Self.highlighted(store.title, entry.parts))
-                                .accessibilityHidden(true)
-                            // The title as it will be saved, without them.
+                            if #unavailable(iOS 26, macOS 26) {
+                                // The line as typed, the words read tinted,
+                                // where the field can't tint them itself.
+                                // The chips say the same to VoiceOver.
+                                Text(tinted(store.title, entry.parts)).accessibilityHidden(true)
+                            }
+                            // The title as it will be saved, without the
+                            // words tinted.
                             Text("Adds “\(store.finalTitle)”")
                             PartChips(entry: entry, workspace: store.workspace) { store.send(.partIgnored($0)) }
                         }
@@ -96,19 +106,6 @@ package struct QuickAddView: View {
             }
         }
         .onAppear { titleFocused = true }
-    }
-
-    /// `line` with the words of `parts` tinted and bold.
-    static func highlighted(_ line: String, _ parts: [QuickEntry.Part]) -> AttributedString {
-        var text = AttributedString(line)
-        let characters = text.characters
-        for part in parts where part.range.lowerBound >= 0 && part.range.upperBound <= characters.count {
-            let start = characters.index(characters.startIndex, offsetBy: part.range.lowerBound)
-            let end = characters.index(characters.startIndex, offsetBy: part.range.upperBound)
-            text[start..<end].foregroundColor = .accentColor
-            text[start..<end].inlinePresentationIntent = .stronglyEmphasized
-        }
-        return text
     }
 
     private var fieldTitle: LocalizedStringKey {
@@ -261,5 +258,107 @@ private struct PartChips: View {
             ) {
                 QuickAddFeature()
             })
+    }
+}
+
+/// The title as it's typed, with the words Quick Add reads, such as
+/// "tomorrow" or "#Health", tinted in place so it's clear which ones the
+/// chips stand for. Return adds, as in a one-line field.
+@available(iOS 26, macOS 26, *)
+private struct EntryField: View {
+    let title: LocalizedStringKey
+    let line: String
+    let parts: [QuickEntry.Part]
+    let changed: (String) -> Void
+    let submitted: () -> Void
+
+    @State private var text = AttributedString()
+    @State private var selection = AttributedTextSelection()
+
+    var body: some View {
+        TextEditor(text: $text, selection: $selection)
+            .scrollDisabled(true)
+            .scrollContentBackground(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+            .overlay(alignment: .topLeading) {
+                if line.isEmpty {
+                    Text(title)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, Self.inset.top)
+                        .padding(.leading, Self.inset.leading)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+            // Lines the words up with the rows below, past the editor's own
+            // margin.
+            .padding(.horizontal, -Self.inset.leading)
+            .accessibilityLabel(Text(title))
+            .onAppear { show(line) }
+            .onChange(of: text) { typed() }
+            .onChange(of: line) { show(line) }
+            .onChange(of: parts) { tint() }
+    }
+
+    /// Where the editor starts its text, so the prompt sits where typing
+    /// does.
+    private static var inset: EdgeInsets {
+        #if os(iOS)
+            EdgeInsets(top: 8, leading: 5, bottom: 8, trailing: 5)
+        #else
+            EdgeInsets(top: 0, leading: 5, bottom: 0, trailing: 5)
+        #endif
+    }
+
+    /// Passes on what was typed. A return adds instead of starting a line,
+    /// and a pasted line break becomes a space.
+    private func typed() {
+        let typed = String(text.characters)
+        guard typed.contains(where: \.isNewline) else {
+            if typed != line { changed(typed) } else { tint() }
+            return
+        }
+        let submits = typed.last?.isNewline == true
+        let joined = typed.split(whereSeparator: \.isNewline).joined(separator: " ")
+        show(joined)
+        if joined != line { changed(joined) }
+        if submits { submitted() }
+    }
+
+    /// Shows `line` when it isn't what's typed, as after an add or a paste.
+    private func show(_ line: String) {
+        guard String(text.characters) != line else { return }
+        text = AttributedString(line)
+        selection = AttributedTextSelection(insertionPoint: text.endIndex)
+        tint()
+    }
+
+    /// Tints the words of `parts`, keeping the cursor where it is. Changes
+    /// nothing when they're tinted already, so it doesn't loop.
+    private func tint() {
+        guard tinted(String(text.characters), parts) != text else { return }
+        text.transform(updating: &selection) { text in
+            text.foregroundColor = nil
+            text.inlinePresentationIntent = nil
+            tintParts(&text, parts)
+        }
+    }
+}
+
+/// `line` with the words of `parts` tinted and bold.
+private func tinted(_ line: String, _ parts: [QuickEntry.Part]) -> AttributedString {
+    var text = AttributedString(line)
+    tintParts(&text, parts)
+    return text
+}
+
+/// Tints and bolds the words of `parts` in `text`.
+private func tintParts(_ text: inout AttributedString, _ parts: [QuickEntry.Part]) {
+    let characters = text.characters
+    for part in parts where part.range.lowerBound >= 0 && part.range.upperBound <= characters.count {
+        let start = characters.index(characters.startIndex, offsetBy: part.range.lowerBound)
+        let end = characters.index(characters.startIndex, offsetBy: part.range.upperBound)
+        text[start..<end].foregroundColor = .accentColor
+        text[start..<end].inlinePresentationIntent = .stronglyEmphasized
     }
 }
