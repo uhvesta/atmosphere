@@ -74,7 +74,7 @@
     [RadioGroup] "Add"
       [RadioButton/Segment] "Task" value: "0"
       [RadioButton/Segment] "Project" value: "1"
-    [TextField] "Name"
+    [TextArea] "Name"
     [StaticText] "" value: "Avenue"
     [PopUpButton] "" value: "Home"
     [Button] "Cancel"
