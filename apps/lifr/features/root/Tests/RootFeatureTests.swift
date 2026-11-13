@@ -1635,6 +1635,26 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testDueOnAsksForADateForTheOpenTask() async throws {
+        let run = records.task("Run", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.goTo(.anytime))
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.listShortcut(.pickDue))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.currentRows?.reschedule)
+
+        await store.send(.anytime(.rowTapped(run.id)))
+        await store.skipReceivedActions(strict: false)
+        await store.send(.listShortcut(.pickDue))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.currentRows?.reschedule?.id, run.id)
+        await task.cancel()
+    }
+
     func testGoToShowsTheListOnEitherPlatform() async {
         let mac = makeStore(.mac)
         await mac.send(.goTo(.calendar))

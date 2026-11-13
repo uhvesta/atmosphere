@@ -210,6 +210,9 @@ package struct RootCommands: Commands {
                 .disabled(store.openTaskID == nil)
             Button("Due Next Week") { store.send(.dueShortcut(.nextWeek)) }
                 .disabled(store.openTaskID == nil)
+            Button("Due On…") { store.send(.listShortcut(.pickDue)) }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(store.state.statusTaskID == nil)
             Button("No Due Date") { store.send(.dueShortcut(.none)) }
                 .disabled(store.openTaskID == nil)
             detailMenus(store.state.openDetail)

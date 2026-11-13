@@ -415,6 +415,8 @@ package struct RootFeature {
     package enum ListShortcut: Hashable, Sendable {
         case duplicate, trash, selectAll, moveUp, moveDown
         case sort(TaskSort)
+        /// Pick a due date for the open task, or the row the keyboard is on.
+        case pickDue
     }
 
     /// What the Task menu sets on the open task.
@@ -1000,6 +1002,9 @@ package struct RootFeature {
                     return .send(list(slot, .movedOnePlace(cursor, up: shortcut == .moveUp)))
                 case .sort(let sort):
                     return .send(list(slot, .sortPicked(sort)))
+                case .pickDue:
+                    guard let id = rows.detail?.id ?? rows.cursor else { return .none }
+                    return .send(list(slot, .rowAction(id, .reschedule)))
                 }
 
             case .priorityShortcut(let priority):
