@@ -380,9 +380,19 @@ package struct ConversationsFeature {
                 return .none
 
             case .newerKept(let newer):
+                guard state.conversations[id: newer.id] != nil else { return .none }
                 // A chat writing a reply keeps it: the reply is newer still,
-                // so it's kept over that copy when it's done.
-                guard state.conversations[id: newer.id] != nil, state.chats[id: newer.id]?.isWorking != true else {
+                // so it's kept over that copy when it's done. Say so now,
+                // while the other device's messages can still be copied.
+                if state.chats[id: newer.id]?.isWorking == true {
+                    state.alert = AlertState {
+                        TextState("Changed on Another Device")
+                    } message: {
+                        TextState(
+                            "“\(newer.title)” has newer messages from another device. The reply being written "
+                                + "here will be kept in their place, so copy them on that device first if you "
+                                + "need them.")
+                    }
                     return .none
                 }
                 state.conversations[id: newer.id] = newer

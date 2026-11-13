@@ -2296,6 +2296,35 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(saved, [newer])
     }
 
+    func testANewerCopyFromAnotherDeviceDuringAReplySaysSoAndKeepsTheReply() async throws {
+        let kept = ConversationsClient.inMemory()
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let store = list(kept)
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    for await _ in gate.stream { break }
+                    continuation.yield(AssistantReply(text: "Later.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
+        await store.skipReceivedActions(strict: false)
+        var newer = try XCTUnwrap(store.state.conversations[id: id])
+        newer.messages.append(ChatMessage(id: UUID(), role: .assistant, text: "From the Mac.", at: now + 60))
+
+        await store.send(.newerKept(newer))
+        XCTAssertNotNil(store.state.alert, "it says so while the reply is written")
+
+        gate.continuation.yield()
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.conversations[id: id]?.messages.map(\.text), ["Hello", "Later."])
+    }
+
     func testArchivingMovesAConversationOutOfTheListAndBack() async throws {
         let first = chat("First")
         let second = chat("Second")
