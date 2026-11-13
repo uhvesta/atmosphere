@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
     Agent, AgentError, ApprovalMode, BackendFile, Backup, Checkout, ClaudeOptions, ClaudeRunner,
-    CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions,
-    Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged,
+    CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions, Image,
+    Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged, Message,
     ModelServer, Query, Repository, Script, ScriptedRunner, SendMode, SessionId, SessionRecord,
     SessionUpdate, StartOptions, Summary, Watch, Workspaces, bundle,
 };
@@ -32,9 +32,10 @@ trait Backend: Send + Sync {
     fn send<'a>(
         &'a self,
         session: &'a SessionId,
-        text: String,
+        message: Message,
         mode: SendMode,
     ) -> BoxFuture<'a, ()>;
+    fn read_image<'a>(&'a self, session: &'a SessionId, name: &'a str) -> BoxFuture<'a, Image>;
     fn approve<'a>(
         &'a self,
         session: &'a SessionId,
@@ -48,6 +49,12 @@ trait Backend: Send + Sync {
     ) -> BoxFuture<'a, ()>;
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
     fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()>;
+    fn edit_queued<'a>(
+        &'a self,
+        session: &'a SessionId,
+        queue_id: &'a str,
+        text: String,
+    ) -> BoxFuture<'a, ()>;
     fn fork<'a>(
         &'a self,
         session: &'a SessionId,
@@ -107,11 +114,18 @@ where
     fn send<'a>(
         &'a self,
         session: &'a SessionId,
-        text: String,
+        message: Message,
         mode: SendMode,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
-            Agent::send(self, session, text, mode)
+            Agent::send(self, session, message, mode)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn read_image<'a>(&'a self, session: &'a SessionId, name: &'a str) -> BoxFuture<'a, Image> {
+        Box::pin(async move {
+            Agent::read_image(self, session, name)
                 .await
                 .map_err(Into::into)
         })
@@ -145,6 +159,18 @@ where
     fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             Agent::unqueue(self, session, queue_id)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn edit_queued<'a>(
+        &'a self,
+        session: &'a SessionId,
+        queue_id: &'a str,
+        text: String,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            Agent::edit_queued(self, session, queue_id, text)
                 .await
                 .map_err(Into::into)
         })
@@ -695,7 +721,11 @@ impl Host {
                 let agent = self.owner(&session)?.1;
                 // One it took already, whose answer was lost, isn't run again.
                 if self.take_send(&session, &message.client_id) {
-                    if let Err(error) = agent.send(&session, message.text, mode).await {
+                    let sent = Message {
+                        text: message.text,
+                        images: message.images.into_iter().map(convert::image).collect(),
+                    };
+                    if let Err(error) = agent.send(&session, sent, mode).await {
                         self.forget_send(&session, &message.client_id);
                         return Err(error.into());
                     }
@@ -801,6 +831,28 @@ impl Host {
                     .await?;
                 Response::Unqueued(pb::Unqueued {})
             }
+            Request::ReadImage(read) => {
+                let session = SessionId::new(read.session_id);
+                let image = self
+                    .owner(&session)?
+                    .1
+                    .read_image(&session, &read.name)
+                    .await?;
+                Response::ImageData(pb::ImageData {
+                    image: Some(pb::Image {
+                        media_type: image.media_type,
+                        data: image.data,
+                    }),
+                })
+            }
+            Request::EditQueued(edit) => {
+                let session = SessionId::new(edit.session_id);
+                self.owner(&session)?
+                    .1
+                    .edit_queued(&session, &edit.queue_id, edit.text)
+                    .await?;
+                Response::QueuedEdited(pb::QueuedEdited {})
+            }
             Request::AbortTurn(abort) => {
                 let session = SessionId::new(abort.session_id);
                 self.owner(&session)?.1.abort(&session).await?;
@@ -862,6 +914,7 @@ impl Host {
                             id: model.id,
                             name: model.name,
                             detail: model.detail.unwrap_or_default(),
+                            reads_images: model.reads_images,
                         })
                         .collect(),
                 })
@@ -1008,7 +1061,7 @@ impl Host {
                             .collect::<Vec<_>>()
                             .join("\n")
                     );
-                    agent.send(&session, text, SendMode::Enqueue).await?;
+                    agent.send(&session, text.into(), SendMode::Enqueue).await?;
                 }
                 Response::BaseUpdated(pb::BaseUpdated {
                     repositories: merged

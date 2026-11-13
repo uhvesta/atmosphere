@@ -55,6 +55,7 @@
   [StaticText] "" value: "3 proposals wait for you"
   [Button] "Show" help: "Scroll to the first proposal not decided yet"
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

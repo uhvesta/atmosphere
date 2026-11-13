@@ -73,7 +73,7 @@ final class DocsFeatureTests: XCTestCase {
             $0.drafts = []
         }
         let sent = daemon.history(session.id).compactMap { event -> String? in
-            if case .userMessage(let text) = event.kind { text } else { nil }
+            if case .userMessage(let text, _) = event.kind { text } else { nil }
         }
         let message = try XCTUnwrap(sent.last)
         XCTAssertEqual(sent.count, 2)

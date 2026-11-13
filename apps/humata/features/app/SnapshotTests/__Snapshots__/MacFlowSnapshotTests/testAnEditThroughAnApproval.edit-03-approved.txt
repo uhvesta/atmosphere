@@ -85,7 +85,9 @@
   [Button] "Deny" help: "Deny (⇧⌘D)"
   [Button] "Approve" help: "Approve (⇧⌘A)"
   [MenuButton] "Go Down" help: "Stop asking in this session"
+  [Button] "Stop and Edit" help: "Stop this turn and put your message back in the box"
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Stop" help: "Stop the reply, keeping what it has written" id: stop.fill
   [Toolbar] ""
     [Button] "Add Project"

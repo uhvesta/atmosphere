@@ -196,6 +196,8 @@ message Request {
     GetStorage get_storage = 93;
     SetStorageSettings set_storage_settings = 94;
     CleanUpStorage clean_up_storage = 95;
+    EditQueued edit_queued = 96;
+    ReadImage read_image = 97;
   }
 }
 
@@ -293,6 +295,8 @@ message Response {
     ApprovalsDecided approvals_decided = 86;
     GrantRevoked grant_revoked = 87;
     Storage storage = 88;
+    QueuedEdited queued_edited = 89;
+    ImageData image_data = 90;
   }
 }
 
@@ -343,6 +347,8 @@ enum ErrorCode {
   ERROR_CODE_APP_ONLY = 26;
   // No such approval or grant; it may have been dropped.
   ERROR_CODE_UNKNOWN_APPROVAL = 27;
+  // No such image in the session; it went with the session's files.
+  ERROR_CODE_UNKNOWN_IMAGE = 28;
 }
 
 enum Backend {
@@ -673,6 +679,8 @@ message ModelChoice {
   string name = 2;
   // Such as what a turn costs; empty when there is nothing to say.
   string detail = 3;
+  // Whether it can see images sent with a message.
+  bool reads_images = 4;
 }
 
 message ImportableSession {
@@ -725,9 +733,32 @@ message SendMessage {
   // Names this send, so one sent again after its answer was lost runs
   // once: the host takes an id it took lately as done. Empty for none.
   string client_id = 4;
+  // Sent with the text. A steer with images goes next in the queue
+  // instead, as a running turn can't take them.
+  // ERROR_CODE_INVALID_REQUEST for a kind other than PNG, JPEG, GIF or
+  // WebP, or one over 20 MB.
+  repeated Image images = 5;
+}
+
+// An image sent with a message.
+message Image {
+  // image/png, image/jpeg, image/gif or image/webp.
+  string media_type = 1;
+  bytes data = 2;
 }
 
 message MessageSent {}
+
+// An image a UserMessage names. ERROR_CODE_UNKNOWN_IMAGE when the
+// session has no image by that name.
+message ReadImage {
+  string session_id = 1;
+  string name = 2;
+}
+
+message ImageData {
+  Image image = 1;
+}
 
 message Approve {
   string session_id = 1;
@@ -1169,6 +1200,18 @@ message Unqueue {
 
 message Unqueued {}
 
+// Changes a queued message's text before its turn starts. Its
+// MessageQueued event comes again, with the same id and the new text.
+// ERROR_CODE_UNKNOWN_QUEUED_MESSAGE when its turn already started or it
+// was taken out.
+message EditQueued {
+  string session_id = 1;
+  string queue_id = 2;
+  string text = 3;
+}
+
+message QueuedEdited {}
+
 // Comments on lines `start_line` to `end_line` of a file as it is in the
 // session's copy; in rendered Markdown, on `quote`, the text picked there.
 message CreateThread {
@@ -1531,6 +1574,8 @@ message Snapshot {
 
 message UserMessage {
   string text = 1;
+  // Names of the images sent with it; ReadImage gives each.
+  repeated string images = 2;
 }
 
 message TurnStarted {}
@@ -1594,6 +1639,8 @@ message MessageQueued {
   // Names it until it leaves the queue.
   string queue_id = 1;
   string text = 2;
+  // Names of its images; ReadImage gives each.
+  repeated string images = 3;
 }
 
 // The queued message left the queue: its turn is starting, or the person

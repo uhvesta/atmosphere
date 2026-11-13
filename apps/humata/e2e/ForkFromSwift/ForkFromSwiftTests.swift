@@ -89,7 +89,7 @@ final class ForkFromSwiftTests: XCTestCase {
     private static func said(_ events: [SessionEvent]) -> [Said] {
         events.compactMap {
             switch $0.kind {
-            case .userMessage(let text): .user(text)
+            case .userMessage(let text, _): .user(text)
             case .assistantMessage(let text): .assistant(text)
             default: nil
             }

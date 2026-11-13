@@ -1585,6 +1585,8 @@ impl Daemon {
             }
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
             Request::Unqueue(unqueue) => self.host_of(&unqueue.session_id).await?,
+            Request::EditQueued(edit) => self.host_of(&edit.session_id).await?,
+            Request::ReadImage(read) => self.host_of(&read.session_id).await?,
             Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,
             Request::UpdateSession(update) => {
                 let host = self.host_of(&update.session_id).await?;

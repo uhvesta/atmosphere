@@ -59,6 +59,7 @@
     [Button] "Apply"
     [StaticText] "" value: "Here's a tighter spec."
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

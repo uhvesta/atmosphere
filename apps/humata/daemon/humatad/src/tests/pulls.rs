@@ -219,6 +219,7 @@ async fn land_a_task() -> Landed {
             text: "write the notes".to_owned(),
             mode: pb::SendMode::Enqueue.into(),
             client_id: String::new(),
+            images: Vec::new(),
         }))
         .await;
     assert!(

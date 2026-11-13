@@ -8,6 +8,7 @@ import HumataReview
 import HumataTerminal
 import InferenceKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A session's chat: the person's messages, the agent's thinking, replies,
 /// the commands it runs with their output and the permissions it asks for,
@@ -295,21 +296,28 @@ package struct SessionView: View {
     @ViewBuilder
     private func row(_ item: ChatItem) -> some View {
         switch item {
-        case .person(let id, let text):
+        case .person(let id, let text, let images):
             if store.editing == id {
                 editor
             } else {
-                MessageView(role: .person, text: text, select: { selecting = TextToSelect(text: $0) })
-                    .contextMenu {
-                        Button("Edit Message…") { store.send(.editTapped(id)) }
-                        Divider()
-                        Button("Fork Before This With the Code") {
-                            store.send(.forkTapped(before: id, chatOnly: false))
-                        }
-                        Button("Fork Before This, Chat Only") {
-                            store.send(.forkTapped(before: id, chatOnly: true))
+                MessageView(
+                    role: .person, text: text, select: { selecting = TextToSelect(text: $0) },
+                    attachments: {
+                        if !images.isEmpty {
+                            SentImages(names: images, thumbnails: store.thumbnails) { store.send(.thumbnailNeeded($0)) }
                         }
                     }
+                )
+                .contextMenu {
+                    Button("Edit Message…") { store.send(.editTapped(id)) }
+                    Divider()
+                    Button("Fork Before This With the Code") {
+                        store.send(.forkTapped(before: id, chatOnly: false))
+                    }
+                    Button("Fork Before This, Chat Only") {
+                        store.send(.forkTapped(before: id, chatOnly: true))
+                    }
+                }
             }
         case .reply(_, let text):
             MessageView(role: .assistant, text: text, select: { selecting = TextToSelect(text: $0) })
@@ -547,9 +555,11 @@ private struct TextToSelect: Identifiable {
     let text: String
 }
 
-/// A message waiting for its turn, above the box, with a way to take it out.
+/// A message waiting for its turn, above the box, with ways to edit it in
+/// place and to take it out. What's sent while it waits joins it.
 private struct QueuedRow: View {
     let queued: QueuedMessage
+    let edit: () -> Void
     let remove: () -> Void
 
     var body: some View {
@@ -559,7 +569,19 @@ private struct QueuedRow: View {
             Text(queued.text)
                 .lineLimit(1)
                 .truncationMode(.tail)
+            if !queued.images.isEmpty {
+                Label("\(queued.images.count)", systemImage: "photo")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .help(
+                        queued.images.count == 1 ? "1 image goes with it" : "\(queued.images.count) images go with it")
+            }
             Spacer()
+            Button("Edit", systemImage: "pencil", action: edit)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Change it before its turn starts")
             Button("Remove", systemImage: "xmark.circle.fill", action: remove)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -572,6 +594,158 @@ private struct QueuedRow: View {
         .background(.fill.quaternary, in: .rect(cornerRadius: 6))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Queued: \(queued.text)")
+    }
+}
+
+/// The images sent with a message, as thumbnails, each read when it first
+/// shows.
+private struct SentImages: View {
+    let names: [String]
+    let thumbnails: [String: Data]
+    let needed: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(names, id: \.self) { name in
+                Group {
+                    if let data = thumbnails[name] {
+                        if let image = NSImage(data: data) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "photo.badge.exclamationmark")
+                                .foregroundStyle(.secondary)
+                                .help("This image is gone from the session")
+                        }
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+                .frame(width: 96, height: 96)
+                .background(.fill.quaternary)
+                .clipShape(.rect(cornerRadius: 8))
+                .onAppear { needed(name) }
+                .accessibilityLabel("Image")
+            }
+        }
+    }
+}
+
+/// The images in the box: a spinner on each while it's made ready to
+/// send, then its thumbnail, each with a way to take it out.
+private struct ImageChips: View {
+    let images: IdentifiedArrayOf<DraftImage>
+    let remove: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(images) { image in
+                    ZStack(alignment: .topTrailing) {
+                        Group {
+                            if image.isPreparing {
+                                ProgressView().controlSize(.small)
+                                    .help("Getting \(image.name) ready to send")
+                            } else if let data = image.thumbnail, let thumbnail = NSImage(data: data) {
+                                Image(nsImage: thumbnail)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Image(systemName: "photo")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(width: 52, height: 52)
+                        .background(.fill.quaternary)
+                        .clipShape(.rect(cornerRadius: 8))
+                        Button("Remove", systemImage: "xmark.circle.fill") { remove(image.id) }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                            .background(.background, in: .circle)
+                            .offset(x: 4, y: -4)
+                            .help("Take it out of the message")
+                    }
+                    .padding(.top, 4)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(image.isPreparing ? "\(image.name), getting ready" : image.name)
+                }
+            }
+        }
+        .scrollIndicators(.never)
+    }
+}
+
+/// The long texts pasted into the box, each a chip to read or take out.
+private struct PasteChips: View {
+    let pastes: [Paste]
+    let remove: (String) -> Void
+    @State private var open: OpenAttachment?
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(pastes) { paste in
+                    HStack(spacing: 4) {
+                        Button {
+                            open = .file(name: "Pasted Text", text: paste.text)
+                        } label: {
+                            Label(paste.label, systemImage: "doc.on.clipboard")
+                                .monospacedDigit()
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Read what was pasted")
+                        Button("Remove", systemImage: "xmark.circle.fill") { remove(paste.id) }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                            .help("Take it out of the message")
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.fill.quaternary, in: .capsule)
+                }
+            }
+        }
+        .scrollIndicators(.never)
+        .attachmentViewer($open)
+    }
+}
+
+/// A queued message open to edit, until it's saved or cancelled; Return
+/// saves, and Escape cancels.
+private struct QueuedEditor: View {
+    @Binding var text: String
+    let save: () -> Void
+    let cancel: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "clock")
+                .foregroundStyle(.secondary)
+            TextField("Queued message", text: $text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...6)
+                .focused($focused)
+                .onSubmit(save)
+                .onKeyPress(.escape) {
+                    cancel()
+                    return .handled
+                }
+            Button("Cancel", action: cancel)
+                .buttonStyle(.borderless)
+            Button("Save", action: save)
+                .buttonStyle(.borderless)
+                .fontWeight(.semibold)
+        }
+        .font(.caption)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.fill.tertiary, in: .rect(cornerRadius: 6))
+        .onAppear { focused = true }
     }
 }
 
@@ -745,38 +919,137 @@ private struct TurnInProgress: View {
 /// each key typed redraws only this and not the chat.
 private struct SessionComposer: View {
     @Bindable var store: StoreOf<SessionFeature>
+    @State private var choosing = false
 
     var body: some View {
-        ChatComposer(
-            text: $store.draft, prompt: Text(store.isWorking ? "Queue a message, or steer" : "Message the agent"),
-            model: nil,
-            send: SendButton(
-                canSend: !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                canStop: store.isWorking,
-                send: { store.send(.sendTapped(.enqueue)) },
-                stop: { store.send(.abortTapped) })
-        ) {
-            store.send(.sendTapped(.enqueue))
-        } top: {
-            ForEach(store.dropped) { dropped in
-                DroppedRow(message: dropped) { store.send(.putBackTapped(dropped.id)) }
+        composer
+            .fileImporter(isPresented: $choosing, allowedContentTypes: [.image], allowsMultipleSelection: true) {
+                if case .success(let urls) = $0 { store.send(.imagesAdded(urls)) }
             }
-            ForEach(store.queued) { queued in
-                QueuedRow(queued: queued) { store.send(.unqueueTapped(queued.id)) }
+            .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
+                // One the model can't see is refused with a note saying so.
+                guard !store.session.archived else { return false }
+                return drop(providers)
             }
-            if store.isWorking, !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                HStack {
-                    Text("Return queues it for after this turn.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+    }
+
+    /// Adds dropped image files, and images dragged from other apps.
+    private func drop(_ providers: [NSItemProvider]) -> Bool {
+        var taken = false
+        for provider in providers {
+            if provider.canLoadObject(ofClass: URL.self) {
+                taken = true
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url, UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true else {
+                        return
+                    }
+                    Task { @MainActor in store.send(.imagesAdded([url])) }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                taken = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data else { return }
+                    Task { @MainActor in store.send(.imagePasted(data)) }
+                }
+            }
+        }
+        return taken
+    }
+
+    /// The image on the clipboard, if there is one. Read only when asked
+    /// for, as it can be large.
+    private var pastedImage: Data? {
+        let pasteboard = NSPasteboard.general
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            if let data = pasteboard.data(forType: type) { return data }
+        }
+        return nil
+    }
+
+    private var prompt: Text { Text(store.isWorking ? "Queue a message, or steer" : "Message the agent") }
+
+    private var sendButton: SendButton {
+        SendButton(
+            canSend: store.canSend,
+            canStop: store.isWorking,
+            send: { store.send(.sendTapped(.enqueue)) },
+            stop: { store.send(.abortTapped) })
+    }
+
+    /// With + for images only when the model can see them.
+    @ViewBuilder private var composer: some View {
+        if store.takesImages {
+            ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {
+                store.send(.sendTapped(.enqueue))
+            } top: {
+                top
+            } attach: {
+                Button("Choose Images…", systemImage: "photo") { choosing = true }
+                Button("Paste Image", systemImage: "doc.on.clipboard") {
+                    if let data = pastedImage { store.send(.imagePasted(data)) }
+                }
+                .disabled(NSPasteboard.general.availableType(from: [.png, .tiff]) == nil)
+            }
+        } else {
+            ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {
+                store.send(.sendTapped(.enqueue))
+            } top: {
+                top
+            }
+        }
+    }
+
+    /// What sits over the field: the message's images and pastes, and the
+    /// messages queued.
+    @ViewBuilder private var top: some View {
+        if !store.images.isEmpty {
+            ImageChips(images: store.images) { store.send(.removeImageTapped($0)) }
+        }
+        if !store.pastes.isEmpty {
+            PasteChips(pastes: store.pastes) { store.send(.removePasteTapped($0)) }
+        }
+        ForEach(store.dropped) { dropped in
+            DroppedRow(message: dropped) { store.send(.putBackTapped(dropped.id)) }
+        }
+        ForEach(store.queued) { queued in
+            if store.editingQueued == queued.id {
+                QueuedEditor(
+                    text: $store.queuedEdit, save: { store.send(.editQueuedSaved) },
+                    cancel: { store.send(.editQueuedCancelled) })
+            } else {
+                QueuedRow(
+                    queued: queued, edit: { store.send(.editQueuedTapped(queued.id)) },
+                    remove: { store.send(.unqueueTapped(queued.id)) })
+            }
+        }
+        if store.isWorking, store.draft.isEmpty, store.lastMessage != nil {
+            HStack {
+                Spacer()
+                Button("Stop and Edit") { store.send(.stopAndEditTapped) }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .help("Stop this turn and put your message back in the box")
+            }
+            .padding(.horizontal, 4)
+        }
+        if store.isWorking, !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            HStack {
+                Text(
+                    store.queued.isEmpty
+                        ? "Return queues it for after this turn."
+                        : "Return adds it to what’s queued."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Spacer()
+                if store.images.isEmpty {
                     Button("Steer Now") { store.send(.sendTapped(.steer)) }
                         .font(.caption.weight(.semibold))
                         .keyboardShortcut(.return, modifiers: .command)
                         .help("Send it to the running turn (⌘↩)")
                 }
-                .padding(.horizontal, 4)
             }
+            .padding(.horizontal, 4)
         }
     }
 }

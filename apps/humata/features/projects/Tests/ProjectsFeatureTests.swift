@@ -844,7 +844,7 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.send(.inboxRetryTapped(session.id))
         await store.receive(\.loaded)
         let sent = try await daemon.client.history(session.id).compactMap { event -> String? in
-            if case .userMessage(let text) = event.kind { text } else { nil }
+            if case .userMessage(let text, _) = event.kind { text } else { nil }
         }
         XCTAssertEqual(sent, ["first", "build it", "build it"])
     }
@@ -1180,7 +1180,7 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(session.seenTurns, session.turns, "what happened outside Humata isn't unread")
         XCTAssertEqual(
             daemon.history(session.id).compactMap {
-                if case .userMessage(let text) = $0.kind { text } else { nil }
+                if case .userMessage(let text, _) = $0.kind { text } else { nil }
             },
             ["fix the login"])
 

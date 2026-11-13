@@ -252,6 +252,7 @@ impl Daemon {
             text: message.clone(),
             mode: pb::SendMode::Enqueue.into(),
             client_id: String::new(),
+            images: Vec::new(),
         });
         self.ask(&host, request).await?;
         let comments: Vec<i64> = pending
@@ -681,7 +682,13 @@ mod tests {
         };
         let events = [
             event(1, Kind::Checkpoint(pb::Checkpoint::default())),
-            event(2, Kind::UserMessage(pb::UserMessage { text: "hi".into() })),
+            event(
+                2,
+                Kind::UserMessage(pb::UserMessage {
+                    text: "hi".into(),
+                    images: Vec::new(),
+                }),
+            ),
             event(3, Kind::TurnStarted(pb::TurnStarted {})),
             event(4, said("[thread 3] not this one")),
             event(5, Kind::TurnEnded(pb::TurnEnded { aborted: false })),
@@ -690,6 +697,7 @@ mod tests {
                 7,
                 Kind::UserMessage(pb::UserMessage {
                     text: "review".into(),
+                    images: Vec::new(),
                 }),
             ),
             event(8, Kind::TurnStarted(pb::TurnStarted {})),
@@ -735,6 +743,7 @@ mod tests {
                 1,
                 Kind::UserMessage(pb::UserMessage {
                     text: "review".into(),
+                    images: Vec::new(),
                 }),
             ),
             event(2, Kind::TurnStarted(pb::TurnStarted {})),

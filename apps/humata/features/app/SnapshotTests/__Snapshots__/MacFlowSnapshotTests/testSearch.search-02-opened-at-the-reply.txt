@@ -44,6 +44,7 @@
     [StaticText] "" value: "seeds"
     [StaticText] "" value: "The seeds now run in a transaction, so a failed one leaves the schema as it was."
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

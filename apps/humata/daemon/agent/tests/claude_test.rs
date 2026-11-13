@@ -348,7 +348,7 @@ fn request_id(events: &[Event]) -> String {
 fn event_with(events: &[Event], text: &str) -> Event {
     events
         .iter()
-        .find(|event| matches!(&event.kind, EventKind::UserMessage { text: said } if said == text))
+        .find(|event| matches!(&event.kind, EventKind::UserMessage { text: said, .. } if said == text))
         .cloned()
         .expect("the message is in the history")
 }

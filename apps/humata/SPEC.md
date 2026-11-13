@@ -145,9 +145,9 @@ original spec; lettered ones were added since.
 | J Agents ask, and a board journal | Done |
 | V Second review pass | Done |
 | P Performance pass | Done |
-| K Signed releases | Built; the first release waits for `gh auth login` |
+| K Signed releases | Done: humata-v0.1.0 published |
 | S1 Storage: safe places, cleanup, opt-in auto-delete | Done |
-| Q1 Queue and composer: edit, merge, cancel, pastes, images | Next |
+| Q1 Queue and composer: edit, merge, cancel, pastes, images | Done |
 | Q2 Rewind and checkpoints | Planned |
 | Q3 Skills from the agents' folders | Planned |
 | Q4 Plugins | Planned |
@@ -1086,17 +1086,17 @@ the Mac. Built after S1, before T1.
 
 #### Q1 Queue and composer
 
-- [ ] A message sent while one waits joins the queued one (a blank line
+- [x] A message sent while one waits joins the queued one (a blank line
   between), so a turn takes them together; Steer Now still steers
-- [ ] A queued message can be edited in place until its turn starts; an
+- [x] A queued message can be edited in place until its turn starts; an
   edit that loses the race to the turn says so and puts the text back
-- [ ] Cancel: a queued message is taken out; a running one is stopped and
+- [x] Cancel: a queued message is taken out; a running one is stopped and
   its text goes back in the box; one stopped before the agent read it
   leaves no trace in the history
-- [ ] A paste over 1,000 characters or 20 lines shows as a chip, "Pasted
+- [x] A paste over 1,000 characters or 20 lines shows as a chip, "Pasted
   12 KB, 340 lines", that opens to read, edit or remove; it's sent as
   the text
-- [ ] Images pasted, dropped or attached go with a message, as thumbnails
+- [x] Images pasted, dropped or attached go with a message, as thumbnails
   in the box and the chat: to Claude Code and Copilot as images, and to a
   local model that can see them; one that can't says so before sending
 

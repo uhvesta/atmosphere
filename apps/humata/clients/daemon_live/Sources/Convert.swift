@@ -23,6 +23,7 @@ extension ErrorCode {
             case .unknownThread: .unknownThread
             case .changed: .changed
             case .unknownQueuedMessage: .unknownQueuedMessage
+            case .unknownImage: .unknownImage
             case .unknownImport: .unknownImport
             case .alreadyImported: .alreadyImported
             case .unknownRequest: .unknownRequest
@@ -400,7 +401,7 @@ extension SessionEvent {
     init?(_ event: Humata_V1_SessionEvent) {
         let kind: Kind
         switch event.kind {
-        case .userMessage(let message): kind = .userMessage(message.text)
+        case .userMessage(let message): kind = .userMessage(message.text, images: message.images)
         case .turnStarted: kind = .turnStarted
         case .assistantDelta(let delta): kind = .assistantDelta(delta.text)
         case .assistantMessage(let message): kind = .assistantMessage(message.text)
@@ -425,7 +426,8 @@ extension SessionEvent {
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
                 premiumRequests: usage.premiumRequests)
         case .checkpoint: kind = .checkpoint
-        case .messageQueued(let queued): kind = .messageQueued(queueID: queued.queueID, text: queued.text)
+        case .messageQueued(let queued):
+            kind = .messageQueued(queueID: queued.queueID, text: queued.text, images: queued.images)
         case .dequeued(let dequeued): kind = .dequeued(queueID: dequeued.queueID, dropped: dequeued.dropped)
         // A save part way through a turn only matters to forks and restores.
         case .saved, nil: return nil

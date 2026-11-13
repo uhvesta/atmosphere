@@ -41,13 +41,21 @@ package final class InMemoryDaemon: Sendable {
         var contents: String?
     }
 
+    struct Queued {
+        var id: String
+        var text: String
+        var images: [String] = []
+    }
+
     struct State {
         var projects: [Project] = []
         var sessions: [Session] = []
         var histories: [String: [SessionEvent]] = [:]
         var paused: [String: Paused] = [:]
-        var queues: [String: [(id: String, text: String)]] = [:]
+        var queues: [String: [Queued]] = [:]
         var nextQueued = 1
+        /// Images sent to each session, by session id then name.
+        var images: [String: [String: ImageAttachment]] = [:]
         /// Each copy of the code's writes, oldest first, by the id of the
         /// session that made the copy.
         var copies: [String: [Write]] = [:]
@@ -101,7 +109,7 @@ package final class InMemoryDaemon: Sendable {
                 ModelChoice(id: "gpt-5", name: "GPT-5", detail: "1 premium request"),
                 ModelChoice(id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", detail: "1 premium request"),
             ],
-            .local: [ModelChoice(id: "qwen3:8b", name: "qwen3:8b")],
+            .local: [ModelChoice(id: "qwen3:8b", name: "qwen3:8b", readsImages: false)],
         ]
         /// The sessions imported, by the backend's id.
         var imported: [String: String] = [:]
@@ -468,10 +476,22 @@ package final class InMemoryDaemon: Sendable {
                 // Writing to it answers what it asked.
                 self.answerRequests { $0.sessionID == session && $0.kind == .question }
             },
+            sendImages: { session, text, images, mode in
+                try self.send(session, text, mode, images: images)
+                self.answerRequests { $0.sessionID == session && $0.kind == .question }
+            },
+            readImage: { session, name in
+                try self.known(session)
+                guard let image = self.state.value.images[session]?[name] else {
+                    throw DaemonError.refused(.unknownImage, message: "Session \(session) has no image \(name).")
+                }
+                return image
+            },
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
             abort: { session in try self.abort(session) },
             unqueue: { session, queueID in try self.unqueue(session, queueID) },
+            editQueued: { session, queueID, text in try self.editQueued(session, queueID, text) },
             fork: { session, before, name, chatOnly in
                 try self.fork(session, before: before, name: name, chatOnly: chatOnly)
             },
@@ -744,24 +764,45 @@ package final class InMemoryDaemon: Sendable {
         return "\(folder)/\(repository.name)"
     }
 
-    func send(_ session: String, _ text: String, _ mode: SendMode) throws {
+    func send(_ session: String, _ text: String, _ mode: SendMode, images: [ImageAttachment] = []) throws {
         try known(session)
         if state.value.sessions.first(where: { $0.id == session })?.archived == true {
             throw DaemonError.refused(
                 .archived, message: "Session \(session) is archived; unarchive it to work in it again.")
         }
-        let (busy, queued) = state.withValue { state -> (Bool, String?) in
-            guard state.paused[session] != nil else { return (false, nil) }
-            guard mode == .enqueue else { return (true, nil) }
+        let (busy, queued, names) = state.withValue { state -> (Bool, Queued?, [String]) in
+            let names = images.map { image in
+                let name =
+                    "i\(state.images[session, default: [:]].count + 1)."
+                    + (image.mediaType.split(separator: "/").last.map(String.init) ?? "png")
+                state.images[session, default: [:]][name] = image
+                return name
+            }
+            guard state.paused[session] != nil else { return (false, nil, names) }
+            // A running turn can't take images, so a steer with them goes next.
+            if mode == .steer, !names.isEmpty {
+                defer { state.nextQueued += 1 }
+                let queued = Queued(id: "q\(state.nextQueued)", text: text, images: names)
+                state.queues[session, default: []].insert(queued, at: 0)
+                return (true, queued, names)
+            }
+            guard mode == .enqueue else { return (true, nil, names) }
+            // What's sent while a message waits joins it.
+            if let last = state.queues[session]?.indices.last, var joined = state.queues[session]?[last] {
+                joined.text = [joined.text, text].filter { !$0.isEmpty }.joined(separator: "\n\n")
+                joined.images += names
+                state.queues[session]?[last] = joined
+                return (true, joined, names)
+            }
             defer { state.nextQueued += 1 }
-            let id = "q\(state.nextQueued)"
-            state.queues[session, default: []].append((id: id, text: text))
-            return (true, id)
+            let queued = Queued(id: "q\(state.nextQueued)", text: text, images: names)
+            state.queues[session, default: []].append(queued)
+            return (true, queued, names)
         }
         if let queued {
-            append(.messageQueued(queueID: queued, text: text), to: session)
+            append(.messageQueued(queueID: queued.id, text: queued.text, images: queued.images), to: session)
         } else if !busy {
-            play(session, text)
+            play(session, text, images: names)
         } else if mode == .steer {
             // A turn waiting on a person reads the steer when it resumes.
             append(.userMessage(text), to: session)
@@ -769,13 +810,13 @@ package final class InMemoryDaemon: Sendable {
     }
 
     /// Takes the next queued message off the session's queue, if any.
-    private func nextQueued(_ session: String) -> String? {
+    private func nextQueued(_ session: String) -> Queued? {
         let next = state.withValue { state in
             state.queues[session]?.isEmpty == false ? state.queues[session]?.removeFirst() : nil
         }
         guard let next else { return nil }
         append(.dequeued(queueID: next.id), to: session)
-        return next.text
+        return next
     }
 
     private func unqueue(_ session: String, _ queueID: String) throws {
@@ -792,14 +833,29 @@ package final class InMemoryDaemon: Sendable {
         append(.dequeued(queueID: queueID), to: session)
     }
 
+    private func editQueued(_ session: String, _ queueID: String, _ text: String) throws {
+        try known(session)
+        let edited = state.withValue { state -> Queued? in
+            guard let index = state.queues[session]?.firstIndex(where: { $0.id == queueID }) else { return nil }
+            state.queues[session]?[index].text = text
+            return state.queues[session]?[index]
+        }
+        guard let edited else {
+            throw DaemonError.refused(
+                .unknownQueuedMessage,
+                message: "Session \(session)'s queued message \(queueID) already started or was taken out.")
+        }
+        append(.messageQueued(queueID: queueID, text: text, images: edited.images), to: session)
+    }
+
     /// Plays turns for `text`, then for each queued message, until one
     /// waits for permission or the queue is empty.
-    private func play(_ session: String, _ text: String) {
-        var next: String? = text
-        while let text = next {
-            append(.userMessage(text), to: session)
+    private func play(_ session: String, _ text: String, images: [String] = []) {
+        var next: Queued? = Queued(id: "", text: text, images: images)
+        while let message = next {
+            append(.userMessage(message.text, images: message.images), to: session)
             append(.turnStarted, to: session)
-            guard proceed(session, steps: script(text)) else { return }
+            guard proceed(session, steps: script(message.text)) else { return }
             next = self.nextQueued(session)
         }
     }
@@ -881,7 +937,7 @@ package final class InMemoryDaemon: Sendable {
     private func resume(_ session: String, rest: [Step]) {
         guard proceed(session, steps: rest) else { return }
         let next = nextQueued(session)
-        if let next { play(session, next) }
+        if let next { play(session, next.text, images: next.images) }
     }
 
     private func setApprovalMode(_ session: String, _ mode: ApprovalMode) throws {
@@ -904,7 +960,7 @@ package final class InMemoryDaemon: Sendable {
         append(.turnEnded(aborted: true), to: session)
         let next = nextQueued(session)
         if let next {
-            play(session, next)
+            play(session, next.text, images: next.images)
         } else {
             append(.idle, to: session)
         }

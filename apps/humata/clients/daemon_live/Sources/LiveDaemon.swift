@@ -125,7 +125,8 @@ extension DaemonClient {
                 }
                 return found.models.map {
                     ModelChoice(
-                        id: $0.id, name: $0.name.isEmpty ? $0.id : $0.name, detail: $0.detail.isEmpty ? nil : $0.detail)
+                        id: $0.id, name: $0.name.isEmpty ? $0.id : $0.name, detail: $0.detail.isEmpty ? nil : $0.detail,
+                        readsImages: $0.readsImages)
                 }
             },
             skipped: { host in
@@ -157,6 +158,30 @@ extension DaemonClient {
                 _ = try await daemon.call(.sendMessage(message))
                 unanswered.answered(session: session, text: text)
             },
+            sendImages: { session, text, images, mode in
+                var message = Humata_V1_SendMessage()
+                message.sessionID = session
+                message.text = text
+                message.mode = mode == .steer ? .immediate : .enqueue
+                message.images = images.map { image in
+                    var sent = Humata_V1_Image()
+                    sent.mediaType = image.mediaType
+                    sent.data = image.data
+                    return sent
+                }
+                // Images are too large to send twice: a lost answer is
+                // sent again as new, which the person sees and can remove.
+                _ = try await daemon.call(.sendMessage(message))
+            },
+            readImage: { session, name in
+                var read = Humata_V1_ReadImage()
+                read.sessionID = session
+                read.name = name
+                guard case .imageData(let found) = try await daemon.call(.readImage(read)) else {
+                    throw DaemonError.unexpected("something other than the image")
+                }
+                return ImageAttachment(mediaType: found.image.mediaType, data: found.image.data)
+            },
             approve: { session, request, approved in
                 var approve = Humata_V1_Approve()
                 approve.sessionID = session
@@ -180,6 +205,13 @@ extension DaemonClient {
                 unqueue.sessionID = session
                 unqueue.queueID = queueID
                 _ = try await daemon.call(.unqueue(unqueue))
+            },
+            editQueued: { session, queueID, text in
+                var edit = Humata_V1_EditQueued()
+                edit.sessionID = session
+                edit.queueID = queueID
+                edit.text = text
+                _ = try await daemon.call(.editQueued(edit))
             },
             fork: { session, before, name, chatOnly in
                 var fork = Humata_V1_ForkSession()

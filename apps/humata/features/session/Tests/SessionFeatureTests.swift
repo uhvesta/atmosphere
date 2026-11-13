@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataSession
+import ImageIO
 import XCTest
 
 @MainActor
@@ -12,7 +13,7 @@ final class SessionFeatureTests: XCTestCase {
     private func said(_ events: IdentifiedArrayOf<SessionEvent>) -> [String] {
         events.compactMap { event in
             switch event.kind {
-            case .userMessage(let text): "user: \(text)"
+            case .userMessage(let text, _): "user: \(text)"
             case .assistantMessage(let text): "agent: \(text)"
             default: nil
             }
@@ -137,7 +138,7 @@ final class SessionFeatureTests: XCTestCase {
         let fork = try XCTUnwrap(daemon.sessions.last)
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
         let said = daemon.history(fork.id).compactMap { event -> String? in
-            if case .userMessage(let text) = event.kind { text } else { nil }
+            if case .userMessage(let text, _) = event.kind { text } else { nil }
         }
         XCTAssertEqual(said, ["one", "three"])
         XCTAssertEqual(daemon.history(session.id), before)
@@ -220,6 +221,99 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.watchRetries, 3)
         XCTAssertEqual(store.state.events.count, 2)
         await store.skipInFlightEffects()
+    }
+
+    /// A small PNG, as a file of one would hold.
+    private func png() throws -> Data {
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    func testAnImagePastedInTheBoxGoesWithTheMessage() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        var state = SessionFeature.State(session: session)
+        state.readsImages = true
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        let image = try png()
+
+        await store.send(.imagePasted(image))
+        XCTAssertEqual(store.state.images.count, 1)
+        XCTAssertFalse(store.state.canSend, "nothing goes until the image is ready")
+        await store.receive(\.imagePrepared)
+        XCTAssertEqual(store.state.images.first?.image, ImageAttachment(mediaType: "image/png", data: image))
+        XCTAssertNotNil(store.state.images.first?.thumbnail)
+        XCTAssertTrue(store.state.canSend)
+
+        await store.send(.sendTapped(.enqueue))
+        XCTAssertTrue(store.state.images.isEmpty)
+        await store.skipReceivedActions()
+        let history = try await daemon.client.history(session.id)
+        let names = history.compactMap { event -> [String]? in
+            guard case .userMessage(_, let images) = event.kind else { return nil }
+            return images
+        }
+        let name = try XCTUnwrap(names.first?.first)
+        let sent = try await daemon.client.readImage(session.id, name)
+        XCTAssertEqual(sent.data, image)
+
+        await store.send(.thumbnailNeeded(name))
+        await store.receive(\.thumbnailLoaded)
+        XCTAssertFalse(store.state.thumbnails[name]?.isEmpty ?? true)
+    }
+
+    func testSomethingThatIsntAnImageIsTakenOutWithAnAlert() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.readsImages = true
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(.imagePasted(Data("not an image".utf8)))
+        await store.receive(\.imagePrepared)
+        XCTAssertTrue(store.state.images.isEmpty)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testALocalModelThatDoesntSayItSeesImagesTakesNone() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .local, workingDirectory: "/work", name: "local", model: "qwen3:8b"))
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await store.receive(\.readsImagesFound, timeout: .seconds(1))
+        XCTAssertFalse(store.state.takesImages)
+        await store.send(.imagePasted(try png()))
+        XCTAssertTrue(store.state.images.isEmpty)
+        XCTAssertNotNil(store.state.alert, "it says why")
+        await watching.cancel()
     }
 
     func testAMessageThatWasntSentGoesBackInTheBox() async {
@@ -579,6 +673,136 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.dropped, [])
     }
 
+    /// A store for session `id`, which also names where its draft is kept.
+    private func queueStore(
+        _ id: String = "s1", _ dependencies: @escaping (inout DependencyValues) -> Void
+    ) -> TestStoreOf<SessionFeature> {
+        let session = Session(id: id, name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, _ in }
+            dependencies(&$0)
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAQueuedMessageQueuedAgainShowsItsNewText() async {
+        let store = store()
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(
+            .received(event("e2", .messageQueued(queueID: "q1", text: "then the changelog\n\nand tag it"))))
+        XCTAssertEqual(store.state.queued, [QueuedMessage(id: "q1", text: "then the changelog\n\nand tag it")])
+    }
+
+    func testAnEditedQueuedMessageIsSavedWithItsNewText() async {
+        let saved = LockIsolated<[String]>([])
+        let store = queueStore {
+            $0.daemon.editQueued = { _, id, text in saved.withValue { $0.append("\(id): \(text)") } }
+        }
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(.editQueuedTapped("q1"))
+        XCTAssertEqual(store.state.queuedEdit, "then the changelog")
+        await store.send(\.binding.queuedEdit, "then the release notes")
+        await store.send(.editQueuedSaved)
+        await store.finish()
+        XCTAssertEqual(saved.value, ["q1: then the release notes"])
+        XCTAssertNil(store.state.editingQueued)
+    }
+
+    func testAnEditWhoseTurnAlreadyStartedGoesInTheBox() async {
+        let store = queueStore("lost-race") {
+            $0.daemon.editQueued = { _, _, _ in
+                throw DaemonError.refused(.unknownQueuedMessage, message: "gone")
+            }
+        }
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(.editQueuedTapped("q1"))
+        await store.send(\.binding.queuedEdit, "then the release notes")
+        await store.send(.editQueuedSaved)
+        await store.receive(\.editQueuedFailed)
+        XCTAssertEqual(store.state.draft, "then the release notes")
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testAQueuedMessageEditedToNothingIsTakenOut() async {
+        let removed = LockIsolated<[String]>([])
+        let store = queueStore { $0.daemon.unqueue = { _, id in removed.withValue { $0.append(id) } } }
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(.editQueuedTapped("q1"))
+        await store.send(\.binding.queuedEdit, "  ")
+        await store.send(.editQueuedSaved)
+        await store.finish()
+        XCTAssertEqual(removed.value, ["q1"])
+    }
+
+    func testStopAndEditStopsTheTurnAndPutsTheMessageBack() async {
+        let stopped = LockIsolated(0)
+        let store = queueStore("stop-and-edit") { $0.daemon.abort = { _ in stopped.withValue { $0 += 1 } } }
+        await store.send(.received(event("e1", .userMessage("write the notes"))))
+        await store.send(.received(event("e2", .turnStarted)))
+        await store.send(.stopAndEditTapped)
+        await store.finish()
+        XCTAssertEqual(stopped.value, 1)
+        XCTAssertEqual(store.state.draft, "write the notes")
+    }
+
+    func testStopAndEditDoesNothingBetweenTurns() async {
+        let stopped = LockIsolated(0)
+        let store = queueStore("between-turns") { $0.daemon.abort = { _ in stopped.withValue { $0 += 1 } } }
+        await store.send(.received(event("e1", .userMessage("write the notes"))))
+        await store.send(.received(event("e2", .turnStarted)))
+        await store.send(.received(event("e3", .turnEnded(aborted: false))))
+        await store.send(.stopAndEditTapped)
+        await store.finish()
+        XCTAssertEqual(stopped.value, 0)
+        XCTAssertEqual(store.state.draft, "")
+    }
+
+    func testALongPasteBecomesAChipAndIsSentAfterTheTypedText() async {
+        let sent = LockIsolated<[String]>([])
+        let store = queueStore("long-paste") {
+            $0.daemon.send = { _, text, _ in sent.withValue { $0.append(text) } }
+            $0.uuid = .incrementing
+        }
+        let log = (1...30).map { "line \($0)" }.joined(separator: "\n")
+        await store.send(\.binding.draft, "why does this fail? ")
+        await store.send(\.binding.draft, "why does this fail? " + log)
+        XCTAssertEqual(store.state.draft, "why does this fail? ")
+        XCTAssertEqual(store.state.pastes.map(\.text), [log])
+        XCTAssertEqual(store.state.pastes.first?.lineCount, 30)
+
+        await store.send(.sendTapped(.enqueue))
+        await store.finish()
+        XCTAssertEqual(sent.value, ["why does this fail?\n\n" + log])
+        XCTAssertEqual(store.state.pastes, [])
+    }
+
+    func testTypingAndShortPastesStayInTheBox() async {
+        let store = queueStore("short-paste") { $0.uuid = .incrementing }
+        await store.send(\.binding.draft, "fix the build")
+        await store.send(\.binding.draft, "fix the build\nand the tests")
+        XCTAssertEqual(store.state.draft, "fix the build\nand the tests")
+        XCTAssertEqual(store.state.pastes, [])
+    }
+
+    func testARemovedPasteIsNotSent() async {
+        let store = queueStore("removed-paste") { $0.uuid = .incrementing }
+        await store.send(\.binding.draft, String(repeating: "x", count: 2_000))
+        let id = store.state.pastes.first?.id ?? ""
+        await store.send(.removePasteTapped(id))
+        XCTAssertEqual(store.state.pastes, [])
+        XCTAssertFalse(store.state.canSend)
+    }
+
+    func testAPasteInTheMiddleLeavesTheTextAroundIt() {
+        let pasted = String(repeating: "y", count: 1_500)
+        let taken = Paste.takeOut(old: "before after", new: "before " + pasted + "after")
+        XCTAssertEqual(taken?.draft, "before after")
+        XCTAssertEqual(taken?.pasted, pasted)
+    }
+
     func testUsageAddsUpEachTurn() async {
         let store = store()
         await store.send(
@@ -728,6 +952,6 @@ final class SessionFeatureTests: XCTestCase {
 
 extension ChatItem {
     fileprivate func isPerson(_ text: String) -> Bool {
-        if case .person(_, text) = self { true } else { false }
+        if case .person(_, text, _) = self { true } else { false }
     }
 }

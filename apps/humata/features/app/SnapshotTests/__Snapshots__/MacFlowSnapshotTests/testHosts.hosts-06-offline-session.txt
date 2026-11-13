@@ -35,6 +35,7 @@
   [OpaqueProviderGroup/OpaqueProviderList] ""
   [StaticText] "" value: "Can't reach build-box, so this is the session as it last was. Humata reconnects when you send a message; check build-box in Hosts if it doesn't."
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

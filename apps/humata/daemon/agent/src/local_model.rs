@@ -370,7 +370,11 @@ impl LocalModelRunner {
         let mut waiting = false;
         loop {
             // Asked afresh each time, so steering sent while it waited is in.
-            let messages = messages(turn.record().instructions.as_deref(), &turn.history());
+            let messages = messages(
+                turn.record().instructions.as_deref(),
+                &turn.history(),
+                Some(&turn.images_folder()),
+            );
             match self.complete(turn, request, tools, messages).await {
                 Err(LocalModelError::Connect { .. }) if apps => {
                     if !waiting {
@@ -579,6 +583,10 @@ fn list_models(
                 id: id.to_owned(),
                 name: id.to_owned(),
                 detail: detail.map(str::to_owned),
+                // Humata's own server lists what each model takes besides text.
+                reads_images: model["inputs"]
+                    .as_array()
+                    .is_some_and(|inputs| inputs.iter().any(|input| input == "image")),
             })
         })
         .collect();
@@ -682,9 +690,41 @@ fn chunk_parts(chunk: Chunk) -> Vec<Part> {
     parts
 }
 
+/// A user message's content: its text alone, or with its images first as
+/// image_url parts. An image gone from the folder is said to be missing.
+fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
+    let Some(folder) = folder.filter(|_| !names.is_empty()) else {
+        return json!(text);
+    };
+    let mut parts: Vec<Value> = names
+        .iter()
+        .map(|name| {
+            let path = folder.join(name);
+            match std::fs::read(&path) {
+                Ok(data) => json!({
+                    "type": "image_url",
+                    "image_url": {"url": format!(
+                        "data:{};base64,{}",
+                        crate::images::media_type(&path),
+                        crate::images::base64(&data),
+                    )},
+                }),
+                Err(_) => json!({"type": "text", "text": "[an image sent here is missing]"}),
+            }
+        })
+        .collect();
+    if !text.is_empty() {
+        parts.push(json!({"type": "text", "text": text}));
+    }
+    Value::Array(parts)
+}
+
 /// The conversation so far as chat messages: the instructions, then each
-/// message, reply and tool call in the history.
-fn messages(instructions: Option<&str>, history: &[Event]) -> Vec<Value> {
+/// message, reply and tool call in the history. The images of the latest
+/// message that has any, read from `images`, go with it as data URLs; an
+/// earlier message's are only noted, since sending every image again each
+/// turn costs tokens and can make the request too large.
+fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>) -> Vec<Value> {
     let mut system = String::from(
         "You are a coding agent working in the person's project folder. Use the tools to read, change and run things there, then say briefly what you did.",
     );
@@ -701,11 +741,24 @@ fn messages(instructions: Option<&str>, history: &[Event]) -> Vec<Value> {
             messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": INTERRUPTED}));
         }
     };
-    for event in history {
+    let latest = history.iter().rposition(
+        |event| matches!(&event.kind, EventKind::UserMessage { images, .. } if !images.is_empty()),
+    );
+    for (index, event) in history.iter().enumerate() {
         match &event.kind {
-            EventKind::UserMessage { text } => {
+            EventKind::UserMessage {
+                text,
+                images: names,
+            } => {
                 close(&mut messages, &mut open);
-                messages.push(json!({"role": "user", "content": text}));
+                let content = if Some(index) == latest || names.is_empty() {
+                    user_content(text, names, images)
+                } else {
+                    let count = names.len();
+                    let noun = if count == 1 { "image" } else { "images" };
+                    json!(format!("[{count} {noun} sent here earlier]\n{text}"))
+                };
+                messages.push(json!({"role": "user", "content": content}));
             }
             EventKind::AssistantMessage { text } => {
                 close(&mut messages, &mut open);
@@ -1253,7 +1306,13 @@ mod tests {
         let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
         let two = events
             .iter()
-            .find(|event| event.kind == EventKind::UserMessage { text: "two".into() })
+            .find(|event| {
+                event.kind
+                    == EventKind::UserMessage {
+                        text: "two".into(),
+                        images: Vec::new(),
+                    }
+            })
             .expect("the message is in the history");
 
         let options = ForkOptions {
@@ -1451,7 +1510,10 @@ mod tests {
     #[test]
     fn a_tool_call_cut_off_before_its_result_still_gets_one() {
         let history = [
-            EventKind::UserMessage { text: "go".into() },
+            EventKind::UserMessage {
+                text: "go".into(),
+                images: Vec::new(),
+            },
             EventKind::ToolStarted {
                 call_id: "c1".into(),
                 tool: "shell".into(),
@@ -1470,10 +1532,11 @@ mod tests {
             EventKind::TurnEnded { aborted: true },
             EventKind::UserMessage {
                 text: "again".into(),
+                images: Vec::new(),
             },
         ]
         .map(Event::now);
-        let messages = messages(None, &history);
+        let messages = messages(None, &history, None);
         let results: Vec<&str> = messages
             .iter()
             .filter(|message| message["role"] == "tool")
@@ -1484,6 +1547,48 @@ mod tests {
         assert_eq!(
             messages.last().map(|message| &message["content"]),
             Some(&json!("again"))
+        );
+    }
+
+    #[test]
+    fn only_the_latest_images_are_sent_again() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        std::fs::write(folder.path().join("old.png"), [1]).expect("written");
+        std::fs::write(folder.path().join("new.png"), [2]).expect("written");
+        let history = [
+            EventKind::UserMessage {
+                text: "first".into(),
+                images: vec!["old.png".into()],
+            },
+            EventKind::AssistantMessage {
+                text: "a cat".into(),
+            },
+            EventKind::UserMessage {
+                text: "and this?".into(),
+                images: vec!["new.png".into()],
+            },
+            EventKind::AssistantMessage {
+                text: "a dog".into(),
+            },
+            EventKind::UserMessage {
+                text: "compare them".into(),
+                images: Vec::new(),
+            },
+        ]
+        .map(Event::now);
+        let messages = messages(None, &history, Some(folder.path()));
+        let images: Vec<&str> = messages
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .filter_map(|part| part["image_url"]["url"].as_str())
+            .collect();
+        assert_eq!(
+            images,
+            vec![format!(
+                "data:image/png;base64,{}",
+                crate::images::base64(&[2])
+            )]
         );
     }
 }

@@ -45,6 +45,7 @@
   [Button] "Open Changes"
   [Button] "Move to In Review"
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

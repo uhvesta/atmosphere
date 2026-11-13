@@ -1261,6 +1261,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 text,
                 mode: mode.into(),
                 client_id: String::new(),
+                images: Vec::new(),
             });
             let sent = |response: &Response| matches!(response, Response::MessageSent(_));
             if wait {

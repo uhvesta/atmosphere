@@ -49,7 +49,7 @@ extension InMemoryDaemon {
     /// What of `event` is searched: a command by itself, not its JSON.
     private static func searched(_ event: SessionEvent) -> (SearchHit.Kind, String)? {
         switch event.kind {
-        case .userMessage(let text): (.message, text)
+        case .userMessage(let text, _): (.message, text)
         case .assistantMessage(let text): (.reply, text)
         case .toolStarted(_, let tool, let arguments):
             (.toolCall, command(arguments) ?? "\(tool) \(arguments)")

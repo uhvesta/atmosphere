@@ -79,11 +79,44 @@ impl Event {
     }
 }
 
+/// An image sent with a message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    /// image/png, image/jpeg, image/gif or image/webp.
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+/// What's sent to a session: text, and any images with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Message {
+    pub text: String,
+    pub images: Vec<Image>,
+}
+
+impl From<String> for Message {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            images: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for Message {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventKind {
     UserMessage {
         text: String,
+        /// File names of the images sent with it, in the session's images folder.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
     },
     TurnStarted,
     /// Part of the reply as it streams; the AssistantMessage after holds all of it.
@@ -122,10 +155,15 @@ pub enum EventKind {
         aborted: bool,
     },
     /// A message waits for the running turn to end; `queue_id` names it
-    /// until it leaves the queue.
+    /// until it leaves the queue. Again with an id still queued, that
+    /// message's text changed: it was edited, or another message was added
+    /// to it.
     MessageQueued {
         queue_id: String,
         text: String,
+        /// The names of the images sent with it, in the session's folder.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
     },
     /// The queued message left the queue: its turn is starting, or the
     /// person took it out, or, `dropped`, Humata stopped before it ran.

@@ -520,6 +520,7 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 text: arguments.required("text")?,
                 mode: pb::SendMode::Enqueue.into(),
                 client_id: String::new(),
+                images: Vec::new(),
             });
             let sent = |response: &Response| matches!(response, Response::MessageSent(_));
             wait(client, &session, request, sent, "MessageSent", arguments).await

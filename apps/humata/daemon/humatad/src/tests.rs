@@ -64,6 +64,7 @@ async fn send(client: &Client, session: &str, text: &str) {
         text: text.to_owned(),
         mode: pb::SendMode::Enqueue.into(),
         client_id: String::new(),
+        images: Vec::new(),
     });
     let sent = client.call(request).await;
     assert!(
@@ -158,6 +159,7 @@ async fn a_send_tried_again_after_its_answer_was_lost_runs_once() {
                 text: text.to_owned(),
                 mode: pb::SendMode::Enqueue.into(),
                 client_id: id.to_owned(),
+                images: Vec::new(),
             }))
             .await;
         assert!(

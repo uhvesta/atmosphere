@@ -331,7 +331,13 @@ mod tests {
     fn user_message(events: &[Event], text: &str) -> Event {
         events
             .iter()
-            .find(|event| event.kind == EventKind::UserMessage { text: text.into() })
+            .find(|event| {
+                event.kind
+                    == EventKind::UserMessage {
+                        text: text.into(),
+                        images: Vec::new(),
+                    }
+            })
             .cloned()
             .expect("the message is in the history")
     }
@@ -349,7 +355,10 @@ mod tests {
         assert_eq!(
             kinds(&events),
             vec![
-                EventKind::UserMessage { text: "hi".into() },
+                EventKind::UserMessage {
+                    text: "hi".into(),
+                    images: Vec::new()
+                },
                 EventKind::TurnStarted,
                 EventKind::AssistantDelta {
                     text: "hello ".into()
@@ -456,7 +465,9 @@ mod tests {
         let mut queued = Vec::new();
         for event in events {
             match &event.kind {
-                EventKind::MessageQueued { queue_id, .. } => queued.push(queue_id.clone()),
+                EventKind::MessageQueued { queue_id, .. } if !queued.contains(queue_id) => {
+                    queued.push(queue_id.clone())
+                }
                 EventKind::Dequeued { queue_id, .. } => queued.retain(|id| id != queue_id),
                 _ => {}
             }
@@ -497,13 +508,257 @@ mod tests {
         assert!(queued_ids(&events).is_empty());
         assert!(!events.iter().any(|event| event.kind
             == EventKind::UserMessage {
-                text: "second".into()
+                text: "second".into(),
+                images: Vec::new(),
             }));
         let again = fixture.agent.unqueue(&id, &queued[0]).await;
         assert!(matches!(
             again,
             Err(AgentError::UnknownQueuedMessage { .. })
         ));
+    }
+
+    /// Whether `count` turns have ended; queued turns run one after
+    /// another with no idle between them.
+    fn ended_turns(count: usize) -> impl Fn(&[Event]) -> bool {
+        move |events| {
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnEnded { .. }))
+                .count()
+                >= count
+        }
+    }
+
+    fn user_messages(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::UserMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Starts a turn that waits for a permission answer, queues `queued`
+    /// behind it, and gives the permission request.
+    async fn queue_behind_a_turn(fixture: &Fixture, id: &SessionId, queued: &[&str]) -> String {
+        fixture
+            .agent
+            .send(id, "first".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, id, waiting).await;
+        for text in queued {
+            fixture
+                .agent
+                .send(id, (*text).into(), SendMode::Enqueue)
+                .await
+                .expect("queued");
+        }
+        permission_request(&events).expect("a permission request")
+    }
+
+    #[tokio::test]
+    async fn messages_sent_while_one_waits_run_as_one() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &["second", "third"]).await;
+        let events = wait_for(&fixture.agent, &id, |events| !queued_ids(events).is_empty()).await;
+        assert_eq!(queued_ids(&events).len(), 1);
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, ended_turns(2)).await;
+        assert_eq!(user_messages(&events), vec!["first", "second\n\nthird"]);
+    }
+
+    #[tokio::test]
+    async fn an_edited_queued_message_runs_as_edited() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        let events = wait_for(&fixture.agent, &id, |events| !queued_ids(events).is_empty()).await;
+        let queued = queued_ids(&events);
+        fixture
+            .agent
+            .edit_queued(&id, &queued[0], "edited".into())
+            .await
+            .expect("edited");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, ended_turns(2)).await;
+        assert_eq!(user_messages(&events), vec!["first", "edited"]);
+        let late = fixture
+            .agent
+            .edit_queued(&id, &queued[0], "too late".into())
+            .await;
+        assert!(matches!(late, Err(AgentError::UnknownQueuedMessage { .. })));
+    }
+
+    fn png(byte: u8) -> crate::event::Image {
+        crate::event::Image {
+            media_type: "image/png".into(),
+            data: vec![byte],
+        }
+    }
+
+    fn with_images(text: &str, images: Vec<crate::event::Image>) -> crate::event::Message {
+        crate::event::Message {
+            text: text.into(),
+            images,
+        }
+    }
+
+    /// The image names of each message the person sent, in order.
+    fn sent_images(events: &[Event]) -> Vec<Vec<String>> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::UserMessage { images, .. } => Some(images.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn images_sent_with_a_message_are_kept_and_read_back() {
+        let fixture = fixture(vec![rule("", vec![say("a cat")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(
+                &id,
+                with_images("what is it?", vec![png(1), png(2)]),
+                SendMode::Enqueue,
+            )
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        let names = sent_images(&events).concat();
+        assert_eq!(names.len(), 2);
+        let first = fixture
+            .agent
+            .read_image(&id, &names[0])
+            .await
+            .expect("read");
+        let second = fixture
+            .agent
+            .read_image(&id, &names[1])
+            .await
+            .expect("read");
+        assert_eq!((first, second), (png(1), png(2)));
+        let unknown = fixture.agent.read_image(&id, "nope.png").await;
+        assert!(matches!(unknown, Err(AgentError::UnknownImage { .. })));
+    }
+
+    #[tokio::test]
+    async fn an_image_of_a_kind_the_agents_cant_read_is_refused() {
+        let fixture = fixture(vec![]);
+        let id = fixture.start().await;
+        let tiff = crate::event::Image {
+            media_type: "image/tiff".into(),
+            data: vec![1],
+        };
+        let sent = fixture
+            .agent
+            .send(&id, with_images("look", vec![tiff]), SendMode::Enqueue)
+            .await;
+        assert!(matches!(sent, Err(AgentError::UnsupportedImage { .. })));
+    }
+
+    #[tokio::test]
+    async fn queued_messages_that_run_as_one_keep_all_their_images() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &[]).await;
+        for (text, byte) in [("second", 1), ("third", 2)] {
+            fixture
+                .agent
+                .send(&id, with_images(text, vec![png(byte)]), SendMode::Enqueue)
+                .await
+                .expect("queued");
+        }
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, ended_turns(2)).await;
+        let images = sent_images(&events);
+        assert_eq!(images.len(), 2);
+        assert_eq!(
+            images[1].len(),
+            2,
+            "both queued images go with the joined message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fork_can_still_read_its_parents_images() {
+        let fixture = fixture(vec![rule("", vec![say("a cat")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(
+                &id,
+                with_images("what is it?", vec![png(7)]),
+                SendMode::Enqueue,
+            )
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        let name = sent_images(&events).concat().remove(0);
+        let fork = fixture
+            .agent
+            .fork(&id, ForkOptions::default())
+            .await
+            .expect("forked");
+        let image = fixture
+            .agent
+            .read_image(&fork.id, &name)
+            .await
+            .expect("read");
+        assert_eq!(image, png(7));
+    }
+
+    #[tokio::test]
+    async fn a_notice_never_joins_a_queued_message() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        fixture
+            .agent
+            .send(&id, "the spec changed".into(), SendMode::EnqueueOnce)
+            .await
+            .expect("queued");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, ended_turns(3)).await;
+        assert_eq!(
+            user_messages(&events),
+            vec!["first", "second", "the spec changed"]
+        );
     }
 
     #[tokio::test]
@@ -737,7 +992,7 @@ mod tests {
         let texts: Vec<_> = events
             .iter()
             .filter_map(|event| match &event.kind {
-                EventKind::UserMessage { text } => Some(text.as_str()),
+                EventKind::UserMessage { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();

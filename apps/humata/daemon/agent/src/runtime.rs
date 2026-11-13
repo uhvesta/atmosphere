@@ -24,8 +24,8 @@ use humata_workspace::{
 };
 
 use crate::event::{
-    ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
-    SessionRecord, SessionState, SessionUpdate, StartOptions,
+    ApprovalMode, Event, EventKind, ForkOptions, Image, Message, Parent, PermissionKind, SendMode,
+    SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
 use crate::import::{Importable, Imported};
 use crate::log::EventLog;
@@ -112,12 +112,24 @@ pub struct Turn {
     session: Arc<Session>,
     workspaces: Option<Arc<Workspaces>>,
     text: String,
+    images: Vec<PathBuf>,
 }
 
 impl Turn {
     /// The message the turn replies to.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The image files sent with the message, by their names'
+    /// extensions png, jpg, gif or webp.
+    pub fn images(&self) -> &[PathBuf] {
+        &self.images
+    }
+
+    /// The folder every image sent to the session is in.
+    pub(crate) fn images_folder(&self) -> PathBuf {
+        crate::images::folder(&self.session.dir)
     }
 
     pub fn record(&self) -> SessionRecord {
@@ -227,18 +239,36 @@ struct Control {
 struct Queued {
     id: String,
     text: String,
+    /// File names in the session's images folder.
+    images: Vec<String>,
+    /// Sent by the person: their next message joins it rather than
+    /// queueing behind it. Notices Humata queues never take one in.
+    joins: bool,
 }
 
 impl Session {
     /// Queues `text` at the back, or the front for a steer between turns,
     /// and says so in the history.
-    fn queue(&self, control: &mut Control, text: String, front: bool) {
+    fn queue(
+        &self,
+        control: &mut Control,
+        text: String,
+        images: Vec<String>,
+        front: bool,
+        joins: bool,
+    ) {
         let id = crate::event::EventId::random().to_string();
         self.note(EventKind::MessageQueued {
             queue_id: id.clone(),
             text: text.clone(),
+            images: images.clone(),
         });
-        let queued = Queued { id, text };
+        let queued = Queued {
+            id,
+            text,
+            images,
+            joins,
+        };
         if front {
             control.queue.push_front(queued);
         } else {
@@ -246,14 +276,36 @@ impl Session {
         }
     }
 
+    /// Adds the person's `text` to their message waiting last in the queue,
+    /// after a blank line, so what they send while a turn runs goes as one
+    /// message. False when nothing of theirs waits last.
+    fn join_queued(&self, control: &mut Control, text: &str, images: &[String]) -> bool {
+        let Some(last) = control.queue.back_mut().filter(|last| last.joins) else {
+            return false;
+        };
+        last.text = match (last.text.is_empty(), text.is_empty()) {
+            (_, true) => last.text.clone(),
+            (true, false) => text.to_owned(),
+            (false, false) => format!("{}\n\n{text}", last.text),
+        };
+        last.images.extend_from_slice(images);
+        let edited = EventKind::MessageQueued {
+            queue_id: last.id.clone(),
+            text: last.text.clone(),
+            images: last.images.clone(),
+        };
+        self.note(edited);
+        true
+    }
+
     /// The next queued message, which leaves the queue to run.
-    fn next_queued(&self, control: &mut Control) -> Option<String> {
+    fn next_queued(&self, control: &mut Control) -> Option<(String, Vec<String>)> {
         let next = control.queue.pop_front()?;
         self.note(EventKind::Dequeued {
             queue_id: next.id,
             dropped: false,
         });
-        Some(next.text)
+        Some((next.text, next.images))
     }
 }
 
@@ -447,7 +499,13 @@ impl<R: Runner> LocalAgent<R> {
 
     /// Starts a driver for `text`. The caller holds `control` and has checked
     /// that nothing is running.
-    fn start_driver(&self, session: &Arc<Session>, control: &mut Control, text: String) {
+    fn start_driver(
+        &self,
+        session: &Arc<Session>,
+        control: &mut Control,
+        text: String,
+        images: Vec<String>,
+    ) {
         control.generation += 1;
         let generation = control.generation;
         let handle = tokio::spawn(drive(
@@ -456,6 +514,7 @@ impl<R: Runner> LocalAgent<R> {
             self.workspaces.clone(),
             generation,
             text,
+            images,
         ));
         control.running = Some(Running {
             generation,
@@ -464,7 +523,7 @@ impl<R: Runner> LocalAgent<R> {
     }
 }
 
-/// Plays `text`, then each queued message, until the queue is empty or the
+/// Plays `text` and `images`, then each queued message, until the queue is empty or the
 /// driver is stopped.
 async fn drive<R: Runner>(
     session: Arc<Session>,
@@ -472,8 +531,9 @@ async fn drive<R: Runner>(
     workspaces: Option<Arc<Workspaces>>,
     generation: u64,
     text: String,
+    images: Vec<String>,
 ) {
-    let mut text = text;
+    let (mut text, mut images) = (text, images);
     loop {
         let prepared = prepare(&session, workspaces.as_deref()).await;
         {
@@ -482,7 +542,10 @@ async fn drive<R: Runner>(
                 return;
             }
             control.turn_open = true;
-            session.note(EventKind::UserMessage { text: text.clone() });
+            session.note(EventKind::UserMessage {
+                text: text.clone(),
+                images: images.clone(),
+            });
             session.note(EventKind::TurnStarted);
         }
         let result = match prepared {
@@ -492,6 +555,10 @@ async fn drive<R: Runner>(
                     session: session.clone(),
                     workspaces: workspaces.clone(),
                     text,
+                    images: images
+                        .iter()
+                        .map(|name| crate::images::folder(&session.dir).join(name))
+                        .collect(),
                 })
                 .await
                 .map_err(|error| describe(&error)),
@@ -511,7 +578,7 @@ async fn drive<R: Runner>(
         control.steering.clear();
         control.pending.clear();
         match session.next_queued(&mut control) {
-            Some(next) => text = next,
+            Some(next) => (text, images) = next,
             None => {
                 control.running = None;
                 session.note(EventKind::Idle);
@@ -550,8 +617,17 @@ impl<R: Runner> Agent for LocalAgent<R> {
         Ok(record)
     }
 
-    async fn send(&self, id: &SessionId, text: String, mode: SendMode) -> Result<(), AgentError> {
+    async fn send(
+        &self,
+        id: &SessionId,
+        message: Message,
+        mode: SendMode,
+    ) -> Result<(), AgentError> {
         let session = self.session(id)?;
+        // Written before the lock, so a large image never holds up the
+        // session's other calls.
+        let images = crate::images::save(id, &session.dir, &message.images)?;
+        let text = message.text;
         let mut control = session.lock();
         if control.record.archived {
             return Err(AgentError::Archived {
@@ -559,21 +635,31 @@ impl<R: Runner> Agent for LocalAgent<R> {
             });
         }
         if control.running.is_none() {
-            self.start_driver(&session, &mut control, text);
+            self.start_driver(&session, &mut control, text, images);
             return Ok(());
         }
         match mode {
-            SendMode::Enqueue => session.queue(&mut control, text, false),
-            SendMode::EnqueueOnce if control.queue.iter().any(|queued| queued.text == text) => {}
-            SendMode::EnqueueOnce => session.queue(&mut control, text, false),
-            SendMode::Immediate if control.turn_open => {
-                session
-                    .log
-                    .append(Event::now(EventKind::UserMessage { text: text.clone() }))?;
+            SendMode::Enqueue => {
+                if !session.join_queued(&mut control, &text, &images) {
+                    session.queue(&mut control, text, images, false, true);
+                }
+            }
+            SendMode::EnqueueOnce
+                if control
+                    .queue
+                    .iter()
+                    .any(|queued| queued.text == text && queued.images == images) => {}
+            SendMode::EnqueueOnce => session.queue(&mut control, text, images, false, false),
+            SendMode::Immediate if control.turn_open && images.is_empty() => {
+                session.log.append(Event::now(EventKind::UserMessage {
+                    text: text.clone(),
+                    images: Vec::new(),
+                }))?;
                 control.steering.push_back(text);
             }
-            // Between turns, or while one is being stopped: it goes next.
-            SendMode::Immediate => session.queue(&mut control, text, true),
+            // Between turns, while one is being stopped, or with images a
+            // running turn can't take: it goes next.
+            SendMode::Immediate => session.queue(&mut control, text, images, true, false),
         }
         Ok(())
     }
@@ -595,6 +681,37 @@ impl<R: Runner> Agent for LocalAgent<R> {
             dropped: false,
         });
         Ok(())
+    }
+
+    async fn edit_queued(
+        &self,
+        id: &SessionId,
+        queue_id: &str,
+        text: String,
+    ) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let mut control = session.lock();
+        let queued = control
+            .queue
+            .iter_mut()
+            .find(|queued| queued.id == queue_id)
+            .ok_or_else(|| AgentError::UnknownQueuedMessage {
+                session: id.clone(),
+                queued: queue_id.to_owned(),
+            })?;
+        queued.text = text.clone();
+        let images = queued.images.clone();
+        session.note(EventKind::MessageQueued {
+            queue_id: queue_id.to_owned(),
+            text,
+            images,
+        });
+        Ok(())
+    }
+
+    async fn read_image(&self, id: &SessionId, name: &str) -> Result<Image, AgentError> {
+        let session = self.session(id)?;
+        crate::images::read(id, &session.dir, name)
     }
 
     async fn approve(
@@ -703,9 +820,9 @@ impl<R: Runner> Agent for LocalAgent<R> {
         }
         control.steering.clear();
         match session.next_queued(&mut control) {
-            Some(next) => {
+            Some((next, images)) => {
                 control.running = None;
-                self.start_driver(&session, &mut control, next);
+                self.start_driver(&session, &mut control, next, images);
             }
             None => {
                 control.running = None;
@@ -786,6 +903,10 @@ impl<R: Runner> Agent for LocalAgent<R> {
             ..from
         };
         self.runner.forked(id, &record, &events)?;
+        copy_images(
+            &parent.dir,
+            &self.root.join("sessions").join(record.id.as_str()),
+        )?;
         self.create(record.clone(), events)?;
         Ok(record)
     }
@@ -1304,7 +1425,9 @@ fn closing(events: &[Event]) -> Vec<EventKind> {
     let mut queued: Vec<&str> = Vec::new();
     for event in events {
         match &event.kind {
-            EventKind::MessageQueued { queue_id, .. } => queued.push(queue_id),
+            EventKind::MessageQueued { queue_id, .. } if !queued.contains(&queue_id.as_str()) => {
+                queued.push(queue_id)
+            }
             EventKind::Dequeued { queue_id, .. } => queued.retain(|id| id != queue_id),
             _ => {}
         }
@@ -1382,6 +1505,34 @@ fn load(dir: &Path) -> Result<Session, AgentError> {
     })
 }
 
+/// Copies the images of the session in `from` to the one in `to`, so a
+/// fork's messages show theirs; a session sent none has nothing to copy.
+fn copy_images(from: &Path, to: &Path) -> Result<(), AgentError> {
+    let from = crate::images::folder(from);
+    let entries = match std::fs::read_dir(&from) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(AgentError::ReadImage { path: from, source }),
+    };
+    let to = crate::images::folder(to);
+    std::fs::create_dir_all(&to).map_err(|source| AgentError::SaveImage {
+        path: to.clone(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| AgentError::ReadImage {
+            path: from.clone(),
+            source,
+        })?;
+        let target = to.join(entry.file_name());
+        std::fs::copy(entry.path(), &target).map_err(|source| AgentError::SaveImage {
+            path: target,
+            source,
+        })?;
+    }
+    Ok(())
+}
+
 /// Writes the session's record in `dir`, all or nothing.
 fn save(dir: &Path, record: &SessionRecord) -> Result<(), AgentError> {
     let path = dir.join(RECORD_FILE);
@@ -1454,7 +1605,10 @@ pub(crate) mod tests {
     #[test]
     fn a_history_cut_inside_a_turn_is_closed_as_aborted() {
         let events = vec![
-            Event::now(EventKind::UserMessage { text: "hi".into() }),
+            Event::now(EventKind::UserMessage {
+                text: "hi".into(),
+                images: Vec::new(),
+            }),
             Event::now(EventKind::TurnStarted),
         ];
         assert_eq!(
@@ -1466,7 +1620,10 @@ pub(crate) mod tests {
     #[test]
     fn a_turn_cut_by_a_stop_ends_failed() {
         let mut events = vec![
-            Event::now(EventKind::UserMessage { text: "hi".into() }),
+            Event::now(EventKind::UserMessage {
+                text: "hi".into(),
+                images: Vec::new(),
+            }),
             Event::now(EventKind::TurnStarted),
         ];
         events.extend(stopped(&events).into_iter().map(Event::now));
@@ -1482,13 +1639,17 @@ pub(crate) mod tests {
     #[test]
     fn a_message_queued_before_a_cut_is_dropped() {
         let events = vec![
-            Event::now(EventKind::UserMessage { text: "hi".into() }),
+            Event::now(EventKind::UserMessage {
+                text: "hi".into(),
+                images: Vec::new(),
+            }),
             Event::now(EventKind::TurnStarted),
             Event::now(EventKind::TurnEnded { aborted: false }),
             Event::now(EventKind::Idle),
             Event::now(EventKind::MessageQueued {
                 queue_id: "q1".into(),
                 text: "next".into(),
+                images: Vec::new(),
             }),
         ];
         assert_eq!(
@@ -1503,7 +1664,10 @@ pub(crate) mod tests {
     #[test]
     fn a_history_cut_between_turns_needs_nothing() {
         let events = vec![
-            Event::now(EventKind::UserMessage { text: "hi".into() }),
+            Event::now(EventKind::UserMessage {
+                text: "hi".into(),
+                images: Vec::new(),
+            }),
             Event::now(EventKind::TurnStarted),
             Event::now(EventKind::TurnEnded { aborted: false }),
             Event::now(EventKind::Idle),

@@ -219,14 +219,17 @@ mod tests {
     use super::*;
 
     fn said(text: &str) -> Event {
-        Event::now(EventKind::UserMessage { text: text.into() })
+        Event::now(EventKind::UserMessage {
+            text: text.into(),
+            images: Vec::new(),
+        })
     }
 
     fn texts(log: &EventLog) -> Vec<String> {
         log.events()
             .into_iter()
             .filter_map(|event| match event.kind {
-                EventKind::UserMessage { text } => Some(text),
+                EventKind::UserMessage { text, .. } => Some(text),
                 _ => None,
             })
             .collect()
@@ -289,7 +292,10 @@ mod tests {
             events.into_iter().map(|event| event.kind).collect()
         };
         let whole = vec![
-            EventKind::UserMessage { text: "hi".into() },
+            EventKind::UserMessage {
+                text: "hi".into(),
+                images: Vec::new(),
+            },
             EventKind::AssistantMessage {
                 text: "hello".into(),
             },

@@ -40,6 +40,44 @@ pub enum AgentError {
     UnknownQueuedMessage { session: SessionId, queued: String },
 
     #[error(
+        "session {session} was sent an image of type {media_type}, which the agents can't read; send it as PNG, JPEG, GIF or WebP"
+    )]
+    UnsupportedImage {
+        session: SessionId,
+        media_type: String,
+    },
+
+    #[error(
+        "session {session} was sent an image of {bytes} bytes, more than the {max} the agents take; send a smaller or more compressed copy"
+    )]
+    ImageTooLarge {
+        session: SessionId,
+        bytes: usize,
+        max: usize,
+    },
+
+    #[error(
+        "session {session} has no image {name}; it may have been removed with the session's files, or the message it came with was rewound"
+    )]
+    UnknownImage { session: SessionId, name: String },
+
+    #[error(
+        "couldn't save an image to {path}; check that the disk has room and the folder is writable, then send it again"
+    )]
+    SaveImage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't read the image {path}; check that the file is readable")]
+    ReadImage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "{id} isn't a session this host skipped; list the skipped sessions again, as it may have been removed already"
     )]
     UnknownSkipped { id: String },

@@ -166,6 +166,10 @@ impl HostError {
             Self::Agent(AgentError::UnknownQueuedMessage { .. }) => {
                 pb::ErrorCode::UnknownQueuedMessage
             }
+            Self::Agent(AgentError::UnknownImage { .. }) => pb::ErrorCode::UnknownImage,
+            Self::Agent(AgentError::UnsupportedImage { .. } | AgentError::ImageTooLarge { .. }) => {
+                pb::ErrorCode::InvalidRequest
+            }
             Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
             Self::Agent(AgentError::UnknownSkipped { .. }) => pb::ErrorCode::UnknownSession,
             Self::Agent(AgentError::UnknownImport { .. } | AgentError::NothingToImport { .. }) => {

@@ -87,6 +87,15 @@ pub enum ClaudeError {
         source: std::io::Error,
     },
 
+    #[error(
+        "couldn't read the image {path} sent with the message; send the message again with the image attached"
+    )]
+    ReadImage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("lost the connection to Claude Code; send again to start it again")]
     Pipe {
         #[source]
@@ -236,6 +245,7 @@ impl Runner for ClaudeRunner {
                 id: (*id).to_owned(),
                 name: (*name).to_owned(),
                 detail: Some((*detail).to_owned()),
+                reads_images: true,
             })
             .collect())
     }
@@ -364,7 +374,8 @@ impl Runner for ClaudeRunner {
             replayed: 0,
             failure: None,
         };
-        playing.send(turn.text()).await?;
+        let images = read_images(turn.images())?;
+        playing.send_with(turn.text(), &images).await?;
         let mut lines = BufReader::new(stdout).lines();
         let mut steer = tokio::time::interval(STEER_EVERY);
         let ended = loop {
@@ -453,9 +464,54 @@ struct Playing<'a> {
     failure: Option<ClaudeError>,
 }
 
+/// The turn's images, each with its media type.
+fn read_images(paths: &[PathBuf]) -> Result<Vec<(&'static str, Vec<u8>)>, ClaudeError> {
+    paths
+        .iter()
+        .map(|path| {
+            std::fs::read(path)
+                .map(|data| (crate::images::media_type(path), data))
+                .map_err(|source| ClaudeError::ReadImage {
+                    path: path.clone(),
+                    source,
+                })
+        })
+        .collect()
+}
+
 impl Playing<'_> {
     async fn send(&mut self, text: &str) -> Result<(), ClaudeError> {
-        let message = json!({"type": "user", "message": {"role": "user", "content": text}});
+        self.send_with(text, &[]).await
+    }
+
+    /// Sends `text` with `images`, each a media type and its bytes.
+    async fn send_with(
+        &mut self,
+        text: &str,
+        images: &[(&'static str, Vec<u8>)],
+    ) -> Result<(), ClaudeError> {
+        let content = if images.is_empty() {
+            json!(text)
+        } else {
+            let mut blocks: Vec<Value> = images
+                .iter()
+                .map(|(media_type, data)| {
+                    json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": crate::images::base64(data),
+                        },
+                    })
+                })
+                .collect();
+            if !text.is_empty() {
+                blocks.push(json!({"type": "text", "text": text}));
+            }
+            Value::Array(blocks)
+        };
+        let message = json!({"type": "user", "message": {"role": "user", "content": content}});
         self.write(&message).await?;
         self.sent += 1;
         Ok(())

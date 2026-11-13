@@ -16,6 +16,7 @@ mod copilot;
 mod env;
 mod error;
 mod event;
+mod images;
 mod import;
 mod links;
 mod local_model;
@@ -36,8 +37,8 @@ pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider
 pub use env::Env;
 pub use error::AgentError;
 pub use event::{
-    ApprovalMode, Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode,
-    SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
+    ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent, PermissionKind,
+    SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
 pub use humata_workspace::bundle;
 pub use humata_workspace::{
@@ -61,6 +62,8 @@ pub struct Model {
     pub name: String,
     /// What sets it apart, such as what it costs.
     pub detail: Option<String>,
+    /// Whether it can see images sent with a message.
+    pub reads_images: bool,
 }
 
 /// A session's history so far, and every event after it.
@@ -82,12 +85,13 @@ pub trait Agent: Send + Sync {
         options: StartOptions,
     ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
 
-    /// Starts a turn with `text`, queues it after the running one, or steers
-    /// the running one, as `mode` says.
+    /// Starts a turn with `message`, queues it after the running one, or
+    /// steers the running one, as `mode` says. A steer with images is
+    /// queued at the front instead, as a running turn can't take images.
     fn send(
         &self,
         session: &SessionId,
-        text: String,
+        message: Message,
         mode: SendMode,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
@@ -107,11 +111,26 @@ pub trait Agent: Send + Sync {
         mode: ApprovalMode,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// The image `name` sent to the session, as a UserMessage names it.
+    fn read_image(
+        &self,
+        session: &SessionId,
+        name: &str,
+    ) -> impl Future<Output = Result<Image, Self::Error>> + Send;
+
     /// Takes a queued message out before its turn starts.
     fn unqueue(
         &self,
         session: &SessionId,
         queue_id: &str,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Changes a queued message's text before its turn starts.
+    fn edit_queued(
+        &self,
+        session: &SessionId,
+        queue_id: &str,
+        text: String,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stops the running turn, if any. Queued messages still run.

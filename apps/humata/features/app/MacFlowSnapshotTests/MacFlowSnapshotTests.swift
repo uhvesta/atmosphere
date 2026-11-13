@@ -8,6 +8,7 @@ import HumataProjects
 import HumataReview
 import HumataSearch
 import HumataSession
+import ImageIO
 import SwiftUI
 import XCTest
 
@@ -71,6 +72,107 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.session?.isWorking == false }
         try await sidebarShows(.idle, store, session)
         await flow.step("done")
+        flow.finish()
+    }
+
+    /// Messages sent while a turn waits join the one queued; it's edited in
+    /// place, and a long paste shows as a chip over the box.
+    func testTheQueueAndAPaste() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [.write(path: "/code/humata/NOTES.md", contents: "Ship M1."), .say("Wrote the notes.")]
+        }
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Release notes", projectID: project.id))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+            $0.uuid = .incrementing
+        }
+        let flow = FlowRecorder("queue", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.binding(.set(\.draft, "Write the release notes for M1")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until { store.session?.isWaiting == true }
+        for text in ["Then the changelog", "and tag the release"] {
+            store.send(.session(.presented(.binding(.set(\.draft, text)))))
+            store.send(.session(.presented(.sendTapped(.enqueue))))
+        }
+        try await until { store.session?.queued.first?.text.hasSuffix("tag the release") == true }
+        XCTAssertEqual(store.session?.queued.count, 1)
+        await flow.step("joined")
+
+        let queued = try XCTUnwrap(store.session?.queued.first)
+        store.send(.session(.presented(.editQueuedTapped(queued.id))))
+        store.send(.session(.presented(.binding(.set(\.queuedEdit, "Then the changelog, and tag v1.0")))))
+        await flow.step("editing")
+
+        store.send(.session(.presented(.editQueuedSaved)))
+        try await until { store.session?.queued.first?.text == "Then the changelog, and tag v1.0" }
+        let log = (1...340).map { "test \($0) passed in 0.\($0 % 10)s" }.joined(separator: "\n")
+        store.send(.session(.presented(.binding(.set(\.draft, "Why is this slow? " + log)))))
+        try await until { store.session?.pastes.count == 1 }
+        await flow.step("pasted")
+        flow.finish()
+    }
+
+    /// A picture to send: a sky over a green hill.
+    private static func picture() throws -> Data {
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 480, height: 320, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.45, green: 0.7, blue: 0.95, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 480, height: 320))
+        context.setFillColor(CGColor(red: 0.3, green: 0.65, blue: 0.3, alpha: 1))
+        context.fillEllipse(in: CGRect(x: -120, y: -260, width: 720, height: 400))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    /// An image pasted in the box shows as a thumbnail, then goes with the
+    /// message and shows in the chat.
+    func testAnImageGoesWithAMessage() async throws {
+        let daemon = InMemoryDaemon { _ in [.say("A green hill under a blue sky.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, name: "Look at this"))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+            $0.uuid = .incrementing
+        }
+        let flow = FlowRecorder("images", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.takesImages == true }
+        store.send(.session(.presented(.imagePasted(try Self.picture()))))
+        store.send(.session(.presented(.binding(.set(\.draft, "What is in this picture?")))))
+        try await until { store.session?.images.first?.isPreparing == false }
+        await flow.step("in the box")
+
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until {
+            guard let session = store.session else { return false }
+            return session.items.count >= 2 && !session.thumbnails.isEmpty
+        }
+        await flow.step("sent")
         flow.finish()
     }
 

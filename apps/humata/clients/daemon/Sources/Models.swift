@@ -1063,11 +1063,24 @@ package struct PendingPermission: Hashable, Sendable {
     }
 }
 
+/// An image sent with a message: PNG, JPEG, GIF or WebP.
+package struct ImageAttachment: Hashable, Sendable {
+    package var mediaType: String
+    package var data: Data
+
+    package init(mediaType: String, data: Data) {
+        self.mediaType = mediaType
+        self.data = data
+    }
+}
+
 /// One thing that happened in a session. Its id stays the same for the life
 /// of the session, and a fork's copies keep it.
 package struct SessionEvent: Identifiable, Hashable, Sendable {
     package enum Kind: Hashable, Sendable {
-        case userMessage(String)
+        /// What the person sent; `images` names the images with it, each
+        /// read with `readImage`.
+        case userMessage(String, images: [String] = [])
         case turnStarted
         /// Part of the reply as it streams; the assistantMessage after it
         /// holds all of it.
@@ -1094,7 +1107,7 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         /// after this starts from it.
         case checkpoint
         /// A message sent while a turn ran, waiting for its own turn.
-        case messageQueued(queueID: String, text: String)
+        case messageQueued(queueID: String, text: String, images: [String] = [])
         /// A queued message left the queue: its turn started, or it was
         /// taken out, or, `dropped`, Humata stopped before it ran.
         case dequeued(queueID: String, dropped: Bool = false)
@@ -1341,6 +1354,8 @@ package enum ErrorCode: Hashable, Sendable {
     case changed
     /// The queued message already started or was taken out.
     case unknownQueuedMessage
+    /// The session has no image by that name.
+    case unknownImage
     /// The session to import isn't one the backend has.
     case unknownImport
     /// The session was imported before.
@@ -1470,11 +1485,14 @@ package struct ModelChoice: Equatable, Identifiable, Sendable {
     package var name: String
     /// Such as what a turn costs; nil when there is nothing to say.
     package var detail: String?
+    /// Whether it can see images sent with a message.
+    package var readsImages: Bool
 
-    package init(id: String, name: String, detail: String? = nil) {
+    package init(id: String, name: String, detail: String? = nil, readsImages: Bool = true) {
         self.id = id
         self.name = name
         self.detail = detail
+        self.readsImages = readsImages
     }
 }
 

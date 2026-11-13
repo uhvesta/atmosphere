@@ -145,7 +145,14 @@ impl History {
     /// Starts a turn with the person's message.
     pub(crate) fn message(&mut self, text: String, time: Option<i64>, theirs: Option<&str>) {
         self.end_turn();
-        self.push(EventKind::UserMessage { text }, time, theirs);
+        self.push(
+            EventKind::UserMessage {
+                text,
+                images: Vec::new(),
+            },
+            time,
+            theirs,
+        );
         self.push(EventKind::TurnStarted, None, None);
         self.open = true;
     }
@@ -627,7 +634,8 @@ mod tests {
             kinds(&history),
             [
                 &EventKind::UserMessage {
-                    text: "fix the login".into()
+                    text: "fix the login".into(),
+                    images: Vec::new(),
                 },
                 &EventKind::TurnStarted,
                 &EventKind::ToolStarted {
@@ -719,7 +727,8 @@ mod tests {
             kinds(&history),
             [
                 &EventKind::UserMessage {
-                    text: "add a test".into()
+                    text: "add a test".into(),
+                    images: Vec::new(),
                 },
                 &EventKind::TurnStarted,
                 &EventKind::AssistantMessage {

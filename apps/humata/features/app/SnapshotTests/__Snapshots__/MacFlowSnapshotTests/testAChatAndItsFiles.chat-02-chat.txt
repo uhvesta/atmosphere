@@ -30,6 +30,7 @@
     [StaticText] "" value: "Allowed by the approval mode"
     [StaticText] "" value: "Wrote the plan in plan.md, with some notes."
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

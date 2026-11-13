@@ -614,7 +614,7 @@ package struct ProjectsFeature {
                 return .run { send in
                     let history = try await daemon.history(id)
                     let last = history.reversed().lazy.compactMap { event -> String? in
-                        guard case .userMessage(let text) = event.kind else { return nil }
+                        guard case .userMessage(let text, _) = event.kind else { return nil }
                         return text
                     }.first
                     if let last { try await daemon.send(id, last, .enqueue) }

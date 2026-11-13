@@ -5,7 +5,7 @@ final class InMemoryDaemonTests: XCTestCase {
     private func said(_ events: [SessionEvent]) -> [String] {
         events.compactMap { event in
             switch event.kind {
-            case .userMessage(let text): "user: \(text)"
+            case .userMessage(let text, _): "user: \(text)"
             case .assistantMessage(let text): "agent: \(text)"
             default: nil
             }
@@ -18,6 +18,27 @@ final class InMemoryDaemonTests: XCTestCase {
         try await daemon.client.send(session.id, "hello", .enqueue)
         let history = try await daemon.client.history(session.id)
         XCTAssertEqual(said(history), ["user: hello", "agent: You said: hello"])
+    }
+
+    func testImagesSentWithAMessageReadBack() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let image = ImageAttachment(mediaType: "image/png", data: Data([1, 2, 3]))
+        try await daemon.client.sendImages(session.id, "what is it?", [image], .enqueue)
+        let history = try await daemon.client.history(session.id)
+        let names = history.compactMap { event -> [String]? in
+            guard case .userMessage(_, let images) = event.kind else { return nil }
+            return images
+        }
+        let name = try XCTUnwrap(names.first?.first)
+        let read = try await daemon.client.readImage(session.id, name)
+        XCTAssertEqual(read, image)
+        do {
+            _ = try await daemon.client.readImage(session.id, "nope.png")
+            XCTFail("an image it never sent was read")
+        } catch DaemonError.refused(let code, _) {
+            XCTAssertEqual(code, .unknownImage)
+        }
     }
 
     func testAForkKeepsTheEventsBeforeItsEvent() async throws {

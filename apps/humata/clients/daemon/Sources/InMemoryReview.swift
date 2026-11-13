@@ -362,7 +362,7 @@ extension InMemoryDaemon {
         var turns = 0
         for event in history {
             switch event.kind {
-            case .userMessage(let text):
+            case .userMessage(let text, _):
                 if let review = pending.first, review.message == text {
                     pending.removeFirst()
                     answering = (review, nil)

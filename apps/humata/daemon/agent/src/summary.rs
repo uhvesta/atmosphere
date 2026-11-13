@@ -169,6 +169,7 @@ mod tests {
         let events = [
             event(EventKind::UserMessage {
                 text: "go".to_owned(),
+                images: Vec::new(),
             }),
             event(EventKind::TurnStarted),
             asked("a"),

@@ -55,6 +55,20 @@ package struct SessionFeature {
         /// still there after opening another session or quitting.
         package var draft: String
         @Shared var savedDraft: String
+        /// Long text pasted into the box, shown as chips and sent after
+        /// what's typed; kept with the draft.
+        package var pastes: [Paste]
+        @Shared var savedPastes: String
+        /// Images put in the box for the next message. Not kept with the
+        /// draft: they can be large, and the files they came from are still
+        /// there to add again.
+        package var images: IdentifiedArrayOf<DraftImage> = []
+        /// Whether the session's model can see images; nil until known.
+        package var readsImages: Bool?
+        /// Small copies of the images sent in the chat, by name.
+        package var thumbnails: [String: Data] = [:]
+        /// Sent images being read for their thumbnails.
+        var loadingThumbnails: Set<String> = []
         /// The thinking the person opened, by item id.
         package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
@@ -66,6 +80,10 @@ package struct SessionFeature {
         package var editing: String?
         /// The edited message's text.
         package var edited = ""
+        /// The queued message being edited in place, by queue id.
+        package var editingQueued: String?
+        /// Its text as edited so far.
+        package var queuedEdit = ""
         @Presents package var alert: AlertState<Never>?
         /// Landing the session, as a sheet.
         @Presents package var land: LandFeature.State?
@@ -90,7 +108,20 @@ package struct SessionFeature {
             let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
             _savedDraft = saved
             draft = saved.wrappedValue
+            let pasted = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id) + "_pastes"))
+            _savedPastes = pasted
+            pastes = Paste.decode(pasted.wrappedValue)
         }
+
+        /// Whether there's anything to send.
+        package var canSend: Bool {
+            guard !images.contains(where: \.isPreparing) else { return false }
+            return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pastes.isEmpty
+                || !images.isEmpty
+        }
+
+        /// Whether images can go with the next message.
+        package var takesImages: Bool { readsImages == true && !session.archived }
 
         /// The chat row of the highlighted event, once the history has it:
         /// a tool's row for its call or output, otherwise the event's own.
@@ -176,7 +207,14 @@ package struct SessionFeature {
             dropped = []
             for event in log {
                 switch event.kind {
-                case .messageQueued(let id, let text): queued.append(QueuedMessage(id: id, text: text))
+                case .messageQueued(let id, let text, let images):
+                    // Again for one still queued: it was edited, or joined.
+                    if let index = queued.firstIndex(where: { $0.id == id }) {
+                        queued[index].text = text
+                        queued[index].images = images
+                    } else {
+                        queued.append(QueuedMessage(id: id, text: text, images: images))
+                    }
                 case .dequeued(let id, let wasDropped):
                     if wasDropped, let message = queued.first(where: { $0.id == id }) { dropped.append(message) }
                     queued.removeAll { $0.id == id }
@@ -208,7 +246,7 @@ package struct SessionFeature {
         /// The person's last message, to send again after a failed turn.
         package var lastMessage: String? {
             for event in events.reversed() {
-                if case .userMessage(let text) = event.kind { return text }
+                if case .userMessage(let text, _) = event.kind { return text }
             }
             return nil
         }
@@ -284,10 +322,35 @@ package struct SessionFeature {
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
         /// The message wasn't sent; it goes back in the box if that is empty.
-        case sendFailed(text: String, message: String)
+        case sendFailed(text: String, images: [DraftImage], message: String)
+        /// The session's model can, or can't, see images.
+        case readsImagesFound(Bool)
+        /// Image files dropped on the box or chosen.
+        case imagesAdded([URL])
+        /// An image pasted into the box.
+        case imagePasted(Data)
+        /// An image in the box is ready to send, or couldn't be read.
+        case imagePrepared(id: String, Result<PreparedImage, ImagePrepError>)
+        case removeImageTapped(String)
+        /// A sent image came into view and needs its thumbnail.
+        case thumbnailNeeded(String)
+        case thumbnailLoaded(name: String, Data?)
         case abortTapped
         /// Takes the queued message out before its turn starts.
         case unqueueTapped(String)
+        /// Takes a pasted chip out of the message.
+        case removePasteTapped(String)
+        /// Opens the queued message to edit in place.
+        case editQueuedTapped(String)
+        case editQueuedCancelled
+        /// Saves the edit; with nothing left, the message is taken out.
+        case editQueuedSaved
+        /// Its turn started first, or it was taken out: the edit goes in
+        /// the box so it isn't lost.
+        case editQueuedFailed(text: String, error: DaemonError?, message: String)
+        /// Stops the running turn and puts the person's message back in the
+        /// box, to change and send again.
+        case stopAndEditTapped
         /// Puts a message that never ran back in the draft.
         case putBackTapped(String)
         /// Sends the person's last message again, after a failed turn.
@@ -352,12 +415,44 @@ package struct SessionFeature {
     @Dependency(\.continuousClock) var clock
 
     @Dependency(\.appActivity) var activity
+    @Dependency(\.uuid) var uuid
     private enum CancelID { case watch, seen, activations }
 
     /// The longest wait before watching again.
     private static let longestRetry = 30
 
     package init() {}
+
+    /// Says why images can't go in the box, when it's that the model can't
+    /// see them.
+    private static func refuseImages(_ state: inout State) -> Effect<Action> {
+        if state.readsImages == false {
+            state.alert = alert(
+                "This session’s model can’t see images, so they weren’t added. Describe what’s in them "
+                    + "instead, or start a session with a model that reads images, such as Claude Code’s."
+            )
+        }
+        return .none
+    }
+
+    /// Finds out once whether the session's model can see images: Claude's
+    /// all can; Copilot and model servers say for each model, and a local
+    /// model that doesn't say is taken as not.
+    private func readsImages(_ state: inout State) -> Effect<Action> {
+        guard state.readsImages == nil else { return .none }
+        let session = state.session
+        switch session.backend {
+        case .claude, .scripted:
+            state.readsImages = true
+            return .none
+        case .copilot, .local:
+            return .run { send in
+                let models = try? await daemon.models(session.host, session.backend, nil)
+                let choice = models?.first { $0.id == session.model } ?? (session.model == nil ? models?.first : nil)
+                await send(.readsImagesFound(choice?.readsImages ?? (session.backend == .copilot)))
+            }
+        }
+    }
 
     /// The replies so far leave the inbox, as they're on screen; none
     /// while Humata is behind another app, so the person is told of them.
@@ -386,7 +481,19 @@ package struct SessionFeature {
         Reduce { state, action in
             switch action {
             case .binding(\.draft):
+                if let (draft, pasted) = Paste.takeOut(old: state.savedDraft, new: state.draft) {
+                    state.draft = draft
+                    state.pastes.append(Paste(id: uuid().uuidString, text: pasted))
+                    let pastes = Paste.encode(state.pastes)
+                    state.$savedPastes.withLock { $0 = pastes }
+                }
                 state.$savedDraft.withLock { $0 = state.draft }
+                return .none
+
+            case .removePasteTapped(let id):
+                state.pastes.removeAll { $0.id == id }
+                let pastes = Paste.encode(state.pastes)
+                state.$savedPastes.withLock { $0 = pastes }
                 return .none
 
             case .proposals(.delegate(.openSession(let session))):
@@ -440,6 +547,7 @@ package struct SessionFeature {
                 state.streaming = ""
                 let session = state.session.id
                 return .merge(
+                    readsImages(&state),
                     .run { send in
                         do {
                             for try await event in await daemon.watch(session) {
@@ -497,23 +605,91 @@ package struct SessionFeature {
                 .cancellable(id: CancelID.watch, cancelInFlight: true)
 
             case .sendTapped(let mode):
-                let text = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { return .none }
+                guard state.canSend else { return .none }
+                let text = Paste.message(draft: state.draft, pastes: state.pastes)
+                let drafted = Array(state.images)
+                let images = drafted.compactMap(\.image)
                 state.draft = ""
                 state.$savedDraft.withLock { $0 = "" }
+                state.pastes = []
+                state.$savedPastes.withLock { $0 = "" }
+                state.images = []
                 let session = state.session.id
                 return .run { _ in
-                    try await daemon.send(session, text, mode)
+                    if images.isEmpty {
+                        try await daemon.send(session, text, mode)
+                    } else {
+                        try await daemon.sendImages(session, text, images, mode)
+                    }
                 } catch: { error, send in
-                    await send(.sendFailed(text: text, message: error.localizedDescription))
+                    await send(.sendFailed(text: text, images: drafted, message: error.localizedDescription))
                 }
 
-            case .sendFailed(let text, let message):
+            case .sendFailed(let text, let images, let message):
                 if state.draft.isEmpty {
                     state.draft = text
                     state.$savedDraft.withLock { $0 = text }
                 }
+                if state.images.isEmpty { state.images = IdentifiedArray(uniqueElements: images) }
                 state.alert = Self.alert(message)
+                return .none
+
+            case .readsImagesFound(let reads):
+                state.readsImages = reads
+                return .none
+
+            case .imagesAdded(let urls):
+                guard state.takesImages else { return Self.refuseImages(&state) }
+                return .merge(
+                    urls.map { url in
+                        let id = uuid().uuidString
+                        state.images.append(DraftImage(id: id, name: url.lastPathComponent))
+                        return .run { send in
+                            let prepared = Result { () throws(ImagePrepError) in try ImagePrep.prepare(url) }
+                            await send(.imagePrepared(id: id, prepared))
+                        }
+                    })
+
+            case .imagePasted(let data):
+                guard state.takesImages else { return Self.refuseImages(&state) }
+                let id = uuid().uuidString
+                let name = "Pasted image"
+                state.images.append(DraftImage(id: id, name: name))
+                return .run { send in
+                    let prepared = Result { () throws(ImagePrepError) in try ImagePrep.prepare(data, name: name) }
+                    await send(.imagePrepared(id: id, prepared))
+                }
+
+            case .imagePrepared(let id, .success(let prepared)):
+                // Taken out while it was being prepared.
+                guard state.images[id: id] != nil else { return .none }
+                state.images[id: id]?.image = prepared.image
+                state.images[id: id]?.thumbnail = prepared.thumbnail
+                return .none
+
+            case .imagePrepared(let id, .failure(let error)):
+                guard state.images.remove(id: id) != nil else { return .none }
+                state.alert = Self.alert(error.description)
+                return .none
+
+            case .removeImageTapped(let id):
+                state.images.remove(id: id)
+                return .none
+
+            case .thumbnailNeeded(let name):
+                guard state.thumbnails[name] == nil, !state.loadingThumbnails.contains(name) else { return .none }
+                state.loadingThumbnails.insert(name)
+                let session = state.session.id
+                return .run { send in
+                    let image = try? await daemon.readImage(session, name)
+                    await send(.thumbnailLoaded(name: name, image.flatMap { ImagePrep.thumbnail($0.data) }))
+                }
+
+            case .thumbnailLoaded(let name, let thumbnail):
+                state.loadingThumbnails.remove(name)
+                // An image that can't be read is shown as missing, and isn't
+                // read again each time it scrolls into view.
+                state.thumbnails[name] = thumbnail ?? Data()
                 return .none
 
             case .abortTapped:
@@ -548,14 +724,68 @@ package struct SessionFeature {
             case .putBackTapped(let id):
                 guard let message = state.dropped.first(where: { $0.id == id }) else { return .none }
                 state.putBack.insert(id)
-                state.draft = state.draft.isEmpty ? message.text : state.draft + "\n\n" + message.text
-                state.$savedDraft.withLock { $0 = state.draft }
+                Self.putInDraft(message.text, &state)
                 return .none
 
             case .unqueueTapped(let queued):
                 let session = state.session.id
                 return .run { _ in
                     try await daemon.unqueue(session, queued)
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .editQueuedTapped(let id):
+                guard let message = state.queued.first(where: { $0.id == id }) else { return .none }
+                state.editingQueued = id
+                state.queuedEdit = message.text
+                return .none
+
+            case .editQueuedCancelled:
+                state.editingQueued = nil
+                state.queuedEdit = ""
+                return .none
+
+            case .editQueuedSaved:
+                guard let id = state.editingQueued else { return .none }
+                let text = state.queuedEdit.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.editingQueued = nil
+                state.queuedEdit = ""
+                let session = state.session.id
+                guard !text.isEmpty else { return .send(.unqueueTapped(id)) }
+                guard state.queued.first(where: { $0.id == id })?.text != text else { return .none }
+                return .run { _ in
+                    try await daemon.editQueued(session, id, text)
+                } catch: { error, send in
+                    await send(
+                        .editQueuedFailed(
+                            text: text, error: error as? DaemonError, message: error.localizedDescription))
+                }
+
+            case .editQueuedFailed(let text, let error, let message):
+                Self.putInDraft(text, &state)
+                if case .refused(.unknownQueuedMessage, _)? = error {
+                    state.alert = AlertState {
+                        TextState("Its turn already started")
+                    } message: {
+                        TextState(
+                            """
+                            The message left the queue before the edit was saved, so it ran as it was. Your \
+                            edit is in the box: send it to follow up, or steer the running turn with it.
+                            """)
+                    }
+                } else {
+                    state.alert = Self.alert(message + " Your edit is in the box.")
+                }
+                return .none
+
+            case .stopAndEditTapped:
+                guard state.isWorking, let text = state.lastMessage else { return .none }
+                let session = state.session.id
+                state.draft = state.draft.isEmpty ? text : text + "\n\n" + state.draft
+                state.$savedDraft.withLock { $0 = state.draft }
+                return .run { _ in
+                    try await daemon.abort(session)
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
@@ -605,7 +835,7 @@ package struct SessionFeature {
                 return .none
 
             case .editTapped(let id):
-                guard case .userMessage(let text)? = state.events[id: id]?.kind else { return .none }
+                guard case .userMessage(let text, _)? = state.events[id: id]?.kind else { return .none }
                 state.editing = id
                 state.edited = text
                 return .none
@@ -662,6 +892,12 @@ package struct SessionFeature {
         } message: {
             TextState((lines + asked).joined(separator: "\n"))
         }
+    }
+
+    /// Adds `text` to the end of the draft, after a blank line, and keeps it.
+    private static func putInDraft(_ text: String, _ state: inout State) {
+        state.draft = state.draft.isEmpty ? text : state.draft + "\n\n" + text
+        state.$savedDraft.withLock { $0 = state.draft }
     }
 
     private static func alert(_ message: String) -> AlertState<Never> {

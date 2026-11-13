@@ -322,6 +322,10 @@ fn copilot_models(listed: &Value) -> Vec<crate::Model> {
                     1.0 => "1 premium request".to_owned(),
                     times => format!("{times} premium requests"),
                 }),
+                // Said for each model; taken as yes when it isn't.
+                reads_images: model["capabilities"]["supports"]["vision"]
+                    .as_bool()
+                    .unwrap_or(true),
             })
         })
         .collect()
@@ -498,11 +502,22 @@ impl Runner for CopilotRunner {
             cli: Some(cli.clone()),
             session: session.clone(),
         };
-        cli.call(
-            "session.send",
-            json!({"sessionId": session, "prompt": turn.text()}),
-        )
-        .await?;
+        // Images go as files it reads itself, from the session's folder.
+        let attachments: Vec<Value> = turn
+            .images()
+            .iter()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                json!({"type": "file", "path": path, "displayName": name})
+            })
+            .collect();
+        let mut send = json!({"sessionId": session, "prompt": turn.text()});
+        if !attachments.is_empty() {
+            send["attachments"] = Value::Array(attachments);
+        }
+        cli.call("session.send", send).await?;
         let mut playing = Playing {
             turn: &turn,
             cli: &cli,
@@ -687,7 +702,7 @@ impl Playing<'_> {
             .iter()
             .filter(|event| !self.links.is_linked(&event.id))
             .filter_map(|event| match &event.kind {
-                EventKind::UserMessage { text } => Some((event.id.clone(), text.as_str())),
+                EventKind::UserMessage { text, .. } => Some((event.id.clone(), text.as_str())),
                 _ => None,
             })
             .collect();

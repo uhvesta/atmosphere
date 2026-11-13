@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Reader plan"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "" value: "Inbox, 0 sessions waiting"
+      [StaticText] "" value: "Inbox, 0 blocked on you, 0 in all"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
@@ -44,6 +44,7 @@ Keep t"
     [StaticText] "" value: "Allowed by the approval mode"
     [StaticText] "" value: "Kept the tapped words in the plan, and the notes now say iCloud at most."
   [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

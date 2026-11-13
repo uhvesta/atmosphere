@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use humata_agent::{
     Action, ApprovalMode, Changes, Edit, Event, EventKind, FileDiff, FileRef, FileStatus, Hunk,
-    HunkAt, Line, LineKind, PermissionKind, Query, Range, Repository, SendMode, SessionRecord,
-    SessionState, Summary,
+    HunkAt, Image, Line, LineKind, PermissionKind, Query, Range, Repository, SendMode,
+    SessionRecord, SessionState, Summary,
 };
 use humata_wire::pb;
 
@@ -15,9 +15,10 @@ use crate::store::{Project, Skill};
 pub fn event(event: &Event) -> pb::SessionEvent {
     use pb::session_event::Kind;
     let kind = match &event.kind {
-        EventKind::UserMessage { text } => {
-            Kind::UserMessage(pb::UserMessage { text: text.clone() })
-        }
+        EventKind::UserMessage { text, images } => Kind::UserMessage(pb::UserMessage {
+            text: text.clone(),
+            images: images.clone(),
+        }),
         EventKind::TurnStarted => Kind::TurnStarted(pb::TurnStarted {}),
         EventKind::AssistantDelta { text } => {
             Kind::AssistantDelta(pb::AssistantDelta { text: text.clone() })
@@ -63,9 +64,14 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             automatic: *automatic,
         }),
         EventKind::TurnEnded { aborted } => Kind::TurnEnded(pb::TurnEnded { aborted: *aborted }),
-        EventKind::MessageQueued { queue_id, text } => Kind::MessageQueued(pb::MessageQueued {
+        EventKind::MessageQueued {
+            queue_id,
+            text,
+            images,
+        } => Kind::MessageQueued(pb::MessageQueued {
             queue_id: queue_id.clone(),
             text: text.clone(),
+            images: images.clone(),
         }),
         EventKind::Dequeued { queue_id, dropped } => Kind::Dequeued(pb::Dequeued {
             queue_id: queue_id.clone(),
@@ -194,6 +200,13 @@ pub fn send_mode(mode: pb::SendMode) -> SendMode {
 }
 
 /// None for an empty string, which proto3 sends for an unset one.
+pub fn image(image: pb::Image) -> Image {
+    Image {
+        media_type: image.media_type,
+        data: image.data,
+    }
+}
+
 pub fn optional(text: String) -> Option<String> {
     Some(text).filter(|text| !text.is_empty())
 }

@@ -317,7 +317,7 @@ fn request_id(events: &[Event]) -> String {
 fn event_with(events: &[Event], text: &str) -> Event {
     events
         .iter()
-        .find(|event| matches!(&event.kind, EventKind::UserMessage { text: said } if said == text))
+        .find(|event| matches!(&event.kind, EventKind::UserMessage { text: said, .. } if said == text))
         .cloned()
         .expect("the message is in the history")
 }
@@ -616,7 +616,9 @@ async fn a_turn_cut_off_by_a_crash_isnt_run_again_on_resume() {
     assert_eq!(replies(after), vec!["Back."], "{after:#?}");
     let said = after
         .iter()
-        .filter(|event| matches!(&event.kind, EventKind::UserMessage { text } if text == "banana"))
+        .filter(
+            |event| matches!(&event.kind, EventKind::UserMessage { text, .. } if text == "banana"),
+        )
         .count();
     assert_eq!(said, 1, "{after:#?}");
     assert_eq!(asked_apricot(&setup.model.requests()), 1);

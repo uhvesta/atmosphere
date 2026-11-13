@@ -411,6 +411,7 @@ impl Daemon {
                     // Saving again before it runs adds no second turn.
                     mode: pb::SendMode::EnqueueOnce.into(),
                     client_id: String::new(),
+                    images: Vec::new(),
                 });
                 // One the host wouldn't queue hears of it with its next
                 // message instead.

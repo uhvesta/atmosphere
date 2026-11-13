@@ -5,7 +5,8 @@ import HumataDaemonClient
 /// what the agent thought, a tool it ran with the permission it asked for,
 /// or how a turn ended badly.
 package enum ChatItem: Identifiable, Hashable, Sendable {
-    case person(id: String, text: String)
+    /// What the person sent, with the names of any images sent with it.
+    case person(id: String, text: String, images: [String] = [])
     case reply(id: String, text: String)
     case thinking(id: String, text: String)
     case tool(ToolCall)
@@ -21,7 +22,7 @@ package enum ChatItem: Identifiable, Hashable, Sendable {
 
     package var id: String {
         switch self {
-        case .person(let id, _), .reply(let id, _), .thinking(let id, _), .permission(let id, _), .stopped(let id),
+        case .person(let id, _, _), .reply(let id, _), .thinking(let id, _), .permission(let id, _), .stopped(let id),
             .failure(let id, _), .notice(let id, _), .cost(let id, _):
             id
         case .tool(let call): call.id
@@ -185,8 +186,8 @@ extension ChatItem {
                 continue
             }
             switch event.kind {
-            case .userMessage(let text):
-                items.append(.person(id: event.id, text: text))
+            case .userMessage(let text, let images):
+                items.append(.person(id: event.id, text: text, images: images))
             case .assistantMessage(let text):
                 items.append(.reply(id: event.id, text: text))
             case .reasoning(let text):
@@ -257,4 +258,12 @@ extension Usage {
 package struct QueuedMessage: Identifiable, Hashable, Sendable {
     package var id: String
     package var text: String
+    /// Names of the images sent with it.
+    package var images: [String]
+
+    package init(id: String, text: String, images: [String] = []) {
+        self.id = id
+        self.text = text
+        self.images = images
+    }
 }

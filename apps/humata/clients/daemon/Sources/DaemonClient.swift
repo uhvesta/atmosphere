@@ -35,6 +35,13 @@ package struct DaemonClient: Sendable {
     /// Deletes a skipped session's folder, with its history.
     package var removeSkipped: @Sendable (_ session: SkippedSession, _ host: String?) async throws -> Void
     package var send: @Sendable (_ session: String, _ text: String, _ mode: SendMode) async throws -> Void
+    /// Sends `text` with `images`. A steer with images goes next in the
+    /// queue instead, as a running turn can't take them.
+    package var sendImages:
+        @Sendable (_ session: String, _ text: String, _ images: [ImageAttachment], _ mode: SendMode) async throws
+            -> Void
+    /// The image `name` a user message names.
+    package var readImage: @Sendable (_ session: String, _ name: String) async throws -> ImageAttachment
     /// Answers a permission request.
     package var approve: @Sendable (_ session: String, _ request: String, _ approved: Bool) async throws -> Void
     /// Sets what the session may do without asking; waiting requests the
@@ -44,6 +51,9 @@ package struct DaemonClient: Sendable {
     package var abort: @Sendable (_ session: String) async throws -> Void
     /// Takes a queued message out before its turn starts.
     package var unqueue: @Sendable (_ session: String, _ queueID: String) async throws -> Void
+    /// Changes a queued message's text before its turn starts; refused
+    /// with `.unknownQueuedMessage` once it has started or was taken out.
+    package var editQueued: @Sendable (_ session: String, _ queueID: String, _ text: String) async throws -> Void
     /// A new session with the history before `before`, or all of it if nil.
     /// It gets its own copy of the code as it was there, unless `chatOnly`,
     /// when it works in the same copy as the session.
