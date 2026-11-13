@@ -163,6 +163,7 @@ original spec; lettered ones were added since.
 | S2 Compression | Planned |
 | S3 Daemon speed | Planned |
 | X Admin mode, gated by approvals | Done |
+| F2 Fresh clones | Planned |
 
 ## Done milestones
 
@@ -423,6 +424,29 @@ the test sshd's `uname` says Linux, and the test checks the Linux build and
 its link are installed (a session can't run, as the build can't run on a
 Mac). `a_project_from_a_url_checks_out_whats_there_when_each_session_starts`
 clones from a `file://` URL and finds a later commit in the next session.
+
+### Milestone F2: fresh clones
+
+**Outcome:** a session starts from what its repository's remote has now, on
+this Mac and on every host, and says so when it can't. An agent told "this
+clone is from June" on a host: the session had started from an old commit.
+
+Today the Mac fetches its URL clones and fast-forwards their branch before
+each session, but a failed fetch or fast-forward only reaches humatad's log.
+Hosts run `git pull --ff-only` in their clones, which fails once the clone's
+branch has moved off its upstream. Folders are never fetched. Worktrees start
+from the clone's own `HEAD`, so any of these leaves a session on an old
+commit without a word.
+
+- [ ] Fetch `origin` with `--prune` before each session, on this Mac and on hosts, and start the session's worktrees from the remote's default branch (`origin/HEAD`, set with `git remote set-head origin --auto` when missing), not the clone's local branch; nothing is merged, so a clone's branch can't block it
+- [ ] A folder repository is fetched too, without touching the folder's checkout; its sessions start from the folder's `HEAD` as now, and the new session says how many commits that is behind the remote's default branch when it is
+- [ ] Show "Fetching <repository>…" with a spinner on the starting session while it fetches, off the main thread, and the session starts when it's done
+- [ ] A fetch that fails, as offline or with a token that has expired, starts the session from what was fetched before and shows the session a notice: what failed, how old the starting commit is, and how to fix it (sign in again with `gh auth login` on that host, or reconnect)
+
+**Done when:** a test pushes a commit to a `file://` remote after the clone is
+made, moves the clone's branch off its upstream, and the next session on this
+Mac and on the SSH test host starts at the new commit; and a test with the
+remote gone starts the session from the old commit and shows the notice.
 
 ### Milestone 7: search across sessions
 
