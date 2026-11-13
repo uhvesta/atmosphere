@@ -491,6 +491,9 @@ package struct NewSessionView: View {
                     Text("Ask Every Time").tag(ApprovalMode.askEveryTime)
                     Text("Allow Edits").tag(ApprovalMode.allowEdits)
                     Text("Allow Everything").tag(ApprovalMode.allowEverything)
+                    if ApprovalMode.offered(for: store.backend).contains(.auto) {
+                        Text("Auto").tag(ApprovalMode.auto)
+                    }
                 }
                 if let item = store.item, item.parentID != nil {
                     Picker("Specs", selection: $store.specs) {

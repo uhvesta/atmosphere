@@ -171,6 +171,11 @@ impl HostError {
                 pb::ErrorCode::InvalidRequest
             }
             Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
+            Self::Agent(
+                AgentError::NotAMessage { .. }
+                | AgentError::NothingToUndo { .. }
+                | AgentError::SharedFiles { .. },
+            ) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::UnknownSkipped { .. }) => pb::ErrorCode::UnknownSession,
             Self::Agent(AgentError::UnknownImport { .. } | AgentError::NothingToImport { .. }) => {
                 pb::ErrorCode::UnknownImport

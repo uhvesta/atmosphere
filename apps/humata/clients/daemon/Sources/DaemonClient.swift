@@ -49,6 +49,11 @@ package struct DaemonClient: Sendable {
     package var setApprovalMode: @Sendable (_ session: String, _ mode: ApprovalMode) async throws -> Void
     /// Stops the running turn.
     package var abort: @Sendable (_ session: String) async throws -> Void
+    /// Stops the turn, drops what's queued and cuts the chat back to
+    /// before the person's message `before`; with `files`, the code too.
+    package var rewind: @Sendable (_ session: String, _ before: String, _ files: Bool) async throws -> Void
+    /// Undoes the last rewind, unless a message was sent since.
+    package var undoRewind: @Sendable (_ session: String) async throws -> Void
     /// Takes a queued message out before its turn starts.
     package var unqueue: @Sendable (_ session: String, _ queueID: String) async throws -> Void
     /// Changes a queued message's text before its turn starts; refused

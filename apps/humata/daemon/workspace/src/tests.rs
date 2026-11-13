@@ -436,3 +436,49 @@ async fn making_a_missing_copy_again_keeps_the_edits_in_the_others() {
     );
     assert!(again[1].path.join("README.md").is_file());
 }
+
+#[tokio::test]
+async fn a_rewind_puts_the_files_back_and_undoing_it_brings_the_newer_ones_back() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repository = repository(dir.path(), "app");
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let checkouts = workspaces
+        .create("session", std::slice::from_ref(&repository), &[])
+        .await
+        .expect("created");
+    let work = &checkouts[0].path;
+    std::fs::write(work.join("README.md"), "first turn\n").expect("wrote");
+    let first = workspaces
+        .snapshot("session", 1, &checkouts)
+        .await
+        .expect("snapshotted");
+    std::fs::write(work.join("README.md"), "second turn\n").expect("wrote");
+    std::fs::write(work.join("LATER.md"), "made later\n").expect("wrote");
+
+    let rewound = workspaces
+        .save_rewound("session", 1, &checkouts)
+        .await
+        .expect("saved");
+    workspaces
+        .restore(&checkouts, &first)
+        .await
+        .expect("rewound");
+    assert_eq!(
+        read(&work.join("README.md")).as_deref(),
+        Some("first turn\n")
+    );
+    assert_eq!(read(&work.join("LATER.md")), None);
+
+    workspaces
+        .restore(&checkouts, &rewound)
+        .await
+        .expect("undone");
+    assert_eq!(
+        read(&work.join("README.md")).as_deref(),
+        Some("second turn\n")
+    );
+    assert_eq!(
+        read(&work.join("LATER.md")).as_deref(),
+        Some("made later\n")
+    );
+}

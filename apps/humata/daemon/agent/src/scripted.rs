@@ -827,6 +827,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_auto_what_reaches_humata_still_asks_the_person() {
+        let fixture = fixture(vec![rule("", vec![write_file("a.txt", "one")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "go".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&fixture.agent, &id, waiting).await;
+        fixture
+            .agent
+            .set_approval_mode(&id, ApprovalMode::Auto)
+            .await
+            .expect("set");
+        let events = wait_for(&fixture.agent, &id, waiting).await;
+        assert!(answers(&events).is_empty());
+        let request = permission_request(&events).expect("still waiting");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert_eq!(answers(&events), vec![(true, false)]);
+    }
+
+    #[tokio::test]
     async fn the_mode_survives_reopening_and_forks_keep_it() {
         let fixture = fixture(vec![rule("", vec![say("hi")])]);
         let id = fixture.start().await;
@@ -1334,6 +1361,74 @@ mod tests {
             fixture.turn(&fork.id, "three", 2).await;
             assert_eq!(fixture.file(&fork.id).await.as_deref(), Some("three"));
             assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+        }
+
+        #[tokio::test]
+        async fn a_rewind_cuts_the_chat_and_code_and_undoing_it_brings_both_back() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let original = fixture.turn(&id, "two", 2).await;
+            let second = user_message(&original, "two");
+
+            fixture
+                .agent
+                .rewind(&id, &second.id, true)
+                .await
+                .expect("rewound");
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+            let history = fixture.agent.history(&id).await.expect("history");
+            assert!(!history.iter().any(|event| event.id == second.id));
+            assert!(matches!(
+                history.last().map(|event| &event.kind),
+                Some(EventKind::Rewound { files: true, .. })
+            ));
+
+            fixture.agent.undo_rewind(&id).await.expect("undone");
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+            let history = fixture.agent.history(&id).await.expect("history");
+            assert!(history.iter().any(|event| event.id == second.id));
+            assert!(matches!(
+                fixture.agent.undo_rewind(&id).await,
+                Err(AgentError::NothingToUndo { .. })
+            ));
+        }
+
+        #[tokio::test]
+        async fn a_rewind_of_the_chat_only_leaves_the_code_and_the_session_carries_on() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let original = fixture.turn(&id, "two", 2).await;
+            let second = user_message(&original, "two");
+
+            fixture
+                .agent
+                .rewind(&id, &second.id, false)
+                .await
+                .expect("rewound");
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+            fixture.turn(&id, "three", 2).await;
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("three"));
+            assert!(matches!(
+                fixture.agent.undo_rewind(&id).await,
+                Err(AgentError::NothingToUndo { .. })
+            ));
+        }
+
+        #[tokio::test]
+        async fn only_a_message_of_the_persons_can_be_rewound_to() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            let events = fixture.turn(&id, "one", 1).await;
+            let reply = events
+                .iter()
+                .find(|event| !matches!(event.kind, EventKind::UserMessage { .. }))
+                .expect("an event that isn't a message");
+            assert!(matches!(
+                fixture.agent.rewind(&id, &reply.id, false).await,
+                Err(AgentError::NotAMessage { .. })
+            ));
         }
 
         #[tokio::test]

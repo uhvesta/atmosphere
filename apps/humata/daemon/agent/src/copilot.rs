@@ -27,7 +27,7 @@ use crate::backup::{self, BackendFile};
 use crate::claude::McpServer;
 use crate::env::Env;
 use crate::error::AgentError;
-use crate::event::{EventKind, PermissionKind};
+use crate::event::{ApprovalMode, EventKind, PermissionKind};
 use crate::event::{SessionId, SessionRecord};
 use crate::import::{self, Importable, Imported};
 use crate::links::{Cut, Links};
@@ -342,6 +342,7 @@ fn session_params(
         "workingDirectory": record.working_directory,
         "requestPermission": true,
         "streaming": true,
+        "permissionMode": permission_mode(record.approval),
     });
     if let Some(id) = id {
         params["sessionId"] = json!(id);
@@ -375,6 +376,18 @@ fn session_params(
         }});
     }
     params
+}
+
+/// Copilot's permission mode for `approval`. Assisted has its judge assess
+/// each request, and Humata lets through those it approves; otherwise every
+/// request comes to Humata and the approval mode answers.
+fn permission_mode(approval: ApprovalMode) -> &'static str {
+    match approval {
+        ApprovalMode::Auto => "assisted",
+        ApprovalMode::AskEveryTime | ApprovalMode::AllowEdits | ApprovalMode::AllowEverything => {
+            "manual"
+        }
+    }
 }
 
 /// The name Humata's MCP server goes by in each session.
@@ -528,6 +541,7 @@ impl Runner for CopilotRunner {
             // The aborted turn's end can come after the abort answered.
             started: !after_abort,
         };
+        let mut mode = permission_mode(turn.approval());
         let mut steer = tokio::time::interval(STEER_EVERY);
         loop {
             tokio::select! {
@@ -543,6 +557,12 @@ impl Runner for CopilotRunner {
                     for text in turn.take_steering() {
                         let params = json!({"sessionId": session, "prompt": text, "mode": "immediate"});
                         cli.call("session.send", params).await?;
+                    }
+                    let now = permission_mode(turn.approval());
+                    if now != mode {
+                        let params = json!({"sessionId": session, "mode": now});
+                        cli.call("session.permissions.setMode", params).await?;
+                        mode = now;
                     }
                 }
             }
@@ -563,6 +583,23 @@ impl Runner for CopilotRunner {
             return Ok(());
         }
         links.save(&Links::path(&self.options.state, fork.id.as_str()))
+    }
+
+    fn rewound(
+        &self,
+        session: &crate::SessionRecord,
+        history: &[crate::Event],
+        rewind: usize,
+    ) -> Result<(), AgentError> {
+        Links::rewind(&self.options.state, session.id.as_str(), history, rewind)
+    }
+
+    fn rewind_undone(
+        &self,
+        session: &crate::SessionRecord,
+        rewind: usize,
+    ) -> Result<(), AgentError> {
+        Links::undo_rewind(&self.options.state, session.id.as_str(), rewind)
     }
 }
 
@@ -632,6 +669,7 @@ impl Playing<'_> {
                 }
                 return Ok(false);
             }
+            "session.compaction_complete" => EventKind::Compacted,
             "assistant.message_delta" => EventKind::AssistantDelta {
                 text: text("deltaContent"),
             },
@@ -735,7 +773,17 @@ impl Playing<'_> {
             .or_else(|| field("intention"))
             .or_else(|| field("kind"))
             .unwrap_or_default();
-        let approved = ours || self.turn.ask(kind, summary).await?;
+        let judged = self.turn.approval() == ApprovalMode::Auto
+            && data["assistedApprovalAssessment"]["status"] == "completed"
+            && data["assistedApprovalAssessment"]["recommendation"] == "approve";
+        let approved = if ours {
+            true
+        } else if judged {
+            self.turn.allowed_by_judge(kind, summary)?;
+            true
+        } else {
+            self.turn.ask(kind, summary).await?
+        };
         let result = if approved {
             json!({"kind": "approve-once"})
         } else {

@@ -1584,6 +1584,8 @@ impl Daemon {
                 return self.watch(&host, std::mem::take(watch)).await;
             }
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
+            Request::RewindSession(rewind) => self.host_of(&rewind.session_id).await?,
+            Request::UndoRewind(undo) => self.host_of(&undo.session_id).await?,
             Request::Unqueue(unqueue) => self.host_of(&unqueue.session_id).await?,
             Request::EditQueued(edit) => self.host_of(&edit.session_id).await?,
             Request::ReadImage(read) => self.host_of(&read.session_id).await?,

@@ -81,7 +81,7 @@ final class InMemoryDaemonTests: XCTestCase {
         for event in events {
             switch event.kind {
             case .permissionRequested(let request, _, _): open.append(request)
-            case .permissionCompleted(let request, _, _): open.removeAll { $0 == request }
+            case .permissionCompleted(let request, _, _, _): open.removeAll { $0 == request }
             default: break
             }
         }

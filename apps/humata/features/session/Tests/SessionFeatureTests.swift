@@ -106,6 +106,68 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.history(fork.id), Array(daemon.history(session.id).prefix { $0.id != two.id }))
     }
 
+    func testRewindingCutsTheChatPutsTheMessageBackAndUndoBringsItAllBack() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        try await daemon.client.send(session.id, "two", .enqueue)
+        let two = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("two") })
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await store.receive(\.receivedAll, timeout: .seconds(1))
+        await store.send(.rewindTapped(two.id))
+        XCTAssertNotNil(store.state.rewindDialog)
+        await store.send(.rewindDialog(.presented(.chat(two.id))))
+        await store.receive(\.rewound, timeout: .seconds(1))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.draft, "two")
+        XCTAssertEqual(said(store.state.events), ["user: one", "agent: You said: one"])
+        let cut = try XCTUnwrap(store.state.events.last?.id)
+        XCTAssertEqual(store.state.items.last, .rewound(id: cut, files: false, undoable: true))
+
+        await store.send(.undoRewindTapped)
+        await store.receive(\.rewindUndone, timeout: .seconds(1))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertEqual(
+            said(store.state.events), ["user: one", "agent: You said: one", "user: two", "agent: You said: two"])
+        await watching.cancel()
+    }
+
+    func testARewindCantBeUndoneOnceAMessageIsSent() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let one = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("one") })
+        try await daemon.client.rewind(session.id, one.id, false)
+        try await daemon.client.send(session.id, "again", .enqueue)
+
+        do {
+            try await daemon.client.undoRewind(session.id)
+            XCTFail("undid a rewind after a message was sent")
+        } catch {}
+        let items = ChatItem.items(daemon.history(session.id))
+        XCTAssertFalse(items.contains { if case .rewound(_, _, true) = $0 { true } else { false } })
+    }
+
+    func testOnlyThePersonsMessagesCanBeRewoundTo() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let reply = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .assistantMessage("You said: one") })
+        do {
+            try await daemon.client.rewind(session.id, reply.id, false)
+            XCTFail("rewound to a reply")
+        } catch {}
+        XCTAssertEqual(daemon.history(session.id).count { $0.kind == .userMessage("one") }, 1)
+    }
+
     func testEditingAnEarlierMessageSendsItToAForkAndLeavesTheSessionAsItWas() async throws {
         let daemon = InMemoryDaemon()
         let session = try await started(daemon)
@@ -451,6 +513,23 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(
             .received(event("e3", .permissionCompleted(requestID: "p1", approved: true, automatic: false))))
         XCTAssertEqual(store.state.pendingPermissions.map(\.id), ["e2"])
+    }
+
+    func testARequestTheAgentsJudgeLetThroughSaysSo() async {
+        let store = store()
+        await store.send(.received(event("e1", .permissionRequested(requestID: "p1", kind: .shell, summary: "ls"))))
+        await store.send(
+            .received(
+                event("e2", .permissionCompleted(requestID: "p1", approved: true, automatic: true, judged: true))))
+        let answers = store.state.items.compactMap { item -> Permission.Answer? in
+            switch item {
+            case .permission(_, let permission): permission.answer
+            case .tool(let call): call.permission?.answer
+            default: nil
+            }
+        }
+        XCTAssertEqual(answers, [.allowedByJudge])
+        XCTAssertTrue(store.state.pendingPermissions.isEmpty)
     }
 
     private let edit: @Sendable (String) -> [InMemoryDaemon.Step] = { _ in

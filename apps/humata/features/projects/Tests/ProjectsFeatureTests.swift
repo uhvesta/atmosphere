@@ -39,6 +39,21 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(session.backend, .scripted)
     }
 
+    func testAutoApprovalsGoWhenTheAgentPickedHasNoJudge() async throws {
+        let store = TestStore(initialState: NewSessionFeature.State(project: nil)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+        await store.send(\.binding.backend, .claude)
+        await store.send(\.binding.approvalMode, .auto)
+        await store.send(\.binding.backend, .copilot)
+        XCTAssertEqual(store.state.approvalMode, .auto)
+        await store.send(\.binding.backend, .local)
+        XCTAssertEqual(store.state.approvalMode, .askEveryTime)
+    }
+
     func testANewChatWorksInTheFolderPickedOrOneOfItsOwn() async throws {
         let daemon = InMemoryDaemon()
         let store = TestStore(initialState: ProjectsFeature.State()) {

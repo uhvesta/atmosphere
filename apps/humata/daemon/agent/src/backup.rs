@@ -178,16 +178,23 @@ pub(crate) fn forget_links(state: &Path, session: &str) -> Result<Vec<String>, A
         .filter(|(_, ours)| ours.as_str() != session)
         .map(|(theirs, _)| theirs)
         .collect();
-    let theirs: Vec<String> = links
-        .session
-        .into_iter()
-        .filter(|theirs| links.imported.as_ref() != Some(theirs) && !shared.contains(theirs))
-        .collect();
+    // Those kept for undoing a rewind go with it too.
+    let (rewound, rewound_dir) = Links::rewound(state, session)?;
+    let mut theirs: Vec<String> = Vec::new();
+    for candidate in links.session.iter().cloned().chain(rewound) {
+        if links.imported.as_ref() != Some(&candidate)
+            && !shared.contains(&candidate)
+            && !theirs.contains(&candidate)
+        {
+            theirs.push(candidate);
+        }
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(source) => return Err(AgentError::Write { path, source }),
     }
+    remove(&rewound_dir)?;
     Ok(theirs)
 }
 

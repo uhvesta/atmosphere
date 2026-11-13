@@ -150,6 +150,9 @@ pub enum EventKind {
         /// Answered by the session's [`ApprovalMode`], not by a person.
         #[serde(default)]
         automatic: bool,
+        /// Let through by the agent's own judge, in [`ApprovalMode::Auto`].
+        #[serde(default)]
+        judged: bool,
     },
     TurnEnded {
         aborted: bool,
@@ -205,6 +208,27 @@ pub enum EventKind {
     Saved {
         snapshots: Vec<Snapshot>,
     },
+    /// The history before this was cut back to just before the person's
+    /// message `text`, the session's `rewind`th rewind; what was cut is kept
+    /// apart, hidden, until the session is deleted. With `files`, the code
+    /// went back too, and `snapshots` hold it as it was, for undoing. It can
+    /// be undone until the next message is sent.
+    Rewound {
+        rewind: usize,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
+        files: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        snapshots: Vec<Snapshot>,
+    },
+    /// The last rewind was undone: the history before this is the one it
+    /// cut, whole again.
+    RewindUndone,
+    /// The agent's backend summed up its conversation to make room. The
+    /// code was saved as it was then; rewinding to a message before this
+    /// gives the agent back everything from before the summary.
+    Compacted,
 }
 
 impl EventKind {
@@ -244,13 +268,17 @@ pub enum ApprovalMode {
     /// Reads and file writes go ahead; commands and anything else still ask.
     AllowEdits,
     AllowEverything,
+    /// The agent's own judge lets through what it finds safe and in line
+    /// with what was asked; the rest asks. Only for Claude Code and Copilot.
+    Auto,
 }
 
 impl ApprovalMode {
-    /// Whether a request of `kind` goes ahead without asking.
+    /// Whether a request of `kind` goes ahead without asking. In `Auto`
+    /// the agent's judge has already let through what it would.
     pub fn allows(self, kind: PermissionKind) -> bool {
         match self {
-            Self::AskEveryTime => false,
+            Self::AskEveryTime | Self::Auto => false,
             Self::AllowEdits => matches!(kind, PermissionKind::Read | PermissionKind::Write),
             Self::AllowEverything => true,
         }

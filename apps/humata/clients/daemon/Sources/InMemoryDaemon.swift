@@ -53,6 +53,8 @@ package final class InMemoryDaemon: Sendable {
         var histories: [String: [SessionEvent]] = [:]
         var paused: [String: Paused] = [:]
         var queues: [String: [Queued]] = [:]
+        /// Each session's histories before its rewinds, the last last.
+        var rewinds: [String: [[SessionEvent]]] = [:]
         var nextQueued = 1
         /// Images sent to each session, by session id then name.
         var images: [String: [String: ImageAttachment]] = [:]
@@ -490,6 +492,8 @@ package final class InMemoryDaemon: Sendable {
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
             abort: { session in try self.abort(session) },
+            rewind: { session, before, files in try self.rewind(session, before: before, files: files) },
+            undoRewind: { session in try self.undoRewind(session) },
             unqueue: { session, queueID in try self.unqueue(session, queueID) },
             editQueued: { session, queueID, text in try self.editQueued(session, queueID, text) },
             fork: { session, before, name, chatOnly in
@@ -966,6 +970,48 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
+    private func rewind(_ session: String, before: String, files: Bool) throws {
+        try known(session)
+        let dropped = state.withValue { state in state.queues.removeValue(forKey: session) ?? [] }
+        for queued in dropped {
+            append(.dequeued(queueID: queued.id, dropped: true), to: session)
+        }
+        try abort(session)
+        let history = state.value.histories[session] ?? []
+        guard let index = history.firstIndex(where: { $0.id == before }) else {
+            throw DaemonError.refused(.unknownEvent, message: "Session \(session) has no event \(before).")
+        }
+        guard case .userMessage(let text, let images) = history[index].kind else {
+            throw DaemonError.refused(
+                .invalidRequest, message: "Only one of your messages can be rewound to; pick a message you sent.")
+        }
+        state.withValue { state in
+            state.rewinds[session, default: []].append(history)
+            state.histories[session] = Array(history[..<index])
+        }
+        append(.rewound(text: text, images: images, files: files), to: session)
+    }
+
+    private func undoRewind(_ session: String) throws {
+        try known(session)
+        let history = state.value.histories[session] ?? []
+        let undoable = history.last {
+            switch $0.kind {
+            case .rewound, .rewindUndone, .userMessage: true
+            default: false
+            }
+        }
+        guard case .rewound = undoable?.kind, let saved = state.value.rewinds[session]?.last else {
+            throw DaemonError.refused(
+                .invalidRequest, message: "There's no rewind to undo: a message was sent since, or none was made.")
+        }
+        state.withValue { state in
+            state.rewinds[session]?.removeLast()
+            state.histories[session] = saved
+        }
+        append(.rewindUndone, to: session)
+    }
+
     /// Adds an event to the session's history and tells its watchers.
     /// Returns its id.
     @discardableResult
@@ -988,7 +1034,7 @@ package final class InMemoryDaemon: Sendable {
                 case .permissionRequested(let request, let permission, let summary):
                     state.sessions[index].pending.append(
                         PendingPermission(requestID: request, kind: permission, summary: summary))
-                case .permissionCompleted(let request, _, _):
+                case .permissionCompleted(let request, _, _, _):
                     state.sessions[index].pending.removeAll { $0.requestID == request }
                 default: break
                 }
@@ -1003,7 +1049,7 @@ package final class InMemoryDaemon: Sendable {
 
     private static func state(after kind: SessionEvent.Kind, waiting: Bool) -> SessionState {
         switch kind {
-        case .idle, .turnEnded: .idle
+        case .idle, .turnEnded, .rewound, .rewindUndone: .idle
         case .permissionRequested: .waitingForApproval
         default: waiting ? .waitingForApproval : .working
         }

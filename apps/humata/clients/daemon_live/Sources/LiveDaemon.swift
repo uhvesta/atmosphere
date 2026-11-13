@@ -200,6 +200,18 @@ extension DaemonClient {
                 abort.sessionID = session
                 _ = try await daemon.call(.abortTurn(abort))
             },
+            rewind: { session, before, files in
+                var rewind = Humata_V1_RewindSession()
+                rewind.sessionID = session
+                rewind.beforeEventID = before
+                rewind.files = files
+                _ = try await daemon.call(.rewindSession(rewind))
+            },
+            undoRewind: { session in
+                var undo = Humata_V1_UndoRewind()
+                undo.sessionID = session
+                _ = try await daemon.call(.undoRewind(undo))
+            },
             unqueue: { session, queueID in
                 var unqueue = Humata_V1_Unqueue()
                 unqueue.sessionID = session

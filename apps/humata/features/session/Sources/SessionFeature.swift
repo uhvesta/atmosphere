@@ -15,6 +15,8 @@ package struct SessionFeature {
         case chat
         case review
         case files
+        /// The specs it reads, for a session in a project.
+        case spec
         case terminal
     }
 
@@ -25,6 +27,8 @@ package struct SessionFeature {
         package var tab = Tab.chat
         package var review: ReviewFeature.State
         package var docs: DocsFeature.State
+        /// The specs it reads.
+        package var specs: SpecsFeature.State
         /// Shells in the session's folder, on its host.
         package var terminals: TerminalsFeature.State
         /// What the agent proposed for the board, shown as cards.
@@ -85,6 +89,16 @@ package struct SessionFeature {
         /// Its text as edited so far.
         package var queuedEdit = ""
         @Presents package var alert: AlertState<Never>?
+        /// Asks how far to rewind: the chat, or the chat and its files.
+        @Presents package var rewindDialog: ConfirmationDialogState<Action.RewindChoice>?
+        /// A rewind or its undo is under way.
+        package var rewinding = false
+        /// The message the last rewind put back in the box, so undoing it
+        /// takes it out again if it wasn't changed.
+        var rewoundText: String?
+        /// The rewind the chat was last read again for, so reading it
+        /// again doesn't start over once more.
+        var restartedFor: String?
         /// Landing the session, as a sheet.
         @Presents package var land: LandFeature.State?
         /// Merging the base in is under way.
@@ -103,6 +117,7 @@ package struct SessionFeature {
             self.highlighted = highlighted
             review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
             docs = DocsFeature.State(sessionID: session.id)
+            specs = SpecsFeature.State(projectID: session.projectID, itemID: session.itemID)
             terminals = TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)
             proposals = ProposalsFeature.State(sessionID: session.id)
             let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
@@ -167,7 +182,7 @@ package struct SessionFeature {
         /// The views it has: a review only for a project's code, and no
         /// terminal once archived, when its folder is gone.
         package var tabs: [Tab] {
-            var tabs: [Tab] = session.projectID == nil ? [.chat, .files] : [.chat, .review, .files]
+            var tabs: [Tab] = session.projectID == nil ? [.chat, .files] : [.chat, .review, .files, .spec]
             if !session.archived { tabs.append(.terminal) }
             return tabs
         }
@@ -200,7 +215,7 @@ package struct SessionFeature {
             for event in log {
                 switch event.kind {
                 case .permissionRequested: waiting.append(event)
-                case .permissionCompleted(let request, _, _):
+                case .permissionCompleted(let request, _, _, _):
                     waiting.removeAll { if case .permissionRequested(request, _, _) = $0.kind { true } else { false } }
                 case .turnEnded: waiting = []
                 default: continue
@@ -379,6 +394,14 @@ package struct SessionFeature {
         case showProposalsTapped
         /// The chat scrolled to the target.
         case scrolled
+        /// Asks how far to rewind to before the person's message `event`.
+        case rewindTapped(String)
+        case rewindDialog(PresentationAction<RewindChoice>)
+        /// The chat was cut back; `text` goes back in the box.
+        case rewound(String)
+        case undoRewindTapped
+        case rewindUndone
+        case rewindFailed(String)
         case answerPermission(requestID: String, approved: Bool)
         case approvalModePicked(ApprovalMode)
         /// The daemon refused the new mode, so the session keeps `previous`.
@@ -404,6 +427,7 @@ package struct SessionFeature {
         case tabPicked(Tab)
         case review(ReviewFeature.Action)
         case docs(DocsFeature.Action)
+        case specs(SpecsFeature.Action)
         /// Opens another terminal in the session's folder, and shows it.
         case newTerminalTapped
         /// Opens the board at the task it works on.
@@ -417,6 +441,13 @@ package struct SessionFeature {
         /// Merges each repository's base branch into the session's copy.
         case updateFromBaseTapped
         case updatedFromBase(BaseUpdate)
+
+        package enum RewindChoice: Equatable {
+            /// Cut the chat back to before `event`, leaving the code.
+            case chat(String)
+            /// Put the code back as it was then, too.
+            case chatAndFiles(String)
+        }
 
         @CasePathable
         package enum Delegate: Equatable {
@@ -442,6 +473,21 @@ package struct SessionFeature {
         // at once, and must not be fetched every second.
         let new = events.filter { state.events[id: $0.id] == nil }
         if new.contains(where: \.kind.isLive) { state.watchRetries = 0 }
+        // A rewind or its undo replaced the history: read it again from
+        // the start, once for each.
+        if !state.events.isEmpty,
+            let restart = new.last(where: { event in
+                switch event.kind {
+                case .rewound, .rewindUndone: true
+                default: false
+                }
+            }), restart.id != state.restartedFor
+        {
+            state.restartedFor = restart.id
+            state.events = []
+            state.streaming = ""
+            return .send(.task)
+        }
         state.receive(events)
         var effects: [Effect<Action>] = []
         if new.contains(where: { event in
@@ -457,6 +503,7 @@ package struct SessionFeature {
             case .chat, .terminal: break
             case .review: effects.append(.send(.review(.refresh)))
             case .files: effects.append(.send(.docs(.refresh)))
+            case .spec: effects.append(.send(.specs(.refresh)))
             }
         }
         return .merge(effects)
@@ -516,6 +563,9 @@ package struct SessionFeature {
         Scope(state: \.docs, action: \.docs) {
             DocsFeature()
         }
+        Scope(state: \.specs, action: \.specs) {
+            SpecsFeature()
+        }
         Scope(state: \.terminals, action: \.terminals) {
             TerminalsFeature()
         }
@@ -547,7 +597,11 @@ package struct SessionFeature {
                 guard let project = state.session.projectID, let item = state.session.itemID else { return .none }
                 return .send(.delegate(.openItem(projectID: project, itemID: item)))
 
-            case .binding, .delegate, .alert, .review, .docs, .terminals, .proposals, .land:
+            case .specs(.delegate(.openItem(let item))):
+                guard let project = state.session.projectID else { return .none }
+                return .send(.delegate(.openItem(projectID: project, itemID: item)))
+
+            case .binding, .delegate, .alert, .review, .docs, .specs, .terminals, .proposals, .land:
                 return .none
 
             case .landTapped:
@@ -582,6 +636,11 @@ package struct SessionFeature {
                 case .chat: return .none
                 case .review: return .send(.review(.refresh))
                 case .files: return .send(.docs(.refresh))
+                case .spec:
+                    // It may have moved to another item since it opened.
+                    state.specs.projectID = state.session.projectID
+                    state.specs.itemID = state.session.itemID
+                    return .send(.specs(.refresh))
                 case .terminal: return .none
                 }
 
@@ -830,6 +889,87 @@ package struct SessionFeature {
                     await send(.failed(error.localizedDescription))
                 }
 
+            case .rewindTapped(let id):
+                guard case .userMessage? = state.events[id: id]?.kind, !state.rewinding else { return .none }
+                let files = state.session.projectID != nil && !state.session.archived
+                let working = state.isWorking
+                state.rewindDialog = ConfirmationDialogState {
+                    TextState("Rewind to before this message?")
+                } actions: {
+                    ButtonState(action: .chat(id)) { TextState("Rewind the Chat") }
+                    if files {
+                        ButtonState(action: .chatAndFiles(id)) { TextState("Rewind the Chat and Files") }
+                    }
+                    ButtonState(role: .cancel) { TextState("Cancel") }
+                } message: {
+                    TextState(
+                        (working
+                            ? "The agent’s turn stops and queued messages are dropped. "
+                            : "")
+                            + "Everything after it leaves the chat, and the message goes back in the box to edit. "
+                            + (files
+                                ? "Rewinding files too puts the code back as it was then, uncommitted changes included. "
+                                : "")
+                            + "Undo brings it all back until you send another message.")
+                }
+                return .none
+
+            case .rewindDialog(.presented(let choice)):
+                let (before, files) =
+                    switch choice {
+                    case .chat(let id): (id, false)
+                    case .chatAndFiles(let id): (id, true)
+                    }
+                guard case .userMessage(let text, _)? = state.events[id: before]?.kind else { return .none }
+                state.rewinding = true
+                let session = state.session.id
+                return .run { send in
+                    try await daemon.rewind(session, before, files)
+                    await send(.rewound(text))
+                } catch: { error, send in
+                    await send(.rewindFailed(error.localizedDescription))
+                }
+
+            case .rewindDialog:
+                return .none
+
+            case .rewound(let text):
+                state.rewinding = false
+                state.rewoundText = text
+                state.draft = state.draft.isEmpty ? text : text + "\n\n" + state.draft
+                state.$savedDraft.withLock { $0 = state.draft }
+                return .none
+
+            case .undoRewindTapped:
+                guard !state.rewinding else { return .none }
+                state.rewinding = true
+                let session = state.session.id
+                return .run { send in
+                    try await daemon.undoRewind(session)
+                    await send(.rewindUndone)
+                } catch: { error, send in
+                    await send(.rewindFailed(error.localizedDescription))
+                }
+
+            case .rewindUndone:
+                state.rewinding = false
+                if let text = state.rewoundText, state.draft == text {
+                    state.draft = ""
+                    state.$savedDraft.withLock { $0 = "" }
+                }
+                state.rewoundText = nil
+                return .none
+
+            case .rewindFailed(let message):
+                state.rewinding = false
+                state.alert = AlertState {
+                    TextState("Couldn’t rewind")
+                } message: {
+                    TextState(
+                        "\(message)\n\nTry again once Humata’s daemon answers.")
+                }
+                return .none
+
             case .answerPermission(let request, let approved):
                 let session = state.session.id
                 return .run { _ in
@@ -909,6 +1049,7 @@ package struct SessionFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+        .ifLet(\.$rewindDialog, action: \.rewindDialog)
         .ifLet(\.$land, action: \.land) {
             LandFeature()
         }

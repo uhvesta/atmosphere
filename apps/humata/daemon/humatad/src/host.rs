@@ -48,6 +48,13 @@ trait Backend: Send + Sync {
         mode: ApprovalMode,
     ) -> BoxFuture<'a, ()>;
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
+    fn rewind<'a>(
+        &'a self,
+        session: &'a SessionId,
+        before: &'a EventId,
+        files: bool,
+    ) -> BoxFuture<'a, ()>;
+    fn undo_rewind<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
     fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()>;
     fn edit_queued<'a>(
         &'a self,
@@ -155,6 +162,21 @@ where
     }
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
         Box::pin(async move { Agent::abort(self, session).await.map_err(Into::into) })
+    }
+    fn rewind<'a>(
+        &'a self,
+        session: &'a SessionId,
+        before: &'a EventId,
+        files: bool,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            Agent::rewind(self, session, before, files)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn undo_rewind<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
+        Box::pin(async move { Agent::undo_rewind(self, session).await.map_err(Into::into) })
     }
     fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
@@ -857,6 +879,20 @@ impl Host {
                 let session = SessionId::new(abort.session_id);
                 self.owner(&session)?.1.abort(&session).await?;
                 Response::TurnAborted(pb::TurnAborted {})
+            }
+            Request::RewindSession(rewind) => {
+                let session = SessionId::new(rewind.session_id);
+                let before = EventId::new(rewind.before_event_id);
+                self.owner(&session)?
+                    .1
+                    .rewind(&session, &before, rewind.files)
+                    .await?;
+                Response::SessionRewound(pb::SessionRewound {})
+            }
+            Request::UndoRewind(undo) => {
+                let session = SessionId::new(undo.session_id);
+                self.owner(&session)?.1.undo_rewind(&session).await?;
+                Response::RewindUndone(pb::RewindUndone {})
             }
             Request::ListImportable(_) => {
                 let mut sessions = Vec::new();

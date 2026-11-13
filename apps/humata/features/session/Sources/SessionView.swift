@@ -31,6 +31,8 @@ package struct SessionView: View {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
             } else if store.tab == .files {
                 DocsView(store: store.scope(state: \.docs, action: \.docs))
+            } else if store.tab == .spec {
+                SpecsView(store: store.scope(state: \.specs, action: \.specs))
             } else if store.tab == .terminal {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
@@ -66,6 +68,21 @@ package struct SessionView: View {
         .navigationTitle(store.session.name.isEmpty ? "Session" : store.session.name)
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
+        .confirmationDialog($store.scope(state: \.rewindDialog, action: \.rewindDialog))
+        .overlay(alignment: .top) {
+            if store.rewinding {
+                Label {
+                    Text("Rewinding…")
+                } icon: {
+                    ProgressView().controlSize(.small)
+                }
+                .font(.callout)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: .capsule)
+                .padding(.top, 8)
+            }
+        }
         .sheet(item: $store.scope(state: \.land, action: \.land)) { LandView(store: $0) }
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
         .sheet(isPresented: editingProposal) {
@@ -84,6 +101,7 @@ package struct SessionView: View {
         case .chat: "Chat"
         case .review: store.review.pending > 0 ? "Review (\(store.review.pending))" : "Review"
         case .files: store.docs.drafts.isEmpty ? "Files" : "Files (\(store.docs.drafts.count))"
+        case .spec: "Spec"
         case .terminal: "Terminal"
         }
     }
@@ -149,7 +167,10 @@ package struct SessionView: View {
         }
         .labelsHidden()
         .fixedSize()
-        .help("The chat, the session's changes to review, the files in its folder, or a terminal there (⌘1 to ⌘4)")
+        .help(
+            "The chat, the session's changes to review, the files in its folder, the specs it reads, "
+                + "or a terminal there (⌘1 to ⌘5)"
+        )
         .background { tabShortcuts }
         if inAMenu {
             picker.pickerStyle(.menu)
@@ -197,7 +218,7 @@ package struct SessionView: View {
                 store.session.host.map { "The folder it works in on \($0)" }
                     ?? "The folder it works in, to look at or work in yourself")
             Picker("Approvals", selection: approvalMode) {
-                ForEach(ApprovalMode.allCases, id: \.self) { mode in
+                ForEach(ApprovalMode.offered(for: store.session.backend), id: \.self) { mode in
                     Text(Self.name(mode)).tag(mode)
                 }
             }
@@ -334,6 +355,8 @@ package struct SessionView: View {
                 )
                 .contextMenu {
                     Button("Edit Message…") { store.send(.editTapped(id)) }
+                    Button("Rewind to Before This…") { store.send(.rewindTapped(id)) }
+                        .disabled(store.rewinding || store.session.archived)
                     Divider()
                     Button("Fork Before This With the Code") {
                         store.send(.forkTapped(before: id, chatOnly: false))
@@ -373,6 +396,27 @@ package struct SessionView: View {
                 .help("What this turn used")
         case .stopped:
             Label("Stopped", systemImage: "stop.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        case .rewound(_, let files, let undoable):
+            HStack(alignment: .firstTextBaseline) {
+                Label(
+                    files ? "Rewound the chat and files to here" : "Rewound the chat to here",
+                    systemImage: "arrow.uturn.backward.circle"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                if undoable {
+                    Spacer()
+                    Button("Undo") { store.send(.undoRewindTapped) }
+                        .disabled(store.rewinding)
+                        .help("Bring back what the rewind cut; possible until you send another message")
+                }
+            }
+        case .compacted:
+            Label(
+                "Context compacted: the agent summed up what came before to make room",
+                systemImage: "rectangle.compress.vertical")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         case .notice(_, let text):
@@ -424,6 +468,7 @@ package struct SessionView: View {
         case .askEveryTime: "Ask Every Time"
         case .allowEdits: "Allow Edits"
         case .allowEverything: "Allow Everything"
+        case .auto: "Auto"
         }
     }
 
@@ -563,6 +608,8 @@ struct PermissionCard: View {
             answered("Denied", systemImage: "xmark")
         case .allowedByMode?:
             answered("Allowed by the approval mode", systemImage: "checkmark.shield")
+        case .allowedByJudge?:
+            answered("Allowed by the agent’s judge, in Auto", systemImage: "checkmark.seal")
         case .notAnswered?:
             answered("Not answered; the turn ended first", systemImage: "clock.badge.xmark")
         }

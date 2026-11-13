@@ -137,6 +137,7 @@ mod tests {
             request_id: id.to_owned(),
             approved: true,
             automatic: false,
+            judged: false,
         })
     }
 

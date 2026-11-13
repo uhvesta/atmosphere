@@ -14,11 +14,23 @@ package enum ApprovalMode: String, CaseIterable, Hashable, Sendable {
     /// Reads and file writes go ahead; commands and anything else still ask.
     case allowEdits
     case allowEverything
+    /// The agent's own judge lets through what it finds safe and in line
+    /// with what was asked; the rest asks. Only for Claude Code and Copilot.
+    case auto
 
-    /// Whether a request of `kind` goes ahead without asking.
+    /// The modes a session on `backend` can have.
+    package static func offered(for backend: Backend) -> [ApprovalMode] {
+        switch backend {
+        case .claude, .copilot: allCases
+        case .local, .scripted: allCases.filter { $0 != .auto }
+        }
+    }
+
+    /// Whether a request of `kind` goes ahead without asking. In `auto` the
+    /// agent's judge has already let through what it would.
     package func allows(_ kind: PermissionKind) -> Bool {
         switch self {
-        case .askEveryTime: false
+        case .askEveryTime, .auto: false
         case .allowEdits: kind == .read || kind == .write
         case .allowEverything: true
         }
@@ -1091,8 +1103,9 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         case toolCompleted(callID: String, success: Bool, output: String)
         case permissionRequested(requestID: String, kind: PermissionKind, summary: String)
         /// `automatic` when the session's approval mode answered it, not a
-        /// person.
-        case permissionCompleted(requestID: String, approved: Bool, automatic: Bool)
+        /// person; `judged` when the agent's own judge let it through, in
+        /// Auto.
+        case permissionCompleted(requestID: String, approved: Bool, automatic: Bool, judged: Bool = false)
         case turnEnded(aborted: Bool)
         case idle
         case failed(String)
@@ -1111,6 +1124,16 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         /// A queued message left the queue: its turn started, or it was
         /// taken out, or, `dropped`, Humata stopped before it ran.
         case dequeued(queueID: String, dropped: Bool = false)
+        /// The chat was cut back to before the person's message `text`,
+        /// and with `files`, its code too. The history starts over here: a
+        /// watcher watches again to read it. Undoable until the next
+        /// message.
+        case rewound(text: String, images: [String] = [], files: Bool)
+        /// The last rewind was undone; the history is as it was before it.
+        /// A watcher watches again to read it.
+        case rewindUndone
+        /// The agent summed up its earlier context to make room.
+        case compacted
     }
 
     package var id: String

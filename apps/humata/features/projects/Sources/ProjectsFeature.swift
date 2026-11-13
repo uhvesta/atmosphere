@@ -1084,6 +1084,9 @@ package struct NewSessionFeature {
             case .binding(\.backend):
                 // One agent's model means nothing to another.
                 state.model = ""
+                if !ApprovalMode.offered(for: state.backend).contains(state.approvalMode) {
+                    state.approvalMode = .askEveryTime
+                }
                 return loadModels(&state)
 
             case .binding(\.host):

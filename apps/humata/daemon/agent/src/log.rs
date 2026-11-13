@@ -179,6 +179,48 @@ impl EventLog {
         Ok(event)
     }
 
+    /// Puts `events` in place of the whole history, all or nothing, then
+    /// tells watchers the last of them, which says why: a watcher starts
+    /// over from the new history when it sees it.
+    pub(crate) fn replace(&self, events: Vec<Event>) -> Result<(), AgentError> {
+        let events: Vec<Event> = events
+            .into_iter()
+            .filter(|event| !streamed(event))
+            .collect();
+        let mut text = String::new();
+        for event in &events {
+            text.push_str(&encode(event)?);
+        }
+        let partial = self.path.with_extension("jsonl.partial");
+        let written = File::create(&partial)
+            .and_then(|mut file| {
+                file.write_all(text.as_bytes())
+                    .and_then(|()| file.sync_data())
+            })
+            .and_then(|()| std::fs::rename(&partial, &self.path));
+        written.map_err(|source| AgentError::Write {
+            path: self.path.clone(),
+            source,
+        })?;
+        let file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| AgentError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut inner = self.lock();
+        inner.file = file;
+        inner.streaming = None;
+        inner.summary = Summary::of(&events);
+        let last = events.last().cloned();
+        inner.events = events;
+        if let Some(last) = last {
+            let _ = self.live.send(last);
+        }
+        Ok(())
+    }
+
     pub(crate) fn events(&self) -> Vec<Event> {
         self.lock().events.clone()
     }

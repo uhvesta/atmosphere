@@ -30,6 +30,21 @@ pub enum AgentError {
     UnknownEvent { session: SessionId, event: EventId },
 
     #[error(
+        "event {event} of session {session} isn't a message the person sent, so there is nothing to rewind to before it; rewind to one of their messages"
+    )]
+    NotAMessage { session: SessionId, event: EventId },
+
+    #[error(
+        "session {session} has no rewind to undo: a message was sent since, or it was undone already. What was cut is still kept, hidden, until the session is deleted"
+    )]
+    NothingToUndo { session: SessionId },
+
+    #[error(
+        "session {session} works in the code of the session it was forked from, so rewinding its files would change that session's too; rewind the chat only, or rewind the other session"
+    )]
+    SharedFiles { session: SessionId },
+
+    #[error(
         "session {session} isn't waiting on permission request {request}; it was answered already, or its turn was stopped"
     )]
     UnknownPermissionRequest { session: SessionId, request: String },

@@ -140,6 +140,40 @@ impl Workspaces {
             .await
     }
 
+    /// Saves each checkout as it is now as the session's `rewind`th rewind,
+    /// so undoing it can put the files back.
+    pub async fn save_rewound(
+        &self,
+        session: &str,
+        rewind: usize,
+        checkouts: &[Checkout],
+    ) -> Result<Vec<Snapshot>, WorkspaceError> {
+        self.take(session, &format!("rewound/{rewind}"), checkouts)
+            .await
+    }
+
+    /// Puts each checkout back as its snapshot in `to` has it: its branch at
+    /// the snapshot's HEAD, and its files, with what the session had changed
+    /// unstaged. Files made since go; ones git ignores stay. A checkout with
+    /// no snapshot in `to` is left as it is.
+    pub async fn restore(
+        &self,
+        checkouts: &[Checkout],
+        to: &[Snapshot],
+    ) -> Result<(), WorkspaceError> {
+        for checkout in checkouts {
+            let Some(snapshot) = to.iter().find(|snapshot| snapshot.name == checkout.name) else {
+                continue;
+            };
+            let path = &checkout.path;
+            git(path, &["reset", "--quiet", "--hard", &snapshot.head]).await?;
+            git(path, &["clean", "--quiet", "--force", "-d"]).await?;
+            git(path, &["read-tree", "-u", "--reset", &snapshot.commit]).await?;
+            git(path, &["reset", "--quiet"]).await?;
+        }
+        Ok(())
+    }
+
     async fn take(
         &self,
         session: &str,

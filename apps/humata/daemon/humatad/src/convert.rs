@@ -58,10 +58,12 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             request_id,
             approved,
             automatic,
+            judged,
         } => Kind::PermissionCompleted(pb::PermissionCompleted {
             request_id: request_id.clone(),
             approved: *approved,
             automatic: *automatic,
+            judged: *judged,
         }),
         EventKind::TurnEnded { aborted } => Kind::TurnEnded(pb::TurnEnded { aborted: *aborted }),
         EventKind::MessageQueued {
@@ -82,6 +84,18 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             message: message.clone(),
         }),
         EventKind::Notice { text } => Kind::Notice(pb::Notice { text: text.clone() }),
+        EventKind::Rewound {
+            text,
+            images,
+            files,
+            ..
+        } => Kind::Rewound(pb::Rewound {
+            text: text.clone(),
+            images: images.clone(),
+            files: *files,
+        }),
+        EventKind::RewindUndone => Kind::RewindUndone(pb::RewindUndoneEvent {}),
+        EventKind::Compacted => Kind::Compacted(pb::Compacted {}),
         EventKind::Waiting { reason } => Kind::Waiting(pb::Waiting {
             reason: reason.clone(),
         }),
@@ -146,6 +160,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
             ApprovalMode::AskEveryTime => pb::ApprovalMode::AskEveryTime,
             ApprovalMode::AllowEdits => pb::ApprovalMode::AllowEdits,
             ApprovalMode::AllowEverything => pb::ApprovalMode::AllowEverything,
+            ApprovalMode::Auto => pb::ApprovalMode::Auto,
         }
         .into(),
         project_id: String::new(),
@@ -188,6 +203,7 @@ pub fn approval_mode(mode: pb::ApprovalMode) -> ApprovalMode {
         }
         pb::ApprovalMode::AllowEdits => ApprovalMode::AllowEdits,
         pb::ApprovalMode::AllowEverything => ApprovalMode::AllowEverything,
+        pb::ApprovalMode::Auto => ApprovalMode::Auto,
     }
 }
 

@@ -66,6 +66,16 @@ pub fn event(event: &pb::SessionEvent) -> String {
         Some(Kind::Failed(failed)) => ("failed", failed.message.clone()),
         Some(Kind::Waiting(waiting)) => ("waiting", waiting.reason.clone()),
         Some(Kind::Notice(notice)) => ("notice", notice.text.clone()),
+        Some(Kind::Rewound(rewound)) => (
+            "rewound",
+            if rewound.files {
+                format!("{} (and its files)", rewound.text)
+            } else {
+                rewound.text.clone()
+            },
+        ),
+        Some(Kind::RewindUndone(_)) => ("rewind-undone", String::new()),
+        Some(Kind::Compacted(_)) => ("compacted", String::new()),
         Some(Kind::Usage(usage)) => (
             "usage",
             format!(

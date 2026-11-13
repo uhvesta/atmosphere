@@ -24,8 +24,8 @@ use humata_workspace::{
 };
 
 use crate::event::{
-    ApprovalMode, Event, EventKind, ForkOptions, Image, Message, Parent, PermissionKind, SendMode,
-    SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
+    ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent, PermissionKind,
+    SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
 use crate::import::{Importable, Imported};
 use crate::log::EventLog;
@@ -34,6 +34,8 @@ use crate::{Agent, Model, Watch};
 
 const RECORD_FILE: &str = "session.json";
 const EVENTS_FILE: &str = "events.jsonl";
+/// Under a session's folder: each rewind's cut history, by number.
+const REWINDS_FOLDER: &str = "rewinds";
 
 /// Plays one turn of a session.
 pub trait Runner: Send + Sync + 'static {
@@ -57,6 +59,26 @@ pub trait Runner: Send + Sync + 'static {
         history: &[Event],
     ) -> Result<(), AgentError> {
         let _ = (parent, fork, history);
+        Ok(())
+    }
+
+    /// Called when `session`'s history is cut back to `history`, as its
+    /// `rewind`th rewind. A runner that keeps its own state per session
+    /// cuts it back to match, keeping what it had for
+    /// [`Runner::rewind_undone`].
+    fn rewound(
+        &self,
+        session: &SessionRecord,
+        history: &[Event],
+        rewind: usize,
+    ) -> Result<(), AgentError> {
+        let _ = (session, history, rewind);
+        Ok(())
+    }
+
+    /// Puts back what [`Runner::rewound`] kept for the `rewind`th rewind.
+    fn rewind_undone(&self, session: &SessionRecord, rewind: usize) -> Result<(), AgentError> {
+        let _ = (session, rewind);
         Ok(())
     }
 
@@ -136,13 +158,50 @@ impl Turn {
         self.session.lock().record.clone()
     }
 
+    /// What the session may do without asking, as it is now.
+    pub fn approval(&self) -> ApprovalMode {
+        self.session.lock().record.approval
+    }
+
+    /// Records a request of `kind` the agent's own judge let through, in
+    /// [`ApprovalMode::Auto`].
+    pub fn allowed_by_judge(
+        &self,
+        kind: PermissionKind,
+        summary: impl Into<String>,
+    ) -> Result<(), AgentError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let _control = self.session.lock();
+        self.session
+            .log
+            .append(Event::now(EventKind::PermissionRequested {
+                request_id: request_id.clone(),
+                kind,
+                summary: summary.into(),
+            }))?;
+        self.session
+            .log
+            .append(Event::now(EventKind::PermissionCompleted {
+                request_id,
+                approved: true,
+                automatic: true,
+                judged: true,
+            }))?;
+        Ok(())
+    }
+
     /// Every event so far, this turn's included.
     pub fn history(&self) -> Vec<Event> {
         self.session.log.events()
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
-        let saving = matches!(kind, EventKind::ToolCompleted { success: true, .. });
+        // A checkpoint after each change, and where the agent's context
+        // is cut, so a rewind to there has the files as they were.
+        let saving = matches!(
+            kind,
+            EventKind::ToolCompleted { success: true, .. } | EventKind::Compacted
+        );
         let event = self.session.log.append(Event::now(kind))?;
         if saving {
             save_soon(&self.session, self.workspaces.clone());
@@ -175,6 +234,7 @@ impl Turn {
                         request_id,
                         approved: true,
                         automatic: true,
+                        judged: false,
                     }))?;
                 return Ok(true);
             }
@@ -735,6 +795,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                     request_id: request_id.to_owned(),
                     approved,
                     automatic: false,
+                    judged: false,
                 }));
             if let Err(error) = recorded {
                 // Unrecorded, it must not go ahead.
@@ -777,6 +838,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                     request_id,
                     approved: true,
                     automatic: true,
+                    judged: false,
                 }));
             // Unrecorded, it must not go ahead; the turn sees a refusal.
             let approved = recorded.is_ok();
@@ -909,6 +971,135 @@ impl<R: Runner> Agent for LocalAgent<R> {
         )?;
         self.create(record.clone(), events)?;
         Ok(record)
+    }
+
+    async fn rewind(
+        &self,
+        id: &SessionId,
+        before: &EventId,
+        files: bool,
+    ) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        {
+            let mut control = session.lock();
+            if control.record.archived {
+                return Err(AgentError::Archived {
+                    session: id.clone(),
+                });
+            }
+            // What waits to be sent goes with what is cut.
+            let queued: Vec<String> = control.queue.drain(..).map(|queued| queued.id).collect();
+            for queue_id in queued {
+                session.note(EventKind::Dequeued {
+                    queue_id,
+                    dropped: true,
+                });
+            }
+        }
+        self.abort(id).await?;
+        let events = session.log.events();
+        let index = events
+            .iter()
+            .position(|event| &event.id == before)
+            .ok_or_else(|| AgentError::UnknownEvent {
+                session: id.clone(),
+                event: before.clone(),
+            })?;
+        let EventKind::UserMessage { text, images } = events[index].kind.clone() else {
+            return Err(AgentError::NotAMessage {
+                session: id.clone(),
+                event: before.clone(),
+            });
+        };
+        let mut kept = events[..index].to_vec();
+        kept.extend(closing(&kept).into_iter().map(Event::now));
+        let rewinds = session.dir.join(REWINDS_FOLDER);
+        let rewind = count_entries(&rewinds)? + 1;
+        let backup = rewinds.join(rewind.to_string());
+        std::fs::create_dir_all(&backup).map_err(|source| AgentError::CreateDirectory {
+            path: backup.clone(),
+            source,
+        })?;
+        drop(EventLog::create(backup.join(EVENTS_FILE), events)?);
+        let record = session.lock().record.clone();
+        let snapshots = if files && !record.checkouts.is_empty() {
+            if record
+                .checkouts
+                .iter()
+                .any(|checkout| checkout.owner != id.as_str())
+            {
+                return Err(AgentError::SharedFiles {
+                    session: id.clone(),
+                });
+            }
+            let workspaces = self.workspaces(id)?;
+            let _capturing = session.capturing.lock().await;
+            let saved = workspaces
+                .save_rewound(id.as_str(), rewind, &record.checkouts)
+                .await
+                .map_err(workspace_failed(id))?;
+            workspaces
+                .restore(&record.checkouts, &last_checkpoint(&kept))
+                .await
+                .map_err(workspace_failed(id))?;
+            saved
+        } else {
+            Vec::new()
+        };
+        self.runner.rewound(&record, &kept, rewind)?;
+        kept.push(Event::now(EventKind::Rewound {
+            rewind,
+            text,
+            images,
+            files,
+            snapshots,
+        }));
+        session.log.replace(kept)
+    }
+
+    async fn undo_rewind(&self, id: &SessionId) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let events = session.log.events();
+        let nothing = || AgentError::NothingToUndo {
+            session: id.clone(),
+        };
+        let last = events
+            .iter()
+            .rev()
+            .take_while(|event| {
+                !matches!(
+                    event.kind,
+                    EventKind::UserMessage { .. } | EventKind::RewindUndone
+                )
+            })
+            .find_map(|event| match &event.kind {
+                EventKind::Rewound {
+                    rewind, snapshots, ..
+                } => Some((*rewind, snapshots.clone())),
+                _ => None,
+            });
+        let (rewind, snapshots) = last.ok_or_else(nothing)?;
+        if session.lock().running.is_some() {
+            return Err(nothing());
+        }
+        let backup = session
+            .dir
+            .join(REWINDS_FOLDER)
+            .join(rewind.to_string())
+            .join(EVENTS_FILE);
+        let mut restored = EventLog::open(backup)?.events();
+        let record = session.lock().record.clone();
+        if !snapshots.is_empty() {
+            let workspaces = self.workspaces(id)?;
+            let _capturing = session.capturing.lock().await;
+            workspaces
+                .restore(&record.checkouts, &snapshots)
+                .await
+                .map_err(workspace_failed(id))?;
+        }
+        self.runner.rewind_undone(&record, rewind)?;
+        restored.push(Event::now(EventKind::RewindUndone));
+        session.log.replace(restored)
     }
 
     async fn skipped(&self) -> Result<Vec<Skipped>, AgentError> {
@@ -1507,6 +1698,18 @@ fn load(dir: &Path) -> Result<Session, AgentError> {
 
 /// Copies the images of the session in `from` to the one in `to`, so a
 /// fork's messages show theirs; a session sent none has nothing to copy.
+/// How many entries the folder at `path` has; none if it isn't there.
+fn count_entries(path: &Path) -> Result<usize, AgentError> {
+    match std::fs::read_dir(path) {
+        Ok(entries) => Ok(entries.count()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(source) => Err(AgentError::ReadDirectory {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
 fn copy_images(from: &Path, to: &Path) -> Result<(), AgentError> {
     let from = crate::images::folder(from);
     let entries = match std::fs::read_dir(&from) {

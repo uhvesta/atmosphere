@@ -72,6 +72,9 @@ enum Approval {
     Edits,
     /// Everything goes ahead.
     Everything,
+    /// The agent's own judge lets through what it finds safe; the rest asks.
+    /// Claude Code and Copilot only.
+    Auto,
 }
 
 impl From<Approval> for pb::ApprovalMode {
@@ -80,6 +83,7 @@ impl From<Approval> for pb::ApprovalMode {
             Approval::Ask => Self::AskEveryTime,
             Approval::Edits => Self::AllowEdits,
             Approval::Everything => Self::AllowEverything,
+            Approval::Auto => Self::Auto,
         }
     }
 }
@@ -727,6 +731,19 @@ enum Command {
     },
     /// Stop a session's running turn.
     Abort { session: String },
+    /// Cut a session's chat back to before one of your messages, stopping
+    /// its turn and dropping what's queued. Undo it with `undo-rewind`
+    /// before sending another message.
+    Rewind {
+        session: String,
+        /// The id of your message to cut from, as `events` prints it.
+        before: String,
+        /// Put the session's code back as it was then too.
+        #[arg(long)]
+        files: bool,
+    },
+    /// Undo a session's last rewind, if no message was sent since.
+    UndoRewind { session: String },
     /// Take a queued message out before its turn starts; its id is in the
     /// `queued` event.
     Unqueue { session: String, queue_id: String },
@@ -1307,6 +1324,32 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 client.call(request).await?,
                 |response| matches!(response, Response::TurnAborted(_)),
                 "TurnAborted",
+            )?;
+        }
+        Command::Rewind {
+            session,
+            before,
+            files,
+        } => {
+            let request = Request::RewindSession(pb::RewindSession {
+                session_id: session,
+                before_event_id: before,
+                files,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::SessionRewound(_)),
+                "SessionRewound",
+            )?;
+        }
+        Command::UndoRewind { session } => {
+            let request = Request::UndoRewind(pb::UndoRewind {
+                session_id: session,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::RewindUndone(_)),
+                "RewindUndone",
             )?;
         }
         Command::Unqueue { session, queue_id } => {

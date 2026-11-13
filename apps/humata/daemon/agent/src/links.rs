@@ -34,6 +34,10 @@ pub(crate) struct PendingFork {
 
 /// Said when a session with earlier turns has no backend session to carry
 /// on, so its agent starts with none of what came before.
+/// Under the links folder: the links each session had before each of its
+/// rewinds.
+const REWOUND_FOLDER: &str = "rewound";
+
 pub(crate) const STARTED_OVER: &str = "The agent started a new conversation: its earlier one in this session couldn't be found, so it doesn't know what was said before. Tell it what it needs from before to carry on.";
 
 /// Whether `history` holds a finished turn before the one starting.
@@ -108,6 +112,77 @@ impl Links {
             path: path.to_owned(),
             source,
         })
+    }
+
+    /// Where the links a session had before its rewind `rewind` are kept,
+    /// for undoing it.
+    fn rewound_path(root: &Path, session: &str, rewind: usize) -> PathBuf {
+        root.join("links")
+            .join(REWOUND_FOLDER)
+            .join(session)
+            .join(format!("{rewind}.json"))
+    }
+
+    /// Saves the session's links for undoing rewind `rewind`, then links
+    /// it as a fork that keeps `history`: its next turn forks the backend's
+    /// session where the rewind cut ours.
+    pub(crate) fn rewind(
+        root: &Path,
+        session: &str,
+        history: &[Event],
+        rewind: usize,
+    ) -> Result<(), AgentError> {
+        let path = Self::path(root, session);
+        let links = Self::load(&path)?;
+        links.save(&Self::rewound_path(root, session, rewind))?;
+        links.fork(history).save_or_remove(&path)
+    }
+
+    /// Puts back the links the session had before rewind `rewind`.
+    pub(crate) fn undo_rewind(root: &Path, session: &str, rewind: usize) -> Result<(), AgentError> {
+        let saved = Self::load(&Self::rewound_path(root, session, rewind))?;
+        saved.save_or_remove(&Self::path(root, session))
+    }
+
+    /// The backend sessions kept for undoing a rewind of `session`, and the
+    /// folder they're kept in.
+    pub(crate) fn rewound(
+        root: &Path,
+        session: &str,
+    ) -> Result<(Vec<String>, PathBuf), AgentError> {
+        let dir = root.join("links").join(REWOUND_FOLDER).join(session);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((Vec::new(), dir));
+            }
+            Err(source) => return Err(AgentError::ReadDirectory { path: dir, source }),
+        };
+        let mut sessions = Vec::new();
+        for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                sessions.extend(Self::load(&path)?.session);
+            }
+        }
+        Ok((sessions, dir))
+    }
+
+    /// Writes the links to `path`, or removes the file when there are none.
+    fn save_or_remove(&self, path: &Path) -> Result<(), AgentError> {
+        if *self != Self::default() {
+            return self.save(path);
+        }
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(AgentError::Write {
+                path: path.to_owned(),
+                source,
+            }),
+        }
     }
 
     /// The backend's event of the last event linked: where a fork that

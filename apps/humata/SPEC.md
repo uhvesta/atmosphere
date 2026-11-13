@@ -148,12 +148,12 @@ original spec; lettered ones were added since.
 | K Signed releases | Done: humata-v0.1.0 published |
 | S1 Storage: safe places, cleanup, opt-in auto-delete | Done |
 | Q1 Queue and composer: edit, merge, cancel, pastes, images | Done |
-| Q2 Rewind and checkpoints | Planned |
-| Q3 Skills from the agents' folders | Planned |
+| Q2 Rewind and checkpoints | Done |
+| Q3 Skills from the agents' folders | Next |
 | Q4 Plugins | Planned |
 | Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Planned |
-| Q6 Auto approvals: the agent's own safety judge | Next |
-| Q7 Spec tab: every spec a chat reads, in the chat | Planned |
+| Q6 Auto approvals: the agent's own safety judge | Done |
+| Q7 Spec tab: every spec a chat reads, in the chat | Done |
 | T1 Tokens and agent tools | Planned |
 | U1 App jank | Planned |
 | D1 Mermaid diagrams | Planned |
@@ -1104,18 +1104,21 @@ the Mac. Built after S1, before T1.
 
 #### Q2 Rewind and checkpoints
 
-- [ ] Rewind to before any message the person sent: the chat only, or the
+- [x] Rewind to before any message the person sent: the chat only, or the
   chat and the files, back to that turn's snapshot; the message goes back
   in the box
-- [ ] Undo Rewind brings back what was cut, chat and files, until the next
+- [x] Undo Rewind brings back what was cut, chat and files, until the next
   message is sent; after that the cut part stays as a hidden fork, kept
   until the session is deleted
-- [ ] Every compaction, Copilot's, Claude Code's or the local model's,
+- [x] Every compaction, Copilot's, Claude Code's or the local model's,
   makes a checkpoint first, shown in the chat; rewinding to it brings
   back the full context from before it
-- [ ] Rewind runs on every backend: Claude Code resumes at the turn,
+- [x] Rewind runs on every backend: Claude Code resumes at the turn,
   Copilot forks at the event, the local model cuts its history; a session
   working is stopped first, after asking
+- The local model never compacts, so it makes no compaction checkpoint;
+  Claude Code's and Copilot's are saved when their compaction is reported,
+  as nothing changes the files while they compact
 
 #### Q3 Skills from the agents' folders
 
@@ -1161,21 +1164,31 @@ the Mac. Built after S1, before T1.
 
 The owner, 2026-11-12: auto approvals through the agents' own judges.
 
-- [ ] Approvals gains Auto: Claude Code sessions switch to its `auto`
-  permission mode through its control protocol (and back to `manual` for
-  the other choices); Copilot sessions use its assisted-approval judge
-- [ ] What the judge won't approve comes to the person as any request
-  does; what it approved shows "Allowed by the agent's judge"
-- [ ] Auto isn't offered for local models, which have no judge
+- [x] Approvals gains Auto: Claude Code turns run in its `auto` permission
+  mode, and a change mid-turn reaches the running CLI as a
+  `set_permission_mode` control request (`manual` for the other choices);
+  Copilot sessions run in its `assisted` mode, set mid-turn with
+  `session.permissions.setMode`, and Humata lets through what its judge
+  recommends approving
+- [x] What the judge won't approve comes to the person as any request
+  does; what it approved shows "Allowed by the agent's judge". Claude
+  Code's classifier runs what it clears without asking and refuses what it
+  blocks; after three refusals in a row or twenty in all it asks, and that
+  comes to the person
+- [x] Auto isn't offered for local models, which have no judge; picking a
+  local model in a new chat drops it to Ask Every Time
 
 #### Q7 Spec tab
 
 The owner, 2026-11-12: see the specs for a chat.
 
-- [ ] A Spec tab beside Chat, Review and Files shows every spec the chat
-  reads, in order: the project's, its task's, its subtask's
-- [ ] Each renders as Markdown, with Edit for the board's editor; an edit
-  is saved to the board and reaches the session as any spec edit does
+- [x] A Spec tab beside Chat, Review and Files shows every spec the chat
+  reads, in order: the project's instructions, its task's, its subtask's
+  (as the daemon gives them, the task's always with a subtask's)
+- [x] Each renders as Markdown, with Edit for Write and Preview like the
+  board's editor; an item's edit is saved to the board and reaches the
+  session as any spec edit does; the project's reaches sessions started
+  after, as in Project Settings. Open on the Board shows the item there
 
 ### Milestone K: signed releases
 

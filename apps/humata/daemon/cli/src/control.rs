@@ -200,8 +200,8 @@ fn tool_list() -> Vec<Tool> {
                 "name": string("What to call it"),
                 "host": string("The host to run on; empty for this Mac"),
                 "directory": string("For a free chat, the folder to work in"),
-                "approval": {"type": "string", "enum": ["ask", "edits", "everything"],
-                    "description": "What it may do without asking; default ask"},
+                "approval": {"type": "string", "enum": ["ask", "edits", "everything", "auto"],
+                    "description": "What it may do without asking; default ask. auto lets the agent's own judge decide, for claude and copilot"},
                 "backend_config": string("The backend's config, such as a scripted agent's script as JSON"),
             }),
             required: &["backend"],
@@ -233,6 +233,24 @@ fn tool_list() -> Vec<Tool> {
         Tool {
             name: "stop_turn",
             description: "Stops what a session is doing now.",
+            properties: json!({"session_id": session()}),
+            required: &["session_id"],
+            effect: Effect::Changes,
+        },
+        Tool {
+            name: "rewind_session",
+            description: "Cuts a session's chat back to before one of the person's messages, stopping its turn and dropping what's queued; with files, its code goes back as it was then too. undo_rewind brings it all back until the next message.",
+            properties: json!({
+                "session_id": session(),
+                "before_event_id": string("The id of the person's message to cut from"),
+                "files": boolean("Put the code back as it was then too"),
+            }),
+            required: &["session_id", "before_event_id"],
+            effect: Effect::Changes,
+        },
+        Tool {
+            name: "undo_rewind",
+            description: "Undoes a session's last rewind, chat and files, if no message was sent since.",
             properties: json!({"session_id": session()}),
             required: &["session_id"],
             effect: Effect::Changes,
@@ -544,6 +562,26 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 other => Err(unexpected(&other)),
             }
         }
+        "rewind_session" => {
+            let request = Request::RewindSession(pb::RewindSession {
+                session_id: arguments.required("session_id")?,
+                before_event_id: arguments.required("before_event_id")?,
+                files: arguments.flag("files"),
+            });
+            match ask(client, request).await? {
+                Response::SessionRewound(_) => Ok("Rewound it.".to_owned()),
+                other => Err(unexpected(&other)),
+            }
+        }
+        "undo_rewind" => {
+            let request = Request::UndoRewind(pb::UndoRewind {
+                session_id: arguments.required("session_id")?,
+            });
+            match ask(client, request).await? {
+                Response::RewindUndone(_) => Ok("Undid its rewind.".to_owned()),
+                other => Err(unexpected(&other)),
+            }
+        }
         "fork_session" => {
             let request = Request::ForkSession(pb::ForkSession {
                 session_id: arguments.required("session_id")?,
@@ -699,9 +737,10 @@ async fn start(client: &Client, arguments: &Arguments<'_>) -> Result<String, Str
         "" | "ask" => pb::ApprovalMode::AskEveryTime,
         "edits" => pb::ApprovalMode::AllowEdits,
         "everything" => pb::ApprovalMode::AllowEverything,
+        "auto" => pb::ApprovalMode::Auto,
         other => {
             return Err(format!(
-                "{other:?} isn't an approval mode; give ask, edits or everything"
+                "{other:?} isn't an approval mode; give ask, edits, everything or auto"
             ));
         }
     };

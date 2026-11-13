@@ -66,6 +66,7 @@ extension ApprovalMode {
             switch mode {
             case .allowEdits: .allowEdits
             case .allowEverything: .allowEverything
+            case .auto: .auto
             case .askEveryTime, .unspecified, .UNRECOGNIZED: .askEveryTime
             }
     }
@@ -75,6 +76,7 @@ extension ApprovalMode {
         case .askEveryTime: .askEveryTime
         case .allowEdits: .allowEdits
         case .allowEverything: .allowEverything
+        case .auto: .auto
         }
     }
 }
@@ -415,12 +417,17 @@ extension SessionEvent {
                 requestID: request.requestID, kind: PermissionKind(request.kind), summary: request.summary)
         case .permissionCompleted(let completed):
             kind = .permissionCompleted(
-                requestID: completed.requestID, approved: completed.approved, automatic: completed.automatic)
+                requestID: completed.requestID, approved: completed.approved, automatic: completed.automatic,
+                judged: completed.judged)
         case .turnEnded(let ended): kind = .turnEnded(aborted: ended.aborted)
         case .idle: kind = .idle
         case .failed(let failed): kind = .failed(failed.message)
         case .waiting(let waiting): kind = .waiting(waiting.reason)
         case .notice(let notice): kind = .notice(notice.text)
+        case .rewound(let rewound):
+            kind = .rewound(text: rewound.text, images: rewound.images, files: rewound.files)
+        case .rewindUndone: kind = .rewindUndone
+        case .compacted: kind = .compacted
         case .usage(let usage):
             kind = .usage(
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,

@@ -183,6 +183,46 @@ final class MacFlowSnapshotTests: XCTestCase {
 
     /// A session is forked before its second turn: the fork shows under it
     /// in the sidebar with the chat up to there, and goes its own way.
+    /// Rewinding cuts the chat back to before a message and puts it back
+    /// in the box; Undo brings everything back.
+    func testRewindingAChat() async throws {
+        let daemon = InMemoryDaemon { text in [.say("Done: \(text).")] }
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "Release notes"))
+        try await daemon.client.send(session.id, "Draft the notes", .enqueue)
+        try await daemon.client.send(session.id, "Add the changelog", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("rewind", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.items.count == 4 }
+        await flow.step("session")
+
+        let second = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("Add the changelog") })
+        store.send(.session(.presented(.rewindTapped(second.id))))
+        try await until { store.session?.rewindDialog != nil }
+        store.send(.session(.presented(.rewindDialog(.presented(.chat(second.id))))))
+        try await until {
+            store.session?.items.count == 3 && store.session?.draft == "Add the changelog"
+                && store.session?.rewinding == false
+        }
+        await flow.step("rewound")
+
+        store.send(.session(.presented(.undoRewindTapped)))
+        try await until { store.session?.items.count == 4 && store.session?.rewinding == false }
+        await flow.step("undone")
+        flow.finish()
+    }
+
     func testAForkBeforeATurn() async throws {
         let daemon = InMemoryDaemon { text in
             [.write(path: "/\(text).md", contents: text), .say("Wrote \(text).md.")]
@@ -930,6 +970,13 @@ final class MacFlowSnapshotTests: XCTestCase {
                 && store.session?.proposals.proposals.contains { $0.currentSpec != nil } == true
         }
         await flow.step("spec edit")
+
+        // The task's own chat reads the project's instructions, then the task.
+        store.send(.session(.presented(.delegate(.openSession(work)))))
+        try await until { store.session?.session.id == work.id }
+        store.send(.session(.presented(.tabPicked(.spec))))
+        try await until { store.session?.specs.pages.count == 2 && store.session?.specs.loading == false }
+        await flow.step("spec tab")
         flow.finish()
     }
 

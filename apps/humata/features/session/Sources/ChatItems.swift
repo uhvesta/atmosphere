@@ -19,11 +19,16 @@ package enum ChatItem: Identifiable, Hashable, Sendable {
     case notice(id: String, text: String)
     /// What a turn used, where it ended; only for turns that report it.
     case cost(id: String, Usage)
+    /// The chat was cut back here, and with `files` its code too;
+    /// `undoable` until the next message.
+    case rewound(id: String, files: Bool, undoable: Bool)
+    /// The agent summed up what came before to make room.
+    case compacted(id: String)
 
     package var id: String {
         switch self {
         case .person(let id, _, _), .reply(let id, _), .thinking(let id, _), .permission(let id, _), .stopped(let id),
-            .failure(let id, _), .notice(let id, _), .cost(let id, _):
+            .failure(let id, _), .notice(let id, _), .cost(let id, _), .rewound(let id, _, _), .compacted(let id):
             id
         case .tool(let call): call.id
         }
@@ -126,6 +131,8 @@ package struct Permission: Hashable, Sendable {
         case denied
         /// The session's approval mode allowed it.
         case allowedByMode
+        /// The agent's own judge let it through, in Auto.
+        case allowedByJudge
         /// Its turn ended, stopped or cut short, before it was answered.
         case notAnswered
     }
@@ -176,6 +183,15 @@ extension ChatItem {
             }
         }
 
+        var rewound: Int?
+
+        /// The last rewind can't be undone once a message is sent or it was.
+        func settleRewind() {
+            guard let index = rewound, case .rewound(let id, let files, _) = items[index] else { return }
+            items[index] = .rewound(id: id, files: files, undoable: false)
+            rewound = nil
+        }
+
         for event in events {
             if case .usage = event.kind { turn.append(event) }
             if case .turnEnded = event.kind {
@@ -192,6 +208,7 @@ extension ChatItem {
             }
             switch event.kind {
             case .userMessage(let text, let images):
+                settleRewind()
                 items.append(.person(id: event.id, text: text, images: images))
             case .assistantMessage(let text):
                 items.append(.reply(id: event.id, text: text))
@@ -227,13 +244,23 @@ extension ChatItem {
                     requests[request] = items.count
                     items.append(.permission(id: event.id, permission))
                 }
-            case .permissionCompleted(let request, let approved, let automatic):
-                answer(request, automatic ? .allowedByMode : approved ? .approved : .denied)
+            case .permissionCompleted(let request, let approved, let automatic, let judged):
+                answer(
+                    request,
+                    judged ? .allowedByJudge : automatic ? .allowedByMode : approved ? .approved : .denied)
                 requests[request] = nil
             case .failed(let message):
                 items.append(.failure(id: event.id, message: message))
             case .notice(let text):
                 items.append(.notice(id: event.id, text: text))
+            case .rewound(_, _, let files):
+                settleRewind()
+                rewound = items.count
+                items.append(.rewound(id: event.id, files: files, undoable: true))
+            case .rewindUndone:
+                settleRewind()
+            case .compacted:
+                items.append(.compacted(id: event.id))
             case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
                 .waiting:
                 continue

@@ -27,7 +27,7 @@ use crate::backup::{self, BackendFile};
 use crate::children;
 use crate::env::Env;
 use crate::error::AgentError;
-use crate::event::{EventKind, PermissionKind, SessionId, SessionRecord};
+use crate::event::{ApprovalMode, EventKind, PermissionKind, SessionId, SessionRecord};
 use crate::import::{self, Importable, Imported};
 use crate::links::Links;
 use crate::runtime::{Runner, Turn};
@@ -157,7 +157,7 @@ impl ClaudeRunner {
             "--permission-prompt-tool",
             "stdio",
             "--permission-mode",
-            "manual",
+            permission_mode(record.approval),
             "--disallowedTools",
             LEFT_OUT,
         ]);
@@ -373,6 +373,7 @@ impl Runner for ClaudeRunner {
             sent: 0,
             replayed: 0,
             failure: None,
+            mode: permission_mode(record.approval),
         };
         let images = read_images(turn.images())?;
         playing.send_with(turn.text(), &images).await?;
@@ -392,6 +393,10 @@ impl Runner for ClaudeRunner {
                 _ = steer.tick() => {
                     for text in turn.take_steering() {
                         playing.send(&text).await?;
+                    }
+                    let mode = permission_mode(turn.approval());
+                    if mode != playing.mode {
+                        playing.set_mode(mode).await?;
                     }
                 }
             }
@@ -426,6 +431,19 @@ impl Runner for ClaudeRunner {
             return Ok(());
         }
         links.save(&Links::path(&self.options.state, fork.id.as_str()))
+    }
+
+    fn rewound(
+        &self,
+        session: &SessionRecord,
+        history: &[crate::Event],
+        rewind: usize,
+    ) -> Result<(), AgentError> {
+        Links::rewind(&self.options.state, session.id.as_str(), history, rewind)
+    }
+
+    fn rewind_undone(&self, session: &SessionRecord, rewind: usize) -> Result<(), AgentError> {
+        Links::undo_rewind(&self.options.state, session.id.as_str(), rewind)
     }
 }
 
@@ -462,6 +480,21 @@ struct Playing<'a> {
     replayed: usize,
     /// What the CLI reported going wrong; the turn fails with it at its end.
     failure: Option<ClaudeError>,
+    /// The CLI's permission mode, as last set.
+    mode: &'static str,
+}
+
+/// The CLI's permission mode for `approval`. In auto its classifier lets
+/// through what it finds safe and refuses the rest, and asks over the pipe
+/// after several refusals; otherwise every tool asks over the pipe and the
+/// approval mode answers.
+fn permission_mode(approval: ApprovalMode) -> &'static str {
+    match approval {
+        ApprovalMode::Auto => "auto",
+        ApprovalMode::AskEveryTime | ApprovalMode::AllowEdits | ApprovalMode::AllowEverything => {
+            "manual"
+        }
+    }
 }
 
 /// The turn's images, each with its media type.
@@ -517,6 +550,18 @@ impl Playing<'_> {
         Ok(())
     }
 
+    /// Switches the running CLI to `mode`, as the person changed the
+    /// session's approvals mid-turn.
+    async fn set_mode(&mut self, mode: &'static str) -> Result<(), ClaudeError> {
+        let request = json!({"type": "control_request",
+            "request_id": uuid::Uuid::new_v4().to_string(),
+            "request": {"subtype": "set_permission_mode", "mode": mode},
+        });
+        self.write(&request).await?;
+        self.mode = mode;
+        Ok(())
+    }
+
     async fn write(&mut self, message: &Value) -> Result<(), ClaudeError> {
         let Some(stdin) = self.stdin.as_mut() else {
             return Ok(());
@@ -549,6 +594,10 @@ impl Playing<'_> {
                 if let Some(session) = event["session_id"].as_str().filter(|id| !id.is_empty()) {
                     session.clone_into(&mut self.session);
                 }
+            }
+            // Its context was summed up to make room.
+            "system" if event["subtype"] == "compact_boundary" => {
+                self.turn.emit(EventKind::Compacted)?;
             }
             "stream_event" => {
                 let delta = &event["event"]["delta"];

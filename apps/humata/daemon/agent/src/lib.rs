@@ -143,6 +143,24 @@ pub trait Agent: Send + Sync {
         options: ForkOptions,
     ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
 
+    /// Cuts `session`'s history back to just before `before`, one of the
+    /// person's messages, stopping it first if it's working; with `files`,
+    /// its code goes back to how it was there too. What was cut is kept,
+    /// hidden, for [`Agent::undo_rewind`] and until the session is deleted.
+    fn rewind(
+        &self,
+        session: &SessionId,
+        before: &EventId,
+        files: bool,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Brings back what the last rewind cut, chat and code, if no message
+    /// was sent since.
+    fn undo_rewind(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     fn history(
         &self,
         session: &SessionId,

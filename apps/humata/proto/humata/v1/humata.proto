@@ -198,6 +198,11 @@ message Request {
     CleanUpStorage clean_up_storage = 95;
     EditQueued edit_queued = 96;
     ReadImage read_image = 97;
+    // Cuts a session's chat back to before one of the person's messages,
+    // and with files, its code too. The cut can be undone until the next
+    // message.
+    RewindSession rewind_session = 98;
+    UndoRewind undo_rewind = 99;
   }
 }
 
@@ -297,6 +302,8 @@ message Response {
     Storage storage = 88;
     QueuedEdited queued_edited = 89;
     ImageData image_data = 90;
+    SessionRewound session_rewound = 91;
+    RewindUndone rewind_undone = 92;
   }
 }
 
@@ -426,6 +433,9 @@ enum ApprovalMode {
   // Reads and file writes go ahead; commands and anything else still ask.
   APPROVAL_MODE_ALLOW_EDITS = 2;
   APPROVAL_MODE_ALLOW_EVERYTHING = 3;
+  // The agent's own judge lets through what it finds safe and in line with
+  // what was asked; the rest asks. Only for Claude Code and Copilot.
+  APPROVAL_MODE_AUTO = 4;
 }
 
 // Sets a session's approval mode from now on. Requests waiting for an
@@ -1407,6 +1417,26 @@ message AbortTurn {
 
 message TurnAborted {}
 
+// Stops the turn if one is running and drops what's queued, then cuts the
+// chat back to before `before_event_id`, which must be the person's
+// message. With `files`, the session's code goes back to how it was then;
+// a session sharing its code with another can't. ERROR_CODE_INVALID_REQUEST
+// when the event isn't a message of the person's.
+message RewindSession {
+  string session_id = 1;
+  string before_event_id = 2;
+  bool files = 3;
+}
+
+message SessionRewound {}
+
+// Undoes the session's last rewind, unless a message was sent since.
+message UndoRewind {
+  string session_id = 1;
+}
+
+message RewindUndone {}
+
 message StreamItem {
   oneof kind {
     SessionEvent session_event = 1;
@@ -1535,8 +1565,30 @@ message SessionEvent {
     Saved saved = 19;
     Waiting waiting = 20;
     Notice notice = 21;
+    Rewound rewound = 22;
+    RewindUndoneEvent rewind_undone = 23;
+    Compacted compacted = 24;
   }
 }
+
+// The chat was cut back to before the message here, which the app offers
+// back to edit. Its history starts over from this event: a watcher reads
+// the session again. Every later event is gone until the rewind is undone.
+message Rewound {
+  // The message cut, and the names of its images.
+  string text = 1;
+  repeated string images = 2;
+  // Whether the code was put back as it was then, too.
+  bool files = 3;
+}
+
+// The last rewind was undone: the history is as it was before it. A watcher
+// reads the session again.
+message RewindUndoneEvent {}
+
+// The agent summed up its earlier context to make room; it keeps the gist,
+// not every word. The code is saved here.
+message Compacted {}
 
 // Something the person should know about the session that isn't from the
 // agent, such as that it started over without its earlier conversation.
@@ -1627,6 +1679,8 @@ message PermissionCompleted {
   bool approved = 2;
   // Answered by the session's approval mode, not by a person.
   bool automatic = 3;
+  // Let through by the agent's own judge, in Auto.
+  bool judged = 4;
 }
 
 message TurnEnded {
