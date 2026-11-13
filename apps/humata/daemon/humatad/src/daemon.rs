@@ -962,8 +962,15 @@ impl Daemon {
             .await
         {
             Ok(Reply::Response(pb::response::Kind::History(history))) => {
-                if !host.is_empty() {
-                    self.store.cache_history(&session, &history)?;
+                // Kept again only when it has changed since, and written
+                // apart: compressing a long history takes a while.
+                if !host.is_empty()
+                    && self.store.cached_history_len(&session)? != history.events.len()
+                {
+                    let kept = history.clone();
+                    self.store
+                        .apart(move |store| store.cache_history(&session, &kept))
+                        .await?;
                 }
                 Ok(Reply::Response(pb::response::Kind::History(history)))
             }
@@ -1111,6 +1118,23 @@ impl Daemon {
             // copies off the host are made at most once a minute, and the
             // turn's end makes one anyway.
             let mut backed_up_save: Option<std::time::Instant> = None;
+            // Copies of the history are compressed and written on a thread
+            // for blocking work, so a long one doesn't hold up an executor
+            // thread; one at a time, in order, skipping to the newest when
+            // several wait. It stops when the watch does.
+            let (copies, mut waiting) = mpsc::unbounded_channel::<pb::History>();
+            let writer = (store.clone(), session.clone());
+            tokio::task::spawn_blocking(move || {
+                let (store, session) = writer;
+                while let Some(mut history) = waiting.blocking_recv() {
+                    while let Ok(newer) = waiting.try_recv() {
+                        history = newer;
+                    }
+                    if let Err(error) = store.cache_history(&session, &history) {
+                        eprintln!("humatad: couldn't keep a copy of {session}'s history: {error}");
+                    }
+                }
+            });
             let mut keep = |events: &Vec<pb::SessionEvent>| {
                 if events.len() <= kept {
                     return;
@@ -1118,11 +1142,11 @@ impl Daemon {
                 let history = pb::History {
                     events: events.clone(),
                 };
-                // A copy that couldn't be written stays as it was; the next
-                // turn tries again.
-                if store.cache_history(&session, &history).is_ok() {
-                    kept = events.len();
-                }
+                // Compressed and written by the writer apart. One that
+                // couldn't be written stays as it was; the next turn's copy
+                // has it all.
+                kept = events.len();
+                let _ = copies.send(history);
             };
             loop {
                 let next = tokio::select! {

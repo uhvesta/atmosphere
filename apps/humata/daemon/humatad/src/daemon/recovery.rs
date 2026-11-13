@@ -199,7 +199,10 @@ impl Daemon {
             })?;
         }
         let name = record_name(&backup.record);
-        self.store.keep_recovery(session, host, &name, &backup)?;
+        let (session, host) = (session.to_owned(), host.to_owned());
+        self.store
+            .apart(move |store| store.keep_recovery(&session, &host, &name, &backup))
+            .await?;
         Ok(())
     }
 

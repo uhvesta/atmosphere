@@ -439,14 +439,35 @@ impl Store {
             source,
         };
         let mut connection = Connection::open(path).map_err(opened)?;
+        // With WAL, NORMAL can lose the last commits in a power cut but
+        // never leaves the store broken, and doesn't wait on the disk for
+        // each one.
         connection
-            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+            .execute_batch(
+                "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;",
+            )
             .map_err(opened)?;
         migrate(&mut connection, path)?;
         Ok(Self {
             path: path.to_owned(),
             connection: Mutex::new(connection),
         })
+    }
+
+    /// Runs `work` on the store on a thread for blocking work, so a big
+    /// write, such as compressing a history, doesn't hold up the executor
+    /// threads every connection is served on.
+    pub async fn apart<T: Send + 'static>(
+        self: &std::sync::Arc<Self>,
+        work: impl FnOnce(&Self) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let store = std::sync::Arc::clone(self);
+        tokio::task::spawn_blocking(move || work(&store))
+            .await
+            .map_err(|source| StoreError::Stopped {
+                path: self.path.clone(),
+                source,
+            })?
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {

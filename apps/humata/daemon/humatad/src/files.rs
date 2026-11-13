@@ -23,13 +23,33 @@ const IMAGES: [&str; 9] = [
     "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp",
 ];
 
+/// `list`, on a thread for blocking work, as a big folder takes a while.
+pub async fn list_apart(root: PathBuf) -> Result<pb::Files, HostError> {
+    let path = root.clone();
+    tokio::task::spawn_blocking(move || list(&root))
+        .await
+        .map_err(|source| HostError::ReadFiles { path, source })?
+}
+
+/// `read`, on a thread for blocking work.
+pub async fn read_apart(root: PathBuf, path: String) -> Result<pb::FileContents, HostError> {
+    let folder = root.clone();
+    tokio::task::spawn_blocking(move || read(&root, &path))
+        .await
+        .map_err(|source| HostError::ReadFiles {
+            path: folder,
+            source,
+        })?
+}
+
 /// Every file under `root` but hidden ones and those in hidden folders,
-/// such as `.git`, by path.
+/// such as `.git`, by path. It stops at the most it lists, rather than
+/// walking the rest of a tree such as `node_modules`.
 pub fn list(root: &Path) -> Result<pb::Files, HostError> {
     let mut files = Vec::new();
     let mut folders = vec![PathBuf::new()];
     let mut truncated = false;
-    while let Some(folder) = folders.pop() {
+    'walk: while let Some(folder) = folders.pop() {
         let path = root.join(&folder);
         let entries = std::fs::read_dir(&path).map_err(|source| HostError::ReadFolder {
             path: path.clone(),
@@ -54,7 +74,7 @@ pub fn list(root: &Path) -> Result<pb::Files, HostError> {
             } else if kind.is_file() {
                 if files.len() == MOST_FILES {
                     truncated = true;
-                    continue;
+                    break 'walk;
                 }
                 let metadata = entry.metadata().ok();
                 files.push(pb::ChatFile {

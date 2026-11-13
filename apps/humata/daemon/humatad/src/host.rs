@@ -1192,11 +1192,11 @@ impl Host {
             }
             Request::ListFiles(list) => {
                 let folder = self.folder(&SessionId::new(list.session_id)).await?;
-                Response::Files(crate::files::list(&folder)?)
+                Response::Files(crate::files::list_apart(folder).await?)
             }
             Request::ReadFile(read) => {
                 let root = self.root(&read.session_id, &read.root).await?;
-                Response::FileContents(crate::files::read(&root, &read.path)?)
+                Response::FileContents(crate::files::read_apart(root, read.path).await?)
             }
             Request::ListFolder(list) => {
                 let root = self.root(&list.session_id, &list.root).await?;

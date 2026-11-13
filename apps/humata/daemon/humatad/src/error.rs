@@ -154,6 +154,15 @@ pub enum HostError {
     },
 
     #[error(
+        "reading the files in {path} on this host stopped part way, which is a bug in humatad; report it with the host's log, and open the folder again"
+    )]
+    ReadFiles {
+        path: std::path::PathBuf,
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error(
         "looking for plugins on this host stopped part way, which is a bug in humatad; report it with the host's log, and look again"
     )]
     ScanPlugins {
@@ -255,9 +264,10 @@ impl HostError {
             | Self::Push { .. }
             | Self::Fetch { .. }
             | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,
-            Self::EncodeBackup { .. } | Self::ScanSkills { .. } | Self::ScanPlugins { .. } => {
-                pb::ErrorCode::StorageFailed
-            }
+            Self::EncodeBackup { .. }
+            | Self::ScanSkills { .. }
+            | Self::ScanPlugins { .. }
+            | Self::ReadFiles { .. } => pb::ErrorCode::StorageFailed,
             Self::SaveSetup { .. }
             | Self::CreateFolder { .. }
             | Self::CreateChatFolder { .. }
@@ -270,6 +280,15 @@ impl HostError {
 /// What the daemon's own store can fail at.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error(
+        "a write to humatad's store {path} stopped part way, which is a bug in humatad; report it with humatad's log. What it wrote is kept as it was, and the next change tries again"
+    )]
+    Stopped {
+        path: PathBuf,
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     #[error("couldn't create the folder {path} for humatad's store; check that it is writable")]
     CreateDirectory {
         path: PathBuf,

@@ -39,23 +39,23 @@ pub async fn create(
         return Ok(None);
     }
     let known = known_commits(repository, haves).await?;
-    let glob = format!("--glob={refs}*");
-    let mut range = vec![glob.as_str()];
-    if !known.is_empty() {
-        range.push("--not");
-        range.extend(known.iter().map(String::as_str));
+    // On stdin, not as arguments: a mirror with a ref per save has more
+    // commits than fit on a command line.
+    let mut range: String = listed.lines().map(|name| format!("{name}\n")).collect();
+    for commit in &known {
+        range.push('^');
+        range.push_str(commit);
+        range.push('\n');
     }
-    let mut count = vec!["rev-list", "--count"];
-    count.extend(&range);
-    if git(repository, &count).await?.trim() == "0" {
+    let counted = git_with_input(repository, &["rev-list", "--count", "--stdin"], &range).await?;
+    if counted.trim() == "0" {
         return Ok(None);
     }
     let file = scratch_file();
     let path = file.to_string_lossy().into_owned();
-    let mut create = vec!["bundle", "create", "--quiet", path.as_str()];
-    create.extend(&range);
+    let create = ["bundle", "create", "--quiet", path.as_str(), "--stdin"];
     let made = async {
-        git(repository, &create).await?;
+        git_with_input(repository, &create, &range).await?;
         tokio::fs::read(&file)
             .await
             .map_err(|source| WorkspaceError::Write {

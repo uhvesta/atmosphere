@@ -1056,31 +1056,111 @@ async fn run_tool(
 }
 
 async fn shell(root: &Path, env: &Env, command: &str) -> (bool, String) {
-    let child = tokio::process::Command::new("/bin/sh")
+    let spawned = tokio::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(command)
         .envs(env.vars())
         .current_dir(root)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .output();
-    match tokio::time::timeout(SHELL_TIMEOUT, child).await {
-        Err(_) => (
-            false,
-            format!(
-                "Stopped after {} seconds without finishing.",
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return (false, format!("Couldn't run it: {error}")),
+    };
+    let mut printed = Capped::default();
+    let run = async {
+        let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
+        let (mut a, mut b) = ([0u8; 8192], [0u8; 8192]);
+        while out.is_some() || err.is_some() {
+            tokio::select! {
+                read = read_some(&mut out, &mut a) => match read {
+                    Some(n) => printed.push(&a[..n]),
+                    None => out = None,
+                },
+                read = read_some(&mut err, &mut b) => match read {
+                    Some(n) => printed.push(&b[..n]),
+                    None => err = None,
+                },
+            }
+        }
+        child.wait().await
+    };
+    let finished = tokio::time::timeout(SHELL_TIMEOUT, run).await;
+    match finished {
+        Err(_) => {
+            let _ = child.start_kill();
+            let mut text = printed.text();
+            text.push_str(&format!(
+                "\n(stopped after {} seconds without finishing; this is what it printed)",
                 SHELL_TIMEOUT.as_secs()
-            ),
-        ),
+            ));
+            (false, text)
+        }
         Ok(Err(error)) => (false, format!("Couldn't run it: {error}")),
-        Ok(Ok(output)) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            if let Some(code) = output.status.code().filter(|code| *code != 0) {
+        Ok(Ok(status)) => {
+            let mut text = printed.text();
+            if let Some(code) = status.code().filter(|code| *code != 0) {
                 text.push_str(&format!("\n(exit status {code})"));
             }
-            (output.status.success(), tail_kept(text))
+            (status.success(), text)
         }
+    }
+}
+
+/// Up to `buffer`'s length from `reader`; None at its end, or with none.
+async fn read_some<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut Option<R>,
+    buffer: &mut [u8],
+) -> Option<usize> {
+    use tokio::io::AsyncReadExt as _;
+    match reader {
+        Some(reader) => match reader.read(buffer).await {
+            Ok(0) | Err(_) => None,
+            Ok(read) => Some(read),
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// What a command printed, as it prints it: its start and its end, so a
+/// noisy one can't take the daemon's memory, and the end, where errors
+/// usually are, is always there.
+#[derive(Default)]
+struct Capped {
+    head: Vec<u8>,
+    tail: std::collections::VecDeque<u8>,
+    cut: usize,
+}
+
+impl Capped {
+    const HEAD: usize = MAX_OUTPUT / 4;
+    const TAIL: usize = MAX_OUTPUT - Self::HEAD;
+
+    fn push(&mut self, mut bytes: &[u8]) {
+        if self.head.len() < Self::HEAD {
+            let taken = (Self::HEAD - self.head.len()).min(bytes.len());
+            self.head.extend_from_slice(&bytes[..taken]);
+            bytes = &bytes[taken..];
+        }
+        self.tail.extend(bytes);
+        if self.tail.len() > Self::TAIL {
+            let over = self.tail.len() - Self::TAIL;
+            self.tail.drain(..over);
+            self.cut += over;
+        }
+    }
+
+    fn text(self) -> String {
+        let mut text = String::from_utf8_lossy(&self.head).into_owned();
+        if self.cut > 0 {
+            text.push_str(&format!("\n(… {} bytes cut here …)\n", self.cut));
+        }
+        let tail: Vec<u8> = self.tail.into();
+        text.push_str(&String::from_utf8_lossy(&tail));
+        text
     }
 }
 
@@ -1161,28 +1241,6 @@ fn context_full(status: u16, body: &str) -> bool {
             || body.contains("window")
             || body.contains("too long")
             || body.contains("too many"))
-}
-
-/// A command's output, cut in the middle when long: its start says what
-/// ran, its end how it went.
-fn tail_kept(text: String) -> String {
-    if text.len() <= MAX_OUTPUT {
-        return text;
-    }
-    let mut head = MAX_OUTPUT / 4;
-    while !text.is_char_boundary(head) {
-        head -= 1;
-    }
-    let mut tail = text.len() - (MAX_OUTPUT - head);
-    while !text.is_char_boundary(tail) {
-        tail += 1;
-    }
-    format!(
-        "{}\n(… {} bytes cut here …)\n{}",
-        &text[..head],
-        tail - head,
-        &text[tail..]
-    )
 }
 
 async fn write(target: &Path, path: &Path, contents: &str) -> (bool, String) {
@@ -1949,12 +2007,27 @@ mod tests {
     }
 
     #[test]
-    fn long_command_output_keeps_its_end() {
-        let text = format!("start\n{}\nexit status 1", "x".repeat(MAX_OUTPUT * 2));
-        let kept = tail_kept(text);
+    fn long_command_output_keeps_its_start_and_end() {
+        let mut printed = Capped::default();
+        printed.push(b"start\n");
+        for _ in 0..1000 {
+            printed.push(&[b'x'; 1000]);
+        }
+        printed.push(b"\nexit status 1");
+        let kept = printed.text();
         assert!(kept.len() < MAX_OUTPUT + 100);
         assert!(kept.starts_with("start"));
         assert!(kept.ends_with("exit status 1"));
+    }
+
+    #[tokio::test]
+    async fn a_command_prints_its_output_and_its_failure() {
+        let root = std::env::temp_dir();
+        let (ok, text) = shell(&root, &Env::default(), "echo out; echo err >&2; exit 3").await;
+        assert!(!ok);
+        assert!(text.contains("out"));
+        assert!(text.contains("err"));
+        assert!(text.contains('3'));
     }
 
     #[test]
