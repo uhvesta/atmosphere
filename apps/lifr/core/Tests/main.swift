@@ -21,4 +21,5 @@ await runSuites([
     ("Recurrence", recurrenceTests()),
     ("Quick entry", quickEntryTests()),
     ("Duplicating", duplicateTests()),
+    ("Focus", focusTests()),
 ])

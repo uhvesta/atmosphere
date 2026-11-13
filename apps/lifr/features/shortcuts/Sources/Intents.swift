@@ -569,3 +569,28 @@ package struct LifrAppShortcuts: AppShortcutsProvider {
             shortTitle: "Copy a Plan Prompt", systemImageName: "doc.on.clipboard")
     }
 }
+
+/// Limits Lifr, its badge and its widgets to the chosen Avenues while a
+/// Focus is on. The system runs it again with none chosen when the Focus
+/// goes off, which shows every Avenue again.
+package struct LifrFocusFilter: SetFocusFilterIntent {
+    package static let title: LocalizedStringResource = "Show Only Some Avenues"
+    package static let description: IntentDescription? = IntentDescription(
+        "While this Focus is on, Lifr, its badge and its widgets show only the Avenues you pick.")
+
+    @Parameter(title: "Avenues", default: [])
+    package var avenues: [AvenueEntity]
+
+    package init() {}
+
+    package var displayRepresentation: DisplayRepresentation {
+        avenues.isEmpty
+            ? DisplayRepresentation(title: "Every Avenue")
+            : DisplayRepresentation(title: "\(avenues.map(\.name).formatted(.list(type: .and)))")
+    }
+
+    package func perform() async throws -> some IntentResult {
+        UserDefaults.standard.set(FocusAvenues(Set(avenues.map(\.id))).rawValue, forKey: FocusAvenues.key)
+        return .result()
+    }
+}

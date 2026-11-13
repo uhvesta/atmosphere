@@ -2084,6 +2084,41 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(written.value?.rows.map(\.id), [stretch.id])
     }
 
+    func testAFocusOnOneAvenueLimitsTheBadgeAndWidgetsToIt() async throws {
+        let home = records.avenue("HOME", "Home")
+        records.task("Run", in: health, due: 0)
+        let sink = records.task("Fix the sink", in: home, due: 0)
+        let reminders = RemindersClient.inMemory()
+        let (glance, written) = GlanceClient.inMemory()
+        let store = makeStore(.phone, store: .inMemory(records.workspace), reminders: reminders)
+        store.dependencies.glance = glance
+        store.state.$focusAvenues.withLock { $0 = FocusAvenues([home.id]) }
+
+        await store.send(.refreshedInBackground)
+        await store.finish()
+
+        XCTAssertEqual(reminders.badge, 1)
+        XCTAssertEqual(written.value?.rows.map(\.id), [sink.id])
+    }
+
+    func testWhenTheFocusGoesOffTheListsShowEveryAvenueAgain() async throws {
+        let home = records.avenue("HOME", "Home")
+        let run = records.task("Run", in: health, due: 0)
+        let sink = records.task("Fix the sink", in: home, due: 0)
+        let store = makeStore(.phone, store: .inMemory(records.workspace))
+        store.state.$focusAvenues.withLock { $0 = FocusAvenues([home.id]) }
+
+        await store.send(.focusChanged)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.workspace?.tasks.count, 2)
+        XCTAssertEqual(store.state.today.list.workspace?.tasks.keys.sorted(), [sink.id])
+
+        store.state.$focusAvenues.withLock { $0 = FocusAvenues() }
+        await store.send(.focusChanged)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.today.list.workspace.map { Set($0.tasks.keys) }, [run.id, sink.id])
+    }
+
     func testStartingTwiceSyncsOnOneTimer() async throws {
         let syncs = LockIsolated(0)
         var sync = SyncClient.off

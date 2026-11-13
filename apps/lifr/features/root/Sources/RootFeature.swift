@@ -205,6 +205,9 @@ package struct RootFeature {
         @Shared(.locksApp) package var locksApp
         /// What the number on the app icon counts.
         @Shared(.badgeCount) package var badgeCount
+        /// The Avenues the Focus that's on limits the lists, badge and
+        /// widgets to.
+        @Shared(.focusAvenues) package var focusAvenues
         /// When this device sums up the day, if it does.
         @Shared(.dailySummary) package var dailySummary
         /// This device's copy of the synced default reminder, for Quick Add,
@@ -567,6 +570,8 @@ package struct RootFeature {
         /// The badge setting changed.
         case badgeCountChanged
         case dailySummaryChanged
+        /// A Focus came on or went off.
+        case focusChanged
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
         case calendar(CalendarFeature.Action)
@@ -713,6 +718,7 @@ package struct RootFeature {
                     .run { [dailySummary = state.$dailySummary] send in
                         for await _ in dailySummary.publisher.dropFirst().values { await send(.dailySummaryChanged) }
                     },
+                    watchFocus(state),
                     .run { [sync] _ in _ = await sync.sync() },
                     syncTimer(state),
                     saveWidgetMarks(),
@@ -792,6 +798,9 @@ package struct RootFeature {
 
             case .badgeCountChanged, .dailySummaryChanged:
                 return scheduleReminders(state)
+
+            case .focusChanged:
+                return reload()
 
             case .reminderOpened(let id):
                 guard state.workspace != nil else {
@@ -1647,6 +1656,10 @@ package struct RootFeature {
         guard state.saves.isLatest(snapshot) else { return .none }
         let workspace = snapshot.workspace
         state.workspace = workspace
+        // The lists show only what the Focus that's on leaves; the records
+        // and what's opened by link or search stay whole.
+        let full = snapshot
+        let snapshot = Snapshot(workspace.focused(on: state.focusAvenues), number: snapshot.number)
         if let picked = workspace.settings.defaultReminder, picked != state.defaultReminder {
             state.$defaultReminder.withLock { $0 = picked }
         }
@@ -1663,7 +1676,7 @@ package struct RootFeature {
                 CalendarFeature().reduce(into: &state.calendar, action: .list(.show(snapshot))).map(Action.calendar))
         }
         if sender != .trash {
-            effects.append(TrashFeature().reduce(into: &state.trash, action: .show(snapshot)).map(Action.trash))
+            effects.append(TrashFeature().reduce(into: &state.trash, action: .show(full)).map(Action.trash))
         }
         if sender != .procrastinated {
             effects.append(
@@ -1693,8 +1706,8 @@ package struct RootFeature {
         }
         state.avenue?.show(snapshot, now: now, timeZone: timeZone)
         state.board?.list.show(snapshot, now: now, timeZone: timeZone)
-        state.settings.show(snapshot)
-        state.conversations.show(snapshot)
+        state.settings.show(full)
+        state.conversations.show(full)
         return .merge(
             effects + [savedFilterShown]
                 + (state.isWindow ? [] : [writeGlance(state), indexSpotlight(state), scheduleReminders(state)]))
@@ -1713,7 +1726,16 @@ package struct RootFeature {
             },
             .run { [sync] send in
                 for await state in await sync.states() { await send(.syncChanged(state)) }
-            })
+            },
+            watchFocus(state))
+    }
+
+    /// Shows the lists again, with the badge and widgets, when a Focus
+    /// comes on or goes off.
+    private func watchFocus(_ state: State) -> Effect<Action> {
+        .run { [focusAvenues = state.$focusAvenues] send in
+            for await _ in focusAvenues.publisher.dropFirst().removeDuplicates().values { await send(.focusChanged) }
+        }
     }
 
     /// Schedules this device's notifications for the reminders in `state`,
@@ -1721,12 +1743,13 @@ package struct RootFeature {
     private func scheduleReminders(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
         let (locked, counted, summary) = (state.locksApp, state.badgeCount, state.dailySummary)
+        let focus = state.focusAvenues
         // Worked out in the effect, off the main actor.
         return .run { [reminders, now, timeZone] send in
             guard
                 let failure = await Self.schedule(
                     workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted,
-                    summary: summary)
+                    summary: summary, focus: focus)
             else { return }
             await send(.remindersScheduled(failure: failure))
         }
@@ -1737,11 +1760,11 @@ package struct RootFeature {
     /// when cancelled first, otherwise why scheduling failed, if it did.
     private static func schedule(
         _ workspace: Workspace, with reminders: RemindersClient, now: Date, timeZone: TimeZone, locked: Bool,
-        counted: BadgeCount, summary: DailySummary
+        counted: BadgeCount, summary: DailySummary, focus: FocusAvenues
     ) async -> String?? {
         let scheduled = workspace.scheduledReminders(
             now: now, timeZone: timeZone, hidingTitles: locked, summaryAt: summary.time)
-        let badge = workspace.badgeCount(counted, now: now, timeZone: timeZone)
+        let badge = workspace.focused(on: focus).badgeCount(counted, now: now, timeZone: timeZone)
         guard !Task.isCancelled else { return nil }
         // Notifications that are off leave the reminders saved and
         // ringing elsewhere; the detail screen says so when one is
@@ -1763,6 +1786,7 @@ package struct RootFeature {
         let locked = state.locksApp
         let counted = state.badgeCount
         let summary = state.dailySummary
+        let focus = state.focusAvenues
         return .run { [sync, store, reminders, glance, now, timeZone] _ in
             _ = await sync.sync()
             let workspace: Workspace
@@ -1774,8 +1798,9 @@ package struct RootFeature {
             }
             _ = await Self.schedule(
                 workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted,
-                summary: summary)
-            if let today = Self.glance(of: workspace, now: now, timeZone: timeZone, locked: locked) {
+                summary: summary, focus: focus)
+            if let today = Self.glance(of: workspace.focused(on: focus), now: now, timeZone: timeZone, locked: locked)
+            {
                 await glance.write(today)
             }
         }
@@ -1789,8 +1814,9 @@ package struct RootFeature {
         guard let workspace = state.workspace else { return .none }
         // Worked out in the effect, off the main actor; a newer save's
         // glance replaces one still being worked out.
-        return .run { [glance, now, timeZone, locked = state.locksApp] _ in
-            guard let today = Self.glance(of: workspace, now: now, timeZone: timeZone, locked: locked),
+        return .run { [glance, now, timeZone, locked = state.locksApp, focus = state.focusAvenues] _ in
+            guard
+                let today = Self.glance(of: workspace.focused(on: focus), now: now, timeZone: timeZone, locked: locked),
                 !Task.isCancelled
             else { return }
             await glance.write(today)

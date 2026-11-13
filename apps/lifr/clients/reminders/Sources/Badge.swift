@@ -56,3 +56,11 @@ extension Workspace {
         }
     }
 }
+
+extension SharedKey where Self == AppStorageKey<FocusAvenues>.Default {
+    /// The Avenues the Focus that's on limits Lifr, its badge and its
+    /// widgets to; none when no Focus does.
+    package static var focusAvenues: Self {
+        Self[.appStorage(FocusAvenues.key), default: FocusAvenues()]
+    }
+}
