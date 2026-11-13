@@ -669,6 +669,9 @@
     "Add a %@ date" : {
 
     },
+    "Add a Project" : {
+
+    },
     "Add a Task" : {
 
     },
@@ -1092,6 +1095,9 @@
 
     },
     "Chats want fast writing; quick tasks, such as naming a conversation, want the first word soon. Automatic runs it where it measured fastest." : {
+
+    },
+    "Checked" : {
 
     },
     "Checking" : {
@@ -1633,6 +1639,9 @@
     "Due Date" : {
 
     },
+    "Due Next Week" : {
+
+    },
     "Due Today" : {
 
     },
@@ -1992,6 +2001,9 @@
 
     },
     "Graphite" : {
+
+    },
+    "Group By" : {
 
     },
     "Group by" : {
@@ -2823,6 +2835,9 @@
     "None" : {
 
     },
+    "Not checked" : {
+
+    },
     "Not done" : {
 
     },
@@ -3064,6 +3079,9 @@
     "Place" : {
 
     },
+    "Plan from Anytime" : {
+
+    },
     "Plan my week" : {
 
     },
@@ -3131,6 +3149,9 @@
 
     },
     "Put this code in the message box as a quote" : {
+
+    },
+    "Quick Add from any app" : {
 
     },
     "Quit Lifr" : {
@@ -3504,6 +3525,9 @@
     "Select All" : {
 
     },
+    "Select All Tasks" : {
+
+    },
     "Select All of It" : {
 
     },
@@ -3565,6 +3589,9 @@
 
     },
     "Show All (%lld More)" : {
+
+    },
+    "Show As" : {
 
     },
     "Show Closed" : {
@@ -3643,6 +3670,9 @@
 
     },
     "Sort" : {
+
+    },
+    "Sort By" : {
 
     },
     "Sound when a task is done" : {
@@ -4576,6 +4606,18 @@
 
     },
     "“%@” has open Sub tasks" : {
+
+    },
+    "⇧⌘Space" : {
+
+    },
+    "⌃Space" : {
+
+    },
+    "⌃⌥Space" : {
+
+    },
+    "⌥Space" : {
 
     }
   },
