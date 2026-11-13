@@ -2134,6 +2134,28 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.today.list.workspace.map { Set($0.tasks.keys) }, [run.id, sink.id])
     }
 
+    func testTheLiveActivityEndsOnceItsTaskIsClosedAndHidesTitlesWhileLocked() async throws {
+        let run = records.task("Run", in: health, status: .inProgress)
+        records.task("Warm up", in: health, parent: run, status: .done)
+        records.task("Cool down", in: health, parent: run)
+        let sink = records.task("Fix the sink", in: health, status: .done)
+        let (focus, showing) = FocusActivityClient.inMemory()
+        let shown = FocusedTask(title: "Old", code: "", closed: 0, total: 0)
+        showing.setValue([run.id: shown, sink.id: shown])
+        let store = makeStore(.phone, store: .inMemory(records.workspace))
+        store.dependencies.focusActivity = focus
+        store.state.$locksApp.withLock { $0 = true }
+
+        await store.send(.focusChanged)
+        await store.receive(\.loaded)
+        await store.finish()
+
+        XCTAssertEqual(Set(showing.value.keys), [run.id])
+        XCTAssertEqual(showing.value[run.id]?.title, "")
+        XCTAssertEqual(showing.value[run.id]?.closed, 1)
+        XCTAssertEqual(showing.value[run.id]?.total, 2)
+    }
+
     func testStartingTwiceSyncsOnOneTimer() async throws {
         let syncs = LockIsolated(0)
         var sync = SyncClient.off

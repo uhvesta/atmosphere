@@ -77,6 +77,15 @@ package struct TaskDetailView: View {
                     Text(status.title).tag(status)
                 }
             }
+            if store.canFocus {
+                // A Live Activity, only for a task In Progress, and only
+                // when asked for.
+                if store.isFocusing {
+                    Button("Stop Focusing", systemImage: "stop.circle") { store.send(.focusTapped) }
+                } else if store.row.status == .inProgress {
+                    Button("Focus on This", systemImage: "scope") { store.send(.focusTapped) }
+                }
+            }
             StackedPicker(
                 "Priority", value: store.row.priority.title ?? String(localized: "None"),
                 selection: Binding(get: { store.row.priority }, set: { store.send(.priorityPicked($0)) })

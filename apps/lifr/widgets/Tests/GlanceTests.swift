@@ -180,6 +180,13 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(try file.read(), [rows[0].id])
     }
 
+    func testMarkingFromTheLiveActivityLeavesAMarkedTaskMarked() throws {
+        let file = MarksFile(url: try folder().appendingPathComponent("Widgets/Marked.json"))
+        try file.mark(rows[0].id)
+        try file.mark(rows[0].id)
+        XCTAssertEqual(try file.read(), [rows[0].id])
+    }
+
     func testSharedTasksAreTakenOnceInTheOrderTheyCame() throws {
         let file = SharedTasksFile(url: try folder().appendingPathComponent("Share/Tasks.json"))
         let first = SharedTask(

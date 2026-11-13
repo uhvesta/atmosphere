@@ -6,7 +6,8 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 swift_library(
     name = "shortcuts",
     package_name = "lifr",
-    srcs = glob(["Sources/*.swift"]),
+    # With the Live Activity's Done, which runs in the app.
+    srcs = glob(["Sources/*.swift"]) + ["//apps/lifr/widgets:focus_done_intent"],
     # Named, so the app's App Intents step sees the framework.
     linkopts = ["-Wl,-framework,AppIntents"],
     module_name = "LifrShortcuts",
@@ -23,6 +24,7 @@ swift_library(
         "//apps/lifr/features/task_list",
         "//apps/lifr/features/today",
         "//apps/lifr/ui",
+        "//apps/lifr/widgets:glance",
     ],
 )
 

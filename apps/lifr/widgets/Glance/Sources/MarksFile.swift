@@ -6,9 +6,18 @@ package enum MarksError: Error, CustomStringConvertible {
     case readFailed(URL, any Error)
     /// The file couldn't be written or removed.
     case writeFailed(URL, any Error)
+    /// This build has no App Group to keep the mark in, such as an unsigned
+    /// iPhone build.
+    case noAppGroup
 
     package var description: String {
         switch self {
+        case .noAppGroup:
+            String(
+                localized: """
+                    This copy of Lifr has no App Group, so a task can't be marked Done from outside it. \
+                    Open Lifr and mark it there.
+                    """)
         case .readFailed(let url, let error):
             String(
                 localized: """
@@ -62,6 +71,13 @@ package struct MarksFile: Sendable {
         if !isMarked { marked.remove(id) }
         try write(marked)
         return isMarked
+    }
+
+    /// Marks the task, leaving it marked when it already was.
+    package func mark(_ id: UUID) throws(MarksError) {
+        var marked = try read()
+        guard marked.insert(id).inserted else { return }
+        try write(marked)
     }
 
     /// The marked tasks, leaving none marked.

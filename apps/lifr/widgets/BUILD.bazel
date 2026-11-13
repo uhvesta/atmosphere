@@ -52,6 +52,7 @@ swift_library(
     visibility = [
         "//apps/lifr/app:__subpackages__",
         "//apps/lifr/features/root:__pkg__",
+        "//apps/lifr/features/task_detail:__pkg__",
     ],
     deps = [
         ":glance",
@@ -72,10 +73,18 @@ swift_library(
     ],
 )
 
+# The Live Activity's Done, built into the widgets, whose button names it,
+# and into the app, which runs it.
+filegroup(
+    name = "focus_done_intent",
+    srcs = ["Intents/FocusDoneIntent.swift"],
+    visibility = ["//apps/lifr/features/shortcuts:__pkg__"],
+)
+
 swift_library(
     name = "extension_lib",
     package_name = "lifr",
-    srcs = glob(["Extension/Sources/*.swift"]),
+    srcs = glob(["Extension/Sources/*.swift"]) + [":focus_done_intent"],
     # Named, so the iPhone extension's App Intents step sees the framework.
     linkopts = ["-Wl,-framework,AppIntents"],
     module_name = "LifrWidgets",
@@ -91,7 +100,7 @@ swift_library(
 
 ios_extension(
     name = "ios",
-    # The Avenues widget's choice of Avenue.
+    # The Avenues widget's choice of Avenue, and the Live Activity's Done.
     app_intents = [":extension_lib"],
     bundle_id = WIDGETS_BUNDLE_ID,
     bundle_name = "LifrWidgets",

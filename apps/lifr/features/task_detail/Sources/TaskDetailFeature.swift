@@ -2,6 +2,9 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrFeedbackClient
+import LifrGlance
+import LifrGlanceClient
+import LifrLockClient
 import LifrRemindersClient
 import LifrStoreClient
 import LifrUI
@@ -76,6 +79,10 @@ package struct TaskDetailFeature {
         package var editingCommentID: UUID?
         package var editedComment = ""
         package var banner: Banner?
+        /// Whether this device can show a Live Activity for the task.
+        package var canFocus = false
+        /// Whether it shows one now.
+        package var isFocusing = false
         @Presents package var subtask: TaskDetailFeature.State?
 
         /// The title and description as typed but not saved yet, as one
@@ -319,6 +326,11 @@ package struct TaskDetailFeature {
         /// The detail is showing: checks whether notifications are on.
         case appeared
         case permissionChecked(ReminderPermission)
+        /// Whether a Live Activity can show, and whether this task has one.
+        case focusChecked(available: Bool, focusing: Bool)
+        /// Focus on This, or Stop Focusing.
+        case focusTapped
+        case focusFailed(any Error)
         /// The reminder was saved, but notifications are off on this device.
         case notificationsOff
         case saved(Result<Saved, any Error>)
@@ -341,6 +353,7 @@ package struct TaskDetailFeature {
     @Dependency(\.store) private var store
     @Dependency(\.feedback) private var feedback
     @Dependency(\.reminders) private var reminders
+    @Dependency(\.focusActivity) private var focusActivity
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
 
@@ -566,7 +579,39 @@ package struct TaskDetailFeature {
                 return .none
 
             case .appeared:
-                return .run { [reminders] send in await send(.permissionChecked(await reminders.permission())) }
+                return .merge(
+                    .run { [reminders] send in await send(.permissionChecked(await reminders.permission())) },
+                    .run { [focusActivity, id = state.id] send in
+                        guard focusActivity.isAvailable() else { return }
+                        await send(.focusChecked(available: true, focusing: await focusActivity.running().contains(id)))
+                    })
+
+            case .focusChecked(let available, let focusing):
+                state.canFocus = available
+                state.isFocusing = focusing
+                return .none
+
+            case .focusTapped:
+                let (id, focusing) = (state.id, state.isFocusing)
+                // No title on the lock screen while the app lock is on.
+                @Shared(.locksApp) var locked
+                let focus = FocusedTask(
+                    title: locked ? "" : state.row.title, code: state.row.code, closed: state.row.subtasks?.closed ?? 0,
+                    total: state.row.subtasks?.total ?? 0)
+                return .run { [focusActivity] send in
+                    if focusing {
+                        await focusActivity.update(id, nil)
+                    } else {
+                        try await focusActivity.start(id, focus)
+                    }
+                    await send(.focusChecked(available: true, focusing: !focusing))
+                } catch: { error, send in
+                    await send(.focusFailed(error))
+                }
+
+            case .focusFailed(let error):
+                state.alert = .failed("Couldn't show the task on the lock screen", error)
+                return .none
 
             case .permissionChecked(let permission):
                 state.notificationsDenied = permission == .denied

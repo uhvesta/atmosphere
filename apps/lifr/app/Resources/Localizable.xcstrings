@@ -4,6 +4,9 @@
     "" : {
 
     },
+    " " : {
+
+    },
     " before due" : {
 
     },
@@ -364,7 +367,20 @@
         }
       }
     },
+    "%@, %lld tasks due" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$lld tasks due"
+          }
+        }
+      }
+    },
     "%@, 1 task" : {
+
+    },
+    "%@, 1 task due" : {
 
     },
     "%@, Done" : {
@@ -1470,6 +1486,9 @@
     "Couldn't show older changes" : {
 
     },
+    "Couldn't show the task on the lock screen" : {
+
+    },
     "Couldn't snooze the reminder" : {
 
     },
@@ -1758,6 +1777,9 @@
     "Every %lld" : {
 
     },
+    "Every Avenue" : {
+
+    },
     "Every Avenue, Project, task, label, comment and reminder is deleted from this device and from your iCloud, and your settings go back to their defaults. It can't be undone." : {
 
     },
@@ -1937,6 +1959,9 @@
 
     },
     "Flash attention works out attention in one step, which takes less memory; a cache under 16 bits needs it. Layers not on the GPU run on the CPU." : {
+
+    },
+    "Focus on This" : {
 
     },
     "For chats" : {
@@ -2424,6 +2449,9 @@
 
     },
     "Listening…" : {
+
+    },
+    "Live Activities are off for Lifr. Turn them on in Settings › Lifr, then try again." : {
 
     },
     "Loading tasks" : {
@@ -3077,6 +3105,9 @@
 
     },
     "Open Lifr to see your Avenues here." : {
+
+    },
+    "Open Lifr to see your due dates here." : {
 
     },
     "Open Task in New Window" : {
@@ -3736,6 +3767,9 @@
     "Show More" : {
 
     },
+    "Show Only Some Avenues" : {
+
+    },
     "Show Prompt" : {
 
     },
@@ -3851,6 +3885,9 @@
 
     },
     "Stop Dictation" : {
+
+    },
+    "Stop Focusing" : {
 
     },
     "Stop Recording" : {
@@ -4097,6 +4134,9 @@
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
 
     },
+    "The lock screen couldn't show the task (%@). End another app's Live Activity and try again." : {
+
+    },
     "The model finished without writing an answer, which happens when it thinks for too long. Retry, or set Thinking lower or off in the model menu, or pick another model." : {
 
     },
@@ -4230,6 +4270,9 @@
 
     },
     "This chat's model" : {
+
+    },
+    "This copy of Lifr has no App Group, so a task can't be marked Done from outside it. Open Lifr and mark it there." : {
 
     },
     "This iPhone" : {
@@ -4531,6 +4574,9 @@
 
     },
     "Which task?" : {
+
+    },
+    "While this Focus is on, Lifr, its badge and its widgets show only the Avenues you pick." : {
 
     },
     "Window" : {

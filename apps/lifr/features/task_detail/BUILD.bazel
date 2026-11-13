@@ -12,10 +12,13 @@ swift_library(
     visibility = ["//apps/lifr/features:__subpackages__"],
     deps = [
         "//apps/lifr/clients/feedback",
+        "//apps/lifr/clients/lock",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/ui",
+        "//apps/lifr/widgets:client",
+        "//apps/lifr/widgets:glance",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -30,10 +33,13 @@ swift_library(
     deps = [
         ":task_detail",
         "//apps/lifr/clients/feedback",
+        "//apps/lifr/clients/lock",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/ui",
+        "//apps/lifr/widgets:client",
+        "//apps/lifr/widgets:glance",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

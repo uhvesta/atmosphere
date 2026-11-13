@@ -61,7 +61,8 @@ swift_library(
 ios_application(
     name = "ios",
     app_icons = glob(["Resources/iOS.xcassets/**"]),
-    # Add a task, what's on today and finish a task, in Shortcuts and Siri.
+    # Add a task, what's on today and finish a task, in Shortcuts and Siri,
+    # and the Live Activity's Done, which runs here.
     app_intents = ["//apps/lifr/features/shortcuts"],
     bundle_id = BUNDLE_ID,
     bundle_name = "Lifr",

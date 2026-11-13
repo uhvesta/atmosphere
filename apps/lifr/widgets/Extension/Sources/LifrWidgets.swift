@@ -18,6 +18,7 @@ struct LifrWidgets: WidgetBundle {
         QuickAddWidget()
         #if os(iOS)
             NewTaskControl()
+            FocusActivityWidget()
         #endif
     }
 }

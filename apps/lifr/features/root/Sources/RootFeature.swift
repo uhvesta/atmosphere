@@ -623,7 +623,7 @@ package struct RootFeature {
         case approval(PresentationAction<ApprovalFeature.Action>)
     }
 
-    private enum CancelID { case reminders, glance, spotlight, syncTimer, copyNotice }
+    private enum CancelID { case reminders, glance, spotlight, syncTimer, copyNotice, focus }
 
     /// How often sync runs while the app is open, for what other devices
     /// sent.
@@ -641,6 +641,7 @@ package struct RootFeature {
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.lock) private var lock
     @Dependency(\.glance) private var glance
+    @Dependency(\.focusActivity) private var focusActivity
     @Dependency(\.spotlight) private var spotlight
     @Dependency(\.bugRecorder) private var bugRecorder
     @Dependency(\.uuid) private var uuid
@@ -666,10 +667,12 @@ package struct RootFeature {
                     return .send(list(slot, .detail(.presented(.statusPickerRequested))))
                 }
             }
-            // The widgets show only counts while the lock is on, and search
-            // lists no task.
+            // The widgets and the Live Activity show only counts while the
+            // lock is on, and search lists no task.
             .onChange(of: \.locksApp) { _, _ in
-                Reduce { state, _ in .merge(writeGlance(state), indexSpotlight(state), scheduleReminders(state)) }
+                Reduce { state, _ in
+                    .merge(writeGlance(state), indexSpotlight(state), scheduleReminders(state), updateFocus(state))
+                }
             }
             // The timer restarts at the new pace.
             .onChange(of: \.syncsContinuously) { _, _ in
@@ -1716,7 +1719,33 @@ package struct RootFeature {
         state.conversations.show(full)
         return .merge(
             effects + [savedFilterShown]
-                + (state.isWindow ? [] : [writeGlance(state), indexSpotlight(state), scheduleReminders(state)]))
+                + (state.isWindow
+                    ? [] : [writeGlance(state), indexSpotlight(state), scheduleReminders(state), updateFocus(state)]))
+    }
+
+    /// Keeps the Live Activity of the task being focused on as the records
+    /// have it, without its title while the lock is on, and ends it once
+    /// the task is closed, deleted or no longer In Progress.
+    private func updateFocus(_ state: State) -> Effect<Action> {
+        guard state.platform == .phone, let workspace = state.workspace else { return .none }
+        return .run { [focusActivity, now, locked = state.locksApp] _ in
+            for id in await focusActivity.running() {
+                await focusActivity.update(id, Self.focus(on: id, in: workspace, now: now, locked: locked))
+            }
+        }
+        .cancellable(id: CancelID.focus, cancelInFlight: true)
+    }
+
+    /// What the Live Activity of task `id` shows, or nil when it should end.
+    private static func focus(on id: UUID, in workspace: Workspace, now: Date, locked: Bool) -> FocusedTask? {
+        guard
+            let task = workspace.tasks[id], task.deletedAt == nil,
+            task.effectiveStatus(now: now, settings: workspace.settings) == .inProgress
+        else { return nil }
+        let subtasks = workspace.subtasks(of: id)
+        return FocusedTask(
+            title: locked ? "" : task.title, code: workspace.displayCode(of: task),
+            closed: subtasks.count { !$0.isOpen }, total: subtasks.count)
     }
 
     /// Another Mac window's start: the records and their changes, and how
