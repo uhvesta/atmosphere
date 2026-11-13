@@ -1848,16 +1848,36 @@ package struct RootFeature {
             avenues: avenues, dueCounts: dueCounts)
     }
 
-    /// Lists every task not in the Trash in the system's search, or none
-    /// while the lock is on.
+    /// Lists every task not in the Trash, and each open Avenue and Project,
+    /// in the system's search, or nothing while the lock is on.
     private func indexSpotlight(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
         // Worked out in the effect, off the main actor.
         return .run { [spotlight, locked = state.locksApp] _ in
+            guard !locked else {
+                await spotlight.index([])
+                return
+            }
+            let avenues = workspace.avenues.values.filter { $0.archivedAt == nil }.sorted {
+                $0.sortOrder < $1.sortOrder
+            }
+            let projects = workspace.projects.values.filter { $0.status != .archived }.sorted {
+                $0.createdAt < $1.createdAt
+            }
+            let tasks = workspace.tasks.values.filter { $0.deletedAt == nil }.sorted { $0.createdAt < $1.createdAt }
             let items: [SpotlightItem] =
-                locked
-                ? []
-                : workspace.tasks.values.filter { $0.deletedAt == nil }.sorted { $0.createdAt < $1.createdAt }.map {
+                avenues.map {
+                    SpotlightItem(
+                        .avenue, id: $0.id, title: $0.name, detail: String(localized: "Avenue in Lifr"), details: "")
+                }
+                + projects.map { project in
+                    let avenue = workspace.avenues[project.avenueID]?.name
+                    return SpotlightItem(
+                        .project, id: project.id, title: project.name,
+                        detail: avenue.map { String(localized: "Project in \($0)") } ?? String(localized: "Project"),
+                        details: project.details)
+                }
+                + tasks.map {
                     let avenue = workspace.avenues[$0.avenueID]?.name
                     let code = workspace.displayCode(of: $0)
                     return SpotlightItem(
@@ -1910,6 +1930,14 @@ package struct RootFeature {
             if state.platform == .mac { return .send(.selected(.scope(.avenue(id)))) }
             state.tab = .avenues
             return .send(.avenues(.opened(.avenue(id))))
+        case .project(let id):
+            // An archived or deleted Project has no page: Today instead.
+            guard state.workspace?.projects[id].map({ $0.status != .archived }) == true else {
+                return .send(.goTo(.today))
+            }
+            if state.platform == .mac { return .send(.selected(.scope(.project(id)))) }
+            state.tab = .avenues
+            return .send(.avenues(.opened(.project(id))))
         case .calendar(let date):
             return .concatenate(.send(.goTo(.calendar)), .send(.calendar(.daySelected(date))))
         case .add(let title):

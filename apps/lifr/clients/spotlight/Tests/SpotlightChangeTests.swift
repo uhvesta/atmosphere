@@ -26,6 +26,24 @@ final class SpotlightChangeTests: XCTestCase {
 
     func testAddingAndRemovingSendsOnlyThose() {
         let change = SpotlightChange(from: [first], to: [second])
-        XCTAssertEqual(change, SpotlightChange(replacesAll: false, removed: [first.id], indexed: [second]))
+        XCTAssertEqual(change, SpotlightChange(replacesAll: false, removed: [first.identifier], indexed: [second]))
+    }
+
+    func testAProjectAndAnAvenueAreListedApartFromTasks() {
+        let project = SpotlightItem(.project, id: first.id, title: "Move house", detail: "Project", details: "")
+        let avenue = SpotlightItem(.avenue, id: UUID(), title: "Home", detail: "Avenue", details: "")
+        let change = SpotlightChange(from: [first], to: [project, avenue])
+        XCTAssertEqual(
+            change, SpotlightChange(replacesAll: false, removed: [first.identifier], indexed: [project, avenue]))
+    }
+
+    func testAResultOpensWhatItNames() {
+        for item in [first, SpotlightItem(.project, id: UUID(), title: "Move house", detail: "", details: "")] {
+            let target = SpotlightItem.target(item.identifier)
+            XCTAssertEqual(target?.kind, item.kind)
+            XCTAssertEqual(target?.id, item.id)
+        }
+        XCTAssertNil(SpotlightItem.target("label/\(UUID().uuidString)"))
+        XCTAssertNil(SpotlightItem.target("not an id"))
     }
 }

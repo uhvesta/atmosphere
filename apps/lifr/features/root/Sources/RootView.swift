@@ -188,7 +188,12 @@ package struct RootView: View {
         .alert($store.scope(state: \.notice, action: \.notice))
         .onOpenURL { store.send(.urlOpened($0)) }
         .onContinueUserActivity(SpotlightClient.activityType) { activity in
-            if let id = SpotlightClient.task(in: activity) { store.send(.linkOpened(.task(id, picksStatus: false))) }
+            switch SpotlightClient.target(in: activity) {
+            case (.task, let id)?: store.send(.linkOpened(.task(id, picksStatus: false)))
+            case (.project, let id)?: store.send(.linkOpened(.project(id)))
+            case (.avenue, let id)?: store.send(.linkOpened(.avenue(id)))
+            case nil: break
+            }
         }
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }

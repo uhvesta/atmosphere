@@ -10,6 +10,7 @@ import LifrQuickAdd
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
+import LifrSpotlightClient
 import LifrStoreClient
 import LifrSyncClient
 import LifrSyncReview
@@ -1890,10 +1891,57 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAProjectsLinkOpensItsPage() async {
+        let move = records.project("Move house", in: health)
+        let mac = makeStore(.mac)
+        var task = await mac.send(.task)
+        await mac.receive(\.loaded)
+        await mac.send(.linkOpened(.project(move.id)))
+        await mac.skipReceivedActions(strict: false)
+        XCTAssertEqual(mac.state.selection, .scope(.project(move.id)))
+        await task.cancel()
+
+        let phone = makeStore(.phone)
+        task = await phone.send(.task)
+        await phone.receive(\.loaded)
+        await phone.send(.linkOpened(.project(move.id)))
+        await phone.skipReceivedActions(strict: false)
+        XCTAssertEqual(phone.state.tab, .avenues)
+        XCTAssertEqual(phone.state.avenues.avenue?.scope, .project(move.id))
+        await task.cancel()
+    }
+
+    func testSearchListsTasksProjectsAndAvenuesButNothingWhileLocked() async {
+        records.task("Stretch", in: health, due: 0)
+        let gone = records.task("Old run", in: health, due: 0)
+        records.trash(gone)
+        _ = records.project("Move house", in: health)
+        let (spotlight, indexed) = SpotlightClient.inMemory()
+        let store = makeStore(.mac)
+        store.dependencies.spotlight = spotlight
+        var task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.skipReceivedActions(strict: false)
+        await task.cancel()
+
+        let titles = Set(indexed.value?.map { "\($0.kind) \($0.title)" } ?? [])
+        XCTAssertTrue(titles.isSuperset(of: ["avenue Health", "project Move house", "task Stretch"]))
+        XCTAssertFalse(titles.contains("task Old run"))
+
+        let (lockedStore, _) = locked(.always(failing: .cancelled), on: .mac)
+        let (lockedSpotlight, lockedIndexed) = SpotlightClient.inMemory()
+        lockedStore.dependencies.spotlight = lockedSpotlight
+        task = await lockedStore.send(.task)
+        await lockedStore.receive(\.unlocked)
+        await lockedStore.skipReceivedActions(strict: false)
+        await task.cancel()
+        XCTAssertEqual(lockedIndexed.value, [])
+    }
+
     func testLinksReadBackWhatTheyName() throws {
         let id = UUID()
         let links: [DeepLink] = [
-            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id),
+            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id), .project(id),
             .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
         ]
         for link in links {
