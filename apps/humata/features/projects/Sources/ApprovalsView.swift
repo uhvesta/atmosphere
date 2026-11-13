@@ -70,7 +70,7 @@ private struct GrantRow: View {
     }
 
     private var detail: String {
-        let until = grant.expires.formatted(date: .omitted, time: .shortened)
+        let until = grant.expires.formatted(date: .abbreviated, time: .shortened)
         let used =
             grant.used == 1
             ? String(localized: "1 action ran under it") : String(localized: "\(grant.used) actions ran under it")

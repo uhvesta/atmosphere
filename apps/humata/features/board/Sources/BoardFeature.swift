@@ -33,6 +33,11 @@ package struct BoardFeature {
         package var importing = false
         /// The last change made here, which Undo takes back.
         package var undo: UndoToast?
+        /// An undo waiting on the daemon; a second ⌘Z waits for it.
+        package var undoing = false
+        /// Cards dropped on a column, shown there until the daemon answers,
+        /// over any read that started before it did.
+        package var moving: [Item.ID: ItemStatus] = [:]
         /// The first change Undo may take back: none made before the board
         /// opened. Nil until the board's log is read.
         package var undoFrom: BoardChange.ID?
@@ -96,6 +101,8 @@ package struct BoardFeature {
         case startNeedsModel(Item.ID, NewSessionFeature.State)
         case dropped(Item.ID, on: ItemStatus)
         case moved(Item)
+        /// A drop the daemon refused: the card goes back to `was`.
+        case moveFailed(Item.ID, was: ItemStatus, String)
         /// Asks to delete the item, then does.
         case deleteTapped(Item.ID)
         case logTapped
@@ -108,6 +115,8 @@ package struct BoardFeature {
         /// yet undone.
         case undoTapped
         case undone(Reverted)
+        /// Undo found nothing to take back.
+        case undoEnded
         case undoExpired
         /// Makes a task of each open GitHub issue of the project's
         /// repositories not imported before.
@@ -186,21 +195,29 @@ package struct BoardFeature {
                 return .none
 
             case .undoTapped:
-                guard let from = state.undoFrom else { return .none }
+                guard let from = state.undoFrom, !state.undoing else { return .none }
                 state.undo = nil
+                state.undoing = true
                 let project = state.project.id
                 return .merge(
                     .cancel(id: CancelID.undo),
                     .run { send in
                         guard let change = Self.undoable(try await daemon.boardLog(project), from: from) else {
+                            await send(.undoEnded)
                             return
                         }
                         await send(.undone(try await daemon.revert(change.id)))
                     } catch: { error, send in
+                        await send(.undoEnded)
                         await send(.actionFailed("Couldn't undo: \(error.localizedDescription)"))
                     })
 
+            case .undoEnded:
+                state.undoing = false
+                return .none
+
             case .undone(let reverted):
+                state.undoing = false
                 if !reverted.kept.isEmpty {
                     state.destination = .alert(BoardLogFeature.keptAlert(reverted.kept))
                 }
@@ -214,7 +231,10 @@ package struct BoardFeature {
                 // Read every two seconds and mostly the same: set only what
                 // changed, so the board isn't drawn again for nothing.
                 if state.failure != nil { state.failure = nil }
-                let items = IdentifiedArray(items, uniquingIDsWith: { _, last in last })
+                var items = IdentifiedArray(items, uniquingIDsWith: { _, last in last })
+                for (id, status) in state.moving {
+                    items[id: id]?.fields.status = status
+                }
                 let sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
                 guard items != state.items || sessions != state.sessions else {
                     if let opening = state.opening {
@@ -332,16 +352,23 @@ package struct BoardFeature {
                     state.destination = .alert(.closing(item, to: status, sessions: live.count))
                     return .none
                 }
-                return move(id, to: status, archiving: [])
+                return move(id, to: status, archiving: [], in: &state)
 
             case .destination(.presented(.alert(.stopAndArchive(let id, let status)))):
                 guard let item = state.items[id: id] else { return .none }
-                return move(id, to: status, archiving: state.sessions(on: item).filter { !$0.archived })
+                return move(id, to: status, archiving: state.sessions(on: item).filter { !$0.archived }, in: &state)
 
             case .destination(.presented(.alert(.keep(let id, let status)))):
-                return move(id, to: status, archiving: [])
+                return move(id, to: status, archiving: [], in: &state)
+
+            case .moveFailed(let id, let was, let message):
+                state.moving[id] = nil
+                state.items[id: id]?.fields.status = was
+                state.actionFailure = message
+                return .none
 
             case .moved(let item):
+                state.moving[item.id] = nil
                 state.items[id: item.id] = item
                 // A task shows its subtasks' sessions, so read it all again.
                 return .merge(.send(.refresh), .send(.changedHere))
@@ -415,13 +442,19 @@ package struct BoardFeature {
         }
     }
 
-    /// Moves the item to `status`, stopping and archiving `sessions` first.
-    private func move(_ id: Item.ID, to status: ItemStatus, archiving sessions: [Session]) -> Effect<Action> {
-        .run { send in
+    /// Moves the item to `status`, stopping and archiving `sessions` first;
+    /// the card shows there at once and goes back if the daemon refuses.
+    private func move(
+        _ id: Item.ID, to status: ItemStatus, archiving sessions: [Session], in state: inout State
+    ) -> Effect<Action> {
+        guard let was = state.items[id: id]?.fields.status else { return .none }
+        state.moving[id] = status
+        state.items[id: id]?.fields.status = status
+        return .run { send in
             try await stopAndArchive(sessions, with: daemon)
             await send(.moved(try await daemon.updateItem(id, ItemUpdate(status: status))))
         } catch: { error, send in
-            await send(.actionFailed(error.localizedDescription))
+            await send(.moveFailed(id, was: was, error.localizedDescription))
         }
     }
 }
@@ -695,11 +728,15 @@ package struct ItemFeature {
                 return .send(.delegate(.changed))
 
             case .failed(let message):
+                let title =
+                    state.readingPullRequests
+                    ? String(localized: "Couldn't refresh the pull requests")
+                    : String(localized: "Couldn't change \(state.item.title)")
                 state.saving = false
                 state.readingPullRequests = false
                 state.destination = .alert(
                     AlertState {
-                        TextState("Couldn't change \(state.item.title)")
+                        TextState(title)
                     } message: {
                         TextState(message)
                     })
@@ -970,9 +1007,13 @@ package struct BoardLogFeature {
                 return .merge(read(state.project.id), .send(.delegate(.changed)))
 
             case .failed(let message):
+                let title =
+                    state.reverting == nil
+                    ? String(localized: "Couldn't read the board's history")
+                    : String(localized: "Couldn't revert the change")
                 state.reverting = nil
                 state.alert = AlertState {
-                    TextState("Couldn't revert the change")
+                    TextState(title)
                 } message: {
                     TextState(message)
                 }

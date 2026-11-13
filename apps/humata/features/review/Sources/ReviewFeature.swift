@@ -65,6 +65,10 @@ package struct ReviewFeature {
         /// can start out of the order they were asked in.
         var request = 0
         package var sending = false
+        /// Why the changes couldn't be read the last time, until they are.
+        package var loadFailure: String?
+        /// A stage, unstage or revert waiting on the daemon; another waits.
+        package var editing = false
         @Presents package var alert: AlertState<Action.Alert>?
 
         package init(sessionID: String, turns: Int = 0) {
@@ -166,7 +170,7 @@ package struct ReviewFeature {
         case loaded(request: Int, [RepositoryChanges], [ReviewThread])
         case loadFailed(request: Int, String)
         case wholeLoaded(FileDiff?)
-        case failed(String)
+        case failed(Doing, String)
         case rangePicked(RangeKind)
         case turnPicked(Int)
         case branchSubmitted
@@ -207,6 +211,33 @@ package struct ReviewFeature {
         }
     }
 
+    /// What was being done when something failed, for the alert's title.
+    package enum Doing: Equatable, Sendable {
+        case reading
+        case commenting
+        case replying
+        case resolving
+        case deleting
+        case sending
+        case markingViewed
+        case editing(ChangeAction)
+
+        var title: String {
+            switch self {
+            case .reading: String(localized: "Couldn’t read the changes")
+            case .commenting: String(localized: "Couldn’t save the comment")
+            case .replying: String(localized: "Couldn’t send the reply")
+            case .resolving: String(localized: "Couldn’t change the thread")
+            case .deleting: String(localized: "Couldn’t delete the comment")
+            case .sending: String(localized: "Couldn’t send the review")
+            case .markingViewed: String(localized: "Couldn’t mark the file")
+            case .editing(.stage): String(localized: "Couldn’t stage the change")
+            case .editing(.unstage): String(localized: "Couldn’t unstage the change")
+            case .editing(.revert): String(localized: "Couldn’t revert the change")
+            }
+        }
+    }
+
     @Dependency(\.daemon) var daemon
 
     package init() {}
@@ -239,10 +270,15 @@ package struct ReviewFeature {
 
             case .loadFailed(_, let message):
                 state.stale = true
-                return .send(.failed(message))
+                state.loading = false
+                state.loadFailure = message
+                // With nothing listed the empty view says it; with a list, the
+                // list is as it was last read.
+                return state.files.isEmpty ? .none : .send(.failed(.reading, message))
 
             case .loaded(_, let repositories, let threads):
                 state.loading = false
+                state.loadFailure = nil
                 state.repositories = repositories
                 state.threads = IdentifiedArray(uniqueElements: threads)
                 if state.selected.map({ selected in !state.files.contains(selected) }) ?? true {
@@ -255,11 +291,12 @@ package struct ReviewFeature {
                 state.whole = file
                 return .none
 
-            case .failed(let message):
+            case .failed(let doing, let message):
                 state.loading = false
                 state.sending = false
+                if case .editing = doing { state.editing = false }
                 state.alert = AlertState {
-                    TextState("Something went wrong")
+                    TextState(doing.title)
                 } message: {
                     TextState(message)
                 }
@@ -341,7 +378,7 @@ package struct ReviewFeature {
                 return .run { send in
                     await send(.threadSaved(try await daemon.createThread(session, thread)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.commenting, error.localizedDescription))
                 }
 
             case .threadSaved(let thread):
@@ -359,7 +396,7 @@ package struct ReviewFeature {
                 return .run { send in
                     await send(.threadSaved(try await daemon.replyToThread(id, text)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.replying, error.localizedDescription))
                 }
 
             case .resolveToggled(let id):
@@ -368,7 +405,7 @@ package struct ReviewFeature {
                 return .run { send in
                     await send(.threadSaved(try await daemon.resolveThread(id, resolved)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.resolving, error.localizedDescription))
                 }
 
             case .deleteTapped(let comment):
@@ -376,7 +413,7 @@ package struct ReviewFeature {
                     try await daemon.deleteComment(comment)
                     await send(.refresh)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.deleting, error.localizedDescription))
                 }
 
             case .sendTapped:
@@ -386,7 +423,7 @@ package struct ReviewFeature {
                 return .run { send in
                     await send(.sent(try await daemon.sendReview(session)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.sending, error.localizedDescription))
                 }
 
             case .sent:
@@ -416,20 +453,23 @@ package struct ReviewFeature {
                 return .run { _ in
                     try await daemon.markViewed(session, file, diff.blob, viewed)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.markingViewed, error.localizedDescription))
                 }
 
             case .editTapped(let edit):
+                guard !state.editing else { return .none }
                 if edit.action == .revert {
                     state.alert = Self.confirmRevert(edit)
                     return .none
                 }
-                return self.edit(edit, in: state)
+                return self.edit(edit, in: &state)
 
             case .alert(.presented(.revert(let edit))):
-                return self.edit(edit, in: state)
+                guard !state.editing else { return .none }
+                return self.edit(edit, in: &state)
 
             case .edited:
+                state.editing = false
                 return load(&state)
             }
         }
@@ -461,17 +501,18 @@ package struct ReviewFeature {
             let changes = try await daemon.changes(session, query)
             await send(.wholeLoaded(changes.flatMap(\.files).first))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.failed(.reading, error.localizedDescription))
         }
     }
 
-    private func edit(_ edit: ChangeEdit, in state: State) -> Effect<Action> {
+    private func edit(_ edit: ChangeEdit, in state: inout State) -> Effect<Action> {
+        state.editing = true
         let session = state.sessionID
         return .run { send in
             try await daemon.editChanges(session, edit)
             await send(.edited)
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.failed(.editing(edit.action), error.localizedDescription))
         }
     }
 

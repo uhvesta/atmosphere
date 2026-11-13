@@ -90,6 +90,8 @@ package struct SessionFeature {
         package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
         package var disconnected = false
+        /// Why watching ended, when it's more than the connection dropping.
+        package var watchFailure: String?
         /// Times in a row watching has ended without a new event, which spaces
         /// out the next try.
         package var watchRetries = 0
@@ -116,6 +118,13 @@ package struct SessionFeature {
         @Presents package var land: LandFeature.State?
         /// Merging the base in is under way.
         package var updating = false
+        /// A fork, or an edited message's fork, is being made.
+        package var forking = false
+        /// Permission requests answered and not yet taken by the agent, so
+        /// their buttons can't send a second answer.
+        package var answering: Set<String> = []
+        /// The last message is being sent again after a failed turn.
+        package var retrying = false
         /// The event a search found, shown highlighted with a way to fork
         /// from it; nil when none is.
         package var highlighted: String?
@@ -239,6 +248,13 @@ package struct SessionFeature {
                 }
             }
             pendingPermissions = waiting
+            if !answering.isEmpty {
+                let ids = Set(
+                    waiting.compactMap { event -> String? in
+                        if case .permissionRequested(let id, _, _) = event.kind { id } else { nil }
+                    })
+                answering.formIntersection(ids)
+            }
             queued = []
             dropped = []
             for event in log {
@@ -261,6 +277,7 @@ package struct SessionFeature {
             let putBack = putBack
             dropped.removeAll { putBack.contains($0.id) }
             retryableFailure = nil
+            if !lastTurnFailed { retrying = false }
             if lastTurnFailed, lastMessage != nil {
                 for item in items.reversed() {
                     if case .failure(let id, _) = item {
@@ -475,7 +492,10 @@ package struct SessionFeature {
         /// sends the fork the edited text.
         case editSent
         case forked(Session)
-        case failed(String)
+        /// The fork for an edited message was made, but the message
+        /// couldn't be sent to it: the fork opens with it in the box.
+        case forkSendFailed(fork: Session, text: String)
+        case failed(Doing, String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
         case tabPicked(Tab)
@@ -495,6 +515,16 @@ package struct SessionFeature {
         /// Merges each repository's base branch into the session's copy.
         case updateFromBaseTapped
         case updatedFromBase(BaseUpdate)
+
+        /// What was being done when a call failed, so the alert names it.
+        package enum Doing: Equatable, Sendable {
+            case stopping
+            case retrying
+            case unqueueing
+            case forking
+            case updating
+            case answering(requestID: String)
+        }
 
         package enum RewindChoice: Equatable {
             /// Cut the chat back to before `event`, leaving the code.
@@ -574,6 +604,7 @@ package struct SessionFeature {
     private static func refuseImages(_ state: inout State) -> Effect<Action> {
         if state.readsImages == false {
             state.alert = alert(
+                "Images weren’t added",
                 "This session’s model can’t see images, so they weren’t added. Describe what’s in them "
                     + "instead, or start a session with a model that reads images, such as Claude Code’s."
             )
@@ -680,7 +711,7 @@ package struct SessionFeature {
                 return .run { send in
                     await send(.updatedFromBase(try await daemon.updateFromBase(session)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.updating, error.localizedDescription))
                 }
 
             case .updatedFromBase(let update):
@@ -711,6 +742,7 @@ package struct SessionFeature {
 
             case .task:
                 state.disconnected = false
+                state.watchFailure = nil
                 // The history is sent again, and the reply's parts with it;
                 // those already shown are skipped, so the reply stays.
                 let session = state.session.id
@@ -725,6 +757,9 @@ package struct SessionFeature {
                                 for try await event in await daemon.watch(session) { await batches.add(event) }
                                 await batches.end(failure: nil)
                             } catch is CancellationError {
+                            } catch DaemonError.disconnected, DaemonError.notRunning {
+                                // A plain drop: the notice says so already.
+                                await batches.end(failure: nil)
                             } catch {
                                 await batches.end(failure: error.localizedDescription)
                             }
@@ -756,8 +791,9 @@ package struct SessionFeature {
                 state.historyLoaded = true
                 return received(events, &state)
 
-            case .watchEnded:
+            case .watchEnded(let failure):
                 state.historyLoaded = true
+                state.watchFailure = failure
                 // The daemon restarted or the host dropped; watch again, less
                 // often the longer it stays away. The notice says so and
                 // lets the person try at once.
@@ -797,7 +833,7 @@ package struct SessionFeature {
                     state.$savedDraft.withLock { $0 = text }
                 }
                 if state.images.isEmpty { state.images = IdentifiedArray(uniqueElements: images) }
-                state.alert = Self.alert(message)
+                state.alert = Self.alert("Couldn’t send the message", message)
                 return .none
 
             case .readsImagesFound(let reads):
@@ -818,6 +854,7 @@ package struct SessionFeature {
 
             case .noImageToPaste:
                 state.alert = Self.alert(
+                    "No image to paste",
                     "The clipboard has no image. Copy one, or take a screenshot to the clipboard with ⌃⇧⌘4, "
                         + "then paste again.")
                 return .none
@@ -841,7 +878,7 @@ package struct SessionFeature {
 
             case .imagePrepared(let id, .failure(let error)):
                 guard state.images.remove(id: id) != nil else { return .none }
-                state.alert = Self.alert(error.description)
+                state.alert = Self.alert("Couldn’t add the image", error.description)
                 return .none
 
             case .removeImageTapped(let id):
@@ -869,16 +906,17 @@ package struct SessionFeature {
                 return .run { _ in
                     try await daemon.abort(session)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.stopping, error.localizedDescription))
                 }
 
             case .retryTapped:
-                guard let text = state.lastMessage, !state.isWorking else { return .none }
+                guard let text = state.lastMessage, !state.isWorking, !state.retrying else { return .none }
+                state.retrying = true
                 let session = state.session.id
                 return .run { _ in
                     try await daemon.send(session, text, .enqueue)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.retrying, error.localizedDescription))
                 }
 
             case .moveApproved:
@@ -904,7 +942,7 @@ package struct SessionFeature {
                 return .run { _ in
                     try await daemon.unqueue(session, queued)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.unqueueing, error.localizedDescription))
                 }
 
             case .editQueuedTapped(let id):
@@ -947,7 +985,7 @@ package struct SessionFeature {
                             """)
                     }
                 } else {
-                    state.alert = Self.alert(message + " Your edit is in the box.")
+                    state.alert = Self.alert("Couldn’t save the edit", message + " Your edit is in the box.")
                 }
                 return .none
 
@@ -959,7 +997,7 @@ package struct SessionFeature {
                 return .run { _ in
                     try await daemon.abort(session)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.stopping, error.localizedDescription))
                 }
 
             case .rewindTapped(let id):
@@ -1045,11 +1083,12 @@ package struct SessionFeature {
                 return .none
 
             case .answerPermission(let request, let approved):
+                guard state.answering.insert(request).inserted else { return .none }
                 let session = state.session.id
                 return .run { _ in
                     try await daemon.approve(session, request, approved)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.answering(requestID: request), error.localizedDescription))
                 }
 
             case .approvalModePicked(let mode):
@@ -1065,7 +1104,7 @@ package struct SessionFeature {
 
             case .approvalModeRefused(let previous, let message):
                 state.session.approvalMode = previous
-                state.alert = Self.alert(message)
+                state.alert = Self.alert("Couldn’t change what the agent may do", message)
                 return .none
 
             case .experimentalToggled(let on):
@@ -1081,7 +1120,7 @@ package struct SessionFeature {
 
             case .experimentalRefused(let previous, let message):
                 state.session.experimental = previous
-                state.alert = Self.alert(message)
+                state.alert = Self.alert("Couldn’t change Copilot’s experimental features", message)
                 return .none
 
             case .thinkingToggled(let id):
@@ -1089,15 +1128,17 @@ package struct SessionFeature {
                 return .none
 
             case .forkTapped(let before, let chatOnly):
+                guard !state.forking else { return .none }
+                state.forking = true
                 let session = state.session
                 return .run { send in
                     await send(.forked(try await daemon.fork(session.id, before, "\(session.name) fork", chatOnly)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.forking, error.localizedDescription))
                 }
 
             case .forkFromHighlightTapped:
-                guard state.highlighted != nil else { return .none }
+                guard state.highlighted != nil, !state.forking else { return .none }
                 return .send(.forkTapped(before: state.forkPointAfterHighlight, chatOnly: false))
 
             case .highlightDismissed:
@@ -1117,24 +1158,45 @@ package struct SessionFeature {
 
             case .editSent:
                 let text = state.edited.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard let before = state.editing, !text.isEmpty else { return .none }
-                state.editing = nil
-                state.edited = ""
+                guard let before = state.editing, !text.isEmpty, !state.forking else { return .none }
+                // The edit stays open until the fork is made, so a failure
+                // doesn't lose it.
+                state.forking = true
                 let session = state.session
                 return .run { send in
                     let fork = try await daemon.fork(session.id, before, "\(session.name) edit", false)
-                    try await daemon.send(fork.id, text, .enqueue)
+                    do {
+                        try await daemon.send(fork.id, text, .enqueue)
+                    } catch {
+                        await send(.forkSendFailed(fork: fork, text: text))
+                        return
+                    }
                     await send(.forked(fork))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.forking, error.localizedDescription))
                 }
 
             case .forked(let fork):
+                state.forking = false
+                state.editing = nil
+                state.edited = ""
                 return .send(.delegate(.openSession(fork)))
 
-            case .failed(let message):
-                state.updating = false
-                state.alert = Self.alert(message)
+            case .forkSendFailed(let fork, let text):
+                // The fork's box keeps the text, to send from there.
+                let draft = Shared(wrappedValue: "", .appStorage(State.draftKey(fork.id)))
+                draft.withLock { $0 = $0.isEmpty ? text : $0 + "\n\n" + text }
+                return .send(.forked(fork))
+
+            case .failed(let doing, let message):
+                switch doing {
+                case .updating: state.updating = false
+                case .forking: state.forking = false
+                case .retrying: state.retrying = false
+                case .answering(let request): state.answering.remove(request)
+                case .stopping, .unqueueing: break
+                }
+                state.alert = Self.alert(Self.title(doing), message)
                 return .none
             }
         }
@@ -1171,9 +1233,20 @@ package struct SessionFeature {
         state.$savedDraft.withLock { $0 = state.draft }
     }
 
-    private static func alert(_ message: String) -> AlertState<Never> {
+    private static func title(_ doing: Action.Doing) -> String {
+        switch doing {
+        case .stopping: "Couldn’t stop the turn"
+        case .retrying: "Couldn’t send your message again"
+        case .unqueueing: "Couldn’t take the message out of the queue"
+        case .forking: "Couldn’t fork the session"
+        case .updating: "Couldn’t update from the base branch"
+        case .answering: "Couldn’t answer the permission request"
+        }
+    }
+
+    private static func alert(_ title: String, _ message: String) -> AlertState<Never> {
         AlertState {
-            TextState("Something went wrong")
+            TextState(title)
         } message: {
             TextState(message)
         }

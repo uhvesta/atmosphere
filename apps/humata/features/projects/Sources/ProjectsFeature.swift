@@ -22,6 +22,16 @@ package struct ProjectsFeature {
         /// Requests answered here, which a read begun before the answer
         /// went would bring back. Few, so kept while Humata runs.
         var answered: Set<AgentRequest.ID> = []
+        /// Permission requests answered here, by request id, kept out of
+        /// reads begun before the answer for the same reason.
+        var answeredPermissions: Set<String> = []
+        /// Admin approvals decided here, kept out the same way.
+        var decidedApprovals: Set<AdminApproval.ID> = []
+        /// Sessions whose last message is being sent again from the inbox.
+        package var retrying: Set<Session.ID> = []
+        /// Sessions being moved, archived or deleted, which show a spinner
+        /// and take no second go.
+        package var busy: Set<Session.ID> = []
         /// Whether the list was read yet: until then nothing is new, so
         /// nothing is notified.
         package var loadedOnce = false
@@ -194,16 +204,16 @@ package struct ProjectsFeature {
         /// to do first.
         case deleteSessionTapped(Session.ID)
         case sessionDeleted(Session.ID)
-        case sessionDeleteFailed(String)
+        case sessionDeleteFailed(Session.ID, String)
         /// Asks where to move a session: this Mac or one of the hosts.
         case moveToHostTapped(Session.ID)
         case moveHostsLoaded(Session.ID, hosts: [String])
         case sessionMoved(Session)
-        case sessionMoveFailed(String)
+        case sessionMoveFailed(Session.ID, String)
         case keeperTapped(Session.ID, keeper: Bool)
         case compareTapped(Session.ID, with: Session.ID)
         case updated(Session)
-        case updateFailed(String)
+        case updateFailed(Session.ID, String)
         /// The person allowed or denied a request from the inbox.
         case inboxAnswered(Session.ID, request: String, approved: Bool)
         /// The person let the session do more without asking, from the
@@ -224,7 +234,9 @@ package struct ProjectsFeature {
         /// The person opened what a session changed, to look before moving
         /// its item.
         case changesTapped(Session.ID)
-        case answerFailed(String)
+        case answerFailed(InboxCall, String)
+        /// Sending a session's last message again from the inbox went.
+        case inboxRetried(Session.ID)
         /// The answer to request `id` didn't go, so it's shown again.
         case requestNotAnswered(AgentRequest.ID)
         /// The person approved or denied admin actions other clients asked
@@ -235,6 +247,16 @@ package struct ProjectsFeature {
         case notificationClicked(Session.ID)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
+
+        /// What the inbox was doing when a call failed, so the alert says
+        /// so and what was hidden comes back.
+        package enum InboxCall: Equatable, Sendable {
+            case answeringPermission(String)
+            case decidingApprovals([AdminApproval.ID])
+            case wideningMode
+            case retrying(Session.ID)
+            case answeringRequest
+        }
 
         @CasePathable
         package enum Delegate: Equatable {
@@ -290,7 +312,18 @@ package struct ProjectsFeature {
                 // Answered here, a request stays hidden, even from a read
                 // that began before the answer and arrives after a newer one.
                 let answered = state.answered
-                let inbox = inbox.filter { entry in entry.request.map { !answered.contains($0.id) } ?? true }
+                let permissions = state.answeredPermissions
+                let inbox = inbox.compactMap { entry -> InboxEntry? in
+                    if let request = entry.request { return answered.contains(request.id) ? nil : entry }
+                    guard !permissions.isEmpty,
+                        entry.session.pending.contains(where: { permissions.contains($0.requestID) })
+                    else { return entry }
+                    var entry = entry
+                    entry.session.pending.removeAll { permissions.contains($0.requestID) }
+                    return entry.reason == .approval && entry.session.pending.isEmpty ? nil : entry
+                }
+                let decided = state.decidedApprovals
+                let approvals = decided.isEmpty ? approvals : approvals.filter { !decided.contains($0.id) }
                 // The open session needs no notice only while it's on screen.
                 let open = activity.isActive() ? state.selection : nil
                 let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: open) : []
@@ -453,6 +486,7 @@ package struct ProjectsFeature {
                 return .none
 
             case .archiveTapped(let id, let archived):
+                guard state.busy.insert(id).inserted else { return .none }
                 return update(id, SessionUpdate(archived: archived))
 
             case .deleteSessionTapped(let id):
@@ -486,19 +520,22 @@ package struct ProjectsFeature {
                 return .none
 
             case .destination(.presented(.alert(.deleteSession(let id)))):
+                guard state.busy.insert(id).inserted else { return .none }
                 return .run { send in
                     try await daemon.delete(id)
                     await send(.sessionDeleted(id))
                 } catch: { error, send in
-                    await send(.sessionDeleteFailed(error.localizedDescription))
+                    await send(.sessionDeleteFailed(id, error.localizedDescription))
                 }
 
             case .sessionDeleted(let id):
+                state.busy.remove(id)
                 state.sessions.remove(id: id)
                 if state.selection == .session(id) { state.selection = nil }
                 return .none
 
-            case .sessionDeleteFailed(let message):
+            case .sessionDeleteFailed(let id, let message):
+                state.busy.remove(id)
                 state.destination = .alert(
                     AlertState {
                         TextState("Couldn't delete the session")
@@ -512,7 +549,7 @@ package struct ProjectsFeature {
                     let hosts = try await daemon.hosts().map(\.name).filter { !$0.isEmpty }
                     await send(.moveHostsLoaded(id, hosts: hosts))
                 } catch: { error, send in
-                    await send(.sessionMoveFailed(error.localizedDescription))
+                    await send(.sessionMoveFailed(id, error.localizedDescription))
                 }
 
             case .moveHostsLoaded(let id, let hosts):
@@ -548,19 +585,22 @@ package struct ProjectsFeature {
                 return .none
 
             case .destination(.presented(.alert(.moveSession(let id, let host)))):
+                guard state.busy.insert(id).inserted else { return .none }
                 return .run { send in
                     let moved = try await daemon.restoreSession(id, host.isEmpty ? nil : host)
                     await send(.sessionMoved(moved))
                     await send(await load())
                 } catch: { error, send in
-                    await send(.sessionMoveFailed(error.localizedDescription))
+                    await send(.sessionMoveFailed(id, error.localizedDescription))
                 }
 
             case .sessionMoved(let session):
+                state.busy.remove(session.id)
                 state.sessions[id: session.id] = session
                 return .none
 
-            case .sessionMoveFailed(let message):
+            case .sessionMoveFailed(let id, let message):
+                state.busy.remove(id)
                 state.destination = .alert(
                     AlertState {
                         TextState("Couldn't move the session")
@@ -581,6 +621,7 @@ package struct ProjectsFeature {
                 .destination(.presented(.rename(.delegate(.renamed(let session))))),
                 .destination(.presented(.move(.delegate(.moved(let session))))),
                 .destination(.presented(.compare(.delegate(.updated(let session))))):
+                state.busy.remove(session.id)
                 state.sessions[id: session.id] = session
                 switch state.destination {
                 case .rename, .move: state.destination = nil
@@ -589,27 +630,35 @@ package struct ProjectsFeature {
                 return .none
 
             case .inboxAnswered(let id, let request, let approved):
-                // Gone from the row at once; the refresh says what's next.
+                // Gone from the row at once, and from reads begun before
+                // the answer; the refresh says what's next.
+                guard state.answeredPermissions.insert(request).inserted else { return .none }
                 if let index = state.inbox.firstIndex(where: { $0.session.id == id && $0.request == nil }) {
                     state.inbox[index].session.pending.removeAll { $0.requestID == request }
+                    if state.inbox[index].reason == .approval, state.inbox[index].session.pending.isEmpty {
+                        state.inbox.remove(at: index)
+                    }
                 }
                 return .run { send in
                     try await daemon.approve(id, request, approved)
                     await send(await load())
                 } catch: { error, send in
-                    await send(.answerFailed(error.localizedDescription))
+                    await send(.answerFailed(.answeringPermission(request), error.localizedDescription))
                     await send(await load())
                 }
 
             case .approvalsDecided(let ids, let approve, let grant):
-                // Gone from the inbox at once; the refresh says what ran.
+                // Gone from the inbox at once, and from reads begun before;
+                // the refresh says what ran.
+                let ids = ids.filter { state.decidedApprovals.insert($0).inserted }
+                guard !ids.isEmpty else { return .none }
                 state.approvals.removeAll { ids.contains($0.id) }
                 return .run { send in
                     _ = try await daemon.decideApprovals(
                         ids, approve, grant?.scopes ?? [], grant.map { UInt32($0.duration.components.seconds) } ?? 0)
                     await send(await load())
                 } catch: { error, send in
-                    await send(.answerFailed(error.localizedDescription))
+                    await send(.answerFailed(.decidingApprovals(ids), error.localizedDescription))
                     await send(await load())
                 }
 
@@ -618,11 +667,12 @@ package struct ProjectsFeature {
                     try await daemon.setApprovalMode(id, mode)
                     await send(await load())
                 } catch: { error, send in
-                    await send(.answerFailed(error.localizedDescription))
+                    await send(.answerFailed(.wideningMode, error.localizedDescription))
                     await send(await load())
                 }
 
             case .inboxRetryTapped(let id):
+                guard state.retrying.insert(id).inserted else { return .none }
                 return .run { send in
                     let history = try await daemon.history(id)
                     let last = history.reversed().lazy.compactMap { event -> String? in
@@ -630,11 +680,16 @@ package struct ProjectsFeature {
                         return text
                     }.first
                     if let last { try await daemon.send(id, last, .enqueue) }
+                    await send(.inboxRetried(id))
                     await send(await load())
                 } catch: { error, send in
-                    await send(.answerFailed(error.localizedDescription))
+                    await send(.answerFailed(.retrying(id), error.localizedDescription))
                     await send(await load())
                 }
+
+            case .inboxRetried(let id):
+                state.retrying.remove(id)
+                return .none
 
             case .nextWaitingTapped:
                 var blocked: [Session.ID] = []
@@ -709,16 +764,33 @@ package struct ProjectsFeature {
                 state.selection = .session(id)
                 return .send(.delegate(.openChanges(session)))
 
-            case .answerFailed(let message):
+            case .answerFailed(let call, let message):
+                let title: String
+                switch call {
+                case .answeringPermission(let request):
+                    state.answeredPermissions.remove(request)
+                    title = "Couldn't answer the permission request"
+                case .decidingApprovals(let ids):
+                    state.decidedApprovals.subtract(ids)
+                    title = "Couldn't decide on the admin actions"
+                case .wideningMode:
+                    title = "Couldn't change what the agent may do"
+                case .retrying(let id):
+                    state.retrying.remove(id)
+                    title = "Couldn't send the message again"
+                case .answeringRequest:
+                    title = "Couldn't answer the request"
+                }
                 state.destination = .alert(
                     AlertState {
-                        TextState("Couldn't answer the request")
+                        TextState(title)
                     } message: {
                         TextState(message)
                     })
                 return .none
 
-            case .updateFailed(let message):
+            case .updateFailed(let id, let message):
+                state.busy.remove(id)
                 state.destination = .alert(
                     AlertState {
                         TextState("Couldn't change the session")
@@ -750,7 +822,7 @@ package struct ProjectsFeature {
         .run { send in
             await send(.updated(try await daemon.update(id, update)))
         } catch: { error, send in
-            await send(.updateFailed(error.localizedDescription))
+            await send(.updateFailed(id, error.localizedDescription))
         }
     }
 
@@ -783,7 +855,7 @@ package struct ProjectsFeature {
             }
             await send(await load())
         } catch: { error, send in
-            await send(.answerFailed(error.localizedDescription))
+            await send(.answerFailed(.answeringRequest, error.localizedDescription))
             await send(await load())
         }
     }

@@ -5,6 +5,7 @@ import HumataDaemonClient
 import HumataDaemonLive
 import HumataDiagram
 import HumataProjects
+import HumataSession
 import SwiftUI
 
 /// Humata: a window for directing coding agents, over humatad.
@@ -84,6 +85,40 @@ struct HumataApp: App {
                     .keyboardShortcut("f", modifiers: [.command, .shift])
                 Button("Hosts") { store.send(.sidebar(.selected(.hosts))) }
             }
+            CommandMenu("Session") {
+                sessionCommands
+            }
         }
+    }
+
+    /// What can be done to the open session, so it's found in the menu bar
+    /// and has a shortcut; each is greyed out when it can't be done now.
+    @ViewBuilder private var sessionCommands: some View {
+        let session = store.session
+        let live = session.map { !$0.session.archived } ?? false
+        Button("Stop the Turn") { send(.abortTapped) }
+            .keyboardShortcut(".", modifiers: .command)
+            .disabled(!(live && session?.isWorking == true))
+        Button("Try Again") { send(.retryTapped) }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(
+                !live || session?.retryableFailure == nil || session?.isWorking == true
+                    || session?.retrying == true)
+        Divider()
+        Button("Fork With the Code") { send(.forkTapped(before: nil, chatOnly: false)) }
+            .keyboardShortcut("f", modifiers: [.command, .option])
+            .disabled(session == nil || session?.forking == true)
+        Button("Fork the Chat Only") { send(.forkTapped(before: nil, chatOnly: true)) }
+            .disabled(session == nil || session?.forking == true)
+        Divider()
+        Button("Land…") { send(.landTapped) }
+            .disabled(session?.ships != true)
+        Button("Update from the Base Branch") { send(.updateFromBaseTapped) }
+            .keyboardShortcut("u", modifiers: [.command, .option])
+            .disabled(session?.ships != true || session?.updating == true || session?.isWorking == true)
+    }
+
+    private func send(_ action: SessionFeature.Action) {
+        store.send(.session(.presented(action)))
     }
 }

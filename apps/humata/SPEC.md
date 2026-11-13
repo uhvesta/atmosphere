@@ -159,7 +159,7 @@ original spec; lettered ones were added since.
 | D1 Mermaid diagrams | Done |
 | D2 Focus view for Markdown | Planned |
 | D3 Versions of a Markdown file | Planned |
-| U2 UX papercuts | Planned |
+| U2 UX papercuts | Done |
 | S2 Compression | Planned |
 | S3 Daemon speed | Planned |
 | X Admin mode, gated by approvals | Done |
@@ -1047,11 +1047,11 @@ turned on, and then deletes archived sessions after 45 days by default.
 #### U2 UX papercuts
 
 - [x] Return doesn't approve; the composer is focused when a session opens
-- [ ] Fork, edit to a fork, update and answering show progress and can't
+- [x] Fork, edit to a fork, update and answering show progress and can't
   be done twice
-- [ ] Each alert says what failed; search has Try Again; one word for
+- [x] Each alert says what failed; search has Try Again; one word for
   approving, one style for times; a permission shows once
-- [ ] Strings in added lines aren't red; Hosts shows no backticks; a
+- [x] Strings in added lines aren't red; Hosts shows no backticks; a
   Session menu; VoiceOver reads diff lines
 
 #### S2 Compression

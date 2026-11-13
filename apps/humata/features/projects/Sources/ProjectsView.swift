@@ -25,6 +25,9 @@ package struct ProjectsView: View {
                     } actions: {
                         Button("Try Again") { store.send(.refresh) }
                     }
+                } else if !store.loadedOnce {
+                    ProgressView("Reading your projects…")
+                        .controlSize(.small)
                 } else if store.projects.isEmpty, store.sessions.isEmpty {
                     ContentUnavailableView {
                         Label("No Projects", systemImage: "folder")
@@ -62,6 +65,19 @@ package struct ProjectsView: View {
                 .tag(SidebarItem.hosts)
             Label("Search Sessions", systemImage: "text.magnifyingglass")
                 .tag(SidebarItem.search)
+            // With nothing listed the overlay says it; with a list, the list
+            // is as it was last read.
+            if let failure = store.failure, !(store.projects.isEmpty && store.sessions.isEmpty) {
+                HStack {
+                    Label("Can't reach Humata's daemon", systemImage: "bolt.horizontal.circle")
+                        .foregroundStyle(.orange)
+                        .help(failure)
+                    Spacer()
+                    Button("Try Again") { store.send(.refresh) }
+                        .buttonStyle(.borderless)
+                }
+                .selectionDisabled()
+            }
             if let matches = store.state.matches {
                 results(matches)
             } else {
@@ -179,7 +195,7 @@ package struct ProjectsView: View {
     }
 
     private func row(_ session: Session) -> some View {
-        SessionRow(session: session, now: store.now)
+        SessionRow(session: session, now: store.now, busy: store.busy.contains(session.id))
             .tag(SidebarItem.session(session.id))
             .contextMenu {
                 Button("Rename…") { store.send(.renameTapped(session.id)) }
@@ -188,7 +204,9 @@ package struct ProjectsView: View {
                 }
                 if !session.archived {
                     Button("Move to Host…") { store.send(.moveToHostTapped(session.id)) }
-                        .disabled(session.state == .working || session.state == .waitingForApproval)
+                        .disabled(
+                            session.state == .working || session.state == .waitingForApproval
+                                || store.busy.contains(session.id))
                 }
                 Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
                     store.send(.keeperTapped(session.id, keeper: !session.keeper))
@@ -204,10 +222,14 @@ package struct ProjectsView: View {
                 Divider()
                 if session.archived {
                     Button("Unarchive") { store.send(.archiveTapped(session.id, archived: false)) }
+                        .disabled(store.busy.contains(session.id))
                     Button("Delete…", role: .destructive) { store.send(.deleteSessionTapped(session.id)) }
+                        .disabled(store.busy.contains(session.id))
                 } else {
                     Button("Archive") { store.send(.archiveTapped(session.id, archived: true)) }
-                        .disabled(session.state == .working || session.state == .waitingForApproval)
+                        .disabled(
+                            session.state == .working || session.state == .waitingForApproval
+                                || store.busy.contains(session.id))
                 }
             }
     }
@@ -218,12 +240,29 @@ extension Session {
     var title: String { name.isEmpty ? "Session" : name }
 }
 
+/// The one formatter for how long ago something was, shared by every row.
+@MainActor private let relativeFormatter: RelativeDateTimeFormatter = {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return formatter
+}()
+
+extension Date {
+    /// How long before `now` it was, as "5 min. ago": the one way the
+    /// sidebar and the inbox say it.
+    @MainActor func relativeTime(to now: Date) -> String {
+        relativeFormatter.localizedString(for: min(self, now), relativeTo: now)
+    }
+}
+
 /// A session in the sidebar: its name, where it runs, whether it is the
 /// keeper, and what it is doing.
 struct SessionRow: View {
     let session: Session
     /// When the list was read, for how long ago it was active.
     var now: Date?
+    /// Being moved, archived or deleted.
+    var busy = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -270,17 +309,21 @@ struct SessionRow: View {
                     .lineLimit(1)
                     .accessibilityLabel("Active \(since)")
             }
-            SessionStateIcon(session: session)
+            if busy {
+                ProgressView()
+                    .controlSize(.mini)
+                    .accessibilityLabel("Working on it")
+            } else {
+                SessionStateIcon(session: session)
+            }
         }
     }
 
-    /// How long ago it was last active, as "5 min ago"; nil before anything
+    /// How long ago it was last active, as "5 min. ago"; nil before anything
     /// happened in it.
     private var since: String? {
         guard let active = session.lastActive, let now else { return nil }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: min(active, now), relativeTo: now)
+        return active.relativeTime(to: now)
     }
 
     private var icon: String {

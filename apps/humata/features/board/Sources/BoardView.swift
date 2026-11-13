@@ -600,7 +600,7 @@ struct BoardLogView: View {
                             .help("An admin action another program asked for, which you approved")
                     }
                     Text("·")
-                    Text(change.time, format: .dateTime.month().day().hour().minute())
+                    Text(change.time.formatted(date: .abbreviated, time: .shortened))
                     if let revert = store.state.revert(of: change) {
                         Text("·")
                         Text("Reverted by \(store.state.name(of: revert.author))")

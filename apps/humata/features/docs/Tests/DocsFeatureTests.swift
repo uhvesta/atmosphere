@@ -110,6 +110,34 @@ final class DocsFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.picked)
     }
 
+    func testAFileThatCouldntBeReadSaysSoUntilItIs() async throws {
+        let (daemon, session) = try await chat()
+        let reachable = LockIsolated(false)
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.readFile = { session, path in
+                guard reachable.value else { throw DaemonError.disconnected }
+                return try await daemon.client.readFile(session, path)
+            }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.listed)
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.readFailure)
+        XCTAssertNil(store.state.alert)
+
+        reachable.setValue(true)
+        await store.send(.refresh)
+        await store.receive(\.read)
+        XCTAssertNil(store.state.readFailure)
+        XCTAssertEqual(store.state.lines?.first, "# Plan")
+    }
+
     func testAFailedSendKeepsTheDrafts() async throws {
         let (daemon, session) = try await chat()
         let store = store(daemon, session)

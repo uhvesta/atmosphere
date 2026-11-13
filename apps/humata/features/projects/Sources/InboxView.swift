@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import HumataDaemonClient
 import SwiftUI
 
@@ -6,47 +7,31 @@ import SwiftUI
 /// over. Picking one opens it; a request for permission, a question or a move
 /// can be answered from its row, and a reply marked as read.
 package struct InboxView: View {
-    var entries: [InboxEntry]
-    var open: (Session.ID) -> Void
-    var openChanges: (Session.ID) -> Void
-    var answer: (Session.ID, _ request: String, _ approved: Bool) -> Void
-    var answerRequest: (AgentRequest.ID, RequestAnswer) -> Void
-    var drafts: [AgentRequest.ID: String]
-    var draftChanged: (AgentRequest.ID, String) -> Void
-    var markRead: (Session.ID) -> Void
-    var widen: (Session.ID, ApprovalMode) -> Void
-    var retry: (Session.ID) -> Void
-    /// Admin actions other clients asked for, oldest first.
-    var approvals: [AdminApproval]
-    var decide: ([AdminApproval.ID], _ approve: Bool, ApprovalGrantAsked?) -> Void
-    /// When the list was read, for how long each has waited.
-    var now: Date?
+    /// The sidebar's, so typing a reply here redraws only the inbox.
+    let store: StoreOf<ProjectsFeature>
 
-    package init(
-        entries: [InboxEntry], approvals: [AdminApproval] = [], drafts: [AgentRequest.ID: String], now: Date?,
-        open: @escaping (Session.ID) -> Void,
-        openChanges: @escaping (Session.ID) -> Void,
-        answer: @escaping (Session.ID, _ request: String, _ approved: Bool) -> Void,
-        answerRequest: @escaping (AgentRequest.ID, RequestAnswer) -> Void,
-        draftChanged: @escaping (AgentRequest.ID, String) -> Void,
-        markRead: @escaping (Session.ID) -> Void,
-        widen: @escaping (Session.ID, ApprovalMode) -> Void,
-        retry: @escaping (Session.ID) -> Void,
-        decide: @escaping ([AdminApproval.ID], _ approve: Bool, ApprovalGrantAsked?) -> Void = { _, _, _ in }
-    ) {
-        self.approvals = approvals
-        self.decide = decide
-        self.widen = widen
-        self.retry = retry
-        self.now = now
-        self.entries = entries
-        self.drafts = drafts
-        self.open = open
-        self.openChanges = openChanges
-        self.answer = answer
-        self.answerRequest = answerRequest
-        self.draftChanged = draftChanged
-        self.markRead = markRead
+    package init(store: StoreOf<ProjectsFeature>) {
+        self.store = store
+    }
+
+    private var entries: [InboxEntry] { store.inbox }
+    /// Admin actions other clients asked for, oldest first.
+    private var approvals: [AdminApproval] { store.approvals }
+    /// When the list was read, for how long each has waited.
+    private var now: Date? { store.now }
+
+    private func open(_ session: Session.ID) { store.send(.selected(.session(session))) }
+
+    private func decide(_ ids: [AdminApproval.ID], _ approve: Bool, _ grant: ApprovalGrantAsked?) {
+        store.send(.approvalsDecided(ids, approve: approve, grant: grant))
+    }
+
+    private func answer(_ session: Session.ID, _ request: String, _ approved: Bool) {
+        store.send(.inboxAnswered(session, request: request, approved: approved))
+    }
+
+    private func widen(_ session: Session.ID, _ mode: ApprovalMode) {
+        store.send(.inboxModeWidened(session, mode))
     }
 
     package var body: some View {
@@ -99,9 +84,10 @@ package struct InboxView: View {
         if let request = entry.request {
             RequestRow(
                 entry: entry, request: request, now: now,
-                reply: Binding(get: { drafts[request.id] ?? "" }, set: { draftChanged(request.id, $0) }),
-                open: { open(entry.session.id) }, openChanges: { openChanges(entry.session.id) },
-                answer: { answerRequest(request.id, $0) })
+                reply: Binding(
+                    get: { store.drafts[request.id] ?? "" }, set: { store.send(.draftChanged(request.id, $0)) }),
+                open: { open(entry.session.id) }, openChanges: { store.send(.changesTapped(entry.session.id)) },
+                answer: { store.send(.requestAnswered(request.id, $0)) })
         } else {
             sessionRow(entry)
         }
@@ -123,9 +109,9 @@ package struct InboxView: View {
             } else if entry.reason == .approval, let request = entry.session.pending.first {
                 Button("Deny") { answer(entry.session.id, request.requestID, false) }
                     .help("Deny: \(request.summary)")
-                Button("Allow") { answer(entry.session.id, request.requestID, true) }
+                Button("Approve") { answer(entry.session.id, request.requestID, true) }
                     .buttonStyle(.borderedProminent)
-                    .help("Allow: \(request.summary)")
+                    .help("Approve: \(request.summary)")
                 Menu {
                     if request.kind == .write {
                         Button("Allow Edits from Now On") { widen(entry.session.id, .allowEdits) }
@@ -134,16 +120,22 @@ package struct InboxView: View {
                     }
                 } label: {
                     Image(systemName: "chevron.down")
+                        .accessibilityLabel("More Answers")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Stop asking in this session")
             } else if entry.reason == .failed, !entry.session.hostOffline {
-                Button("Try Again") { retry(entry.session.id) }
+                let retrying = store.retrying.contains(entry.session.id)
+                if retrying {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Try Again") { store.send(.inboxRetryTapped(entry.session.id)) }
+                    .disabled(retrying)
                     .help("Send its last message again")
             } else if entry.reason == .reply {
-                Button("Mark as Read") { markRead(entry.session.id) }
+                Button("Mark as Read") { store.send(.markReadTapped(entry.session.id)) }
                     .help("Take it out of the inbox without opening it")
             }
         }
@@ -261,13 +253,8 @@ private struct InboxRow: View {
     /// How long it has waited, as of when the list was read.
     private var waited: String? {
         guard let now, let since = entry.request?.created ?? entry.session.lastActive else { return nil }
-        let seconds = max(0, now.timeIntervalSince(since))
-        guard seconds >= 60 else { return String(localized: "just now") }
-        let formatter = DateComponentsFormatter()
-        formatter.unitsStyle = .abbreviated
-        formatter.maximumUnitCount = 1
-        formatter.allowedUnits = [.day, .hour, .minute]
-        return formatter.string(from: seconds).map { String(localized: "waited \($0)") }
+        // As the sidebar says how long ago a session was active.
+        return since.relativeTime(to: now)
     }
 
     private var place: String {

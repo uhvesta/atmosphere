@@ -94,7 +94,6 @@ package struct PluginsFeature {
         Reduce { state, action in
             switch action {
             case .task, .refreshTapped:
-                state.list = nil
                 state.failure = nil
                 return load()
 

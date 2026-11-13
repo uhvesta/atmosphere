@@ -106,6 +106,14 @@ package struct DocsView: View {
             ContentUnavailableView(
                 "Not text", systemImage: "doc",
                 description: Text("\(contents.path) isn't text, so it can't be shown here."))
+        } else if let failure = store.readFailure {
+            ContentUnavailableView {
+                Label("Couldn’t Read the File", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(failure)
+            } actions: {
+                Button("Try Again") { store.send(.refresh) }
+            }
         } else {
             ProgressView()
         }

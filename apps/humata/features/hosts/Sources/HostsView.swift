@@ -355,7 +355,7 @@ extension HostStatus {
             problems.append("Copilot can't run there: \(problem.message)")
         } else if !githubToken {
             problems.append(
-                "Copilot has no GitHub token there. Add GH_TOKEN below, or run `copilot login` on the host.")
+                "Copilot has no GitHub token there. Add GH_TOKEN below, or run “copilot login” on the host.")
         }
         if let setup, !setup.succeeded { problems.append("Its setup script failed; it runs again on the next check.") }
         return problems
@@ -413,7 +413,8 @@ struct HealthSection: View {
                 case .success(let version):
                     LabeledContent("Claude Code", value: version)
                     LabeledContent(
-                        "Anthropic Key", value: status.anthropicKey ? "Set" : "None, unless `claude` is signed in there"
+                        "Anthropic Key",
+                        value: status.anthropicKey ? "Set" : "None, unless Claude Code is signed in there"
                     )
                 case .failure(let problem):
                     // Not a problem unless its sessions use Claude Code.
