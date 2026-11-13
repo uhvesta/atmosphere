@@ -1236,6 +1236,50 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Settings › Plugins lists each host's Claude Code and Copilot plugins
+    /// with what they add, while a host that didn't answer is named; the
+    /// person turns one off for a project.
+    func testSettingsPlugins() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let review = Plugin(
+            agent: .claude, pluginID: "code-review@claude-plugins", name: "code-review",
+            description: "Reviews a diff for bugs before you push", version: "1.4.0",
+            skills: ["review"], commands: ["review", "review-pr"], agents: ["reviewer"], mcpServers: ["github"])
+        daemon.setPlugins(
+            PluginList(
+                plugins: [
+                    review,
+                    Plugin(
+                        agent: .claude, pluginID: "rust-analyzer-lsp@claude-plugins", name: "rust-analyzer-lsp",
+                        description: "Rust language server", version: "0.2.1", enabled: false, lspServers: true),
+                    Plugin(
+                        agent: .copilot, pluginID: "notes", description: "Keeps notes as it works", version: "0.3.0",
+                        skills: ["notes"], hooks: true),
+                    Plugin(
+                        agent: .claude, pluginID: "code-review@claude-plugins", name: "code-review",
+                        description: "Reviews a diff for bugs before you push", version: "1.3.2", host: "devbox",
+                        skills: ["review"], commands: ["review"]),
+                ],
+                unreachable: ["laptop"]))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+        }
+        let flow = FlowRecorder("plugins", PluginsView(store: store.scope(state: \.plugins, action: \.plugins)))
+        store.send(.plugins(.task))
+        try await until { store.plugins.list != nil }
+        await flow.step("listed")
+
+        store.send(.plugins(.choiceChanged(review, .off)))
+        try await until { store.plugins.saving.isEmpty && store.plugins.choice(review) == .off }
+        await flow.step("off-for-project")
+        flow.finish()
+    }
+
     /// An agent's `humata mcp`, in a dev build, asks to change a spec and
     /// delete a task as the person, and a command asks to add one: all wait
     /// in the inbox, by who asked. The person approves the agent's both,

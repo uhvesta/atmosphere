@@ -314,6 +314,18 @@ impl Machine {
         Ok(pb::SkillsScanned { skills })
     }
 
+    /// The plugins Claude Code and Copilot have installed here, read on a
+    /// background thread.
+    pub async fn scan_plugins(&self) -> Result<pb::PluginsScanned, HostError> {
+        let plugins = tokio::task::spawn_blocking(|| {
+            let (claude, copilot) = crate::plugins::folders();
+            crate::plugins::scan(claude.as_deref(), copilot.as_deref())
+        })
+        .await
+        .map_err(|source| HostError::ScanPlugins { source })?;
+        Ok(pb::PluginsScanned { plugins })
+    }
+
     /// Pushes `branch` from the worktree at `directory` to its `origin`,
     /// setting it as the branch's upstream.
     pub async fn push(

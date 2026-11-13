@@ -23,6 +23,7 @@ mod local_model;
 mod log;
 mod mcp_client;
 mod paths;
+mod plugins;
 mod runtime;
 mod scripted;
 mod summary;

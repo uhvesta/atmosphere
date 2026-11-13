@@ -79,18 +79,26 @@ package struct Project: Identifiable, Hashable, Sendable {
     package var instructions: String
     /// Know-how every session in the project reads after its instructions.
     package var skills: [Skill]
+    /// Plugins turned on or off for its sessions, over how each CLI has them.
+    package var plugins: [PluginChoice]
     package var created: Date
 
     package init(
         id: String, name: String, repositories: [Repository], instructions: String = "", skills: [Skill] = [],
-        created: Date
+        plugins: [PluginChoice] = [], created: Date
     ) {
         self.id = id
         self.name = name
         self.repositories = repositories
         self.instructions = instructions
         self.skills = skills
+        self.plugins = plugins
         self.created = created
+    }
+
+    /// The project's choice for a plugin; nil goes by its CLI.
+    package func plugin(_ agent: Plugin.Agent, _ id: String) -> Bool? {
+        plugins.first { $0.agent == agent && $0.id == id }?.enabled
     }
 }
 
@@ -1815,5 +1823,99 @@ package struct SkillList: Hashable, Sendable {
         self.skills = skills
         self.clashes = clashes
         self.unreachable = unreachable
+    }
+}
+
+/// A Claude Code or Copilot plugin installed on the Mac or a host.
+package struct Plugin: Hashable, Identifiable, Sendable {
+    package enum Agent: String, Hashable, Sendable, CaseIterable {
+        case claude
+        case copilot
+
+        package var title: String {
+            switch self {
+            case .claude: "Claude Code"
+            case .copilot: "Copilot"
+            }
+        }
+    }
+
+    package var agent: Agent
+    /// Its name as its CLI knows it, such as `review@market`.
+    package var pluginID: String
+    package var name: String
+    package var description: String
+    package var version: String
+    /// "" for the Mac.
+    package var host: String
+    /// Whether its CLI has it on.
+    package var enabled: Bool
+    package var skills: [String]
+    package var commands: [String]
+    package var agents: [String]
+    package var mcpServers: [String]
+    package var hooks: Bool
+    package var lspServers: Bool
+
+    package init(
+        agent: Agent, pluginID: String, name: String = "", description: String = "", version: String = "",
+        host: String = "", enabled: Bool = true, skills: [String] = [], commands: [String] = [],
+        agents: [String] = [], mcpServers: [String] = [], hooks: Bool = false, lspServers: Bool = false
+    ) {
+        self.agent = agent
+        self.pluginID = pluginID
+        self.name = name.isEmpty ? pluginID : name
+        self.description = description
+        self.version = version
+        self.host = host
+        self.enabled = enabled
+        self.skills = skills
+        self.commands = commands
+        self.agents = agents
+        self.mcpServers = mcpServers
+        self.hooks = hooks
+        self.lspServers = lspServers
+    }
+
+    package var id: String { "\(host)|\(agent.rawValue)|\(pluginID)" }
+
+    /// What it adds to a session, such as "2 skills, 1 MCP server".
+    package var adds: String {
+        var parts: [String] = []
+        func count(_ items: [String], _ one: String, _ many: String) {
+            if !items.isEmpty { parts.append("\(items.count) \(items.count == 1 ? one : many)") }
+        }
+        count(skills, "skill", "skills")
+        count(commands, "command", "commands")
+        count(agents, "agent", "agents")
+        count(mcpServers, "MCP server", "MCP servers")
+        if hooks { parts.append("hooks") }
+        if lspServers { parts.append("language servers") }
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// Every plugin on the Mac and the hosts that answered.
+package struct PluginList: Hashable, Sendable {
+    package var plugins: [Plugin]
+    /// Hosts that couldn't be reached, whose plugins aren't listed.
+    package var unreachable: [String]
+
+    package init(plugins: [Plugin] = [], unreachable: [String] = []) {
+        self.plugins = plugins
+        self.unreachable = unreachable
+    }
+}
+
+/// A project's choice to turn a plugin on or off.
+package struct PluginChoice: Hashable, Sendable {
+    package var agent: Plugin.Agent
+    package var id: String
+    package var enabled: Bool
+
+    package init(agent: Plugin.Agent, id: String, enabled: Bool) {
+        self.agent = agent
+        self.id = id
+        self.enabled = enabled
     }
 }

@@ -64,6 +64,31 @@ impl Store {
             .map_err(self.failed())
     }
 
+    /// Turns `plugin` of `agent` on or off for `project`'s sessions, or
+    /// with None back to how its CLI has it.
+    pub fn set_project_plugin(
+        &self,
+        project: &str,
+        agent: i32,
+        plugin: &str,
+        enabled: Option<bool>,
+    ) -> Result<(), StoreError> {
+        self.project(project)?;
+        let connection = self.lock();
+        let set = match enabled {
+            Some(enabled) => connection.execute(
+                "INSERT INTO project_plugins (project_id, agent, plugin, enabled) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (project_id, agent, plugin) DO UPDATE SET enabled = excluded.enabled",
+                params![project, agent, plugin, enabled],
+            ),
+            None => connection.execute(
+                "DELETE FROM project_plugins WHERE project_id = ?1 AND agent = ?2 AND plugin = ?3",
+                params![project, agent, plugin],
+            ),
+        };
+        set.map(drop).map_err(self.failed())
+    }
+
     /// Keeps the newest `kept` board changes of each project, so older
     /// ones can't be undone, then gives the space freed back to the disk.
     pub fn compact(&self, kept: u32) -> Result<(), StoreError> {
@@ -123,4 +148,23 @@ mod tests {
         store.compact(10).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(store.setting("days").ok().flatten().as_deref(), Some("90"));
     }
+}
+
+/// The plugins `project`'s sessions have on or off.
+pub(super) fn project_plugins(
+    connection: &rusqlite::Connection,
+    project: &str,
+) -> rusqlite::Result<Vec<humata_wire::pb::PluginChoice>> {
+    let mut statement = connection.prepare_cached(
+        "SELECT agent, plugin, enabled FROM project_plugins WHERE project_id = ?1
+         ORDER BY agent, plugin",
+    )?;
+    let rows = statement.query_map([project], |row| {
+        Ok(humata_wire::pb::PluginChoice {
+            agent: row.get(0)?,
+            id: row.get(1)?,
+            enabled: row.get(2)?,
+        })
+    })?;
+    rows.collect()
 }

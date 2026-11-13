@@ -139,6 +139,9 @@ pub enum CopilotError {
     },
 
     #[error(transparent)]
+    Plugins(#[from] crate::plugins::OverlayError),
+
+    #[error(transparent)]
     Agent(#[from] AgentError),
 }
 
@@ -199,6 +202,20 @@ impl CopilotRunner {
         links: &mut Links,
         path: &std::path::Path,
     ) -> Result<String, CopilotError> {
+        // Copilot reads them as it opens the session.
+        if !links
+            .session
+            .as_ref()
+            .is_some_and(|session| cli.is_live(session))
+        {
+            let record = turn.record();
+            let checkouts: Vec<_> = record
+                .checkouts
+                .iter()
+                .map(|checkout| checkout.path.clone())
+                .collect();
+            crate::plugins::write_copilot(&checkouts, &record.plugins)?;
+        }
         if let Some(session) = &links.session {
             if !cli.is_live(session) {
                 let params =

@@ -32,6 +32,7 @@ package struct AppFeature {
         package var approvals = ApprovalsFeature.State()
         package var storage = StorageFeature.State()
         package var skills = SkillsFeature.State()
+        package var plugins = PluginsFeature.State()
         /// What each session looked away from was showing, put back when
         /// it opens again while Humata runs.
         var left: [Session.ID: SessionFeature.State.Left] = [:]
@@ -85,6 +86,7 @@ package struct AppFeature {
         case approvals(ApprovalsFeature.Action)
         case storage(StorageFeature.Action)
         case skills(SkillsFeature.Action)
+        case plugins(PluginsFeature.Action)
     }
 
     @Dependency(\.daemon) var daemon
@@ -99,6 +101,7 @@ package struct AppFeature {
         Scope(state: \.approvals, action: \.approvals) { ApprovalsFeature() }
         Scope(state: \.storage, action: \.storage) { StorageFeature() }
         Scope(state: \.skills, action: \.skills) { SkillsFeature() }
+        Scope(state: \.plugins, action: \.plugins) { PluginsFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -248,7 +251,7 @@ package struct AppFeature {
             case .session(.presented(.delegate(.answerRequest(let id, let answer)))):
                 return .send(.sidebar(.requestAnswered(id, answer)))
 
-            case .sidebar, .session, .board, .hosts, .search, .settings, .approvals, .storage, .skills:
+            case .sidebar, .session, .board, .hosts, .search, .settings, .approvals, .storage, .skills, .plugins:
                 return .none
             }
         }

@@ -1,5 +1,6 @@
 //! What a session is made of: its record and its events.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -349,6 +350,9 @@ pub struct StartOptions {
     /// Repositories the session gets its own copy of, before its first turn;
     /// it then works in that copy, not in `working_directory`.
     pub repositories: Vec<Repository>,
+    /// Plugins turned on (true) or off for it, by its CLI's name for them,
+    /// over how the CLI has them.
+    pub plugins: BTreeMap<String, bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -408,4 +412,8 @@ pub struct SessionRecord {
     pub archived: bool,
     #[serde(default)]
     pub keeper: bool,
+    /// Plugins turned on (true) or off for it, by its CLI's name for them,
+    /// over how the CLI has them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, bool>,
 }

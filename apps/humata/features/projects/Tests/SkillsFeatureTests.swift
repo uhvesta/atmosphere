@@ -74,6 +74,7 @@ final class SkillsFeatureTests: XCTestCase {
         await store.send(.picked(clash.id, winner: "zz"))
         await store.receive(\.pickFailed)
         await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.failure)
         XCTAssertNil(store.state.list?.clashes.first?.winner)
         XCTAssertEqual(store.state.unpicked, 1)
     }

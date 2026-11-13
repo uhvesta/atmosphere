@@ -33,6 +33,7 @@ mod recovery;
 mod repositories;
 pub use repositories::Clones;
 pub use storage::Places;
+mod plugins;
 mod review;
 mod search;
 mod skills;
@@ -1047,6 +1048,7 @@ impl Daemon {
             item.as_ref(),
             parent.as_ref(),
         );
+        start.plugins.clone_from(&project.plugins);
         Ok((Some(project_id), item.map(|item| item.id)))
     }
 
@@ -1343,6 +1345,19 @@ impl Daemon {
                 self.pick_skill(pick)?;
                 return Ok(Reply::Response(Response::SkillPicked(pb::SkillPicked {})));
             }
+            Request::ListPlugins(_) => {
+                return Ok(Reply::Response(Response::PluginList(
+                    self.list_plugins().await?,
+                )));
+            }
+            Request::SetProjectPlugin(set) => {
+                let project = self.set_project_plugin(set)?;
+                return Ok(Reply::Response(Response::ProjectUpdated(
+                    pb::ProjectUpdated {
+                        project: Some(project),
+                    },
+                )));
+            }
             Request::ListApprovals(_) => {
                 return Ok(Reply::Response(Response::Approvals(self.list_approvals()?)));
             }
@@ -1565,6 +1580,7 @@ impl Daemon {
             | Request::ReadHostStatus(_)
             | Request::CloneRepositories(_)
             | Request::ScanSkills(_)
+            | Request::ScanPlugins(_)
             | Request::WatchToolCalls(_)
             | Request::AnswerToolCall(_)
             | Request::StopHost(_)

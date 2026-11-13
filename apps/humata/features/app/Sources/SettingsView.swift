@@ -27,6 +27,9 @@ package struct SettingsView: View {
             SkillsView(store: store.scope(state: \.skills, action: \.skills))
                 .tabItem { Label("Skills", systemImage: "books.vertical") }
                 .tag(SettingsTab.skills)
+            PluginsView(store: store.scope(state: \.plugins, action: \.plugins))
+                .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
+                .tag(SettingsTab.plugins)
         }
         .frame(minWidth: 760, minHeight: 480)
     }

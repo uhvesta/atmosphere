@@ -63,6 +63,24 @@ impl From<Backend> for pb::Backend {
     }
 }
 
+/// Which agent's plugin.
+#[derive(Clone, Copy, ValueEnum)]
+enum PluginAgent {
+    Claude,
+    Copilot,
+}
+
+/// A project's choice for a plugin.
+#[derive(Clone, Copy, ValueEnum)]
+enum PluginChoice {
+    /// On for the project's sessions.
+    On,
+    /// Off for the project's sessions.
+    Off,
+    /// However its CLI has it.
+    Default,
+}
+
 /// What a session may do without asking.
 #[derive(Clone, Copy, ValueEnum)]
 enum Approval {
@@ -758,6 +776,18 @@ enum Command {
         #[arg(required = true)]
         candidates: Vec<String>,
     },
+    /// List the Claude Code and Copilot plugins installed on this Mac and
+    /// each host, with what each adds and whether its CLI has it on.
+    Plugins,
+    /// Turn a plugin on or off for a project's sessions, over how its CLI
+    /// has it, or back to how the CLI has it. Installing stays in each CLI.
+    Plugin {
+        project: String,
+        agent: PluginAgent,
+        /// Its name as `plugins` prints it, such as `review@market`.
+        id: String,
+        choice: PluginChoice,
+    },
     /// Take a queued message out before its turn starts; its id is in the
     /// `queued` event.
     Unqueue { session: String, queue_id: String },
@@ -1268,6 +1298,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 }
                 .into(),
                 planning,
+                plugins: Vec::new(),
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {
@@ -1384,6 +1415,47 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 client.call(request).await?,
                 |response| matches!(response, Response::SkillPicked(_)),
                 "SkillPicked",
+            )?;
+        }
+        Command::Plugins => match client
+            .call(Request::ListPlugins(pb::ListPlugins {}))
+            .await?
+        {
+            Response::PluginList(list) => {
+                for plugin in &list.plugins {
+                    println!("{}", print::plugin(plugin));
+                }
+                for host in &list.unreachable {
+                    println!("unreachable\t{host}");
+                }
+            }
+            other => return Err(unexpected("the plugins", &other)),
+        },
+        Command::Plugin {
+            project,
+            agent,
+            id,
+            choice,
+        } => {
+            let agent = match agent {
+                PluginAgent::Claude => pb::PluginAgent::Claude,
+                PluginAgent::Copilot => pb::PluginAgent::Copilot,
+            };
+            let enabled = match choice {
+                PluginChoice::On => Some(true),
+                PluginChoice::Off => Some(false),
+                PluginChoice::Default => None,
+            };
+            let request = Request::SetProjectPlugin(pb::SetProjectPlugin {
+                project_id: project,
+                agent: agent as i32,
+                id,
+                enabled,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::ProjectUpdated(_)),
+                "ProjectUpdated",
             )?;
         }
         Command::UndoRewind { session } => {

@@ -44,6 +44,8 @@
       [RadioButton/Segment] "Environments" value: "1" id: server.rack
       [RadioButton/Segment] "Approvals" value: "0" id: lock.shield
       [RadioButton/Segment] "Storage" value: "0" id: internaldrive
+      [RadioButton/Segment] "Skills" value: "0" id: books.vertical
+      [RadioButton/Segment] "Plugins" value: "0" id: puzzlepiece.extension
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

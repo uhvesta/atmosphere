@@ -555,6 +555,23 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the skill picked")
                 }
             },
+            plugins: {
+                guard case .pluginList(let list) = try await daemon.call(.listPlugins(Humata_V1_ListPlugins())) else {
+                    throw DaemonError.unexpected("something other than the plugins")
+                }
+                return PluginList(plugins: list.plugins.compactMap(Plugin.init), unreachable: list.unreachable)
+            },
+            setProjectPlugin: { project, agent, id, enabled in
+                var set = Humata_V1_SetProjectPlugin()
+                set.projectID = project
+                set.agent = agent.proto
+                set.id = id
+                if let enabled { set.enabled = enabled }
+                guard case .projectUpdated(let updated) = try await daemon.call(.setProjectPlugin(set)) else {
+                    throw DaemonError.unexpected("something other than the project")
+                }
+                return Project(updated.project)
+            },
             answerRequest: { request, answer in
                 var asked = Humata_V1_AnswerRequest()
                 asked.requestID = request

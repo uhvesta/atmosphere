@@ -672,6 +672,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             checkouts: Vec::new(),
             archived: false,
             keeper: false,
+            plugins: options.plugins,
         };
         self.create(record.clone(), Vec::new())?;
         Ok(record)
@@ -1218,6 +1219,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             checkouts: Vec::new(),
             archived: false,
             keeper: false,
+            plugins: Default::default(),
         };
         self.create(record.clone(), imported.events)?;
         Ok(record)

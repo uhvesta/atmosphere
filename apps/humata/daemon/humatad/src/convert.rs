@@ -268,6 +268,7 @@ pub fn project(project: Project) -> pb::Project {
                 text: skill.text,
             })
             .collect(),
+        plugins: project.plugins,
     }
 }
 

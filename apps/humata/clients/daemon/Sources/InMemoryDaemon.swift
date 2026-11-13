@@ -56,6 +56,7 @@ package final class InMemoryDaemon: Sendable {
         /// Each session's histories before its rewinds, the last last.
         var rewinds: [String: [[SessionEvent]]] = [:]
         var skills = SkillList()
+        var plugins = PluginList()
         var nextQueued = 1
         /// Images sent to each session, by session id then name.
         var images: [String: [String: ImageAttachment]] = [:]
@@ -574,6 +575,10 @@ package final class InMemoryDaemon: Sendable {
             cleanUpStorage: { cleanup in self.cleanUp(cleanup) },
             skills: { self.state.value.skills },
             pickSkill: { name, candidates, winner in try self.pickSkill(name, candidates, winner) },
+            plugins: { self.state.value.plugins },
+            setProjectPlugin: { project, agent, id, enabled in
+                try self.setProjectPlugin(project, agent, id, enabled)
+            },
             answerRequest: { request, answer in try self.answerRequest(request, answer) },
             history: { session in
                 try self.known(session)

@@ -340,6 +340,16 @@ const MIGRATIONS: &[&str] = &["
         winner TEXT NOT NULL,
         PRIMARY KEY (name, candidates)
     );
+", "
+    -- Plugins a project's sessions have on or off, over how each CLI has
+    -- them: `agent` is the proto's PluginAgent, `plugin` the CLI's name.
+    CREATE TABLE project_plugins (
+        project_id TEXT NOT NULL,
+        agent INTEGER NOT NULL,
+        plugin TEXT NOT NULL,
+        enabled INTEGER NOT NULL,
+        PRIMARY KEY (project_id, agent, plugin)
+    );
 "];
 
 /// What reverting a board change did.
@@ -364,6 +374,8 @@ pub struct Project {
     pub created_unix_ms: i64,
     /// Read by every session in it, after its instructions.
     pub skills: Vec<Skill>,
+    /// Plugins its sessions have on or off, over how each CLI has them.
+    pub plugins: Vec<pb::PluginChoice>,
 }
 
 /// What the daemon knows of a session, beyond what its host says.
@@ -448,6 +460,7 @@ impl Store {
             instructions,
             created_unix_ms: now_unix_ms(),
             skills,
+            plugins: Vec::new(),
         };
         let mut connection = self.lock();
         let added = (|| {
@@ -557,6 +570,7 @@ impl Store {
                 "DELETE FROM project_repositories WHERE project_id = ?1",
                 [id],
             )?;
+            transaction.execute("DELETE FROM project_plugins WHERE project_id = ?1", [id])?;
             transaction.execute("DELETE FROM projects WHERE id = ?1", [id])?;
             Ok(())
         })();
@@ -1540,6 +1554,7 @@ fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         instructions: row.get(2)?,
         created_unix_ms: row.get(3)?,
         skills: Vec::new(),
+        plugins: Vec::new(),
     })
 }
 
@@ -1563,10 +1578,12 @@ fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Res
         .collect();
     let repositories = rows.into_iter().map(|(repository, _)| repository).collect();
     let skills = planning::skills(connection, &project.id)?;
+    let plugins = settings::project_plugins(connection, &project.id)?;
     Ok(Project {
         repositories,
         urls,
         skills,
+        plugins,
         ..project
     })
 }

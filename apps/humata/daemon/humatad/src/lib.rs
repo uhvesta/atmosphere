@@ -16,6 +16,7 @@ mod machine;
 mod mcp;
 mod old_clones;
 mod peer;
+mod plugins;
 mod ports;
 mod relay;
 mod skills;

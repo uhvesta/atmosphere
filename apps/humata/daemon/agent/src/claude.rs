@@ -211,6 +211,11 @@ impl ClaudeRunner {
             // the person sees and can revert, so they aren't asked about.
             command.args(["--allowedTools", "mcp__humata"]);
         }
+        // Over the person's own settings, for this session alone.
+        if !record.plugins.is_empty() {
+            let settings = json!({"enabledPlugins": record.plugins});
+            command.args(["--settings", &settings.to_string()]);
+        }
         command
             .current_dir(&record.working_directory)
             .envs(self.options.env.vars())

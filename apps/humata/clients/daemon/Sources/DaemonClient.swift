@@ -151,6 +151,13 @@ package struct DaemonClient: Sendable {
     /// Picks which of the skills named `name` wins, for every project and
     /// host, while the files are `candidates`, by hash.
     package var pickSkill: @Sendable (_ name: String, _ candidates: [String], _ winner: String) async throws -> Void
+    /// Every Claude Code and Copilot plugin on the Mac and each host that
+    /// answers.
+    package var plugins: @Sendable () async throws -> PluginList
+    /// Turns a plugin on or off for a project's sessions; nil goes back to
+    /// how its CLI has it.
+    package var setProjectPlugin:
+        @Sendable (_ projectID: String, _ agent: Plugin.Agent, _ id: String, _ enabled: Bool?) async throws -> Project
     /// Answers an agent's question or move; it leaves the inbox.
     package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]

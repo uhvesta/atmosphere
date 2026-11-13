@@ -84,4 +84,27 @@ extension InMemoryDaemon {
             state.skills.clashes[index].winner = winner
         }
     }
+
+    /// The plugins the Mac and hosts have, as the daemon would list them.
+    package func setPlugins(_ plugins: PluginList) {
+        state.withValue { $0.plugins = plugins }
+    }
+
+    func setProjectPlugin(
+        _ projectID: String, _ agent: Plugin.Agent, _ id: String, _ enabled: Bool?
+    ) throws -> Project {
+        try state.withValue { state in
+            guard let index = state.projects.firstIndex(where: { $0.id == projectID }) else {
+                throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
+            }
+            guard !id.isEmpty else {
+                throw DaemonError.refused(.invalidRequest, message: "Say which plugin, by its name in its CLI.")
+            }
+            state.projects[index].plugins.removeAll { $0.agent == agent && $0.id == id }
+            if let enabled {
+                state.projects[index].plugins.append(PluginChoice(agent: agent, id: id, enabled: enabled))
+            }
+            return state.projects[index]
+        }
+    }
 }

@@ -371,6 +371,28 @@ async fn a_message_is_answered() {
 }
 
 #[tokio::test]
+async fn a_project_turning_plugins_on_and_off_still_gets_answers() {
+    let setup = Setup::new(vec![Reply::Text("Hello there.")]).await;
+    let agent = setup.agent();
+    let mut options = setup.start_options();
+    options.plugins = [
+        ("review@market".to_owned(), false),
+        ("lint@market".to_owned(), true),
+    ]
+    .into();
+    let session = agent.start(options).await.expect("start");
+
+    agent
+        .send(&session.id, "apricot".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let events = wait_for(&agent, &session.id, idle_turns(1)).await;
+
+    assert_eq!(failures(&events), Vec::<String>::new());
+    assert_eq!(replies(&events), vec!["Hello there."]);
+}
+
+#[tokio::test]
 async fn an_approved_command_runs() {
     let setup = Setup::new(vec![Reply::Shell("echo hi > made.txt")]).await;
     let agent = setup.agent();

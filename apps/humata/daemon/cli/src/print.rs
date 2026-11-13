@@ -670,3 +670,43 @@ pub fn skill_clash(clash: &pb::SkillClash) -> String {
     let hashes: Vec<&str> = clash.candidates.iter().map(|c| c.hash.as_str()).collect();
     format!("clash\t{}\t{winner}\t{}", clash.name, hashes.join(" "))
 }
+
+/// A plugin: its agent, name and host, whether its CLI has it on, its
+/// version, what it adds, then what it's for.
+pub fn plugin(plugin: &pb::FoundPlugin) -> String {
+    let agent = match plugin.agent() {
+        pb::PluginAgent::Claude => "claude",
+        pb::PluginAgent::Copilot => "copilot",
+        pb::PluginAgent::Unspecified => "-",
+    };
+    let host = if plugin.host.is_empty() {
+        "mac"
+    } else {
+        &plugin.host
+    };
+    let state = if plugin.enabled { "on" } else { "off" };
+    let mut adds = Vec::new();
+    for (count, what) in [
+        (plugin.skills.len(), "skills"),
+        (plugin.commands.len(), "commands"),
+        (plugin.agents.len(), "agents"),
+        (plugin.mcp_servers.len(), "mcp"),
+    ] {
+        if count > 0 {
+            adds.push(format!("{count} {what}"));
+        }
+    }
+    if plugin.hooks {
+        adds.push("hooks".to_owned());
+    }
+    if plugin.lsp_servers {
+        adds.push("lsp".to_owned());
+    }
+    format!(
+        "plugin\t{agent}\t{}\t{host}\t{state}\t{}\t{}\t{}",
+        plugin.id,
+        or_dash(&plugin.version),
+        or_dash(&adds.join(", ")),
+        plugin.description
+    )
+}

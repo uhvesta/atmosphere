@@ -3538,3 +3538,50 @@ async fn a_session_waits_for_a_pick_between_two_skills_of_one_name() {
         "{refused:?}"
     );
 }
+
+#[tokio::test]
+async fn a_projects_plugin_choice_holds_until_set_back_to_the_clis() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let set = |enabled: Option<bool>| {
+        pb::request::Kind::SetProjectPlugin(pb::SetProjectPlugin {
+            project_id: project.id.clone(),
+            agent: pb::PluginAgent::Claude.into(),
+            id: "review@market".to_owned(),
+            enabled,
+        })
+    };
+
+    let Ok(pb::response::Kind::ProjectUpdated(pb::ProjectUpdated { project: Some(off) })) =
+        client.call(set(Some(false))).await
+    else {
+        panic!("not set")
+    };
+    assert_eq!(
+        off.plugins,
+        vec![pb::PluginChoice {
+            agent: pb::PluginAgent::Claude.into(),
+            id: "review@market".to_owned(),
+            enabled: false,
+        }]
+    );
+    let Ok(pb::response::Kind::ProjectUpdated(pb::ProjectUpdated {
+        project: Some(back),
+    })) = client.call(set(None)).await
+    else {
+        panic!("not set back")
+    };
+    assert!(back.plugins.is_empty());
+
+    let nameless = client
+        .call(pb::request::Kind::SetProjectPlugin(pb::SetProjectPlugin {
+            project_id: project.id.clone(),
+            agent: pb::PluginAgent::Claude.into(),
+            id: String::new(),
+            enabled: Some(true),
+        }))
+        .await;
+    assert!(nameless.is_err());
+}

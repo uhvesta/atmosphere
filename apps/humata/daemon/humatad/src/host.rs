@@ -727,6 +727,7 @@ impl Host {
                             .into_iter()
                             .map(convert::repository)
                             .collect(),
+                        plugins: plugin_choices(backend, &start.plugins),
                     })
                     .await?;
                 self.owners
@@ -824,7 +825,9 @@ impl Host {
             | Request::CleanUpStorage(_)
             | Request::SetModelServer(_)
             | Request::ListSkills(_)
-            | Request::PickSkill(_) => {
+            | Request::PickSkill(_)
+            | Request::ListPlugins(_)
+            | Request::SetProjectPlugin(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::SetSpecs(set) => {
@@ -849,6 +852,9 @@ impl Host {
             }
             Request::ScanSkills(scan) => {
                 Response::SkillsScanned(self.machine.scan_skills(scan).await?)
+            }
+            Request::ScanPlugins(pb::ScanPlugins {}) => {
+                Response::PluginsScanned(self.machine.scan_plugins().await?)
             }
             Request::Unqueue(unqueue) => {
                 let session = SessionId::new(unqueue.session_id);
@@ -1449,4 +1455,22 @@ async fn record(agent: &dyn Backend, session: &SessionId) -> Result<SessionRecor
             }
             .into()
         })
+}
+
+/// The plugins turned on or off for a session of `backend`, by its CLI's
+/// name for each; another agent's don't apply.
+fn plugin_choices(
+    backend: pb::Backend,
+    choices: &[pb::PluginChoice],
+) -> std::collections::BTreeMap<String, bool> {
+    let agent = match backend {
+        pb::Backend::Claude => pb::PluginAgent::Claude,
+        pb::Backend::Copilot => pb::PluginAgent::Copilot,
+        _ => return std::collections::BTreeMap::new(),
+    };
+    choices
+        .iter()
+        .filter(|choice| choice.agent() == agent)
+        .map(|choice| (choice.id.clone(), choice.enabled))
+        .collect()
 }

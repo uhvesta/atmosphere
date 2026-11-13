@@ -101,6 +101,7 @@ extension Project {
         self.init(
             id: project.id, name: project.name, repositories: project.repositories.map(Repository.init),
             instructions: project.instructions, skills: project.skills.map(Skill.init),
+            plugins: project.plugins.compactMap(PluginChoice.init),
             created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
     }
 }
@@ -860,5 +861,40 @@ extension SkillList {
                     winner: $0.winner.isEmpty ? nil : $0.winner)
             },
             unreachable: list.unreachable)
+    }
+}
+
+extension Plugin.Agent {
+    init?(_ agent: Humata_V1_PluginAgent) {
+        switch agent {
+        case .claude: self = .claude
+        case .copilot: self = .copilot
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+    }
+
+    var proto: Humata_V1_PluginAgent {
+        switch self {
+        case .claude: .claude
+        case .copilot: .copilot
+        }
+    }
+}
+
+extension Plugin {
+    init?(_ plugin: Humata_V1_FoundPlugin) {
+        guard let agent = Agent(plugin.agent) else { return nil }
+        self.init(
+            agent: agent, pluginID: plugin.id, name: plugin.name, description: plugin.description_p,
+            version: plugin.version, host: plugin.host, enabled: plugin.enabled, skills: plugin.skills,
+            commands: plugin.commands, agents: plugin.agents, mcpServers: plugin.mcpServers, hooks: plugin.hooks,
+            lspServers: plugin.lspServers)
+    }
+}
+
+extension PluginChoice {
+    init?(_ choice: Humata_V1_PluginChoice) {
+        guard let agent = Plugin.Agent(choice.agent) else { return nil }
+        self.init(agent: agent, id: choice.id, enabled: choice.enabled)
     }
 }

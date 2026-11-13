@@ -154,6 +154,14 @@ pub enum HostError {
     },
 
     #[error(
+        "looking for plugins on this host stopped part way, which is a bug in humatad; report it with the host's log, and look again"
+    )]
+    ScanPlugins {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error(
         "couldn't move the snapshots of the repository {name} on this host. Check that git works there and the disk has room, then try again"
     )]
     Snapshots {
@@ -247,7 +255,9 @@ impl HostError {
             | Self::Push { .. }
             | Self::Fetch { .. }
             | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,
-            Self::EncodeBackup { .. } | Self::ScanSkills { .. } => pb::ErrorCode::StorageFailed,
+            Self::EncodeBackup { .. } | Self::ScanSkills { .. } | Self::ScanPlugins { .. } => {
+                pb::ErrorCode::StorageFailed
+            }
             Self::SaveSetup { .. }
             | Self::CreateFolder { .. }
             | Self::CreateChatFolder { .. }
@@ -385,6 +395,11 @@ pub enum DaemonError {
         "say which skill wins: give its name, the hashes of every file of that name, and the hash of the one to keep, as `humata skills` lists them"
     )]
     BadSkillPick,
+
+    #[error(
+        "say which plugin to turn on or off: give the project, Claude Code or Copilot, and the plugin's name as `humata plugins` lists it"
+    )]
+    BadPluginChoice,
 
     #[error(transparent)]
     Commands(#[from] crate::commands::CommandsError),
@@ -804,7 +819,7 @@ impl DaemonError {
             | Self::ModelServerPort { .. } => pb::ErrorCode::InvalidRequest,
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
             Self::SkillClash { .. } => pb::ErrorCode::SkillClash,
-            Self::BadSkillPick => pb::ErrorCode::InvalidRequest,
+            Self::BadSkillPick | Self::BadPluginChoice => pb::ErrorCode::InvalidRequest,
             Self::SaveHosts { .. } | Self::Mirror { .. } => pb::ErrorCode::StorageFailed,
             Self::BadRepositoryName { .. } | Self::NoRecovery { .. } => {
                 pb::ErrorCode::InvalidRequest

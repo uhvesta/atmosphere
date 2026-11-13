@@ -150,8 +150,8 @@ original spec; lettered ones were added since.
 | Q1 Queue and composer: edit, merge, cancel, pastes, images | Done |
 | Q2 Rewind and checkpoints | Done |
 | Q3 Skills from the agents' folders | Done |
-| Q4 Plugins | Next |
-| Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Planned |
+| Q4 Plugins | Done |
+| Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Next |
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
 | T1 Tokens and agent tools | Planned |
@@ -1142,9 +1142,24 @@ say to use the listed one.
 
 #### Q4 Plugins
 
-- [ ] The Claude Code and Copilot plugins installed on each host, listed
+- [x] The Claude Code and Copilot plugins installed on each host, listed
   with what they add (skills, commands, MCP servers, hooks), and turned on
   or off per project; installing stays in each CLI
+
+Settings › Plugins lists them by host and agent, from each CLI's own record
+(`~/.claude/plugins/installed_plugins.json`, `~/.copilot/config.json`), with
+whether the CLI has each on, and holds a project's choices: as the CLI has
+it, on, or off, for that project's sessions on every host. `humata plugins`
+and `humata plugin` do the same. Nothing is written to the CLIs' own
+settings: Claude Code gets the choices with `--settings` on each turn;
+Copilot reads them from `.github/copilot/settings.local.json` in each of the
+session's copies of the repositories, which Humata writes before the
+session opens and keeps out of git through the repository's
+`info/exclude`. So a Copilot chat in a folder, with no copies, gets no
+choices; and whether Copilot applies that file in a session isn't
+confirmed, as its `plugin list` doesn't show it. A choice changed while a
+session is open reaches it when it next opens, and a fork that shares its
+parent's copies shares its parent's file.
 
 #### Q5 Models
 

@@ -206,6 +206,14 @@ message Request {
     ScanSkills scan_skills = 100;
     ListSkills list_skills = 101;
     PickSkill pick_skill = 102;
+    // Daemon to host: the plugins Claude Code and Copilot have installed
+    // there.
+    ScanPlugins scan_plugins = 103;
+    // Every host's plugins, for Settings › Plugins.
+    ListPlugins list_plugins = 104;
+    // Turns a plugin on or off for a project's sessions, or back to how
+    // its CLI has it.
+    SetProjectPlugin set_project_plugin = 105;
   }
 }
 
@@ -310,6 +318,8 @@ message Response {
     SkillsScanned skills_scanned = 93;
     SkillList skill_list = 94;
     SkillPicked skill_picked = 95;
+    PluginsScanned plugins_scanned = 96;
+    PluginList plugin_list = 97;
   }
 }
 
@@ -410,6 +420,9 @@ message StartSession {
   // Plans in its project rather than changing code: it gets no copy of the
   // repositories, only an empty folder of its own, so it starts at once.
   bool planning = 13;
+  // Plugins turned on or off for this session, over how its CLI has them;
+  // only those of its backend's agent apply.
+  repeated PluginChoice plugins = 14;
 }
 
 enum SpecScope {
@@ -469,6 +482,8 @@ message Project {
   int64 created_unix_ms = 5;
   // Skills every session in it reads after its instructions.
   repeated Skill skills = 7;
+  // Plugins its sessions have on or off, over how each CLI has them.
+  repeated PluginChoice plugins = 8;
 }
 
 // A named piece of know-how, such as how to cut a release, in Markdown.
@@ -2726,3 +2741,60 @@ message PickSkill {
 }
 
 message SkillPicked {}
+
+// Whose plugin it is.
+enum PluginAgent {
+  PLUGIN_AGENT_UNSPECIFIED = 0;
+  PLUGIN_AGENT_CLAUDE = 1;
+  PLUGIN_AGENT_COPILOT = 2;
+}
+
+message ScanPlugins {}
+
+message PluginsScanned {
+  repeated FoundPlugin plugins = 1;
+}
+
+// A plugin installed on a host, and what it adds.
+message FoundPlugin {
+  PluginAgent agent = 1;
+  // As its CLI names it, such as `name@marketplace`.
+  string id = 2;
+  string name = 3;
+  string description = 4;
+  string version = 5;
+  // Empty for the Mac.
+  string host = 6;
+  // Whether its CLI has it on.
+  bool enabled = 7;
+  // The names of the skills, commands and agents it adds, and of its MCP
+  // servers.
+  repeated string skills = 8;
+  repeated string commands = 9;
+  repeated string agents = 10;
+  repeated string mcp_servers = 11;
+  bool hooks = 12;
+  bool lsp_servers = 13;
+}
+
+message ListPlugins {}
+
+message PluginList {
+  repeated FoundPlugin plugins = 1;
+  // Hosts that didn't answer in time.
+  repeated string unreachable = 2;
+}
+
+message PluginChoice {
+  PluginAgent agent = 1;
+  string id = 2;
+  bool enabled = 3;
+}
+
+message SetProjectPlugin {
+  string project_id = 1;
+  PluginAgent agent = 2;
+  string id = 3;
+  // Unset to go back to how its CLI has it.
+  optional bool enabled = 4;
+}

@@ -10,6 +10,7 @@ package enum SettingsTab {
     package static let approvals = "approvals"
     package static let storage = "storage"
     package static let skills = "skills"
+    package static let plugins = "plugins"
 }
 
 /// Settings › Skills: every skill on the Mac and each host, in the agents'
@@ -57,20 +58,25 @@ package struct SkillsFeature {
 
     package init() {}
 
+    /// Lists them again; a failure on screen stays until the next.
+    private func load() -> Effect<Action> {
+        .run { send in
+            async let projects = daemon.projects()
+            let list = try await daemon.skills()
+            await send(.loaded(list, try await projects))
+        } catch: { error, send in
+            await send(.failed(error.localizedDescription))
+        }
+        .cancellable(id: CancelID.load, cancelInFlight: true)
+    }
+
     package var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .task, .refreshTapped:
                 state.list = nil
                 state.failure = nil
-                return .run { send in
-                    async let projects = daemon.projects()
-                    let list = try await daemon.skills()
-                    await send(.loaded(list, try await projects))
-                } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
-                }
-                .cancellable(id: CancelID.load, cancelInFlight: true)
+                return load()
 
             case .loaded(let list, let projects):
                 state.list = list
@@ -103,7 +109,7 @@ package struct SkillsFeature {
             case .pickFailed(let id, let message):
                 state.saving.remove(id)
                 state.failure = message
-                return .send(.refreshTapped)
+                return load()
 
             case .showInFinderTapped(let path):
                 let url = URL(fileURLWithPath: path).deletingLastPathComponent()
