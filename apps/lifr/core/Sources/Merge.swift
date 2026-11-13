@@ -57,10 +57,20 @@ extension Workspace {
     /// done.
     package mutating func importSynced(
         records: [RecordID: RecordValue?] = [:], journal synced: [JournalEntry] = [],
-        history syncedHistory: [HistoryEvent] = []
+        history syncedHistory: [HistoryEvent] = [], seen: [RecordID: RecordValue?] = [:]
     ) {
         for (record, value) in records.sorted(by: { $0.key.kind.order < $1.key.kind.order }) {
-            set(record, to: value)
+            // Edited here after sync read it: the edit is merged in, and it
+            // keeps its values where both changed the same field, so the
+            // next sync sends it.
+            if let read = seen[record], case let now = self.value(of: record), now != read {
+                switch RecordValue.merge(base: read, mine: now, theirs: value) {
+                case .merged(let merged): set(record, to: merged)
+                case .conflict(let conflict): set(record, to: conflict.merged)
+                }
+            } else {
+                set(record, to: value)
+            }
         }
         journal.add(synced: synced)
         if !syncedHistory.isEmpty {

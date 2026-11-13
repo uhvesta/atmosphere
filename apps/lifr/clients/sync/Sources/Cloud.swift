@@ -101,6 +101,6 @@ extension SyncedChanges {
             case .event(let event): history.append(event)
             }
         }
-        self.init(records: synced.records, journal: journal, history: history)
+        self.init(records: synced.records, journal: journal, history: history, seen: synced.seen)
     }
 }

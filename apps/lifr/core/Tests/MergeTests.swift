@@ -153,6 +153,20 @@ func mergeTests() -> [TestCase] {
             phone.workspace.importSynced(journal: mac.workspace.journal, history: mac.workspace.history)
             try expectEqual(phone.workspace.journal.count, before + 1)
         },
+        TestCase("given a task edited here while sync merged it, when the import lands, then both changes stay") {
+            let phone = try Fixture()
+            let task = try phone.task("Buy socks")
+            let read = try phone.get(task)
+            var theirs = read
+            theirs.priority = .high
+            try phone.perform { workspace, context throws(LifrError) in
+                try workspace.edit(task.id, .init(title: "Buy wool socks"), in: context)
+            }
+            let id = RecordID(.task, task.id)
+            phone.workspace.importSynced(records: [id: .task(theirs)], seen: [id: .task(read)])
+            try expectEqual(phone.get(task).title, "Buy wool socks")
+            try expectEqual(phone.get(task).priority, .high)
+        },
         TestCase("given an import that removes a record, then it's gone") {
             let fixture = try Fixture()
             let task = try fixture.task("Gone elsewhere")

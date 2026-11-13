@@ -41,11 +41,18 @@ package struct SyncedChanges: Hashable, Sendable {
     package var records: [RecordID: RecordValue?]
     package var journal: [JournalEntry]
     package var history: [HistoryEvent]
+    /// Each record in `records` as sync's merge read it, so an edit saved
+    /// since is merged in rather than written over.
+    package var seen: [RecordID: RecordValue?]
 
-    package init(records: [RecordID: RecordValue?] = [:], journal: [JournalEntry] = [], history: [HistoryEvent] = []) {
+    package init(
+        records: [RecordID: RecordValue?] = [:], journal: [JournalEntry] = [], history: [HistoryEvent] = [],
+        seen: [RecordID: RecordValue?] = [:]
+    ) {
         self.records = records
         self.journal = journal
         self.history = history
+        self.seen = seen
     }
 
     package var isEmpty: Bool { records.isEmpty && journal.isEmpty && history.isEmpty }

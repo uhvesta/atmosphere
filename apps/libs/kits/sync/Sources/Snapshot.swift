@@ -49,10 +49,18 @@ public struct Synced<Snapshot: SyncSnapshot>: Hashable, Sendable {
     public var records: [RecordID<Snapshot.Record.Kind>: Snapshot.Record?]
     /// Logs this device didn't have, in the order they arrived.
     public var logs: [Snapshot.Log]
+    /// Each record in `records` as the merge read it here. A store that
+    /// finds one changed since, by an edit made while sync ran, merges that
+    /// edit in rather than writing over it.
+    public var seen: [RecordID<Snapshot.Record.Kind>: Snapshot.Record?]
 
-    public init(records: [RecordID<Snapshot.Record.Kind>: Snapshot.Record?] = [:], logs: [Snapshot.Log] = []) {
+    public init(
+        records: [RecordID<Snapshot.Record.Kind>: Snapshot.Record?] = [:], logs: [Snapshot.Log] = [],
+        seen: [RecordID<Snapshot.Record.Kind>: Snapshot.Record?] = [:]
+    ) {
         self.records = records
         self.logs = logs
+        self.seen = seen
     }
 
     public var isEmpty: Bool { records.isEmpty && logs.isEmpty }

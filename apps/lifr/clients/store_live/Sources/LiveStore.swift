@@ -112,7 +112,8 @@ package actor LiveStore: ModelActor {
     ) throws(LiveStoreError) -> [Fix] {
         let (before, index) = try loaded()
         var after = before
-        after.importSynced(records: changes.records, journal: changes.journal, history: changes.history)
+        after.importSynced(
+            records: changes.records, journal: changes.journal, history: changes.history, seen: changes.seen)
         var fixes: [Fix] = []
         after.perform(in: context()) { workspace, context in
             fixes = workspace.reconcile(in: context)

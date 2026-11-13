@@ -60,15 +60,21 @@ public struct SyncLedger<Snapshot: SyncSnapshot>: Hashable, Codable, Sendable {
         for (record, theirs) in latest {
             let base = held[record].map(\.base) ?? bases[record] ?? nil
             // One this device can't read is taken as unchanged here.
-            let mine = snapshot.unreadable.contains(record) ? base : snapshot.value(of: record)
+            let unreadable = snapshot.unreadable.contains(record)
+            let mine = unreadable ? base : snapshot.value(of: record)
+            let written: Record??
             switch Record.merge(base: base, mine: mine, theirs: theirs.value) {
             case .merged(let value):
                 held[record] = nil
                 bases[record] = .some(theirs.value)
-                if value != mine { synced.records[record] = .some(value) }
+                written = value != mine ? .some(value) : nil
             case .conflict(let conflict):
                 held[record] = Held(base: base, theirs: theirs.value, device: theirs.device)
-                if conflict.merged != mine { synced.records[record] = .some(conflict.merged) }
+                written = conflict.merged != mine ? .some(conflict.merged) : nil
+            }
+            if let written {
+                synced.records[record] = written
+                if !unreadable { synced.seen[record] = .some(mine) }
             }
         }
         return synced

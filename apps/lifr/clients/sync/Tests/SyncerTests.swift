@@ -254,6 +254,31 @@ final class SyncerTests: XCTestCase {
         }
     }
 
+    func testAnEditSavedWhileSyncMergesIsKeptAlongsideTheOtherDevicesChange() async throws {
+        try await run {
+            let (phone, mac, cloud, socks) = try await pair()
+            var store = mac.store
+            let importSynced = store.importSynced
+            let edits = mac.store
+            store.importSynced = { changes in
+                // The person renames the task just before the import lands.
+                _ = try await edits.edit(socks, Workspace.TaskEdit(title: "Buy wool socks"))
+                return try await importSynced(changes)
+            }
+            let editing = Syncer(cloud: cloud.connection(device: "Mac"), store: store, storage: mac.storage)
+            _ = try await phone.store.edit(socks, Workspace.TaskEdit(priority: .high))
+            await phone.syncer.sync()
+
+            let state = await editing.sync()
+
+            XCTAssertEqual(state.status, .idle)
+            try await assertEqual({ try await mac.task(socks)?.title }, "Buy wool socks")
+            try await assertEqual({ try await mac.task(socks)?.priority }, .high)
+            await phone.syncer.sync()
+            try await assertEqual({ try await phone.task(socks)?.title }, "Buy wool socks")
+        }
+    }
+
     func testTheLedgerCarriesHeldRecordsAcrossLaunches() async throws {
         try await run {
             let (phone, mac, cloud, socks) = try await pair()

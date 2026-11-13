@@ -31,7 +31,8 @@ extension StoreClient {
                 @Dependency(\.date.now) var now
                 return sync(now: now) { workspace in
                     workspace.importSynced(
-                        records: changes.records, journal: changes.journal, history: changes.history)
+                        records: changes.records, journal: changes.journal, history: changes.history,
+                        seen: changes.seen)
                 }
             },
             archiveJournal: { cutoff in
