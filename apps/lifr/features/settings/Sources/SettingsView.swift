@@ -591,7 +591,6 @@ private struct AboutSection: View {
         ("Swift Transformers, Swift Hugging Face and Swift Jinja", "Apache 2.0"),
         ("Swift Collections, Swift Numerics, Swift Crypto and Swift Argument Parser", "Apache 2.0"),
         ("EventSource", "MIT"),
-        ("SwiftTerm", "MIT"),
         ("yyjson", "MIT"),
     ]
 

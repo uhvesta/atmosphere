@@ -1010,17 +1010,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.session != nil }
         store.send(.session(.presented(.newTerminalTapped)))
         try await until { store.session?.terminals.current != nil }
-        let terminal = try XCTUnwrap(store.session?.terminals.selected)
+        let terminal = try XCTUnwrap(store.session?.terminals.current?.terminal)
         for line in ["pwd", "echo hello from build-box", "cargo --version"] {
-            store.send(
-                .session(
-                    .presented(.terminals(.terminals(.element(id: terminal, action: .typed(Data((line + "\r").utf8))))))
-                ))
+            try await daemon.client.typeInTerminal(terminal, Data((line + "\r").utf8))
         }
-        try await until {
-            String(bytes: store.session?.terminals.current?.screen.data ?? Data(), encoding: .utf8)?
-                .contains("command not found") == true
-        }
+        try await until { store.session?.terminals.current?.command != nil }
         await flow.step("session terminal")
 
         store.send(.sidebar(.selected(.hosts)))
@@ -1029,10 +1023,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.hosts(.presented(.paneSelected(.terminals))))
         try await until { store.hosts?.terminals?.tabs.count == 2 }
         store.send(.hosts(.presented(.terminals(.selected(logs.id)))))
-        try await until {
-            String(bytes: store.hosts?.terminals?.current?.screen.data ?? Data(), encoding: .utf8)?
-                .contains("tailing") == true
-        }
+        try await until { store.hosts?.terminals?.current?.command != nil }
         await flow.step("host terminals")
 
         daemon.addFile(

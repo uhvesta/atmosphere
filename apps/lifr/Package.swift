@@ -15,7 +15,5 @@ let package = Package(
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", exact: "1.19.7"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.32.3"),
         .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.4.0"),
-        // Humata's terminals; 1.19 and later generate sources with a build plugin, which Bazel can't run.
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm", exact: "1.18.0"),
     ]
 )

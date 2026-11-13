@@ -235,7 +235,7 @@ public struct ThinkingDisclosure: View {
             if preview.isCut, let select {
                 Button("Show All") { select(all) }
                     .help("Only the first 20,000 characters show here; open all of them to read and select")
-                    .buttonStyle(.link)
+                    .buttonStyle(.borderless)
                     .font(.caption)
             }
         }

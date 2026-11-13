@@ -6,25 +6,26 @@ import XCTest
 
 @MainActor
 final class TerminalsFeatureTests: XCTestCase {
-    private func store(_ daemon: InMemoryDaemon, _ state: TerminalsFeature.State) -> TestStoreOf<TerminalsFeature> {
+    private func store(
+        _ daemon: InMemoryDaemon, _ state: TerminalsFeature.State,
+        dependencies: @escaping (inout DependencyValues) -> Void = { _ in }
+    ) -> TestStoreOf<TerminalsFeature> {
         let store = TestStore(initialState: state) {
             TerminalsFeature()
         } withDependencies: {
             $0.daemon = daemon.client
-            $0.continuousClock = ImmediateClock()
+            dependencies(&$0)
         }
         store.exhaustivity = .off
         return store
     }
 
-    private func shown(_ store: TestStoreOf<TerminalsFeature>) -> String {
-        String(bytes: store.state.current?.screen.data ?? Data(), encoding: .utf8) ?? ""
-    }
-
-    func testASessionsTabOpensAShellInItsFolderAndRunsWhatsTyped() async throws {
+    func testASessionsTabOpensAShellInItsFolderAndDrawsItWithItsCommand() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
-        let store = store(daemon, TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true))
+        let store = store(daemon, TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)) {
+            $0.terminalCommand = TerminalCommandClient { TerminalCommand(line: "show \($0.id)") }
+        }
 
         await store.send(.task)
         await store.receive(\.listed)
@@ -32,34 +33,25 @@ final class TerminalsFeatureTests: XCTestCase {
         await store.receive(\.opened)
         let id = try XCTUnwrap(store.state.selected)
         XCTAssertEqual(store.state.current?.terminal.folder, session.workingDirectory)
+        XCTAssertNil(store.state.current?.command)
 
-        let attach = await store.send(.terminals(.element(id: id, action: .attach)))
-        await store.receive(\.terminals)
-        await store.send(.terminals(.element(id: id, action: .typed(Data("pwd\r".utf8)))))
-        await store.receive(\.terminals[id: id].output)
-        XCTAssertTrue(shown(store).contains(session.workingDirectory + "\r\n$ "), shown(store))
-        await attach.cancel()
+        await store.send(.terminals(.element(id: id, action: .attach)))
+        XCTAssertEqual(store.state.current?.command, TerminalCommand(line: "show \(id)"))
     }
 
-    func testTerminalsStayOpenBetweenViewsAndReplayWhatTheyPrinted() async throws {
+    func testTerminalsStayOpenBetweenViews() async throws {
         let daemon = InMemoryDaemon()
         let terminal = try await daemon.client.openTerminal(HostPlace(host: "build"), .standard)
-        try await daemon.client.typeInTerminal(terminal, Data("echo hi\r".utf8))
 
         // A host's list doesn't open one by itself, and shows what's running.
         let store = store(daemon, TerminalsFeature.State(place: HostPlace(host: "build"), opensFirst: false))
         await store.send(.task)
         await store.receive(\.listed)
         XCTAssertEqual(store.state.tabs.ids, [terminal.id])
-
-        let attach = await store.send(.terminals(.element(id: terminal.id, action: .attach)))
-        await store.receive(\.terminals)
-        XCTAssertTrue(shown(store).contains("hi\r\n$ "), shown(store))
-        XCTAssertEqual(store.state.current?.screen.generation, 1)
-        await attach.cancel()
+        XCTAssertEqual(store.state.selected, terminal.id)
     }
 
-    func testExitingEndsTheShellAndClosingForgetsIt() async throws {
+    func testAShellThatExitedShowsItsCodeAndClosingForgetsIt() async throws {
         let daemon = InMemoryDaemon()
         let store = store(daemon, TerminalsFeature.State(place: HostPlace(), opensFirst: false))
         await store.send(.task)
@@ -69,14 +61,14 @@ final class TerminalsFeatureTests: XCTestCase {
         await store.send(.newTapped)
         await store.receive(\.opened)
         let id = try XCTUnwrap(store.state.selected)
-        let attach = await store.send(.terminals(.element(id: id, action: .attach)))
-        await store.receive(\.terminals)
-        await store.send(.terminals(.element(id: id, action: .typed(Data("exit 3\r".utf8)))))
-        while store.state.current?.terminal.exitCode == nil {
-            await store.receive(\.terminals[id: id].output)
-        }
+        let terminal = try XCTUnwrap(store.state.current?.terminal)
+        try await daemon.client.typeInTerminal(terminal, Data("exit 3\r".utf8))
+
+        await store.send(.terminals(.element(id: id, action: .surfaceExited)))
+        await store.receive(\.terminals[id: id].checked)
         XCTAssertEqual(store.state.current?.terminal.exitCode, 3)
-        await attach.finish()
+        XCTAssertEqual(store.state.current?.detached, false)
+        XCTAssertEqual(store.state.current?.gone, false)
 
         await store.send(.closeTapped(id))
         await store.receive(\.closed)
@@ -85,7 +77,7 @@ final class TerminalsFeatureTests: XCTestCase {
         XCTAssertTrue(left.isEmpty)
     }
 
-    func testATerminalClosedElsewhereStopsReconnecting() async throws {
+    func testATerminalClosedElsewhereIsGoneAndItsTabStillCloses() async throws {
         let daemon = InMemoryDaemon()
         let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
         let store = store(daemon, TerminalsFeature.State(place: HostPlace(), opensFirst: false))
@@ -93,51 +85,64 @@ final class TerminalsFeatureTests: XCTestCase {
         await store.receive(\.listed)
         try await daemon.client.closeTerminal(terminal)
 
-        await store.send(.terminals(.element(id: terminal.id, action: .attach)))
-        await store.receive(\.terminals)
-        await store.receive(\.terminals)
-        XCTAssertTrue(store.state.current?.exited ?? false)
-        XCTAssertFalse(store.state.current?.detached ?? true)
+        await store.send(.terminals(.element(id: terminal.id, action: .surfaceExited)))
+        await store.receive(\.terminals[id: terminal.id].checked)
+        XCTAssertEqual(store.state.current?.gone, true)
+        XCTAssertEqual(store.state.current?.exited, true)
+        XCTAssertEqual(store.state.current?.detached, false)
+
+        // Reattach has nothing to attach to.
+        await store.send(.terminals(.element(id: terminal.id, action: .reattachTapped)))
+        XCTAssertEqual(store.state.current?.generation, 0)
+
+        await store.send(.closeTapped(terminal.id))
+        await store.receive(\.closed)
+        XCTAssertTrue(store.state.tabs.isEmpty)
+        XCTAssertNil(store.state.failure)
     }
 
-    func testKeysTypedWhileEarlierOnesAreOnTheirWayArriveInOrder() async throws {
+    func testASurfaceThatEndsWhileTheShellRunsOffersReattachOnANewSurface() async throws {
         let daemon = InMemoryDaemon()
         let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
-        let arrived = LockIsolated<[String]>([])
         let store = TestStore(initialState: TerminalFeature.State(terminal: terminal)) {
             TerminalFeature()
         } withDependencies: {
             $0.daemon = daemon.client
-            $0.daemon.typeInTerminal = { _, data in
-                let keys = String(bytes: data, encoding: .utf8) ?? ""
-                // The first is slow to arrive.
-                if keys == "a" { try await Task.sleep(for: .milliseconds(50)) }
-                arrived.withValue { $0.append(keys) }
-            }
         }
         store.exhaustivity = .off
 
-        await store.send(.typed(Data("a".utf8)))
-        await store.send(.typed(Data("b".utf8)))
-        await store.send(.typed(Data("c".utf8)))
-        await store.receive(\.sent, timeout: .seconds(1))
-        await store.receive(\.sent, timeout: .seconds(1))
+        await store.send(.attach)
+        let command = try XCTUnwrap(store.state.command)
+        await store.send(.surfaceExited)
+        await store.receive(\.checked)
+        XCTAssertTrue(store.state.detached)
+        XCTAssertFalse(store.state.exited)
 
-        XCTAssertEqual(arrived.value, ["a", "bc"])
+        await store.send(.reattachTapped)
+        XCTAssertFalse(store.state.detached)
+        XCTAssertEqual(store.state.generation, 1)
+        XCTAssertEqual(store.state.command, command)
     }
 
-    func testAReattachThatReplaysWhatsDrawnDoesntRedraw() async throws {
+    func testAHostThatCantBeAskedLeavesReattachAndSaysWhy() async throws {
         let daemon = InMemoryDaemon()
         let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
         let store = TestStore(initialState: TerminalFeature.State(terminal: terminal)) {
             TerminalFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.terminals = { _ in throw DaemonError.unexpected("no answer") }
         }
         store.exhaustivity = .off
 
-        await store.send(.output(TerminalOutput(data: Data("$ ".utf8), replay: true)))
-        await store.send(.output(TerminalOutput(data: Data("$ ".utf8), replay: true)))
-        XCTAssertEqual(store.state.screen.generation, 1)
-        await store.send(.output(TerminalOutput(data: Data("$ ls".utf8), replay: true)))
-        XCTAssertEqual(store.state.screen.generation, 2)
+        await store.send(.surfaceExited)
+        await store.receive(\.failed)
+        XCTAssertTrue(store.state.detached)
+        XCTAssertFalse(store.state.exited)
+        XCTAssertNotNil(store.state.failure)
+
+        await store.send(.reattachTapped)
+        XCTAssertNil(store.state.failure)
+        XCTAssertEqual(store.state.generation, 1)
     }
 }

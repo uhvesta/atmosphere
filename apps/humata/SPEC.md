@@ -357,7 +357,7 @@ Structure:
   stream). Remote terminals ride the existing SSH connection through the
   daemon; nothing new is opened. The host keeps the terminal running if the
   Mac disconnects, and replays its recent output on reattach. The app renders
-  it with SwiftTerm in a session's Terminal tab and in each host's Terminals
+  it with Ghostty in a session's Terminal tab and in each host's Terminals
   pane in Hosts, which lists every shell on the host, a session's or not.
 - **Files.** A tree of a session's folder, or any folder on a host, read
   through the protocol (`ListFiles` and `ReadFile` already exist for chat

@@ -1,7 +1,6 @@
 import AppKit
 import ComposableArchitecture
 import HumataDaemonClient
-import SwiftTerm
 import SwiftUI
 
 /// The terminals as tabs above the selected one, with + for another and ×
@@ -99,23 +98,34 @@ private struct TerminalTab: View {
     }
 }
 
-/// One terminal, drawn as it printed, with a note once it exited or while
-/// it's reconnecting.
+/// One terminal, drawn by Ghostty, with a note once its shell exited or it
+/// was closed elsewhere, and Reattach when only the pipe to it ended.
 private struct TerminalPane: View {
     let store: StoreOf<TerminalFeature>
 
     var body: some View {
         VStack(spacing: 0) {
-            TerminalScreenView(
-                screen: store.screen, typed: { store.send(.typed($0)) }, resized: { store.send(.resized($0)) })
+            if let command = store.command {
+                TerminalSurface(command: command, generation: store.generation) { _ in
+                    store.send(.surfaceExited)
+                }
+            } else {
+                Color.clear
+            }
             if let code = store.terminal.exitCode {
                 notice(
                     code == 0 ? "The shell exited." : "The shell exited with code \(code).",
                     systemImage: "stop.circle")
+            } else if store.gone {
+                notice("This terminal was closed elsewhere.", systemImage: "xmark.circle")
             } else if store.detached {
-                notice("Lost the connection to the terminal. Reconnecting…", systemImage: "bolt.horizontal.circle")
-            } else if let failure = store.failure {
-                notice(failure, systemImage: "exclamationmark.triangle")
+                HStack(spacing: 0) {
+                    notice(
+                        store.failure ?? "The connection to the terminal ended. Its shell is still running.",
+                        systemImage: "bolt.horizontal.circle")
+                    Button("Reattach") { store.send(.reattachTapped) }
+                        .padding(.trailing, 8)
+                }
             }
         }
         .task { await store.send(.attach).finish() }
@@ -127,57 +137,5 @@ private struct TerminalPane: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
-    }
-}
-
-/// SwiftTerm's view, fed the screen's bytes as they come: from the start
-/// when they were replayed, otherwise only what's new.
-private struct TerminalScreenView: NSViewRepresentable {
-    let screen: TerminalFeature.Screen
-    let typed: (Data) -> Void
-    let resized: (TerminalSize) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
-        view.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        view.terminalDelegate = context.coordinator
-        return view
-    }
-
-    func updateNSView(_ view: TerminalView, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.typed = typed
-        coordinator.resized = resized
-        if coordinator.generation != screen.generation || coordinator.fed < screen.start {
-            // RIS: clears the screen and scrollback to draw it again.
-            view.feed(text: "\u{1b}c")
-            coordinator.generation = screen.generation
-            coordinator.fed = screen.start
-        }
-        let new = coordinator.fed - screen.start
-        guard new < screen.data.count else { return }
-        view.feed(byteArray: ArraySlice(screen.data.dropFirst(new)))
-        coordinator.fed = screen.end
-    }
-
-    final class Coordinator: NSObject, TerminalViewDelegate {
-        var generation = 0
-        /// How many of the screen's bytes the view was given.
-        var fed = 0
-        var typed: (Data) -> Void = { _ in }
-        var resized: (TerminalSize) -> Void = { _ in }
-
-        func send(source: TerminalView, data: ArraySlice<UInt8>) { typed(Data(data)) }
-
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            resized(TerminalSize(rows: newRows, columns: newCols))
-        }
-
-        func setTerminalTitle(source: TerminalView, title: String) {}
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-        func scrolled(source: TerminalView, position: Double) {}
-        func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
     }
 }

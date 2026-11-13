@@ -917,7 +917,7 @@
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apps/lifr/Package.resolved df8bcb53e35d3f2f1d87741709e38bfb806fca7732bb44d72026db5ed91213bb"
+          "FILE:@@//apps/lifr/Package.resolved f3e2502966e5effa9b4007431661e38f8c13e1dab48e8400bd42133340a9de35"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
@@ -956,7 +956,6 @@
                 "swiftpkg_swift_snapshot_testing",
                 "swiftpkg_swift_syntax",
                 "swiftpkg_swift_transformers",
-                "swiftpkg_swiftterm",
                 "swiftpkg_yyjson"
               ]
             }
@@ -1038,25 +1037,6 @@
               "commit": "402a8a1105f52038b0949d9596981fc9e32bed17",
               "remote": "https://github.com/huggingface/swift-transformers",
               "version": "1.4.0",
-              "env": {},
-              "env_inherit": [],
-              "cached_json_directory": "",
-              "make_files_read_only": false,
-              "replace_scm_with_registry": false,
-              "target_deps": {},
-              "module_aliases": {},
-              "dep_module_aliases": "",
-              "bazel_target_mods": "",
-              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
-            }
-          },
-          "swiftpkg_swiftterm": {
-            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
-            "attributes": {
-              "bazel_package_name": "swiftpkg_swiftterm",
-              "commit": "7691f85b222a67a66b58499e1b2647443cf0dda7",
-              "remote": "https://github.com/migueldeicaza/SwiftTerm",
-              "version": "1.18.0",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -1511,7 +1491,6 @@
             "swiftpkg_swift_snapshot_testing",
             "swiftpkg_mlx_swift_lm",
             "swiftpkg_swift_transformers",
-            "swiftpkg_swiftterm",
             "swift_package"
           ],
           "explicitRootModuleDirectDevDeps": [],
