@@ -126,6 +126,17 @@ package struct ReviewView: View {
                 .toggleStyle(.button)
                 .help("Show resolved threads too")
             Spacer()
+            // Read again with files already shown, the changes don't say so
+            // themselves; nor does a stage, unstage or revert.
+            if store.editing {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Changing what’s staged")
+            } else if store.loading, !store.files.isEmpty {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Reading the changes")
+            }
             if store.sending {
                 ProgressView()
                     .controlSize(.small)

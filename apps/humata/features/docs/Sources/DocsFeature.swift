@@ -153,7 +153,7 @@ package struct DocsFeature {
         /// Shows the selected file's versions, or stops.
         case versionsToggled
         case versionsListed(path: String, [FileVersion])
-        case versionsFailed(String)
+        case versionsFailed(VersionsDoing, String)
         /// A version to show, by turn; nil for the file now.
         case versionPicked(Int?)
         case versionRead(path: String, turn: Int, lines: [String])
@@ -182,6 +182,14 @@ package struct DocsFeature {
         case listing
         case reading(path: String)
         case sending
+    }
+
+    /// What was being done with the file's versions when it failed.
+    package enum VersionsDoing: Equatable, Sendable {
+        case listing
+        /// Reading the version a turn left.
+        case reading(turn: Int)
+        case restoring
     }
 
     @Dependency(\.daemon) var daemon
@@ -291,17 +299,42 @@ package struct DocsFeature {
                 state.versions?.list = list
                 return .none
 
-            case .versionsFailed(let message):
-                if state.versions?.list == nil { state.versions = nil }
-                state.versions?.restoring = false
-                state.alert = AlertState {
-                    TextState("Couldn’t read or restore the file’s versions")
-                } message: {
-                    TextState(
-                        "\(message)\n\nThe file as it is now is unchanged. Check that Humata’s daemon is running, "
-                            + "then try again.")
+            case .versionsFailed(let doing, let message):
+                let title: String
+                let advice: String
+                switch doing {
+                case .listing:
+                    if state.versions?.list == nil { state.versions = nil }
+                    title = String(localized: "Couldn’t list the file’s versions")
+                    advice = String(
+                        localized: "The file is unchanged. Show its versions again once what’s said above is fixed.")
+                case .reading(let turn):
+                    // Back on the file now, so the version can be picked again.
+                    guard state.versions?.selected == turn else { return .none }
+                    state.versions?.selected = nil
+                    state.versions?.lines = nil
+                    state.versions?.comparison = nil
+                    title = String(localized: "Couldn’t read the file as \(Self.name(turn)) left it")
+                    advice = String(
+                        localized: """
+                            The file is unchanged and shows as it is now. Pick the version again once what’s said \
+                            above is fixed.
+                            """)
+                case .restoring:
+                    state.versions?.restoring = false
+                    title = String(localized: "Couldn’t restore the version")
+                    advice = String(
+                        localized: """
+                            The file may or may not have been written: it’s read again here, so check what it \
+                            shows before restoring again.
+                            """)
                 }
-                return .none
+                state.alert = AlertState {
+                    TextState(title)
+                } message: {
+                    TextState("\(message)\n\n\(advice)")
+                }
+                return doing == .restoring ? read(state) : .none
 
             case .versionPicked(let turn):
                 guard let versions = state.versions, versions.selected != turn else { return .none }
@@ -316,7 +349,7 @@ package struct DocsFeature {
                     let contents = try await daemon.readFileVersion(session, path, turn)
                     await send(.versionRead(path: path, turn: turn, lines: Self.lines(contents.text ?? "")))
                 } catch: { error, send in
-                    await send(.versionsFailed(error.localizedDescription))
+                    await send(.versionsFailed(.reading(turn: turn), error.localizedDescription))
                 }
                 .cancellable(id: CancelID.version, cancelInFlight: true)
 
@@ -371,7 +404,7 @@ package struct DocsFeature {
                     }
                     await send(.restored(contents, changed: changed ?? []))
                 } catch: { error, send in
-                    await send(.versionsFailed(error.localizedDescription))
+                    await send(.versionsFailed(.restoring, error.localizedDescription))
                 }
 
             case .restored(let contents, let changed):
@@ -467,7 +500,7 @@ package struct DocsFeature {
         return .run { send in
             await send(.versionsListed(path: path, try await daemon.fileVersions(session, path)))
         } catch: { error, send in
-            await send(.versionsFailed(error.localizedDescription))
+            await send(.versionsFailed(.listing, error.localizedDescription))
         }
         .cancellable(id: CancelID.versions, cancelInFlight: true)
     }

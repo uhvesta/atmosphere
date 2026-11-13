@@ -67,6 +67,28 @@ package struct BoardFeature {
         package func sessions(on item: Item) -> [Session] {
             item.sessionIDs.compactMap { sessions[id: $0] }
         }
+
+        /// The board to keep while something else shows in its place. What it
+        /// was waiting on stops when it goes, so nothing kept says it's still
+        /// in progress: the answer that would clear it never comes.
+        package func settled() -> Self {
+            var kept = self
+            kept.starting = []
+            kept.importing = false
+            kept.undoing = false
+            kept.moving = [:]
+            switch kept.destination {
+            case .item(var item):
+                item.settle()
+                kept.destination = .item(item)
+            case .newItem(var new):
+                new.creating = false
+                kept.destination = .newItem(new)
+            default:
+                break
+            }
+            return kept
+        }
     }
 
     @Reducer
@@ -521,6 +543,18 @@ package struct ItemFeature {
         var draftChanged: Bool {
             guard let draft else { return false }
             return draft.title != item.title || draft.spec != item.spec
+        }
+
+        /// Clears what was in progress when its board was put away.
+        fileprivate mutating func settle() {
+            saving = false
+            startingWork = false
+            readingPullRequests = false
+            comments.sending = false
+            if case .newSubtask(var new) = destination {
+                new.creating = false
+                destination = .newSubtask(new)
+            }
         }
     }
 

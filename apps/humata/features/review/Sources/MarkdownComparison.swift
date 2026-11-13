@@ -30,18 +30,43 @@ package enum MarkdownComparison {
     /// line, and where lines were removed, the line now in their place.
     package static func changedLines(from old: [String], to new: [String]) -> Set<Int> {
         guard old != new else { return [] }
+        // Most edits touch a little of a file: only what's between the lines
+        // both versions start and end with is compared.
+        var start = 0
+        while start < old.count, start < new.count, old[start] == new[start] { start += 1 }
+        var end = 0
+        while end < old.count - start, end < new.count - start,
+            old[old.count - 1 - end] == new[new.count - 1 - end]
+        {
+            end += 1
+        }
+        let before = old[start..<(old.count - end)]
+        let after = new[start..<(new.count - end)]
         var changed = Set<Int>()
-        walk(new.difference(from: old), old: old.count, new: new.count) { step in
+        /// Lines were removed before `after`'s line at `next`.
+        func removed(before next: Int) {
+            if new.isEmpty { return }
+            changed.insert(min(start + next, new.count - 1) + 1)
+        }
+        // The diff's time grows with the square of what differs, so a
+        // rewrite this long is all marked instead.
+        guard before.count <= longestCompared, after.count <= longestCompared else {
+            if after.isEmpty { removed(before: 0) }
+            changed.formUnion((start + 1)..<(start + 1 + after.count))
+            return changed
+        }
+        walk(Array(after).difference(from: Array(before)), old: before.count, new: after.count) { step in
             switch step {
-            case .removed(_, let next):
-                if new.isEmpty { return }
-                changed.insert(min(next, new.count - 1) + 1)
-            case .added(let index): changed.insert(index + 1)
+            case .removed(_, let next): removed(before: next)
+            case .added(let index): changed.insert(start + index + 1)
             case .kept: break
             }
         }
         return changed
     }
+
+    /// The most differing lines of either version `changedLines` diffs.
+    private static let longestCompared = 2000
 
     /// `old` and `new` rendered as one document: `new`'s blocks, with the
     /// blocks `old` had and `new` doesn't where they were.

@@ -66,10 +66,26 @@ final class InMemoryDaemonTests: XCTestCase {
         try await daemon.client.send(session.id, "two", .enqueue)
 
         var seen: [SessionEvent] = []
-        for _ in 0..<10 {
-            if case .event(let event)? = try await events.next() { seen.append(event) }
+        var history: [SessionEvent]?
+        while seen.count < 10 {
+            switch try await events.next() {
+            case .event(let event)?: seen.append(event)
+            case .historyLoaded?: history = seen
+            case .loading?: break
+            case nil: return XCTFail("The watch ended")
+            }
         }
         XCTAssertEqual(said(seen), ["user: one", "agent: You said: one", "user: two", "agent: You said: two"])
+        // What was there when the watch began ends with the history's mark.
+        XCTAssertEqual(said(try XCTUnwrap(history)), ["user: one", "agent: You said: one"])
+    }
+
+    func testWatchingAnEmptyHistorySaysItIsLoaded() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var items = await daemon.client.watch(session.id).makeAsyncIterator()
+        let first = try await items.next()
+        XCTAssertEqual(first, .historyLoaded)
     }
 
     private let edit: @Sendable (String) -> [InMemoryDaemon.Step] = { _ in

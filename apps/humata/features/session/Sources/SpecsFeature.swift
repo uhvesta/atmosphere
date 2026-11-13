@@ -122,7 +122,7 @@ package struct SpecsFeature {
         case focusTapped(String?)
         case versionsToggled
         case versionsListed(pageID: String, [Version])
-        case versionsFailed(String)
+        case versionsFailed(VersionsDoing, String)
         /// A version to show; nil for the spec now.
         case versionPicked(Version.ID?)
         case compareToggled
@@ -137,6 +137,12 @@ package struct SpecsFeature {
             /// The person wants the item on the board.
             case openItem(String)
         }
+    }
+
+    /// What was being done with the spec's versions when it failed.
+    package enum VersionsDoing: Equatable, Sendable {
+        case listing
+        case restoring
     }
 
     @Dependency(\.daemon) var daemon
@@ -276,15 +282,28 @@ package struct SpecsFeature {
                 }
                 return compare(state)
 
-            case .versionsFailed(let message):
-                if state.versions?.list == nil { state.versions = nil }
-                state.versions?.restoring = false
+            case .versionsFailed(let doing, let message):
+                let title: String
+                let advice: String
+                switch doing {
+                case .listing:
+                    if state.versions?.list == nil { state.versions = nil }
+                    title = String(localized: "Couldn’t list the spec’s versions")
+                    advice = String(
+                        localized: "The spec is unchanged. Show its versions again once what’s said above is fixed.")
+                case .restoring:
+                    state.versions?.restoring = false
+                    title = String(localized: "Couldn’t restore the version")
+                    advice = String(
+                        localized: """
+                            The spec shown may be older than the board’s: check the task on the board before \
+                            restoring again.
+                            """)
+                }
                 state.alert = AlertState {
-                    TextState("Couldn’t read or restore the spec’s versions")
+                    TextState(title)
                 } message: {
-                    TextState(
-                        "\(message)\n\nThe spec as it is now is unchanged. Check that Humata’s daemon is running, "
-                            + "then try again.")
+                    TextState("\(message)\n\n\(advice)")
                 }
                 return .none
 
@@ -339,7 +358,7 @@ package struct SpecsFeature {
                         restored.text = version.text
                         await send(.restored(restored))
                     } catch {
-                        await send(.versionsFailed(error.localizedDescription))
+                        await send(.versionsFailed(.restoring, error.localizedDescription))
                     }
                 }
 
@@ -378,7 +397,7 @@ package struct SpecsFeature {
                 }
                 await send(.versionsListed(pageID: pageID, versions))
             } catch {
-                await send(.versionsFailed(error.localizedDescription))
+                await send(.versionsFailed(.listing, error.localizedDescription))
             }
         }
         .cancellable(id: CancelID.versions, cancelInFlight: true)

@@ -118,6 +118,15 @@ package struct DocsView: View {
                 if versions.restoring { ProgressView().controlSize(.small) }
             }
             Spacer()
+            if store.sending {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Sending the comments")
+            } else if store.loading, !store.files.isEmpty {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Reading the folder")
+            }
             Button {
                 store.send(.sendTapped)
             } label: {

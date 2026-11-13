@@ -1,7 +1,10 @@
 import ComposableArchitecture
 import HumataAppFeature
+import HumataBoard
 import HumataDaemonClient
+import HumataHosts
 import HumataProjects
+import HumataSearch
 import HumataSession
 import XCTest
 
@@ -281,6 +284,73 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.sidebar.selection, .board(project.id))
         XCTAssertEqual(store.state.board?.project.id, project.id)
         XCTAssertEqual(store.state.board?.opening, "item-7")
+    }
+
+    func testABoardPutAwayWhileWorkWasStartingStartsItWhenShownAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        _ = try await daemon.client.setSessionDefaults(nil, SessionDefaults(backend: .scripted))
+        // Work was starting on the task, and its page was starting it too.
+        var board = BoardFeature.State(project: project)
+        board.items = [task]
+        board.starting = [task.id]
+        var page = ItemFeature.State(project: project, item: task, parent: nil, subtasks: [], sessions: [])
+        page.startingWork = true
+        board.destination = .item(page)
+        var state = AppFeature.State()
+        state.sidebar.projects = [project]
+        state.sidebar.selection = .board(project.id)
+        state.board = board
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .inbox)
+        await store.receive(\.sidebar.delegate.openInbox)
+        XCTAssertNil(store.state.board)
+        await store.send(\.sidebar.selected, .board(project.id))
+        await store.receive(\.sidebar.delegate.openBoard)
+
+        await store.send(\.board.startWorkTapped, task.id)
+        await store.receive(\.board.startFinished)
+        XCTAssertEqual(daemon.sessions.count, 1)
+        guard case .item(let shown) = store.state.board?.destination else {
+            return XCTFail("the task's page isn't open")
+        }
+        XCTAssertFalse(shown.startingWork)
+    }
+
+    func testSearchAndHostsPutAwayMidwayAreNotStillWaitingWhenShownAgain() async throws {
+        var search = SearchFeature.State()
+        search.text = "login"
+        search.isSearching = true
+        var state = AppFeature.State()
+        state.search = search
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .hosts)
+        await store.receive(\.sidebar.delegate.openHosts)
+        await store.send(\.sidebar.selected, .search)
+        await store.receive(\.sidebar.delegate.openSearch)
+        XCTAssertEqual(store.state.search?.text, "login")
+        XCTAssertEqual(store.state.search?.isSearching, false)
+
+        var hosts = HostsFeature.State()
+        hosts.linking = true
+        hosts.restoring = ["r1"]
+        XCTAssertFalse(hosts.settled().linking)
+        XCTAssertTrue(hosts.settled().restoring.isEmpty)
     }
 
     func testLinksThatNameNothingAreIgnored() throws {

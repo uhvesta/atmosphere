@@ -904,6 +904,8 @@ extension DaemonClient {
                                     if let event = SessionEvent(event) { continuation.yield(.event(event)) }
                                 case .historyLoading(let loading):
                                     continuation.yield(.loading(read: loading.read, total: loading.total))
+                                case .historyLoaded:
+                                    continuation.yield(.historyLoaded)
                                 default: break
                                 }
                             }

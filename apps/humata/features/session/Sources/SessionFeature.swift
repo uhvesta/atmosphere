@@ -727,6 +727,7 @@ package struct SessionFeature {
                                     case .event(let event): await batches.add(event)
                                     case .loading(let read, let total):
                                         await send(.historyLoading(read: read, total: total))
+                                    case .historyLoaded: await batches.historyLoaded()
                                     }
                                 }
                                 await batches.end(failure: nil)
@@ -764,6 +765,8 @@ package struct SessionFeature {
             case .receivedAll(let events):
                 state.historyLoaded = true
                 state.historyLoading = nil
+                // An empty history's end, or one said again: nothing to show.
+                guard !events.isEmpty else { return .none }
                 return received(events, &state)
 
             case .historyLoading(let read, let total):
@@ -1251,12 +1254,21 @@ private actor EventBatches {
     }
 
     private var pending: [SessionEvent] = []
+    /// The history is all sent and no batch has said so yet: the next one
+    /// does, even with no events.
+    private var loaded = false
     private var ended: Batch?
     private var cancelled = false
     private var waiter: CheckedContinuation<Void, Never>?
 
     func add(_ event: SessionEvent) {
         pending.append(event)
+        wake()
+    }
+
+    /// The history's events have all been added, if it had any.
+    func historyLoaded() {
+        loaded = true
         wake()
     }
 
@@ -1267,7 +1279,7 @@ private actor EventBatches {
 
     /// The next batch, waiting for one; nil once cancelled.
     func next() async -> Batch? {
-        if pending.isEmpty, ended == nil, !cancelled {
+        if pending.isEmpty, !loaded, ended == nil, !cancelled {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { waiter = $0 }
             } onCancel: {
@@ -1275,8 +1287,11 @@ private actor EventBatches {
             }
         }
         if cancelled || Task.isCancelled { return nil }
-        if !pending.isEmpty {
-            defer { pending = [] }
+        if !pending.isEmpty || loaded {
+            defer {
+                pending = []
+                loaded = false
+            }
             return .events(pending)
         }
         return ended

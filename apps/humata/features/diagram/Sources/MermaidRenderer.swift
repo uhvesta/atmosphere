@@ -39,6 +39,10 @@ package final class MermaidRenderer {
         var scale: Double
     }
 
+    /// How long a draw may take before its page is given up on, so one
+    /// that never answers doesn't hold up every diagram after it.
+    private static let patience = Duration.seconds(10)
+
     private let resources: URL?
     private let cache = NSCache<NSString, NSImage>()
     private var drawing: [Key: Task<Result<NSImage, DiagramError>, Never>] = [:]
@@ -85,7 +89,49 @@ package final class MermaidRenderer {
         else { return .failure(.unavailable) }
         let page = self.page ?? Page(resources: resources)
         self.page = page
-        return await page.draw(key.source, dark: key.dark, scale: key.scale)
+        let result = await Self.race(Self.patience) {
+            await page.draw(key.source, dark: key.dark, scale: key.scale)
+        }
+        guard let result else {
+            // Whatever it's stuck on, the next draw gets a page of its own.
+            page.fail("The page that draws diagrams didn't answer in time.")
+            if self.page === page { self.page = nil }
+            return .failure(.failed(message: "The page that draws diagrams didn't answer in time."))
+        }
+        // A page that failed isn't asked again: the next draw makes a new one.
+        if case .failure(.failed) = result, self.page === page { self.page = nil }
+        return result
+    }
+
+    /// What `work` gives, or nil if it takes longer than `limit`: it's then
+    /// left to end by itself, as WebKit's calls can't be stopped.
+    private static func race(
+        _ limit: Duration, _ work: @escaping @MainActor () async -> Result<NSImage, DiagramError>
+    ) async -> Result<NSImage, DiagramError>? {
+        let answer = Answer()
+        return await withCheckedContinuation { continuation in
+            answer.waiter = continuation
+            let timer = Task { @MainActor in
+                guard (try? await Task.sleep(for: limit)) != nil else { return }
+                answer.give(nil)
+            }
+            Task { @MainActor in
+                let result = await work()
+                timer.cancel()
+                answer.give(result)
+            }
+        }
+    }
+
+    /// Whoever waits for a raced draw, answered once.
+    @MainActor
+    private final class Answer {
+        var waiter: CheckedContinuation<Result<NSImage, DiagramError>?, Never>?
+
+        func give(_ result: Result<NSImage, DiagramError>?) {
+            waiter?.resume(returning: result)
+            waiter = nil
+        }
     }
 }
 
@@ -95,6 +141,9 @@ private final class Page: NSObject, WKNavigationDelegate {
     private let web: WKWebView
     private let resources: URL
     private var loaded = false
+    /// Why the page can draw nothing more: it didn't load, its process
+    /// ended or it stopped answering. A page that failed stays failed.
+    private(set) var failure: String?
     private var waiting: [CheckedContinuation<Bool, Never>] = []
 
     init(resources: URL) {
@@ -110,19 +159,32 @@ private final class Page: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard failure == nil else { return }
         loaded = true
         for waiter in waiting { waiter.resume(returning: true) }
         waiting = []
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
-        for waiter in waiting { waiter.resume(returning: false) }
-        waiting = []
+        // A diagram's link, refused once the page is loaded, fails only itself.
+        guard !loaded else { return }
+        fail("The page that draws diagrams didn't load: \(error.localizedDescription)")
     }
 
     func webView(
         _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error
     ) {
+        guard !loaded else { return }
+        fail("The page that draws diagrams didn't load: \(error.localizedDescription)")
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        fail("The process that draws diagrams ended.")
+    }
+
+    /// Marks the page as done for, and tells the draws waiting on it.
+    func fail(_ message: String) {
+        if failure == nil { failure = message }
         for waiter in waiting { waiter.resume(returning: false) }
         waiting = []
     }
@@ -136,6 +198,7 @@ private final class Page: NSObject, WKNavigationDelegate {
     }
 
     private func ready() async -> Bool {
+        if failure != nil { return false }
         if loaded { return true }
         return await withCheckedContinuation { waiting.append($0) }
     }
@@ -160,7 +223,7 @@ private final class Page: NSObject, WKNavigationDelegate {
 
     func draw(_ source: String, dark: Bool, scale: Double) async -> Result<NSImage, DiagramError> {
         guard await ready() else {
-            return .failure(.failed(message: "The page that draws diagrams didn't load."))
+            return .failure(.failed(message: failure ?? "The page that draws diagrams didn't load."))
         }
         let answer: Any?
         do {
@@ -168,7 +231,13 @@ private final class Page: NSObject, WKNavigationDelegate {
                 Self.script, arguments: ["source": source, "dark": dark, "largest": MermaidRenderer.largest],
                 contentWorld: .page)
         } catch {
-            return .failure(.invalid(message: Self.message(of: error)))
+            // Only what the script threw is the diagram's mistake; anything
+            // else is the page's, such as its process ending.
+            let info = (error as NSError).userInfo
+            guard let thrown = info["WKJavaScriptExceptionMessage"] as? String else {
+                return .failure(.failed(message: failure ?? error.localizedDescription))
+            }
+            return .failure(.invalid(message: thrown))
         }
         guard let drawn = answer as? [String: Any] else {
             return .failure(.failed(message: "mermaid.js gave back nothing to show."))
@@ -189,11 +258,5 @@ private final class Page: NSObject, WKNavigationDelegate {
         } catch {
             return .failure(.failed(message: error.localizedDescription))
         }
-    }
-
-    /// What a script's error says, without WebKit's wrapping.
-    private static func message(of error: any Error) -> String {
-        let info = (error as NSError).userInfo
-        return info["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
     }
 }

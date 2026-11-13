@@ -47,6 +47,18 @@ package struct SearchFeature {
             self.projects = projects
             self.projectID = projectID
         }
+
+        /// The search to keep while something else shows in its place. A
+        /// search still running stops when it goes, so the kept one isn't
+        /// searching, and its text counts as not searched yet.
+        package func settled() -> Self {
+            var kept = self
+            if kept.isSearching {
+                kept.isSearching = false
+                kept.queried = ""
+            }
+            return kept
+        }
     }
 
     package enum Action: BindableAction {

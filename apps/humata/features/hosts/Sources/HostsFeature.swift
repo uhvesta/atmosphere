@@ -48,6 +48,22 @@ package struct HostsFeature {
         package var selected: RemoteHost? {
             selection.flatMap { $0 == coordinator.id ? coordinator : hosts[id: $0] }
         }
+
+        /// The hosts to keep while something else shows in their place. What
+        /// they were waiting on stops when they go, so nothing kept says it's
+        /// still in progress: the answer that would clear it never comes.
+        package func settled() -> Self {
+            var kept = self
+            kept.restoring = []
+            kept.linking = false
+            kept.editor?.saving = false
+            kept.ports?.forwarding = false
+            if case .add(var add) = kept.destination {
+                add.adding = false
+                kept.destination = .add(add)
+            }
+            return kept
+        }
     }
 
     package enum Pane: Hashable, Sendable {

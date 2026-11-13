@@ -42,6 +42,25 @@ final class MermaidRendererTests: XCTestCase {
         XCTAssertGreaterThan(sequence.size.width, 0)
     }
 
+    /// The second draw is what a page that failed used to leave waiting
+    /// for good, with every diagram after it.
+    func testAPageThatCantLoadFailsEveryDrawInsteadOfHoldingThemUp() async throws {
+        let broken = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: broken) }
+        // mermaid.js is there, but not the page that runs it.
+        try Data().write(to: broken.appending(path: "mermaid.min.js"))
+        let renderer = MermaidRenderer(resources: broken)
+        for source in ["graph LR\n  A --> B", "graph LR\n  B --> C"] {
+            do {
+                _ = try await renderer.image(source, dark: false)
+                XCTFail("Drew without the page")
+            } catch {
+                guard case .failed = error else { return XCTFail("Expected failed, got \(error)") }
+            }
+        }
+    }
+
     func testWithoutMermaidNothingCanBeDrawn() async {
         let empty = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         let renderer = MermaidRenderer(resources: empty)

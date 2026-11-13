@@ -1114,6 +1114,49 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(live.state.items, ChatItem.items(events))
     }
 
+    func testANewSessionWithNoHistoryStopsLoading() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        XCTAssertFalse(store.state.historyLoaded)
+        await store.receive(\.receivedAll, timeout: .seconds(1))
+        XCTAssertTrue(store.state.historyLoaded)
+        XCTAssertTrue(store.state.items.isEmpty)
+        await watching.cancel()
+    }
+
+    func testTheHistorysEndSaidAgainChangesNothing() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let said = SessionEvent(id: "e1", time: Date(timeIntervalSince1970: 0), kind: .userMessage("hi"))
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.watch = { _ in
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.event(said))
+                    continuation.yield(.historyLoaded)
+                    continuation.yield(.event(said))
+                    continuation.yield(.historyLoaded)
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.receivedAll)
+        XCTAssertTrue(store.state.historyLoaded)
+        XCTAssertEqual(store.state.events.map(\.id), ["e1"])
+        await store.skipInFlightEffects()
+    }
+
     func testTheChatLoadsUntilItsHistoryComes() async {
         let store = store()
         XCTAssertFalse(store.state.historyLoaded)

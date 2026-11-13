@@ -275,6 +275,68 @@ final class DocsFocusAndVersionsTests: XCTestCase {
         XCTAssertEqual(now.text, second)
     }
 
+    func testAVersionThatCantBeReadGoesBackToTheFileNowAndCanBePickedAgain() async throws {
+        let (daemon, session) = try await chat()
+        try await daemon.client.send(session.id, "Change", .enqueue)
+        let failing = LockIsolated(true)
+        var client = daemon.client
+        let read = client.readFileVersion
+        client.readFileVersion = { session, path, turn in
+            if failing.value { throw DaemonError.unexpected("the host is offline") }
+            return try await read(session, path, turn)
+        }
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.read)
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsListed)
+
+        await store.send(.versionPicked(1))
+        await store.receive(\.versionsFailed)
+        XCTAssertNil(store.state.versions?.selected)
+        XCTAssertNotNil(store.state.versions?.list)
+        XCTAssertNotNil(store.state.alert)
+
+        failing.setValue(false)
+        await store.send(.alert(.dismiss))
+        await store.send(.versionPicked(1))
+        await store.receive(\.versionRead)
+        XCTAssertEqual(store.state.versions?.selected, 1)
+        XCTAssertNotNil(store.state.versions?.lines)
+    }
+
+    func testARestoreThatFailsStopsRestoringAndKeepsTheVersionShown() async throws {
+        let (daemon, session) = try await chat()
+        try await daemon.client.send(session.id, "Change", .enqueue)
+        var client = daemon.client
+        client.restoreFileVersion = { _, _, _ in throw DaemonError.unexpected("refused") }
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.read)
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsListed)
+        await store.send(.versionPicked(1))
+        await store.receive(\.versionRead)
+        await store.send(.restoreTapped)
+        await store.send(.alert(.presented(.restore(path: "plan.md", turn: 1))))
+        await store.receive(\.versionsFailed)
+        XCTAssertEqual(store.state.versions?.restoring, false)
+        XCTAssertEqual(store.state.versions?.selected, 1)
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testVersionsThatCantBeReadShowAnAlert() async throws {
         let daemon = InMemoryDaemon()
         var state = DocsFeature.State(sessionID: "gone")

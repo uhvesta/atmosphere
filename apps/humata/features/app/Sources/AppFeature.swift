@@ -46,11 +46,11 @@ package struct AppFeature {
         package init() {}
 
         /// Puts away the open board, hosts and search, to show again as they
-        /// were.
+        /// were, but for what they were waiting on: that stops with them.
         mutating func putAway() {
-            if let board { keptBoards[board.project.id] = board }
-            if let hosts { keptHosts = hosts }
-            if let search { keptSearch = search }
+            if let board { keptBoards[board.project.id] = board.settled() }
+            if let hosts { keptHosts = hosts.settled() }
+            if let search { keptSearch = search.settled() }
             board = nil
             hosts = nil
             search = nil

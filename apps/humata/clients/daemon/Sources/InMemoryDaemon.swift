@@ -1191,6 +1191,7 @@ package final class InMemoryDaemon: Sendable {
                 for event in history {
                     continuation.yield(.event(event))
                 }
+                continuation.yield(.historyLoaded)
                 state.watchers[session, default: [:]][id] = continuation
                 return true
             }
