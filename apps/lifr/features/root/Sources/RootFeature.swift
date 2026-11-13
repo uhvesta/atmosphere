@@ -419,8 +419,12 @@ package struct RootFeature {
 
     /// What the Task menu sets on the open task.
     package enum DetailShortcut: Hashable, Sendable {
-        case repeats(RepeatPreset?), customRepeat, reminder(ReminderChoice), customReminder
-        case avenue(UUID), label(UUID)
+        case repeats(RepeatPreset?)
+        case customRepeat
+        case reminder(ReminderChoice)
+        case customReminder
+        case avenue(UUID)
+        case label(UUID)
     }
 
     /// Where a task list lives in `State`.
