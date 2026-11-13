@@ -28,6 +28,10 @@ final class ReaderFeatureTests: XCTestCase {
                 if let fails { throw fails }
                 spoken.withValue { $0.append(text) }
             }
+            $0.speech.speakSlowly = { text, _ throws(SpeechError) in
+                if let fails { throw fails }
+                spoken.withValue { $0.append("slowly: \(text)") }
+            }
             $0.date.now = epoch
             $0.uuid = .incrementing
         }
@@ -154,6 +158,35 @@ final class ReaderFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.destination?.chat?.compact, true)
     }
 
+    func testAPickedPassageIsReadAloudAtEitherPaceAndStaysPicked() async throws {
+        let spoken = LockIsolated<[String]>([])
+        let store = await reader(try spanish(), spoken: spoken)
+        let (paragraph, amigo) = try word("amigo", in: store)
+        let (_, dias) = try word("días", in: store)
+        await store.send(.binding(.set(\.isHighlighting, true)))
+        await store.send(.wordTapped(paragraph: paragraph, amigo))
+        await store.send(.wordTapped(paragraph: paragraph, dias))
+
+        await store.send(.listenTapped(slowly: false))
+        await store.send(.listenTapped(slowly: true))
+        await store.finish()
+
+        XCTAssertEqual(spoken.value, ["amigo. Buenos días", "slowly: amigo. Buenos días"])
+        XCTAssertEqual(store.state.picked?.text, "amigo. Buenos días")
+    }
+
+    func testAPassageThatCantBeReadAloudSaysWhy() async throws {
+        let store = await reader(try spanish(), fails: .audioUnavailable(reason: "busy"))
+        let (paragraph, amigo) = try word("amigo", in: store)
+        await store.send(.binding(.set(\.isHighlighting, true)))
+        await store.send(.wordTapped(paragraph: paragraph, amigo))
+
+        await store.send(.listenTapped(slowly: false))
+        await store.receive(\.listenFailed)
+
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testCancellingAHighlightPicksNothingAndAsksNothing() async throws {
         let store = await reader(try spanish())
         let (paragraph, amigo) = try word("amigo", in: store)
@@ -245,6 +278,56 @@ final class ReaderFeatureTests: XCTestCase {
         await store.send(.alert(.presented(.changeLanguage(Language("it")))))
         XCTAssertEqual(store.state.book.language, Language("it"))
         XCTAssertTrue(store.state.book.annotations.isEmpty)
+    }
+
+    func testAnAnswerForTheOldLanguageIsDroppedAndTheNewOneAskedFor() async throws {
+        let book = try spanish("Ciao.")
+        let paragraph = try book.paragraphs.first.unwrap()
+        let (released, release) = AsyncStream<Void>.makeStream()
+        let late: ScriptedRuntime.Step = { _, _ throws(ModelRuntimeError) in
+            for await _ in released { break }
+            return "Chow."
+        }
+        let store = await reader(book, steps: [late, ScriptedRuntime.answer("Hi.")])
+        await store.send(.binding(.set(\.showsTranslation, true)))
+        await store.send(.paragraphAppeared(paragraph.id))
+
+        await store.send(.languagePicked(Language("it")))
+        release.yield()
+        release.finish()
+        await store.finish()
+        XCTAssertTrue(store.state.book.annotations.isEmpty)
+
+        await store.send(.paragraphAppeared(paragraph.id))
+        await store.receive(\.annotated)
+        XCTAssertEqual(store.state.book.annotations[paragraph.id]?.translation, "Hi.")
+    }
+
+    func testTurningASwitchOffAndOnAsksAgainForWhatFailed() async throws {
+        let book = try spanish("Hola.")
+        let paragraph = try book.paragraphs.first.unwrap()
+        let store = await reader(book, steps: [ScriptedRuntime.fail(.failed("busy")), ScriptedRuntime.answer("Hi.")])
+        await store.send(.binding(.set(\.showsTranslation, true)))
+        await store.send(.paragraphAppeared(paragraph.id))
+        await store.receive(\.annotated)
+        XCTAssertNotNil(store.state.problems[paragraph.id])
+
+        await store.send(.binding(.set(\.showsTranslation, false)))
+        XCTAssertTrue(store.state.problems.isEmpty)
+        await store.send(.binding(.set(\.showsTranslation, true)))
+        await store.send(.paragraphAppeared(paragraph.id))
+        await store.receive(\.annotated)
+        XCTAssertEqual(store.state.book.annotations[paragraph.id]?.translation, "Hi.")
+    }
+
+    func testAParagraphShownWithBothSwitchesOffChangesNothing() async throws {
+        let book = try spanish("Hola.")
+        let store = await reader(book)
+        let before = store.state.book
+        await store.send(.paragraphAppeared(try book.paragraphs.first.unwrap().id))
+        await store.finish()
+        XCTAssertEqual(store.state.book, before)
+        XCTAssertTrue(store.state.writing.isEmpty)
     }
 
     func testAnotherLanguageForABookWithNothingWrittenNeedsNoAsking() async throws {

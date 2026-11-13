@@ -125,6 +125,9 @@ package struct ReaderFeature {
         case languagePicked(Language)
         case wordTapped(paragraph: UUID, WordSpan)
         case askTapped
+        /// Reads the passage picked aloud, slowly when `slowly`.
+        case listenTapped(slowly: Bool)
+        case listenFailed(SpeechError)
         case cancelHighlightTapped
         case chatsTapped
         case chatBubbleTapped(paragraph: UUID)
@@ -139,6 +142,7 @@ package struct ReaderFeature {
     }
 
     @Dependency(\.tutor) private var tutor
+    @Dependency(\.speech) private var speech
     @Dependency(\.readerServices) private var services
     @Dependency(\.date.now) private var now
 
@@ -149,10 +153,13 @@ package struct ReaderFeature {
         Reduce { state, action in
             switch action {
             case .binding(\.showsTranslation):
+                // What failed is asked again when it's next shown.
+                state.problems = [:]
                 state.book.translates = state.showsTranslation
                 if state.showsTranslation { state.book.translate(into: tutor.reader) }
                 return .none
             case .binding(\.showsTransliteration):
+                state.problems = [:]
                 state.book.transliterates = state.showsTransliteration
                 return .none
             case .binding(\.isHighlighting):
@@ -192,11 +199,9 @@ package struct ReaderFeature {
                     state.alert = Self.changing(to: language, state.book)
                     return .none
                 }
-                read(as: language, &state)
-                return .none
+                return read(as: language, &state)
             case .alert(.presented(.changeLanguage(let language))):
-                read(as: language, &state)
-                return .none
+                return read(as: language, &state)
             case .wordTapped(let id, let word):
                 guard let paragraph = state.book.paragraph(id) else { return .none }
                 if state.isHighlighting {
@@ -218,6 +223,28 @@ package struct ReaderFeature {
                 state.isHighlighting = false
                 clearSelection(&state)
                 open(passage, &state)
+                return .none
+            case .listenTapped(let slowly):
+                guard let passage = state.picked else { return .none }
+                return .run { [language = state.book.language] send in
+                    do throws(SpeechError) {
+                        if slowly {
+                            try await speech.speakSlowly(passage.text, language.rawValue)
+                        } else {
+                            try await speech.speak(passage.text, language.rawValue)
+                        }
+                    } catch {
+                        await send(.listenFailed(error))
+                    }
+                }
+            case .listenFailed(let error):
+                state.alert = AlertState {
+                    TextState("Couldn't read it aloud")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(error.description)
+                }
                 return .none
             case .cancelHighlightTapped:
                 state.isHighlighting = false
@@ -272,13 +299,15 @@ package struct ReaderFeature {
 
     /// Reads the book as `language`, dropping what was written for the
     /// one before.
-    private func read(as language: Language, _ state: inout State) {
+    private func read(as language: Language, _ state: inout State) -> Effect<Action> {
         state.book.language = language
         state.book.annotations = [:]
         state.book.words = [:]
         state.problems = [:]
         state.writing = []
         findWords(&state)
+        // What the model is writing is for the old language.
+        return .cancel(id: Annotating.paragraph)
     }
 
     private func findWords(_ state: inout State) {
@@ -319,7 +348,10 @@ package struct ReaderFeature {
             }
             await send(.annotated(paragraph.id, written, problem))
         }
+        .cancellable(id: Annotating.paragraph, cancelInFlight: true)
     }
+
+    private enum Annotating { case paragraph }
 
     /// Moves on from `id` to the next paragraph that still needs the model.
     private func next(after id: UUID, _ state: inout State) -> Effect<Action> {

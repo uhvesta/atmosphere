@@ -94,6 +94,12 @@ struct ReaderView: View {
                 Text("“\(passage.text)”").lineLimit(1).truncationMode(.middle)
                 Spacer()
                 Button("Ask") { store.send(.askTapped) }.buttonStyle(.borderedProminent)
+                Menu("Listen") {
+                    Button("Slowly", systemImage: "tortoise") { store.send(.listenTapped(slowly: true)) }
+                } primaryAction: {
+                    store.send(.listenTapped(slowly: false))
+                }
+                .fixedSize()
                 Button("Copy") { copy(passage.text) }
             } else {
                 Text("Tap where the passage starts, then where it ends.").foregroundStyle(.secondary)

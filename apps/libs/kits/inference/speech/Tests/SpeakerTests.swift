@@ -66,7 +66,17 @@ final class SpeakerTests: XCTestCase {
 
         try await speaker.speak("Hi", language: "en")
 
-        XCTAssertEqual(output.events, [.start(16_000), .play([0.1, 0.2]), .play([0.3]), .drain])
+        XCTAssertEqual(output.events, [.start(16_000, 1), .play([0.1, 0.2]), .play([0.3]), .drain])
+    }
+
+    func testASlowReadPlaysTheSameAudioSlower() async throws {
+        let output = FakeOutput()
+        let system = FakeEngine(pieces: [[0.1, 0.2]])
+        let speaker = speaker(installed: [], choice: .system, system: system, output: output)
+
+        try await speaker.speak("Hi", language: "en", speed: 0.7)
+
+        XCTAssertEqual(output.events, [.start(16_000, 0.7), .play([0.1, 0.2]), .drain])
     }
 
     func testAnEnginesErrorIsThrownAndStopsTheAudio() async {
@@ -124,7 +134,7 @@ final class SpeakerTests: XCTestCase {
 
         XCTAssertEqual(system.spoken.map(\.text), ["First", "Second"])
         let stop = try XCTUnwrap(output.events.firstIndex(of: .stop))
-        let secondStart = try XCTUnwrap(output.events.lastIndex(of: .start(16_000)))
+        let secondStart = try XCTUnwrap(output.events.lastIndex(of: .start(16_000, 1)))
         XCTAssertLessThan(stop, secondStart, "The first stopped before the second started")
         XCTAssertEqual(output.events.last, .drain)
     }
@@ -191,7 +201,7 @@ final class FakeEngine: SpeechEngine, @unchecked Sendable {
 /// Records what it's asked to play.
 final class FakeOutput: AudioOutput, @unchecked Sendable {
     enum Event: Equatable {
-        case start(Double)
+        case start(Double, Float)
         case play([Float])
         case drain
         case stop
@@ -207,8 +217,8 @@ final class FakeOutput: AudioOutput, @unchecked Sendable {
 
     var events: [Event] { lock.withLock { _events } }
 
-    func start(sampleRate: Double) async throws(SpeechError) {
-        lock.withLock { _events.append(.start(sampleRate)) }
+    func start(sampleRate: Double, speed: Float) async throws(SpeechError) {
+        lock.withLock { _events.append(.start(sampleRate, speed)) }
         if let startError { throw startError }
     }
 

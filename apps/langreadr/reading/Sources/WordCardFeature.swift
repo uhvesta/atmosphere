@@ -51,7 +51,9 @@ package struct WordCardFeature {
         /// another sentence's meaning is known.
         case lookUpTapped
         case sayTapped
+        case saySlowlyTapped
         case saySentenceTapped
+        case saySentenceSlowlyTapped
         case spoke(SpeechError?)
         case askTapped
         case doneTapped
@@ -83,9 +85,13 @@ package struct WordCardFeature {
                 guard state.note == nil else { return .none }
                 return lookUp(&state)
             case .sayTapped:
-                return say(state.word.text, &state)
+                return say(state.word.text, slowly: false, &state)
+            case .saySlowlyTapped:
+                return say(state.word.text, slowly: true, &state)
             case .saySentenceTapped:
-                return say(state.sentence, &state)
+                return say(state.sentence, slowly: false, &state)
+            case .saySentenceSlowlyTapped:
+                return say(state.sentence, slowly: true, &state)
             case .spoke(let problem):
                 state.speechProblem = problem?.description
                 return .none
@@ -121,11 +127,15 @@ package struct WordCardFeature {
     }
 
     /// Reads `text` aloud in the card's language, in its voice.
-    private func say(_ text: String, _ state: inout State) -> Effect<Action> {
+    private func say(_ text: String, slowly: Bool, _ state: inout State) -> Effect<Action> {
         state.speechProblem = nil
         return .run { [language = state.language] send in
             do throws(SpeechError) {
-                try await speech.speak(text, language.rawValue)
+                if slowly {
+                    try await speech.speakSlowly(text, language.rawValue)
+                } else {
+                    try await speech.speak(text, language.rawValue)
+                }
             } catch {
                 await send(.spoke(error))
             }

@@ -24,6 +24,7 @@
 [header] "mercado"
 [text] "mercado"
 [button] "Say it"
+[button] "Say it slowly"
 [text] "mer-KAH-doh"
 [header, text] "Meaning"
 [text] "market; marketplace"

@@ -9,9 +9,11 @@ import XCTest
 
 @MainActor
 final class WordCardSpeechTests: XCTestCase {
-    private func card(speak: @escaping @Sendable (String, String) async throws(SpeechError) -> Void)
-        -> TestStoreOf<WordCardFeature>
-    {
+    private func card(
+        speak: @escaping @Sendable (String, String) async throws(SpeechError) -> Void,
+        slowly: @escaping @Sendable (String, String) async throws(SpeechError) -> Void = { _, _ throws(SpeechError) in
+        }
+    ) -> TestStoreOf<WordCardFeature> {
         let word = WordSpan(text: "amigo", start: 5, end: 10)
         let store = TestStore(
             initialState: WordCardFeature.State(
@@ -21,6 +23,7 @@ final class WordCardSpeechTests: XCTestCase {
             WordCardFeature()
         } withDependencies: {
             $0.speech.speak = speak
+            $0.speech.speakSlowly = slowly
         }
         store.exhaustivity = .off
         return store
@@ -36,6 +39,19 @@ final class WordCardSpeechTests: XCTestCase {
 
         XCTAssertEqual(said.value, ["es-MX: amigo", "es-MX: Hola amigo."])
         XCTAssertNil(store.state.speechProblem)
+    }
+
+    func testTheWordAndItsSentenceCanBeSaidSlowly() async {
+        let said = LockIsolated<[String]>([])
+        let store = card(
+            speak: { _, _ in XCTFail("Said at the usual pace") },
+            slowly: { text, _ in said.withValue { $0.append(text) } })
+
+        await store.send(.saySlowlyTapped)
+        await store.send(.saySentenceSlowlyTapped)
+        await store.finish()
+
+        XCTAssertEqual(said.value, ["amigo", "Hola amigo."])
     }
 
     func testWhyItCouldntBeSaidIsShown() async {

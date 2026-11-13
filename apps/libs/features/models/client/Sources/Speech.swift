@@ -23,16 +23,26 @@ public struct SpeechClient: Sendable {
     public var speak: @Sendable (_ text: String, _ language: String) async throws(SpeechError) -> Void = {
         _, _ throws(SpeechError) in
     }
+    /// Reads `text` aloud as `speak` does, slower, for someone learning
+    /// the language to follow.
+    public var speakSlowly: @Sendable (_ text: String, _ language: String) async throws(SpeechError) -> Void = {
+        _, _ throws(SpeechError) in
+    }
     // swiftlint:enable closure_parameter_position
     /// Stops what's speaking.
     public var stop: @Sendable () async -> Void
 }
 
 extension SpeechClient {
+    // As above: the formatter puts a typed throw's parameters on their own line.
+    // swiftlint:disable closure_parameter_position
     /// Picks kept in `selection`, and `speak` for what's said.
     public static func picks(
         _ selection: VoiceSelection,
         speak: @escaping @Sendable (String, String) async throws(SpeechError) -> Void = { _, _ throws(SpeechError) in
+        },
+        speakSlowly: @escaping @Sendable (String, String) async throws(SpeechError) -> Void = {
+            _, _ throws(SpeechError) in
         }, stop: @escaping @Sendable () async -> Void = {}
     ) -> Self {
         SpeechClient(
@@ -42,8 +52,9 @@ extension SpeechClient {
             },
             choose: { choice, language in selection.choose(choice, for: language) },
             forget: { id in selection.forget(id) },
-            speak: speak, stop: stop)
+            speak: speak, speakSlowly: speakSlowly, stop: stop)
     }
+    // swiftlint:enable closure_parameter_position
 
     /// Picks in memory, saying nothing.
     public static var inMemory: Self { .picks(VoiceSelection(file: nil)) }

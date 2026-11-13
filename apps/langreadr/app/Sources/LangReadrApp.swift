@@ -145,6 +145,9 @@ extension SpeechClient: DependencyKey {
         return .picks(
             selection,
             speak: { text, language throws(SpeechError) in try await speaker.speak(text, language: language) },
+            speakSlowly: { text, language throws(SpeechError) in
+                try await speaker.speak(text, language: language, speed: 0.7)
+            },
             stop: { await speaker.stop() })
     }()
 }

@@ -3,8 +3,9 @@ import InferenceKit
 
 /// Where speech plays: the device's speaker, or a recording in tests.
 public protocol AudioOutput: Sendable {
-    /// Gets ready to play audio at `sampleRate`, before the first piece.
-    func start(sampleRate: Double) async throws(SpeechError)
+    /// Gets ready to play audio at `sampleRate`, before the first piece,
+    /// at `speed` times as fast as it was made without changing its pitch.
+    func start(sampleRate: Double, speed: Float) async throws(SpeechError)
     /// Plays `audio` after what's already queued.
     func play(_ audio: SpeechAudio) async
     /// Returns once everything queued has played, or it's stopped.
@@ -55,17 +56,18 @@ public final class Speaker: Sendable {
             selection.choice(for: language), language: language, installed: await installed(), catalog: catalog)
     }
 
-    /// Reads `text` aloud in `language`, a BCP 47 tag, after stopping
-    /// whatever is speaking, and returns once it has played, or once it's
-    /// cut off by `stop`, another text or the task's cancellation.
-    public func speak(_ text: String, language: String) async throws(SpeechError) {
+    /// Reads `text` aloud in `language`, a BCP 47 tag, at `speed` times
+    /// the voice's own pace, after stopping whatever is speaking, and
+    /// returns once it has played, or once it's cut off by `stop`, another
+    /// text or the task's cancellation.
+    public func speak(_ text: String, language: String, speed: Float = 1) async throws(SpeechError) {
         let task = current.withValue { current in
             let previous = current
             previous?.cancel()
             let task = Task<Result<Void, SpeechError>, Never> {
                 // The one before it stops first, so the two never overlap.
                 _ = await previous?.value
-                return await self.run(text, language: language)
+                return await self.run(text, language: language, speed: speed)
             }
             current = task
             return task
@@ -93,7 +95,7 @@ public final class Speaker: Sendable {
         await output.stop()
     }
 
-    private func run(_ text: String, language: String) async -> Result<Void, SpeechError> {
+    private func run(_ text: String, language: String, speed: Float) async -> Result<Void, SpeechError> {
         guard !Task.isCancelled else { return .success(()) }
         let engine: any SpeechEngine
         let voice: String
@@ -121,7 +123,7 @@ public final class Speaker: Sendable {
                 guard !Task.isCancelled else { break }
                 if !started {
                     do throws(SpeechError) {
-                        try await output.start(sampleRate: piece.sampleRate)
+                        try await output.start(sampleRate: piece.sampleRate, speed: speed)
                     } catch {
                         making.cancel()
                         return .failure(error)

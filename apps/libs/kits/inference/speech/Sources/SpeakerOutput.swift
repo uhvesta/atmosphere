@@ -2,10 +2,12 @@
 import InferenceKit
 
 /// The device's speaker, through AVAudioEngine: one player node, which
-/// queues each piece of speech as it's made.
+/// queues each piece of speech as it's made, through a time stretch that
+/// slows it without lowering it.
 public actor SpeakerOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    private let stretch = AVAudioUnitTimePitch()
     private var format: AVAudioFormat?
     /// Pieces queued and not yet played.
     private var queued = 0
@@ -15,9 +17,10 @@ public actor SpeakerOutput: AudioOutput {
 
     public init() {
         engine.attach(player)
+        engine.attach(stretch)
     }
 
-    public func start(sampleRate: Double) throws(SpeechError) {
+    public func start(sampleRate: Double, speed: Float) throws(SpeechError) {
         #if os(iOS)
             do {
                 let session = AVAudioSession.sharedInstance()
@@ -33,9 +36,12 @@ public actor SpeakerOutput: AudioOutput {
             }
             if engine.isRunning { engine.stop() }
             engine.disconnectNodeOutput(player)
-            engine.connect(player, to: engine.mainMixerNode, format: format)
+            engine.disconnectNodeOutput(stretch)
+            engine.connect(player, to: stretch, format: format)
+            engine.connect(stretch, to: engine.mainMixerNode, format: format)
             self.format = format
         }
+        stretch.rate = speed
         if !engine.isRunning {
             engine.prepare()
             do {
