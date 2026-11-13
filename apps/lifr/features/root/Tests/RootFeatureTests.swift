@@ -1911,6 +1911,30 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testASavedFiltersLinkShowsItsTasks() async {
+        let urgent = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
+        let mac = makeStore(.mac)
+        var task = await mac.send(.task)
+        await mac.receive(\.loaded)
+        await mac.send(.linkOpened(.filter(urgent.id)))
+        await mac.skipReceivedActions(strict: false)
+        XCTAssertEqual(mac.state.selection, .savedFilter(urgent.id))
+        await task.cancel()
+
+        let phone = makeStore(.phone)
+        task = await phone.send(.task)
+        await phone.receive(\.loaded)
+        await phone.send(.linkOpened(.filter(urgent.id)))
+        await phone.skipReceivedActions(strict: false)
+        XCTAssertNotNil(phone.state.savedFilter)
+
+        await phone.send(.binding(.set(\.tab, .conversations)))
+        await phone.send(.linkOpened(.filter(UUID())))
+        await phone.skipReceivedActions(strict: false)
+        XCTAssertEqual(phone.state.tab, .today, "a filter that's gone opens Today")
+        await task.cancel()
+    }
+
     func testSearchListsTasksProjectsAndAvenuesButNothingWhileLocked() async {
         records.task("Stretch", in: health, due: 0)
         let gone = records.task("Old run", in: health, due: 0)
@@ -1941,7 +1965,7 @@ final class RootFeatureTests: XCTestCase {
     func testLinksReadBackWhatTheyName() throws {
         let id = UUID()
         let links: [DeepLink] = [
-            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id), .project(id),
+            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id), .project(id), .filter(id),
             .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
         ]
         for link in links {

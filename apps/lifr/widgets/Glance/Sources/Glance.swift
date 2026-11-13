@@ -72,6 +72,9 @@ package struct TodayGlance: Codable, Hashable, Sendable {
     /// Each active Project, Avenue by Avenue, in the same shape as an
     /// Avenue, or nil from a Lifr that didn't write them yet.
     package var projects: [AvenueGlance]?
+    /// Each saved filter's open tasks, in the sidebar's order, or nil from
+    /// a Lifr that didn't write them yet.
+    package var filters: [AvenueGlance]?
     /// How many open tasks are due on each day of this month and the
     /// next, by YYYY-MM-DD, or nil from a Lifr that didn't write them yet.
     package var dueCounts: [String: Int]?
@@ -80,7 +83,8 @@ package struct TodayGlance: Codable, Hashable, Sendable {
     /// many while `locked`.
     package init(
         asOf: Date, from: Date, until: Date, rows: [Row], locked: Bool, later: [TodayGlance] = [],
-        avenues: [AvenueGlance]? = nil, projects: [AvenueGlance]? = nil, dueCounts: [String: Int]? = nil
+        avenues: [AvenueGlance]? = nil, projects: [AvenueGlance]? = nil,
+        filters: [AvenueGlance]? = nil, dueCounts: [String: Int]? = nil
     ) {
         self.asOf = asOf
         self.from = from
@@ -92,6 +96,7 @@ package struct TodayGlance: Codable, Hashable, Sendable {
         self.later = later
         self.avenues = avenues.map { $0.map { locked ? $0.locked : $0 } }
         self.projects = projects.map { $0.map { locked ? $0.locked : $0 } }
+        self.filters = filters.map { $0.map { locked ? $0.locked : $0 } }
         self.dueCounts = dueCounts
     }
 
@@ -105,6 +110,7 @@ package struct TodayGlance: Codable, Hashable, Sendable {
                 var day = day
                 day.avenues = day.avenues ?? avenues
                 day.projects = day.projects ?? projects
+                day.filters = day.filters ?? filters
                 day.dueCounts = day.dueCounts ?? dueCounts
                 return day
             }
@@ -133,7 +139,7 @@ package struct TodayGlance: Codable, Hashable, Sendable {
     }
 }
 
-/// An Avenue or a Project in the widgets: how many open tasks it has and
+/// An Avenue, a Project or a saved filter in the widgets: how many open tasks it has and
 /// the first few.
 package struct AvenueGlance: Codable, Hashable, Sendable, Identifiable {
     package var id: UUID

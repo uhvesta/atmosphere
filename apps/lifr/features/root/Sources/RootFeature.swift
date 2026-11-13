@@ -1851,6 +1851,15 @@ package struct RootFeature {
                         count: rows.count, overdue: rows.count(where: \.isOverdue), rows: Array(rows.prefix(8)))
                 }
         }
+        let filters = workspace.sortedSavedFilters.map { saved in
+            let matching = saved.filter.matching(in: workspace, now: now, timeZone: timeZone).filter {
+                $0.isOpen && !$0.isSubtask
+            }
+            let rows = glanced(workspace.rows(matching, now: now, timeZone: timeZone))
+            return AvenueGlance(
+                id: saved.id, name: saved.name, symbol: saved.symbol, color: "blue", count: rows.count,
+                overdue: rows.count(where: \.isOverdue), rows: Array(rows.prefix(8)))
+        }
         let thisMonth = CalendarDate(now, in: timeZone).firstOfMonth
         let months = thisMonth..<thisMonth.firstOfMonth(adding: 2)
         var dueCounts: [String: Int] = [:]
@@ -1864,7 +1873,7 @@ package struct RootFeature {
         }
         return TodayGlance(
             asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: locked, later: later,
-            avenues: avenues, projects: projects, dueCounts: dueCounts)
+            avenues: avenues, projects: projects, filters: filters, dueCounts: dueCounts)
     }
 
     /// Lists every task not in the Trash, and each open Avenue and Project,
@@ -1957,6 +1966,10 @@ package struct RootFeature {
             if state.platform == .mac { return .send(.selected(.scope(.project(id)))) }
             state.tab = .avenues
             return .send(.avenues(.opened(.project(id))))
+        case .filter(let id):
+            guard state.workspace?.savedFilters[id] != nil else { return .send(.goTo(.today)) }
+            if state.platform == .mac { return .send(.selected(.savedFilter(id))) }
+            return .send(.savedFilterTapped(id))
         case .calendar(let date):
             return .concatenate(.send(.goTo(.calendar)), .send(.calendar(.daySelected(date))))
         case .add(let title):

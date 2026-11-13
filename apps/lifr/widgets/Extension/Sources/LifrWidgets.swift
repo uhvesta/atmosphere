@@ -101,17 +101,23 @@ struct AvenuesWidget: Widget {
     /// An Avenue or Project the Avenues widget can show, from what Lifr
     /// last wrote.
     struct AvenueOption: AppEntity {
-        static let typeDisplayRepresentation: TypeDisplayRepresentation = "Avenue or Project"
+        static let typeDisplayRepresentation: TypeDisplayRepresentation = "Avenue, Project or Filter"
         static let defaultQuery = Query()
 
         var id: UUID
         var name: String
-        var isProject = false
+        var kind = Kind.avenue
+
+        enum Kind {
+            case avenue, project, filter
+        }
 
         var displayRepresentation: DisplayRepresentation {
-            isProject
-                ? DisplayRepresentation(title: "\(name)", subtitle: "Project")
-                : DisplayRepresentation(title: "\(name)")
+            switch kind {
+            case .avenue: DisplayRepresentation(title: "\(name)")
+            case .project: DisplayRepresentation(title: "\(name)", subtitle: "Project")
+            case .filter: DisplayRepresentation(title: "\(name)", subtitle: "Saved Filter")
+            }
         }
 
         struct Query: EntityQuery {
@@ -126,7 +132,8 @@ struct AvenuesWidget: Widget {
             private func options() -> [AvenueOption] {
                 let glance = readGlance()
                 return (glance?.avenues ?? []).map { AvenueOption(id: $0.id, name: $0.name) }
-                    + (glance?.projects ?? []).map { AvenueOption(id: $0.id, name: $0.name, isProject: true) }
+                    + (glance?.projects ?? []).map { AvenueOption(id: $0.id, name: $0.name, kind: .project) }
+                    + (glance?.filters ?? []).map { AvenueOption(id: $0.id, name: $0.name, kind: .filter) }
             }
         }
     }
@@ -134,11 +141,11 @@ struct AvenuesWidget: Widget {
     /// Which Avenue the Avenues widget shows: all of them when none is
     /// picked.
     struct PickAvenueIntent: WidgetConfigurationIntent {
-        static let title: LocalizedStringResource = "Pick an Avenue or Project"
+        static let title: LocalizedStringResource = "Pick an Avenue, Project or Filter"
         static let description = IntentDescription(
-            "Shows one Avenue's or Project's tasks, or every Avenue when none is picked.")
+            "Shows one Avenue's, Project's or saved filter's tasks, or every Avenue when none is picked.")
 
-        @Parameter(title: "Avenue or Project")
+        @Parameter(title: "Avenue, Project or Filter")
         var avenue: AvenueOption?
 
         init() {}
@@ -396,7 +403,8 @@ struct AvenuesEntryView: View {
     private func content(_ id: UUID) -> AvenueWidgetView.Content {
         guard let avenues = entry.glance?.avenues else { return .notWritten }
         if let avenue = avenues.first(where: { $0.id == id }) { return .avenue(avenue) }
-        return entry.glance?.projects?.first { $0.id == id }.map { .project($0) } ?? .gone
+        if let project = entry.glance?.projects?.first(where: { $0.id == id }) { return .project(project) }
+        return entry.glance?.filters?.first { $0.id == id }.map { .filter($0) } ?? .gone
     }
 }
 

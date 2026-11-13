@@ -17,6 +17,7 @@ package struct AvenueWidgetView: View {
         case gone
         case avenue(AvenueGlance)
         case project(AvenueGlance)
+        case filter(AvenueGlance)
     }
 
     package var content: Content
@@ -34,7 +35,7 @@ package struct AvenueWidgetView: View {
                 note("Open Lifr to see this Avenue here.")
             case .gone:
                 note("What this widget showed was archived, finished or deleted. Edit the widget to pick another.")
-            case .avenue(let avenue), .project(let avenue):
+            case .avenue(let avenue), .project(let avenue), .filter(let avenue):
                 header(avenue)
                 titles(avenue)
             }
@@ -48,6 +49,7 @@ package struct AvenueWidgetView: View {
         switch content {
         case .avenue(let avenue): return DeepLink.avenue(avenue.id).url
         case .project(let project): return DeepLink.project(project.id).url
+        case .filter(let filter): return DeepLink.filter(filter.id).url
         case .notWritten, .gone: return nil
         }
     }

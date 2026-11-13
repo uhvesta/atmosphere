@@ -8,6 +8,7 @@ import Foundation
 /// - `lifr://upcoming` shows Upcoming.
 /// - `lifr://avenue/<id>` shows an Avenue's page.
 /// - `lifr://project/<id>` shows a Project's page.
+/// - `lifr://filter/<id>` shows a saved filter's tasks.
 /// - `lifr://calendar/2026-11-09` shows that day in the calendar.
 /// - `lifr://add?title=Buy%20milk` opens Quick Add, with the title if given.
 package enum DeepLink: Hashable, Sendable {
@@ -16,6 +17,7 @@ package enum DeepLink: Hashable, Sendable {
     case upcoming
     case avenue(UUID)
     case project(UUID)
+    case filter(UUID)
     case calendar(CalendarDate)
     case add(title: String?)
 
@@ -43,6 +45,9 @@ package enum DeepLink: Hashable, Sendable {
         case ("project", 1):
             guard let id = UUID(uuidString: path[0]) else { return nil }
             self = .project(id)
+        case ("filter", 1):
+            guard let id = UUID(uuidString: path[0]) else { return nil }
+            self = .filter(id)
         case ("calendar", 1):
             guard let date = try? CalendarDate(path[0]) else { return nil }
             self = .calendar(date)
@@ -72,6 +77,9 @@ package enum DeepLink: Hashable, Sendable {
             components.path = "/\(id.uuidString)"
         case .project(let id):
             components.host = "project"
+            components.path = "/\(id.uuidString)"
+        case .filter(let id):
+            components.host = "filter"
             components.path = "/\(id.uuidString)"
         case .calendar(let date):
             components.host = "calendar"
