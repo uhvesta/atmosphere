@@ -398,9 +398,9 @@ package struct ConversationsFeature {
 
             case .failed(let error):
                 state.alert = AlertState {
-                    TextState("Conversations")
+                    TextState("Couldn't save the conversation")
                 } message: {
-                    TextState(String(describing: error))
+                    TextState(error.localizedDescription)
                 }
                 return .none
 

@@ -11,6 +11,8 @@ package struct SkillsFeature {
         package var skills: [Skill] = []
         @Presents package var editor: SkillEditor.State?
         @Presents package var alert: AlertState<Never>?
+        /// Whether the latest change deleted skills, so a failure says so.
+        var deletes = false
         /// Why the skills couldn't be loaded, until they load.
         package var loadError: String?
 
@@ -52,12 +54,14 @@ package struct SkillsFeature {
                 guard let index = state.skills.firstIndex(where: { $0.id == id }) else { return .none }
                 state.skills[index].isOn = on
                 let skill = state.skills[index]
+                state.deletes = false
                 return save { try await $0.save(skill) }
 
             case .autoPicksToggled(let id, let on):
                 guard let index = state.skills.firstIndex(where: { $0.id == id }) else { return .none }
                 state.skills[index].autoPicks = on
                 let skill = state.skills[index]
+                state.deletes = false
                 return save { try await $0.save(skill) }
 
             case .newTapped:
@@ -72,10 +76,12 @@ package struct SkillsFeature {
             case .deleteTapped(let ids):
                 let ids = ids.filter { $0.hasPrefix(Skill.userPrefix) }
                 state.skills.removeAll { ids.contains($0.id) }
+                state.deletes = true
                 return save { try await $0.delete(ids) }
 
             case .editor(.presented(.delegate(.save(let skill)))):
                 state.editor = nil
+                state.deletes = false
                 return save { try await $0.save(skill) }
 
             case .loaded(.failure(let error)):
@@ -84,7 +90,7 @@ package struct SkillsFeature {
 
             case .saved(.failure(let error)):
                 state.alert = AlertState {
-                    TextState("Couldn't save the skill")
+                    state.deletes ? TextState("Couldn't delete the skill") : TextState("Couldn't save the skill")
                 } message: {
                     TextState(String(describing: error))
                 }

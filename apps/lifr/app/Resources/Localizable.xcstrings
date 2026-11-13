@@ -1174,6 +1174,9 @@
     "Couldn't delete the conversation" : {
 
     },
+    "Couldn't delete the skill" : {
+
+    },
     "Couldn't dictate" : {
 
     },
@@ -1245,6 +1248,9 @@
 
     },
     "Couldn't save" : {
+
+    },
+    "Couldn't save the conversation" : {
 
     },
     "Couldn't save the skill" : {
