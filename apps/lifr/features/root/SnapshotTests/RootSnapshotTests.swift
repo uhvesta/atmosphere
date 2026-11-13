@@ -27,10 +27,9 @@ final class RootSnapshotTests: XCTestCase {
         return state
     }
 
-    private func screen(_ colorScheme: ColorScheme = .light) -> some View {
+    private func screen() -> some View {
         RootView(store: Store(initialState: state) { EmptyReducer() })
             .environment(\.timeZone, .gmt)
-            .environment(\.colorScheme, colorScheme)
     }
 
     func testDisplayData() {
