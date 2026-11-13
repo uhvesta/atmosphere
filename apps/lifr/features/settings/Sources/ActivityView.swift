@@ -11,6 +11,19 @@ package struct ActivityView: View {
     }
 
     package var body: some View {
+        ActivityList(store: store)
+            .navigationTitle("Activity")
+            .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
+            .alert($store.scope(state: \.alert, action: \.alert))
+    }
+}
+
+/// The filters and the changes, apart from the dialogs, so showing or
+/// dismissing one doesn't work the changes out again.
+private struct ActivityList: View {
+    @Bindable var store: StoreOf<ActivityFeature>
+
+    var body: some View {
         let rows = store.state.rows(now: Date(), calendar: .current)
         List {
             Section {
@@ -58,9 +71,6 @@ package struct ActivityView: View {
                 }
             }
         }
-        .navigationTitle("Activity")
-        .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
-        .alert($store.scope(state: \.alert, action: \.alert))
     }
 
     /// How to revert a change, in the gesture the platform uses for it.
