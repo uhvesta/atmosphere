@@ -90,6 +90,11 @@ package struct AvenueWidgetView: View {
                 ForEach(avenue.rows.prefix(room)) { row in
                     title(row, color: Color(widgetAvenue: avenue.color))
                 }
+                if avenue.count > room {
+                    Text("\(avenue.count - room) more")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
