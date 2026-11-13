@@ -63,6 +63,11 @@ esac
 app="$scratch/Humata.app"
 [ -d "$app" ] || fail "$out has no Humata.app in it."
 chmod -R u+w "$app"
+bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.plist")
+case "$bundle_id" in
+  com.example.*)
+    fail "the app was built as $bundle_id, the placeholder used when no identity is set. Set LIFR_TEAM_ID and LIFR_BUNDLE_PREFIX in this checkout's user.bazelrc (see apps/lifr/identity.bzl), then release again; a placeholder ID would change once fixed, and people's settings and login item would be left behind." ;;
+esac
 plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$(git rev-list --count HEAD)" "$app/Contents/Info.plist"
 
