@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use humata_wire::{Client, ClientError, Service, pb};
 
-use crate::daemon::{Clones, Daemon};
+use crate::daemon::{Clones, Daemon, Places};
 use crate::host::Host;
 use crate::hosts::{HostConfig, Hosts};
 use crate::store::Store;
@@ -569,6 +569,10 @@ async fn daemon_itself(state: &Path, hosts: Hosts) -> Arc<Daemon> {
                 dir: state.join("repositories"),
                 old: None,
             },
+            Places {
+                state: state.to_owned(),
+                cache: state.to_owned(),
+            },
             "test".to_owned(),
         ),
         Err(error) => panic!("couldn't open the host: {error}"),
@@ -974,6 +978,7 @@ async fn a_deleted_session_is_gone_with_its_files_and_refs() {
     let delete = |id: &str| {
         client.call(pb::request::Kind::DeleteSession(pb::DeleteSession {
             session_id: id.to_owned(),
+            only_if_held: false,
         }))
     };
     let archive = |id: &str| {
@@ -3331,6 +3336,7 @@ async fn a_delete_that_cant_clean_up_still_forgets_the_session() {
     let deleted = client
         .call(pb::request::Kind::DeleteSession(pb::DeleteSession {
             session_id: session.id.clone(),
+            only_if_held: false,
         }))
         .await;
     assert!(deleted.is_err(), "{deleted:?}");

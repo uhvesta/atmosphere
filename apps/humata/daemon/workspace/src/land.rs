@@ -203,6 +203,32 @@ pub async fn holds_only(checkout: &Checkout, tip: &str) -> bool {
         .is_ok()
 }
 
+/// Whether every commit on `branch` in the repository at `repository` is
+/// also on another branch, a remote branch or a tag, so deleting the
+/// branch and its session's snapshots loses no commit. True when there's
+/// no such branch; false when that can't be told.
+pub async fn held_elsewhere(repository: &Path, branch: &str) -> bool {
+    if !has_branch(repository, branch).await {
+        return true;
+    }
+    let own = format!("refs/heads/{branch}");
+    let exclude = format!("--exclude={own}");
+    let only_here = git(
+        repository,
+        &[
+            "rev-list",
+            "--count",
+            &own,
+            "--not",
+            &exclude,
+            "--exclude=refs/humata/*",
+            "--all",
+        ],
+    )
+    .await;
+    only_here.is_ok_and(|count| count.trim() == "0")
+}
+
 /// Deletes `branch` from the repository at `repository`; one already gone
 /// is fine.
 pub async fn delete_branch(repository: &Path, branch: &str) -> Result<(), WorkspaceError> {

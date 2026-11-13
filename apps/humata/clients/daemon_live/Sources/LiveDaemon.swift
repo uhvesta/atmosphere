@@ -470,6 +470,32 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the revoked grant")
                 }
             },
+            storage: {
+                guard case .storage(let storage) = try await daemon.call(.getStorage(Humata_V1_GetStorage())) else {
+                    throw DaemonError.unexpected("something other than the storage")
+                }
+                return Storage(storage)
+            },
+            setStorageSettings: { autoDelete, days in
+                var set = Humata_V1_SetStorageSettings()
+                set.settings.autoDelete = autoDelete
+                set.settings.days = UInt32(clamping: days)
+                guard case .storage(let storage) = try await daemon.call(.setStorageSettings(set)) else {
+                    throw DaemonError.unexpected("something other than the storage")
+                }
+                return Storage(storage)
+            },
+            cleanUpStorage: { cleanup in
+                var clean = Humata_V1_CleanUpStorage()
+                clean.deleteArchivedAfterDays = UInt32(clamping: cleanup.deleteAfterDays)
+                clean.compact = cleanup.compact
+                clean.putAwayWorktrees = cleanup.putAwayWorktrees
+                clean.removeUnusedClones = cleanup.removeUnusedClones
+                guard case .storage(let storage) = try await daemon.call(.cleanUpStorage(clean)) else {
+                    throw DaemonError.unexpected("something other than the storage")
+                }
+                return Storage(storage)
+            },
             answerRequest: { request, answer in
                 var asked = Humata_V1_AnswerRequest()
                 asked.requestID = request

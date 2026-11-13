@@ -1,5 +1,6 @@
 import Foundation
 import HumataAppFeature
+import HumataDaemonClient
 import InferenceKit
 import InferenceKitLive
 import InferenceServerKit
@@ -68,6 +69,37 @@ private actor ModelServing {
         return host
     }()
 
+    /// The models downloaded, each measured, off the main thread.
+    static func files() async -> [ModelFiles.Model] {
+        await Task.detached(priority: .utility) {
+            Self.library.installed().map { model in
+                ModelFiles.Model(
+                    id: model.id.rawValue, name: model.spec.name, bytes: Self.allocated(model.directory),
+                    path: model.directory.path(percentEncoded: false))
+            }
+        }.value
+    }
+
+    static func delete(_ id: String) async throws {
+        try await library.delete(ModelID(rawValue: id))
+    }
+
+    /// The disk space the files under `folder` take.
+    private static func allocated(_ folder: URL) -> UInt64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
+        guard let files = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys) else {
+            return 0
+        }
+        var bytes: UInt64 = 0
+        for case let file as URL in files {
+            let values = try? file.resourceValues(forKeys: Set(keys))
+            if values?.isRegularFile == true {
+                bytes += UInt64(values?.totalFileAllocatedSize ?? 0)
+            }
+        }
+        return bytes
+    }
+
     private static func models() -> [ServedModel] {
         let downloaded = library.installed().filter { $0.spec.runtime == .mlx }.map { model in
             ServedModel(id: model.id.rawValue, runtime: EngineRuntime(model: model, host: host))
@@ -121,4 +153,11 @@ private actor ModelServing {
 
 extension ModelServerService {
     static let live = ModelServerService { await ModelServing.shared.start() }
+}
+
+extension ModelFiles {
+    static let live = ModelFiles(
+        folder: ModelLibrary.defaultRoot.path(percentEncoded: false),
+        installed: { await ModelServing.files() },
+        delete: { id in try await ModelServing.delete(id) })
 }

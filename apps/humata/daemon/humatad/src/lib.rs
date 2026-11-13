@@ -14,6 +14,7 @@ mod hosts;
 mod login_env;
 mod machine;
 mod mcp;
+mod old_clones;
 mod peer;
 mod ports;
 mod relay;
@@ -29,7 +30,7 @@ pub use error::StartError;
 pub use login_env::{LoginEnvError, login_environment};
 pub use mcp::{McpError, mcp_stdio};
 
-use daemon::{Clones, Daemon};
+use daemon::{Clones, Daemon, Places};
 use host::Host;
 use hosts::Hosts;
 use humata_agent::McpServer;
@@ -208,11 +209,18 @@ pub async fn relay(socket: &Path, state: &Path, cache: &Path) -> Result<(), Star
     }
 }
 
+/// How large `host.log` grows before the next start sets it aside.
+const HOST_LOG_LIMIT: u64 = 8 << 20;
+
 /// Starts `humatad host --socket` on its own, its output in
 /// `<state>/host.log`, and connects once it listens.
 async fn start_host(socket: &Path, state: &Path, cache: &Path) -> Result<UnixStream, StartError> {
     let program = std::env::current_exe().map_err(|source| StartError::OwnProgram { source })?;
     let log = state.join("host.log");
+    // One older log is kept, so it never grows past twice this.
+    if std::fs::metadata(&log).is_ok_and(|log| log.len() > HOST_LOG_LIMIT) {
+        let _ = std::fs::rename(&log, state.join("host.log.1"));
+    }
     let opened = std::fs::create_dir_all(state).and_then(|()| {
         std::fs::OpenOptions::new()
             .create(true)
@@ -304,6 +312,15 @@ pub async fn daemon(
     hosts: &Path,
 ) -> Result<(), StartError> {
     let store = Store::open(&state.join("humata.sqlite3"))?;
+    // Before the host reads its sessions, so they name the moved clones.
+    for error in old_clones::move_old_clones(
+        &cache.join("repositories"),
+        &state.join("repositories"),
+        &store,
+        &state.join("host"),
+    ) {
+        eprintln!("humatad: {}", humata_wire::describe(&error));
+    }
     // Agents here reach the board and review threads through `humatad mcp`.
     let mcp = mcp_server(socket);
     let local = Host::open(&state.join("host"), &cache.join("worktrees"), mcp).await?;
@@ -319,8 +336,13 @@ pub async fn daemon(
             dir: state.join("repositories"),
             old: Some(cache.join("repositories")),
         },
+        Places {
+            state: state.to_owned(),
+            cache: cache.to_owned(),
+        },
         build.to_string(),
     );
+    daemon.delete_on_schedule();
     let listener = socket::listen(socket).await?;
     let serving = async {
         loop {

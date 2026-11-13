@@ -767,6 +767,9 @@ impl Host {
             | Request::ListApprovals(_)
             | Request::DecideApprovals(_)
             | Request::RevokeGrant(_)
+            | Request::GetStorage(_)
+            | Request::SetStorageSettings(_)
+            | Request::CleanUpStorage(_)
             | Request::SetModelServer(_) => {
                 return Err(HostError::NotForHosts);
             }
@@ -919,12 +922,27 @@ impl Host {
             }
             Request::DeleteSession(delete) => {
                 let session = SessionId::new(delete.session_id);
-                self.owner(&session)?.1.delete(&session).await?;
+                let agent = self.owner(&session)?.1;
+                if delete.only_if_held {
+                    let record = record(agent.as_ref(), &session).await?;
+                    for checkout in &record.checkouts {
+                        // A fork's checkouts are its parent's.
+                        if checkout.owner == session.as_str()
+                            && !humata_agent::held_elsewhere(&checkout.repository, &checkout.branch)
+                                .await
+                        {
+                            return Ok(Reply::Response(Response::SessionDeleted(
+                                pb::SessionDeleted { kept: true },
+                            )));
+                        }
+                    }
+                }
+                agent.delete(&session).await?;
                 self.owners
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .remove(&session);
-                Response::SessionDeleted(pb::SessionDeleted {})
+                Response::SessionDeleted(pb::SessionDeleted { kept: false })
             }
             Request::ReadChanges(read) => {
                 let session = SessionId::new(read.session_id.clone());

@@ -32,8 +32,10 @@ mod pulls;
 mod recovery;
 mod repositories;
 pub use repositories::Clones;
+pub use storage::Places;
 mod review;
 mod search;
+mod storage;
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
 /// host they run on. Projects, and where each session is, are the daemon's.
@@ -71,6 +73,9 @@ pub struct Daemon {
     indexing: tokio::sync::Mutex<()>,
     /// Told when an approval is asked for or decided.
     approvals_changed: tokio::sync::Notify,
+    /// Where its files are on the Mac, as Settings › Storage shows them.
+    places: storage::Places,
+    cleaning: std::sync::Mutex<storage::Cleaning>,
 }
 
 impl Daemon {
@@ -82,6 +87,7 @@ impl Daemon {
         hosts_file: PathBuf,
         recovery: PathBuf,
         clones: Clones,
+        places: storage::Places,
         build: String,
     ) -> Arc<Self> {
         let (tool_calls, calls) = mpsc::unbounded_channel();
@@ -119,6 +125,8 @@ impl Daemon {
             next_forward: std::sync::atomic::AtomicU64::new(0),
             indexing: tokio::sync::Mutex::new(()),
             approvals_changed: tokio::sync::Notify::new(),
+            places,
+            cleaning: std::sync::Mutex::default(),
         });
         if let Err(error) = daemon.interrupt_unfinished_approvals() {
             eprintln!(
@@ -1327,6 +1335,17 @@ impl Daemon {
                 self.revoke_grant(&revoke.id)?;
                 return Ok(Reply::Response(Response::GrantRevoked(pb::GrantRevoked {})));
             }
+            Request::GetStorage(_) => {
+                return Ok(Reply::Response(Response::Storage(self.storage().await?)));
+            }
+            Request::SetStorageSettings(set) => {
+                self.set_storage_settings(&set.settings.clone().unwrap_or_default())?;
+                return Ok(Reply::Response(Response::Storage(self.storage().await?)));
+            }
+            Request::CleanUpStorage(clean) => {
+                self.start_cleanup(std::mem::take(clean))?;
+                return Ok(Reply::Response(Response::Storage(self.storage().await?)));
+            }
             Request::DeclineProposal(decline) => {
                 let proposal = self.decline_proposal(decline).await?;
                 return Ok(Reply::Response(Response::ProposalDeclined(
@@ -1577,9 +1596,11 @@ impl Daemon {
                 host
             }
             Request::DeleteSession(delete) => {
-                self.delete_session(&delete.session_id).await?;
+                let deleted = self
+                    .delete_session(&delete.session_id, delete.only_if_held)
+                    .await?;
                 return Ok(Reply::Response(Response::SessionDeleted(
-                    pb::SessionDeleted {},
+                    pb::SessionDeleted { kept: !deleted },
                 )));
             }
             Request::ReadChanges(read) => {

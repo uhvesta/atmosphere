@@ -649,6 +649,131 @@ package struct Approvals: Hashable, Sendable {
     }
 }
 
+/// What humatad's files take on this Mac, how they're cleaned up, and the
+/// cleanup going on.
+package struct Storage: Hashable, Sendable {
+    package enum Kind: Hashable, Sendable, CaseIterable {
+        /// Repositories added by their URLs, with the sessions' branches
+        /// and snapshots.
+        case clones
+        case worktrees
+        case histories
+        /// Copies of other machines' sessions, to recover them from.
+        case recovery
+        /// Projects, the board and reviews.
+        case store
+        /// The index Search looks in.
+        case search
+        case logs
+        /// Models downloaded for Humata's model server; the app's, not
+        /// humatad's.
+        case models
+    }
+
+    /// What a cleanup by hand does; each part is off unless asked for.
+    package struct Cleanup: Hashable, Sendable {
+        /// Deletes archived sessions unused for this many days; 0 deletes none.
+        package var deleteAfterDays: Int
+        /// Packs the repositories, drops mid-turn saves, compacts the store.
+        package var compact: Bool
+        /// Removes the worktrees archived sessions still have.
+        package var putAwayWorktrees: Bool
+        /// Deletes humatad's clones no project or session uses.
+        package var removeUnusedClones: Bool
+
+        package init(
+            deleteAfterDays: Int = 0, compact: Bool = false, putAwayWorktrees: Bool = false,
+            removeUnusedClones: Bool = false
+        ) {
+            self.deleteAfterDays = deleteAfterDays
+            self.compact = compact
+            self.putAwayWorktrees = putAwayWorktrees
+            self.removeUnusedClones = removeUnusedClones
+        }
+    }
+
+    package struct Use: Hashable, Sendable, Identifiable {
+        package var kind: Kind
+        package var bytes: UInt64
+        /// The folder or file, to show in Finder.
+        package var path: String
+
+        package var id: Kind { kind }
+
+        package init(kind: Kind, bytes: UInt64, path: String) {
+            self.kind = kind
+            self.bytes = bytes
+            self.path = path
+        }
+    }
+
+    /// A cleanup going on: which step, and how far through it; `total` is 0
+    /// while that isn't known.
+    package struct Job: Hashable, Sendable {
+        package var step: String
+        package var done: Int
+        package var total: Int
+
+        package init(step: String, done: Int = 0, total: Int = 0) {
+            self.step = step
+            self.done = done
+            self.total = total
+        }
+    }
+
+    /// An archived session a cleanup left, and why.
+    package struct Skip: Hashable, Sendable, Identifiable {
+        package var sessionID: String
+        package var name: String
+        package var reason: String
+
+        package var id: String { sessionID }
+
+        package init(sessionID: String, name: String, reason: String) {
+            self.sessionID = sessionID
+            self.name = name
+            self.reason = reason
+        }
+    }
+
+    package var uses: [Use]
+    /// Off unless the person turns it on.
+    package var autoDelete: Bool
+    /// How long archived sessions are kept before a cleanup deletes them.
+    package var days: Int
+    package var job: Job?
+    /// From the last cleanup.
+    package var skipped: [Skip]
+    package var deletedSessions: Int
+    /// When the last cleanup finished; nil if none has.
+    package var cleaned: Date?
+    /// Why the last cleanup stopped short, if it did.
+    package var failure: String?
+    /// What removing archived sessions' worktrees would free.
+    package var archivedWorktreesBytes: UInt64
+    /// What removing the clones no project uses would free.
+    package var unusedClonesBytes: UInt64
+
+    package init(
+        uses: [Use] = [], autoDelete: Bool = false, days: Int = 45, job: Job? = nil, skipped: [Skip] = [],
+        deletedSessions: Int = 0, cleaned: Date? = nil, failure: String? = nil, archivedWorktreesBytes: UInt64 = 0,
+        unusedClonesBytes: UInt64 = 0
+    ) {
+        self.archivedWorktreesBytes = archivedWorktreesBytes
+        self.unusedClonesBytes = unusedClonesBytes
+        self.uses = uses
+        self.autoDelete = autoDelete
+        self.days = days
+        self.job = job
+        self.skipped = skipped
+        self.deletedSessions = deletedSessions
+        self.cleaned = cleaned
+        self.failure = failure
+    }
+
+    package var total: UInt64 { uses.reduce(0) { $0 + $1.bytes } }
+}
+
 /// Which specs a session on an item reads ahead of its instructions.
 package enum SpecScope: Hashable, Sendable {
     /// Its item's alone.

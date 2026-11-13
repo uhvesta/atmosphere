@@ -610,6 +610,23 @@ pub enum DaemonError {
     )]
     DeleteForked { name: String, fork: String },
 
+    #[error("a cleanup is already running; wait for it to finish, then start another")]
+    CleanupRunning,
+
+    #[error(
+        "couldn't remove the unused clone {path}; check that the folder is writable, or move it to the Trash yourself"
+    )]
+    RemoveClone {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "archived sessions can be kept 1 to 3650 days, not {days}; pick a number in that range"
+    )]
+    StorageDays { days: u32 },
+
     #[error(
         "{name:?} can't be deleted while its host {host} can't be reached: its files there would be left behind. Try again once {host} is back"
     )]
@@ -739,13 +756,14 @@ impl DaemonError {
                 pb::ErrorCode::UnknownApproval
             }
             Self::ProjectInUse { .. } | Self::ItemHasSessions { .. } => pb::ErrorCode::Busy,
-            Self::DeleteUnarchived { .. } | Self::DeleteForked { .. } => {
-                pb::ErrorCode::InvalidRequest
-            }
+            Self::DeleteUnarchived { .. }
+            | Self::DeleteForked { .. }
+            | Self::StorageDays { .. } => pb::ErrorCode::InvalidRequest,
+            Self::CleanupRunning => pb::ErrorCode::Busy,
             Self::DeleteOffline { .. } => pb::ErrorCode::HostUnavailable,
             Self::MoveWhileWorking { .. } => pb::ErrorCode::Busy,
             Self::AlreadyThere { .. } | Self::MoveForked { .. } => pb::ErrorCode::InvalidRequest,
-            Self::DeleteRecovery { .. } => pb::ErrorCode::StorageFailed,
+            Self::DeleteRecovery { .. } | Self::RemoveClone { .. } => pb::ErrorCode::StorageFailed,
             Self::NoFile
             | Self::NoComment
             | Self::LinesOutside { .. }
@@ -798,6 +816,47 @@ impl DaemonError {
 }
 
 /// What stops humatad from starting.
+#[derive(Debug, thiserror::Error)]
+pub enum MoveCloneError {
+    #[error(
+        "couldn't move the clone {from} to {to}; it is still used where it is. Check that both folders are writable, then restart humatad"
+    )]
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't write {path} while moving a clone; check that it is writable and the disk isn't full, then restart humatad to finish the move"
+    )]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't run git to repair a moved clone's worktrees; check that git is installed, then restart humatad"
+    )]
+    RunGit {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "git couldn't point the worktrees at the moved clone {clone}: {output}. Run `git -C {clone} worktree repair` with each session's folder"
+    )]
+    Repair { clone: PathBuf, output: String },
+
+    #[error("couldn't point projects at a moved clone; restart humatad to try again")]
+    Store {
+        #[source]
+        source: Box<StoreError>,
+    },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
     #[error(transparent)]

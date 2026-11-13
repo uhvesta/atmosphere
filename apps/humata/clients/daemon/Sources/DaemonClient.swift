@@ -123,6 +123,13 @@ package struct DaemonClient: Sendable {
         @Sendable (_ ids: [String], _ approve: Bool, _ scopes: [ApprovalScope], _ seconds: UInt32) async throws ->
             [AdminApproval]
     package var revokeGrant: @Sendable (_ grant: String) async throws -> Void
+    /// What humatad's files take on this Mac, and the cleanup settings.
+    package var storage: @Sendable () async throws -> Storage
+    /// Turns the daily cleanup on or off, keeping archived sessions `days`.
+    package var setStorageSettings: @Sendable (_ autoDelete: Bool, _ days: Int) async throws -> Storage
+    /// Starts a cleanup in the background, doing the parts of `cleanup`
+    /// asked for. `storage` shows how far it is.
+    package var cleanUpStorage: @Sendable (_ cleanup: Storage.Cleanup) async throws -> Storage
     /// Answers an agent's question or move; it leaves the inbox.
     package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]

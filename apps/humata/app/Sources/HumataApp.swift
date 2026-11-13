@@ -17,6 +17,7 @@ struct HumataApp: App {
         $0.daemonService = .live(socket: DaemonClient.defaultSocket, programVersion: version)
         $0.notifications = .live()
         $0.modelServer = .live
+        $0.modelFiles = .live
         $0.appActivity = .live()
     }
 

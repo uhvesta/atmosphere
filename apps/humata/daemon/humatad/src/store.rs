@@ -22,6 +22,7 @@ mod recoveries;
 mod requests;
 mod review;
 mod search;
+mod settings;
 
 pub use planning::{Decision, Skill};
 pub use pulls::{Checks, PullRequest, PullState, Standing};
@@ -324,6 +325,12 @@ const MIGRATIONS: &[&str] = &["
     -- time sessions are listed.
     CREATE INDEX open_agent_requests_by_session ON agent_requests (session_id)
         WHERE answered_unix_ms IS NULL;
+", "
+    -- The daemon's own settings, as the person set them.
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
 "];
 
 /// What reverting a board change did.
@@ -465,6 +472,26 @@ impl Store {
         })();
         added.map_err(self.failed())?;
         Ok(project)
+    }
+
+    /// Points every project's repository at or under `from` at the same
+    /// place under `to`, as when its folder moved.
+    pub fn move_paths(&self, from: &str, to: &str) -> Result<(), StoreError> {
+        let mut connection = self.lock();
+        let moved = (|| {
+            let transaction = connection.transaction()?;
+            for (table, column) in [("project_repositories", "path"), ("projects", "repository")] {
+                transaction.execute(
+                    &format!(
+                        "UPDATE {table} SET {column} = ?2 || substr({column}, length(?1) + 1)
+                         WHERE {column} = ?1 OR substr({column}, 1, length(?1) + 1) = ?1 || '/'"
+                    ),
+                    params![from, to],
+                )?;
+            }
+            transaction.commit()
+        })();
+        moved.map_err(self.failed())
     }
 
     /// Every project, oldest first.

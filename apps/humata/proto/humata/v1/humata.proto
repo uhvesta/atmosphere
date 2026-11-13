@@ -191,6 +191,11 @@ message Request {
     ListApprovals list_approvals = 90;
     DecideApprovals decide_approvals = 91;
     RevokeGrant revoke_grant = 92;
+    // For the Mac only: what humatad's files take on the Mac, and cleaning
+    // them up. Changing the settings and cleaning up are the app's only.
+    GetStorage get_storage = 93;
+    SetStorageSettings set_storage_settings = 94;
+    CleanUpStorage clean_up_storage = 95;
   }
 }
 
@@ -287,6 +292,7 @@ message Response {
     Approvals approvals = 85;
     ApprovalsDecided approvals_decided = 86;
     GrantRevoked grant_revoked = 87;
+    Storage storage = 88;
   }
 }
 
@@ -895,9 +901,107 @@ message SessionUpdated {
 // while a fork of it exists, or while its host can't be reached.
 message DeleteSession {
   string session_id = 1;
+  // Unless no other branch, remote branch or tag holds its branch's
+  // commits; then SessionDeleted says it was kept.
+  bool only_if_held = 2;
 }
 
-message SessionDeleted {}
+message SessionDeleted {
+  // With `only_if_held`: it has commits nothing else holds, so it stays.
+  bool kept = 1;
+}
+
+// Read with GetStorage; SetStorageSettings and CleanUpStorage answer it
+// too, as it is after the change.
+message GetStorage {}
+
+message SetStorageSettings {
+  StorageSettings settings = 1;
+}
+
+// Starts a cleanup on the Mac, in the background; Storage's `job` shows
+// how far it is. Refused while one runs.
+message CleanUpStorage {
+  // Deletes archived sessions not used for this many days, with their
+  // snapshots; 0 deletes none. Never one that is a keeper, has forks, has
+  // commits nothing else holds, or is on a host that can't be reached:
+  // those are listed in `skipped`.
+  uint32 delete_archived_after_days = 1;
+  // Packs the clones and recovery copies, drops archived sessions' saves
+  // from part way through turns, trims the board's history and compacts
+  // the store.
+  bool compact = 2;
+  // Removes the worktrees archived sessions still have; unarchiving one
+  // makes them again.
+  bool put_away_worktrees = 3;
+  // Deletes humatad's clones no project or session on this Mac uses, with
+  // their branches and snapshots.
+  bool remove_unused_clones = 4;
+}
+
+message StorageSettings {
+  // Off unless the person turns it on: once a day, while no session works,
+  // a cleanup deletes archived sessions after `days` and compacts.
+  bool auto_delete = 1;
+  uint32 days = 2;
+}
+
+enum StorageKind {
+  STORAGE_KIND_UNSPECIFIED = 0;
+  // Repositories added by their URLs, with the sessions' branches and
+  // snapshots.
+  STORAGE_KIND_CLONES = 1;
+  // The sessions' working copies.
+  STORAGE_KIND_WORKTREES = 2;
+  // Sessions' records and histories.
+  STORAGE_KIND_HISTORIES = 3;
+  // Copies of other machines' sessions, to recover them from.
+  STORAGE_KIND_RECOVERY = 4;
+  // Projects, the board and reviews.
+  STORAGE_KIND_STORE = 5;
+  STORAGE_KIND_LOGS = 6;
+  // The index Search looks in, inside the store.
+  STORAGE_KIND_SEARCH = 7;
+}
+
+message StorageUse {
+  StorageKind kind = 1;
+  uint64 bytes = 2;
+  // The folder or file, to show in Finder.
+  string path = 3;
+}
+
+// A cleanup going on: which step, and how far through it.
+message StorageJob {
+  string step = 1;
+  uint32 done = 2;
+  uint32 total = 3;
+}
+
+// An archived session a cleanup left, and why.
+message StorageSkip {
+  string session_id = 1;
+  string name = 2;
+  string reason = 3;
+}
+
+message Storage {
+  repeated StorageUse uses = 1;
+  StorageSettings settings = 2;
+  // Unset when no cleanup runs.
+  StorageJob job = 3;
+  // From the last cleanup.
+  repeated StorageSkip skipped = 4;
+  uint64 deleted_sessions = 5;
+  // When the last cleanup finished; 0 if none has since humatad started.
+  int64 cleaned_unix_ms = 6;
+  // Why the last cleanup stopped short, if it did.
+  string failure = 7;
+  // What removing archived sessions' worktrees would free.
+  uint64 archived_worktrees_bytes = 8;
+  // What removing the clones no project uses would free.
+  uint64 unused_clones_bytes = 9;
+}
 
 // Removes a task or subtask, logged so Board History can bring it back.
 // Refused while it has subtasks or sessions that aren't archived; its

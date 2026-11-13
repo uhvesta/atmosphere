@@ -290,6 +290,39 @@ extension AdminApproval {
     }
 }
 
+extension Storage {
+    init(_ storage: Humata_V1_Storage) {
+        self.init(
+            uses: storage.uses.compactMap { use in
+                Storage.Kind(use.kind).map { Storage.Use(kind: $0, bytes: use.bytes, path: use.path) }
+            },
+            autoDelete: storage.settings.autoDelete, days: Int(storage.settings.days),
+            job: storage.hasJob
+                ? Storage.Job(step: storage.job.step, done: Int(storage.job.done), total: Int(storage.job.total))
+                : nil,
+            skipped: storage.skipped.map { Storage.Skip(sessionID: $0.sessionID, name: $0.name, reason: $0.reason) },
+            deletedSessions: Int(storage.deletedSessions),
+            cleaned: storage.cleanedUnixMs == 0 ? nil : date(storage.cleanedUnixMs),
+            failure: storage.failure.isEmpty ? nil : storage.failure,
+            archivedWorktreesBytes: storage.archivedWorktreesBytes, unusedClonesBytes: storage.unusedClonesBytes)
+    }
+}
+
+extension Storage.Kind {
+    init?(_ kind: Humata_V1_StorageKind) {
+        switch kind {
+        case .clones: self = .clones
+        case .worktrees: self = .worktrees
+        case .histories: self = .histories
+        case .recovery: self = .recovery
+        case .store: self = .store
+        case .search: self = .search
+        case .logs: self = .logs
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+    }
+}
+
 extension ApprovalGrant {
     init(_ grant: Humata_V1_Grant) {
         self.init(

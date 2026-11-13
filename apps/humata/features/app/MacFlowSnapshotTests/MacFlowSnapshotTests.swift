@@ -3,6 +3,7 @@ import FlowKit
 import HumataAppFeature
 import HumataBoard
 import HumataDaemonClient
+import HumataHosts
 import HumataProjects
 import HumataReview
 import HumataSearch
@@ -983,6 +984,48 @@ final class MacFlowSnapshotTests: XCTestCase {
             return false
         }
         await flow.step("added")
+        flow.finish()
+    }
+
+    /// Settings › Storage measures Humata's files by kind; a cleanup shows
+    /// its progress as it goes, then what it deleted and what it kept.
+    func testSettingsStorage() async throws {
+        let daemon = InMemoryDaemon()
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.modelFiles = ModelFiles(
+                folder: "/Users/you/Library/Application Support/Humata/Models",
+                installed: {
+                    [
+                        .init(id: "qwen3-8b", name: "Qwen3 8B", bytes: 4_700_000_000, path: "/Models/qwen3-8b"),
+                        .init(id: "gemma3-4b", name: "Gemma 3 4B", bytes: 2_600_000_000, path: "/Models/gemma3-4b"),
+                    ]
+                }, delete: { _ in })
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder(
+            "storage", StorageView(store: store.scope(state: \.storage, action: \.storage)))
+
+        store.send(.storage(.task))
+        try await until { store.storage.storage != nil && !store.storage.models.isEmpty }
+        await flow.step("measured")
+
+        daemon.startCleanup(Storage.Job(step: "Packing repositories", done: 3, total: 7))
+        store.send(.storage(.task))
+        try await until { store.storage.storage?.job?.done == 3 }
+        await flow.step("cleaning")
+
+        let kept = try await daemon.client.start(StartRequest(backend: .scripted, name: "The keeper"))
+        _ = try await daemon.client.update(kept.id, SessionUpdate(archived: true, keeper: true))
+        daemon.setLastActive(daemon.start.addingTimeInterval(-100 * 86_400), of: [kept.id])
+        _ = try await daemon.client.cleanUpStorage(Storage.Cleanup(deleteAfterDays: 45, compact: true))
+        store.send(.storage(.task))
+        try await until { store.storage.storage?.cleaned != nil }
+        await flow.step("cleaned")
         flow.finish()
     }
 

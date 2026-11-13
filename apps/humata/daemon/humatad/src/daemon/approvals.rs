@@ -37,13 +37,16 @@ pub(super) fn scope_of(request: &pb::request::Kind) -> Option<pb::ApprovalScope>
     }
 }
 
-/// Requests only the app may send: deciding approvals and revoking grants
-/// is the person's, so no client may ask for them.
+/// Requests only the app may send: deciding approvals, revoking grants and
+/// what's kept on disk are the person's, so no client may ask for them.
 fn app_only(request: &pb::request::Kind) -> bool {
     use pb::request::Kind as Request;
     matches!(
         request,
-        Request::DecideApprovals(_) | Request::RevokeGrant(_)
+        Request::DecideApprovals(_)
+            | Request::RevokeGrant(_)
+            | Request::SetStorageSettings(_)
+            | Request::CleanUpStorage(_)
     )
 }
 

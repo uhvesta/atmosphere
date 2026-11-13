@@ -129,6 +129,23 @@ package final class InMemoryDaemon: Sendable {
         var approvals: [AdminApproval] = []
         /// Grants in force.
         var grants: [ApprovalGrant] = []
+        var storage = Storage(
+            uses: [
+                .init(
+                    kind: .clones, bytes: 503_000_000,
+                    path: "/Users/you/Library/Application Support/Humata/repositories"),
+                .init(kind: .worktrees, bytes: 412_000_000, path: "/Users/you/Library/Caches/Humata/worktrees"),
+                .init(kind: .histories, bytes: 61_000_000, path: "/Users/you/Library/Application Support/Humata/host"),
+                .init(
+                    kind: .recovery, bytes: 18_000_000, path: "/Users/you/Library/Application Support/Humata/recovery"),
+                .init(
+                    kind: .store, bytes: 9_400_000, path: "/Users/you/Library/Application Support/Humata/humata.sqlite3"
+                ),
+                .init(
+                    kind: .search, bytes: 3_100_000,
+                    path: "/Users/you/Library/Application Support/Humata/humata.sqlite3"),
+                .init(kind: .logs, bytes: 1_200_000, path: "/Users/you/Library/Application Support/Humata/host.log"),
+            ], archivedWorktreesBytes: 126_000_000, unusedClonesBytes: 88_000_000)
         var nextGrant = 1
         var commandLinks = CommandLinks(
             folder: "/Users/you/.local/bin",
@@ -521,6 +538,15 @@ package final class InMemoryDaemon: Sendable {
                 try self.decideApprovals(ids, approve: approve, scopes: scopes, seconds: seconds)
             },
             revokeGrant: { grant in try self.revokeGrant(grant) },
+            storage: { self.state.value.storage },
+            setStorageSettings: { autoDelete, days in
+                self.state.withValue { state in
+                    state.storage.autoDelete = autoDelete
+                    state.storage.days = days
+                    return state.storage
+                }
+            },
+            cleanUpStorage: { cleanup in self.cleanUp(cleanup) },
             answerRequest: { request, answer in try self.answerRequest(request, answer) },
             history: { session in
                 try self.known(session)

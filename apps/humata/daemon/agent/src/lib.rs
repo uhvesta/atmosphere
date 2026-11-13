@@ -43,7 +43,7 @@ pub use humata_workspace::bundle;
 pub use humata_workspace::{
     Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Landed, Line,
     LineKind, Merged, Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
-    delete_branch, forget, holds_only,
+    delete_branch, forget, held_elsewhere, holds_only,
 };
 pub use import::{Importable, Imported};
 pub use local_model::{

@@ -100,8 +100,13 @@ impl Daemon {
     }
 
     /// Deletes an archived session: on its host, then its recovery copy
-    /// and everything the daemon kept of it.
-    pub(super) async fn delete_session(&self, id: &str) -> Result<(), DaemonError> {
+    /// and everything the daemon kept of it. With `only_if_held`, one with
+    /// commits nothing else holds is kept, and false returned.
+    pub(super) async fn delete_session(
+        &self,
+        id: &str,
+        only_if_held: bool,
+    ) -> Result<bool, DaemonError> {
         let sessions = self.list("").await?.sessions;
         let session = sessions
             .iter()
@@ -122,8 +127,10 @@ impl Daemon {
         let project = convert::optional(session.project_id.clone());
         let request = pb::request::Kind::DeleteSession(pb::DeleteSession {
             session_id: id.to_owned(),
+            only_if_held,
         });
         match self.ask(&session.host, request).await? {
+            pb::response::Kind::SessionDeleted(deleted) if deleted.kept => return Ok(false),
             pb::response::Kind::SessionDeleted(_) => {}
             _ => return Err(unexpected(&session.host, "the session deleted")),
         }
@@ -148,7 +155,7 @@ impl Daemon {
                 source,
             })?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Takes `session`'s backup from `host`, its new commits into the
@@ -398,6 +405,7 @@ impl Daemon {
         });
         let delete = pb::request::Kind::DeleteSession(pb::DeleteSession {
             session_id: session.to_owned(),
+            only_if_held: false,
         });
         let removed = match self.ask(host, archive).await {
             Ok(_) => self.ask(host, delete).await.map(drop),

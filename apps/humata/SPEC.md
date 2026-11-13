@@ -146,6 +146,20 @@ original spec; lettered ones were added since.
 | V Second review pass | Done |
 | P Performance pass | Done |
 | K Signed releases | Built; the first release waits for `gh auth login` |
+| S1 Storage: safe places, cleanup, opt-in auto-delete | Done |
+| Q1 Queue and composer: edit, merge, cancel, pastes, images | Next |
+| Q2 Rewind and checkpoints | Planned |
+| Q3 Skills from the agents' folders | Planned |
+| Q4 Plugins | Planned |
+| Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Planned |
+| T1 Tokens and agent tools | Planned |
+| U1 App jank | Planned |
+| D1 Mermaid diagrams | Planned |
+| D2 Focus view for Markdown | Planned |
+| D3 Versions of a Markdown file | Planned |
+| U2 UX papercuts | Planned |
+| S2 Compression | Planned |
+| S3 Daemon speed | Planned |
 | X Admin mode, gated by approvals | Done |
 
 ## Done milestones
@@ -941,6 +955,195 @@ at a time, in batches, time-boxed, and for scopes of actions.
 proposal once approved in the app, a grant lets the next ones run until it
 expires, a denied one changes nothing, and a default build's `humata mcp`
 lists no admin tool.
+
+### Third review pass: storage, tokens, jank and Markdown
+
+The owner, 2026-11-12: compress what we can on background threads,
+delete old things on request and, if opted into, on their own; Mermaid in
+Markdown, a focused view of a Markdown file beside its chat, and its
+versions. Fable reviewers looked for perf, storage, token and UX problems;
+their findings are folded in below. Signed off the same day: deleting an
+archived session deletes its snapshots too; auto-delete is off until
+turned on, and then deletes archived sessions after 45 days by default.
+
+#### S1 Storage: safe places, cleanup, opt-in auto-delete
+
+- [x] Clones from before they moved, still in `~/Library/Caches/Humata/repositories`
+  where a cache cleaner would take their branches and snapshots, move to
+  Application Support once their sessions are idle: paths in the store,
+  each `session.json`, and the worktrees' links are rewritten
+- [x] Settings › Storage shows the space taken by worktrees, clones,
+  histories, recovery copies, the search index, models and logs, each
+  with Show in Finder
+- [x] By hand: remove archived sessions' worktrees (unarchiving makes them
+  again), delete archived sessions older than an age, remove clones no
+  project uses, delete downloaded models. Each says what it removes and
+  how much space first, and that it can't be undone
+- [x] Auto-delete, off by default: once on, archived sessions older than
+  45 days (30, 45, 90 or 180) are deleted about daily, while nothing runs
+- [x] Never deleted: sessions not archived, keepers, sessions with forks,
+  work not pushed or merged, a recovery copy that is the only copy; a
+  session on an offline host is deleted once the host is back. What was
+  skipped, and why, is shown
+- [x] Space really comes back: `git gc` in the repositories after their
+  snapshots go, the store vacuumed, mid-turn snapshots thinned (each
+  turn's own kept)
+- [x] `host.log` rotates; the board journal keeps a bounded history, and
+  undo ends at it
+
+#### T1 Tokens and agent tools
+
+- [ ] Local model: a message sent while a tool call runs doesn't split the
+  call from its result
+- [ ] Local model: a context budget shrinks old tool output at a stable
+  point, and a full context says to fork or start anew
+- [ ] Local model: `read_file` takes an offset and limit, `edit_file`
+  replaces text, shell output keeps its tail, a reply is one message
+- [ ] Skills listed by name with `read_skill`; specs in messages, so a
+  newer one replaces the old; a fork keeps its parent's instructions
+- [ ] MCP: `read_turn` opens a search hit; search defaults to the session's
+  project and says when there's more; "Mac away" errors say not to retry;
+  the instructions match the tools; proposals check their ids and take
+  replacements; Claude's usage keeps cache reads and writes apart
+
+#### U1 App jank
+
+- [ ] A session's history arrives in one batch, with a loading state;
+  live events are added, not the chat rebuilt; a reconnect resumes
+  without wiping the reply streaming in
+- [ ] The sidebar and inbox don't redraw every two seconds
+- [ ] A failing list shows inline, not an alert every two seconds
+- [ ] Search, boards and hosts keep their state when left
+- [ ] Answered inbox rows don't come back; reopening the window doesn't
+  flash the spinner; search results don't reorder under the pointer;
+  review doesn't reload when nothing changed
+
+#### D1 Mermaid diagrams
+
+- [ ] A `mermaid` block renders as a diagram wherever Markdown renders,
+  from a bundled mermaid.js in a web view with no network, cached by
+  source, in light and dark; a broken one shows its source and error
+- [ ] A diagram opens large in its own window: zoom, pan, fit; drag out a
+  region and send it to the chat as an image, with a note
+- [ ] Code sent to the chat: select lines in a file, a diff or a code
+  block and send them as a quote with their path and lines, or with a
+  comment, straight into the composer
+
+#### D2 Focus view for Markdown
+
+- [ ] A Markdown file or spec opens in a focus view: the rendered document
+  wide, the session's chat beside it with its composer; inline comments
+  sent into that chat; agent edits reload in place, keeping the scroll,
+  with what changed marked
+
+#### D3 Versions of a Markdown file
+
+- [ ] Its versions, from the session's turn snapshots and the spec
+  journal, listed in the focus view; any one rendered, or compared with
+  now as a rendered diff; restoring one writes it as a new change
+
+#### U2 UX papercuts
+
+- [ ] Return doesn't approve; the composer is focused when a session opens
+- [ ] Fork, edit to a fork, update and answering show progress and can't
+  be done twice
+- [ ] Each alert says what failed; search has Try Again; one word for
+  approving, one style for times; a permission shows once
+- [ ] Strings in added lines aren't red; Hosts shows no backticks; a
+  Session menu; VoiceOver reads diff lines
+
+#### S2 Compression
+
+- [ ] Histories of archived or long-idle sessions sealed as zstd on a
+  background thread; the live tail stays plain
+- [ ] Recovery copies take only what's new each turn; a remote session's
+  text kept once, not four times
+- [ ] Compressing and decompressing never run on the executor or the main
+  thread. While a sealed history is being opened, the session shows a
+  progress bar (bytes read of its size), or a spinner where the size
+  isn't known; Settings › Storage shows sealing and cleanup progress the
+  same way
+
+#### S3 Daemon speed
+
+- [ ] The app's three two-second lists share one listing; remote rows are
+  written only when they change
+- [ ] SQLite off the executor threads; search catch-up writes only what
+  changed; specs and comments indexed apart
+- [ ] No whole-history copies on hot paths; archived sessions loaded when
+  opened
+
+### Composer, rewind, skills, plugins and models
+
+The owner, 2026-11-12, signed off the same day: queued messages can be
+edited, and a message sent while one waits joins it; long pastes and images
+in messages; rewind the chat, or the chat and the files, undoably, with a
+checkpoint before each compaction as Copilot's CLI makes; skills from
+`~/.claude` and `~/.copilot` with clashes picked, each pick remembered
+globally and editable in Settings; plugins listed and toggled; default
+models, Copilot's experimental mode and Fusion; on-device models only on
+the Mac. Built after S1, before T1.
+
+#### Q1 Queue and composer
+
+- [ ] A message sent while one waits joins the queued one (a blank line
+  between), so a turn takes them together; Steer Now still steers
+- [ ] A queued message can be edited in place until its turn starts; an
+  edit that loses the race to the turn says so and puts the text back
+- [ ] Cancel: a queued message is taken out; a running one is stopped and
+  its text goes back in the box; one stopped before the agent read it
+  leaves no trace in the history
+- [ ] A paste over 1,000 characters or 20 lines shows as a chip, "Pasted
+  12 KB, 340 lines", that opens to read, edit or remove; it's sent as
+  the text
+- [ ] Images pasted, dropped or attached go with a message, as thumbnails
+  in the box and the chat: to Claude Code and Copilot as images, and to a
+  local model that can see them; one that can't says so before sending
+
+#### Q2 Rewind and checkpoints
+
+- [ ] Rewind to before any message the person sent: the chat only, or the
+  chat and the files, back to that turn's snapshot; the message goes back
+  in the box
+- [ ] Undo Rewind brings back what was cut, chat and files, until the next
+  message is sent; after that the cut part stays as a hidden fork, kept
+  until the session is deleted
+- [ ] Every compaction, Copilot's, Claude Code's or the local model's,
+  makes a checkpoint first, shown in the chat; rewinding to it brings
+  back the full context from before it
+- [ ] Rewind runs on every backend: Claude Code resumes at the turn,
+  Copilot forks at the event, the local model cuts its history; a session
+  working is stopped first, after asking
+
+#### Q3 Skills from the agents' folders
+
+- [ ] Skills from `~/.claude/skills`, `~/.copilot/skills` and each
+  repository's `.claude/skills` and `.github/skills`, on each host, listed
+  in Settings › Skills beside the project's own, and given to every
+  backend
+- [ ] Two with one name: a new session can't start until the person picks
+  which wins; the pick is remembered for every project and host, shown
+  and changed in Settings › Skills, and asked again only when either
+  file changes
+
+#### Q4 Plugins
+
+- [ ] The Claude Code and Copilot plugins installed on each host, listed
+  with what they add (skills, commands, MCP servers, hooks), and turned on
+  or off per project; installing stays in each CLI
+
+#### Q5 Models
+
+- [ ] A default backend, model and effort, for all projects and per project,
+  that New Session starts from; the last choice no longer overrides it
+- [ ] Copilot's experimental mode, a switch per project and per session
+  (`--experimental`), off by default
+- [ ] Copilot Fusion in the model picker, with its tier (standard, high,
+  max); its cost per turn shown as for any model; local models in Fusion
+  need experimental mode, and say so
+- [ ] On-device models run only on the Mac: a session on a host uses the
+  Mac's model server through the forward, and a `base_url` that points at
+  the host itself is refused for Humata's on-device models
 
 ### Milestone K: signed releases
 
