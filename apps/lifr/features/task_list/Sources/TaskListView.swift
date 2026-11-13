@@ -409,9 +409,9 @@ private struct BulkBar: View {
     }
 
     private func count(_ picked: Int) -> some View {
-        Text(picked == 1 ? "1 task" : "\(picked) tasks")
+        Text("^[\(picked) task](inflect: true)")
             .font(.subheadline.weight(.semibold))
-            .accessibilityLabel(picked == 1 ? "1 task picked" : "\(picked) tasks picked")
+            .accessibilityLabel("^[\(picked) task](inflect: true) picked")
     }
 
     private var pickAll: some View {

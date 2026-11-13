@@ -259,7 +259,7 @@ extension TaskFilter {
     /// The filter in a few words, such as ““dentist”, 2 filters”.
     package var summary: String {
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filters = filterCount == 1 ? String(localized: "1 filter") : String(localized: "\(filterCount) filters")
+        let filters = String(AttributedString(localized: "^[\(filterCount) filter](inflect: true)").characters)
         if words.isEmpty { return filters }
         return filterCount == 0 ? "“\(words)”" : "“\(words)”, \(filters)"
     }

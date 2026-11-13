@@ -23,7 +23,12 @@ final class ScheduledRemindersTests: XCTestCase {
 
         XCTAssertEqual(scheduled.map(\.title), ["Book physio", "Long run"])
         XCTAssertEqual(scheduled.map(\.fireAt), [now + 600, ISO8601DateFormatter().date(from: "2026-11-04T06:00:00Z")])
-        XCTAssertEqual(scheduled.last?.body, "HEALTH-0002 · due 2026-11-04 at 07:00")
+        let english = Locale(identifier: "en_US")
+        let body = records.workspace.scheduledReminders(now: now, timeZone: .gmt, locale: english).last?.body ?? ""
+        XCTAssertTrue(body.contains("HEALTH-0002"), body)
+        XCTAssertTrue(body.contains("Nov 4"), body)
+        XCTAssertTrue(body.contains("7:00"), body)
+        XCTAssertFalse(body.contains("2026-11-04"), body)
     }
 
     func testTheBadgeCountsOverdueAndDueTodayOrOnlyOverdue() {

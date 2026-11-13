@@ -29,9 +29,10 @@ final class RootSnapshotTests: XCTestCase {
         return state
     }
 
-    private func screen() -> some View {
+    private func screen(_ direction: LayoutDirection = .leftToRight) -> some View {
         RootView(store: Store(initialState: state) { EmptyReducer() })
             .environment(\.timeZone, .gmt)
+            .environment(\.layoutDirection, direction)
     }
 
     func testDisplayData() {
@@ -57,5 +58,11 @@ final class RootSnapshotTests: XCTestCase {
         // its tab empty on the SE's size. Each tab's screen has its own SE
         // images in its package.
         assertScreenImages(of: screen(), named: "today", images: [.proMaxLight, .proMaxDark])
+    }
+
+    /// Laid out as a right-to-left language would: rows, badges and the
+    /// toolbar mirror, and nothing overlaps.
+    func testRightToLeft() {
+        assertScreenImages(of: screen(.rightToLeft), named: "right-to-left", images: [.proMaxLight])
     }
 }

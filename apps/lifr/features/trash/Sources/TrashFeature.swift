@@ -102,11 +102,12 @@ package struct TrashFeature {
             case .emptyTapped:
                 guard !state.rows.isEmpty else { return .none }
                 let count = state.rows.count + state.rows.reduce(0) { $0 + $1.subtaskCount }
+                let delete = AttributedString(localized: "Delete ^[\(count) Task](inflect: true)")
                 state.confirmation = ConfirmationDialogState(titleVisibility: .visible) {
                     TextState("Empty Trash?")
                 } actions: {
                     ButtonState(role: .destructive, action: .empty) {
-                        count == 1 ? TextState("Delete 1 Task") : TextState("Delete \(count) Tasks")
+                        TextState(String(delete.characters))
                     }
                     ButtonState(role: .cancel) { TextState("Cancel") }
                 } message: {

@@ -72,8 +72,7 @@ package struct AvenueWidgetView: View {
     }
 
     private func label(_ avenue: AvenueGlance) -> Text {
-        let tasks =
-            avenue.count == 1 ? String(localized: "1 open task") : String(localized: "\(avenue.count) open tasks")
+        let tasks = String(AttributedString(localized: "^[\(avenue.count) open task](inflect: true)").characters)
         return avenue.overdue > 0
             ? Text("\(avenue.name), \(tasks), \(avenue.overdue) overdue") : Text("\(avenue.name), \(tasks)")
     }

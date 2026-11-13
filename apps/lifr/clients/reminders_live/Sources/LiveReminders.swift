@@ -11,10 +11,15 @@ package enum LiveRemindersError: Error, CustomStringConvertible {
     package var description: String {
         switch self {
         case .scheduleFailed(let titles, let underlying):
-            "Couldn't schedule \(titles.count == 1 ? "the reminder" : "\(titles.count) reminders") for "
-                + "\(titles.map { "\"\($0)\"" }.joined(separator: ", ")) on this device: "
-                + "\(underlying.localizedDescription). They're saved and ring on your other devices. Check that "
-                + "notifications are on for Lifr in Settings, then open Lifr again."
+            String(
+                AttributedString(
+                    localized: """
+                        Couldn't schedule ^[\(titles.count) reminder](inflect: true) for \
+                        \(titles.map { "“\($0)”" }.formatted(.list(type: .and))) on this device: \
+                        \(underlying.localizedDescription). They're saved and ring on your other devices. Check \
+                        that notifications are on for Lifr in Settings, then open Lifr again.
+                        """
+                ).characters)
         }
     }
 }

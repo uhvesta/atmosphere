@@ -71,11 +71,15 @@ extension TaskRowData {
     /// Everything but the title, in the order VoiceOver reads it.
     package func accessibilityValue(_ locale: Locale) -> String {
         var parts = [status.title]
-        if let priority = priority.title { parts.append("\(priority) priority") }
+        if let priority = priority.title { parts.append(String(localized: "\(priority) priority")) }
         if let starts { parts.append(String(localized: "Starts \(starts.formatted(locale))")) }
         if let due { parts.append(due.text(locale)) }
         if repeats { parts.append(String(localized: "Repeats")) }
-        if let subtasks { parts.append("\(subtasks.closed) of \(subtasks.total) Sub tasks closed") }
+        if let subtasks {
+            let closed = AttributedString(
+                localized: "\(subtasks.closed) of ^[\(subtasks.total) Sub task](inflect: true) closed")
+            parts.append(String(closed.characters))
+        }
         if !labels.isEmpty { parts.append(labels.map(\.name).formatted(.list(type: .and))) }
         parts.append(fullCode)
         return parts.joined(separator: ", ")

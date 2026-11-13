@@ -34,9 +34,10 @@ extension Workspace {
     /// that aren't in the trash or an archived Avenue and that fire after
     /// `now`, soonest first, at most `reminderLimit`. With `hidingTitles`,
     /// as when the app lock is on, each says only that a task is due, so
-    /// the lock screen doesn't show what.
+    /// the lock screen doesn't show what. Dates and times read as `locale`
+    /// writes them.
     package func scheduledReminders(
-        now: Date, timeZone: TimeZone, hidingTitles: Bool = false
+        now: Date, timeZone: TimeZone, hidingTitles: Bool = false, locale: Locale = .current
     ) -> [ScheduledReminder] {
         let scheduled = reminders.values.compactMap { reminder -> ScheduledReminder? in
             guard let task = tasks[reminder.taskID], task.deletedAt == nil, task.isOpen,
@@ -50,17 +51,24 @@ extension Workspace {
             }
             return ScheduledReminder(
                 id: reminder.id, taskID: task.id, title: task.title,
-                body: dueText(task) ?? displayCode(of: task), fireAt: fireAt)
+                body: dueText(task, locale) ?? displayCode(of: task), fireAt: fireAt)
         }
         return Array(
             scheduled.sorted { ($0.fireAt, $0.id.uuidString) < ($1.fireAt, $1.id.uuidString) }
                 .prefix(Self.reminderLimit))
     }
 
-    private func dueText(_ task: LifrTask) -> String? {
+    private func dueText(_ task: LifrTask, _ locale: Locale) -> String? {
         guard let due = task.dueDate else { return nil }
-        let time = task.dueTime.map { " at \($0)" } ?? ""
-        return "\(displayCode(of: task)) · due \(due)\(time)"
+        // Both are wall-clock values, so they're read in UTC.
+        let style = Date.FormatStyle(locale: locale, calendar: CalendarDate.utcCalendar, timeZone: .gmt)
+        let code = displayCode(of: task)
+        let date = due.noonUTC.formatted(style.month(.abbreviated).day())
+        guard let dueTime = task.dueTime else { return String(localized: "\(code) · due \(date)") }
+        let midnight = CalendarDate.utcCalendar.startOfDay(for: due.noonUTC)
+        let time = midnight.addingTimeInterval(TimeInterval(dueTime.hour * 3600 + dueTime.minute * 60))
+            .formatted(style.hour().minute())
+        return String(localized: "\(code) · due \(date) at \(time)")
     }
 }
 

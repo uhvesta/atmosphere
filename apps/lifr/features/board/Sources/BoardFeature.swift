@@ -28,8 +28,10 @@ extension TaskQuery {
                 var notes: [UUID: String] = [:]
                 for task in column {
                     switch task.procrastination(now: now, settings: workspace.settings) {
-                    case .setByHand: notes[task.id] = "set by hand"
-                    case .inactive(let days): notes[task.id] = "idle \(days) days"
+                    case .setByHand: notes[task.id] = String(localized: "set by hand")
+                    case .inactive(let days):
+                        let note = AttributedString(localized: "idle ^[\(days) day](inflect: true)")
+                        notes[task.id] = String(note.characters)
                     case nil: break
                     }
                 }

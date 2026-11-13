@@ -63,7 +63,7 @@ private struct TrashRowView: View {
                 }
                 Text(row.code).monospaced()
                 if row.subtaskCount > 0 {
-                    Text(row.subtaskCount == 1 ? "1 Sub task" : "\(row.subtaskCount) Sub tasks")
+                    Text("^[\(row.subtaskCount) Sub task](inflect: true)")
                 }
                 Text(deleted)
             }

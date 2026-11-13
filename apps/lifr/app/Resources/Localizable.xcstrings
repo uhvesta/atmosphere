@@ -176,6 +176,9 @@
         }
       }
     },
+    "%@ priority" : {
+
+    },
     "%@ s" : {
 
     },
@@ -207,6 +210,26 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$@ · %2$@"
+          }
+        }
+      }
+    },
+    "%@ · due %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · due %2$@"
+          }
+        }
+      }
+    },
+    "%@ · due %@ at %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · due %2$@ at %3$@"
           }
         }
       }
@@ -380,6 +403,16 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$lld of %2$lld done"
+          }
+        }
+      }
+    },
+    "%lld of ^[%lld Sub task](inflect: true) closed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of ^[%2$lld Sub task](inflect: true) closed"
           }
         }
       }
@@ -1307,6 +1340,16 @@
     "Couldn't save your Avenues: %@. Try again, or skip and add them later from Avenues." : {
 
     },
+    "Couldn't schedule ^[%lld reminder](inflect: true) for %@ on this device: %@. They're saved and ring on your other devices. Check that notifications are on for Lifr in Settings, then open Lifr again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Couldn't schedule ^[%1$lld reminder](inflect: true) for %2$@ on this device: %3$@. They're saved and ring on your other devices. Check that notifications are on for Lifr in Settings, then open Lifr again."
+          }
+        }
+      }
+    },
     "Couldn't show older changes" : {
 
     },
@@ -1389,6 +1432,9 @@
 
     },
     "Delete Label" : {
+
+    },
+    "Delete ^[%lld Task](inflect: true)" : {
 
     },
     "Delete all archived conversations?" : {
@@ -4093,6 +4139,9 @@
     "Yours" : {
 
     },
+    "^[%lld Sub task](inflect: true)" : {
+
+    },
     "^[%lld change](inflect: true)" : {
 
     },
@@ -4103,6 +4152,15 @@
 
     },
     "^[%lld change](inflect: true) waiting" : {
+
+    },
+    "^[%lld filter](inflect: true)" : {
+
+    },
+    "^[%lld task](inflect: true)" : {
+
+    },
+    "^[%lld task](inflect: true) picked" : {
 
     },
     "another device" : {
@@ -4126,6 +4184,9 @@
     "iCloud lost the records twice" : {
 
     },
+    "idle ^[%lld day](inflect: true)" : {
+
+    },
     "micro-batch %lld" : {
 
     },
@@ -4133,6 +4194,9 @@
 
     },
     "nothing due" : {
+
+    },
+    "set by hand" : {
 
     },
     "something removed" : {

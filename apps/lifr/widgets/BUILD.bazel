@@ -109,6 +109,8 @@ ios_extension(
         "@apple_support//constraints:device": "//apps/lifr/app:ios_development",
         "//conditions:default": None,
     }),
+    # The app's catalog, so the widgets' words are translated too.
+    resources = ["//apps/lifr/app:Resources/Localizable.xcstrings"],
     target_compatible_with = ["//bazel/xcode"],
     # The app's build number: the App Store requires they match.
     version = "//apps/lifr/app:ios_version",
@@ -127,6 +129,7 @@ macos_extension(
     }),
     infoplists = ["Extension/Info.plist"],
     minimum_os_version = "15.0",
+    resources = ["//apps/lifr/app:Resources/Localizable.xcstrings"],
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/app:__pkg__"],
     deps = [":extension_lib"],

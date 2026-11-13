@@ -231,6 +231,12 @@ lifr_strings(
     deps = [":app_lib"],
 )
 
+# The widgets show the app's words, so their bundles carry its catalog.
+exports_files(
+    ["Resources/Localizable.xcstrings"],
+    visibility = ["//apps/lifr/widgets:__pkg__"],
+)
+
 diff_test(
     name = "strings_test",
     failure_message = "The app's strings changed. Run `bazel run --config=xcode //apps/lifr/app:update_strings`, then translate the new strings in the diff.",

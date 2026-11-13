@@ -179,7 +179,7 @@ package struct UpcomingWidgetView: View {
     }
 
     private func count(_ count: Int) -> String {
-        count == 1 ? String(localized: "1 task") : String(localized: "\(count) tasks")
+        String(AttributedString(localized: "^[\(count) task](inflect: true)").characters)
     }
 
     /// The link that opens `day` in the calendar.
