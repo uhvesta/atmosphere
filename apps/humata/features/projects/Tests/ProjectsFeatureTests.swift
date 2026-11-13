@@ -703,6 +703,32 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertNil(store.state.drafts[second.id])
     }
 
+    func testAnAnsweredRequestDoesntComeBackFromAReadBegunBeforeTheAnswer() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let question = daemon.addRequest(session.id, .question, "Email or phone?")
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let stale = store.state.inbox
+        XCTAssertEqual(stale.compactMap(\.request?.id), [question.id])
+        await store.send(.requestAnswered(question.id, .reply("Email.")))
+        await store.receive(\.requestAnswerSent)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.inbox.compactMap(\.request?.id), [])
+        // The read begun before the answer arrives last.
+        await store.send(.loaded(projects: [], sessions: [session], inbox: stale, approvals: []))
+        XCTAssertEqual(store.state.inbox.compactMap(\.request?.id), [])
+    }
+
     func testANewSessionCanRunOnAHost() async throws {
         let daemon = InMemoryDaemon()
         _ = try await daemon.client.addHost("far", "me@far")

@@ -358,6 +358,30 @@ impl Session {
         true
     }
 
+    /// Puts `text` in place of the notice waiting in the queue that begins
+    /// with the same line, which says what it's about, so only the latest
+    /// of a notice sent again waits. False when none waits.
+    fn replace_queued(&self, control: &mut Control, text: &str, images: &[String]) -> bool {
+        let about = text.lines().next().unwrap_or_default();
+        let Some(queued) = control.queue.iter_mut().find(|queued| {
+            !queued.joins && queued.text.lines().next().unwrap_or_default() == about
+        }) else {
+            return false;
+        };
+        if queued.text == text && queued.images == images {
+            return true;
+        }
+        queued.text = text.to_owned();
+        queued.images = images.to_vec();
+        let edited = EventKind::MessageQueued {
+            queue_id: queued.id.clone(),
+            text: queued.text.clone(),
+            images: queued.images.clone(),
+        };
+        self.note(edited);
+        true
+    }
+
     /// The next queued message, which leaves the queue to run.
     fn next_queued(&self, control: &mut Control) -> Option<(String, Vec<String>)> {
         let next = control.queue.pop_front()?;
@@ -707,12 +731,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
                     session.queue(&mut control, text, images, false, true);
                 }
             }
-            SendMode::EnqueueOnce
-                if control
-                    .queue
-                    .iter()
-                    .any(|queued| queued.text == text && queued.images == images) => {}
-            SendMode::EnqueueOnce => session.queue(&mut control, text, images, false, false),
+            SendMode::EnqueueOnce => {
+                if !session.replace_queued(&mut control, &text, &images) {
+                    session.queue(&mut control, text, images, false, false);
+                }
+            }
             SendMode::Immediate if control.turn_open && images.is_empty() => {
                 session.log.append(Event::now(EventKind::UserMessage {
                     text: text.clone(),

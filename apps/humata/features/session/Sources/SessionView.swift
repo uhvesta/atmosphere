@@ -306,6 +306,13 @@ package struct SessionView: View {
                 .padding()
             }
             .defaultScrollAnchor(.bottom)
+            .overlay {
+                if !store.historyLoaded, store.items.isEmpty {
+                    ProgressView("Loading the chat…")
+                        .controlSize(.small)
+                        .accessibilityIdentifier("chat.loading")
+                }
+            }
             .onChange(of: store.highlightedItem, initial: true) { _, item in
                 guard let item else { return }
                 reader.scrollTo(item, anchor: .center)
@@ -393,6 +400,11 @@ package struct SessionView: View {
             } else {
                 ToolCallView(call: call) { request, approved in
                     store.send(.answerPermission(requestID: request, approved: approved))
+                }
+                if let failure = store.proposals.listFailure, store.state.proposes(call.id) {
+                    Label("Couldn’t read this proposal: \(failure)", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
         case .permission(_, let permission):

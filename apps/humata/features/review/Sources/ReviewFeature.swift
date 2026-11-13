@@ -58,6 +58,9 @@ package struct ReviewFeature {
         /// Replies being written, by thread.
         package var replies: [ReviewThread.ID: String] = [:]
         package var loading = false
+        /// The turns there had been when the changes were last read; nil
+        /// before they first are.
+        var loadedAt: Int?
         /// Numbers each load, so only the latest one's changes show: effects
         /// can start out of the order they were asked in.
         var request = 0
@@ -130,6 +133,8 @@ package struct ReviewFeature {
         case binding(BindingAction<State>)
         /// The view appeared, or the session's turn ended; reads it all again.
         case refresh
+        /// The review came on screen: read again only after a turn since.
+        case appeared
         case loaded(request: Int, [RepositoryChanges], [ReviewThread])
         case loadFailed(request: Int, String)
         case wholeLoaded(FileDiff?)
@@ -178,6 +183,10 @@ package struct ReviewFeature {
             case .refresh:
                 return load(&state)
 
+            case .appeared:
+                guard state.loadedAt != state.turns else { return .none }
+                return load(&state)
+
             // A where clause holds for only the pattern before it, so each has one.
             case .loaded(let request, _, _) where request != state.request,
                 .loadFailed(let request, _) where request != state.request:
@@ -189,6 +198,7 @@ package struct ReviewFeature {
 
             case .loaded(_, let repositories, let threads):
                 state.loading = false
+                state.loadedAt = state.turns
                 state.repositories = repositories
                 state.threads = IdentifiedArray(uniqueElements: threads)
                 if state.selected.map({ selected in !state.files.contains(selected) }) ?? true {

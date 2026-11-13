@@ -36,7 +36,7 @@ package struct ReviewView: View {
                 }
             }
         }
-        .task { store.send(.refresh) }
+        .task { store.send(.appeared) }
         .alert($store.scope(state: \.alert, action: \.alert))
     }
 

@@ -9,8 +9,11 @@ import HumataSession
 /// a column gives it that status; a card opens its item's page.
 @Reducer
 package struct BoardFeature {
+    /// Identified by its project, so opening another board in its place
+    /// stops what this one was doing.
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
+        package var id: Project.ID { project.id }
         package var project: Project
         package var items: IdentifiedArrayOf<Item> = []
         /// The project's sessions.

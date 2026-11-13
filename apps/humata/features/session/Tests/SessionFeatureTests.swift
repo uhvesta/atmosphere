@@ -48,7 +48,7 @@ final class SessionFeatureTests: XCTestCase {
         await watching.cancel()
     }
 
-    func testTheReviewIsReadWhenPickedAndAgainWhenATurnEnds() async throws {
+    func testTheReviewIsReadAgainWhenATurnEndsWhileItsShown() async throws {
         let daemon = InMemoryDaemon { text in [.write(path: "\(text).txt", contents: text)] }
         let project = try await daemon.client.createProject("Humata", [Repository(path: "/code/humata")], "")
         let session = try await daemon.client.start(
@@ -63,8 +63,13 @@ final class SessionFeatureTests: XCTestCase {
 
         let watching = await store.send(.task)
         await store.send(.tabPicked(.review))
+        // As the review's view appears.
+        await store.send(.review(.appeared))
         await store.receive(\.review.loaded)
         XCTAssertEqual(store.state.review.files.map(\.path), ["one.txt"])
+        // Shown again with no turn since, it isn't read again.
+        await store.send(.review(.appeared))
+        XCTAssertFalse(store.state.review.loading)
 
         try await daemon.client.send(session.id, "two", .enqueue)
         await store.receive(\.review.loaded, timeout: .seconds(1))
@@ -880,6 +885,45 @@ final class SessionFeatureTests: XCTestCase {
         let taken = Paste.takeOut(old: "before after", new: "before " + pasted + "after")
         XCTAssertEqual(taken?.draft, "before after")
         XCTAssertEqual(taken?.pasted, pasted)
+    }
+
+    func testAReconnectsHistoryKeepsTheReplyStreamingInWithoutDoublingIt() async {
+        let store = store()
+        let history = [
+            event("e1", .userMessage("go")), event("e2", .turnStarted),
+            event("d1", .assistantDelta("Hel")), event("d2", .assistantDelta("lo")),
+        ]
+        await store.send(.receivedAll(history))
+        XCTAssertEqual(store.state.streaming, "Hello")
+        // The watch drops; watching again sends the history once more.
+        await store.send(.receivedAll(history + [event("d3", .assistantDelta(" there"))]))
+        XCTAssertEqual(store.state.streaming, "Hello there")
+        await store.send(.received(event("e3", .assistantMessage("Hello there"))))
+        XCTAssertEqual(store.state.streaming, "")
+    }
+
+    func testLiveEventsShowTheSameChatAsTheirHistory() async {
+        let events = [
+            event("e1", .userMessage("go")), event("e2", .turnStarted),
+            event("e3", .toolStarted(callID: "c1", tool: "Bash", argumentsJSON: "{}")),
+            event("e4", .permissionRequested(requestID: "r1", kind: .shell, summary: "ls")),
+            event("e5", .permissionCompleted(requestID: "r1", approved: true, automatic: false, judged: false)),
+            event("e6", .toolCompleted(callID: "c1", success: true, output: "a")),
+            event("e7", .assistantMessage("done")), event("e8", .turnEnded(aborted: false)),
+        ]
+        let live = store()
+        for one in events { await live.send(.received(one)) }
+        let loaded = store()
+        await loaded.send(.receivedAll(events))
+        XCTAssertEqual(live.state.items, loaded.state.items)
+        XCTAssertEqual(live.state.items, ChatItem.items(events))
+    }
+
+    func testTheChatLoadsUntilItsHistoryComes() async {
+        let store = store()
+        XCTAssertFalse(store.state.historyLoaded)
+        await store.send(.receivedAll([]))
+        XCTAssertTrue(store.state.historyLoaded)
     }
 
     func testUsageAddsUpEachTurn() async {

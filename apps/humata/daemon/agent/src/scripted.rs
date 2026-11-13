@@ -790,6 +790,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_notice_sent_again_with_new_text_runs_only_the_latest() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &[]).await;
+        for spec in ["old spec", "new spec"] {
+            fixture
+                .agent
+                .send(
+                    &id,
+                    format!("the spec changed\n\n{spec}").into(),
+                    SendMode::EnqueueOnce,
+                )
+                .await
+                .expect("queued");
+        }
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, ended_turns(2)).await;
+        assert_eq!(
+            user_messages(&events),
+            vec!["first", "the spec changed\n\nnew spec"]
+        );
+    }
+
+    #[tokio::test]
     async fn allowing_everything_never_waits() {
         let fixture = fixture(vec![rule(
             "",

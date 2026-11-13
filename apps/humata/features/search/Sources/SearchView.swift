@@ -77,8 +77,14 @@ package struct SearchView: View {
     @ViewBuilder
     private var results: some View {
         if let failure = store.failure {
-            ContentUnavailableView(
-                "Couldn't Search", systemImage: "exclamationmark.magnifyingglass", description: Text(failure))
+            ContentUnavailableView {
+                Label("Couldn't Search", systemImage: "exclamationmark.magnifyingglass")
+            } description: {
+                Text(failure)
+            } actions: {
+                Button("Try Again") { store.send(.submitted) }
+                    .accessibilityIdentifier("search.retry")
+            }
         } else if store.text.trimmingCharacters(in: .whitespaces).isEmpty {
             ContentUnavailableView(
                 "Search Every Session", systemImage: "text.magnifyingglass",

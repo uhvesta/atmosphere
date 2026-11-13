@@ -81,6 +81,33 @@ final class SearchFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.hits.map(\.related), [true])
     }
 
+    func testRelatedWordsHitsGoBelowThePlainOnesWithoutRepeatingThem() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "cargo build", output: "built"), .say("Compiled it.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
+        try await daemon.client.send(session.id, "compile it", .enqueue)
+        let store = TestStore(initialState: SearchFeature.State()) {
+            SearchFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.calendar = Self.calendar
+            $0.continuousClock = TestClock()
+            $0.relatedWords = RelatedWordsClient { _ in ["cargo", "compiled"] }
+            $0.date = .constant(daemon.start)
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.text, "compile")
+        await store.send(.submitted)
+        await store.receive(\.found)
+        let plain = store.state.hits
+        XCTAssertFalse(plain.isEmpty)
+        await store.receive(\.found)
+        await store.receive(\.finished)
+        XCTAssertEqual(Array(store.state.hits.prefix(plain.count)), plain)
+        XCTAssertGreaterThan(store.state.hits.count, plain.count)
+        XCTAssertEqual(Set(store.state.hits.map(\.id)).count, store.state.hits.count)
+    }
+
     func testATimeScopeLeavesOutWhatHappenedBefore() async throws {
         let daemon = daemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
@@ -163,10 +190,8 @@ final class SearchFeatureTests: XCTestCase {
         await store.send(\.binding.text, "hello")
         await store.send(.submitted)
         await store.receive(\.finished)
+        // The slow one was stopped, so its answer changes nothing.
         answer.yield()
-        // The slow one's own end, which changes nothing.
-        await store.receive(\.finished)
-        await store.skipInFlightEffects()
 
         XCTAssertEqual(store.state.words, "hello")
         XCTAssertFalse(store.state.isSearching)

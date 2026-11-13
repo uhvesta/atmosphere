@@ -866,7 +866,10 @@ mod tests {
             ended("d"),
         ];
         let second = turn_text(&events, 2, "c").unwrap_or_default();
-        assert!(second.contains("second ask") && !second.contains("first ask"), "{second}");
+        assert!(
+            second.contains("second ask") && !second.contains("first ask"),
+            "{second}"
+        );
         assert_eq!(turn_text(&events, 4, ""), None);
     }
 

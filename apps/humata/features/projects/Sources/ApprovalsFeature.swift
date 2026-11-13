@@ -48,7 +48,8 @@ package struct ApprovalsFeature {
                 }
 
             case .loaded(let approvals):
-                state.now = date.now
+                let now = date.now.toTheMinute
+                if state.now != now { state.now = now }
                 if !state.loaded { state.loaded = true }
                 if state.failure != nil { state.failure = nil }
                 if state.approvals != approvals { state.approvals = approvals }

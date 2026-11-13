@@ -78,6 +78,12 @@ package struct SearchFeature {
     @Dependency(\.date) var date
     @Dependency(\.calendar) var calendar
 
+    /// Each search by its number, so a newer one stops an older one's work
+    /// without an older one, starting late, stopping the newer.
+    private struct SearchID: Hashable {
+        var request: Int
+    }
+
     /// How long typing pauses before it's searched.
     static let pause = Duration.milliseconds(300)
 
@@ -111,7 +117,14 @@ package struct SearchFeature {
                 return .none
 
             case .found(_, let results, let related):
-                state.hits = results.hits
+                // Related words' hits go below those already shown, so the
+                // list doesn't change under the pointer.
+                if related.isEmpty {
+                    state.hits = results.hits
+                } else {
+                    let shown = Set(state.hits.map(\.id))
+                    state.hits += results.hits.filter { !shown.contains($0.id) }
+                }
                 state.words = results.words
                 state.namedSince = results.since
                 state.namedUntil = results.until
@@ -149,21 +162,25 @@ package struct SearchFeature {
         let text = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         state.queried = text
         state.searched = false
+        let stop = Effect<Action>.cancel(id: SearchID(request: state.request))
         state.request += 1
         guard !text.isEmpty else {
             state.hits = []
             state.related = []
             state.isSearching = false
             state.failure = nil
-            return .none
+            return stop
         }
         state.isSearching = true
-        guard let pause else { return run(state) }
+        guard let pause else { return .merge(stop, run(state)) }
         let request = state.request
-        return .run { send in
-            try await clock.sleep(for: pause)
-            await send(.due(request: request))
-        }
+        return .merge(
+            stop,
+            .run { send in
+                try await clock.sleep(for: pause)
+                await send(.due(request: request))
+            }
+            .cancellable(id: SearchID(request: request)))
     }
 
     /// Searches the text plainly, then with related words.
@@ -182,6 +199,7 @@ package struct SearchFeature {
         } catch: { error, send in
             await send(.failed(request: request, error.localizedDescription))
         }
+        .cancellable(id: SearchID(request: request))
     }
 
     private func since(_ period: Period) -> Date? {

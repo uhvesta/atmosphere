@@ -322,9 +322,11 @@ impl Daemon {
         let skills = self
             .session_skills(&project, host, &fork.repositories, "")
             .await?;
+        // Instructions the fork was given stay, below the project's.
+        let own = fork.instructions.take().unwrap_or_default();
         fork.instructions = Some(instructions(
             &project,
-            "",
+            &own,
             &skills,
             Some(&item),
             parent.as_ref(),

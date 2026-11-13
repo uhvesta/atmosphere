@@ -163,7 +163,10 @@ extension Session {
                 PendingPermission(requestID: $0.requestID, kind: PermissionKind($0.kind), summary: $0.summary)
             },
             hostOffline: info.hostOffline,
-            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs), planning: info.planning,
+            // To the minute, as it's shown, so each tool call doesn't
+            // redraw the sidebar.
+            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs / 60_000 * 60_000),
+            planning: info.planning,
             asking: info.asking, lastMessage: optional(info.lastMessage), itemTitle: optional(info.itemTitle),
             effort: optional(info.effort), experimental: info.experimental)
     }

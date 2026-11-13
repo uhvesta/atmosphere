@@ -154,8 +154,8 @@ original spec; lettered ones were added since.
 | Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Done |
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
-| T1 Tokens and agent tools | Planned |
-| U1 App jank | Planned |
+| T1 Tokens and agent tools | Done |
+| U1 App jank | Done |
 | D1 Mermaid diagrams | Planned |
 | D2 Focus view for Markdown | Planned |
 | D3 Versions of a Markdown file | Planned |
@@ -1010,13 +1010,13 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### U1 App jank
 
-- [ ] A session's history arrives in one batch, with a loading state;
+- [x] A session's history arrives in one batch, with a loading state;
   live events are added, not the chat rebuilt; a reconnect resumes
   without wiping the reply streaming in
-- [ ] The sidebar and inbox don't redraw every two seconds
-- [ ] A failing list shows inline, not an alert every two seconds
-- [ ] Search, boards and hosts keep their state when left
-- [ ] Answered inbox rows don't come back; reopening the window doesn't
+- [x] The sidebar and inbox don't redraw every two seconds
+- [x] A failing list shows inline, not an alert every two seconds
+- [x] Search, boards and hosts keep their state when left
+- [x] Answered inbox rows don't come back; reopening the window doesn't
   flash the spinner; search results don't reorder under the pointer;
   review doesn't reload when nothing changed
 

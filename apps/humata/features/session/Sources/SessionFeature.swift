@@ -20,8 +20,11 @@ package struct SessionFeature {
         case terminal
     }
 
+    /// Identified by its session, so opening another in its place stops
+    /// what this one was doing instead of finishing it into the other.
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
+        package var id: Session.ID { session.id }
         package var session: Session
         /// The view showing.
         package var tab = Tab.chat
@@ -40,12 +43,22 @@ package struct SessionFeature {
             get { log }
             set {
                 log = newValue
+                chat = Chat()
+                for event in log { chat.add(event) }
                 derive()
             }
         }
         private var log: IdentifiedArrayOf<SessionEvent> = []
+        /// The chat, worked out an event at a time.
+        private var chat = Chat()
         /// What the chat shows, oldest first.
-        package private(set) var items: [ChatItem] = []
+        package var items: [ChatItem] { chat.items }
+        /// Whether the history has come since the session opened, so the
+        /// chat shows it's loading until then.
+        package var historyLoaded = false
+        /// The streamed parts of the reply taken in, so the history sent
+        /// again on a reconnect doesn't add them twice.
+        var streamed: Set<String> = []
         /// Requests for permission the agent is still waiting on.
         package private(set) var pendingPermissions: [SessionEvent] = []
         /// The failure row offering Try Again: the newest, while the last
@@ -208,7 +221,6 @@ package struct SessionFeature {
         /// Works out from the events what the chat shows, so views read it
         /// instead of working it out again.
         private mutating func derive() {
-            items = ChatItem.items(log)
             usage = Usage.total(log)
             // A request waits until it's answered or its turn ends.
             var waiting: [SessionEvent] = []
@@ -320,21 +332,37 @@ package struct SessionFeature {
         /// thousands of events shows at once instead of one at a time.
         mutating func receive(_ batch: [SessionEvent]) {
             var log = log
-            var changed = false
+            var added: [SessionEvent] = []
+            var replaced = false
             for event in batch {
                 switch event.kind {
                 case .assistantDelta(let text):
-                    streaming += text
+                    if streamed.insert(event.id).inserted { streaming += text }
                     continue
                 case .assistantMessage, .turnEnded:
                     streaming = ""
+                    streamed = []
                 default: break
                 }
-                log.updateOrAppend(event)
-                changed = true
+                if let known = log[id: event.id] {
+                    guard known != event else { continue }
+                    log[id: event.id] = event
+                    replaced = true
+                } else {
+                    log.append(event)
+                    added.append(event)
+                }
             }
-            guard changed else { return }
-            events = log
+            guard replaced || !added.isEmpty else { return }
+            if replaced {
+                events = log
+            } else {
+                // Live events go on the end of the chat; only a changed
+                // event means working it out again.
+                self.log = log
+                for event in added { chat.add(event) }
+                derive()
+            }
             if batch.contains(where: { $0.kind == .turnStarted }) {
                 let started = log.filter { $0.kind == .turnStarted }.count
                 review.turns = max(review.turns, started)
@@ -489,6 +517,7 @@ package struct SessionFeature {
             state.restartedFor = restart.id
             state.events = []
             state.streaming = ""
+            state.streamed = []
             return .send(.task)
         }
         state.receive(events)
@@ -636,9 +665,8 @@ package struct SessionFeature {
             case .tabPicked(let tab):
                 state.tab = tab
                 switch tab {
-                case .chat: return .none
-                case .review: return .send(.review(.refresh))
-                case .files: return .send(.docs(.refresh))
+                // Review and Files read again as their views appear.
+                case .chat, .review, .files: return .none
                 case .spec:
                     // It may have moved to another item since it opened.
                     state.specs.projectID = state.session.projectID
@@ -649,8 +677,8 @@ package struct SessionFeature {
 
             case .task:
                 state.disconnected = false
-                // The history is sent again, and the reply with it.
-                state.streaming = ""
+                // The history is sent again, and the reply's parts with it;
+                // those already shown are skipped, so the reply stays.
                 let session = state.session.id
                 return .merge(
                     readsImages(&state),
@@ -691,9 +719,11 @@ package struct SessionFeature {
                 return received([event], &state)
 
             case .receivedAll(let events):
+                state.historyLoaded = true
                 return received(events, &state)
 
             case .watchEnded:
+                state.historyLoaded = true
                 // The daemon restarted or the host dropped; watch again, less
                 // often the longer it stays away. The notice says so and
                 // lets the person try at once.

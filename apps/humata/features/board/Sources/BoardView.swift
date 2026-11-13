@@ -60,6 +60,16 @@ package struct BoardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.bar)
                 }
+                if store.failure == nil, let failure = store.proposals.listFailure {
+                    Label(
+                        "Couldn’t read the agents’ proposals: \(failure)",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.callout)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.bar)
+                }
                 let proposed = store.proposals.pending
                 if !proposed.isEmpty {
                     outsideProposals(proposed)

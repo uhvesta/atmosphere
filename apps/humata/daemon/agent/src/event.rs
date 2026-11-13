@@ -298,7 +298,8 @@ pub enum SendMode {
     Enqueue,
     /// Steer the running turn; start one if none is running.
     Immediate,
-    /// As `Enqueue`, unless the same text already waits in the queue.
+    /// As `Enqueue`, but in place of a notice waiting in the queue whose
+    /// first line, which says what it's about, is the same.
     EnqueueOnce,
 }
 

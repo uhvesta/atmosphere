@@ -19,6 +19,9 @@ package struct ProjectsFeature {
         /// What the person has typed to each agent's request, kept until it's
         /// sent.
         package var drafts: [AgentRequest.ID: String] = [:]
+        /// Requests answered here, which a read begun before the answer
+        /// went would bring back. Few, so kept while Humata runs.
+        var answered: Set<AgentRequest.ID> = []
         /// Whether the list was read yet: until then nothing is new, so
         /// nothing is notified.
         package var loadedOnce = false
@@ -222,6 +225,8 @@ package struct ProjectsFeature {
         /// its item.
         case changesTapped(Session.ID)
         case answerFailed(String)
+        /// The answer to request `id` didn't go, so it's shown again.
+        case requestNotAnswered(AgentRequest.ID)
         /// The person approved or denied admin actions other clients asked
         /// for; approving can let those of `grant`'s scopes run without
         /// asking for its seconds.
@@ -282,6 +287,10 @@ package struct ProjectsFeature {
 
             case .loaded(let projects, let sessions, let inbox, let approvals):
                 if state.failure != nil { state.failure = nil }
+                // Answered here, a request stays hidden, even from a read
+                // that began before the answer and arrives after a newer one.
+                let answered = state.answered
+                let inbox = inbox.filter { entry in entry.request.map { !answered.contains($0.id) } ?? true }
                 // The open session needs no notice only while it's on screen.
                 let open = activity.isActive() ? state.selection : nil
                 let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: open) : []
@@ -290,7 +299,10 @@ package struct ProjectsFeature {
                 let blocked = inbox.count(where: \.reason.blocks) + approvals.count
                 let badge = !state.loadedOnce || blocked != state.blockedCount ? blocked : nil
                 if !state.loadedOnce { state.loadedOnce = true }
-                state.now = date.now
+                // Times show to the minute; a new `now` each read would draw
+                // every row again.
+                let now = date.now.toTheMinute
+                if state.now != now { state.now = now }
                 // Read every two seconds and mostly the same: set only what
                 // changed, so the sidebar isn't drawn again for nothing.
                 if state.inbox != inbox { state.inbox = inbox }
@@ -667,6 +679,10 @@ package struct ProjectsFeature {
                 let live = archive ? state.closing(id, with: answer) : []
                 return answerRequest(&state, id, answer, archiving: live)
 
+            case .requestNotAnswered(let id):
+                state.answered.remove(id)
+                return .none
+
             case .requestAnswerSent(let id):
                 state.drafts[id] = nil
                 return .none
@@ -750,8 +766,14 @@ package struct ProjectsFeature {
         _ state: inout State, _ id: AgentRequest.ID, _ answer: RequestAnswer, archiving sessions: [Session]
     ) -> Effect<Action> {
         state.inbox.removeAll { $0.request?.id == id }
+        state.answered.insert(id)
         return .run { send in
-            try await daemon.answerRequest(id, answer)
+            do {
+                try await daemon.answerRequest(id, answer)
+            } catch {
+                await send(.requestNotAnswered(id))
+                throw error
+            }
             await send(.requestAnswerSent(id))
             for session in sessions where session.state == .working || session.state == .waitingForApproval {
                 try await daemon.abort(session.id)
@@ -1274,5 +1296,12 @@ package struct ApprovalGrantAsked: Equatable, Sendable {
     package init(scopes: [ApprovalScope], duration: Duration) {
         self.scopes = scopes
         self.duration = duration
+    }
+}
+
+extension Date {
+    /// This time with its seconds dropped.
+    var toTheMinute: Date {
+        Date(timeIntervalSinceReferenceDate: (timeIntervalSinceReferenceDate / 60).rounded(.down) * 60)
     }
 }

@@ -164,109 +164,116 @@ extension ChatItem {
     /// The chat for `events`, oldest first. A permission request belongs to
     /// the tool call running when it was made.
     package static func items(_ events: some Sequence<SessionEvent>) -> [ChatItem] {
-        var items: [ChatItem] = []
-        var calls: [String: Int] = [:]
-        var running: String?
-        var requests: [String: Int] = [:]
-        var turn: [SessionEvent] = []
+        var chat = Chat()
+        for event in events { chat.add(event) }
+        return chat.items
+    }
+}
 
-        func answer(_ request: String, _ answer: Permission.Answer) {
-            guard let index = requests[request] else { return }
-            switch items[index] {
-            case .tool(var call):
-                call.permission?.answer = answer
+/// The chat worked out an event at a time, so a live event is added to it
+/// instead of the chat being worked out again from the start.
+struct Chat: Equatable {
+    private(set) var items: [ChatItem] = []
+    private var calls: [String: Int] = [:]
+    private var running: String?
+    private var requests: [String: Int] = [:]
+    /// The usage reported in the turn so far.
+    private var turn: [SessionEvent] = []
+    private var rewound: Int?
+
+    private mutating func answer(_ request: String, _ answer: Permission.Answer) {
+        guard let index = requests[request] else { return }
+        switch items[index] {
+        case .tool(var call):
+            call.permission?.answer = answer
+            items[index] = .tool(call)
+        case .permission(let id, var permission):
+            permission.answer = answer
+            items[index] = .permission(id: id, permission)
+        default: break
+        }
+    }
+
+    /// The last rewind can't be undone once a message is sent or it was.
+    private mutating func settleRewind() {
+        guard let index = rewound, case .rewound(let id, let files, _) = items[index] else { return }
+        items[index] = .rewound(id: id, files: files, undoable: false)
+        rewound = nil
+    }
+
+    mutating func add(_ event: SessionEvent) {
+        if case .usage = event.kind { turn.append(event) }
+        if case .turnEnded = event.kind {
+            defer { turn = [] }
+            // Nothing waits on a request once its turn is over.
+            for request in requests.keys { answer(request, .notAnswered) }
+            requests = [:]
+            if case .turnEnded(aborted: true) = event.kind {
+                running = nil
+                items.append(.stopped(id: event.id))
+            }
+            if let usage = Usage.total(turn) { items.append(.cost(id: "\(event.id)-cost", usage)) }
+            return
+        }
+        switch event.kind {
+        case .userMessage(let text, let images):
+            settleRewind()
+            items.append(.person(id: event.id, text: text, images: images))
+        case .assistantMessage(let text):
+            items.append(.reply(id: event.id, text: text))
+        case .reasoning(let text):
+            if case .thinking(let id, let before)? = items.last {
+                items[items.count - 1] = .thinking(id: id, text: before + text)
+            } else {
+                items.append(.thinking(id: event.id, text: text))
+            }
+        case .toolStarted(let callID, let tool, let arguments):
+            calls[callID] = items.count
+            running = callID
+            items.append(
+                .tool(
+                    ToolCall(
+                        id: callID, tool: tool, subject: ToolCall.subject(of: arguments),
+                        change: ToolCall.change(of: arguments))))
+        case .toolCompleted(let callID, let success, let output):
+            if running == callID { running = nil }
+            guard let index = calls[callID], case .tool(var call) = items[index] else { return }
+            call.output = output
+            call.succeeded = success
+            items[index] = .tool(call)
+        case .permissionRequested(let request, let kind, let summary):
+            let permission = Permission(requestID: request, kind: kind, summary: summary)
+            if let running, let index = calls[running], case .tool(var call) = items[index],
+                call.permission == nil
+            {
+                call.permission = permission
                 items[index] = .tool(call)
-            case .permission(let id, var permission):
-                permission.answer = answer
-                items[index] = .permission(id: id, permission)
-            default: break
+                requests[request] = index
+            } else {
+                requests[request] = items.count
+                items.append(.permission(id: event.id, permission))
             }
+        case .permissionCompleted(let request, let approved, let automatic, let judged):
+            answer(
+                request,
+                judged ? .allowedByJudge : automatic ? .allowedByMode : approved ? .approved : .denied)
+            requests[request] = nil
+        case .failed(let message):
+            items.append(.failure(id: event.id, message: message))
+        case .notice(let text):
+            items.append(.notice(id: event.id, text: text))
+        case .rewound(_, _, let files):
+            settleRewind()
+            rewound = items.count
+            items.append(.rewound(id: event.id, files: files, undoable: true))
+        case .rewindUndone:
+            settleRewind()
+        case .compacted:
+            items.append(.compacted(id: event.id))
+        case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
+            .waiting:
+            return
         }
-
-        var rewound: Int?
-
-        /// The last rewind can't be undone once a message is sent or it was.
-        func settleRewind() {
-            guard let index = rewound, case .rewound(let id, let files, _) = items[index] else { return }
-            items[index] = .rewound(id: id, files: files, undoable: false)
-            rewound = nil
-        }
-
-        for event in events {
-            if case .usage = event.kind { turn.append(event) }
-            if case .turnEnded = event.kind {
-                defer { turn = [] }
-                // Nothing waits on a request once its turn is over.
-                for request in requests.keys { answer(request, .notAnswered) }
-                requests = [:]
-                if case .turnEnded(aborted: true) = event.kind {
-                    running = nil
-                    items.append(.stopped(id: event.id))
-                }
-                if let usage = Usage.total(turn) { items.append(.cost(id: "\(event.id)-cost", usage)) }
-                continue
-            }
-            switch event.kind {
-            case .userMessage(let text, let images):
-                settleRewind()
-                items.append(.person(id: event.id, text: text, images: images))
-            case .assistantMessage(let text):
-                items.append(.reply(id: event.id, text: text))
-            case .reasoning(let text):
-                if case .thinking(let id, let before)? = items.last {
-                    items[items.count - 1] = .thinking(id: id, text: before + text)
-                } else {
-                    items.append(.thinking(id: event.id, text: text))
-                }
-            case .toolStarted(let callID, let tool, let arguments):
-                calls[callID] = items.count
-                running = callID
-                items.append(
-                    .tool(
-                        ToolCall(
-                            id: callID, tool: tool, subject: ToolCall.subject(of: arguments),
-                            change: ToolCall.change(of: arguments))))
-            case .toolCompleted(let callID, let success, let output):
-                if running == callID { running = nil }
-                guard let index = calls[callID], case .tool(var call) = items[index] else { continue }
-                call.output = output
-                call.succeeded = success
-                items[index] = .tool(call)
-            case .permissionRequested(let request, let kind, let summary):
-                let permission = Permission(requestID: request, kind: kind, summary: summary)
-                if let running, let index = calls[running], case .tool(var call) = items[index],
-                    call.permission == nil
-                {
-                    call.permission = permission
-                    items[index] = .tool(call)
-                    requests[request] = index
-                } else {
-                    requests[request] = items.count
-                    items.append(.permission(id: event.id, permission))
-                }
-            case .permissionCompleted(let request, let approved, let automatic, let judged):
-                answer(
-                    request,
-                    judged ? .allowedByJudge : automatic ? .allowedByMode : approved ? .approved : .denied)
-                requests[request] = nil
-            case .failed(let message):
-                items.append(.failure(id: event.id, message: message))
-            case .notice(let text):
-                items.append(.notice(id: event.id, text: text))
-            case .rewound(_, _, let files):
-                settleRewind()
-                rewound = items.count
-                items.append(.rewound(id: event.id, files: files, undoable: true))
-            case .rewindUndone:
-                settleRewind()
-            case .compacted:
-                items.append(.compacted(id: event.id))
-            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
-                .waiting:
-                continue
-            }
-        }
-        return items
     }
 }
 

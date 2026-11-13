@@ -33,6 +33,9 @@ package struct ProposalsFeature {
         /// The proposals being applied or declined, so their buttons wait.
         package var deciding: Set<String> = []
         @Presents package var alert: AlertState<Never>?
+        /// Why they couldn't be listed, shown where they go; listing is
+        /// tried again with each refresh.
+        package var listFailure: String?
 
         package init(sessionID: String) {
             self.sessionID = sessionID
@@ -62,6 +65,8 @@ package struct ProposalsFeature {
         /// Forks the planning session onto the task applying it made.
         case startWorkTapped(itemID: String)
         case decided(String, Proposal.State)
+        /// They couldn't be listed.
+        case listFailed(String)
         case failed(id: String?, message: String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
@@ -96,11 +101,16 @@ package struct ProposalsFeature {
                         await send(.listed(try await daemon.proposals(session)))
                     }
                 } catch: { error, send in
-                    await send(.failed(id: nil, message: error.localizedDescription))
+                    await send(.listFailed(error.localizedDescription))
                 }
                 .cancellable(id: CancelID.list, cancelInFlight: true)
 
+            case .listFailed(let message):
+                if state.listFailure != message { state.listFailure = message }
+                return .none
+
             case .listed(let proposals):
+                if state.listFailure != nil { state.listFailure = nil }
                 let listed = IdentifiedArray(uniqueElements: proposals)
                 if listed != state.proposals { state.proposals = listed }
                 return .none
@@ -156,7 +166,7 @@ package struct ProposalsFeature {
             case .failed(let id, let message):
                 if let id { state.deciding.remove(id) }
                 state.alert = AlertState {
-                    TextState("Something went wrong")
+                    TextState(id == nil ? "Couldn’t Start Work on the Task" : "Couldn’t Decide on the Proposal")
                 } message: {
                     TextState(message)
                 }

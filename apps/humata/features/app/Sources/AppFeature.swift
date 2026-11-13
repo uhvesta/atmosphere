@@ -37,8 +37,36 @@ package struct AppFeature {
         /// What each session looked away from was showing, put back when
         /// it opens again while Humata runs.
         var left: [Session.ID: SessionFeature.State.Left] = [:]
+        /// Search, each board and the hosts as they were left, put back
+        /// when they open again while Humata runs.
+        var keptSearch: SearchFeature.State?
+        var keptBoards: [Project.ID: BoardFeature.State] = [:]
+        var keptHosts: HostsFeature.State?
 
         package init() {}
+
+        /// Puts away the open board, hosts and search, to show again as they
+        /// were.
+        mutating func putAway() {
+            if let board { keptBoards[board.project.id] = board }
+            if let hosts { keptHosts = hosts }
+            if let search { keptSearch = search }
+            board = nil
+            hosts = nil
+            search = nil
+        }
+
+        /// Opens `project`'s board as it was left, or anew to open `item`.
+        mutating func openBoard(_ project: Project, at item: String? = nil) {
+            putAway()
+            if item == nil, var kept = keptBoards.removeValue(forKey: project.id) {
+                kept.project = project
+                board = kept
+            } else {
+                keptBoards[project.id] = nil
+                board = BoardFeature.State(project: project, opening: item)
+            }
+        }
 
         /// Opens `next` in place of the open session, keeping what the one
         /// closed was showing; nil closes it.
@@ -108,7 +136,12 @@ package struct AppFeature {
         Reduce { state, action in
             switch action {
             case .task:
-                state.daemon = .starting
+                // Reopening the window checks again without hiding the
+                // sidebar behind the spinner.
+                switch state.daemon {
+                case .running, .updatePending: break
+                default: state.daemon = .starting
+                }
                 return .run { send in
                     try await service.start()
                     let current = try await service.isCurrent()
@@ -169,9 +202,7 @@ package struct AppFeature {
                 return .none
 
             case .sidebar(.delegate(.openSession(let session))):
-                state.board = nil
-                state.hosts = nil
-                state.search = nil
+                state.putAway()
                 guard state.session?.session.id != session.id else { return .none }
                 var open = SessionFeature.State(session: session)
                 open.request = Self.request(of: session.id, in: state.sidebar.inbox)
@@ -179,40 +210,35 @@ package struct AppFeature {
                 return .none
 
             case .sidebar(.delegate(.openChanges(let session))):
-                state.board = nil
-                state.hosts = nil
-                state.search = nil
+                state.putAway()
                 if state.session?.session.id != session.id { state.show(SessionFeature.State(session: session)) }
                 return .send(.session(.presented(.tabPicked(.review))))
 
             case .sidebar(.delegate(.openBoard(let project))):
                 state.show(nil)
-                state.hosts = nil
-                state.search = nil
                 guard state.board?.project.id != project.id else { return .none }
-                state.board = BoardFeature.State(project: project)
+                state.openBoard(project)
                 return .none
 
             case .sidebar(.delegate(.openInbox)):
                 state.show(nil)
-                state.board = nil
-                state.hosts = nil
-                state.search = nil
+                state.putAway()
                 return .none
 
             case .sidebar(.delegate(.openSearch)):
                 state.show(nil)
-                state.board = nil
-                state.hosts = nil
-                if state.search == nil {
-                    state.search = SearchFeature.State(projects: Array(state.sidebar.projects))
-                }
+                guard state.search == nil else { return .none }
+                var search = state.keptSearch ?? SearchFeature.State()
+                state.putAway()
+                state.keptSearch = nil
+                search.projects = Array(state.sidebar.projects)
+                state.search = search
                 return .none
 
             case .search(.presented(.delegate(.openSession(let id, let event)))):
                 guard let session = state.sidebar.sessions[id: id] else { return .none }
                 state.sidebar.selection = .session(id)
-                state.search = nil
+                state.putAway()
                 state.show(SessionFeature.State(session: session, highlighted: event))
                 return .none
 
@@ -220,9 +246,8 @@ package struct AppFeature {
                 .session(.presented(.delegate(.openItem(let projectID, let itemID)))):
                 guard let project = state.sidebar.projects[id: projectID] else { return .none }
                 state.sidebar.selection = .board(projectID)
-                state.search = nil
                 state.show(nil)
-                state.board = BoardFeature.State(project: project, opening: itemID)
+                state.openBoard(project, at: itemID)
                 return .none
 
             case .opened(let url):
@@ -232,9 +257,11 @@ package struct AppFeature {
 
             case .sidebar(.delegate(.openHosts)):
                 state.show(nil)
-                state.board = nil
-                state.search = nil
-                if state.hosts == nil { state.hosts = HostsFeature.State() }
+                guard state.hosts == nil else { return .none }
+                let hosts = state.keptHosts ?? HostsFeature.State()
+                state.putAway()
+                state.keptHosts = nil
+                state.hosts = hosts
                 return .none
 
             case .hosts(.presented(.removed)):
@@ -245,9 +272,7 @@ package struct AppFeature {
                 .board(.presented(.delegate(.openSession(let session)))):
                 if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
                 state.sidebar.selection = .session(session.id)
-                state.board = nil
-                state.hosts = nil
-                state.search = nil
+                state.putAway()
                 state.show(SessionFeature.State(session: session))
                 return .send(.sidebar(.refresh))
 
@@ -285,9 +310,7 @@ package struct AppFeature {
             guard let project = state.sidebar.projects[id: projectID] else { return .none }
             state.sidebar.selection = .board(projectID)
             state.show(nil)
-            state.hosts = nil
-            state.search = nil
-            state.board = BoardFeature.State(project: project, opening: itemID)
+            state.openBoard(project, at: itemID)
             return .none
         }
     }
