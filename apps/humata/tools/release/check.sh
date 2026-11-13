@@ -55,7 +55,7 @@ spctl --assess --type execute -vv "$app" 2>&1 | grep -q 'source=Notarized Develo
   fail "Gatekeeper doesn't accept the app as notarized Developer ID code: $(spctl --assess --type execute -vv "$app" 2>&1 | tr '\n' ' ')"
 
 for binary in humata-darwin-arm64 humatad-darwin-arm64; do
-  echo "Checking $binary…"
+  echo "Checking ${binary}…"
   chmod +x "$binary"
   codesign --verify --strict "$binary" || fail "$binary's signature doesn't verify."
   spctl --assess --type open --context context:primary-signature -vv "$binary" 2>&1 |

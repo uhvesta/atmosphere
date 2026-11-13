@@ -47,7 +47,7 @@ security find-generic-password -s "$service" >/dev/null 2>&1 ||
 
 sh tools/bootstrap/bazelisk.sh
 bazel="$root/.tools/bin/bazel"
-echo "Building Humata $version from $commit…"
+echo "Building Humata $version from ${commit}…"
 "$bazel" build --config=xcode --//apps/humata/daemon/cli:admin=false //apps/humata/app:macos
 out=$("$bazel" cquery --config=xcode --//apps/humata/daemon/cli:admin=false --output=files //apps/humata/app:macos 2>/dev/null | head -n 1)
 [ -n "$out" ] && [ -e "$out" ] || fail "the build finished but its output wasn't found; run: bazel cquery --config=xcode --output=files //apps/humata/app:macos"
@@ -69,7 +69,7 @@ plutil -replace CFBundleVersion -string "$(git rev-list --count HEAD)" "$app/Con
 # Inside out: everything an Apple tool counts as code, then the app. The
 # Mac builds of humatad under Resources/builds are code too, and notarization
 # refuses anything in the app that isn't signed this way.
-echo "Signing with $identity…"
+echo "Signing with ${identity}…"
 sign() {
   codesign --force --timestamp --options runtime --sign "$identity" "$@"
 }
@@ -111,7 +111,7 @@ cp "$app/Contents/Resources/builds/humatad-linux-aarch64" "$assets/humatad-linux
 cp "$app/Contents/Resources/builds/humatad-linux-x86_64" "$assets/humatad-linux-x86_64"
 (cd "$assets" && shasum -a 256 -- * >SHA256SUMS)
 
-echo "Uploading a draft release $tag…"
+echo "Uploading a draft release ${tag}…"
 notes="Humata $version, built from $commit. Signed with Developer ID and notarized by Apple.
 
 - Humata-$version.zip: the Mac app (Apple silicon), with humata and humatad inside.
