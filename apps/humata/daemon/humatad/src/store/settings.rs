@@ -73,7 +73,7 @@ impl Store {
         plugin: &str,
         enabled: Option<bool>,
     ) -> Result<(), StoreError> {
-        self.project(project)?;
+        self.project_exists(project)?;
         let connection = self.lock();
         let set = match enabled {
             Some(enabled) => connection.execute(
@@ -106,7 +106,7 @@ impl Store {
         defaults: Option<&humata_wire::pb::SessionDefaults>,
     ) -> Result<(), StoreError> {
         if !project.is_empty() {
-            self.project(project)?;
+            self.project_exists(project)?;
         }
         let connection = self.lock();
         let set = match defaults {

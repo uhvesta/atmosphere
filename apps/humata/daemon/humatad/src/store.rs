@@ -606,10 +606,35 @@ impl Store {
         found.ok_or_else(|| StoreError::UnknownProject { id: id.to_owned() })
     }
 
+    /// Fails with [`StoreError::UnknownProject`] unless `id` is a project,
+    /// without reading it.
+    fn project_exists(&self, id: &str) -> Result<(), StoreError> {
+        let found = self
+            .lock()
+            .prepare_cached("SELECT 1 FROM projects WHERE id = ?1")
+            .and_then(|mut statement| statement.query_row([id], |_| Ok(())).optional())
+            .map_err(self.failed())?;
+        found.ok_or_else(|| StoreError::UnknownProject { id: id.to_owned() })
+    }
+
+    /// Every item of every project, without its spec or its sessions: what
+    /// the inbox shows of them.
+    pub fn item_heads(&self) -> Result<Vec<Item>, StoreError> {
+        let connection = self.lock();
+        let listed = (|| -> rusqlite::Result<Vec<Item>> {
+            let mut statement = connection.prepare_cached(
+                "SELECT id, project_id, parent_id, title, '', status, priority,
+                     created_unix_ms, updated_unix_ms FROM items",
+            )?;
+            statement.query_map([], item_row)?.collect()
+        })();
+        listed.map_err(self.failed())
+    }
+
     /// Removes `id`, its repositories and its board. Its sessions are kept,
     /// in no project and on no item.
     pub fn delete_project(&self, id: &str) -> Result<(), StoreError> {
-        self.project(id)?;
+        self.project_exists(id)?;
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
         let deleted = (|| {
@@ -640,7 +665,7 @@ impl Store {
         repositories: &[Repository],
         urls: &BTreeMap<String, String>,
     ) -> Result<(), StoreError> {
-        self.project(project)?;
+        self.project_exists(project)?;
         let mut connection = self.lock();
         let set = (|| {
             let transaction = connection.transaction()?;
@@ -1049,7 +1074,7 @@ impl Store {
         if fields.title.trim().is_empty() {
             return Err(StoreError::NoTitle);
         }
-        self.project(project)?;
+        self.project_exists(project)?;
         if let Some(parent) = &fields.parent_id {
             let parent = self.item(parent)?;
             if parent.project_id != project {
@@ -1223,7 +1248,7 @@ impl Store {
     /// `project`'s items: tasks by priority, most urgent first, then by when
     /// they were added, each followed by its subtasks in the same order.
     pub fn items(&self, project: &str) -> Result<Vec<Item>, StoreError> {
-        self.project(project)?;
+        self.project_exists(project)?;
         let connection = self.lock();
         let listed = (|| -> rusqlite::Result<Vec<Item>> {
             let mut statement = connection.prepare(&format!(
@@ -1259,7 +1284,7 @@ impl Store {
 
     /// `project`'s board changes, newest first.
     pub fn board_log(&self, project: &str) -> Result<Vec<Change>, StoreError> {
-        self.project(project)?;
+        self.project_exists(project)?;
         let connection = self.lock();
         let listed = (|| -> rusqlite::Result<Vec<Change>> {
             let mut statement = connection.prepare(
@@ -2053,6 +2078,46 @@ mod tests {
             Some("")
         );
         assert_eq!(known.get("s1"), store.known("s1").expect("read").as_ref());
+    }
+
+    #[test]
+    fn item_heads_hold_every_projects_items_without_their_specs() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = store(dir.path());
+        let author = Author::on(pb::ChangeSurface::Mcp);
+        let mut added = Vec::new();
+        for name in ["one", "two"] {
+            let project = store
+                .add_project(
+                    name.into(),
+                    repositories(&format!("/code/{name}")),
+                    BTreeMap::new(),
+                    String::new(),
+                    Vec::new(),
+                )
+                .expect("added");
+            let fields = ItemFields {
+                parent_id: None,
+                status: Status::Done,
+                priority: Priority::None,
+                title: format!("Tidy {name}"),
+                spec: "a long spec".into(),
+            };
+            added.push(store.add_item(&project.id, fields, &author).expect("added"));
+        }
+        let mut heads = store.item_heads().expect("listed");
+        heads.sort_by(|a, b| a.fields.title.cmp(&b.fields.title));
+        assert_eq!(heads.len(), 2);
+        for (head, item) in heads.iter().zip(&added) {
+            assert_eq!(head.id, item.id);
+            assert_eq!(head.fields.title, item.fields.title);
+            assert_eq!(head.fields.status, Status::Done);
+            assert!(head.fields.spec.is_empty());
+        }
+        assert!(matches!(
+            store.items("nope"),
+            Err(StoreError::UnknownProject { .. })
+        ));
     }
 
     #[test]

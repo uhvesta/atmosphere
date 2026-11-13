@@ -598,17 +598,13 @@ impl Daemon {
     async fn inbox(&self) -> Result<pb::Inbox, DaemonError> {
         let projects = self.store.projects()?;
         let sessions = self.list("").await?.sessions;
-        let mut items: HashMap<String, pb::Item> = HashMap::new();
-        for project in &projects {
-            let mut shown: Vec<pb::Item> = self
-                .store
-                .items(&project.id)?
-                .iter()
-                .map(Item::wire)
-                .collect();
-            board::show(&mut shown, &sessions);
-            items.extend(shown.into_iter().map(|item| (item.id.clone(), item)));
-        }
+        // Their titles and statuses only, not their specs.
+        let mut shown: Vec<pb::Item> = self.store.item_heads()?.iter().map(Item::wire).collect();
+        board::show(&mut shown, &sessions);
+        let items: HashMap<String, pb::Item> = shown
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect();
         let names: HashMap<&str, &str> = projects
             .iter()
             .map(|project| (project.id.as_str(), project.name.as_str()))
