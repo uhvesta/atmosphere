@@ -162,6 +162,7 @@ original spec; lettered ones were added since.
 | U2 UX papercuts | Planned |
 | S2 Compression | Planned |
 | S3 Daemon speed | Planned |
+| G1 libghostty terminal | Planned |
 | X Admin mode, gated by approvals | Done |
 
 ## Done milestones
@@ -1074,6 +1075,38 @@ turned on, and then deletes archived sessions after 45 days by default.
   changed; specs and comments indexed apart
 - [ ] No whole-history copies on hot paths; archived sessions loaded when
   opened
+
+### A terminal on libghostty
+
+Proposed 2026-11-13, waiting on the owner's sign-off of the structure:
+terminals drawn by libghostty-vt, Ghostty's terminal library, instead of
+SwiftTerm. libghostty-vt keeps the screen, scrollback and modes and encodes
+keys and mouse; it doesn't draw and doesn't talk to a pty, so the bytes
+still come from the host over the protocol as they do now, and the app
+draws the screen itself with Metal. The wire and the daemon don't change.
+
+#### G1 libghostty terminal
+
+- [ ] libghostty-vt, pinned by version and SHA-256 like llama.cpp, builds
+  into the app with no Zig step; its MIT notice is listed
+- [ ] Terminals look and behave as before: the same tabs, replay on
+  reattach, resize sent to the host, and exit and reconnect notes
+- [ ] Drawn with Metal: crisp text at any scale, true color, wide and
+  combining characters and emoji, a blinking cursor, and no stutter while
+  a command prints fast
+- [ ] Keys as a real terminal sends them: arrows and function keys in
+  every mode, Option as Meta, the kitty keyboard protocol, and input
+  methods for composed text
+- [ ] Select with the mouse (a word on double-click, a line on triple),
+  copy with ⌘C, paste with ⌘V (bracketed when the program asks), and
+  mouse reporting for programs like vim and htop
+- [ ] Scroll back through what printed with the wheel or trackpad; ⌘F
+  finds text in it
+- [ ] The font and size, and colors that follow light and dark mode, set
+  in Settings
+- [ ] VoiceOver reads the screen and announces new output
+- [ ] Programs that ask the terminal a question (cursor position, device
+  attributes, colors) get their answer, in order with the keys typed
 
 ### Composer, rewind, skills, plugins and models
 
