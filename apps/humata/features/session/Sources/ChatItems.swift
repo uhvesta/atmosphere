@@ -126,6 +126,8 @@ package struct Permission: Hashable, Sendable {
         case denied
         /// The session's approval mode allowed it.
         case allowedByMode
+        /// Its turn ended, stopped or cut short, before it was answered.
+        case notAnswered
     }
 
     package var requestID: String
@@ -178,6 +180,9 @@ extension ChatItem {
             if case .usage = event.kind { turn.append(event) }
             if case .turnEnded = event.kind {
                 defer { turn = [] }
+                // Nothing waits on a request once its turn is over.
+                for request in requests.keys { answer(request, .notAnswered) }
+                requests = [:]
                 if case .turnEnded(aborted: true) = event.kind {
                     running = nil
                     items.append(.stopped(id: event.id))
@@ -224,6 +229,7 @@ extension ChatItem {
                 }
             case .permissionCompleted(let request, let approved, let automatic):
                 answer(request, automatic ? .allowedByMode : approved ? .approved : .denied)
+                requests[request] = nil
             case .failed(let message):
                 items.append(.failure(id: event.id, message: message))
             case .notice(let text):

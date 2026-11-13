@@ -32,15 +32,15 @@ final class SessionFeatureTests: XCTestCase {
         store.exhaustivity = .off
 
         let watching = await store.send(.task)
-        await store.receive(\.received, timeout: .seconds(1))
-        await store.skipReceivedActions()
+        await store.receive(\.receivedAll, timeout: .seconds(1))
+        await store.skipReceivedActions(strict: false)
         XCTAssertEqual(said(store.state.events), ["user: earlier", "agent: You said: earlier"])
 
         await store.send(\.binding.draft, "  hello  ")
         await store.send(.sendTapped(.enqueue)) {
             $0.draft = ""
         }
-        await store.skipReceivedActions()
+        await store.skipReceivedActions(strict: false)
         XCTAssertEqual(
             said(store.state.events),
             ["user: earlier", "agent: You said: earlier", "user: hello", "agent: You said: hello"])
@@ -263,7 +263,7 @@ final class SessionFeatureTests: XCTestCase {
 
         await store.send(.sendTapped(.enqueue))
         XCTAssertTrue(store.state.images.isEmpty)
-        await store.skipReceivedActions()
+        await store.skipReceivedActions(strict: false)
         let history = try await daemon.client.history(session.id)
         let names = history.compactMap { event -> [String]? in
             guard case .userMessage(_, let images) = event.kind else { return nil }
@@ -835,6 +835,44 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(.received(event("e3", .turnEnded(aborted: true))))
         XCTAssertEqual(store.state.items, [.person(id: "e1", text: "go"), .stopped(id: "e3")])
         XCTAssertFalse(store.state.isWorking)
+    }
+
+    func testARequestLeftWhenItsTurnEndsIsNoLongerWaiting() async {
+        let store = store()
+        await store.send(
+            .receivedAll([
+                event("e1", .userMessage("go")),
+                event("e2", .turnStarted),
+                event("e3", .permissionRequested(requestID: "p1", kind: .shell, summary: "touch SPEC.md")),
+                event("e4", .turnEnded(aborted: true)),
+            ]))
+        XCTAssertFalse(store.state.isWaiting)
+        let answers = store.state.items.compactMap { item in
+            if case .permission(_, let permission) = item { permission.answer } else { nil }
+        }
+        XCTAssertEqual(answers, [.notAnswered])
+
+        await store.send(.received(event("e5", .userMessage("hello"))))
+        await store.send(.received(event("e6", .turnStarted)))
+        XCTAssertFalse(store.state.isWaiting)
+    }
+
+    func testEventsTakenTogetherShowTheSameChatAsOneByOne() async {
+        let events = [
+            event("e1", .userMessage("go")),
+            event("e2", .turnStarted),
+            event("d1", .assistantDelta("Do")),
+            event("d2", .assistantDelta("ne")),
+            event("e3", .assistantMessage("Done")),
+            event("e4", .turnEnded(aborted: false)),
+        ]
+        let together = store()
+        await together.send(.receivedAll(events))
+        let oneByOne = store()
+        for event in events { await oneByOne.send(.received(event)) }
+        XCTAssertEqual(together.state.items, oneByOne.state.items)
+        XCTAssertEqual(together.state.streaming, "")
+        XCTAssertFalse(together.state.isWorking)
     }
 
     func testForkingFromAHighlightedReplyKeepsItsWholeTurn() async throws {

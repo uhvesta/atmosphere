@@ -152,6 +152,8 @@ original spec; lettered ones were added since.
 | Q3 Skills from the agents' folders | Planned |
 | Q4 Plugins | Planned |
 | Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Planned |
+| Q6 Auto approvals: the agent's own safety judge | Next |
+| Q7 Spec tab: every spec a chat reads, in the chat | Planned |
 | T1 Tokens and agent tools | Planned |
 | U1 App jank | Planned |
 | D1 Mermaid diagrams | Planned |
@@ -1144,6 +1146,36 @@ the Mac. Built after S1, before T1.
 - [ ] On-device models run only on the Mac: a session on a host uses the
   Mac's model server through the forward, and a `base_url` that points at
   the host itself is refused for Humata's on-device models
+
+#### Fixes from the owner, 2026-11-12
+
+- [x] The session header gives up the usage, then its actions' names, then
+  the tabs' row as the window narrows, so nothing is cut off
+- [x] A permission request still open when its turn ends shows as not
+  answered, with no Approve or Deny, and nothing waits on it
+- [x] Opening a chat shows its history at once: a watch's events are taken
+  in batches and the chat worked out once per batch, not once per event
+- [x] Releases are built optimized (`--compilation_mode=opt`); 0.1.0 wasn't
+
+#### Q6 Auto approvals
+
+The owner, 2026-11-12: auto approvals through the agents' own judges.
+
+- [ ] Approvals gains Auto: Claude Code sessions switch to its `auto`
+  permission mode through its control protocol (and back to `manual` for
+  the other choices); Copilot sessions use its assisted-approval judge
+- [ ] What the judge won't approve comes to the person as any request
+  does; what it approved shows "Allowed by the agent's judge"
+- [ ] Auto isn't offered for local models, which have no judge
+
+#### Q7 Spec tab
+
+The owner, 2026-11-12: see the specs for a chat.
+
+- [ ] A Spec tab beside Chat, Review and Files shows every spec the chat
+  reads, in order: the project's, its task's, its subtask's
+- [ ] Each renders as Markdown, with Edit for the board's editor; an edit
+  is saved to the board and reaches the session as any spec edit does
 
 ### Milestone K: signed releases
 

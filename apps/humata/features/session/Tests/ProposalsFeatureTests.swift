@@ -32,7 +32,7 @@ final class ProposalsFeatureTests: XCTestCase {
 
         let watching = await store.send(.task)
         await store.receive(\.proposals.listed, timeout: .seconds(1))
-        await store.skipReceivedActions()
+        await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.proposals.proposals.map(\.title), ["Login form", "Dark mode", "Confetti"])
         await watching.cancel()
     }

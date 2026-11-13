@@ -195,14 +195,18 @@ package struct SessionFeature {
         private mutating func derive() {
             items = ChatItem.items(log)
             usage = Usage.total(log)
-            var answered = Set<String>()
+            // A request waits until it's answered or its turn ends.
+            var waiting: [SessionEvent] = []
             for event in log {
-                if case .permissionCompleted(let request, _, _) = event.kind { answered.insert(request) }
+                switch event.kind {
+                case .permissionRequested: waiting.append(event)
+                case .permissionCompleted(let request, _, _):
+                    waiting.removeAll { if case .permissionRequested(request, _, _) = $0.kind { true } else { false } }
+                case .turnEnded: waiting = []
+                default: continue
+                }
             }
-            pendingPermissions = log.filter { event in
-                guard case .permissionRequested(let request, _, _) = event.kind else { return false }
-                return !answered.contains(request)
-            }
+            pendingPermissions = waiting
             queued = []
             dropped = []
             for event in log {
@@ -294,20 +298,31 @@ package struct SessionFeature {
         }
 
         mutating func receive(_ event: SessionEvent) {
-            defer {
-                if case .turnStarted = event.kind {
-                    let started = events.filter { $0.kind == .turnStarted }.count
-                    review.turns = max(review.turns, started)
+            receive([event])
+        }
+
+        /// Takes in `batch` and works out the chat once, so a history of
+        /// thousands of events shows at once instead of one at a time.
+        mutating func receive(_ batch: [SessionEvent]) {
+            var log = log
+            var changed = false
+            for event in batch {
+                switch event.kind {
+                case .assistantDelta(let text):
+                    streaming += text
+                    continue
+                case .assistantMessage, .turnEnded:
+                    streaming = ""
+                default: break
                 }
+                log.updateOrAppend(event)
+                changed = true
             }
-            switch event.kind {
-            case .assistantDelta(let text):
-                streaming += text
-            case .assistantMessage, .turnEnded:
-                streaming = ""
-                events.updateOrAppend(event)
-            default:
-                events.updateOrAppend(event)
+            guard changed else { return }
+            events = log
+            if batch.contains(where: { $0.kind == .turnStarted }) {
+                let started = log.filter { $0.kind == .turnStarted }.count
+                review.turns = max(review.turns, started)
             }
         }
     }
@@ -319,6 +334,9 @@ package struct SessionFeature {
         /// Humata came to the front, so the open reply is seen.
         case becameActive
         case received(SessionEvent)
+        /// Events that came together, such as the history when watching
+        /// starts.
+        case receivedAll([SessionEvent])
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
         /// The message wasn't sent; it goes back in the box if that is empty.
@@ -417,6 +435,32 @@ package struct SessionFeature {
     @Dependency(\.appActivity) var activity
     @Dependency(\.uuid) var uuid
     private enum CancelID { case watch, seen, activations }
+
+    private func received(_ events: [SessionEvent], _ state: inout State) -> Effect<Action> {
+        // A watch sends the history first. Only something new shows the
+        // session is live: an offline host's cached history ends its watch
+        // at once, and must not be fetched every second.
+        let new = events.filter { state.events[id: $0.id] == nil }
+        if new.contains(where: \.kind.isLive) { state.watchRetries = 0 }
+        state.receive(events)
+        var effects: [Effect<Action>] = []
+        if new.contains(where: { event in
+            if case .toolCompleted(let call, true, _) = event.kind { state.proposes(call) } else { false }
+        }) {
+            effects.append(.send(.proposals(.refresh)))
+        }
+        // The agent may have answered the review, or changed the code or
+        // the files.
+        if new.contains(where: { if case .turnEnded = $0.kind { true } else { false } }) {
+            effects.append(markSeen(state))
+            switch state.tab {
+            case .chat, .terminal: break
+            case .review: effects.append(.send(.review(.refresh)))
+            case .files: effects.append(.send(.docs(.refresh)))
+            }
+        }
+        return .merge(effects)
+    }
 
     /// The longest wait before watching again.
     private static let longestRetry = 30
@@ -549,14 +593,26 @@ package struct SessionFeature {
                 return .merge(
                     readsImages(&state),
                     .run { send in
-                        do {
-                            for try await event in await daemon.watch(session) {
-                                await send(.received(event))
+                        // What comes while a batch is shown goes as the
+                        // next one, so the history is shown all at once.
+                        let batches = EventBatches()
+                        let reader = Task {
+                            do {
+                                for try await event in await daemon.watch(session) { await batches.add(event) }
+                                await batches.end(failure: nil)
+                            } catch is CancellationError {
+                            } catch {
+                                await batches.end(failure: error.localizedDescription)
                             }
-                            await send(.watchEnded(failure: nil))
-                        } catch is CancellationError {
-                        } catch {
-                            await send(.watchEnded(failure: error.localizedDescription))
+                        }
+                        defer { reader.cancel() }
+                        while let batch = await batches.next() {
+                            switch batch {
+                            case .events(let events): await send(.receivedAll(events))
+                            case .ended(let failure):
+                                await send(.watchEnded(failure: failure))
+                                return
+                            }
                         }
                     }
                     .cancellable(id: CancelID.watch, cancelInFlight: true),
@@ -570,26 +626,10 @@ package struct SessionFeature {
                 return markSeen(state)
 
             case .received(let event):
-                // A watch sends the history first. Only something new shows
-                // the session is live: an offline host's cached history ends
-                // its watch at once, and must not be fetched every second.
-                let new = state.events[id: event.id] == nil
-                if new, event.kind.isLive { state.watchRetries = 0 }
-                state.receive(event)
-                guard new else { return .none }
-                if case .toolCompleted(let call, true, _) = event.kind, state.proposes(call) {
-                    return .send(.proposals(.refresh))
-                }
-                // The agent may have answered the review, or changed the code
-                // or the files.
-                guard case .turnEnded = event.kind else { return .none }
-                let seen = markSeen(state)
-                switch state.tab {
-                case .chat: return seen
-                case .review: return .merge(seen, .send(.review(.refresh)))
-                case .files: return .merge(seen, .send(.docs(.refresh)))
-                case .terminal: return seen
-                }
+                return received([event], &state)
+
+            case .receivedAll(let events):
+                return received(events, &state)
 
             case .watchEnded:
                 // The daemon restarted or the host dropped; watch again, less
@@ -914,5 +954,57 @@ extension SessionEvent.Kind {
     /// isn't kept, so it's new on every watch, a replayed one too.
     fileprivate var isLive: Bool {
         if case .assistantDelta = self { false } else { true }
+    }
+}
+
+/// A watch's events, handed on in batches: everything that came since the
+/// last batch was taken goes as one.
+private actor EventBatches {
+    enum Batch {
+        case events([SessionEvent])
+        /// The watch ended, with why if it failed.
+        case ended(failure: String?)
+    }
+
+    private var pending: [SessionEvent] = []
+    private var ended: Batch?
+    private var cancelled = false
+    private var waiter: CheckedContinuation<Void, Never>?
+
+    func add(_ event: SessionEvent) {
+        pending.append(event)
+        wake()
+    }
+
+    func end(failure: String?) {
+        ended = .ended(failure: failure)
+        wake()
+    }
+
+    /// The next batch, waiting for one; nil once cancelled.
+    func next() async -> Batch? {
+        if pending.isEmpty, ended == nil, !cancelled {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { waiter = $0 }
+            } onCancel: {
+                Task { await self.cancel() }
+            }
+        }
+        if cancelled || Task.isCancelled { return nil }
+        if !pending.isEmpty {
+            defer { pending = [] }
+            return .events(pending)
+        }
+        return ended
+    }
+
+    private func cancel() {
+        cancelled = true
+        wake()
+    }
+
+    private func wake() {
+        waiter?.resume()
+        waiter = nil
     }
 }

@@ -24,6 +24,8 @@ package struct SessionView: View {
     package var body: some View {
         VStack(spacing: 0) {
             header
+                // The narrowest header fits; the window goes no narrower.
+                .frame(minWidth: 560)
             Divider()
             if store.tab == .review {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
@@ -86,7 +88,21 @@ package struct SessionView: View {
         }
     }
 
+    /// The title, the tabs and the actions, giving up the usage, then the
+    /// actions' names, then the tabs' row as the window narrows, so nothing
+    /// is cut off.
     private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            headerRow(usage: true, names: true, tabsInAMenu: false)
+            headerRow(usage: false, names: true, tabsInAMenu: false)
+            headerRow(usage: false, names: false, tabsInAMenu: false)
+            headerRow(usage: false, names: false, tabsInAMenu: true)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+    }
+
+    private func headerRow(usage showsUsage: Bool, names: Bool, tabsInAMenu: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(store.session.name.isEmpty ? "Session" : store.session.name)
@@ -108,37 +124,43 @@ package struct SessionView: View {
                     .help("Open \(task) on the board")
                 }
             }
-            .frame(minWidth: 90, alignment: .leading)
-            Spacer()
-            Picker("View", selection: Binding(get: { store.tab }, set: { store.send(.tabPicked($0)) })) {
-                ForEach(store.tabs, id: \.self) { tab in
-                    Text(title(tab)).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
-            .help("The chat, the session's changes to review, the files in its folder, or a terminal there (⌘1 to ⌘4)")
-            .background { tabShortcuts }
-            Spacer()
-            if let usage = store.usage {
+            // A long title is cut short rather than squeezing the rest out.
+            .frame(minWidth: 90, maxWidth: 260, alignment: .leading)
+            Spacer(minLength: 0)
+            tabPicker(inAMenu: tabsInAMenu)
+            Spacer(minLength: 0)
+            if showsUsage, let usage = store.usage {
                 Text(Self.describe(usage))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                     .help("What this session has used")
             }
-            ViewThatFits(in: .horizontal) {
-                actions.labelStyle(.titleAndIcon)
-                actions.labelStyle(.iconOnly)
-            }
+            actions(names: names)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
     }
 
-    /// Fork, Ship, Folder and the approval mode; icons only when the
-    /// window is too narrow for their names.
-    private var actions: some View {
+    @ViewBuilder
+    private func tabPicker(inAMenu: Bool) -> some View {
+        let picker = Picker("View", selection: Binding(get: { store.tab }, set: { store.send(.tabPicked($0)) })) {
+            ForEach(store.tabs, id: \.self) { tab in
+                Text(title(tab)).tag(tab)
+            }
+        }
+        .labelsHidden()
+        .fixedSize()
+        .help("The chat, the session's changes to review, the files in its folder, or a terminal there (⌘1 to ⌘4)")
+        .background { tabShortcuts }
+        if inAMenu {
+            picker.pickerStyle(.menu)
+        } else {
+            picker.pickerStyle(.segmented)
+        }
+    }
+
+    /// Fork, Ship, Folder and the approval mode; without their names, and
+    /// the approval mode without its label, when the window is too narrow.
+    private func actions(names: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Menu {
                 Button("Fork With the Code") { store.send(.forkTapped(before: nil, chatOnly: false)) }
@@ -180,9 +202,11 @@ package struct SessionView: View {
                 }
             }
             .pickerStyle(.menu)
+            .modifier(HidesLabel(hidden: !names))
             .fixedSize()
             .help("What the agent may do without asking")
         }
+        .modifier(IconsOnly(enabled: !names))
     }
 
     /// ⌘1, ⌘2 and so on for the views, in the order the picker shows them,
@@ -539,6 +563,8 @@ struct PermissionCard: View {
             answered("Denied", systemImage: "xmark")
         case .allowedByMode?:
             answered("Allowed by the approval mode", systemImage: "checkmark.shield")
+        case .notAnswered?:
+            answered("Not answered; the turn ended first", systemImage: "clock.badge.xmark")
         }
     }
 
@@ -1051,5 +1077,23 @@ private struct SessionComposer: View {
             }
             .padding(.horizontal, 4)
         }
+    }
+}
+
+/// Hides a control's label when `hidden`.
+private struct HidesLabel: ViewModifier {
+    let hidden: Bool
+
+    func body(content: Content) -> some View {
+        if hidden { content.labelsHidden() } else { content }
+    }
+}
+
+/// Labels as icons alone when `enabled`, otherwise with their titles.
+private struct IconsOnly: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled { content.labelStyle(.iconOnly) } else { content.labelStyle(.titleAndIcon) }
     }
 }
