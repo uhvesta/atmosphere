@@ -53,22 +53,62 @@ cc_library(
 )
 """
 
-def _run(repository_ctx, what, arguments, environment = {}, working_directory = "."):
-    result = repository_ctx.execute(
+_METAL_HINT = ("Check the output above; if it names the Metal toolchain, install it " +
+               "with `xcodebuild -downloadComponent MetalToolchain` and build again.")
+
+_NETWORK_HINT = ("Zig couldn't download them, even after {} tries. Check that this Mac " +
+                 "is online and can reach the hosts named above, then build again; " +
+                 "packages fetched before are kept, so it picks up where it stopped.")
+
+_FETCH_TRIES = 4
+
+def _execute(repository_ctx, arguments, environment, working_directory):
+    return repository_ctx.execute(
         arguments,
         environment = environment,
         quiet = False,
         timeout = 3600,
         working_directory = working_directory,
     )
+
+def _failed(what, result, hint):
+    fail("{} failed ({}). {}\n{}".format(what, result.return_code, hint, result.stderr[-4000:]))
+
+def _run(repository_ctx, what, arguments, environment = {}, working_directory = "."):
+    result = _execute(repository_ctx, arguments, environment, working_directory)
     if result.return_code != 0:
-        fail(("{} failed ({}). Check the output above; if it names the Metal " +
-              "toolchain, install it with `xcodebuild -downloadComponent " +
-              "MetalToolchain` and build again.\n{}").format(
-            what,
-            result.return_code,
-            result.stderr[-4000:],
-        ))
+        _failed(what, result, _METAL_HINT)
+
+def _fetch(repository_ctx, what, arguments, environment, working_directory):
+    """Runs a download, trying again when the network drops it."""
+    for _ in range(_FETCH_TRIES):
+        result = _execute(repository_ctx, arguments, environment, working_directory)
+        if result.return_code == 0:
+            return
+    _failed(what, result, _NETWORK_HINT.format(_FETCH_TRIES))
+
+# On macOS Ghostty starts every command through `/usr/bin/login -flp`, to
+# give the user's default shell a login session. Humata's surfaces always
+# run their own command (`humata terminal attach`, whose shell is on the
+# host), which wants none of that: login(1) is setuid, so it can't start in a
+# sandbox, and it adds a login record and a `cd ~`. Without it, macOS runs
+# commands as every other system does, with `/bin/sh -c`.
+_LOGIN_WRAP = """\
+    // hushlogin behavior.
+    if (comptime builtin.target.os.tag.isDarwin()) darwin: {"""
+
+_NO_LOGIN_WRAP = """\
+    // hushlogin behavior. Humata: never, see ghostty_kit.bzl.
+    if (false) darwin: {"""
+
+def _run_commands_without_login(repository_ctx, path):
+    source = repository_ctx.read(path)
+    if source.count(_LOGIN_WRAP) != 1:
+        fail(("Ghostty {}'s {} no longer has the login(1) wrap this repository " +
+              "removes. Find where it now builds a command's argv on macOS, " +
+              "update _LOGIN_WRAP to match, and check that terminals still start " +
+              "without login(1).").format(_GHOSTTY_VERSION, path))
+    repository_ctx.file(path, source.replace(_LOGIN_WRAP, _NO_LOGIN_WRAP), legacy_utf8 = False)
 
 def _ghostty_kit_impl(repository_ctx):
     if repository_ctx.os.name != "mac os x" or repository_ctx.os.arch != "aarch64":
@@ -87,6 +127,7 @@ def _ghostty_kit_impl(repository_ctx):
         stripPrefix = "ghostty-{}".format(_GHOSTTY_VERSION),
         output = "src",
     )
+    _run_commands_without_login(repository_ctx, "src/src/termio/Exec.zig")
 
     zig = str(repository_ctx.path("zig/zig"))
     src = str(repository_ctx.path("src"))
@@ -95,7 +136,7 @@ def _ghostty_kit_impl(repository_ctx):
         "ZIG_GLOBAL_CACHE_DIR": str(repository_ctx.path("zig-cache")),
         "ZIG_LOCAL_CACHE_DIR": str(repository_ctx.path("zig-cache-local")),
     }
-    _run(
+    _fetch(
         repository_ctx,
         "Fetching Ghostty's Zig packages",
         [zig, "build", "--fetch=all"],

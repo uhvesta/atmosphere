@@ -37,6 +37,12 @@
   [Button] "humata"
   [Button] "Close humata" help: "End this terminal's shell"
   [Button] "New Terminal" help: "Open another terminal here"
+  [TextArea] "Terminal" value: "build-box:~/humata$ echo tailing the build logs
+tailing the build logs
+09:30:01 INFO  cache warmed 📦
+09:30:04 WARN  slow action: 12s
+09:30:09 ERROR linker: 未定義のシンボル
+build-box:~/humata$"
   [Toolbar] ""
     [Button] "Add Project"
     [Button] "Hide Sidebar"

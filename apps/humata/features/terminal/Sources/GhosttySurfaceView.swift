@@ -9,6 +9,10 @@ import GhosttyKit
 /// its own, given this view's keys, mouse, size and focus.
 final class GhosttySurfaceView: NSView {
     private(set) var surface: ghostty_surface_t?
+    /// The command's line as C text. Ghostty keeps the pointer, not a copy,
+    /// and reads it when it starts the command, so it lives as long as the
+    /// surface does.
+    private let line: CText
     /// Called once when the command ended, with its exit code if Ghostty
     /// told it.
     var exited: ((Int32?) -> Void)?
@@ -28,6 +32,7 @@ final class GhosttySurfaceView: NSView {
     private var screen: (text: String, read: TimeInterval)?
 
     init(runtime: GhosttyRuntime, command: TerminalCommand) {
+        line = CText(command.line)
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         var config = ghostty_surface_config_new()
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -45,13 +50,11 @@ final class GhosttySurfaceView: NSView {
             }
         }
         var variables = copies.map { ghostty_env_var_s(key: $0.0, value: $0.1) }
-        surface = command.line.withCString { line in
-            variables.withUnsafeMutableBufferPointer { variables in
-                config.command = line
-                config.env_vars = variables.baseAddress
-                config.env_var_count = variables.count
-                return ghostty_surface_new(runtime.app, &config)
-            }
+        surface = variables.withUnsafeMutableBufferPointer { variables in
+            config.command = UnsafePointer(line.pointer)
+            config.env_vars = variables.baseAddress
+            config.env_var_count = variables.count
+            return ghostty_surface_new(runtime.app, &config)
         }
         sizeChanged()
     }
@@ -65,17 +68,29 @@ final class GhosttySurfaceView: NSView {
         // `close()` frees it while the view is still whole; this is for a
         // view dropped without it.
         guard let surface else { return }
-        let freed = Freed(surface: surface)
+        let freed = Freed(surface: surface, line: line)
         if Thread.isMainThread {
             ghostty_surface_free(freed.surface)
         } else {
+            // The line goes with the closure, after the surface.
             DispatchQueue.main.async { ghostty_surface_free(freed.surface) }
         }
     }
 
-    /// A surface on its way to being freed on the main thread.
+    /// A surface on its way to being freed on the main thread, and the line
+    /// it may still read until then.
     private struct Freed: @unchecked Sendable {
         let surface: ghostty_surface_t
+        let line: CText
+    }
+
+    /// A C copy of a string, freed with the last reference to it.
+    private final class CText {
+        let pointer: UnsafeMutablePointer<CChar>?
+
+        init(_ text: String) { pointer = strdup(text) }
+
+        deinit { free(pointer) }
     }
 
     /// Ends the surface and its command; the view draws nothing after.

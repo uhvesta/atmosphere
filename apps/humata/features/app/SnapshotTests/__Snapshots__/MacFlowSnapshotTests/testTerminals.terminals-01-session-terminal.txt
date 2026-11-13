@@ -27,6 +27,13 @@
   [Button] "humata"
   [Button] "Close humata" help: "End this terminal's shell"
   [Button] "New Terminal" help: "Open another terminal here"
+  [TextArea] "Terminal" value: "build-box:~/humata$ echo hello from build-box
+hello from build-box
+build-box:~/humata$ cargo test
+   Compiling humatad v0.1.0
+    Finished test profile in 4.2s
+test host::tests::reconnects ... ok
+test"
   [Toolbar] ""
     [Button] "Add Project"
     [Button] "Hide Sidebar"

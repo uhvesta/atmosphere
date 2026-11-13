@@ -1139,7 +1139,7 @@ reads only the config Humata writes from Settings, never
 - [ ] Scroll back with the wheel or trackpad; ⌘F finds text in it
 - [x] Settings › Terminal: the font and size, and a color theme with light
   and dark palettes; Ghostty's own config files are never read
-- [ ] VoiceOver reads the screen
+- [x] VoiceOver reads the screen
 - [x] SwiftTerm removed
 
 ### Composer, rewind, skills, plugins and models

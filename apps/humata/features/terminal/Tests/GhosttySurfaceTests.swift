@@ -43,6 +43,50 @@ final class GhosttySurfaceTests: XCTestCase {
         window.close()
     }
 
+    private func type(_ characters: String, keyCode: UInt16, into view: GhosttySurfaceView) {
+        for type in [NSEvent.EventType.keyDown, .keyUp] {
+            guard
+                let event = NSEvent.keyEvent(
+                    with: type, location: .zero, modifierFlags: [], timestamp: 0,
+                    windowNumber: view.window?.windowNumber ?? 0, context: nil, characters: characters,
+                    charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode)
+            else { return XCTFail("no key event for \(characters)") }
+            if type == .keyDown { view.keyDown(with: event) } else { view.keyUp(with: event) }
+        }
+    }
+
+    func testTypedKeysReachTheCommand() throws {
+        let (view, window) = try surface(running: "exec cat")
+        window.makeFirstResponder(view)
+        spin(for: 0.5) { false }
+
+        type("h", keyCode: 4, into: view)
+        type("i", keyCode: 34, into: view)
+        type("\r", keyCode: 36, into: view)
+        // The pty echoes the line, then cat prints it back.
+        spin(for: 5) { text(view).components(separatedBy: "hi").count > 2 }
+
+        XCTAssertEqual(text(view).components(separatedBy: "hi").count, 3, "screen: \(text(view))")
+        view.close()
+        window.close()
+    }
+
+    func testFindCountsTheMatchesOnScreen() throws {
+        let (view, window) = try surface(running: "printf 'one needle, two needle'; exec cat")
+        let search = TerminalSearch()
+        view.search = search
+        search.view = view
+        spin(for: 5) { text(view).contains("two needle") }
+
+        search.needle = "needle"
+        search.needleChanged()
+        spin(for: 5) { search.total == 2 }
+
+        XCTAssertEqual(search.total, 2, "screen: \(text(view))")
+        view.close()
+        window.close()
+    }
+
     func testACommandThatEndsIsToldWithItsCode() throws {
         let (view, window) = try surface(running: "exit 3")
         var exited: Int32?? = nil
@@ -50,7 +94,7 @@ final class GhosttySurfaceTests: XCTestCase {
 
         spin(for: 5) { exited != nil }
 
-        XCTAssertEqual(exited, .some(3))
+        XCTAssertEqual(exited, .some(3), "screen: \(text(view))")
         view.close()
         window.close()
     }
