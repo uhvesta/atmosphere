@@ -1893,7 +1893,8 @@ Fable found and judged, with three items from the flow snapshots: 30 kept,
   leaves a program running finishes
 - Deferred: a terminal's first open that outlives its session, the menu
   bar's redraws, images read before the history's lock, closing a session
-  deleted elsewhere, earlier rows kept across tabs, the side chat's width in
+  deleted elsewhere (done in 0.15.0), earlier rows kept across tabs (done
+  in 0.16.1), the side chat's width in
   the window's least
 
 ### Fixes before v0.12.0
@@ -1933,7 +1934,7 @@ profile of opening a long chat found.
   side chat once a listing every host answered leaves it out, and a read
   made after it does too (`Sessions.complete`); a host shown as it last
   was closes nothing
-- Deferred: earlier rows kept across tabs
+- Earlier rows kept across tabs: done in 0.16.1
 
 ### Requests after v0.11.0
 

@@ -257,6 +257,39 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertEqual(aboveEnd(scroll), before.aboveEnd, accuracy: 60, "what was in view moved")
     }
 
+    /// Earlier rows the person asked for are still there after another
+    /// tab, rather than the chat opening again with its last rows only.
+    func testEarlierMessagesStayShownAfterAnotherTab() async throws {
+        let (store, window, task) = try await opened(Self.long())
+        defer {
+            task.cancel()
+            window.close()
+            window.contentViewController = nil
+        }
+        var scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
+        await settle(window)
+        func height() -> CGFloat { scroll.documentView?.frame.height ?? 0 }
+        for _ in 0..<2 {
+            scrollToTop(scroll)
+            await settle(window)
+        }
+        let opening = height()
+        for offset in stride(from: CGFloat(6), through: 60, by: 9) where height() < opening + 500 {
+            try click(scroll, below: offset, in: window)
+            await settle(window)
+            await settle(window)
+        }
+        XCTAssertGreaterThan(height(), opening + 500, "no earlier rows came")
+
+        store.send(.tabPicked(.files))
+        await settle(window)
+        store.send(.tabPicked(.chat))
+        await settle(window)
+        await settle(window)
+        scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat after the tab")
+        XCTAssertGreaterThan(height(), opening + 500, "the earlier rows went with the tab")
+    }
+
     /// A proposed spec edit shows what it takes out of the spec and puts
     /// in, inside its card: the chat makes room for it, where a spinner
     /// left in its place would take a line.

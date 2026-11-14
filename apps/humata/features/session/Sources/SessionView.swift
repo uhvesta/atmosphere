@@ -19,6 +19,9 @@ package struct SessionView: View {
     /// same one each time this is drawn: a new one in the environment
     /// would draw every code block in the chat again.
     @State private var quoter: CodeQuoter
+    /// Which of the chat's rows show, kept here so earlier ones the person
+    /// asked for are still there after another tab.
+    @State private var tail = ChatTail()
 
     package init(store: StoreOf<SessionFeature>) {
         self.store = store
@@ -68,7 +71,7 @@ package struct SessionView: View {
             } else if store.tab == .terminal {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
-                Fills { ChatList(store: store) }
+                Fills { ChatList(store: store, tail: tail) }
                     .scaledBody()
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
                     .environment(\.codeQuoter, store.session.archived ? nil : quoter)
@@ -464,7 +467,7 @@ package struct SessionView: View {
             document
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
-                Fills { ChatList(store: store) }
+                Fills { ChatList(store: store, tail: tail) }
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
                     .environment(\.codeQuoter, store.session.archived ? nil : quoter)
                 if !store.session.archived {
@@ -536,6 +539,7 @@ private struct Separately<Content: View>: View {
 /// change.
 private struct ChatList: View {
     let store: StoreOf<SessionFeature>
+    let tail: ChatTail
     /// Takes the chat to a row or to its end.
     @State private var scrolling = ChatScrolling()
     /// The room the banner and the strip take over the chat.
@@ -544,40 +548,42 @@ private struct ChatList: View {
 
     var body: some View {
         let highlighted = store.highlightedItem
-        ChatRows(store: store, scrolling: scrolling, topInset: topInset, bottomInset: bottomInset)
-            .equatable()
-            .overlay { ChatLoading(store: store) }
-            .onChange(of: highlighted, initial: true) { _, item in
-                guard let item else { return }
-                scrolling.scroll(to: item, placement: .center, animated: false)
-            }
-            // A message sent takes the chat to its end to show it and what
-            // the agent says to it, wherever the person had scrolled.
-            .onChange(of: store.sending) { old, new in
-                guard new > old else { return }
-                scrolling.scrollToEnd()
-            }
-            .onChange(of: store.scrollTarget) { _, item in
-                guard let item else { return }
-                scrolling.scroll(to: item, placement: .top, animated: true)
-                store.send(.scrolled)
-            }
-            // Over the chat, with room for them left over and under its
-            // rows: they don't change the chat's frame.
-            .overlay(alignment: .top) {
-                VStack(spacing: 0) {
-                    if store.highlighted != nil {
-                        highlightBanner(found: highlighted != nil)
-                    }
+        ChatRows(
+            store: store, tail: tail, scrolling: scrolling, topInset: topInset, bottomInset: bottomInset
+        )
+        .equatable()
+        .overlay { ChatLoading(store: store) }
+        .onChange(of: highlighted, initial: true) { _, item in
+            guard let item else { return }
+            scrolling.scroll(to: item, placement: .center, animated: false)
+        }
+        // A message sent takes the chat to its end to show it and what
+        // the agent says to it, wherever the person had scrolled.
+        .onChange(of: store.sending) { old, new in
+            guard new > old else { return }
+            scrolling.scrollToEnd()
+        }
+        .onChange(of: store.scrollTarget) { _, item in
+            guard let item else { return }
+            scrolling.scroll(to: item, placement: .top, animated: true)
+            store.send(.scrolled)
+        }
+        // Over the chat, with room for them left over and under its
+        // rows: they don't change the chat's frame.
+        .overlay(alignment: .top) {
+            VStack(spacing: 0) {
+                if store.highlighted != nil {
+                    highlightBanner(found: highlighted != nil)
                 }
-                .onGeometryChange(for: CGFloat.self, of: \.size.height) { topInset = $0 }
             }
-            .overlay(alignment: .bottom) {
-                VStack(spacing: 0) {
-                    WaitingStrip(store: store)
-                }
-                .onGeometryChange(for: CGFloat.self, of: \.size.height) { bottomInset = $0 }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { topInset = $0 }
+        }
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 0) {
+                WaitingStrip(store: store)
             }
+            .onGeometryChange(for: CGFloat.self, of: \.size.height) { bottomInset = $0 }
+        }
     }
 
     /// Over the chat while a search hit is highlighted: forks from it, or
@@ -631,15 +637,13 @@ private struct ChatLoading: View {
 /// room over and under it: what it shows it reads from the store itself.
 private struct ChatRows: View, Equatable {
     let store: StoreOf<SessionFeature>
+    let tail: ChatTail
     let scrolling: ChatScrolling
     let topInset: CGFloat
     let bottomInset: CGFloat
-    /// How many rows above the chat's last the person has asked to see.
-    @State private var earlier = 0
     /// Which rows the pointer rests on, for all the rows.
     @State private var pointed = PointedRows()
     @State private var selecting: TextToSelect?
-    @State private var tail = ChatTail()
     /// The finished parts of the reply being written.
     @State private var streamed = StreamedRows()
     /// Text at another size makes every row another height.
@@ -648,7 +652,8 @@ private struct ChatRows: View, Equatable {
     private static let earlierID = "chat.earlier"
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.store === rhs.store && lhs.topInset == rhs.topInset && lhs.bottomInset == rhs.bottomInset
+        lhs.store === rhs.store && lhs.tail === rhs.tail && lhs.topInset == rhs.topInset
+            && lhs.bottomInset == rhs.bottomInset
     }
 
     var body: some View {
@@ -662,7 +667,7 @@ private struct ChatRows: View, Equatable {
         // them once asked for or jumped to, or with a message left open to
         // change: a long chat opens with a few screens of rows.
         let start = tail.start(
-            in: all, earlier: earlier, showing: [highlighted, store.scrollTarget, store.editing])
+            in: all, earlier: tail.earlier, showing: [highlighted, store.scrollTarget, store.editing])
         let shown = Array(Self.whole(highlighted, in: all[start...]))
         // As many again as are shown, and no more than there are.
         let more = start > 0 ? min(max(ChatTail.rows, all.count - start), start) : 0
@@ -715,7 +720,7 @@ private struct ChatRows: View, Equatable {
         if id == Self.earlierID {
             guard more > 0 else { return nil }
             return ChatWindowRow(value: more) {
-                Button("Show Earlier Messages") { earlier += more }
+                Button("Show Earlier Messages") { tail.earlier += more }
                     .buttonStyle(ChatRowButtonStyle())
                     .frame(maxWidth: .infinity)
                     .help(more == 1 ? "Show the row before these" : "Show the \(more) rows before these")
@@ -919,18 +924,21 @@ private struct StreamedPart: View, Equatable {
 /// opened, those that came since, and those above that the person asked
 /// for or was taken to. Where they start stays put as rows are added, so
 /// what's in view doesn't move.
-@MainActor final class ChatTail {
+@MainActor @Observable final class ChatTail {
     /// How many rows a chat opens with: a few screens of them.
     static let rows = 300
     /// Rows shown above one the chat is taken to, so it isn't the first.
     private static let lead = 20
 
+    /// How many rows above the chat's last the person has asked to see.
+    var earlier = 0
+
     /// The first row shown before any were asked for; nil until the chat
     /// has rows. Below 0 once rows above the first were all taken in.
-    private var first: Int?
+    @ObservationIgnored private var first: Int?
     /// How many rows had been asked for when `first` was set: only those
     /// asked for since count.
-    private var asked = 0
+    @ObservationIgnored private var asked = 0
 
     /// Where the rows shown start in `lines`, with `earlier` rows asked for
     /// in all and the rows `targets` name shown, when `lines` holds them.
