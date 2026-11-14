@@ -65,7 +65,20 @@ package struct QuickAddView: View {
                                 // The line as typed, the words read tinted,
                                 // where the field can't tint them itself.
                                 // The chips say the same to VoiceOver.
-                                Text(tinted(store.title, entry.parts)).accessibilityHidden(true)
+                                // Tapping a tinted word keeps it as text,
+                                // as its chip does.
+                                Text(tinted(store.title, entry.parts, linked: true))
+                                    .accessibilityHidden(true)
+                                    .environment(
+                                        \.openURL,
+                                        OpenURLAction { url in
+                                            guard url.scheme == partScheme,
+                                                let index = Int(url.host() ?? ""),
+                                                entry.parts.indices.contains(index)
+                                            else { return .discarded }
+                                            store.send(.partIgnored(entry.parts[index].key))
+                                            return .handled
+                                        })
                             }
                             // The title as it will be saved, without the
                             // words tinted.
@@ -372,20 +385,26 @@ private struct EntryField: View {
     }
 }
 
-/// `line` with the words of `parts` tinted and bold.
-private func tinted(_ line: String, _ parts: [QuickEntry.Part]) -> AttributedString {
+/// The scheme of a tinted word's link: its part's index as the host.
+private let partScheme = "lifr-part"
+
+/// `line` with the words of `parts` tinted and bold, each a link to its
+/// part when `linked`.
+private func tinted(_ line: String, _ parts: [QuickEntry.Part], linked: Bool = false) -> AttributedString {
     var text = AttributedString(line)
-    tintParts(&text, parts)
+    tintParts(&text, parts, linked: linked)
     return text
 }
 
 /// Tints and bolds the words of `parts` in `text`.
-private func tintParts(_ text: inout AttributedString, _ parts: [QuickEntry.Part]) {
+private func tintParts(_ text: inout AttributedString, _ parts: [QuickEntry.Part], linked: Bool = false) {
     let characters = text.characters
-    for part in parts where part.range.lowerBound >= 0 && part.range.upperBound <= characters.count {
+    for (index, part) in parts.enumerated()
+    where part.range.lowerBound >= 0 && part.range.upperBound <= characters.count {
         let start = characters.index(characters.startIndex, offsetBy: part.range.lowerBound)
         let end = characters.index(characters.startIndex, offsetBy: part.range.upperBound)
         text[start..<end].foregroundColor = .accentColor
         text[start..<end].inlinePresentationIntent = .stronglyEmphasized
+        if linked { text[start..<end].link = URL(string: "\(partScheme)://\(index)") }
     }
 }
