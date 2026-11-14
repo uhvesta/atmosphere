@@ -25,6 +25,10 @@ package struct SavedRepositoriesFeature {
         package var refreshing: Set<String> = []
         /// Owners just added whose repositories are still being listed.
         package var listing: Set<String> = []
+        /// Owners whose first listing hadn't finished when looking for it
+        /// stopped: no longer shown as being listed, and Refresh looks
+        /// again.
+        package var unfinished: Set<String> = []
         /// Why something couldn't be read or changed, and what to do.
         package var failure: String?
 
@@ -47,6 +51,8 @@ package struct SavedRepositoriesFeature {
         case removeTapped(SavedRepository.ID)
         case addOwnerTapped
         case ownerAdded([RepositoryOwner])
+        /// Looking at the owners just added stopped, listed or not.
+        case listingEnded
         case removeOwnerTapped(String)
         /// Nil lists every owner again.
         case refreshTapped(String?)
@@ -98,6 +104,7 @@ package struct SavedRepositoriesFeature {
                 state.loading = false
                 state.repositories = repositories
                 state.owners = owners
+                Self.settle(&state)
                 return .none
 
             case .repositoriesChanged(let repositories):
@@ -107,7 +114,17 @@ package struct SavedRepositoriesFeature {
             case .ownersChanged(let owners):
                 state.owners = owners
                 state.listing = state.listing.filter { login in Self.pending(login, in: owners) }
+                Self.settle(&state)
                 return state.listing.isEmpty ? .cancel(id: CancelID.listing) : .none
+
+            case .listingEnded:
+                // A minute on, the daemon has neither listed them nor said
+                // why not. The spinner would turn for good, so the row says
+                // the listing hasn't finished instead.
+                state.unfinished.formUnion(state.listing)
+                state.listing = []
+                Self.settle(&state)
+                return .none
 
             case .renameTapped(let id):
                 guard let repository = state.repositories?.first(where: { $0.id == id }) else { return .none }
@@ -164,12 +181,14 @@ package struct SavedRepositoriesFeature {
                 let added = owners.map(\.login).filter { !before.contains($0) }
                 let pending = added.filter { Self.pending($0, in: owners) }
                 state.listing.formUnion(pending)
+                Self.settle(&state)
                 guard !state.listing.isEmpty else { return reloadRepositories() }
                 return .merge(reloadRepositories(), poll())
 
             case .removeOwnerTapped(let login):
                 state.failure = nil
                 state.listing.remove(login)
+                state.unfinished.remove(login)
                 return .run { send in
                     await send(.ownersChanged(try await daemon.removeRepositoryOwner(login)))
                     await send(.repositoriesChanged(try await daemon.savedRepositories()))
@@ -191,6 +210,7 @@ package struct SavedRepositoriesFeature {
             case .refreshed(let login, let owners):
                 state.refreshing.remove(login ?? "")
                 state.owners = owners
+                Self.settle(&state)
                 return reloadRepositories()
 
             case .failed(let failure, let message):
@@ -212,6 +232,15 @@ package struct SavedRepositoriesFeature {
         return owner.refreshed == nil && owner.error == nil
     }
 
+    /// Keeps as unfinished only the owners still neither listed nor
+    /// failed, and not being looked at again.
+    private static func settle(_ state: inout State) {
+        guard !state.unfinished.isEmpty else { return }
+        let owners = state.owners ?? []
+        let listing = state.listing
+        state.unfinished = state.unfinished.filter { pending($0, in: owners) && !listing.contains($0) }
+    }
+
     private func reloadRepositories() -> Effect<Action> {
         .run { send in
             await send(.repositoriesChanged(try await daemon.savedRepositories()))
@@ -229,6 +258,7 @@ package struct SavedRepositoriesFeature {
                 await send(.ownersChanged(try await daemon.repositoryOwners()))
                 await send(.repositoriesChanged(try await daemon.savedRepositories()))
             }
+            await send(.listingEnded)
         } catch: { error, send in
             guard !(error is CancellationError) else { return }
             await send(.failed(.load, error.localizedDescription))

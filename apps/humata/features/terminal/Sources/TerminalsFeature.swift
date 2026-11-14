@@ -23,6 +23,12 @@ package struct TerminalsFeature {
         /// Why the terminals couldn't be read, opened or closed, and what to
         /// do about it.
         package var failure: String?
+        /// The tabs whose shell the host was told to end and hasn't
+        /// answered for: each shows it, and takes no second go.
+        package var closing: Set<Terminal.ID> = []
+        /// Asks before ending a shell that hasn't exited, since what runs
+        /// in it stops and can't be brought back.
+        @Presents package var confirm: AlertState<Action.Confirm>?
 
         /// `opensFirst` opens a terminal when there is none, as a session's
         /// tab does; a host's list waits to be asked.
@@ -54,8 +60,16 @@ package struct TerminalsFeature {
         case selected(Terminal.ID)
         case closeTapped(Terminal.ID)
         case closed(Terminal.ID)
+        /// The host couldn't end the tab's shell, and this is why.
+        case closeFailed(Terminal.ID, String)
         case failed(String)
+        case confirm(PresentationAction<Confirm>)
         case terminals(IdentifiedActionOf<TerminalFeature>)
+
+        package enum Confirm: Equatable, Sendable {
+            /// End the tab's shell, though it hasn't exited.
+            case endShell(Terminal.ID)
+        }
     }
 
     @Dependency(\.daemon) var daemon
@@ -108,18 +122,39 @@ package struct TerminalsFeature {
                 return .none
 
             case .closeTapped(let id):
-                guard let tab = state.tabs[id: id] else { return .none }
+                guard let tab = state.tabs[id: id], !state.closing.contains(id) else { return .none }
                 // Closed elsewhere already: only the tab is left to drop.
                 guard !tab.gone else { return .send(.closed(id)) }
-                let terminal = tab.terminal
-                return .run { send in
-                    try await daemon.closeTerminal(terminal)
-                    await send(.closed(id))
-                } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                // Its shell exited: there's nothing running to lose.
+                guard !tab.exited else { return close(id, &state) }
+                // An idle prompt can't be told from a running job, and
+                // these shells outlive the app, so it always asks.
+                let title = tab.terminal.title
+                state.confirm = AlertState {
+                    TextState(title.isEmpty ? "End this terminal’s shell?" : "End the shell of “\(title)”?")
+                } actions: {
+                    ButtonState(role: .destructive, action: .endShell(id)) { TextState("End Shell") }
+                    ButtonState(role: .cancel) { TextState("Cancel") }
+                } message: {
+                    TextState(
+                        "Whatever is running in it stops, and what it printed is gone. To keep it running, "
+                            + "cancel: the shell stays on its host while no tab shows it.")
                 }
+                return .none
+
+            case .confirm(.presented(.endShell(let id))):
+                return close(id, &state)
+
+            case .confirm:
+                return .none
+
+            case .closeFailed(let id, let message):
+                state.closing.remove(id)
+                state.failure = message
+                return .none
 
             case .closed(let id):
+                state.closing.remove(id)
                 let index = state.tabs.index(id: id)
                 state.tabs.remove(id: id)
                 if state.selected == id, let index {
@@ -136,8 +171,21 @@ package struct TerminalsFeature {
                 return .none
             }
         }
+        .ifLet(\.$confirm, action: \.confirm)
         .forEach(\.tabs, action: \.terminals) {
             TerminalFeature()
+        }
+    }
+
+    /// Tells the host to end the tab's shell, once: the tab shows it's
+    /// closing until the host answers.
+    private func close(_ id: Terminal.ID, _ state: inout State) -> Effect<Action> {
+        guard let terminal = state.tabs[id: id]?.terminal, state.closing.insert(id).inserted else { return .none }
+        return .run { send in
+            try await daemon.closeTerminal(terminal)
+            await send(.closed(id))
+        } catch: { error, send in
+            await send(.closeFailed(id, error.localizedDescription))
         }
     }
 }

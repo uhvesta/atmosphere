@@ -26,7 +26,9 @@ package enum SettingsTab {
 package struct SkillsFeature {
     @ObservableState
     package struct State: Equatable {
-        /// Nil while the Mac and hosts are looked through.
+        /// Nil until the Mac and hosts were looked through: while they're
+        /// looked through the first time, and after a look that failed
+        /// with none before it, which isn't a look that found none.
         package var list: SkillList?
         /// Project names by id, to group by.
         package var projects: [String: String] = [:]
@@ -93,7 +95,6 @@ package struct SkillsFeature {
             case .failed(let message):
                 state.loading = false
                 state.failure = message
-                state.list = state.list ?? SkillList()
                 return .none
 
             case .picked(let id, let winner):
@@ -163,6 +164,20 @@ package struct SkillsView: View {
         Group {
             if let list = store.list {
                 content(list)
+            } else if let failure = store.failure, !store.loading {
+                // Never listed: the failure and a way to look again, not
+                // a list that says there are none.
+                VStack(spacing: 12) {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                    Text("The skills couldn’t be listed. Check that Humata’s daemon is running, then try again.")
+                        .foregroundStyle(.secondary)
+                    Button("Try Again") { store.send(.refreshTapped) }
+                }
+                .multilineTextAlignment(.center)
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 8) {
                     ProgressView()

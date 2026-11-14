@@ -20,8 +20,9 @@ package struct ProjectsFeature {
         /// sent.
         package var drafts: [AgentRequest.ID: String] = [:]
         /// Requests answered here, which a read begun before the answer
-        /// went would bring back. Few, so kept while Humata runs.
-        var answered: Set<AgentRequest.ID> = []
+        /// went would bring back. Few, so kept while Humata runs. The
+        /// window reads it to show an open session's request as answered.
+        package internal(set) var answered: Set<AgentRequest.ID> = []
         /// Permission requests answered here, by request id, kept out of
         /// reads begun before the answer for the same reason.
         var answeredPermissions: Set<String> = []
@@ -672,6 +673,9 @@ package struct ProjectsFeature {
             case .moveToHostTapped(let id):
                 // It moves with its files, so not while they're changing.
                 if let session = state.sessions[id: id], state.hold(on: session) != nil { return .none }
+                // Reading the hosts asks each one, which can take a while:
+                // the session shows it's busy and takes no second go.
+                guard state.busy.insert(id).inserted else { return .none }
                 return .run { send in
                     let hosts = try await daemon.hosts().map(\.name).filter { !$0.isEmpty }
                     await send(.moveHostsLoaded(id, hosts: hosts))
@@ -680,6 +684,7 @@ package struct ProjectsFeature {
                 }
 
             case .moveHostsLoaded(let id, let hosts):
+                state.busy.remove(id)
                 guard let session = state.sessions[id: id] else { return .none }
                 let here = session.host ?? ""
                 let targets = ([""] + hosts).filter { $0 != here }
@@ -831,6 +836,9 @@ package struct ProjectsFeature {
                 return .send(.selected(.session(next)))
 
             case .requestAnswered(let id, let answer):
+                // Answered already, from the session's strip or here: a
+                // second answer would act twice, as allowing a start does.
+                guard !state.answered.contains(id) else { return .none }
                 let live = state.closing(id, with: answer)
                 if !live.isEmpty {
                     state.destination = .alert(
@@ -858,6 +866,7 @@ package struct ProjectsFeature {
                 return answerRequest(&state, id, answer, archiving: [])
 
             case .destination(.presented(.alert(.closeItem(let id, let answer, let archive)))):
+                guard !state.answered.contains(id) else { return .none }
                 let live = archive ? state.closing(id, with: answer) : []
                 return answerRequest(&state, id, answer, archiving: live)
 

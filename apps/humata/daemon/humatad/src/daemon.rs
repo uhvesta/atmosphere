@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 
 use crate::board::{self, Author, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::convert;
-use crate::error::DaemonError;
 use crate::error::StoreError;
+use crate::error::{AgentSessionsError, DaemonError};
 use crate::host::Host;
 use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh, ToolCall};
 use crate::store::{Placement, Store};
@@ -45,6 +45,10 @@ struct Listing {
 /// The least time between copies off a host made for saves part way
 /// through a turn.
 const SAVE_BACKUP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+/// The longest text an agent may put in the inbox with ask_person or
+/// request_move, in bytes. The humata tools check it before they ask, so
+/// one made while the Mac is away isn't kept and then refused.
+pub(crate) const REQUEST_LIMIT: usize = 32 * 1024;
 
 mod agent_sessions;
 mod approvals;
@@ -119,6 +123,15 @@ pub struct Daemon {
     /// Held while GitHub owners' repositories are listed, so two listings
     /// don't race.
     owners_listing: tokio::sync::Mutex<()>,
+    /// Held while an agent's start of a session, or its message that waits
+    /// for the person, is counted against its project's limits and then
+    /// made, and while the person's allowing of a start is carried out, so
+    /// ones made together are counted one after another and a start
+    /// allowed twice starts once.
+    agent_asks: tokio::sync::Mutex<()>,
+    /// How many messages each session's agent sent straight to other
+    /// sessions since the person last wrote to it, by session.
+    agent_messages: std::sync::Mutex<HashMap<String, u32>>,
 }
 
 impl Daemon {
@@ -176,6 +189,8 @@ impl Daemon {
             cleaning: std::sync::Mutex::default(),
             pull_refresh_changed,
             owners_listing: tokio::sync::Mutex::new(()),
+            agent_asks: tokio::sync::Mutex::new(()),
+            agent_messages: std::sync::Mutex::default(),
         });
         if let Err(error) = daemon.interrupt_unfinished_approvals() {
             eprintln!(
@@ -754,6 +769,7 @@ impl Daemon {
         if text.is_empty() {
             return Err(DaemonError::NoRequestText);
         }
+        request_short_enough(text)?;
         self.placement(&ask.session_id).await?;
         Ok(self.store.add_request(
             pb::AgentRequest {
@@ -778,7 +794,23 @@ impl Daemon {
         ) {
             return Err(DaemonError::NotAMove);
         }
+        request_short_enough(summary)?;
         let placement = self.placement(&asked.session_id).await?;
+        // A side chat only reads, whichever client asks for it. Its host
+        // says whether it is one.
+        let read_only = self
+            .list_on("", Some(&placement.host))
+            .await?
+            .sessions
+            .iter()
+            .find(|session| session.id == asked.session_id)
+            .map(|session| session.read_only)
+            .ok_or_else(|| StoreError::UnknownSession {
+                id: asked.session_id.clone(),
+            })?;
+        if read_only {
+            return Err(AgentSessionsError::ReadOnlyMove.into());
+        }
         let item_id = match (asked.item_id.as_str(), &placement.item) {
             ("", Some(placed)) => placed.as_str(),
             ("", None) => return Err(DaemonError::NoTaskToMove),
@@ -831,8 +863,11 @@ impl Daemon {
                 // asked to send, declines it; the agent is told which.
                 let text = agent_sessions::declined_with(&request, text);
                 // Straight to the session: its other questions stay open.
-                // Named by the request, so answering it again, as after a
-                // crash before it was marked answered, sends it once.
+                // Named by the request, so answering it again before it
+                // was marked answered sends it once, for as long as the
+                // process that hosts the session lives. A session on this
+                // Mac is hosted by humatad itself, so that isn't across
+                // its restart.
                 let reply = self
                     .send_message(pb::SendMessage {
                         session_id: request.session_id.clone(),
@@ -844,6 +879,8 @@ impl Daemon {
                 if let Some(refused) = refusal(&reply) {
                     return Err(refused);
                 }
+                // The person wrote to it.
+                self.person_wrote(&request.session_id);
                 None
             }
             Some(Answer::Approve(_)) if request.kind() == pb::AgentRequestKind::Move => {
@@ -869,10 +906,19 @@ impl Daemon {
     }
 
     /// Sends `message` to its session with the spec notes kept for it, which
-    /// are forgotten only once its host took the message.
+    /// are forgotten only once its host took the message. Another agent's
+    /// message and Humata's own notice are told apart from the person's by
+    /// their first line, so they go as they are and the notes wait for the
+    /// person's next message.
     async fn send_message(&self, mut message: pb::SendMessage) -> Result<Reply, DaemonError> {
         let host = self.host_of(&message.session_id).await?;
-        let notes = self.store.spec_notes(&message.session_id)?;
+        let persons = crate::sender::sender(&message.text).is_none()
+            && crate::sender::notice(&message.text).is_none();
+        let notes = if persons {
+            self.store.spec_notes(&message.session_id)?
+        } else {
+            Vec::new()
+        };
         if !notes.is_empty() {
             let told: Vec<&str> = notes.iter().map(|(_, note)| note.as_str()).collect();
             message.text = format!("{}\n\n{}", told.join("\n\n"), message.text);
@@ -1840,8 +1886,10 @@ impl Daemon {
                 let session = message.session_id.clone();
                 let reply = self.send_message(std::mem::take(message)).await?;
                 if refusal(&reply).is_none() {
-                    // Writing to it answers what it asked.
+                    // Writing to it answers what it asked, and lets its
+                    // agent write to other sessions afresh.
                     self.store.answer_questions(&session)?;
+                    self.person_wrote(&session);
                 }
                 return Ok(reply);
             }
@@ -2329,6 +2377,17 @@ impl Service for Daemon {
             }
         })
     }
+}
+
+/// Fails when `text` is longer than what an agent asks the person may be.
+fn request_short_enough(text: &str) -> Result<(), AgentSessionsError> {
+    if text.len() > REQUEST_LIMIT {
+        return Err(AgentSessionsError::RequestTooLong {
+            bytes: text.len(),
+            limit: REQUEST_LIMIT,
+        });
+    }
+    Ok(())
 }
 
 /// The host's refusal in `reply`, as an error.

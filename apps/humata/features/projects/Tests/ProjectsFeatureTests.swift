@@ -502,6 +502,42 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertNil(sessions.first { $0.id == session.id }?.host)
     }
 
+    func testASessionIsBusyWhileTheHostsToMoveItToAreRead() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let client = daemon.client
+        let reads = LockIsolated(0)
+        // The hosts take a while to answer.
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = client
+            $0.daemon.hosts = {
+                reads.withValue { $0 += 1 }
+                for await _ in answered { break }
+                return try await client.hosts()
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.moveToHostTapped(session.id))
+        XCTAssertEqual(store.state.busy, [session.id])
+        // A second go while they're read asks nothing more.
+        await store.send(.moveToHostTapped(session.id))
+        await Task.megaYield()
+        XCTAssertEqual(reads.value, 1)
+
+        answer.yield()
+        await store.receive(\.moveHostsLoaded)
+        XCTAssertEqual(store.state.busy, [])
+        XCTAssertNotNil(store.state.destination?.alert)
+    }
+
     func testDeletingAnUnarchivedSessionIsRefused() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
@@ -1365,10 +1401,9 @@ final class ProjectsFeatureTests: XCTestCase {
         let archived = try await daemon.client.sessions(nil).first { $0.id == session.id }?.archived
         XCTAssertEqual(archived, true)
 
-        // Answered already, from elsewhere: the person is told.
+        // Answered here already: pressed again, it is not answered again.
         await store.send(.requestAnswered(move.id, .dismiss))
-        await store.receive(\.answerFailed)
-        XCTAssertNotNil(store.state.destination)
+        XCTAssertNil(store.state.destination)
     }
 
     func testAMoveCanBeMadeToAnotherColumnThanAsked() async throws {

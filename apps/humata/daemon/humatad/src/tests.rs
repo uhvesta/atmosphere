@@ -14,7 +14,7 @@ const SCRIPT: &str = r#"{"rules": [
     {"when": "", "steps": [{"step": "say", "text": "something else"}]}
 ]}"#;
 
-async fn client_of<S: Service>(service: Arc<S>) -> Client {
+pub(crate) async fn client_of<S: Service>(service: Arc<S>) -> Client {
     let (ours, theirs) = tokio::io::duplex(64 * 1024);
     let (reader, writer) = tokio::io::split(theirs);
     tokio::spawn(humata_wire::serve(
@@ -3453,6 +3453,59 @@ async fn every_sessions_messages_are_searched_and_an_agent_searches_only_its_hos
             .tool_call("other", Some(pb::request::Kind::Search(named)))
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_search_after_a_rewind_and_a_new_turn_finds_the_new_turn_and_not_the_one_cut() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let session = started(&client, start_in(&project.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    send(&client, &session.id, "the migrations keep failing").await;
+    let events = after_turns(&client, &session.id, 2).await;
+    let search = |query: &str| pb::Search {
+        query: query.to_owned(),
+        ..Default::default()
+    };
+    // Indexed with its two turns.
+    let found = searched(&client, search("migration")).await;
+    assert!(
+        found.hits.iter().any(|hit| hit.session_id == session.id),
+        "{found:?}"
+    );
+
+    // The second turn is taken back and another takes its place, so the
+    // session has as many turns as when it was indexed.
+    let rewound = client
+        .call(pb::request::Kind::RewindSession(pb::RewindSession {
+            session_id: session.id.clone(),
+            before_event_id: user_message(&events, "the migrations keep failing"),
+            files: false,
+        }))
+        .await;
+    assert!(
+        matches!(rewound, Ok(pb::response::Kind::SessionRewound(_))),
+        "{rewound:?}"
+    );
+    send(&client, &session.id, "rename the crate").await;
+    after_turns(&client, &session.id, 2).await;
+
+    let found = searched(&client, search("renam")).await;
+    assert!(
+        found
+            .hits
+            .iter()
+            .any(|hit| hit.session_id == session.id && hit.turn == 2),
+        "{found:?}"
+    );
+    let cut = searched(&client, search("migration")).await;
+    assert!(
+        cut.hits.iter().all(|hit| hit.session_id != session.id),
+        "{cut:?}"
     );
 }
 

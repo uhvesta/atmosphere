@@ -107,6 +107,40 @@ final class SavedRepositoriesFeatureTests: XCTestCase {
         XCTAssertEqual(projects, [project])
     }
 
+    func testAnOwnerStillBeingListedWhenLookingStopsIsMarkedUnfinished() async throws {
+        // The daemon never gets to the end of the listing.
+        let pending = [RepositoryOwner(login: "octo-org")]
+        let listed = LockIsolated(false)
+        let store = TestStore(initialState: SavedRepositoriesFeature.State()) {
+            SavedRepositoriesFeature()
+        } withDependencies: {
+            $0.daemon.savedRepositories = { [] }
+            $0.daemon.repositoryOwners = { pending }
+            $0.daemon.addRepositoryOwner = { _ in pending }
+            $0.daemon.refreshRepositoryOwners = { _ in
+                listed.setValue(true)
+                return [RepositoryOwner(login: "octo-org", refreshed: Date(timeIntervalSince1970: 60))]
+            }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.newOwner, "octo-org")
+        await store.send(.addOwnerTapped)
+        await store.receive(\.ownerAdded)
+        XCTAssertEqual(store.state.listing, ["octo-org"])
+        await store.receive(\.listingEnded, timeout: .seconds(5))
+        XCTAssertEqual(store.state.listing, [], "it no longer shows as being listed")
+        XCTAssertEqual(store.state.unfinished, ["octo-org"])
+
+        // Refresh looks again, and one that lists it clears the mark.
+        await store.send(.refreshTapped("octo-org"))
+        await store.receive(\.refreshed)
+        XCTAssertTrue(listed.value)
+        XCTAssertEqual(store.state.unfinished, [])
+        await settle(store)
+    }
+
     func testWhenTheDaemonDoesntAnswerItSaysSo() async throws {
         let store = TestStore(initialState: SavedRepositoriesFeature.State()) {
             SavedRepositoriesFeature()

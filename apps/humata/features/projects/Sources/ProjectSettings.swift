@@ -61,6 +61,12 @@ package struct ProjectSettingsFeature {
                 })
         }
 
+        /// Whether saving changes the repositories, which clones those
+        /// given by URL before it's done.
+        var repositoriesChanged: Bool {
+            repositories.compactMap(\.repository) != Self.rows(project).compactMap(\.repository)
+        }
+
         package var canSave: Bool {
             !saving && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && repositories.contains { $0.repository != nil }
@@ -274,8 +280,18 @@ struct ProjectSettingsView: View {
                 Button("Cancel") { dismiss() }
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { store.send(.saveTapped) }
-                    .disabled(!store.canSave)
+                HStack(spacing: 8) {
+                    // Saving new repositories clones them first, which can
+                    // take minutes: it shows it's still at it.
+                    if store.saving {
+                        ProgressView().controlSize(.small)
+                        Text(store.repositoriesChanged ? "Cloning the repositories…" : "Saving…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Save") { store.send(.saveTapped) }
+                        .disabled(!store.canSave)
+                }
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))

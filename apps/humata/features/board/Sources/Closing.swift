@@ -53,6 +53,22 @@ extension AlertState where Action == BoardAlert {
 }
 
 extension AlertState where Action == BoardAlert {
+    /// Says Undo had nothing to take back, and where every change is.
+    static var nothingToUndo: Self {
+        AlertState {
+            TextState("Nothing to Undo")
+        } actions: {
+            ButtonState(role: .cancel) {
+                TextState("OK")
+            }
+        } message: {
+            TextState(
+                "Undo takes back what you changed on this board here since it opened, and all of that is "
+                    + "undone or nothing was changed. History lists every change to the board, and can revert "
+                    + "any of them.")
+        }
+    }
+
     /// Confirms deleting `item`.
     static func deleting(_ item: Item) -> Self {
         AlertState {

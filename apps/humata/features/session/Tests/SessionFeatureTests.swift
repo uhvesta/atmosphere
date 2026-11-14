@@ -1257,10 +1257,12 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(.editQueuedTapped("q1"))
         XCTAssertEqual(store.state.queuedEdit, "then the changelog")
         await store.send(\.binding.queuedEdit, "then the release notes")
+        let caret = store.state.boxFocus
         await store.send(.editQueuedSaved)
         await store.finish()
         XCTAssertEqual(saved.value, ["q1: then the release notes"])
         XCTAssertNil(store.state.editingQueued)
+        XCTAssertNotEqual(store.state.boxFocus, caret, "the box takes the caret the editor had")
     }
 
     func testAnEditWhoseTurnAlreadyStartedGoesInTheBox() async {
@@ -1979,6 +1981,148 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(stopped.value, 1)
         XCTAssertEqual(store.state.draft, "")
         XCTAssertEqual(store.state.pastes.map(\.text), [long])
+    }
+
+    private func readyImage(_ id: String) -> DraftImage {
+        DraftImage(id: id, name: "shot.png", image: ImageAttachment(mediaType: "image/png", data: Data([1])))
+    }
+
+    func testAModelListThatCantBeReadLeavesTheBoxesImagesAndWhatWasKnown() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .local, workingDirectory: "/work", name: "local", model: "qwen3:8b"))
+        var state = SessionFeature.State(session: session)
+        state.readsImages = true
+        state.images = [readyImage("i1")]
+        let listed = LockIsolated(false)
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.models = { _, _, _ in
+                listed.setValue(true)
+                throw DaemonError.disconnected
+            }
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await until(store) { $0.historyLoaded && listed.value }
+        // Time for an answer to come, were one sent.
+        for _ in 0..<20 {
+            await Task.yield()
+            await store.skipReceivedActions(strict: false)
+        }
+        XCTAssertEqual(store.state.images.map(\.id), ["i1"])
+        XCTAssertEqual(store.state.readsImages, true)
+        XCTAssertNil(store.state.alert)
+        await watching.cancel()
+    }
+
+    func testAModelListThatSaysTheModelCantSeeImagesTakesTheBoxesImageOut() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .local, workingDirectory: "/work", name: "local", model: "qwen3:8b"))
+        daemon.setModels([ModelChoice(id: "qwen3:8b", name: "Qwen 3", readsImages: false)], for: .local)
+        var state = SessionFeature.State(session: session)
+        state.images = [readyImage("i1")]
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await store.receive(\.readsImagesFound, timeout: .seconds(1))
+        XCTAssertTrue(store.state.images.isEmpty)
+        XCTAssertEqual(store.state.readsImages, false)
+        XCTAssertNotNil(store.state.alert, "it says why")
+        await watching.cancel()
+    }
+
+    func testAWatchThatStartsOverDoesntListTheModelsAgainOnceTheAnswerIsKnown() async throws {
+        let session = Session(
+            id: "models-once", name: "local", backend: .local, workingDirectory: "/work", model: "qwen3:8b")
+        let listed = LockIsolated(0)
+        let clock = TestClock()
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
+            $0.daemon.models = { _, _, _ in
+                listed.withValue { $0 += 1 }
+                return [ModelChoice(id: "qwen3:8b", name: "Qwen 3", readsImages: true)]
+            }
+            // The connection drops as soon as the history has come.
+            $0.daemon.watch = { _, _ in
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.historyLoaded)
+                    continuation.finish(throwing: DaemonError.disconnected)
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await until(store) { $0.readsImages == true && $0.disconnected }
+        XCTAssertEqual(listed.value, 1)
+
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.task)
+        await store.receive(\.watchEnded)
+        XCTAssertEqual(listed.value, 1, "the watch started over without asking again")
+        XCTAssertEqual(store.state.readsImages, true)
+        await store.skipInFlightEffects()
+    }
+
+    func testEveryForkOfAReadOnlySessionIsAskedForChatOnlyAndNoChatUnderItForItsOwnCopy() async {
+        var session = Session(id: "side-forks", name: "side", backend: .scripted, workingDirectory: "/work")
+        session.readOnly = true
+        var made = session
+        made.id = "side-forks-fork"
+        let fork = made
+        let chatOnly = LockIsolated<[Bool]>([])
+        let children = LockIsolated<[ChildChat]>([])
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.fork = { _, _, _, only in
+                chatOnly.withValue { $0.append(only) }
+                return fork
+            }
+            $0.daemon.newChild = { _, _, kind in
+                children.withValue { $0.append(kind) }
+                return fork
+            }
+            $0.daemon.send = { _, _, _ in }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+
+        // Fork With the Code, as the Session menu sends it.
+        await store.send(.forkTapped(before: nil, chatOnly: false))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        XCTAssertEqual(chatOnly.value, [true])
+
+        // "/fork", with the space Tab leaves after it.
+        await store.send(\.binding.draft, "/fork ")
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        XCTAssertEqual(chatOnly.value, [true, true])
+
+        await store.send(.received(event("e1", .userMessage("hello"))))
+        await store.send(.editTapped("e1"))
+        await store.send(\.binding.edited, "hello again")
+        await store.send(.editSent)
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        XCTAssertEqual(chatOnly.value, [true, true, true])
+
+        await store.send(.childTapped(.empty(ownCopy: true), message: ""))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        XCTAssertEqual(children.value, [.empty(ownCopy: false)])
     }
 
     func testAnImageAddedBeforeTheModelIsKnownWaitsAndComesOutIfItCantBeSeen() async throws {

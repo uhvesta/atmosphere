@@ -489,6 +489,12 @@ const MIGRATIONS: &[&str] = &["
     -- name of the session to start or written to.
     ALTER TABLE agent_requests ADD COLUMN target_session_id TEXT NOT NULL DEFAULT '';
     ALTER TABLE agent_requests ADD COLUMN name TEXT NOT NULL DEFAULT '';
+", "
+    -- When each session was last active as the index last saw it, so one
+    -- rewound and then taken as many turns further again, which has the
+    -- turns it had, is told from one left alone. A session indexed before
+    -- has 0, which is filled in when it's next looked at.
+    ALTER TABLE search_sessions ADD COLUMN last_active_unix_ms INTEGER NOT NULL DEFAULT 0;
 "];
 
 /// What reverting a board change did.

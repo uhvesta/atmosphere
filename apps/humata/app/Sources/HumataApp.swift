@@ -98,6 +98,9 @@ struct HumataApp: App {
         let session = store.commandSession
         let side = store.focusedColumn == .side && store.side != nil
         let live = session.map { !$0.session.archived } ?? false
+        // A side chat, in either column, only reads, and so does what's
+        // made from it: it gets no copy of the code it could never write.
+        let readOnly = session?.session.readOnly == true
         Button(side ? "Stop the Side Chat’s Turn" : "Stop the Turn") { send(.abortTapped) }
             .keyboardShortcut(".", modifiers: .command)
             .disabled(session?.canStop != true)
@@ -107,24 +110,47 @@ struct HumataApp: App {
                 !live || session?.retryableFailure == nil || session?.isWorking == true
                     || session?.retrying == true)
         Divider()
-        Button(side ? "Fork the Side Chat With the Code" : "Fork With the Code") {
-            send(.forkTapped(before: nil, chatOnly: false))
+        // The chat's own commands, for those who don't type them. Compact
+        // is greyed out unless the session's host has said its agent
+        // takes it, and Undo Rewind unless the last rewind can be undone.
+        Button(side ? "Rewind the Side Chat…" : "Rewind…") { send(.rewindPickerAsked) }
+            .disabled(!live || session?.rewinding == true)
+        Button(side ? "Undo the Side Chat’s Rewind" : "Undo Rewind") { send(.undoRewindTapped) }
+            .disabled(!live || session?.canUndoRewind != true || session?.rewinding == true)
+        Button(side ? "Compact the Side Chat" : "Compact") { send(.compactAsked(focus: "")) }
+            .disabled(!live || session?.chatCommands?.compact != true || session?.compactStarting == true)
+        Divider()
+        if readOnly {
+            Button(side ? "Fork the Side Chat, Read-Only" : "Fork, Read-Only") {
+                send(.forkTapped(before: nil, chatOnly: true))
+            }
+            .keyboardShortcut("f", modifiers: [.command, .option])
+            .disabled(session?.forking == true)
+            Button(side ? "New Read-Only Chat Under the Side Chat" : "New Read-Only Chat Here") {
+                send(.childTapped(.empty(ownCopy: false), message: ""))
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(!live || session?.forking == true)
+        } else {
+            Button(side ? "Fork the Side Chat With the Code" : "Fork With the Code") {
+                send(.forkTapped(before: nil, chatOnly: false))
+            }
+            .keyboardShortcut("f", modifiers: [.command, .option])
+            .disabled(session == nil || session?.forking == true)
+            Button(side ? "Fork the Side Chat’s Chat Only" : "Fork the Chat Only") {
+                send(.forkTapped(before: nil, chatOnly: true))
+            }
+            .disabled(session == nil || session?.forking == true)
+            Button(side ? "New Chat Under the Side Chat" : "New Chat Here") {
+                send(.childTapped(.empty(ownCopy: false), message: ""))
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(!live || session?.forking == true)
+            Button(side ? "New Chat Under the Side Chat With Its Own Copy" : "New Chat Here With Its Own Copy") {
+                send(.childTapped(.empty(ownCopy: true), message: ""))
+            }
+            .disabled(!live || session?.forking == true)
         }
-        .keyboardShortcut("f", modifiers: [.command, .option])
-        .disabled(session == nil || session?.forking == true)
-        Button(side ? "Fork the Side Chat’s Chat Only" : "Fork the Chat Only") {
-            send(.forkTapped(before: nil, chatOnly: true))
-        }
-        .disabled(session == nil || session?.forking == true)
-        Button(side ? "New Chat Under the Side Chat" : "New Chat Here") {
-            send(.childTapped(.empty(ownCopy: false), message: ""))
-        }
-        .keyboardShortcut("n", modifiers: [.command, .option])
-        .disabled(!live || session?.forking == true)
-        Button(side ? "New Chat Under the Side Chat With Its Own Copy" : "New Chat Here With Its Own Copy") {
-            send(.childTapped(.empty(ownCopy: true), message: ""))
-        }
-        .disabled(!live || session?.forking == true)
         // Greyed out unless the session's host has said it holds a side
         // chat to reading only.
         Button(side ? "Side Chat of the Side Chat, in Its Place" : "Side Chat") {

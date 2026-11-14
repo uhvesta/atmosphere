@@ -204,7 +204,8 @@ impl Daemon {
     }
 
     /// Indexes what every session did since it was last indexed. A session
-    /// whose turns and whereabouts are as indexed isn't read or written,
+    /// whose turns, last activity and whereabouts are as indexed isn't read
+    /// or written,
     /// and neither is one at work or waiting that has said nothing since
     /// it was read, or was read a moment ago.
     async fn catch_up(&self) -> Result<(), DaemonError> {
@@ -242,11 +243,29 @@ impl Daemon {
             let read_lately = reads
                 .get(&session.id)
                 .is_some_and(|read| read.still_holds(session, Instant::now()));
+            // A settled session is as indexed when it has the turns it had
+            // and was last active when it was: every event moves that, so
+            // one rewound and taken as many turns further isn't. One
+            // indexed before the time was kept is taken as unchanged, and
+            // the time is filled in, so updating Humata doesn't read every
+            // history again.
+            let as_indexed = indexed.as_ref().is_some_and(|indexed| {
+                let had = &indexed.indexed;
+                settled
+                    && had.turns == session.turns
+                    && (had.last_active_unix_ms == session.last_active_unix_ms
+                        || had.last_active_unix_ms == 0)
+            });
             if let Some(indexed) = &indexed
-                && ((settled && indexed.indexed.turns == session.turns) || read_lately)
+                && (as_indexed || read_lately)
             {
-                if indexed.whereabouts != whereabouts {
-                    let unchanged = indexed.indexed.clone();
+                let timed = as_indexed
+                    && indexed.indexed.last_active_unix_ms != session.last_active_unix_ms;
+                if indexed.whereabouts != whereabouts || timed {
+                    let mut unchanged = indexed.indexed.clone();
+                    if timed {
+                        unchanged.last_active_unix_ms = session.last_active_unix_ms;
+                    }
                     let id = session.id.clone();
                     self.store
                         .apart(move |store| store.index(&id, &whereabouts, from, &unchanged, &[]))
@@ -280,6 +299,7 @@ impl Daemon {
                     .last()
                     .map(|event| event.id.clone())
                     .unwrap_or_default(),
+                last_active_unix_ms: session.last_active_unix_ms,
             };
             let had = indexed.as_ref().map(|indexed| &indexed.indexed);
             let id = session.id.clone();
@@ -562,6 +582,7 @@ mod tests {
             events: 2,
             turns: 1,
             last_event: "b".to_owned(),
+            last_active_unix_ms: 0,
         };
         // Grown, or as it was.
         assert!(follows_on(&events(&["a", "b", "c"]), Some(&had)));

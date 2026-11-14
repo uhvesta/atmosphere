@@ -340,6 +340,10 @@ struct Session {
     /// Held while the session's code is captured, so two captures of one
     /// worktree never run at once.
     capturing: tokio::sync::Mutex<()>,
+    /// Held for the whole of a stop, a rewind and an undo of one, so each
+    /// has the session to itself: a rewind waits for a stop under way, and
+    /// two rewinds never count the same backup folder.
+    reshaping: tokio::sync::Mutex<()>,
     /// Whether a tool call finished since the code was last saved.
     unsaved: AtomicBool,
 }
@@ -347,6 +351,11 @@ struct Session {
 struct Control {
     record: SessionRecord,
     running: Option<Running>,
+    /// The job the driver is about to play, until it notes the turn's
+    /// start; a stop that finds it here knows it never began.
+    starting: Option<Job>,
+    /// A rewind or an undo of one is under way, so nothing is sent.
+    rewinding: bool,
     /// Bumped for every driver, and on abort, so a stopped driver can tell.
     generation: u64,
     /// Between a turn's start and its end.
@@ -365,6 +374,9 @@ enum Job {
     Message { text: String, images: Vec<String> },
     /// Sums up the conversation, keeping `focus` in mind.
     Compact { focus: String },
+    /// Replies to messages sent to steer the turn before, which ended
+    /// without taking them. They are in the history already.
+    Steered { texts: Vec<String> },
 }
 
 /// A message waiting for the running turn to end.
@@ -496,6 +508,8 @@ impl Control {
         Self {
             record,
             running: None,
+            starting: None,
+            rewinding: false,
             generation: 0,
             turn_open: false,
             compacting: false,
@@ -509,6 +523,20 @@ impl Control {
         self.running
             .as_ref()
             .is_some_and(|running| running.generation == generation)
+    }
+
+    /// A driver runs and nothing is stopping it.
+    fn driving(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|running| running.handle.is_some())
+    }
+
+    /// A stop took the driver's handle and hasn't finished.
+    fn being_stopped(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|running| running.handle.is_none())
     }
 }
 
@@ -668,6 +696,7 @@ impl<R: Runner> LocalAgent<R> {
             log,
             control: Mutex::new(Control::new(record)),
             capturing: tokio::sync::Mutex::default(),
+            reshaping: tokio::sync::Mutex::default(),
             unsaved: AtomicBool::new(false),
         });
         self.lock().insert(session.id.clone(), session.clone());
@@ -679,12 +708,14 @@ impl<R: Runner> LocalAgent<R> {
     fn start_driver(&self, session: &Arc<Session>, control: &mut Control, first: Job) {
         control.generation += 1;
         let generation = control.generation;
+        // Kept here until its turn starts, so a stop before then still
+        // has it to record.
+        control.starting = Some(first);
         let handle = tokio::spawn(drive(
             session.clone(),
             self.runner.clone(),
             self.workspaces.clone(),
             generation,
-            first,
         ));
         control.running = Some(Running {
             generation,
@@ -697,13 +728,29 @@ impl<R: Runner> LocalAgent<R> {
     /// turn another call is already stopping can't be followed by `first`.
     async fn abort_then(&self, id: &SessionId, first: Option<Job>) -> Result<(), AgentError> {
         let session = self.session(id)?;
+        // A stop already under way isn't waited for: a second press of
+        // Stop mustn't stop the queued turn the first one starts.
+        if session.lock().being_stopped() {
+            return already_stopping(id, first);
+        }
+        let _reshaping = session.reshaping.lock().await;
+        self.stop_then(&session, first).await
+    }
+
+    /// As [`Self::abort_then`], for a caller that holds the session's
+    /// `reshaping`.
+    async fn stop_then(
+        &self,
+        session: &Arc<Session>,
+        first: Option<Job>,
+    ) -> Result<(), AgentError> {
         let handle = {
             let mut control = session.lock();
             control.generation += 1;
             let generation = control.generation;
             if control.running.is_none() {
                 if let Some(first) = first {
-                    self.start_driver(&session, &mut control, first);
+                    self.start_driver(session, &mut control, first);
                 }
                 return Ok(());
             }
@@ -715,12 +762,7 @@ impl<R: Runner> LocalAgent<R> {
             let Some(handle) = taken else {
                 // Already being stopped: whoever stops it starts what is
                 // next, which leaves no place for `first`.
-                return match first {
-                    Some(_) => Err(AgentError::CompactWhileWorking {
-                        session: id.clone(),
-                    }),
-                    None => Ok(()),
-                };
+                return already_stopping(&session.id, first);
             };
             control.pending.clear();
             handle.abort();
@@ -730,17 +772,27 @@ impl<R: Runner> LocalAgent<R> {
         let _ = handle.await;
         let open = session.lock().turn_open;
         let checkpoint = if open {
-            checkpoint(&session, self.workspaces.as_deref()).await
+            checkpoint(session, self.workspaces.as_deref()).await
         } else {
             Ok(None)
         };
         let mut control = session.lock();
         if control.turn_open {
-            note_checkpoint(&session, checkpoint);
+            note_checkpoint(session, checkpoint);
             session.note(EventKind::TurnEnded { aborted: true });
             control.turn_open = false;
+        } else if let Some(Job::Message { text, images }) = control.starting.take() {
+            // Stopped before its turn began, while the history was read
+            // or the code copied: it reads as a turn stopped at once. A
+            // summary or a turn for steering left over notes nothing.
+            session.note(EventKind::UserMessage { text, images });
+            session.note(EventKind::TurnStarted);
+            session.note(EventKind::TurnEnded { aborted: true });
         }
+        control.starting = None;
         control.compacting = false;
+        // A steer the stopped turn hadn't taken goes with it: it stays in
+        // the chat, unanswered, as the turn's own message does.
         control.steering.clear();
         control.running = None;
         let next = match first {
@@ -748,23 +800,42 @@ impl<R: Runner> LocalAgent<R> {
             None => session.next_queued(&mut control),
         };
         match next {
-            Some(next) => self.start_driver(&session, &mut control, next),
+            Some(next) => self.start_driver(session, &mut control, next),
             None => session.note(EventKind::Idle),
         }
         Ok(())
     }
 }
 
-/// Plays `first`, then each queued message, until the queue is empty or
-/// the driver is stopped.
+/// What a stop asked for while another is under way comes to: nothing more
+/// for a plain stop, and a refusal for one that was to start `first`.
+fn already_stopping(id: &SessionId, first: Option<Job>) -> Result<(), AgentError> {
+    match first {
+        Some(_) => Err(AgentError::CompactWhileWorking {
+            session: id.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Clears [`Control::rewinding`] on every way out of a rewind or an undo.
+struct Rewinding<'a>(&'a Session);
+
+impl Drop for Rewinding<'_> {
+    fn drop(&mut self) {
+        self.0.lock().rewinding = false;
+    }
+}
+
+/// Plays the job waiting in [`Control::starting`], then what steering the
+/// turn left and each queued message, until none is left or the driver is
+/// stopped.
 async fn drive<R: Runner>(
     session: Arc<Session>,
     runner: Arc<R>,
     workspaces: Option<Arc<Workspaces>>,
     generation: u64,
-    first: Job,
 ) {
-    let mut job = first;
     // A session at rest is read here once; were the read to fail, the
     // turn's first event fails the same way and says so.
     if let Err(error) = load_history(&session).await {
@@ -776,24 +847,32 @@ async fn drive<R: Runner>(
     }
     loop {
         let prepared = prepare(&session, workspaces.as_deref()).await;
-        {
+        let job = {
             let mut control = session.lock();
             if !control.is_current(generation) {
                 return;
             }
+            let Some(job) = control.starting.take() else {
+                control.running = None;
+                session.note(EventKind::Idle);
+                return;
+            };
             control.turn_open = true;
             control.compacting = matches!(job, Job::Compact { .. });
-            session.note(match &job {
-                Job::Message { text, images } => EventKind::UserMessage {
+            match &job {
+                Job::Message { text, images } => session.note(EventKind::UserMessage {
                     text: text.clone(),
                     images: images.clone(),
-                },
-                Job::Compact { focus } => EventKind::Compacting {
+                }),
+                Job::Compact { focus } => session.note(EventKind::Compacting {
                     focus: focus.clone(),
-                },
-            });
+                }),
+                // Recorded when they were sent.
+                Job::Steered { .. } => {}
+            }
             session.note(EventKind::TurnStarted);
-        }
+            job
+        };
         let result = match (prepared, job) {
             (Err(error), _) => Err(describe(&error)),
             (Ok(()), Job::Message { text, images }) => runner
@@ -826,6 +905,17 @@ async fn drive<R: Runner>(
                     .await
                     .map_err(|error| describe(&error))
             }
+            (Ok(()), Job::Steered { texts }) => runner
+                .clone()
+                .run_turn(Turn {
+                    session: session.clone(),
+                    workspaces: workspaces.clone(),
+                    text: texts.join("\n\n"),
+                    images: Vec::new(),
+                    reading: Mutex::default(),
+                })
+                .await
+                .map_err(|error| describe(&error)),
         };
         let checkpoint = checkpoint(&session, workspaces.as_deref()).await;
         let mut control = session.lock();
@@ -839,16 +929,21 @@ async fn drive<R: Runner>(
         session.note(EventKind::TurnEnded { aborted: false });
         control.turn_open = false;
         control.compacting = false;
-        control.steering.clear();
         control.pending.clear();
-        match session.next_queued(&mut control) {
-            Some(next) => job = next,
-            None => {
-                control.running = None;
-                session.note(EventKind::Idle);
-                return;
-            }
+        // Steering sent after the runner last looked, or that it never
+        // takes, gets a turn of its own, ahead of the queue.
+        let left: Vec<String> = control.steering.drain(..).collect();
+        let next = if left.is_empty() {
+            session.next_queued(&mut control)
+        } else {
+            Some(Job::Steered { texts: left })
+        };
+        if next.is_none() {
+            control.running = None;
+            session.note(EventKind::Idle);
+            return;
         }
+        control.starting = next;
     }
 }
 
@@ -907,6 +1002,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 session: id.clone(),
             });
         }
+        if control.rewinding {
+            return Err(AgentError::Rewinding {
+                session: id.clone(),
+            });
+        }
         if control.running.is_none() {
             self.start_driver(&session, &mut control, Job::Message { text, images });
             return Ok(());
@@ -924,7 +1024,10 @@ impl<R: Runner> Agent for LocalAgent<R> {
             }
             SendMode::EnqueueApart => session.queue(&mut control, text, images, false, false),
             SendMode::Immediate
-                if control.turn_open && !control.compacting && images.is_empty() =>
+                if control.turn_open
+                    && control.driving()
+                    && !control.compacting
+                    && images.is_empty() =>
             {
                 session.log.append(Event::now(EventKind::UserMessage {
                     text: text.clone(),
@@ -1083,8 +1186,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
     ) -> Result<SessionRecord, AgentError> {
         let parent = self.session(id)?;
         let empty = options.empty;
-        // A side chat reads its parent's copy of the code.
-        let chat_only = options.chat_only || options.read_only;
+        let from = parent.lock().record.clone();
+        // A side chat reads its parent's copy of the code, and so does
+        // every fork of one, whatever was asked: a copy of its own would
+        // be one it can never write.
+        let chat_only = options.chat_only || options.read_only || from.read_only;
         let before = options.before.filter(|_| !empty);
         // Read off the executor when the parent's history is at rest.
         let mut events = if empty {
@@ -1110,7 +1216,6 @@ impl<R: Runner> Agent for LocalAgent<R> {
             events.truncate(index);
         }
         events.extend(closing(&events).into_iter().map(Event::now));
-        let from = parent.lock().record.clone();
         let read_only = options.read_only || from.read_only;
         let instructions = options.instructions.or_else(|| from.instructions.clone());
         let instructions = if read_only && !from.read_only {
@@ -1189,6 +1294,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
         files: bool,
     ) -> Result<(), AgentError> {
         let session = self.session(id)?;
+        // Waits for a stop, a rewind or an undo already under way.
+        let _reshaping = session.reshaping.lock().await;
         // Every refusal comes before anything is dropped or stopped, so a
         // rewind that can't be made leaves the turn and the queue alone.
         {
@@ -1232,9 +1339,13 @@ impl<R: Runner> Agent for LocalAgent<R> {
             }
             Some(true) => {}
         }
+        // From here until it's done nothing is sent to the session: a
+        // message would land in the history the rewind replaces.
+        session.lock().rewinding = true;
+        let _rewinding = Rewinding(&session);
         // What waits to be sent goes with what is cut.
         drop_queued(&session);
-        self.abort(id).await?;
+        self.stop_then(&session, None).await?;
         let events = session.log.events()?;
         let index = events
             .iter()
@@ -1282,10 +1393,23 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 .save_rewound(id.as_str(), rewind, &record.checkouts)
                 .await
                 .map_err(workspace_failed(id))?;
-            workspaces
-                .restore(&record.checkouts, &code)
-                .await
-                .map_err(workspace_failed(id))?;
+            if let Err(restoring) = workspaces.restore(&record.checkouts, &code).await {
+                // Part of the code may be at the rewind point and part
+                // not: back to what was just saved, as an undo does.
+                let put_back = workspaces.restore(&record.checkouts, &saved).await;
+                return Err(match put_back {
+                    Ok(()) => AgentError::RewindUndone {
+                        session: id.clone(),
+                        source: restoring,
+                    },
+                    Err(source) => AgentError::RewindLeftPartWay {
+                        session: id.clone(),
+                        rewind,
+                        restoring: describe(&restoring),
+                        source,
+                    },
+                });
+            }
             saved
         } else {
             Vec::new()
@@ -1303,6 +1427,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
 
     async fn undo_rewind(&self, id: &SessionId) -> Result<(), AgentError> {
         let session = self.session(id)?;
+        // Waits for a stop or a rewind already under way.
+        let _reshaping = session.reshaping.lock().await;
         let events = session.log.events()?;
         let nothing = || AgentError::NothingToUndo {
             session: id.clone(),
@@ -1325,9 +1451,15 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 _ => None,
             });
         let (rewind, snapshots) = last.ok_or_else(nothing)?;
-        if session.lock().running.is_some() {
-            return Err(nothing());
+        {
+            let mut control = session.lock();
+            if control.running.is_some() {
+                return Err(nothing());
+            }
+            // Nothing is sent while the history is put back.
+            control.rewinding = true;
         }
+        let _rewinding = Rewinding(&session);
         let backup = session
             .dir
             .join(REWINDS_FOLDER)
@@ -2301,6 +2433,7 @@ fn load(dir: &Path) -> Result<Session, AgentError> {
         log,
         control: Mutex::new(Control::new(record)),
         capturing: tokio::sync::Mutex::default(),
+        reshaping: tokio::sync::Mutex::default(),
         unsaved: AtomicBool::new(false),
     })
 }

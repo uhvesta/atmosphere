@@ -50,15 +50,21 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
                 : "Sum up the conversation to make room"
             choices.append(SlashChoice(BuiltIn.compact.rawValue, summary: summary, builtIn: .compact))
         }
+        // What's made under a read-only session reads only too, so it
+        // gets no copy of the code: one it could never write to.
         choices.append(
             SlashChoice(
                 BuiltIn.newHere.rawValue,
-                summary: "Start an empty chat under this one, in the same copy of the code; add “copy” for its own",
+                summary: session.readOnly
+                    ? "Start an empty read-only chat under this one"
+                    : "Start an empty chat under this one, in the same copy of the code; add “copy” for its own",
                 builtIn: .newHere))
         choices.append(
             SlashChoice(
                 BuiltIn.fork.rawValue,
-                summary: "Fork the chat so far with its own copy of the code; add “chat” to share this copy",
+                summary: session.readOnly
+                    ? "Fork the chat so far into another read-only chat"
+                    : "Fork the chat so far with its own copy of the code; add “chat” to share this copy",
                 builtIn: .fork))
         // Only where the host holds it to reading.
         if let commands, commands.side {

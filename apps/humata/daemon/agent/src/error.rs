@@ -74,6 +74,34 @@ pub enum AgentError {
     SharedFiles { session: SessionId },
 
     #[error(
+        "session {session} is being rewound, so the message wasn't sent; send it again once the chat shows the rewind"
+    )]
+    Rewinding { session: SessionId },
+
+    #[error(
+        "couldn't put session {session}'s files back as they were at the rewind point, so nothing was rewound: the files are as they were before and the chat is whole. Fix what the cause below says, then rewind again, or rewind the chat only"
+    )]
+    RewindUndone {
+        session: SessionId,
+        #[source]
+        source: humata_workspace::WorkspaceError,
+    },
+
+    #[error(
+        "couldn't put session {session}'s files back as they were at the rewind point ({restoring}), and putting them back as they were before failed too, so its files may be part way between the two; the chat wasn't cut. The files as they were before are saved in each of the session's repositories under the refs refs/humata/{session}/rewound/{rewind}/: fix what the cause below says, then check those out by hand, or rewind again"
+    )]
+    RewindLeftPartWay {
+        session: SessionId,
+        /// The rewind's number, which names the snapshots it saved.
+        rewind: usize,
+        /// Why the files couldn't be put at the rewind point.
+        restoring: String,
+        /// Why they couldn't be put back as they were.
+        #[source]
+        source: humata_workspace::WorkspaceError,
+    },
+
+    #[error(
         "session {session} isn't waiting on permission request {request}; it was answered already, or its turn was stopped"
     )]
     UnknownPermissionRequest { session: SessionId, request: String },

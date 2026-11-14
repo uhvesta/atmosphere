@@ -787,3 +787,296 @@ async fn allowing_a_start_past_the_projects_limit_is_refused_and_it_stays_in_the
     assert!(allowed.is_ok(), "{allowed:?}");
     assert_eq!(sessions(client).await.len(), 2);
 }
+
+/// What `count` messages from `from`'s agent to `to`, sent together, came
+/// to.
+async fn written_together(
+    client: &Arc<Client>,
+    from: &str,
+    to: &str,
+    count: usize,
+) -> Vec<Result<pb::AgentActed, ClientError>> {
+    let mut sending = tokio::task::JoinSet::new();
+    for _ in 0..count {
+        let (client, from, to) = (Arc::clone(client), from.to_owned(), to.to_owned());
+        sending.spawn(async move { write(&client, &from, &to).await });
+    }
+    let mut results = Vec::new();
+    while let Some(done) = sending.join_next().await {
+        results.push(done.unwrap_or_else(|error| panic!("{error}")));
+    }
+    results
+}
+
+#[tokio::test]
+async fn starts_sent_together_are_counted_one_after_another() {
+    let Setup {
+        client,
+        project,
+        session,
+        ..
+    } = &setup().await;
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            mode: pb::AgentSessionsMode::Allow.into(),
+            message_others: false,
+            max_children: 2,
+            max_depth: 1,
+        },
+    )
+    .await;
+
+    let (first, second, third, fourth) = tokio::join!(
+        start_child(client, &session.id, "First"),
+        start_child(client, &session.id, "Second"),
+        start_child(client, &session.id, "Third"),
+        start_child(client, &session.id, "Fourth"),
+    );
+    let asked = [first, second, third, fourth];
+    let started = asked
+        .iter()
+        .filter(|asked| matches!(asked, Ok(acted) if acted.session.is_some()))
+        .count();
+    let refused = asked.iter().filter(|asked| asked.is_err()).count();
+    assert_eq!((started, refused), (2, 2), "{asked:?}");
+    // The asking session and the two it may have.
+    assert_eq!(sessions(client).await.len(), 3);
+}
+
+#[tokio::test]
+async fn a_start_allowed_twice_together_starts_one_session() {
+    let Setup {
+        client, session, ..
+    } = &setup().await;
+    let acted = start_child(client, &session.id, "Tests")
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let request = acted.request.unwrap_or_else(|| panic!("nothing waits"));
+
+    let allow = || {
+        client.call(answer(
+            &request.id,
+            pb::answer_request::Answer::Approve(true),
+        ))
+    };
+    let (first, second) = tokio::join!(allow(), allow());
+    assert!(
+        first.is_ok() != second.is_ok(),
+        "one allows it and the other finds it answered: {first:?} {second:?}"
+    );
+    assert_eq!(sessions(client).await.len(), 2);
+    assert!(requests(client).await.is_empty());
+}
+
+#[tokio::test]
+async fn messages_sent_together_wait_for_the_person_only_up_to_the_limit() {
+    let setup = setup().await;
+    let (client, session) = (Arc::new(setup.client), setup.session);
+    let other = started(&client, start_on(&setup.task)).await;
+    let_agents(
+        &client,
+        &setup.project,
+        pb::AgentSessions {
+            mode: pb::AgentSessionsMode::Ask.into(),
+            message_others: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    // How many wait when they come one at a time.
+    let mut limit = 0usize;
+    while write(&client, &session.id, &other.id).await.is_ok() {
+        limit += 1;
+        assert!(limit < 1000, "nothing limits the messages waiting");
+    }
+    for request in requests(&client).await {
+        let declined = client
+            .call(answer(
+                &request.id,
+                pb::answer_request::Answer::Dismiss(true),
+            ))
+            .await;
+        assert!(declined.is_ok(), "{declined:?}");
+    }
+    assert!(requests(&client).await.is_empty());
+
+    // Sent together, no more of them wait.
+    let asked = written_together(&client, &session.id, &other.id, limit + 4).await;
+    let kept = asked.iter().filter(|asked| asked.is_ok()).count();
+    assert_eq!(kept, limit, "{asked:?}");
+    assert_eq!(requests(&client).await.len(), limit);
+}
+
+#[tokio::test]
+async fn an_agents_message_keeps_its_senders_line_and_a_spec_note_waits_for_the_person() {
+    let Setup {
+        client,
+        project,
+        task,
+        session,
+        ..
+    } = &setup().await;
+    let other = started(client, start_on(task)).await;
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            message_others: true,
+            ..allowing()
+        },
+    )
+    .await;
+    send(client, &other.id, "hello").await;
+    after_turns(client, &other.id, 1).await;
+    // The task's spec changes, which the other session is to hear of.
+    let changed = client
+        .call(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.clone(),
+            spec: Some("Sign in with a passkey.".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(changed.is_ok(), "{changed:?}");
+
+    // The agent's message comes first, and is still the agent's.
+    let sent = write(client, &session.id, &other.id).await;
+    assert!(sent.is_ok(), "{sent:?}");
+    let events = after_turns(client, &other.id, 2).await;
+    assert_eq!(
+        received(&events).get(1),
+        Some(&(Some(session.id.clone()), "hello".to_owned()))
+    );
+
+    // The note comes with what the person writes next.
+    send(client, &other.id, "hello").await;
+    let events = after_turns(client, &other.id, 3).await;
+    let got = received(&events);
+    let Some((None, persons)) = got.get(2) else {
+        panic!("{got:?}")
+    };
+    assert!(
+        persons.contains(task.as_str()) && persons.contains("Sign in with a passkey."),
+        "{persons:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_writes_to_others_only_so_often_until_the_person_writes_to_it() {
+    let Setup {
+        client,
+        project,
+        task,
+        session,
+        ..
+    } = &setup().await;
+    let other = started(client, start_on(task)).await;
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            message_others: true,
+            ..allowing()
+        },
+    )
+    .await;
+
+    let mut sent = 0usize;
+    while write(client, &session.id, &other.id).await.is_ok() {
+        sent += 1;
+        assert!(sent < 1000, "nothing limits an agent's messages");
+    }
+    assert!(sent > 0);
+    // The one refused never reached the other session.
+    let events = after_turns(client, &other.id, sent).await;
+    assert_eq!(received(&events).len(), sent);
+    assert!(write(client, &session.id, &other.id).await.is_err());
+
+    // The person writes to the asking session, and its agent may again.
+    send(client, &session.id, "hello").await;
+    let again = write(client, &session.id, &other.id).await;
+    assert!(
+        matches!(&again, Ok(acted) if acted.session.is_some()),
+        "{again:?}"
+    );
+}
+
+fn move_to_done(session: &str) -> pb::request::Kind {
+    pb::request::Kind::RequestMove(pb::RequestMove {
+        session_id: session.to_owned(),
+        status: pb::ItemStatus::Done.into(),
+        summary: "Login works.".to_owned(),
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn a_side_chat_asks_for_no_move_of_the_task_it_is_beside() {
+    let Setup {
+        client, session, ..
+    } = &setup().await;
+    send(client, &session.id, "hello").await;
+    after_turns(client, &session.id, 1).await;
+    let side = match client
+        .call(pb::request::Kind::ForkSession(pb::ForkSession {
+            session_id: session.id.clone(),
+            read_only: true,
+            ..Default::default()
+        }))
+        .await
+    {
+        Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+            session: Some(side),
+        })) => side,
+        other => panic!("not forked: {other:?}"),
+    };
+
+    let refused = client.call(move_to_done(&side.id)).await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(requests(client).await.is_empty());
+
+    // The session it is beside still asks.
+    let asked = client.call(move_to_done(&session.id)).await;
+    assert!(asked.is_ok(), "{asked:?}");
+    assert_eq!(requests(client).await.len(), 1);
+}
+
+#[tokio::test]
+async fn nothing_over_the_size_reaches_the_inbox() {
+    let Setup {
+        client, session, ..
+    } = &setup().await;
+    let long = "word ".repeat(20_000);
+
+    let question = client
+        .call(pb::request::Kind::AskPerson(pb::AskPerson {
+            session_id: session.id.clone(),
+            text: long.clone(),
+            client_id: String::new(),
+        }))
+        .await;
+    assert!(question.is_err(), "{question:?}");
+    let moved = client
+        .call(pb::request::Kind::RequestMove(pb::RequestMove {
+            session_id: session.id.clone(),
+            status: pb::ItemStatus::Done.into(),
+            summary: long,
+            ..Default::default()
+        }))
+        .await;
+    assert!(moved.is_err(), "{moved:?}");
+    // A session's name far longer than the sidebar shows, where a start
+    // waits for the person.
+    let named = start_child(client, &session.id, &"Tests ".repeat(100)).await;
+    assert!(named.is_err(), "{named:?}");
+    assert!(requests(client).await.is_empty());
+
+    // What fits still waits there.
+    let named = start_child(client, &session.id, "Tests").await;
+    assert!(
+        matches!(&named, Ok(acted) if acted.request.is_some()),
+        "{named:?}"
+    );
+    assert_eq!(requests(client).await.len(), 1);
+}

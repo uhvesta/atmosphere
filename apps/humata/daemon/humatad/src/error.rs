@@ -248,7 +248,8 @@ impl HostError {
                 AgentError::ArchiveWhileWorking { .. }
                 | AgentError::LandWhileWorking { .. }
                 | AgentError::UpdateWhileWorking { .. }
-                | AgentError::CompactWhileWorking { .. },
+                | AgentError::CompactWhileWorking { .. }
+                | AgentError::Rewinding { .. },
             ) => pb::ErrorCode::Busy,
             Self::Agent(
                 AgentError::NoWorkspaces { .. }
@@ -982,6 +983,26 @@ pub enum AgentSessionsError {
         #[source]
         source: Box<DaemonError>,
     },
+
+    #[error(
+        "this session's agent has written to other sessions {sent} times since the person last wrote to this session, and {limit} is the most it may. End your turn and say what's left to do, or ask_person; it can write to other sessions again once the person writes to this session"
+    )]
+    TooManyUnattended { sent: u32, limit: u32 },
+
+    #[error(
+        "this is a side chat, which only reads, so it can't ask for a task to be moved. Say which move you'd ask for and why, and the person can make it from the session this chat is beside"
+    )]
+    ReadOnlyMove,
+
+    #[error(
+        "the session's name is {characters} characters and the most a name may be is {limit}. Give a short name, and put the detail in the message"
+    )]
+    NameTooLong { characters: usize, limit: usize },
+
+    #[error(
+        "what you ask the person is {bytes} bytes and the most it may be is {limit}. Put the detail in a file or in your reply, and ask in a shorter text that names it"
+    )]
+    RequestTooLong { bytes: usize, limit: usize },
 
     /// As `TooManyChildren`, for the person allowing a start.
     #[error(

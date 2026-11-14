@@ -36,6 +36,7 @@ package struct SavedRepositoriesView: View {
                 ForEach(owners) { owner in
                     OwnerRow(
                         owner: owner, listing: store.listing.contains(owner.login),
+                        unfinished: store.unfinished.contains(owner.login),
                         refreshing: store.refreshing.contains(owner.login) || store.refreshing.contains(""),
                         refresh: { store.send(.refreshTapped(owner.login)) },
                         remove: { store.send(.removeOwnerTapped(owner.login)) })
@@ -111,6 +112,8 @@ package struct SavedRepositoriesView: View {
 private struct OwnerRow: View {
     let owner: RepositoryOwner
     let listing: Bool
+    /// Its first listing hadn't finished when looking for it stopped.
+    let unfinished: Bool
     let refreshing: Bool
     let refresh: () -> Void
     let remove: () -> Void
@@ -141,6 +144,13 @@ private struct OwnerRow: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+            } else if unfinished, !refreshing {
+                Text(
+                    "Its repositories aren’t listed yet: the listing hadn’t finished after a minute. "
+                        + "Refresh looks again."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }

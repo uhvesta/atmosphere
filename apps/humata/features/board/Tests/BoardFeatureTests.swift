@@ -1076,6 +1076,73 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.undoing)
     }
 
+    func testUndoWithNothingChangedHereSaysSoAndRevertsNothing() async throws {
+        let board = try await board()
+        // The board's items were made before it opened, so they aren't
+        // Undo's to take back.
+        let reverts = LockIsolated(0)
+        let client = board.daemon.client
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.daemon.revert = { change in
+                reverts.withValue { $0 += 1 }
+                return try await client.revert(change)
+            }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let newest = try await client.boardLog(board.project.id, nil, 1).first?.id
+        await store.send(.logStarted(newest: newest))
+        XCTAssertNil(store.state.destination)
+
+        await store.send(.undoTapped)
+        await store.receive(\.undoEnded)
+        XCTAssertNotNil(store.state.destination?.alert, "it says there was nothing to undo")
+        XCTAssertFalse(store.state.undoing)
+        XCTAssertEqual(reverts.value, 0)
+    }
+
+    func testUndoBeforeTheLogWasReadReadsItAndRevertsNothingMadeBefore() async throws {
+        let board = try await board()
+        let reverts = LockIsolated(0)
+        let client = board.daemon.client
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.daemon.revert = { change in
+                reverts.withValue { $0 += 1 }
+                return try await client.revert(change)
+            }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.undoFrom)
+
+        // The log's first read never came: Undo reads it, and says so.
+        await store.send(.undoTapped)
+        await store.receive(\.undoEnded)
+        XCTAssertNotNil(store.state.undoFrom)
+        XCTAssertNotNil(store.state.destination?.alert)
+        XCTAssertEqual(reverts.value, 0)
+
+        // A change made here after that is Undo's to take back.
+        await store.send(.destination(.dismiss))
+        await store.send(.dropped(board.other.id, on: .done))
+        await store.receive(\.moved)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.undoTapped)
+        await store.receive(\.undone)
+        XCTAssertEqual(reverts.value, 1)
+        await store.skipInFlightEffects(strict: false)
+    }
+
     func testTheJournalSaysItIsReadOnlyOnceItIs() async throws {
         let board = try await board()
         let store = TestStore(initialState: BoardLogFeature.State(project: board.project, items: [])) {

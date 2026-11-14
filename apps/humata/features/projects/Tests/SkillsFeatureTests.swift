@@ -101,4 +101,32 @@ final class SkillsFeatureTests: XCTestCase {
         await store.receive(\.delegate.started)
         XCTAssertNil(store.state.skillClash)
     }
+
+    func testAFirstListingThatFailsShowsNoListUntilOneIsRead() async throws {
+        let daemon = daemon()
+        let client = daemon.client
+        let fails = LockIsolated(true)
+        let store = TestStore(initialState: SkillsFeature.State()) {
+            SkillsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.daemon.skills = {
+                if fails.value { throw DaemonError.disconnected }
+                return try await client.skills()
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.failed)
+        XCTAssertNil(store.state.list, "a list that couldn't be read isn't an empty one")
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertFalse(store.state.loading)
+
+        fails.setValue(false)
+        await store.send(.refreshTapped)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.failure)
+        XCTAssertEqual(store.state.list?.skills.count, 2)
+    }
 }

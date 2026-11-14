@@ -125,4 +125,49 @@ final class ModelDefaultsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.defaults.backend, .copilot)
         XCTAssertEqual(store.state.models.map(\.id), [ModelChoice.fusion])
     }
+
+    func testDefaultsThatCouldNotBeReadAreNotSavedOverAndTryAgainShowsThem() async throws {
+        let daemon = InMemoryDaemon()
+        let stored = SessionDefaults(backend: .claude, model: "opus")
+        _ = try await daemon.client.setSessionDefaults(nil, stored)
+        let client = daemon.client
+        let fails = LockIsolated(true)
+        let writes = LockIsolated(0)
+        let store = TestStore(initialState: ModelDefaultsFeature.State()) {
+            ModelDefaultsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.daemon.sessionDefaults = {
+                if fails.value { throw DaemonError.disconnected }
+                return try await client.sessionDefaults()
+            }
+            $0.daemon.setSessionDefaults = { project, defaults in
+                writes.withValue { $0 += 1 }
+                return try await client.setSessionDefaults(project, defaults)
+            }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.failed)
+        XCTAssertFalse(store.state.everRead)
+        XCTAssertNotNil(store.state.failure)
+
+        // A change to what was never read writes nothing.
+        await store.send(.backendPicked(.copilot))
+        await store.send(.modelTyped("gpt"))
+        await store.send(.experimentalToggled(true))
+        await store.finish()
+        XCTAssertEqual(writes.value, 0)
+        let kept = try await client.sessionDefaults()
+        XCTAssertEqual(kept, stored)
+
+        fails.setValue(false)
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertTrue(store.state.everRead)
+        XCTAssertNil(store.state.failure)
+        XCTAssertEqual(store.state.defaults, stored)
+    }
 }

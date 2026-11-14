@@ -926,13 +926,21 @@ final class AppFeatureTests: XCTestCase {
     /// A store over `sessions` whose daemon holds `histories`, read as they
     /// are when a watch starts, and sends a watcher what follows the event
     /// it has, or all of it when it holds that event no longer. `asked`
-    /// takes the event each watch said it has.
+    /// takes the event each watch said it has. `beside`, if given, is
+    /// open from the start as a side chat of the first of `sessions`.
     private func store(
         _ sessions: [Session], _ histories: LockIsolated<[Session.ID: [SessionEvent]]>,
-        asked: LockIsolated<[String?]>
+        asked: LockIsolated<[String?]>, beside: Session? = nil
     ) -> TestStoreOf<AppFeature> {
         var state = AppFeature.State()
         state.sidebar.sessions = IdentifiedArray(uniqueElements: sessions)
+        if let beside, let first = sessions.first {
+            var side = SessionFeature.State(session: beside)
+            side.beside = true
+            state.sidebar.selection = .session(first.id)
+            state.session = SessionFeature.State(session: first)
+            state.side = side
+        }
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
@@ -1073,6 +1081,279 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.session.receivedAll, timeout: .seconds(1))
         XCTAssertEqual(asked.value, [nil, "e3", nil])
         XCTAssertEqual(store.state.session?.events.map(\.id), ["e1", "e2", "r1"])
+        await store.skipInFlightEffects()
+    }
+
+    /// A store with a session open whose agent asked to start another,
+    /// over a daemon that takes each answer only once `gate` gives it an
+    /// outcome: true lets the answer through, false fails it. `answers`
+    /// counts the answers that reached the daemon.
+    private func withAStartRequestOpen(
+        gate: AsyncStream<Bool>, answers: LockIsolated<Int>
+    ) async throws -> (TestStoreOf<AppFeature>, AgentRequest) {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
+        let request = daemon.addRequest(session.id, .startSession(name: "Tests"), "Write the tests.")
+        let client = daemon.client
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = client
+            $0.daemon.answerRequest = { id, answer in
+                answers.withValue { $0 += 1 }
+                var goes = true
+                for await outcome in gate {
+                    goes = outcome
+                    break
+                }
+                guard goes else { throw DaemonError.disconnected }
+                try await client.answerRequest(id, answer)
+            }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        await store.send(\.sidebar.selected, .session(session.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        return (store, request)
+    }
+
+    func testAllowingARequestTwiceFromTheStripAnswersItOnce() async throws {
+        let (gate, outcome) = AsyncStream<Bool>.makeStream()
+        let answers = LockIsolated(0)
+        let (store, request) = try await withAStartRequestOpen(gate: gate, answers: answers)
+        XCTAssertEqual(store.state.session?.request?.id, request.id)
+
+        await store.send(\.session.requestAllowed)
+        await store.receive(\.sidebar.requestAnswered)
+        XCTAssertEqual(store.state.session?.answeringRequest, true)
+        XCTAssertEqual(store.state.session?.request?.id, request.id, "the strip stays up while it's answered")
+
+        await store.send(\.session.requestAllowed)
+        await Task.megaYield()
+        XCTAssertEqual(answers.value, 1)
+
+        outcome.yield(true)
+        await store.receive(\.sidebar.requestAnswerSent)
+        XCTAssertNil(store.state.session?.request)
+        XCTAssertEqual(store.state.session?.answeringRequest, false)
+        await store.skipInFlightEffects()
+    }
+
+    func testAListReadWhileARequestIsBeingAnsweredDoesNotOfferItAgain() async throws {
+        let (gate, outcome) = AsyncStream<Bool>.makeStream()
+        let answers = LockIsolated(0)
+        let (store, request) = try await withAStartRequestOpen(gate: gate, answers: answers)
+
+        await store.send(\.session.requestAllowed)
+        await store.receive(\.sidebar.requestAnswered)
+        // The daemon still lists the request: its answer hasn't landed.
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        XCTAssertEqual(store.state.session?.answeringRequest, true)
+        XCTAssertEqual(store.state.session?.request?.id, request.id)
+
+        outcome.yield(true)
+        await store.receive(\.sidebar.requestAnswerSent)
+        // Nor does a read from before the answer, once it has.
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        XCTAssertNil(store.state.session?.request)
+        XCTAssertEqual(answers.value, 1)
+        await store.skipInFlightEffects()
+    }
+
+    func testARequestWhoseAnswerFailedCanBeAnsweredAgainFromTheStrip() async throws {
+        let (gate, outcome) = AsyncStream<Bool>.makeStream()
+        let answers = LockIsolated(0)
+        let (store, request) = try await withAStartRequestOpen(gate: gate, answers: answers)
+
+        await store.send(\.session.requestAllowed)
+        await store.receive(\.sidebar.requestAnswered)
+        outcome.yield(false)
+        await store.receive(\.sidebar.requestNotAnswered)
+        XCTAssertEqual(store.state.session?.answeringRequest, false)
+        XCTAssertEqual(store.state.session?.request?.id, request.id)
+
+        await store.send(\.session.requestAllowed)
+        await store.receive(\.sidebar.requestAnswered)
+        XCTAssertEqual(store.state.session?.answeringRequest, true)
+        outcome.yield(true)
+        await store.receive(\.sidebar.requestAnswerSent)
+        XCTAssertEqual(answers.value, 2)
+        XCTAssertNil(store.state.session?.request)
+        await store.skipInFlightEffects()
+    }
+
+    func testASessionOpenedFromASearchHitShowsWhatItsAgentAsks() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "first"))
+        try await daemon.client.send(session.id, "the migrations fail", .enqueue)
+        let message = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("the migrations fail") })
+        let asked = daemon.addRequest(session.id, .question, "Which of the two?")
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        await store.send(\.sidebar.selected, .search)
+        await store.receive(\.sidebar.delegate.openSearch)
+        await store.send(\.search.delegate.openSession, (id: session.id, event: message.id))
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+        XCTAssertEqual(store.state.session?.request?.id, asked.id)
+        await store.skipInFlightEffects()
+    }
+
+    func testAnEditSentFromTheSideChatOpensItsForkBesideTheOpenSession() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "first"))
+        try await daemon.client.send(session.id, "hello", .enqueue)
+        let store = try await withASideChat(daemon, of: session, question: "and why?")
+        let side = try XCTUnwrap(store.state.side?.session)
+        let asked = try XCTUnwrap(daemon.history(side.id).first { $0.kind == .userMessage("and why?") })
+
+        await store.send(\.side.task)
+        await store.receive(\.side.receivedAll, timeout: .seconds(1))
+        await store.send(\.side.editTapped, asked.id)
+        await store.send(\.side.binding.edited, "and how?")
+        await store.send(\.side.editSent)
+        await store.receive(\.side.delegate.openSession, timeout: .seconds(1))
+
+        XCTAssertEqual(store.state.session?.session.id, session.id, "the open session stays as it is")
+        XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+        let fork = try XCTUnwrap(store.state.side?.session)
+        XCTAssertNotEqual(fork.id, side.id)
+        XCTAssertEqual(fork.parentID, side.id)
+        XCTAssertTrue(fork.readOnly)
+        await store.skipInFlightEffects()
+    }
+
+    func testASideChatClosedAndOpenedFromTheSidebarShowsAtOnceAndIsWatchedFromItsLastEvent() async throws {
+        let first = Session(id: "side-kept-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "side-kept-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+        let history = [
+            event("s1", .userMessage("why?")), event("s2", .turnStarted), event("s3", .assistantMessage("because")),
+        ]
+        let asked = LockIsolated<[String?]>([])
+        let store = store([first, side], LockIsolated([side.id: history]), asked: asked, beside: side)
+
+        await store.send(\.side.task)
+        await store.receive(\.side.receivedAll, timeout: .seconds(1))
+        XCTAssertEqual(store.state.side?.items.map(\.id), ["s1", "s3"])
+
+        await store.send(.side(.dismiss))
+        XCTAssertNil(store.state.side)
+
+        await store.send(\.sidebar.selected, .session(side.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, side.id)
+        XCTAssertEqual(store.state.session?.historyLoaded, true)
+        XCTAssertEqual(store.state.session?.items.map(\.id), ["s1", "s3"])
+
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        XCTAssertEqual(asked.value, [nil, "s3"])
+        await store.skipInFlightEffects()
+    }
+
+    func testASideChatReplacedByAnotherKeepsTheImageInItsBox() async throws {
+        let first = Session(id: "replaced-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "replaced-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+        var next = Session(id: "replaced-next", name: "next", backend: .scripted, workingDirectory: "/work")
+        next.parentID = side.id
+        next.readOnly = true
+        let image = DraftImage(
+            id: "i1", name: "shot.png", image: ImageAttachment(mediaType: "image/png", data: Data([1])))
+        var beside = SessionFeature.State(session: side)
+        beside.beside = true
+        beside.images = [image]
+        var state = AppFeature.State()
+        state.sidebar.sessions = [first, side, next]
+        state.sidebar.selection = .session(first.id)
+        state.session = SessionFeature.State(session: first)
+        state.side = beside
+        let listed = [first, side, next]
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon.projects = { [] }
+            $0.daemon.sessions = { _ in listed }
+            $0.daemon.inbox = { Inbox() }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.columnFocused(.side))
+        await store.send(\.side.delegate.openSide, next)
+        await store.receive(\.sidebar.loaded)
+        XCTAssertEqual(store.state.side?.session.id, next.id)
+        XCTAssertEqual(store.state.side?.images, [])
+        XCTAssertEqual(store.state.focusedColumn, .side, "the person stays in the column they were in")
+        XCTAssertEqual(store.state.side?.takesShortcuts, true)
+
+        await store.send(\.sidebar.selected, .session(side.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, side.id)
+        XCTAssertEqual(store.state.session?.images.map(\.id), [image.id])
+        await store.skipInFlightEffects()
+    }
+
+    func testClosingTheSideChatFromItsColumnPutsTheCaretInTheSessionsBox() async throws {
+        let first = Session(id: "caret-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "caret-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+
+        // From the side column, the box of the session left takes it.
+        let inSide = besideEachOther(first, side, stopped: LockIsolated([]))
+        let before = inSide.state.session?.boxFocus
+        await inSide.send(.columnFocused(.side))
+        await inSide.send(.side(.dismiss))
+        XCTAssertNil(inSide.state.side)
+        XCTAssertNotEqual(inSide.state.session?.boxFocus, before)
+
+        // From the main column, the caret is where the person left it.
+        let inMain = besideEachOther(first, side, stopped: LockIsolated([]))
+        await inMain.send(.side(.dismiss))
+        XCTAssertNil(inMain.state.side)
+        XCTAssertEqual(inMain.state.session?.boxFocus, before)
+    }
+
+    func testRewindFromTheMenuOpensThePickerOfTheColumnInUse() async throws {
+        let first = Session(id: "menu-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "menu-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+        let history = [event("m1", .userMessage("why?")), event("m2", .assistantMessage("because"))]
+        let store = store(
+            [first, side], LockIsolated([first.id: history, side.id: history]), asked: LockIsolated([]),
+            beside: side)
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        await store.send(\.side.task)
+        await store.receive(\.side.receivedAll, timeout: .seconds(1))
+
+        await store.send(.columnFocused(.side))
+        await store.send(.sessionCommand(.rewindPickerAsked))
+        await store.receive(\.side.rewindPickerAsked)
+        XCTAssertNotNil(store.state.side?.rewindPicker)
+        XCTAssertNil(store.state.session?.rewindPicker, "the open session's chat is left alone")
         await store.skipInFlightEffects()
     }
 

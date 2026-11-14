@@ -19,7 +19,7 @@ use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{Event, EventKind, PermissionKind, SessionRecord};
 use crate::mcp_client::McpClient;
-use crate::paths::inside;
+use crate::paths::{OutsideError, resolved_inside};
 use crate::runtime::{Runner, Turn, describe};
 use crate::{Compaction, Model};
 
@@ -88,6 +88,13 @@ impl ModelServer {
 const MAX_STEPS: usize = 32;
 /// A tool's output beyond this is cut, to keep the model's context small.
 const MAX_OUTPUT: usize = 16 * 1024;
+/// The most tool calls one reply may hold. A reply numbers its calls from
+/// 0, and room is made up to the number it gives, so a number past this is
+/// refused.
+const MOST_CALLS: usize = 64;
+/// The largest file `read_file` loads; a larger one is read a part at a
+/// time with a command.
+const LARGEST_READ: u64 = 8 * 1024 * 1024;
 /// Kept free of a file's lines for the notes after them: which lines they
 /// are, where to go on, and that a long line was cut.
 const LINES_NOTE_ROOM: usize = 256;
@@ -199,6 +206,16 @@ pub enum LocalModelError {
         "{model} at {url} wrote no summary of the conversation when asked to sum it up: it said nothing, or called tools instead. The conversation is as it was; ask again, and if it keeps happening, rewind to an earlier message to make room, or use a model that follows instructions more closely"
     )]
     NoSummary { url: String, model: String },
+
+    #[error(
+        "{model} at {url} numbered a tool call {index} in one reply, and a reply may hold {limit}, so the turn was stopped. That is most likely a fault in the model server and not something the model meant: check the server's log, then send the message again, or try another model"
+    )]
+    TooManyCalls {
+        url: String,
+        model: String,
+        index: usize,
+        limit: usize,
+    },
 
     #[error(transparent)]
     Agent(#[from] AgentError),
@@ -355,7 +372,13 @@ impl Runner for LocalModelRunner {
                 .reply(&turn, &request, &offered, budget, apps, None)
                 .await?;
             if reply.calls.is_empty() {
-                return Ok(());
+                // A message sent to steer the turn while this reply was on
+                // its way is in the history, and nothing has answered it:
+                // the model gets another go, with it.
+                if turn.take_steering().is_empty() {
+                    return Ok(());
+                }
+                continue;
             }
             for call in reply.calls {
                 calls += 1;
@@ -660,6 +683,14 @@ impl LocalModelRunner {
                     name,
                     arguments,
                 } => {
+                    if index >= MOST_CALLS {
+                        return Err(LocalModelError::TooManyCalls {
+                            url: request.url.clone(),
+                            model: request.model.clone(),
+                            index,
+                            limit: MOST_CALLS,
+                        });
+                    }
                     if calls.len() <= index {
                         calls.resize_with(index + 1, Call::default);
                     }
@@ -1088,6 +1119,10 @@ fn messages(
     let mut reply = Said::default();
     // Sent while the reply's calls ran, so after their results.
     let mut waiting: Vec<Value> = Vec::new();
+    // Sent to steer a turn while the reply it answers was on its way: the
+    // reply was logged after them but asked for before, so they follow it.
+    let mut steered: Vec<Value> = Vec::new();
+    let mut in_turn = false;
     for (index, event) in history.iter().enumerate() {
         match &event.kind {
             EventKind::UserMessage {
@@ -1101,18 +1136,29 @@ fn messages(
                     let noun = if count == 1 { "image" } else { "images" };
                     json!(format!("[{count} {noun} sent here earlier]\n{text}"))
                 };
-                waiting.push(json!({"role": "user", "content": content}));
+                let message = json!({"role": "user", "content": content});
+                if in_turn && reply.is_empty() {
+                    steered.push(message);
+                    continue;
+                }
+                waiting.push(message);
                 if reply.calls.is_empty() {
-                    reply.end(&mut messages, &mut waiting);
+                    reply.end_after(&mut messages, &mut waiting, &mut steered);
                 }
             }
             EventKind::AssistantMessage { text } => {
-                reply.end(&mut messages, &mut waiting);
+                reply.end_after(&mut messages, &mut waiting, &mut steered);
                 reply.text = Some(text.clone());
             }
             // A new reply, or a new turn, starts here.
-            EventKind::Usage { .. } | EventKind::TurnStarted | EventKind::TurnEnded { .. } => {
-                reply.end(&mut messages, &mut waiting);
+            EventKind::Usage { .. } => {
+                reply.end_after(&mut messages, &mut waiting, &mut steered);
+            }
+            EventKind::TurnStarted | EventKind::TurnEnded { .. } => {
+                reply.end_after(&mut messages, &mut waiting, &mut steered);
+                // A turn that ended with no reply leaves them where they were.
+                messages.append(&mut steered);
+                in_turn = matches!(event.kind, EventKind::TurnStarted);
             }
             EventKind::ToolStarted {
                 call_id,
@@ -1162,7 +1208,8 @@ fn messages(
             _ => {}
         }
     }
-    reply.end(&mut messages, &mut waiting);
+    reply.end_after(&mut messages, &mut waiting, &mut steered);
+    messages.append(&mut steered);
     messages
 }
 
@@ -1287,6 +1334,26 @@ struct Said {
 }
 
 impl Said {
+    fn is_empty(&self) -> bool {
+        self.text.is_none() && self.calls.is_empty()
+    }
+
+    /// As [`Said::end`], with the messages that steered this reply, if it
+    /// is one, going first among those that follow it.
+    fn end_after(
+        &mut self,
+        messages: &mut Vec<Value>,
+        waiting: &mut Vec<Value>,
+        steered: &mut Vec<Value>,
+    ) {
+        if !self.is_empty() && !steered.is_empty() {
+            let mut after = std::mem::take(steered);
+            after.append(waiting);
+            *waiting = after;
+        }
+        self.end(messages, waiting);
+    }
+
     /// Adds the reply, if there is one, and then the messages that waited
     /// for it. A call that never got a result, as when a restart cut it
     /// off, is given one: servers refuse a call without its result.
@@ -1453,7 +1520,7 @@ async fn run_tool(
                 {
                     shell(&root, env, &command, SHELL_TIMEOUT).await
                 } else {
-                    denied()
+                    refused(turn)
                 }
             }
         },
@@ -1463,13 +1530,9 @@ async fn run_tool(
                 path,
                 offset,
                 limit,
-            }) => match inside(&root, &path) {
-                None => outside(&path),
-                Some(target) if target.is_dir() => list(&target, &path).await,
-                Some(target) => match tokio::fs::read_to_string(&target).await {
-                    Ok(contents) => (true, lines(&contents, offset, limit)),
-                    Err(error) => (false, format!("Couldn't read {}: {error}", path.display())),
-                },
+            }) => match resolved_inside(&root, &path).await {
+                Err(error) => outside(&error),
+                Ok(target) => read(&target, &path, offset, limit).await,
             },
         },
         "list_folder" => match serde_json::from_str::<ListArguments>(arguments) {
@@ -1477,9 +1540,9 @@ async fn run_tool(
             Ok(ListArguments { path }) if path.as_os_str().is_empty() || path == Path::new(".") => {
                 list(&root, &path).await
             }
-            Ok(ListArguments { path }) => match inside(&root, &path) {
-                None => outside(&path),
-                Some(target) => list(&target, &path).await,
+            Ok(ListArguments { path }) => match resolved_inside(&root, &path).await {
+                Err(error) => outside(&error),
+                Ok(target) => list(&target, &path).await,
             },
         },
         "search_files" => match serde_json::from_str::<SearchArguments>(arguments) {
@@ -1487,9 +1550,9 @@ async fn run_tool(
             Ok(SearchArguments { text, .. }) if text.is_empty() => {
                 (false, "Give text to search for.".to_owned())
             }
-            Ok(SearchArguments { text, path }) => match folder(&root, &path) {
-                None => outside(&path),
-                Some(folder) => looked(move || search_files(&root, &folder, &text)).await,
+            Ok(SearchArguments { text, path }) => match folder(&root, &path).await {
+                Err(error) => outside(&error),
+                Ok(folder) => looked(move || search_files(&root, &folder, &text)).await,
             },
         },
         "find_files" => match serde_json::from_str::<FindArguments>(arguments) {
@@ -1497,32 +1560,32 @@ async fn run_tool(
             Ok(FindArguments { name, .. }) if name.is_empty() => {
                 (false, "Give name, part of the paths to find.".to_owned())
             }
-            Ok(FindArguments { name, path }) => match folder(&root, &path) {
-                None => outside(&path),
-                Some(folder) => looked(move || find_files(&root, &folder, &name)).await,
+            Ok(FindArguments { name, path }) => match folder(&root, &path).await {
+                Err(error) => outside(&error),
+                Ok(folder) => looked(move || find_files(&root, &folder, &name)).await,
             },
         },
         "write_file" => match serde_json::from_str::<WriteArguments>(arguments) {
             Err(error) => bad(error),
-            Ok(WriteArguments { path, contents }) => match inside(&root, &path) {
-                None => outside(&path),
-                Some(target) => {
+            Ok(WriteArguments { path, contents }) => match resolved_inside(&root, &path).await {
+                Err(error) => outside(&error),
+                Ok(target) => {
                     if turn
                         .ask(PermissionKind::Write, format!("Write {}", path.display()))
                         .await?
                     {
                         write(&target, &path, &contents).await
                     } else {
-                        denied()
+                        refused(turn)
                     }
                 }
             },
         },
         "edit_file" => match serde_json::from_str::<EditArguments>(arguments) {
             Err(error) => bad(error),
-            Ok(edit) => match inside(&root, &edit.path) {
-                None => outside(&edit.path),
-                Some(target) => {
+            Ok(edit) => match resolved_inside(&root, &edit.path).await {
+                Err(error) => outside(&error),
+                Ok(target) => {
                     if turn
                         .ask(
                             PermissionKind::Write,
@@ -1532,7 +1595,7 @@ async fn run_tool(
                     {
                         edited(&target, &edit).await
                     } else {
-                        denied()
+                        refused(turn)
                     }
                 }
             },
@@ -1779,6 +1842,40 @@ fn context_full(status: u16, body: &str) -> bool {
             || body.contains("too many"))
 }
 
+/// A file's lines, as [`lines`] gives them, or the names in a folder. A
+/// file over [`LARGEST_READ`] isn't loaded.
+async fn read(
+    target: &Path,
+    path: &Path,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> (bool, String) {
+    let couldnt =
+        |error: std::io::Error| (false, format!("Couldn't read {}: {error}", path.display()));
+    let data = match tokio::fs::metadata(target).await {
+        Ok(data) => data,
+        Err(error) => return couldnt(error),
+    };
+    if data.is_dir() {
+        return list(target, path).await;
+    }
+    if data.len() > LARGEST_READ {
+        return (
+            false,
+            format!(
+                "{} is {} MiB, and read_file reads files up to {} MiB. Use search_files to find lines in it, or shell with `head` or `sed -n` for a part of it.",
+                path.display(),
+                data.len() / (1024 * 1024),
+                LARGEST_READ / (1024 * 1024),
+            ),
+        );
+    }
+    match tokio::fs::read_to_string(target).await {
+        Ok(contents) => (true, lines(&contents, offset, limit)),
+        Err(error) => couldnt(error),
+    }
+}
+
 async fn write(target: &Path, path: &Path, contents: &str) -> (bool, String) {
     if let Some(parent) = target.parent()
         && let Err(error) = tokio::fs::create_dir_all(parent).await
@@ -1827,11 +1924,11 @@ async fn list(target: &Path, path: &Path) -> (bool, String) {
 
 /// The folder a search looks under: the project folder when `path` is
 /// empty or `.`, else `path` in it.
-fn folder(root: &Path, path: &Path) -> Option<PathBuf> {
+async fn folder(root: &Path, path: &Path) -> Result<PathBuf, OutsideError> {
     if path.as_os_str().is_empty() || path == Path::new(".") {
-        Some(root.to_owned())
+        Ok(root.to_owned())
     } else {
-        inside(root, path)
+        resolved_inside(root, path).await
     }
 }
 
@@ -1980,18 +2077,22 @@ fn answer(found: Vec<String>, all: bool, none: &str) -> (bool, String) {
     (true, truncated(text))
 }
 
-fn denied() -> (bool, String) {
-    (false, "The person denied this.".into())
+/// What the model reads when a write or a command didn't go ahead: the
+/// person said no, or the session is a side chat, which is refused without
+/// the person being asked.
+fn refused(turn: &Turn) -> (bool, String) {
+    if turn.record().read_only {
+        (
+            false,
+            "This is a side chat, which only reads: it can't change files or run commands, and the person wasn't asked. Say what you would change, and the person can do it from the session this chat is beside.".into(),
+        )
+    } else {
+        (false, "The person denied this.".into())
+    }
 }
 
-fn outside(path: &Path) -> (bool, String) {
-    (
-        false,
-        format!(
-            "{} is outside the project folder; use a relative path without `..`.",
-            path.display()
-        ),
-    )
+fn outside(error: &OutsideError) -> (bool, String) {
+    (false, describe(error))
 }
 
 fn truncated(mut text: String) -> String {
@@ -2076,6 +2177,17 @@ mod tests {
         listing: Value,
         replies: Vec<(u16, String)>,
     ) -> FakeServer {
+        serve_held(listener, listing, replies, None)
+    }
+
+    /// Like [`serve_listing`]; with `held`, each chat request is kept and
+    /// then waits for a `notify_one` before its reply is sent.
+    fn serve_held(
+        listener: TcpListener,
+        listing: Value,
+        replies: Vec<(u16, String)>,
+        held: Option<Arc<tokio::sync::Notify>>,
+    ) -> FakeServer {
         let port = listener.local_addr().expect("an address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let kept = requests.clone();
@@ -2121,6 +2233,9 @@ mod tests {
                 };
                 if let Ok(request) = serde_json::from_slice(&request) {
                     kept.lock().expect("not poisoned").push(request);
+                }
+                if let Some(held) = &held {
+                    held.notified().await;
                 }
                 let response = format!(
                     "HTTP/1.1 {status} X\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -2220,6 +2335,188 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests[0]["model"], "qwen3");
         assert_eq!(said(&requests[0]), ["user: hi"]);
+    }
+
+    /// Waits until the server has been asked for `count` replies.
+    async fn asked(server: &FakeServer, count: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while server.requests().len() < count {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the model was asked {} times, not {count}",
+                server.requests().len()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_steer_sent_while_a_reply_without_calls_is_on_its_way_is_answered_in_the_same_turn() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let held = Arc::new(tokio::sync::Notify::new());
+        let server = serve_held(
+            listener,
+            json!({"object": "list", "data": []}),
+            vec![
+                (200, sse(&[text("First.")])),
+                (200, sse(&[text("Second.")])),
+            ],
+            Some(held.clone()),
+        );
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "hi").await;
+
+        asked(&server, 1).await;
+        fixture
+            .agent
+            .send(&id, "and this".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        held.notify_one();
+        asked(&server, 2).await;
+        held.notify_one();
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let count = |found: fn(&EventKind) -> bool| {
+            events.iter().filter(|event| found(&event.kind)).count()
+        };
+        assert_eq!(count(|kind| matches!(kind, EventKind::TurnStarted)), 1);
+        assert_eq!(
+            count(|kind| matches!(kind, EventKind::AssistantMessage { .. })),
+            2
+        );
+        assert_eq!(
+            said(&server.requests()[1]),
+            ["user: hi", "assistant: First.", "user: and this"]
+        );
+    }
+
+    /// The results of the tools the model called, as it was sent them.
+    fn results(request: &Value) -> Vec<String> {
+        said(request)
+            .into_iter()
+            .filter_map(|said| said.strip_prefix("tool: ").map(str::to_owned))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_link_out_of_the_project_is_neither_read_nor_written_through() {
+        let server = serve(vec![
+            (
+                200,
+                sse(&call("c1", "read_file", json!({"path": "out/secret.txt"}))),
+            ),
+            (
+                200,
+                sse(&call(
+                    "c2",
+                    "write_file",
+                    json!({"path": "out/new.txt", "contents": "mine"}),
+                )),
+            ),
+            (
+                200,
+                sse(&call(
+                    "c3",
+                    "search_files",
+                    json!({"text": "hunter2", "path": "out"}),
+                )),
+            ),
+            (200, sse(&[text("Okay.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let elsewhere = tempfile::tempdir().expect("a temporary folder");
+        std::fs::write(elsewhere.path().join("secret.txt"), "hunter2").expect("a file");
+        std::os::unix::fs::symlink(elsewhere.path(), fixture.work.path().join("out"))
+            .expect("a link");
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "read it").await;
+
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let failed = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::ToolCompleted { success: false, .. }))
+            .count();
+        assert_eq!(failed, 3);
+        assert!(permission_request(&events).is_none());
+        assert!(!elsewhere.path().join("new.txt").exists());
+        let results = results(&server.requests()[3]);
+        assert_eq!(results.len(), 3);
+        assert!(
+            results.iter().all(|result| !result.contains("hunter2")),
+            "{results:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_to_somewhere_in_the_project_is_read() {
+        let server = serve(vec![
+            (
+                200,
+                sse(&call("c1", "read_file", json!({"path": "alias/a.txt"}))),
+            ),
+            (200, sse(&[text("Seen.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let work = fixture.work.path();
+        std::fs::create_dir_all(work.join("src")).expect("a folder");
+        std::fs::write(work.join("src/a.txt"), "one").expect("a file");
+        std::os::unix::fs::symlink(work.join("src"), work.join("alias")).expect("a link");
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "read it").await;
+
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let results = results(&server.requests()[1]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].trim_end(), "one");
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_limit_is_not_read() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let target = folder.path().join("huge.bin");
+        // Sparse: it takes no room on disk.
+        std::fs::File::create(&target)
+            .and_then(|file| file.set_len(LARGEST_READ + 1))
+            .expect("a large file");
+        let small = folder.path().join("small.txt");
+        std::fs::write(&small, "one").expect("a file");
+
+        let (read_huge, _) = read(&target, Path::new("huge.bin"), None, None).await;
+        let (read_small, contents) = read(&small, Path::new("small.txt"), None, None).await;
+
+        assert!(!read_huge);
+        assert!(read_small);
+        assert_eq!(contents.trim_end(), "one");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_numbers_a_tool_call_far_past_the_limit_fails_the_turn() {
+        let huge = json!({"choices": [{"delta": {"tool_calls": [
+            {"index": 4_000_000_000_u64, "id": "c1", "function": {"name": "list_folder", "arguments": "{}"}},
+        ]}}]});
+        let server = serve(vec![(200, sse(&[huge]))]).await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "hi").await;
+
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Failed { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::ToolStarted { .. }))
+        );
     }
 
     /// The text of every message sent to the model, the system's aside.
@@ -2983,18 +3280,6 @@ mod tests {
     }
 
     #[test]
-    fn paths_outside_the_folder_are_refused() {
-        let root = Path::new("/work");
-        assert_eq!(
-            inside(root, Path::new("a/b")),
-            Some(PathBuf::from("/work/a/b"))
-        );
-        assert_eq!(inside(root, Path::new("../a")), None);
-        assert_eq!(inside(root, Path::new("/etc/passwd")), None);
-        assert_eq!(inside(root, Path::new("")), None);
-    }
-
-    #[test]
     fn a_tool_call_cut_off_before_its_result_still_gets_one() {
         let history = [
             EventKind::UserMessage {
@@ -3332,11 +3617,6 @@ mod tests {
         // Nothing found isn't a failure.
         let (ok, _) = search_files(root, root, "absent");
         assert!(ok);
-        assert_eq!(folder_of(root, "../up"), None);
-    }
-
-    fn folder_of(root: &Path, path: &str) -> Option<PathBuf> {
-        folder(root, Path::new(path))
     }
 
     #[test]

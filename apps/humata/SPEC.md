@@ -1414,8 +1414,9 @@ The owner, 2026-11-13: an empty fork, and a read-only chat on the side.
   approval mode, for every backend; it always asks about the rest, so no
   judge clears anything; Claude Code also runs without Bash, Edit, Write
   and NotebookEdit, and Copilot without its shell and edit tools. Its
-  instructions say so, and its forks are held to the same. Other servers'
-  tools still ask the person
+  instructions say so, and its forks are held to the same. A Claude
+  side chat is given only Humata's MCP server, not the person's other
+  servers; on other backends those servers' tools still ask the person
 - [x] `/side` and Side Chat are offered only when the session's host says
   it holds side chats to reading (`ChatCommands.side`); the menus learn
   that when the / list is first opened in the chat. A host from before
@@ -1721,6 +1722,39 @@ Haiku gathered, Fable found and judged: 29 kept, 4 deferred, 3 dropped.
   or runs a command; search catches up correctly and counts less
 - Deferred: a second SQLite read connection, the history from an event
   id, no-project chats' agent-session setting (they keep Ask)
+
+### Review after v0.8.0
+
+Fable found and judged: 33 kept, 4 deferred, 1 dropped.
+
+- [x] A request is answered once however often Allow, Decline or Move is
+  pressed, from the strip or the inbox, and the strip shows that it is
+  being answered; a start allowed twice together starts one session
+- [x] Every fork of a read-only session is read-only and chat-only, and a
+  side chat asks for no move; the menus offer only read-only forks there
+- [x] An agent writes to other sessions at most 20 times until the person
+  writes to it; a started session's name is at most 80 characters and a
+  request at most 32 KiB
+- [x] The MCP server runs a changing tool only for a session it knows is
+  not read-only; Humata's notes wait for the person's own next message
+- [x] `read_session` keeps the last reply whole and a cut message names
+  the event `read_turn` opens it at; search catches up after a rewind
+- [x] Stop drops a steer not yet taken; a message during a rewind is
+  refused; a rewind that can't be undone or stopped part way says so
+- [x] File tools stay inside the session's copy through symlinks and read
+  at most 8 MiB; a local model takes at most 64 tool calls a turn and a
+  steer lands after the reply it interrupted; MCP calls time out and are
+  cancelled
+- [x] `/side` takes pastes; other commands with pastes or images stay in
+  the box; Tab completes a command in the / list; a host that couldn't
+  be asked for its commands is asked again
+- [x] Rewind…, Undo Rewind and Compact are in the Session menu; ⌘. stops
+  only the column in use; the box takes the caret after the side chat,
+  the rewind picker or a queued edit closes
+- [x] Closing a live terminal tab asks first; Undo with nothing to undo
+  says so; settings that couldn't be read are not saved over and offer
+  Try Again; saving a project shows its progress
+- Deferred: D12–D14, U8
 
 ### Milestone AC: agent access
 

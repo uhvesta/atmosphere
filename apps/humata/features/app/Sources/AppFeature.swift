@@ -84,9 +84,65 @@ package struct AppFeature {
         /// written to it for when it's opened from the sidebar, unless
         /// it's gone for good; the open session takes the shortcuts again.
         mutating func closeSide(keeping: Bool = true) {
-            if keeping, let side { left[side.session.id] = side.left }
-            side = nil
+            // The person was writing in the column that goes, so the open
+            // session's box takes the caret.
+            if side != nil, focusedColumn == .side { session?.boxFocus += 1 }
+            putAwaySide(keeping: keeping)
             focus(.main)
+        }
+
+        /// Takes the side chat out of its column. Kept, what it showed,
+        /// what was being written to it and its history wait for it to
+        /// open again, as any session's do; otherwise nothing of it stays.
+        private mutating func putAwaySide(keeping: Bool) {
+            guard let side else { return }
+            if keeping {
+                left[side.session.id] = side.left
+                histories.keep(side.history, of: side.session.id)
+            } else {
+                histories.forget(side.session.id)
+            }
+            self.side = nil
+        }
+
+        /// Shows `session` beside the open one, in the place of a side chat
+        /// already there, which is kept as any closed one is. The person
+        /// stays in the column they were in.
+        mutating func showBeside(_ session: Session) {
+            guard self.session != nil else { return }
+            if sidebar.sessions[id: session.id] == nil { sidebar.sessions.append(session) }
+            let column = focusedColumn
+            putAwaySide(keeping: true)
+            side = opened(session, beside: true)
+            // The shortcuts stay where the person is until they go into
+            // the new chat, which the window says when they do.
+            focus(column)
+        }
+
+        /// `session` as it opens: with what its agent asked and waits on,
+        /// from the inbox, so its strip is there from the start.
+        func opened(_ session: Session, highlighted: String? = nil, beside: Bool = false) -> SessionFeature.State {
+            var open = SessionFeature.State(session: session, highlighted: highlighted)
+            if beside { open.beside = true }
+            open.request = request(of: session.id)
+            return open
+        }
+
+        /// What `session` asked and waits on, from the sidebar's inbox,
+        /// which leaves out the requests answered here.
+        func request(of session: Session.ID) -> AgentRequest? {
+            sidebar.inbox.lazy.compactMap(\.request).first { $0.sessionID == session }
+        }
+
+        /// Marks the columns showing request `id` as being answered or not.
+        /// One being answered keeps its strip, busy, until the answer lands.
+        mutating func answering(_ id: AgentRequest.ID, _ answering: Bool) {
+            if session?.request?.id == id, session?.answeringRequest != answering {
+                session?.answeringRequest = answering
+            }
+            if side?.request?.id == id, side?.answeringRequest != answering {
+                side?.answeringRequest = answering
+            }
         }
 
         /// Puts away the open board, hosts and search, to show again as they
@@ -311,7 +367,7 @@ package struct AppFeature {
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
 
-            case .sidebar(.loaded(_, let sessions, let inbox, _)):
+            case .sidebar(.loaded(_, let sessions, _, _)):
                 // Every two seconds: set only what changed, so the open
                 // session isn't drawn again for nothing.
                 if let open = state.session {
@@ -331,8 +387,13 @@ package struct AppFeature {
                             state.keepTab()
                         }
                     }
-                    let request = Self.request(of: open.session.id, in: inbox)
-                    if request != open.request { state.session?.request = request }
+                    // From the sidebar's inbox, which this follows and which
+                    // leaves out what was answered here. A request being
+                    // answered keeps its strip until the answer lands.
+                    if !open.answeringRequest {
+                        let request = state.request(of: open.session.id)
+                        if request != open.request { state.session?.request = request }
+                    }
                 }
                 if let beside = state.side {
                     let listed = sessions.first { $0.id == beside.session.id }
@@ -346,8 +407,10 @@ package struct AppFeature {
                             }
                             if listed.host != beside.session.host { state.side?.session.host = listed.host }
                         }
-                        let request = Self.request(of: beside.session.id, in: inbox)
-                        if request != beside.request { state.side?.request = request }
+                        if !beside.answeringRequest {
+                            let request = state.request(of: beside.session.id)
+                            if request != beside.request { state.side?.request = request }
+                        }
                     }
                 }
                 let shown = show(&state)
@@ -404,14 +467,12 @@ package struct AppFeature {
             case .sidebar(.delegate(.openSession(let session))):
                 state.putAway()
                 guard state.session?.session.id != session.id else { return .none }
-                var open = SessionFeature.State(session: session)
-                open.request = Self.request(of: session.id, in: state.sidebar.inbox)
-                state.show(open)
+                state.show(state.opened(session))
                 return .none
 
             case .sidebar(.delegate(.openChanges(let session))):
                 state.putAway()
-                if state.session?.session.id != session.id { state.show(SessionFeature.State(session: session)) }
+                if state.session?.session.id != session.id { state.show(state.opened(session)) }
                 return .send(.session(.presented(.tabPicked(.review))))
 
             case .sidebar(.delegate(.openBoard(let project))):
@@ -444,7 +505,7 @@ package struct AppFeature {
                 guard let session = state.sidebar.sessions[id: id] else { return .none }
                 state.sidebar.selection = .session(id)
                 state.putAway()
-                state.show(SessionFeature.State(session: session, highlighted: event))
+                state.show(state.opened(session, highlighted: event))
                 return .none
 
             case .search(.presented(.delegate(.openItem(let projectID, let itemID)))),
@@ -480,14 +541,15 @@ package struct AppFeature {
                 // Beside the open session, which stays as it is; a side
                 // chat of the side chat takes its place.
                 guard state.session != nil else { return .none }
-                if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
-                var side = SessionFeature.State(session: session)
-                side.beside = true
-                side.request = Self.request(of: session.id, in: state.sidebar.inbox)
-                state.side = side
-                // The shortcuts stay where the person is until they go
-                // into the new chat, which the window says when they do.
-                state.focus(state.focusedColumn)
+                state.showBeside(session)
+                return .send(.sidebar(.refresh))
+
+            case .side(.presented(.delegate(.openSession(let session)))) where session.readOnly:
+                // What a side chat makes reads only, as it does, so it
+                // opens in the side chat's place and the open session
+                // stays as it is.
+                guard state.session != nil else { return .none }
+                state.showBeside(session)
                 return .send(.sidebar(.refresh))
 
             case .side(.dismiss):
@@ -514,12 +576,33 @@ package struct AppFeature {
                 if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
                 state.sidebar.selection = .session(session.id)
                 state.putAway()
-                state.show(SessionFeature.State(session: session))
+                state.show(state.opened(session))
                 return .send(.sidebar(.refresh))
 
             case .session(.presented(.delegate(.answerRequest(let id, let answer)))),
                 .side(.presented(.delegate(.answerRequest(let id, let answer)))):
                 return .send(.sidebar(.requestAnswered(id, answer)))
+
+            case .sidebar(.requestAnswered(let id, _)),
+                .sidebar(.destination(.presented(.alert(.closeItem(let id, _, _))))):
+                // After the sidebar, which holds the request as answered
+                // once the answer is on its way: one it asks about first,
+                // as closing an item with sessions, isn't yet.
+                state.answering(id, state.sidebar.answered.contains(id))
+                return .none
+
+            case .sidebar(.requestAnswerSent(let id)):
+                // The answer landed: the strip goes, where it was kept up.
+                state.answering(id, false)
+                if state.session?.request?.id == id { state.session?.request = nil }
+                if state.side?.request?.id == id { state.side?.request = nil }
+                return .none
+
+            case .sidebar(.requestNotAnswered(let id)):
+                // The request is still the agent's to wait on, so the
+                // strip can be answered again.
+                state.answering(id, false)
+                return .none
 
             case .session(.presented(.delegate(.send(let outgoing)))),
                 .side(.presented(.delegate(.send(let outgoing)))):
@@ -599,11 +682,6 @@ package struct AppFeature {
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
         .ifLet(\.$search, action: \.search) { SearchFeature() }
-    }
-
-    /// What `session` asked and waits on, from the inbox.
-    private static func request(of session: Session.ID, in inbox: [InboxEntry]) -> AgentRequest? {
-        inbox.lazy.compactMap(\.request).first { $0.sessionID == session }
     }
 
     /// Shows the link opened from outside, once the sidebar has read it.

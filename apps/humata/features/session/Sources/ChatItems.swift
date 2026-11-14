@@ -228,6 +228,8 @@ struct Chat: Equatable, Sendable {
     /// The usage reported in the turn so far.
     private var turn: [SessionEvent] = []
     private var rewound: Int?
+    /// Whether the last rewind can still be undone.
+    var canUndoRewind: Bool { rewound != nil }
 
     /// Whether a turn has started and not yet ended.
     private(set) var working = false

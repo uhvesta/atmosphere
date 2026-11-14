@@ -236,16 +236,31 @@ package struct SessionView: View {
     private func actions(names: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Menu {
-                Button("Fork With the Code") { store.send(.forkTapped(before: nil, chatOnly: false)) }
-                Button("Fork the Chat Only") { store.send(.forkTapped(before: nil, chatOnly: true)) }
+                // What's made from a read-only session reads only too, so
+                // none of it is offered a copy of the code.
+                let readOnly = store.session.readOnly
+                if readOnly {
+                    Button("Fork, Read-Only") { store.send(.forkTapped(before: nil, chatOnly: true)) }
+                        .help("Another read-only chat with the chat so far: it can't change files either")
+                } else {
+                    Button("Fork With the Code") { store.send(.forkTapped(before: nil, chatOnly: false)) }
+                    Button("Fork the Chat Only") { store.send(.forkTapped(before: nil, chatOnly: true)) }
+                }
                 if !store.session.archived {
                     Divider()
-                    Button("New Chat Here") { store.send(.childTapped(.empty(ownCopy: false), message: "")) }
-                        .help("An empty chat under this one, in the same copy of the code")
-                    Button("New Chat Here With Its Own Copy") {
-                        store.send(.childTapped(.empty(ownCopy: true), message: ""))
+                    if readOnly {
+                        Button("New Read-Only Chat Here") {
+                            store.send(.childTapped(.empty(ownCopy: false), message: ""))
+                        }
+                        .help("An empty chat under this one, read-only as this one is")
+                    } else {
+                        Button("New Chat Here") { store.send(.childTapped(.empty(ownCopy: false), message: "")) }
+                            .help("An empty chat under this one, in the same copy of the code")
+                        Button("New Chat Here With Its Own Copy") {
+                            store.send(.childTapped(.empty(ownCopy: true), message: ""))
+                        }
+                        .help("An empty chat under this one, in its own copy of the code as it was last saved")
                     }
-                    .help("An empty chat under this one, in its own copy of the code as it was last saved")
                     // Only once the session's host has said it holds one
                     // to reading; it's asked as the chat opens.
                     if store.chatCommands?.side == true {
@@ -567,9 +582,14 @@ private struct ChatList: View {
                 .foregroundStyle(.secondary)
             Text(found ? "What the search found is highlighted." : "Finding what the search found…")
             Spacer()
-            Button("Fork from Here") { store.send(.forkFromHighlightTapped) }
-                .disabled(!found)
-                .help("A new session with this chat up to the end of that turn, and the code as it was then.")
+            Button(store.session.readOnly ? "Fork from Here, Read-Only" : "Fork from Here") {
+                store.send(.forkFromHighlightTapped)
+            }
+            .disabled(!found)
+            .help(
+                store.session.readOnly
+                    ? "A new read-only chat with this chat up to the end of that turn."
+                    : "A new session with this chat up to the end of that turn, and the code as it was then.")
             Button("Done") { store.send(.highlightDismissed) }
         }
         .padding(.horizontal, 12)
@@ -645,6 +665,7 @@ private struct ChatRows: View, Equatable {
             shows.editing = store.editing == id
             shows.rewinding = store.rewinding
             shows.archived = store.session.archived
+            shows.readOnly = store.session.readOnly
             for name in images { shows.thumbnails[name] = store.thumbnails[name] }
         case .thinking(let id, _):
             shows.thinkingOpen = store.expandedThinking.contains(id)
@@ -665,7 +686,11 @@ private struct ChatRows: View, Equatable {
         case .compacted:
             shows.rewinding = store.rewinding
             shows.archived = store.session.archived
-        case .reply, .permission, .stopped, .notice, .cost, .fromSession:
+        case .fromSession:
+            shows.rewinding = store.rewinding
+            shows.archived = store.session.archived
+            shows.readOnly = store.session.readOnly
+        case .reply, .permission, .stopped, .notice, .cost:
             break
         }
         return shows
@@ -859,6 +884,9 @@ private struct ChatRow: View, Equatable {
         var proposalFailure: String?
         var rewinding = false
         var archived = false
+        /// The session only reads, so its forks do too and get no copy
+        /// of the code.
+        var readOnly = false
         /// The failure offers Try Again.
         var retryable = false
         /// The subagent the tool call started.
@@ -909,18 +937,19 @@ private struct ChatRow: View, Equatable {
                     Button("Rewind to Before This…") { store.send(.rewindTapped(id)) }
                         .disabled(shows.rewinding || shows.archived)
                     Divider()
-                    Button("Fork Before This With the Code") {
-                        store.send(.forkTapped(before: id, chatOnly: false))
-                    }
-                    .disabled(store.forking)
-                    Button("Fork Before This, Chat Only") {
-                        store.send(.forkTapped(before: id, chatOnly: true))
-                    }
-                    .disabled(store.forking)
+                    forkEntries(before: id)
                 }
             }
-        case .fromSession(_, let sender):
+        case .fromSession(let id, let sender):
+            // Another agent's words: a point to rewind to or fork from, as
+            // the person's own message is, but not theirs to edit.
             SentBySession(sender: sender, select: select)
+                .contextMenu {
+                    Button("Rewind to Before This…") { store.send(.rewindTapped(id)) }
+                        .disabled(shows.rewinding || shows.archived)
+                    Divider()
+                    forkEntries(before: id)
+                }
         case .reply(_, let text):
             if let part, part.upperBound <= text.endIndex {
                 MarkdownText(String(text[part]))
@@ -1008,11 +1037,36 @@ private struct ChatRow: View, Equatable {
                     .textSelection(.enabled)
                 if shows.retryable {
                     Spacer()
+                    if store.retrying {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Sending your message again")
+                    }
                     Button("Try Again") { store.send(.retryTapped) }
                         .disabled(store.retrying)
                         .help("Send your last message again")
                 }
             }
+        }
+    }
+
+    /// The forks from before the message `id`. From a read-only session
+    /// only the one that reads only, as any fork of it does: a copy of
+    /// the code would be one it could never write to.
+    @ViewBuilder
+    private func forkEntries(before id: String) -> some View {
+        if shows.readOnly {
+            Button("Fork Before This, Read-Only") { store.send(.forkTapped(before: id, chatOnly: true)) }
+                .disabled(store.forking)
+        } else {
+            Button("Fork Before This With the Code") {
+                store.send(.forkTapped(before: id, chatOnly: false))
+            }
+            .disabled(store.forking)
+            Button("Fork Before This, Chat Only") {
+                store.send(.forkTapped(before: id, chatOnly: true))
+            }
+            .disabled(store.forking)
         }
     }
 }
@@ -1052,7 +1106,7 @@ private struct MessageEditor: View {
                 .background(.fill.quaternary, in: .rect(cornerRadius: 10))
                 .accessibilityLabel("Edited message")
             HStack {
-                Text("Sending starts a fork from before this message; this session stays as it is.")
+                Text(caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1061,6 +1115,18 @@ private struct MessageEditor: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(store.forking || store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+        }
+    }
+
+    /// What sending does, which for a read-only chat isn't what it does
+    /// elsewhere.
+    private var caption: LocalizedStringKey {
+        if store.beside {
+            "Sending starts a read-only fork from before this message, which opens in this side chat’s place."
+        } else if store.session.readOnly {
+            "Sending starts a read-only fork from before this message; this chat stays as it is."
+        } else {
+            "Sending starts a fork from before this message; this session stays as it is."
         }
     }
 }
@@ -1675,9 +1741,11 @@ private struct WaitingStrip: View {
                 Label(LocalizedStringKey(request.text), systemImage: "checkmark.seal")
                     .textSelection(.enabled)
                 Spacer()
+                answeringLabel
                 Button("Open Changes") { store.send(.tabPicked(.review)) }
                 Button("Move to \(status.title)") { store.send(.moveApproved) }
                     .buttonStyle(.borderedProminent)
+                    .disabled(store.answeringRequest)
             }
         case .startSession(let name):
             sessionRequest(
@@ -1706,10 +1774,37 @@ private struct WaitingStrip: View {
                     .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            answeringLabel
             Button("Decline") { store.send(.requestDeclined) }
+                .disabled(store.answeringRequest)
                 .help("Tell the agent it wasn’t allowed; to say why, decline it in the Inbox")
             Button("Allow") { store.send(.requestAllowed) }
                 .buttonStyle(.borderedProminent)
+                .disabled(store.answeringRequest)
+        }
+    }
+
+    /// While the request's answer is on its way to the agent: a spinner
+    /// and which answer, so the buttons, off till it lands, say why.
+    @ViewBuilder private var answeringLabel: some View {
+        if store.answeringRequest {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(answeringText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private var answeringText: LocalizedStringKey {
+        switch store.requestAnswer {
+        case .allowing?: "Allowing…"
+        case .declining?: "Declining…"
+        case .moving?: "Moving…"
+        // Answered elsewhere, such as in the Inbox.
+        case nil: "Answering…"
         }
     }
 
@@ -1827,7 +1922,8 @@ private struct SessionComposer: View {
         let _ = SessionBodyRuns.ran(.composer)
         composer
             // The / list's arrows, Tab and Escape; Return picks through
-            // sending, which picks while the list shows.
+            // sending, which picks while the list shows, and Tab only
+            // completes the name.
             .onKeyPress(keys: [.upArrow, .downArrow, .tab, .escape]) { press in
                 // The /rewind picker's, when the keys come from the
                 // message's field and not its own.
@@ -1846,7 +1942,9 @@ private struct SessionComposer: View {
                 switch press.key {
                 case .upArrow: store.send(.slashMoved(by: -1))
                 case .downArrow: store.send(.slashMoved(by: 1))
-                case .tab: store.send(.sendTapped(.enqueue))
+                // Tab writes the name in the box; only Return carries a
+                // command out.
+                case .tab: store.send(.slashCompleted)
                 default: store.send(.slashClosed)
                 }
                 return .handled
@@ -1929,9 +2027,13 @@ private struct SessionComposer: View {
     private var prompt: Text { Text(store.isWorking ? "Queue a message, or steer" : "Message the agent") }
 
     private var sendButton: SendButton {
+        // The Session menu's Stop owns ⌘., and follows the column in use
+        // when two sessions show side by side; a key on each box's button
+        // too would stop whichever the system found first.
         SendButton(
             canSend: store.canSend,
-            canStop: store.isWorking,
+            canStop: store.canStop,
+            stopShortcut: false,
             send: { store.send(.sendTapped(.enqueue)) },
             stop: { store.send(.abortTapped) })
     }
@@ -1957,6 +2059,7 @@ private struct SessionComposer: View {
             }
         }
         .showingPlus(store.takesImages)
+        .focusing(store.boxFocus)
     }
 
     /// What sits over the field: the / list, the message's images and

@@ -404,4 +404,41 @@ final class SlashMenuTests: XCTestCase {
         await store.receive(\.slashLoaded, timeout: .seconds(1))
         XCTAssertEqual(shown(store), ["release"])
     }
+
+    func testTabWritesACommandTypedInFullInTheBoxAndOnlyReturnCarriesItOut() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/fork")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertEqual(store.state.slashChoices.first?.id, "fork")
+        await store.send(.slashCompleted)
+        await store.finish()
+        XCTAssertEqual(store.state.draft, "/fork ")
+        XCTAssertFalse(store.state.slashOpen)
+        XCTAssertFalse(store.state.forking)
+        XCTAssertEqual(daemon.sessions.count, 1, "nothing was forked")
+
+        await store.send(\.binding.draft, "/fork")
+        XCTAssertTrue(store.state.slashOpen)
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        XCTAssertEqual(daemon.sessions.count, 2)
+        XCTAssertEqual(daemon.sessions.last?.parentID, session.id)
+    }
+
+    func testTabWritesAHighlightedSkillsNameInTheBox() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setSkills(SkillList(skills: [FoundSkill(name: "release", origin: .claudeUser, hash: "a")]))
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/rel")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.slashCompleted)
+        XCTAssertEqual(store.state.draft, "/release ")
+        XCTAssertFalse(store.state.slashOpen)
+        XCTAssertEqual(store.state.sending, 0)
+    }
 }

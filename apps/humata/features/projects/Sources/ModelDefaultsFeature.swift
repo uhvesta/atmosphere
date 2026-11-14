@@ -37,6 +37,10 @@ package struct ModelDefaultsFeature {
     @ObservableState
     package struct State: Equatable {
         package var loading = true
+        /// Whether the stored defaults were read since Humata started.
+        /// Until they are there's nothing true to show or to change, so
+        /// the form isn't shown and no change is saved over what's stored.
+        package internal(set) var everRead = false
         package var projects: [Project] = []
         /// The project whose defaults are shown; nil for every project's.
         package var projectID: String?
@@ -111,8 +115,17 @@ package struct ModelDefaultsFeature {
     package var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
+            case .ownToggled, .backendPicked, .modelTyped, .effortPicked, .experimentalToggled:
+                // A change to defaults never read would save blanks over
+                // the stored ones.
+                guard state.everRead else { return .none }
+            default:
+                break
+            }
+            switch action {
             case .task:
                 state.loading = true
+                state.failure = nil
                 // A list asked for when the tab last showed stopped with it.
                 state.modelsLoading = false
                 let edits = state.edits
@@ -126,6 +139,7 @@ package struct ModelDefaultsFeature {
 
             case .loaded(let edits, let every, let projects):
                 state.loading = false
+                state.everRead = true
                 state.projects = projects.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 if state.projectID != nil, state.project == nil { state.projectID = nil }
                 // Read before a change made since, as when the tab shows
@@ -136,7 +150,9 @@ package struct ModelDefaultsFeature {
 
             case .failed(let message):
                 state.loading = false
-                state.failure = message
+                state.failure =
+                    "Couldn’t read the model defaults: \(message)\n\nCheck that Humata’s daemon is running, "
+                    + "then try again."
                 return .none
 
             case .projectPicked(let id):
@@ -281,11 +297,30 @@ package struct ModelDefaultsView: View {
         Group {
             if store.loading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !store.everRead {
+                unread
             } else {
                 form
             }
         }
         .task { await store.send(.task).finish() }
+    }
+
+    /// In place of the form while the stored defaults couldn't be read:
+    /// blank fields would read as the defaults, and a change to one would
+    /// save over them.
+    private var unread: some View {
+        VStack(spacing: 12) {
+            Label(
+                store.failure ?? "Couldn’t read the model defaults.", systemImage: "exclamationmark.triangle.fill"
+            )
+            .foregroundStyle(.red)
+            .multilineTextAlignment(.leading)
+            .textSelection(.enabled)
+            Button("Try Again") { store.send(.task) }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var form: some View {

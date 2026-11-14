@@ -57,7 +57,11 @@ const STDERR_KEPT: usize = 4096;
 const LEFT_OUT: &str = "AskUserQuestion,EnterPlanMode,ExitPlanMode,EnterWorktree,ExitWorktree,CronCreate,CronDelete,CronList";
 /// Left out of a read-only session too: every tool of the CLI's own that
 /// changes files or runs commands. A tool left out is refused whatever the
-/// person's own settings allow, for the session's subagents as well.
+/// person's own settings allow, for the session's subagents as well. That
+/// covers the CLI's own tools only: a tool of an MCP server the person set
+/// up could change things too, and their settings may always allow it, so
+/// a read-only session is started with Humata's server alone
+/// (`--strict-mcp-config`, in [`ClaudeRunner::command`]).
 const LEFT_OUT_READ_ONLY: &str = "Bash,Edit,MultiEdit,Write,NotebookEdit";
 
 /// What the model is told when the person denies a tool.
@@ -234,6 +238,12 @@ impl ClaudeRunner {
             // project's Agent Sessions setting allows: the daemon checks
             // that on each call, and refuses a read-only session there.
             command.args(["--allowedTools", "mcp__humata"]);
+        }
+        // A side chat loads no MCP server but the one given above: one of
+        // the person's own may have a tool that changes things and that
+        // their settings always allow, which would run here unasked.
+        if record.read_only {
+            command.arg("--strict-mcp-config");
         }
         // Over the person's own settings, for this session alone.
         if !record.plugins.is_empty() {
@@ -1007,6 +1017,53 @@ mod tests {
 
     fn result() -> Value {
         json!({"type": "result", "subtype": "success", "is_error": false, "result": "", "usage": {}})
+    }
+
+    /// The arguments the CLI is started with for a turn of a new session,
+    /// read-only or not, with Humata's MCP server set.
+    fn arguments(read_only: bool) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let runner = ClaudeRunner::new(ClaudeOptions {
+            program: "claude".into(),
+            state: dir.path().join("state"),
+            env: Env::new(Vec::new()),
+            mcp: Some(McpServer {
+                command: "humata".into(),
+                args: vec!["mcp".into()],
+                env: Vec::new(),
+            }),
+        });
+        let record: SessionRecord = serde_json::from_value(json!({
+            "id": "s",
+            "name": "test",
+            "working_directory": dir.path(),
+            "model": null,
+            "instructions": null,
+            "parent": null,
+            "read_only": read_only,
+        }))
+        .expect("a session's record");
+        let (command, _) = runner.command(&record, &mut Links::default());
+        command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn only_a_read_only_session_is_started_with_humatas_mcp_server_alone() {
+        let strict = "--strict-mcp-config".to_owned();
+        let side = arguments(true);
+        let writable = arguments(false);
+
+        assert!(side.contains(&strict), "{side:?}");
+        assert!(side.contains(&"--mcp-config".to_owned()), "{side:?}");
+        assert!(!writable.contains(&strict), "{writable:?}");
+        assert!(
+            writable.contains(&"--mcp-config".to_owned()),
+            "{writable:?}"
+        );
     }
 
     #[tokio::test]

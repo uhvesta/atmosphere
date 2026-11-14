@@ -6,7 +6,7 @@ import SwiftUI
 /// The terminals as tabs above the selected one, with + for another and ×
 /// to close one; the shell keeps running on its host when the view goes.
 package struct TerminalsView: View {
-    let store: StoreOf<TerminalsFeature>
+    @Bindable var store: StoreOf<TerminalsFeature>
 
     package init(store: StoreOf<TerminalsFeature>) {
         self.store = store
@@ -51,6 +51,7 @@ package struct TerminalsView: View {
                     .padding()
             }
         }
+        .alert($store.scope(state: \.confirm, action: \.confirm))
         .task { await store.send(.task).finish() }
     }
 
@@ -60,6 +61,7 @@ package struct TerminalsView: View {
                 ForEach(store.tabs) { tab in
                     TerminalTab(
                         title: tab.terminal.title, exited: tab.exited, selected: tab.id == store.selected,
+                        closing: store.closing.contains(tab.id),
                         select: { store.send(.selected(tab.id)) }, close: { store.send(.closeTapped(tab.id)) })
                 }
                 Button {
@@ -88,6 +90,8 @@ private struct TerminalTab: View {
     let title: String
     let exited: Bool
     let selected: Bool
+    /// Its host is ending its shell and hasn't answered yet.
+    let closing: Bool
     let select: () -> Void
     let close: () -> Void
 
@@ -98,13 +102,20 @@ private struct TerminalTab: View {
                     .foregroundStyle(exited ? .secondary : .primary)
             }
             .buttonStyle(.plain)
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .imageScale(.small)
+            if closing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help("Ending this terminal's shell…")
+                    .accessibilityLabel("Closing \(title)")
+            } else {
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.borderless)
+                .help(exited ? "Forget this terminal" : "End this terminal's shell…")
+                .accessibilityLabel("Close \(title)")
             }
-            .buttonStyle(.borderless)
-            .help(exited ? "Forget this terminal" : "End this terminal's shell")
-            .accessibilityLabel("Close \(title)")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)

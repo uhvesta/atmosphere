@@ -159,12 +159,20 @@ public struct SummaryMarker: View {
 public struct SendButton: View {
     let canSend: Bool
     let canStop: Bool
+    /// Whether Stop takes ⌘. itself. Not where something else owns the
+    /// key, such as a menu item that follows the column in use when two
+    /// chats show side by side.
+    let stopShortcut: Bool
     let send: () -> Void
     let stop: () -> Void
 
-    public init(canSend: Bool, canStop: Bool, send: @escaping () -> Void, stop: @escaping () -> Void) {
+    public init(
+        canSend: Bool, canStop: Bool, stopShortcut: Bool = true, send: @escaping () -> Void,
+        stop: @escaping () -> Void
+    ) {
         self.canSend = canSend
         self.canStop = canStop
+        self.stopShortcut = stopShortcut
         self.send = send
         self.stop = stop
     }
@@ -176,7 +184,7 @@ public struct SendButton: View {
             }
             .buttonStyle(RoundButtonStyle(prominent: true))
             .help("Stop the reply, keeping what it has written")
-            .keyboardShortcut(".", modifiers: .command)
+            .keyboardShortcut(stopShortcut ? KeyboardShortcut(".", modifiers: .command) : nil)
         } else {
             Button(action: send) {
                 Label("Send", systemImage: "arrow.up")
@@ -230,16 +238,21 @@ public struct MessageField: View {
     /// to read it doesn't cover the thread.
     @FocusState private var focused: Bool
     let token: String?
+    /// The field takes the caret again each time this changes, on the
+    /// Mac: after something that had it, such as a picker over the box,
+    /// has gone.
+    let focusing: Int
     let removeToken: () -> Void
     let submit: () -> Void
 
     public init(
-        text: Binding<String>, prompt: Text? = nil, token: String? = nil, removeToken: @escaping () -> Void = {},
-        submit: @escaping () -> Void
+        text: Binding<String>, prompt: Text? = nil, token: String? = nil, focusing: Int = 0,
+        removeToken: @escaping () -> Void = {}, submit: @escaping () -> Void
     ) {
         _text = text
         self.prompt = prompt
         self.token = token
+        self.focusing = focusing
         self.removeToken = removeToken
         self.submit = submit
     }
@@ -262,6 +275,11 @@ public struct MessageField: View {
                 .lineLimit(typeSize.isAccessibilitySize ? 1...3 : 1...8)
                 .focused($focused)
                 .onAppear {
+                    #if os(macOS)
+                        focused = true
+                    #endif
+                }
+                .onChange(of: focusing) {
                     #if os(macOS)
                         focused = true
                     #endif
@@ -427,6 +445,16 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     var plus: Plus
     private var token: String?
     private var removeToken: () -> Void = {}
+    private var focusing = 0
+
+    /// Puts the caret in the field each time `token` changes, on the Mac:
+    /// whoever took it away, such as a picker over the box, adds one when
+    /// it's done.
+    public func focusing(_ token: Int) -> Self {
+        var composer = self
+        composer.focusing = token
+        return composer
+    }
 
     /// Starts the field with the skill `name` picked for the message, as
     /// "/name"; deleting it calls `remove`.
@@ -476,8 +504,11 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             top
-            MessageField(text: $text, prompt: prompt, token: token, removeToken: removeToken, submit: submit)
-                .padding(.horizontal, 4)
+            MessageField(
+                text: $text, prompt: prompt, token: token, focusing: focusing, removeToken: removeToken,
+                submit: submit
+            )
+            .padding(.horizontal, 4)
             HStack(spacing: 8) {
                 switch plus {
                 case .menu:

@@ -244,7 +244,9 @@ impl Server {
     async fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
         let text = |field: &str| arguments[field].as_str().map(str::trim).map(str::to_owned);
         // A side chat isn't offered these; one called all the same is
-        // refused, and humatad refuses the two that reach it besides.
+        // refused, and humatad refuses the three that reach it besides.
+        // They go on only for a session known not to be one: two of them
+        // are answered here alone, so while humatad can't say, none is.
         if matches!(
             name,
             "propose_task"
@@ -252,11 +254,20 @@ impl Server {
                 | "request_move"
                 | "start_session"
                 | "send_message"
-        ) && self.session().await.is_ok_and(|session| session.read_only)
-        {
-            return Err(format!(
-                "this is a side chat, which only reads and answers questions, so it has no {name}. Say what you'd propose or hand over, and the person can do it from the session this chat is beside"
-            ));
+        ) {
+            match self.session().await {
+                Ok(session) if !session.read_only => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "this is a side chat, which only reads and answers questions, so it has no {name}. Say what you'd propose or hand over, and the person can do it from the session this chat is beside"
+                    ));
+                }
+                Err(why) => {
+                    return Err(format!(
+                        "Humata can't tell yet whether this session may use {name}, as humatad didn't say which session this is ({why}). Nothing was done; call {name} again in a moment"
+                    ));
+                }
+            }
         }
         match name {
             "board" => self.board(arguments["all"] == json!(true)).await,
@@ -392,9 +403,13 @@ impl Server {
                 ))
             }
             "ask_person" => {
+                let question = required(text("question"), "question")?;
+                // Checked here too: one kept on a host while the Mac is
+                // away would be refused only once it got there.
+                short_enough("question", &question)?;
                 let ask = pb::AskPerson {
                     session_id: self.session.clone(),
-                    text: required(text("question"), "question")?,
+                    text: question,
                     client_id: String::new(),
                 };
                 match self.ask(pb::request::Kind::AskPerson(ask)).await? {
@@ -419,6 +434,7 @@ impl Server {
                         )
                     })?;
                 let summary = required(text("summary"), "summary")?;
+                short_enough("summary", &summary)?;
                 // Left empty, the daemon takes this session's task, so the
                 // request needs nothing from it while the Mac is away.
                 let item_id = text("item_id").unwrap_or_default();
@@ -629,13 +645,14 @@ impl Server {
     }
 
     /// Where this session is, to offer only the tools that work there. When
-    /// humatad can't say, every tool is offered.
+    /// humatad can't say, it's offered what a side chat is: every tool that
+    /// reads or asks the person, and none that a side chat may not use.
     async fn offered(&self) -> Offered {
         let Ok(session) = self.session().await else {
             return Offered {
                 place: Place::Unknown,
                 sessions: true,
-                read_only: false,
+                read_only: true,
             };
         };
         Offered {
@@ -848,9 +865,11 @@ fn found(results: &pb::SearchResults) -> String {
 const TURN_TEXT: usize = 16 * 1024;
 /// The most of each tool's arguments or output in it.
 const TURN_PART: usize = 1500;
+const EARLIER_LEFT_OUT: &str = "(Earlier in the turn left out.)\n";
 
 /// Turn `turn` of `events` (counted from 1, as search hits count them) as
-/// an agent reads it. When it's too long, it starts at `event`, the hit.
+/// an agent reads it. When it's too long, it starts at `event`, the hit;
+/// with no event named, it keeps its end, where the reply is.
 fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<String> {
     use pb::session_event::Kind;
     let mut at = 1;
@@ -861,7 +880,7 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
         .filter(|found| found.parent_call_id.is_empty())
     {
         if at == turn
-            && let Some(part) = event_text(found, usize::MAX, TURN_PART)
+            && let Some(part) = event_text(found, usize::MAX, TURN_PART, None)
         {
             parts.push((found.id.clone(), part));
         }
@@ -877,16 +896,38 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
     }
     let total: usize = parts.iter().map(|(_, part)| part.len() + 1).sum();
     let from = if total > TURN_TEXT {
-        parts.iter().position(|(id, _)| id == event).unwrap_or(0)
+        match parts.iter().position(|(id, _)| id == event) {
+            Some(at) => at,
+            None => {
+                // As many of its last parts as fit under the line that
+                // says the start is left out, and at least the last.
+                let mut room = TURN_TEXT - EARLIER_LEFT_OUT.len();
+                let mut from = parts.len().saturating_sub(1);
+                for (index, (_, part)) in parts.iter().enumerate().rev() {
+                    if part.len() + 1 > room {
+                        break;
+                    }
+                    room -= part.len() + 1;
+                    from = index;
+                }
+                from
+            }
+        }
     } else {
         0
     };
     let mut text = String::new();
     if from > 0 {
-        text.push_str("(Earlier in the turn left out.)\n");
+        text.push_str(EARLIER_LEFT_OUT);
     }
-    for (_, part) in &parts[from..] {
+    for (index, (_, part)) in parts[from..].iter().enumerate() {
         if text.len() + part.len() > TURN_TEXT {
+            if index == 0 {
+                // Too long on its own: as much of it as fits.
+                text.push_str(&cut(part, TURN_TEXT));
+                text.push('\n');
+                continue;
+            }
             text.push_str("(The rest of the turn left out.)\n");
             break;
         }
@@ -900,26 +941,33 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
 }
 
 /// What `event` said or did, as an agent reads it: a message cut to
-/// `message` bytes, a tool's arguments or output to `tool`. None for
-/// events that say nothing.
-fn event_text(event: &pb::SessionEvent, message: usize, tool: usize) -> Option<String> {
+/// `message` bytes, a tool's arguments or output to `tool`. A cut message
+/// says how read_turn reads the rest when `turn`, the turn it is in, is
+/// given. None for events that say nothing.
+fn event_text(
+    event: &pb::SessionEvent,
+    message: usize,
+    tool: usize,
+    turn: Option<u32>,
+) -> Option<String> {
     use pb::session_event::Kind;
+    let said = |text: &str| match turn {
+        Some(turn) if text.len() > message => format!(
+            "{} Read all of this message with read_turn: turn {turn}, event_id {:?}.",
+            cut(text, message),
+            event.id
+        ),
+        _ => cut(text, message),
+    };
     match &event.kind {
         Some(Kind::UserMessage(sent)) => Some(match crate::sender::sender(&sent.text) {
-            Some(from) => format!(
-                "Session {:?} ({}): {}",
-                from.name,
-                from.id,
-                cut(from.text, message)
-            ),
+            Some(from) => format!("Session {:?} ({}): {}", from.name, from.id, said(from.text)),
             None => match crate::sender::notice(&sent.text) {
-                Some(told) => format!("Humata: {}", cut(told, message)),
-                None => format!("The person: {}", cut(&sent.text, message)),
+                Some(told) => format!("Humata: {}", said(told)),
+                None => format!("The person: {}", said(&sent.text)),
             },
         }),
-        Some(Kind::AssistantMessage(reply)) => {
-            Some(format!("Agent: {}", cut(&reply.text, message)))
-        }
+        Some(Kind::AssistantMessage(reply)) => Some(format!("Agent: {}", said(&reply.text))),
         Some(Kind::ToolStarted(call)) => Some(format!(
             "Tool {}: {}",
             call.tool,
@@ -942,6 +990,9 @@ const READ_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 const SESSION_TEXT: usize = 16 * 1024;
 /// The most of each message in it, and of each tool's arguments or output.
 const SESSION_MESSAGE: usize = 4 * 1024;
+/// The most of the agent's last reply in it: all there is room for, less a
+/// little for how the session stands and for saying where the rest is.
+const SESSION_REPLY: usize = SESSION_TEXT - 1024;
 const SESSION_TOOL: usize = 300;
 
 /// Session `id` as another session's agent reads it: how it stands, as
@@ -962,16 +1013,44 @@ fn session_text(id: &str, listed: Option<&pb::SessionInfo>, events: &[pb::Sessio
         ),
         None => format!("Session {id}:\n"),
     };
-    // The newest that fit, as the chat shows them, without subagents' steps.
-    let mut room = SESSION_TEXT;
-    let mut kept: Vec<String> = Vec::new();
-    let mut left_out = false;
+    // As the chat shows them, without subagents' steps, each with its turn
+    // as read_turn counts them.
+    let mut turn = 1;
+    let mut shown: Vec<(u32, &pb::SessionEvent)> = Vec::new();
     for event in events
         .iter()
-        .rev()
         .filter(|event| event.parent_call_id.is_empty())
     {
-        let Some(part) = event_text(event, SESSION_MESSAGE, SESSION_TOOL) else {
+        shown.push((turn, event));
+        if matches!(event.kind, Some(pb::session_event::Kind::TurnEnded(_))) {
+            turn += 1;
+        }
+    }
+    // The agent's last reply is what a reader most often came for, so it
+    // gets its room first and goes in whole if it can.
+    let mut room = SESSION_TEXT;
+    let last_reply = shown.iter().rposition(|(_, event)| {
+        matches!(
+            event.kind,
+            Some(pb::session_event::Kind::AssistantMessage(_))
+        )
+    });
+    let mut answer = last_reply.and_then(|at| {
+        let (turn, event) = shown[at];
+        event_text(event, SESSION_REPLY, SESSION_TOOL, Some(turn))
+    });
+    if let Some(answer) = &answer {
+        room = room.saturating_sub(answer.len() + 1);
+    }
+    // Then the newest of the rest that fit.
+    let mut kept: Vec<String> = Vec::new();
+    let mut left_out = false;
+    for (index, (turn, event)) in shown.iter().enumerate().rev() {
+        if Some(index) == last_reply {
+            kept.extend(answer.take());
+            continue;
+        }
+        let Some(part) = event_text(event, SESSION_MESSAGE, SESSION_TOOL, Some(*turn)) else {
             continue;
         };
         if part.len() + 1 > room {
@@ -980,6 +1059,11 @@ fn session_text(id: &str, listed: Option<&pb::SessionInfo>, events: &[pb::Sessio
         }
         room -= part.len() + 1;
         kept.push(part);
+    }
+    // What followed the reply took all the room: the reply still goes in.
+    if let Some(answer) = answer {
+        kept.push("(What came between is left out; read_turn reaches it.)".to_owned());
+        kept.push(answer);
     }
     if kept.is_empty() && !left_out {
         text.push_str("Nothing was said or done in it yet.\n");
@@ -1047,6 +1131,19 @@ pub(crate) fn replaced(spec: &str, replacements: &[(String, String)]) -> Result<
         }
     }
     Ok(spec)
+}
+
+/// Fails when `text`, given as `field`, is longer than what an agent asks
+/// the person may be.
+fn short_enough(field: &str, text: &str) -> Result<(), String> {
+    let limit = crate::daemon::REQUEST_LIMIT;
+    if text.len() > limit {
+        return Err(format!(
+            "{field} is {} bytes and the most it may be is {limit}. Put the detail in a file or in your reply, and give a shorter {field} that names it",
+            text.len()
+        ));
+    }
+    Ok(())
 }
 
 fn required(value: Option<String>, field: &str) -> Result<String, String> {
@@ -1687,6 +1784,196 @@ mod tests {
         assert!(short.contains("The person: the oldest ask"), "{short}");
     }
 
+    /// A humatad that can't list its sessions, and counts what else it is
+    /// asked.
+    struct NotListing {
+        others: std::sync::atomic::AtomicUsize,
+    }
+
+    impl humata_wire::Service for NotListing {
+        fn handle(self: Arc<Self>, request: pb::request::Kind) -> humata_wire::ServiceFuture {
+            Box::pin(async move {
+                if !matches!(request, pb::request::Kind::ListSessions(_)) {
+                    self.others
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                humata_wire::Reply::Response(humata_wire::error(
+                    pb::ErrorCode::HostUnavailable,
+                    "not answering",
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_humatad_cant_place_is_offered_and_run_only_what_a_side_chat_is() {
+        let humatad = Arc::new(NotListing {
+            others: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let server = server(crate::tests::client_of(Arc::clone(&humatad)).await, "s-1");
+        let kept_back = [
+            ("propose_task", json!({"title": "copy", "spec": "Words."})),
+            (
+                "propose_spec_edit",
+                json!({"item_id": "i-1", "title": "sign-in"}),
+            ),
+            (
+                "request_move",
+                json!({"status": "done", "summary": "Login works."}),
+            ),
+            (
+                "start_session",
+                json!({"name": "Tests", "message": "hello"}),
+            ),
+            (
+                "send_message",
+                json!({"session_id": "s-2", "text": "hello"}),
+            ),
+        ];
+        for (tool, arguments) in &kept_back {
+            let (_, failed) = call(&server, tool, arguments.clone()).await;
+            assert!(failed, "{tool} {arguments}");
+        }
+        // Nothing but which session this is was asked of humatad.
+        assert_eq!(humatad.others.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let listed = exchange(
+            &server,
+            &[json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})],
+        )
+        .await;
+        let names: Vec<&str> = listed[0]["result"]["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|tool| tool["name"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(names.contains(&"ask_person"), "{names:?}");
+        for (tool, _) in &kept_back {
+            assert!(!names.contains(tool), "{tool}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn a_session_is_read_with_its_last_reply_whole_though_longer_than_other_messages_may_be() {
+        use pb::session_event::Kind;
+        let reply = format!("{}THE-LAST-WORDS", "found ".repeat(10 * 1024 / 6));
+        let mut events = vec![said(
+            "ask",
+            Kind::UserMessage(pb::UserMessage {
+                text: "report what you found".to_owned(),
+                ..Default::default()
+            }),
+        )];
+        // An earlier reply, as long, is still cut.
+        events.push(said(
+            "earlier",
+            Kind::AssistantMessage(pb::AssistantMessage {
+                text: format!("{}THE-EARLIER-END", "looking ".repeat(10 * 1024 / 8)),
+            }),
+        ));
+        events.push(said(
+            "report",
+            Kind::AssistantMessage(pb::AssistantMessage { text: reply }),
+        ));
+        events.push(said("end", Kind::TurnEnded(pb::TurnEnded::default())));
+
+        let text = session_text("child-id", None, &events);
+        assert!(text.contains("THE-LAST-WORDS"), "{text}");
+        assert!(!text.contains("THE-EARLIER-END"), "{text}");
+        assert!(text.len() <= SESSION_TEXT + 1024, "{}", text.len());
+    }
+
+    #[test]
+    fn a_cut_message_names_the_event_that_read_turn_opens_it_at() {
+        use pb::session_event::Kind;
+        let message = |id: &str, text: String| {
+            said(
+                id,
+                Kind::UserMessage(pb::UserMessage {
+                    text,
+                    ..Default::default()
+                }),
+            )
+        };
+        let ended = |id: &str| said(id, Kind::TurnEnded(pb::TurnEnded::default()));
+        let mut events = vec![
+            message("first-ask", "an earlier ask".to_owned()),
+            ended("first-end"),
+            message("second-ask", "THE-TURNS-START".to_owned()),
+        ];
+        // More of the turn than read_turn gives at once.
+        for index in 0..20 {
+            events.push(said(
+                &format!("output-{index}"),
+                Kind::ToolCompleted(pb::ToolCompleted {
+                    success: true,
+                    output: "line ".repeat(400),
+                    ..Default::default()
+                }),
+            ));
+        }
+        events.push(message(
+            "long-steer",
+            format!("{}THE-STEERS-END", "also ".repeat(6 * 1024 / 5)),
+        ));
+        events.push(said(
+            "reply",
+            Kind::AssistantMessage(pb::AssistantMessage {
+                text: "done".to_owned(),
+            }),
+        ));
+        events.push(ended("second-end"));
+
+        let read = session_text("child-id", None, &events);
+        assert!(!read.contains("THE-STEERS-END"), "{read}");
+        assert!(read.contains("long-steer"), "{read}");
+
+        let opened = turn_text(&events, 2, "long-steer").unwrap_or_default();
+        assert!(opened.contains("THE-STEERS-END"), "{opened}");
+        assert!(!opened.contains("THE-TURNS-START"), "{opened}");
+        // In another turn, the event opens nothing.
+        let other = turn_text(&events, 1, "long-steer").unwrap_or_default();
+        assert!(!other.contains("THE-STEERS-END"), "{other}");
+    }
+
+    #[test]
+    fn a_long_turn_read_with_no_event_named_ends_with_its_reply() {
+        use pb::session_event::Kind;
+        let mut events = vec![said(
+            "ask",
+            Kind::UserMessage(pb::UserMessage {
+                text: "THE-ASK".to_owned(),
+                ..Default::default()
+            }),
+        )];
+        for index in 0..40 {
+            events.push(said(
+                &format!("output-{index}"),
+                Kind::ToolCompleted(pb::ToolCompleted {
+                    success: true,
+                    output: "line ".repeat(400),
+                    ..Default::default()
+                }),
+            ));
+        }
+        events.push(said(
+            "reply",
+            Kind::AssistantMessage(pb::AssistantMessage {
+                text: "THE-REPLY".to_owned(),
+            }),
+        ));
+        events.push(said("end", Kind::TurnEnded(pb::TurnEnded::default())));
+
+        let text = turn_text(&events, 1, "").unwrap_or_default();
+        assert!(text.contains("THE-REPLY"), "{text}");
+        assert!(!text.contains("THE-ASK"), "{text}");
+        assert!(text.len() <= TURN_TEXT + 1024, "{}", text.len());
+    }
+
     #[test]
     fn what_humata_told_a_session_isnt_read_as_the_persons() {
         use pb::session_event::Kind;
@@ -1860,9 +2147,14 @@ mod tests {
 
     #[tokio::test]
     async fn it_starts_lists_its_tools_and_skips_notifications() {
+        use crate::tests::{daemon, git_repository, project, start_on};
         let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let client = crate::tests::daemon(state.path(), crate::hosts::Hosts::default()).await;
-        let server = server(client, "none");
+        let repository = git_repository();
+        let client = daemon(state.path(), crate::hosts::Hosts::default()).await;
+        let project = project(&client, repository.path()).await;
+        let task = crate::tests::item(&client, &project.id, "", "login").await;
+        let session = crate::tests::started(&client, start_on(&task.id)).await;
+        let server = server(client, &session.id);
         let answers = exchange(
             &server,
             &[

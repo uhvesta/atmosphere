@@ -170,4 +170,79 @@ final class TerminalsFeatureTests: XCTestCase {
         XCTAssertNil(store.state.failure)
         XCTAssertEqual(store.state.generation, 1)
     }
+
+    func testClosingATerminalWhoseShellRunsAsksFirstAndEndsItOnce() async throws {
+        let daemon = InMemoryDaemon()
+        let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
+        let closes = LockIsolated(0)
+        // The host's answer waits, so a second press comes before it.
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = store(daemon, TerminalsFeature.State(place: HostPlace(), opensFirst: false)) {
+            let close = $0.daemon.closeTerminal
+            $0.daemon.closeTerminal = { terminal in
+                closes.withValue { $0 += 1 }
+                for await _ in answered { break }
+                try await close(terminal)
+            }
+        }
+        await store.send(.task)
+        await store.receive(\.listed)
+
+        await store.send(.closeTapped(terminal.id))
+        await Task.megaYield()
+        XCTAssertNotNil(store.state.confirm)
+        XCTAssertEqual(closes.value, 0, "nothing ends until the person says so")
+        XCTAssertEqual(store.state.tabs.ids, [terminal.id])
+
+        // Cancelled, the shell keeps running.
+        await store.send(.confirm(.dismiss))
+        await Task.megaYield()
+        XCTAssertEqual(closes.value, 0)
+        let running = try await daemon.client.terminals(nil)
+        XCTAssertEqual(running.map(\.id), [terminal.id])
+
+        await store.send(.closeTapped(terminal.id))
+        await store.send(.confirm(.presented(.endShell(terminal.id))))
+        XCTAssertTrue(store.state.closing.contains(terminal.id))
+        // Pressed again while the host is asked: nothing more is sent or asked.
+        await store.send(.closeTapped(terminal.id))
+        await Task.megaYield()
+        XCTAssertEqual(closes.value, 1)
+        XCTAssertNil(store.state.confirm)
+
+        answer.yield()
+        await store.receive(\.closed)
+        XCTAssertTrue(store.state.tabs.isEmpty)
+        XCTAssertTrue(store.state.closing.isEmpty)
+        let left = try await daemon.client.terminals(nil)
+        XCTAssertTrue(left.isEmpty)
+    }
+
+    func testATerminalThatCouldNotBeClosedCanBeClosedAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
+        let fails = LockIsolated(true)
+        let store = store(daemon, TerminalsFeature.State(place: HostPlace(), opensFirst: false)) {
+            let close = $0.daemon.closeTerminal
+            $0.daemon.closeTerminal = { terminal in
+                if fails.value { throw DaemonError.unexpected("no answer") }
+                try await close(terminal)
+            }
+        }
+        await store.send(.task)
+        await store.receive(\.listed)
+
+        await store.send(.closeTapped(terminal.id))
+        await store.send(.confirm(.presented(.endShell(terminal.id))))
+        await store.receive(\.closeFailed)
+        XCTAssertTrue(store.state.closing.isEmpty)
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertEqual(store.state.tabs.ids, [terminal.id])
+
+        fails.setValue(false)
+        await store.send(.closeTapped(terminal.id))
+        await store.send(.confirm(.presented(.endShell(terminal.id))))
+        await store.receive(\.closed)
+        XCTAssertTrue(store.state.tabs.isEmpty)
+    }
 }

@@ -772,8 +772,197 @@ final class ChatCommandTests: XCTestCase {
         }
         await store.send(.requestAllowed)
         await store.receive(answered(.approve))
+        // The answer didn't land, so whoever shows the session makes the
+        // strip answerable again.
+        await store.send(\.binding.answeringRequest, false)
         await store.send(.requestDeclined)
         await store.receive(answered(.dismiss))
+    }
+
+    func testARequestAllowedTwiceBeforeItsAnswerLandsIsAnsweredOnce() async {
+        let session = Session(id: "strip-twice", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.request = AgentRequest(
+            id: "r1", sessionID: "strip-twice", kind: .startSession(name: "Tests"), text: "Write the tests.",
+            created: Date(timeIntervalSince1970: 0))
+        // Exhaustive, so a second answer handed on would fail the test.
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        }
+
+        await store.send(.requestAllowed) {
+            $0.answeringRequest = true
+            $0.requestAnswer = .allowing
+        }
+        await store.receive(\.delegate.answerRequest)
+        await store.send(.requestAllowed)
+        await store.send(.requestDeclined)
+    }
+
+    // MARK: A command with a paste or an image in the box
+
+    private func ready(_ id: String) -> DraftImage {
+        DraftImage(id: id, name: "shot.png", image: ImageAttachment(mediaType: "image/png", data: Data([1])))
+    }
+
+    func testSideWithAPasteAsksTheSideChatWithThePasteAndSendsTheSessionNothing() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let before = daemon.history(session.id)
+        let store = store(daemon, session)
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(\.binding.pastes, [Paste(id: "p1", text: "the pasted log")])
+        await store.send(.sendTapped(.enqueue))
+        var opened: Session?
+        await store.receive(
+            { action in
+                guard case .delegate(.openSide(let side)) = action else { return false }
+                opened = side
+                return true
+            }, timeout: .seconds(1))
+        let side = try XCTUnwrap(opened)
+        let asked = daemon.history(side.id).dropFirst(before.count).compactMap { event -> String? in
+            if case .userMessage(let text, _) = event.kind { text } else { nil }
+        }
+        XCTAssertEqual(asked.count, 1)
+        XCTAssertEqual(asked.first?.contains("why is it slow?"), true)
+        XCTAssertEqual(asked.first?.contains("the pasted log"), true)
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertEqual(store.state.pastes, [])
+        XCTAssertEqual(daemon.history(session.id), before, "nothing went to the session itself")
+    }
+
+    func testCompactWithAPasteSendsNothingAndKeepsTheBox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let before = daemon.history(session.id)
+        let store = store(daemon, session)
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+
+        let paste = Paste(id: "p1", text: "the pasted log")
+        await store.send(\.binding.draft, "/compact keep the notes")
+        await store.send(\.binding.pastes, [paste])
+        await store.send(.sendTapped(.enqueue))
+        await store.finish()
+        XCTAssertNotNil(store.state.alert, "it says why nothing happened")
+        XCTAssertEqual(store.state.draft, "/compact keep the notes")
+        XCTAssertEqual(store.state.pastes, [paste])
+        XCTAssertEqual(store.state.sending, 0)
+        XCTAssertFalse(store.state.compactStarting)
+        XCTAssertEqual(daemon.history(session.id), before, "neither compacted nor sent to the agent")
+    }
+
+    func testSideWithAnImageSendsNothingAndKeepsTheBox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let before = daemon.history(session.id)
+        let store = store(daemon, session)
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+
+        await store.send(\.binding.draft, "/side what is this?")
+        await store.send(\.binding.images, [ready("i1")])
+        await store.send(.sendTapped(.enqueue))
+        await store.finish()
+        XCTAssertNotNil(store.state.alert, "it says why nothing happened")
+        XCTAssertEqual(store.state.draft, "/side what is this?")
+        XCTAssertEqual(store.state.images.map(\.id), ["i1"])
+        XCTAssertEqual(store.state.sending, 0)
+        XCTAssertEqual(daemon.sessions.count, 1, "no side chat was made")
+        XCTAssertEqual(daemon.history(session.id), before, "nothing went to the session itself")
+    }
+
+    // MARK: A host that couldn't be asked
+
+    func testACommandHeldForAHostThatCantBeAskedStaysInTheBoxAndNothingIsSent() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let before = daemon.history(session.id)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.chatCommands = { _ in throw DaemonError.disconnected }
+            $0.continuousClock = ImmediateClock()
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_000))
+        }
+        store.exhaustivity = .off
+
+        // Pasted whole, so the / list never opened and asked.
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(.sendTapped(.enqueue))
+        XCTAssertTrue(store.state.holdingSend)
+        await store.receive(\.commandsLoaded, timeout: .seconds(1))
+        await store.finish()
+        XCTAssertFalse(store.state.holdingSend)
+        XCTAssertNotNil(store.state.alert, "it says the host didn't answer")
+        XCTAssertEqual(store.state.draft, "/side why is it slow?")
+        XCTAssertEqual(store.state.sending, 0)
+        XCTAssertEqual(daemon.sessions.count, 1, "no side chat was made")
+        XCTAssertEqual(daemon.history(session.id), before, "nothing went to the session")
+    }
+
+    func testACommandHeldForAHostThatRefusesTheQuestionGoesToTheAgentAsTyped() async throws {
+        let daemon = InMemoryDaemon()
+        // As a host from before chat commands answers.
+        daemon.setChatCommands(nil)
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(.sendTapped(.enqueue))
+        var sent: String?
+        await store.receive(
+            { action in
+                guard case .delegate(.send(let outgoing)) = action else { return false }
+                sent = outgoing.text
+                return true
+            }, timeout: .seconds(1))
+        XCTAssertEqual(sent, "/side why is it slow?")
+        XCTAssertEqual(daemon.sessions.count, 1, "no side chat was made")
+    }
+
+    // MARK: Rewinding from the menu, and the caret
+
+    func testRewindAskedForFromOutsideTheBoxOpensThePickerAndLeavesWhatIsTyped() async {
+        let store = fed("rewind-asked")
+        await store.send(.receivedAll([event("e1", .userMessage("one")), event("e2", .userMessage("two"))]))
+        await store.send(\.binding.draft, "half a thought")
+
+        await store.send(.rewindPickerAsked)
+        XCTAssertEqual(messages(store.state.rewindPicker), ["two", "one"])
+        XCTAssertEqual(store.state.draft, "half a thought")
+    }
+
+    func testClosingTheRewindPickerHasTheBoxTakeTheCaret() async {
+        let store = fed("rewind-caret")
+        await store.send(.receivedAll([event("e1", .userMessage("one"))]))
+        await store.send(.rewindPickerAsked)
+        XCTAssertNotNil(store.state.rewindPicker)
+        let before = store.state.boxFocus
+
+        await store.send(.rewindPickerClosed)
+        XCTAssertNil(store.state.rewindPicker)
+        XCTAssertNotEqual(store.state.boxFocus, before)
+    }
+
+    func testARewindCanBeUndoneUntilTheNextMessage() async {
+        let store = fed("rewind-undoable")
+        XCTAssertFalse(store.state.canUndoRewind)
+        // The history of a chat just opened, which ends with a rewind.
+        await store.send(
+            .receivedAll([event("e1", .userMessage("one")), event("r1", .rewound(text: "two", files: false))]))
+        XCTAssertTrue(store.state.canUndoRewind)
+
+        await store.send(.received(event("e3", .userMessage("three"))))
+        XCTAssertFalse(store.state.canUndoRewind)
     }
 
     func testAQuestionIsntAllowedOrDeclinedFromTheStrip() async {

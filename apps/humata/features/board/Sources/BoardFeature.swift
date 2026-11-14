@@ -189,8 +189,10 @@ package struct BoardFeature {
         /// yet undone.
         case undoTapped
         case undone(Reverted)
-        /// Undo found nothing to take back.
+        /// Undo found nothing to take back, which it says.
         case undoEnded
+        /// Undo couldn't read the changes or take one back, and this is why.
+        case undoFailed(String)
         case undoExpired
         /// Makes a task of each open GitHub issue of the project's
         /// repositories not imported before.
@@ -312,7 +314,9 @@ package struct BoardFeature {
                     })
 
             case .logStarted(let newest):
-                state.undoFrom = newest.map { $0 + 1 } ?? 0
+                // The first read stands: one that comes later, as from
+                // Undo, mustn't put changes already made here out of reach.
+                if state.undoFrom == nil { state.undoFrom = newest.map { $0 + 1 } ?? 0 }
                 return .none
 
             case .changedHere:
@@ -339,13 +343,23 @@ package struct BoardFeature {
                 return .none
 
             case .undoTapped:
-                guard let from = state.undoFrom, !state.undoing else { return .none }
+                guard !state.undoing else { return .none }
                 state.undo = nil
                 state.undoing = true
                 let project = state.project.id
+                let known = state.undoFrom
                 return .merge(
                     .cancel(id: CancelID.undo),
                     .run { send in
+                        guard let from = known else {
+                            // The board's log wasn't read as it opened, so
+                            // which changes were made here isn't known. It's
+                            // read again: what's changed here from now on can
+                            // be undone, and nothing before can.
+                            await send(.logStarted(newest: try await daemon.boardLog(project, nil, 1).first?.id))
+                            await send(.undoEnded)
+                            return
+                        }
                         guard let change = Self.undoable(try await daemon.boardLog(project, from, nil), from: from)
                         else {
                             await send(.undoEnded)
@@ -353,13 +367,17 @@ package struct BoardFeature {
                         }
                         await send(.undone(try await daemon.revert(change.id)))
                     } catch: { error, send in
-                        await send(.undoEnded)
-                        await send(.actionFailed("Couldn't undo: \(error.localizedDescription)"))
+                        await send(.undoFailed(error.localizedDescription))
                     })
 
             case .undoEnded:
                 state.undoing = false
+                state.present(.nothingToUndo)
                 return .none
+
+            case .undoFailed(let message):
+                state.undoing = false
+                return .send(.actionFailed("Couldn't undo: \(message)"))
 
             case .undone(let reverted):
                 state.undoing = false

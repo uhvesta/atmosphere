@@ -82,4 +82,38 @@ final class PluginsFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.failure)
         XCTAssertNil(store.state.projectID)
     }
+
+    func testAFirstListingThatFailsShowsNoListUntilOneIsRead() async throws {
+        let daemon = daemon()
+        let client = daemon.client
+        let fails = LockIsolated(true)
+        let store = TestStore(initialState: PluginsFeature.State()) {
+            PluginsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.daemon.plugins = {
+                if fails.value { throw DaemonError.disconnected }
+                return try await client.plugins()
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.failed)
+        XCTAssertNil(store.state.list, "a list that couldn't be read isn't an empty one")
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertFalse(store.state.loading)
+
+        fails.setValue(false)
+        await store.send(.refreshTapped)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.failure)
+        XCTAssertEqual(store.state.list?.plugins.count, 2)
+
+        // One that fails after keeps what was listed.
+        fails.setValue(true)
+        await store.send(.refreshTapped)
+        await store.receive(\.failed)
+        XCTAssertEqual(store.state.list?.plugins.count, 2)
+    }
 }

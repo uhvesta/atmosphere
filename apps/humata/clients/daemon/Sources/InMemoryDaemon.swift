@@ -1343,7 +1343,9 @@ package final class InMemoryDaemon: Sendable {
             fork.turns = 0
             fork.readOnly = parent.readOnly || readOnly
             state.nextSession += 1
-            if chatOnly {
+            // What's made from a read-only session works in its copy
+            // whatever was asked: it could never write to its own.
+            if chatOnly || fork.readOnly {
                 state.copyOf[fork.id] = state.copyOf[parent.id]
                 // The copy stays its owner's: only that session rewinds it.
                 fork.sharesCode = parent.projectID != nil

@@ -1243,6 +1243,192 @@ mod tests {
         ));
     }
 
+    fn replies(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::AssistantMessage { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn stopped_turns(events: &[Event]) -> usize {
+        events
+            .iter()
+            .filter(|event| event.kind == EventKind::TurnEnded { aborted: true })
+            .count()
+    }
+
+    /// A turn that waits for a permission answer, then one that replies.
+    fn waits_then_replies() -> Vec<Rule> {
+        vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_steer_the_turn_never_took_gets_a_turn_of_its_own_after_it() {
+        let fixture = fixture(waits_then_replies());
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &[]).await;
+        fixture
+            .agent
+            .send(&id, "steer".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        assert_eq!(user_messages(&events), vec!["first", "steer"]);
+        assert_eq!(replies(&events), vec!["done"], "{events:#?}");
+        assert!(ended_turns(2)(&events), "{events:#?}");
+    }
+
+    #[tokio::test]
+    async fn a_steer_sent_while_a_stop_is_under_way_runs_next() {
+        let fixture = fixture(waits_then_replies());
+        let id = fixture.start().await;
+        queue_behind_a_turn(&fixture, &id, &[]).await;
+
+        // The stop is polled first and waits for the turn to end, so the
+        // message is sent with the stop under way.
+        let (stopped, sent) = tokio::join!(
+            fixture.agent.abort(&id),
+            fixture.agent.send(&id, "steer".into(), SendMode::Immediate),
+        );
+        stopped.expect("stopped");
+        sent.expect("sent");
+
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert_eq!(user_messages(&events), vec!["first", "steer"]);
+        assert_eq!(stopped_turns(&events), 1, "{events:#?}");
+        assert_eq!(replies(&events), vec!["done"], "{events:#?}");
+    }
+
+    #[tokio::test]
+    async fn a_stop_straight_after_a_send_leaves_the_message_with_a_stopped_turn() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+
+        fixture.agent.abort(&id).await.expect("stopped");
+
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert_eq!(user_messages(&history), vec!["hello"]);
+        assert_eq!(stopped_turns(&history), 1, "{history:#?}");
+        assert_eq!(SessionState::after(&history), SessionState::Idle);
+        let summary = fixture.agent.summary(&id).await.expect("summed up");
+        assert_eq!(summary.state(), SessionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn a_stop_as_a_turn_ends_never_loses_the_message_queued_behind_it() {
+        // The stop lands at a different moment each time: in the first
+        // turn, between the two, in the second, or after both.
+        for yields in 0..16 {
+            let fixture = fixture(vec![rule("", vec![say("one two three")])]);
+            let id = fixture.start().await;
+            for text in ["first", "second"] {
+                fixture
+                    .agent
+                    .send(&id, text.into(), SendMode::EnqueueApart)
+                    .await
+                    .expect("sent");
+            }
+            for _ in 0..yields {
+                tokio::task::yield_now().await;
+            }
+
+            fixture.agent.abort(&id).await.expect("stopped");
+
+            let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+            assert_eq!(
+                user_messages(&events),
+                vec!["first", "second"],
+                "after {yields} yields: {events:#?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rewind_asked_for_while_a_stop_is_under_way_leaves_a_history_that_ends_with_it() {
+        let fixture = fixture(waits_then_replies());
+        let id = fixture.start().await;
+        queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        let history = fixture.agent.history(&id).await.expect("history");
+        let first = user_message(&history, "first");
+
+        // The stop is polled first and waits for the turn to end, so the
+        // rewind is asked for with the stop under way.
+        let (stopped, rewound) = tokio::join!(
+            fixture.agent.abort(&id),
+            fixture.agent.rewind(&id, &first.id, false),
+        );
+        stopped.expect("stopped");
+        rewound.expect("rewound");
+
+        // Time for anything the stop left running to show.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert!(
+            matches!(
+                history.last().map(|event| &event.kind),
+                Some(EventKind::Rewound { .. })
+            ),
+            "{history:#?}"
+        );
+        assert_eq!(user_messages(&history), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_while_a_rewind_is_under_way_is_refused_and_isnt_in_the_history() {
+        let fixture = fixture(waits_then_replies());
+        let id = fixture.start().await;
+        queue_behind_a_turn(&fixture, &id, &[]).await;
+        let history = fixture.agent.history(&id).await.expect("history");
+        let first = user_message(&history, "first");
+
+        // The rewind is polled first and waits for the turn it stops, so
+        // the message is sent with the rewind under way.
+        let (rewound, sent) = tokio::join!(
+            fixture.agent.rewind(&id, &first.id, false),
+            fixture.agent.send(&id, "late".into(), SendMode::Enqueue),
+        );
+        rewound.expect("rewound");
+
+        assert!(
+            matches!(sent, Err(AgentError::Rewinding { .. })),
+            "{sent:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert_eq!(user_messages(&history), Vec::<String>::new());
+        assert!(queued_ids(&history).is_empty(), "{history:#?}");
+
+        // Once it's done the session takes messages again.
+        fixture
+            .agent
+            .send(&id, "again".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, &id, |events| {
+            replies(events) == vec!["done"]
+        })
+        .await;
+        assert_eq!(user_messages(&events), vec!["again"]);
+    }
+
     #[tokio::test]
     async fn a_fork_before_a_turn_has_the_history_up_to_it() {
         let fixture = fixture(vec![
@@ -2041,6 +2227,33 @@ mod tests {
             let fork = fixture.agent.fork(&side.id, options).await.expect("forked");
             fixture.turn(&fork.id, "two", 4).await;
             assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+        }
+
+        #[tokio::test]
+        async fn a_fork_of_a_read_only_session_asked_for_its_own_copy_reads_only_in_its_parents() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let parents = record(&fixture.agent, &id).await.working_directory;
+            let options = ForkOptions {
+                read_only: true,
+                ..ForkOptions::default()
+            };
+            let side = fixture.agent.fork(&id, options).await.expect("forked");
+
+            // With the chat and without it; neither asks to share the code.
+            for (empty, turns) in [(false, 2), (true, 1)] {
+                let options = ForkOptions {
+                    empty,
+                    ..ForkOptions::default()
+                };
+                let fork = fixture.agent.fork(&side.id, options).await.expect("forked");
+
+                assert!(fork.read_only, "empty: {empty}");
+                assert_eq!(fork.working_directory, parents, "empty: {empty}");
+                fixture.turn(&fork.id, "two", turns).await;
+                assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+            }
         }
 
         #[tokio::test]

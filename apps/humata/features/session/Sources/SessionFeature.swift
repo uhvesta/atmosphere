@@ -227,6 +227,9 @@ package struct SessionFeature {
         var heldSend: HeldSend?
         /// Whether a message is held so, which the box shows.
         package var holdingSend: Bool { heldSend != nil }
+        /// The pastes that went as a /side question's first message, taken
+        /// out of the box once its side chat is made.
+        var sidePastes: [Paste.ID] = []
         /// Where the chat can be rewound to, to pick from, after /rewind;
         /// nil while closed. Only the box reads it.
         package var rewindPicker: RewindPicker?
@@ -309,6 +312,16 @@ package struct SessionFeature {
         /// The question or move the agent asked for and is waiting on, from
         /// the inbox.
         package var request: AgentRequest?
+        /// The request was answered and the daemon hasn't said so yet, so
+        /// the strip's buttons can't answer it a second time. Whoever
+        /// shows the session clears it when the answer lands or fails.
+        package var answeringRequest = false
+        /// How the strip answered it, which it says while that's under
+        /// way; nil when it was answered elsewhere, such as in the Inbox.
+        package var requestAnswer: RequestAnswering?
+        /// Added to by whoever wants the box to take the caret, such as
+        /// after a picker over it that had the caret has closed.
+        package var boxFocus = 0
         /// The chat row to scroll to once, such as the first proposal waiting.
         package var scrollTarget: String?
 
@@ -459,6 +472,7 @@ package struct SessionFeature {
             if let land, land.turnRunning != working { self.land?.turnRunning = working }
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
             if lastMessageOwn != chat.lastMessageOwn { lastMessageOwn = chat.lastMessageOwn }
+            if canUndoRewind != chat.canUndoRewind { canUndoRewind = chat.canUndoRewind }
             if lastImages != chat.lastImages { lastImages = chat.lastImages }
             if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
             if !lastTurnFailed, retrying { retrying = false }
@@ -508,6 +522,9 @@ package struct SessionFeature {
         /// Whether it was the person's own, to stop and edit: not another
         /// session's agent's or a notice of Humata's.
         package private(set) var lastMessageOwn = false
+        /// Whether the chat's last rewind can still be undone: until a
+        /// message is sent after it, or it's undone.
+        package private(set) var canUndoRewind = false
         /// The names of the images sent with it, which go with it again.
         package private(set) var lastImages: [String] = []
 
@@ -728,6 +745,30 @@ package struct SessionFeature {
         var mode: SendMode
     }
 
+    /// What came of asking a session's host which chat commands its agent
+    /// takes.
+    package enum CommandsAsked: Equatable, Sendable {
+        /// The host said which.
+        case said(ChatCommands)
+        /// The host refused the question, as one from before chat commands
+        /// does: its agent takes none.
+        case takesNone
+        /// The host couldn't be asked, so it hasn't answered.
+        case unanswered
+
+        /// What the host said, when it did.
+        var commands: ChatCommands? {
+            if case .said(let commands) = self { commands } else { nil }
+        }
+    }
+
+    /// How the strip over the box answered the agent's request.
+    package enum RequestAnswering: Equatable, Sendable {
+        case allowing
+        case declining
+        case moving
+    }
+
     /// A message handed on to be sent, with what it was made of, so it can
     /// go back in its session's box if it isn't sent.
     package struct Outgoing: Equatable, Sendable {
@@ -762,14 +803,17 @@ package struct SessionFeature {
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
         /// The skills were looked for, and the agent's host asked which
-        /// chat commands it takes; nil when it couldn't say.
-        case slashLoaded(Result<[SlashChoice], SlashLoadFailure>, commands: ChatCommands?)
-        /// The agent's host said which chat commands it takes, asked as
-        /// the chat opened; nil when it couldn't say.
-        case commandsLoaded(ChatCommands?)
+        /// chat commands it takes.
+        case slashLoaded(Result<[SlashChoice], SlashLoadFailure>, commands: CommandsAsked)
+        /// The agent's host was asked which chat commands it takes, as
+        /// the chat opened or for a message held.
+        case commandsLoaded(CommandsAsked)
         /// An arrow moved the / list's pick by `by` rows.
         case slashMoved(by: Int)
         case slashPicked(String)
+        /// Tab in the / list: writes the highlighted choice's name in the
+        /// box, to type what follows it; nothing is carried out.
+        case slashCompleted
         /// Escape closed the / list.
         case slashClosed
         /// What's typed in the /rewind picker's field.
@@ -779,6 +823,9 @@ package struct SessionFeature {
         /// Picked the event to rewind to; asks how far, as its row does.
         case rewindPickerPicked(String)
         case rewindPickerClosed
+        /// Opens the /rewind picker from outside the box, such as from a
+        /// menu; what's typed in the box stays.
+        case rewindPickerAsked
         /// Has the agent sum up the conversation, keeping `focus` in mind;
         /// asks first when that stops a turn.
         case compactAsked(focus: String)
@@ -1006,22 +1053,22 @@ package struct SessionFeature {
             // A host from before chat commands can't say which it takes:
             // it's offered none of them, and its skills all the same. One
             // that couldn't be asked this time is offered what it last said.
-            async let asked = daemon.chatCommands(session.id)
+            async let asked = Self.commandsAsked(of: session.id, daemon)
             do {
                 async let skills = daemon.skills()
                 async let plugins = daemon.plugins()
                 async let projects = daemon.projects()
-                let commands = try? await asked
+                let commands = await asked
                 let project = try await projects.first { $0.id == session.projectID }
                 let offered = SlashChoice.offered(
                     to: session, skills: try await skills, plugins: try await plugins, project: project,
-                    commands: commands ?? known)
+                    commands: commands.commands ?? known)
                 await send(.slashLoaded(.success(offered), commands: commands))
             } catch {
                 let failure = SlashLoadFailure(
                     message: "Couldn't look for skills: \(error.localizedDescription) "
                         + "Check the daemon and hosts are reachable, then type / again.")
-                await send(.slashLoaded(.failure(failure), commands: try? await asked))
+                await send(.slashLoaded(.failure(failure), commands: await asked))
             }
         }
         .cancellable(id: CancelID.slash, cancelInFlight: true)
@@ -1053,19 +1100,51 @@ package struct SessionFeature {
         guard !state.commandsLoading, !state.slashLoading else { return .none }
         state.commandsLoading = true
         let session = state.session.id
-        return .run { send in
-            await send(.commandsLoaded(try? await daemon.chatCommands(session)))
+        return .run { [daemon] send in
+            await send(.commandsLoaded(await Self.commandsAsked(of: session, daemon)))
         }
     }
 
-    /// Takes in what the host said of its chat commands, nil when it
-    /// couldn't say, which leaves what it said before. A message held for
-    /// the answer is sent now, unless the box has changed since.
-    private func commandsAnswered(_ commands: ChatCommands?, _ state: inout State) -> Effect<Action> {
-        if !state.commandsAnswered { state.commandsAnswered = true }
-        if let commands, state.chatCommands != commands {
-            state.chatCommands = commands
-            state.$savedCommands.withLock { $0 = commands }
+    /// Asks `session`'s host which chat commands its agent takes. A host
+    /// that refuses the question takes none; one that couldn't be reached
+    /// hasn't answered.
+    private static func commandsAsked(of session: Session.ID, _ daemon: DaemonClient) async -> CommandsAsked {
+        do {
+            return .said(try await daemon.chatCommands(session))
+        } catch let error as DaemonError {
+            // Refused for the host being away is this Mac's daemon saying
+            // it couldn't ask, not the host saying no.
+            if case .refused(.hostUnavailable, _) = error { return .unanswered }
+            if case .refused = error { return .takesNone }
+            return .unanswered
+        } catch {
+            return .unanswered
+        }
+    }
+
+    /// Takes in what came of asking the host for its chat commands. One
+    /// that takes none leaves what it said before, and has answered: a
+    /// message held for the answer is sent now, unless the box has changed
+    /// since. One that couldn't be asked hasn't: the message held stays in
+    /// the box, with why.
+    private func commandsAnswered(_ asked: CommandsAsked, _ state: inout State) -> Effect<Action> {
+        switch asked {
+        case .said(let commands):
+            if !state.commandsAnswered { state.commandsAnswered = true }
+            if state.chatCommands != commands {
+                state.chatCommands = commands
+                state.$savedCommands.withLock { $0 = commands }
+            }
+        case .takesNone:
+            if !state.commandsAnswered { state.commandsAnswered = true }
+        case .unanswered:
+            guard state.heldSend != nil else { return .none }
+            state.heldSend = nil
+            state.alert = Self.alert(
+                "The session’s host didn’t answer",
+                "Humata couldn’t ask the host whether its agent takes this command, so nothing was sent and the "
+                    + "command is still in the box. Press Return to try again, or check the host in Hosts.")
+            return .none
         }
         guard let held = state.heldSend else { return .none }
         state.heldSend = nil
@@ -1078,19 +1157,22 @@ package struct SessionFeature {
         slashHidden(&state)
     }
 
-    /// Opens the /rewind picker on what `query` finds, in place of what's
-    /// typed in the box.
-    private func rewindPickerOpened(_ query: String, _ state: inout State) {
+    /// Opens the /rewind picker on what `query` finds: in place of the
+    /// command typed in the box, or with `typed` false, as from a menu,
+    /// leaving the box as it is.
+    private func rewindPickerOpened(_ query: String, typed: Bool = true, _ state: inout State) {
         // The chat isn't all here yet, so neither is what it can be cut
         // back to: the command stays in the box for when it is.
         guard state.historyLoaded else {
             state.alert = Self.alert(
                 "The chat is still opening",
-                "What it can be rewound to isn't known until the chat shows. The command is still in the box: "
-                    + "press Return again once the chat is here.")
+                "What it can be rewound to isn't known until the chat shows. "
+                    + (typed
+                        ? "The command is still in the box: press Return again once the chat is here."
+                        : "Choose Rewind again once the chat is here."))
             return
         }
-        clearDraft(&state)
+        if typed { clearDraft(&state) }
         let points = RewindPoint.points(in: state.events)
         guard !points.isEmpty else {
             state.alert = Self.alert(
@@ -1235,8 +1317,11 @@ package struct SessionFeature {
             // Asked each time the chat opens, behind what was last found:
             // the model, or what it can do, may have changed.
             return .run { send in
-                let models = try? await daemon.models(session.host, session.backend, nil)
-                let choice = models?.first { $0.id == session.model } ?? (session.model == nil ? models?.first : nil)
+                // A list that couldn't be read says nothing of the model:
+                // what was last found stands, and images wait if nothing
+                // was.
+                guard let models = try? await daemon.models(session.host, session.backend, nil) else { return }
+                let choice = models.first { $0.id == session.model } ?? (session.model == nil ? models.first : nil)
                 await send(.readsImagesFound(choice?.readsImages ?? (session.backend == .copilot)))
             }
         }
@@ -1336,6 +1421,15 @@ package struct SessionFeature {
                 slashHidden(&state)
                 return .none
 
+            case .slashCompleted:
+                guard state.slashOpen, state.slashChoices.indices.contains(state.slashSelected) else {
+                    return .none
+                }
+                state.draft = "/\(state.slashChoices[state.slashSelected].id) "
+                state.$savedDraft.withLock { $0 = state.draft }
+                slashHidden(&state)
+                return .none
+
             case .rewindPickerQueryChanged(let query):
                 guard var picker = state.rewindPicker, picker.query != query else { return .none }
                 picker.query = query
@@ -1357,6 +1451,16 @@ package struct SessionFeature {
 
             case .rewindPickerClosed:
                 state.rewindPicker = nil
+                // Its field had the caret, and is gone.
+                state.boxFocus += 1
+                return .none
+
+            case .rewindPickerAsked:
+                guard !state.session.archived, !state.rewinding else { return .none }
+                // A /rewind typed and not yet sent goes, as Return on it
+                // would take it; anything else in the box stays.
+                let typed = SlashChoice.command(in: state.draft)?.command == .rewind
+                rewindPickerOpened("", typed: typed, &state)
                 return .none
 
             case .compactAsked(let focus):
@@ -1492,6 +1596,9 @@ package struct SessionFeature {
                 }
 
             case .task:
+                // A watch that starts over asks again only for what isn't
+                // known yet.
+                let knowsImages = state.disconnected && state.readsImages != nil
                 state.disconnected = false
                 state.watchFailure = nil
                 state.replaying = state.events.isEmpty
@@ -1506,7 +1613,7 @@ package struct SessionFeature {
                 let commands: Effect<Action> =
                     state.chatCommands == nil && !state.session.archived ? askCommands(&state) : .none
                 return .merge(
-                    readsImages(&state),
+                    knowsImages ? .none : readsImages(&state),
                     commands,
                     .run { send in
                         // The history goes as one batch once it has all
@@ -1617,7 +1724,7 @@ package struct SessionFeature {
                 // A command only some hosts take waits until this one has
                 // said whether it does, and stays in the box till then:
                 // sent now, it would go to the agent as a message.
-                if state.pastes.isEmpty, state.images.isEmpty, !state.commandsAnswered, !state.session.archived,
+                if !state.commandsAnswered, !state.session.archived,
                     let command = SlashChoice.command(in: state.draft)?.command,
                     command == .compact || command == .side
                 {
@@ -1626,9 +1733,25 @@ package struct SessionFeature {
                 }
                 // One of Humata's own commands is carried out, not sent;
                 // one the session isn't offered goes to the agent as typed.
-                if state.pastes.isEmpty, state.images.isEmpty,
-                    let (command, text) = SlashChoice.command(in: state.draft), Self.offers(command, state)
-                {
+                if let (command, text) = SlashChoice.command(in: state.draft), Self.offers(command, state) {
+                    // Never sent to the agent as a message because of what
+                    // else is in the box: a /side question would go to the
+                    // agent that can write. The box stays as it is.
+                    if command == .side, !state.images.isEmpty {
+                        state.alert = Self.alert(
+                            "/side takes no images",
+                            "Nothing was sent. Take the images out of the box and press Return again, then add "
+                                + "them in the side chat once it opens.")
+                        return .none
+                    }
+                    if command != .side, !state.pastes.isEmpty || !state.images.isEmpty {
+                        state.alert = Self.alert(
+                            "/\(command.rawValue) takes no pasted text or images",
+                            "Nothing was sent. Take the pasted text and images out of the box and press Return "
+                                + "again; to send them to the agent instead, take the command out and put what "
+                                + "you pasted in a message.")
+                        return .none
+                    }
                     switch command {
                     case .rewind:
                         rewindPickerOpened(text, &state)
@@ -1648,7 +1771,11 @@ package struct SessionFeature {
                     case .side:
                         // It stays in the box until the side chat is made,
                         // so a failure doesn't lose the question.
-                        return .send(.childTapped(.side, message: text))
+                        guard !state.forking else { return .none }
+                        // Pasted text is part of the question.
+                        state.sidePastes = state.pastes.map(\.id)
+                        return .send(
+                            .childTapped(.side, message: Paste.message(draft: text, pastes: state.pastes)))
                     }
                 }
                 guard state.canSend else { return .none }
@@ -1795,15 +1922,27 @@ package struct SessionFeature {
                 }
 
             case .moveApproved:
-                guard let request = state.request, case .move = request.kind else { return .none }
+                guard !state.answeringRequest, let request = state.request, case .move = request.kind else {
+                    return .none
+                }
+                state.answeringRequest = true
+                state.requestAnswer = .moving
                 return .send(.delegate(.answerRequest(request.id, .approve)))
 
             case .requestAllowed:
-                guard let request = state.request, request.kind.asksForSession else { return .none }
+                guard !state.answeringRequest, let request = state.request, request.kind.asksForSession else {
+                    return .none
+                }
+                state.answeringRequest = true
+                state.requestAnswer = .allowing
                 return .send(.delegate(.answerRequest(request.id, .approve)))
 
             case .requestDeclined:
-                guard let request = state.request, request.kind.asksForSession else { return .none }
+                guard !state.answeringRequest, let request = state.request, request.kind.asksForSession else {
+                    return .none
+                }
+                state.answeringRequest = true
+                state.requestAnswer = .declining
                 return .send(.delegate(.answerRequest(request.id, .dismiss)))
 
             case .showProposalsTapped:
@@ -1837,6 +1976,8 @@ package struct SessionFeature {
             case .editQueuedCancelled:
                 state.editingQueued = nil
                 state.queuedEdit = ""
+                // Its editor had the caret, and is gone.
+                state.boxFocus += 1
                 return .none
 
             case .editQueuedSaved:
@@ -1844,6 +1985,7 @@ package struct SessionFeature {
                 let text = state.queuedEdit.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.editingQueued = nil
                 state.queuedEdit = ""
+                state.boxFocus += 1
                 let session = state.session.id
                 let queued = state.queued.first(where: { $0.id == id })
                 // Emptied, it's taken out of the queue; one that is only
@@ -2001,6 +2143,8 @@ package struct SessionFeature {
                 state.rewoundText = text
                 let paste = putInBox(text, ahead: true, &state)
                 state.rewoundPaste = paste
+                // The message is back in the box, to edit there.
+                state.boxFocus += 1
                 return .none
 
             case .sentImagesRead(let images, let rewound):
@@ -2104,10 +2248,13 @@ package struct SessionFeature {
                 state.shownSubagent = nil
                 return .none
 
-            case .forkTapped(let before, let chatOnly):
+            case .forkTapped(let before, let asked):
                 guard !state.forking else { return .none }
                 state.forking = true
                 let session = state.session
+                // A copy of the code would be one a read-only session's
+                // fork, read-only too, could never write.
+                let chatOnly = asked || session.readOnly
                 return .run { send in
                     await send(.forked(try await daemon.fork(session.id, before, "\(session.name) fork", chatOnly)))
                 } catch: { error, send in
@@ -2143,7 +2290,8 @@ package struct SessionFeature {
                 state.forking = true
                 let session = state.session
                 return .run { send in
-                    let fork = try await daemon.fork(session.id, before, "\(session.name) edit", false)
+                    // Chat only for a read-only session, as any fork of it.
+                    let fork = try await daemon.fork(session.id, before, "\(session.name) edit", session.readOnly)
                     do {
                         try await daemon.send(fork.id, text, .enqueue)
                     } catch {
@@ -2168,11 +2316,14 @@ package struct SessionFeature {
                 draft.withLock { $0 = $0.isEmpty ? text : $0 + "\n\n" + text }
                 return .send(.forked(fork))
 
-            case .childTapped(let kind, let message):
+            case .childTapped(let asked, let message):
                 guard !state.forking, !state.session.archived else { return .none }
+                let session = state.session
+                // No copy of its own under a read-only session: the chat
+                // would be read-only too, and could never write to it.
+                let kind = session.readOnly && asked == .empty(ownCopy: true) ? .empty(ownCopy: false) : asked
                 state.forking = true
                 state.makingChild = kind
-                let session = state.session
                 let name = kind == .side ? "\(session.name) side" : "New chat"
                 let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
                 return .run { send in
@@ -2200,6 +2351,16 @@ package struct SessionFeature {
                 state.forking = false
                 state.makingChild = nil
                 if SlashChoice.command(in: state.draft)?.command == .side { clearDraft(&state) }
+                // The pastes that went with the question go with it.
+                if !state.sidePastes.isEmpty {
+                    let sent = Set(state.sidePastes)
+                    state.sidePastes = []
+                    if state.pastes.contains(where: { sent.contains($0.id) }) {
+                        state.pastes.removeAll { sent.contains($0.id) }
+                        let pastes = Paste.encode(state.pastes)
+                        state.$savedPastes.withLock { $0 = pastes }
+                    }
+                }
                 if !unsent.isEmpty {
                     // The side chat's box keeps it, to send from there.
                     let draft = Shared(wrappedValue: "", .appStorage(State.draftKey(side.id)))
@@ -2217,6 +2378,7 @@ package struct SessionFeature {
                 case .forking, .startingChild:
                     state.forking = false
                     state.makingChild = nil
+                    state.sidePastes = []
                 case .retrying: state.retrying = false
                 case .answering(let request): state.answering.remove(request)
                 case .stopping: state.stopping = false

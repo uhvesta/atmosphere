@@ -64,6 +64,9 @@ pub struct Indexed {
     /// The id of the last event indexed; empty when none is, or for a
     /// session indexed before this was kept.
     pub last_event: String,
+    /// When it was last active, as listed when it was indexed; 0 for a
+    /// session indexed before this was kept.
+    pub last_active_unix_ms: i64,
 }
 
 /// A session as the index last saw it, and where it was then.
@@ -128,8 +131,8 @@ impl Store {
         let connection = self.lock();
         connection
             .prepare_cached(
-                "SELECT events, turns, host, project, item, last_event FROM search_sessions
-                 WHERE id = ?1",
+                "SELECT events, turns, host, project, item, last_event, last_active_unix_ms
+                 FROM search_sessions WHERE id = ?1",
             )
             .and_then(|mut statement| {
                 statement
@@ -139,6 +142,7 @@ impl Store {
                                 events: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
                                 turns: row.get(1)?,
                                 last_event: row.get(5)?,
+                                last_active_unix_ms: row.get(6)?,
                             },
                             whereabouts: Whereabouts {
                                 host: row.get(2)?,
@@ -178,11 +182,14 @@ impl Store {
                 }
             }
             transaction.execute(
-                "INSERT INTO search_sessions (id, host, project, item, events, turns, last_event)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO search_sessions
+                    (id, host, project, item, events, turns, last_event, last_active_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO UPDATE SET host = ?2, project = ?3, item = ?4,
-                    events = max(events, ?5), turns = ?6,
-                    last_event = CASE WHEN ?5 >= events THEN ?7 ELSE last_event END",
+                    last_event = CASE WHEN ?5 >= events THEN ?7 ELSE last_event END,
+                    last_active_unix_ms =
+                        CASE WHEN ?5 >= events THEN ?8 ELSE last_active_unix_ms END,
+                    events = max(events, ?5), turns = ?6",
                 params![
                     session,
                     whereabouts.host,
@@ -191,6 +198,7 @@ impl Store {
                     i64::try_from(indexed.events).unwrap_or(i64::MAX),
                     indexed.turns,
                     indexed.last_event,
+                    indexed.last_active_unix_ms,
                 ],
             )?;
             transaction.commit()
@@ -228,10 +236,11 @@ impl Store {
                 insert(&transaction, session, entry)?;
             }
             transaction.execute(
-                "INSERT INTO search_sessions (id, host, project, item, events, turns, last_event)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO search_sessions
+                    (id, host, project, item, events, turns, last_event, last_active_unix_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO UPDATE SET host = ?2, project = ?3, item = ?4,
-                    events = ?5, turns = ?6, last_event = ?7",
+                    events = ?5, turns = ?6, last_event = ?7, last_active_unix_ms = ?8",
                 params![
                     session,
                     whereabouts.host,
@@ -240,6 +249,7 @@ impl Store {
                     i64::try_from(indexed.events).unwrap_or(i64::MAX),
                     indexed.turns,
                     indexed.last_event,
+                    indexed.last_active_unix_ms,
                 ],
             )?;
             transaction.commit()
@@ -478,6 +488,7 @@ mod tests {
             events,
             turns: 1,
             last_event: format!("e{events}"),
+            last_active_unix_ms: 0,
         }
     }
 
@@ -594,6 +605,7 @@ mod tests {
             events: 1,
             turns: 1,
             last_event: "e9".to_owned(),
+            last_active_unix_ms: 0,
         };
         store
             .index_afresh("s1", &whereabouts("p1"), &now, &after)
@@ -796,6 +808,32 @@ mod tests {
             .filter(|found| found.kind == EntryKind::Message)
             .count();
         assert_eq!((specs, messages), (2, 1));
+    }
+
+    #[test]
+    fn when_a_session_was_last_active_is_kept_with_how_far_it_is_indexed() {
+        let (_dir, store) = store();
+        let said = [entry("e1", EntryKind::Message, 1_000, "rename the crate")];
+        let first = Indexed {
+            last_active_unix_ms: 1_000,
+            ..indexed(1)
+        };
+        store
+            .index("s1", &whereabouts("p1"), 0, &first, &said)
+            .expect("indexed");
+        let kept = store.indexed("s1").expect("read").map(|at| at.indexed);
+        assert_eq!(kept, Some(first));
+
+        // Indexed afresh, as after a rewind, it has the later time.
+        let again = Indexed {
+            last_active_unix_ms: 5_000,
+            ..indexed(1)
+        };
+        store
+            .index_afresh("s1", &whereabouts("p1"), &again, &said)
+            .expect("indexed");
+        let kept = store.indexed("s1").expect("read").map(|at| at.indexed);
+        assert_eq!(kept, Some(again));
     }
 
     #[test]

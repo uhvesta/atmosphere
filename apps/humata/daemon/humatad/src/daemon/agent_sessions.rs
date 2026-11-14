@@ -5,6 +5,8 @@
 
 use humata_wire::pb;
 
+use std::sync::PoisonError;
+
 use super::{Daemon, refusal};
 use crate::error::{AgentSessionsError, DaemonError, StoreError};
 use crate::sender;
@@ -16,6 +18,15 @@ const MESSAGE_LIMIT: usize = 32 * 1024;
 /// The most messages to other sessions one session's agent may have
 /// waiting for the person at once.
 const WAITING_LIMIT: u32 = 8;
+
+/// The most messages one session's agent may send straight to other
+/// sessions, where its project allows that without asking, since the
+/// person last wrote to it. Two agents answering each other stop here.
+const UNATTENDED_LIMIT: u32 = 20;
+
+/// The longest name an agent may give a session it starts, in characters.
+/// It shows in the sidebar and the inbox; the detail goes in the message.
+const NAME_LIMIT: usize = 80;
 
 /// Fails when `text` is longer than an agent's message may be.
 fn short_enough(text: &str) -> Result<(), AgentSessionsError> {
@@ -193,29 +204,43 @@ impl Daemon {
         if name.is_empty() || text.is_empty() {
             return Err(AgentSessionsError::NoNameOrMessage.into());
         }
-        short_enough(text)?;
-        let caller = self.agent_caller(&start.session_id).await?;
-        let waiting = self
-            .store
-            .open_of_kind(&caller.session.id, pb::AgentRequestKind::StartSession)?;
-        self.room_for_child(&caller, waiting)?;
-        if caller.allowed.mode() != pb::AgentSessionsMode::Allow {
-            let request = self.store.add_request(
-                pb::AgentRequest {
-                    session_id: caller.session.id.clone(),
-                    kind: pb::AgentRequestKind::StartSession.into(),
-                    text: text.to_owned(),
-                    name: name.to_owned(),
-                    ..Default::default()
-                },
-                "",
-            )?;
-            return Ok(pb::AgentActed {
-                request: Some(request),
-                session: None,
-            });
+        let characters = name.chars().count();
+        if characters > NAME_LIMIT {
+            return Err(AgentSessionsError::NameTooLong {
+                characters,
+                limit: NAME_LIMIT,
+            }
+            .into());
         }
-        let child = self.start_child(&caller.session, name).await?;
+        short_enough(text)?;
+        let (caller, child) = {
+            // One start at a time, so each is counted with those before it:
+            // the sessions are listed only once earlier starts are made.
+            let _counted = self.agent_asks.lock().await;
+            let caller = self.agent_caller(&start.session_id).await?;
+            let waiting = self
+                .store
+                .open_of_kind(&caller.session.id, pb::AgentRequestKind::StartSession)?;
+            self.room_for_child(&caller, waiting)?;
+            if caller.allowed.mode() != pb::AgentSessionsMode::Allow {
+                let request = self.store.add_request(
+                    pb::AgentRequest {
+                        session_id: caller.session.id.clone(),
+                        kind: pb::AgentRequestKind::StartSession.into(),
+                        text: text.to_owned(),
+                        name: name.to_owned(),
+                        ..Default::default()
+                    },
+                    "",
+                )?;
+                return Ok(pb::AgentActed {
+                    request: Some(request),
+                    session: None,
+                });
+            }
+            let child = self.start_child(&caller.session, name).await?;
+            (caller, child)
+        };
         // The session is there whether or not its message reaches it, so a
         // failure names it, or the agent would start another.
         if let Err(source) = self
@@ -249,6 +274,9 @@ impl Daemon {
         let caller = self.agent_caller(&send.session_id).await?;
         let target = caller.target(&send.to_session_id)?;
         if caller.allowed.mode() != pb::AgentSessionsMode::Allow {
+            // Counted and kept in one go, so messages sent together don't
+            // each see room for themselves.
+            let _counted = self.agent_asks.lock().await;
             let waiting = self
                 .store
                 .open_of_kind(&caller.session.id, pb::AgentRequestKind::SendMessage)?;
@@ -271,12 +299,59 @@ impl Daemon {
                 session: None,
             });
         }
-        self.send_from(&caller.session, &target.id, text, String::new())
-            .await?;
+        // Counted before it is sent, so ones sent together can't all pass,
+        // and not counted after all if it didn't go.
+        self.count_unattended(&caller.session.id)?;
+        if let Err(failure) = self
+            .send_from(&caller.session, &target.id, text, String::new())
+            .await
+        {
+            self.uncount_unattended(&caller.session.id);
+            return Err(failure);
+        }
         Ok(pb::AgentActed {
             request: None,
             session: Some(target.clone()),
         })
+    }
+
+    /// Counts one more message `session`'s agent sends straight to another
+    /// session; refused once it has sent as many as it may since the
+    /// person last wrote to it.
+    fn count_unattended(&self, session: &str) -> Result<(), AgentSessionsError> {
+        let mut sent = self
+            .agent_messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let count = sent.entry(session.to_owned()).or_insert(0);
+        if *count >= UNATTENDED_LIMIT {
+            return Err(AgentSessionsError::TooManyUnattended {
+                sent: *count,
+                limit: UNATTENDED_LIMIT,
+            });
+        }
+        *count += 1;
+        Ok(())
+    }
+
+    /// Takes back a count made for a message that wasn't sent after all.
+    fn uncount_unattended(&self, session: &str) {
+        let mut sent = self
+            .agent_messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = sent.get_mut(session) {
+            *count = count.saturating_sub(1);
+        }
+    }
+
+    /// The person wrote to `session`, so its agent may write to other
+    /// sessions afresh.
+    pub(super) fn person_wrote(&self, session: &str) {
+        self.agent_messages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session);
     }
 
     /// Starts a session named `name` as `parent`'s child: where `parent`
@@ -368,18 +443,21 @@ impl Daemon {
         &self,
         request: &pb::AgentRequest,
     ) -> Result<(), DaemonError> {
-        let sessions = self.list("").await?.sessions;
-        let session = sessions
-            .iter()
-            .find(|session| session.id == request.session_id)
-            .cloned()
-            .ok_or_else(|| StoreError::UnknownSession {
-                id: request.session_id.clone(),
-            })?;
         let told = format!("allowed-{}", request.id);
         if request.kind() == pb::AgentRequestKind::SendMessage {
+            let session = self
+                .list("")
+                .await?
+                .sessions
+                .into_iter()
+                .find(|session| session.id == request.session_id)
+                .ok_or_else(|| StoreError::UnknownSession {
+                    id: request.session_id.clone(),
+                })?;
             // Named by the request, so allowing it again after its answer
-            // was lost sends it once.
+            // was lost sends it once, for as long as the process that
+            // hosts the target session lives. A session on this Mac is
+            // hosted by humatad itself, so that isn't across its restart.
             self.send_from(
                 &session,
                 &request.target_session_id,
@@ -399,39 +477,56 @@ impl Daemon {
                 )
                 .await;
         }
-        let project = Some(session.project_id.as_str()).filter(|project| !project.is_empty());
-        let caller = Caller {
-            allowed: self.store.agent_sessions(project)?,
-            session,
-            sessions,
+        let (caller, child) = {
+            // One start at a time. Allowed twice together, the second
+            // waits here and then finds the request answered, so it starts
+            // nothing; and the sessions are listed after any start before.
+            let _counted = self.agent_asks.lock().await;
+            self.store.open_request(&request.id)?;
+            let sessions = self.list("").await?.sessions;
+            let session = sessions
+                .iter()
+                .find(|session| session.id == request.session_id)
+                .cloned()
+                .ok_or_else(|| StoreError::UnknownSession {
+                    id: request.session_id.clone(),
+                })?;
+            let project = Some(session.project_id.as_str()).filter(|project| !project.is_empty());
+            let caller = Caller {
+                allowed: self.store.agent_sessions(project)?,
+                session,
+                sessions,
+            };
+            // This request is one of those waiting.
+            let waiting = self
+                .store
+                .open_of_kind(&caller.session.id, pb::AgentRequestKind::StartSession)?
+                .saturating_sub(1);
+            // Said to the person, who is the one allowing it, not to the
+            // agent.
+            self.room_for_child(&caller, waiting)
+                .map_err(|refused| match refused {
+                    DaemonError::AgentSessions(AgentSessionsError::TooManyChildren { limit }) => {
+                        DaemonError::from(AgentSessionsError::AllowTooManyChildren {
+                            name: caller.session.name.clone(),
+                            limit,
+                        })
+                    }
+                    DaemonError::AgentSessions(AgentSessionsError::TooDeep { depth, limit }) => {
+                        DaemonError::from(AgentSessionsError::AllowTooDeep {
+                            name: caller.session.name.clone(),
+                            depth,
+                            limit,
+                        })
+                    }
+                    other => other,
+                })?;
+            let child = self.start_child(&caller.session, &request.name).await?;
+            // Out of the inbox before its first message: allowed again, it
+            // would start a second session.
+            self.store.answer_request(&request.id)?;
+            (caller, child)
         };
-        // This request is one of those waiting.
-        let waiting = self
-            .store
-            .open_of_kind(&caller.session.id, pb::AgentRequestKind::StartSession)?
-            .saturating_sub(1);
-        // Said to the person, who is the one allowing it, not to the agent.
-        self.room_for_child(&caller, waiting)
-            .map_err(|refused| match refused {
-                DaemonError::AgentSessions(AgentSessionsError::TooManyChildren { limit }) => {
-                    DaemonError::from(AgentSessionsError::AllowTooManyChildren {
-                        name: caller.session.name.clone(),
-                        limit,
-                    })
-                }
-                DaemonError::AgentSessions(AgentSessionsError::TooDeep { depth, limit }) => {
-                    DaemonError::from(AgentSessionsError::AllowTooDeep {
-                        name: caller.session.name.clone(),
-                        depth,
-                        limit,
-                    })
-                }
-                other => other,
-            })?;
-        let child = self.start_child(&caller.session, &request.name).await?;
-        // Out of the inbox before its first message: allowed again, it
-        // would start a second session.
-        self.store.answer_request(&request.id)?;
         let first = self
             .send_from(
                 &caller.session,
