@@ -632,7 +632,7 @@ package final class InMemoryDaemon: Sendable {
             setPullRefresh: { refresh in try self.setPullRefresh(refresh) },
             updateFromBase: { session in try self.updateFromBase(session) },
             importIssues: { project in try self.importIssues(project) },
-            watch: { session in self.watch(session) }
+            watch: { session, after in self.watch(session, after: after) }
         )
     }
 
@@ -1202,12 +1202,13 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func watch(_ session: String) -> AsyncThrowingStream<WatchItem, any Error> {
+    private func watch(_ session: String, after: String?) -> AsyncThrowingStream<WatchItem, any Error> {
         AsyncThrowingStream { continuation in
             let id = UUID()
             let known = state.withValue { state -> Bool in
                 guard let history = state.histories[session] else { return false }
-                for event in history {
+                let unsent = after.flatMap { after in history.lastIndex { $0.id == after } }.map { $0 + 1 } ?? 0
+                for event in history[unsent...] {
                     continuation.yield(.event(event))
                 }
                 continuation.yield(.historyLoaded)

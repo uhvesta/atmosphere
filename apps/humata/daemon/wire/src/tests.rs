@@ -124,6 +124,7 @@ fn send(session: &str) -> pb::request::Kind {
 fn watch(session: &str) -> pb::request::Kind {
     pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.to_owned(),
+        ..Default::default()
     })
 }
 

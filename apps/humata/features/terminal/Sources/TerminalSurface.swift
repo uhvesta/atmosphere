@@ -82,7 +82,9 @@ final class TerminalSurfaceHost: NSView {
         surface?.close()
         surface = nil
         shown = nil
-        subviews.forEach { $0.removeFromSuperview() }
+        for view in subviews {
+            view.removeFromSuperview()
+        }
     }
 
     private func fill(with view: NSView) {

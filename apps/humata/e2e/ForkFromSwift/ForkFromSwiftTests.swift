@@ -140,7 +140,7 @@ final class ForkFromSwiftTests: XCTestCase {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 var ended = 0
-                for try await item in await client.watch(session) {
+                for try await item in await client.watch(session, nil) {
                     guard case .event(let event) = item else { continue }
                     if case .turnEnded = event.kind { ended += 1 }
                     if ended >= count, event.kind == .idle { return }

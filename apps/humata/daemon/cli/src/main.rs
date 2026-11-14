@@ -8,6 +8,7 @@ mod control;
 mod error;
 mod print;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -1716,6 +1717,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Watch { session } => {
             let request = Request::WatchSession(pb::WatchSession {
                 session_id: session,
+                after_event_id: String::new(),
             });
             let (_, mut stream) = client.stream(request).await?;
             while let Some(item) = stream.next().await {
@@ -2424,20 +2426,25 @@ async fn call_and_wait(
     expected: &'static str,
     mut on_event: impl FnMut(&pb::SessionEvent),
 ) -> Result<(), CliError> {
-    // The watch replays the history first; what is already there isn't new.
-    let seen = history(client, session).await?.len();
+    // What is already there isn't new: the watch starts after it. A history
+    // since cut back starts over, and its events already seen are skipped.
+    let history = history(client, session).await?;
+    let after_event_id = history
+        .last()
+        .map(|event| event.id.clone())
+        .unwrap_or_default();
+    let seen: HashSet<String> = history.into_iter().map(|event| event.id).collect();
     let watch = pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.to_owned(),
+        after_event_id,
     });
     let (_, mut stream) = client.stream(watch).await?;
     expect_ok(client.call(request).await?, answered, expected)?;
-    let mut index = 0;
     while let Some(item) = stream.next().await {
         let Some(event) = session_event(item)? else {
             continue;
         };
-        index += 1;
-        if index <= seen {
+        if seen.contains(&event.id) {
             continue;
         }
         on_event(&event);

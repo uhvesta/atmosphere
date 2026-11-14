@@ -62,7 +62,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
         try await daemon.client.send(session.id, "one", .enqueue)
-        var events = await daemon.client.watch(session.id).makeAsyncIterator()
+        var events = await daemon.client.watch(session.id, nil).makeAsyncIterator()
         try await daemon.client.send(session.id, "two", .enqueue)
 
         var seen: [SessionEvent] = []
@@ -83,7 +83,7 @@ final class InMemoryDaemonTests: XCTestCase {
     func testWatchingAnEmptyHistorySaysItIsLoaded() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
-        var items = await daemon.client.watch(session.id).makeAsyncIterator()
+        var items = await daemon.client.watch(session.id, nil).makeAsyncIterator()
         let first = try await items.next()
         XCTAssertEqual(first, .historyLoaded)
     }

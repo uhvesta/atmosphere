@@ -81,6 +81,7 @@ def _run(repository_ctx, what, arguments, environment = {}, working_directory = 
 
 def _fetch(repository_ctx, what, arguments, environment, working_directory):
     """Runs a download, trying again when the network drops it."""
+    result = None
     for _ in range(_FETCH_TRIES):
         result = _execute(repository_ctx, arguments, environment, working_directory)
         if result.return_code == 0:

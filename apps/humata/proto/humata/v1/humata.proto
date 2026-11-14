@@ -1548,6 +1548,11 @@ message History {
 // as it happens.
 message WatchSession {
   string session_id = 1;
+  // When set, the history sent first starts after this event, for a watcher
+  // that has the history up to it. When the history no longer holds it, as
+  // after a rewind or once it was a part of a reply since made whole, the
+  // whole history is sent.
+  string after_event_id = 2;
 }
 
 message Watching {}

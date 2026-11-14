@@ -826,6 +826,9 @@ package struct SessionFeature {
                 // The history is sent again, and the reply's parts with it;
                 // those already shown are skipped, so the reply stays.
                 let session = state.session.id
+                // A chat opened again, or a watch started over, has the
+                // history up to its last event; only what follows is sent.
+                let after = state.events.last?.id
                 return .merge(
                     readsImages(&state),
                     .run { send in
@@ -835,7 +838,7 @@ package struct SessionFeature {
                         let batches = EventBatches()
                         let reader = Task {
                             do {
-                                for try await item in await daemon.watch(session) {
+                                for try await item in await daemon.watch(session, after) {
                                     switch item {
                                     case .event(let event): await batches.add(event)
                                     case .loading(let read, let total):

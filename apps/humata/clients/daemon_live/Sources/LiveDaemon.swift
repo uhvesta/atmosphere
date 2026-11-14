@@ -923,12 +923,13 @@ extension DaemonClient {
                 }
                 return ImportedIssues(items: imported.items.map(Item.init), skipped: Int(imported.skipped))
             },
-            watch: { session in
+            watch: { session, after in
                 AsyncThrowingStream { continuation in
                     let task = Task {
                         do {
                             var watch = Humata_V1_WatchSession()
                             watch.sessionID = session
+                            watch.afterEventID = after ?? ""
                             for try await item in try await daemon.stream(.watchSession(watch)) {
                                 switch item.kind {
                                 case .sessionEvent(let event):

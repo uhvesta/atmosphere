@@ -45,7 +45,7 @@ final class LongChatTests: XCTestCase {
         let store = Store(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     for event in history { continuation.yield(.event(event)) }
                     continuation.yield(.historyLoaded)

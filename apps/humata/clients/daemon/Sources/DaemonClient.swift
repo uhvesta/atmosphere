@@ -260,11 +260,14 @@ package struct DaemonClient: Sendable {
     /// not imported before.
     package var importIssues: @Sendable (_ project: String) async throws -> ImportedIssues
     /// How much of the session's history is read while it's read from disk,
-    /// the history, then each new event. Ends when the calling task is
-    /// cancelled; throws if the connection drops.
-    package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<WatchItem, any Error> = { _ in
-        AsyncThrowingStream { $0.finish() }
-    }
+    /// the history, then each new event. With `after`, the history starts
+    /// past that event, for a caller that has it up to there; all of it
+    /// comes when the history no longer holds that event. Ends when the
+    /// calling task is cancelled; throws if the connection drops.
+    package var watch:
+        @Sendable (_ session: String, _ after: String?) async -> AsyncThrowingStream<WatchItem, any Error> = { _, _ in
+            AsyncThrowingStream { $0.finish() }
+        }
 }
 
 extension DaemonClient: TestDependencyKey {

@@ -46,9 +46,9 @@ final class GhosttySurfaceView: NSView {
         // C copies of the environment, freed once Ghostty has taken its own.
         let copies = command.environment.sorted { $0.key < $1.key }.map { (strdup($0.key), strdup($0.value)) }
         defer {
-            copies.forEach {
-                free($0.0)
-                free($0.1)
+            for (key, value) in copies {
+                free(key)
+                free(value)
             }
         }
         var variables = copies.map { ghostty_env_var_s(key: $0.0, value: $0.1) }
@@ -250,9 +250,15 @@ final class GhosttySurfaceView: NSView {
         }
         let available = read.available.map { strdup($0) }
         defer {
-            mimes.forEach { free($0) }
-            datas.forEach { $0.deallocate() }
-            available.forEach { free($0) }
+            for mime in mimes {
+                free(mime)
+            }
+            for data in datas {
+                data.deallocate()
+            }
+            for type in available {
+                free(type)
+            }
         }
         let contents = read.contents.indices.map { index in
             ghostty_clipboard_content_s(

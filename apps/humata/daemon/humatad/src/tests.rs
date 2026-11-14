@@ -82,6 +82,7 @@ pub(crate) async fn after_turns(
 ) -> Vec<pb::SessionEvent> {
     let request = pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.to_owned(),
+        ..Default::default()
     });
     let Ok((_, mut stream)) = client.stream(request).await else {
         panic!("couldn't watch {session}")
@@ -187,6 +188,7 @@ async fn a_watch_marks_the_end_of_the_history_before_anything_new() {
     let session = started(&client, start(state.path(), "")).await.id;
     let request = pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.clone(),
+        ..Default::default()
     });
     let Ok((_, mut stream)) = client.stream(request).await else {
         panic!("couldn't watch {session}")
@@ -2889,6 +2891,7 @@ const WRITE_THEN_WAIT: &str = r#"{"rules": [
 async fn saved_mid_turn(client: &Client, session: &str) {
     let request = pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.to_owned(),
+        ..Default::default()
     });
     let Ok((_, mut stream)) = client.stream(request).await else {
         panic!("couldn't watch {session}")
@@ -4395,4 +4398,79 @@ async fn saving_a_hosts_setup_script_answers_before_the_script_ends() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("the setup script never ran");
+}
+
+/// The history a watch of `session` sends first, when its watcher has the
+/// history up to `after`.
+async fn replayed(client: &Client, session: &str, after: &str) -> Vec<pb::SessionEvent> {
+    let request = pb::request::Kind::WatchSession(pb::WatchSession {
+        session_id: session.to_owned(),
+        after_event_id: after.to_owned(),
+    });
+    let Ok((_, mut stream)) = client.stream(request).await else {
+        panic!("couldn't watch {session}")
+    };
+    let mut events = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+            Ok(Some(Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+            }))) => events.push(event),
+            Ok(Some(Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::HistoryLoaded(_)),
+            }))) => return events,
+            Ok(Some(Ok(_))) => {}
+            other => panic!("the watch ended with {other:?}; events so far: {events:#?}"),
+        }
+    }
+}
+
+/// `events` as a history keeps them: without the parts of replies.
+fn whole(events: Vec<pb::SessionEvent>) -> Vec<pb::SessionEvent> {
+    events
+        .into_iter()
+        .filter(|event| !matches!(event.kind, Some(pb::session_event::Kind::AssistantDelta(_))))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_watcher_that_has_the_history_up_to_an_event_is_sent_only_what_follows_it() {
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts
+        .hosts
+        .insert("far".to_owned(), host_reached_by_command(dir.path()).await);
+    let (mac, work) = (dir.path().join("mac"), dir.path().join("work"));
+    for folder in [&mac, &work] {
+        std::fs::create_dir_all(folder).unwrap_or_else(|error| panic!("{error}"));
+    }
+    let client = daemon(&mac, hosts).await;
+    for host in ["", "far"] {
+        let session = started(&client, start(&work, host)).await.id;
+        send(&client, &session, "hello").await;
+        let first = whole(after_turns(&client, &session, 1).await);
+        send(&client, &session, "more").await;
+        let all = whole(after_turns(&client, &session, 2).await);
+        let Some(last_of_first) = first.last() else {
+            panic!("the first turn has no events")
+        };
+
+        let rest = replayed(&client, &session, &last_of_first.id).await;
+        assert_eq!(rest, all[first.len()..], "on {host:?}");
+        assert!(
+            replayed(&client, &session, &all[all.len() - 1].id)
+                .await
+                .is_empty()
+        );
+        // An event the history doesn't hold, as after a rewind, gets all of it.
+        assert_eq!(
+            replayed(&client, &session, "gone").await,
+            all,
+            "on {host:?}"
+        );
+        assert_eq!(replayed(&client, &session, "").await, all, "on {host:?}");
+    }
 }

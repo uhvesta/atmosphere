@@ -1269,20 +1269,30 @@ impl Daemon {
     /// as each turn ends. While the host can't be reached, the recovery copy
     /// is sent instead and the stream ends, so the session can still be read
     /// and the app knows to watch again.
-    async fn watch(&self, host: &str, watch: pb::WatchSession) -> Result<Reply, DaemonError> {
+    async fn watch(&self, host: &str, mut watch: pb::WatchSession) -> Result<Reply, DaemonError> {
         let session = watch.session_id.clone();
-        let request = pb::request::Kind::WatchSession(watch);
         if host.is_empty() {
-            return self.forward(host, request).await;
+            return self
+                .forward(host, pb::request::Kind::WatchSession(watch))
+                .await;
         }
+        // The host is asked for the whole history, which the backing up
+        // below counts through, and only what the watcher lacks is passed on.
+        let after = std::mem::take(&mut watch.after_event_id);
+        let request = pb::request::Kind::WatchSession(watch);
         let (response, mut upstream) = match self.forward(host, request).await {
             Ok(Reply::Stream { response, items }) => (response, items),
             Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
                 let Some(history) = self.kept_history(&session).await? else {
                     return Err(failure);
                 };
+                let unsent = history
+                    .events
+                    .iter()
+                    .rposition(|event| !after.is_empty() && event.id == after)
+                    .map_or(0, |index| index + 1);
                 let (items, receiver) = mpsc::channel(history.events.len() + 1);
-                for event in history.events {
+                for event in history.events.into_iter().skip(unsent) {
                     let item = pb::StreamItem {
                         kind: Some(pb::stream_item::Kind::SessionEvent(event)),
                     };
@@ -1322,7 +1332,12 @@ impl Daemon {
             // copies off the host are made at most once a minute, and the
             // turn's end makes one anyway.
             let mut backed_up_save: Option<std::time::Instant> = None;
-            loop {
+            // While the history comes, the event the watcher has it up to,
+            // and what came before it is held: dropped once that event comes,
+            // all sent if the history ends without it.
+            let mut after = Some(after).filter(|after| !after.is_empty());
+            let mut held = Vec::new();
+            'relay: loop {
                 let next = tokio::select! {
                     next = upstream.recv() => next,
                     () = items.closed() => break,
@@ -1387,6 +1402,32 @@ impl Daemon {
                         }
                     }
                 }
+                if let Some(wanted) = &after {
+                    match &item {
+                        Ok(pb::StreamItem {
+                            kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+                        }) => {
+                            if event.id == *wanted {
+                                held.clear();
+                                after = None;
+                            } else {
+                                held.push(item);
+                            }
+                            continue;
+                        }
+                        Ok(pb::StreamItem {
+                            kind: Some(pb::stream_item::Kind::HistoryLoaded(_)),
+                        }) => {
+                            after = None;
+                            for kept in held.drain(..) {
+                                if items.send(kept).await.is_err() {
+                                    break 'relay;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 if items.send(item).await.is_err() {
                     break;
                 }
@@ -1411,6 +1452,7 @@ impl Daemon {
         loop {
             let request = pb::request::Kind::WatchSession(pb::WatchSession {
                 session_id: session.to_owned(),
+                ..Default::default()
             });
             match self.forward(host, request).await {
                 Ok(Reply::Stream { items, .. }) => return Some(items),

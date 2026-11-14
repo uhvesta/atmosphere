@@ -295,7 +295,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     continuation.yield(.loading(read: 0, total: 0))
                     continuation.yield(.loading(read: 40, total: 100))
@@ -325,7 +325,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in AsyncThrowingStream { $0.finish(throwing: DaemonError.disconnected) } }
+            $0.daemon.watch = { _, _ in AsyncThrowingStream { $0.finish(throwing: DaemonError.disconnected) } }
             $0.continuousClock = clock
         }
         store.exhaustivity = .off
@@ -344,6 +344,46 @@ final class SessionFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testAChatWatchedAgainIsSentOnlyWhatCameAfterItsLastEvent() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let event = { (id: String, kind: SessionEvent.Kind) in
+            SessionEvent(id: id, time: Date(timeIntervalSince1970: 0), kind: kind)
+        }
+        let history = LockIsolated([event("e1", .userMessage("hi")), event("e2", .turnEnded(aborted: false))])
+        let asked = LockIsolated<[String?]>([])
+        let clock = TestClock()
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            // As the daemon does: the history past `after`, then the
+            // connection drops.
+            $0.daemon.watch = { _, after in
+                asked.withValue { $0.append(after) }
+                let events = history.value
+                let unsent = after.flatMap { after in events.lastIndex { $0.id == after } }.map { $0 + 1 } ?? 0
+                return AsyncThrowingStream { continuation in
+                    for event in events[unsent...] { continuation.yield(.event(event)) }
+                    continuation.yield(.historyLoaded)
+                    continuation.finish(throwing: DaemonError.disconnected)
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.watchEnded)
+        history.withValue { $0.append(event("e3", .userMessage("more"))) }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.task)
+        await store.receive(\.watchEnded)
+
+        XCTAssertEqual(asked.value, [nil, "e2"])
+        XCTAssertEqual(store.state.events.map(\.id), ["e1", "e2", "e3"])
+        await store.skipInFlightEffects()
+    }
+
     func testAnOfflineHostsHistoryIsWatchedAgainLessOftenEachTime() async throws {
         // The daemon sends what it has kept and ends the watch at once.
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
@@ -355,7 +395,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     for event in kept { continuation.yield(.event(event)) }
                     continuation.finish()
@@ -547,7 +587,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: state ?? SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in AsyncThrowingStream { _ in } }
+            $0.daemon.watch = { _, _ in AsyncThrowingStream { _ in } }
             $0.daemon.markSeen = { _, _ in }
         }
         store.exhaustivity = .off
@@ -599,7 +639,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 watches.withValue { $0 += 1 }
                 return watches.value == 1 ? stream : AsyncThrowingStream { _ in }
             }
@@ -689,7 +729,7 @@ final class SessionFeatureTests: XCTestCase {
                 seen.withValue { $0.append(turns) }
                 marked.fulfill()
             }
-            $0.daemon.watch = { _ in AsyncThrowingStream { _ in } }
+            $0.daemon.watch = { _, _ in AsyncThrowingStream { _ in } }
             $0.appActivity = AppActivity(
                 isActive: { active.value }, activations: { activations }, setBadge: { _ in })
         }
@@ -1314,7 +1354,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     continuation.yield(.event(said))
                     continuation.yield(.historyLoaded)
@@ -1557,7 +1597,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in stream }
+            $0.daemon.watch = { _, _ in stream }
             $0.daemon.markSeen = { _, _ in }
         }
         store.exhaustivity = .off
@@ -1588,7 +1628,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     for event in kept { continuation.yield(.event(event)) }
                     continuation.finish()

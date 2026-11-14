@@ -292,7 +292,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             // The history a restarted daemon sends, all at once.
-            $0.daemon.watch = { _ in
+            $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     for event in history { continuation.yield(.event(event)) }
                     continuation.yield(.historyLoaded)
