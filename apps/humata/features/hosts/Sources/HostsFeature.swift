@@ -760,11 +760,19 @@ package struct HostEditorFeature {
             if !(provider.baseURL.hasPrefix("https://") || provider.baseURL.hasPrefix("http://")) {
                 return "Its base URL starts with https://, or http:// for a server on your own network."
             }
-            if !provider.keyVariable.isVariableName {
-                return "Name the variable that holds its key, such as \(provider.kind.keyVariable): letters, "
-                    + "digits and _, not starting with a digit. The key itself goes in that variable above."
+            if !provider.keyVariable.isKeyVariableName {
+                return "Name the variable that holds its key, such as \(provider.kind.keyVariable): upper-case "
+                    + "letters, digits and _, not starting with a digit, at most 64 characters. The key itself "
+                    + "goes in that variable above."
             }
             return nil
+        }
+
+        /// Whether "Add <variable>" would add a row for `provider`'s key:
+        /// false once a row of that name is there to type the key in.
+        package func offersAddKeyVariable(for provider: HostProvider) -> Bool {
+            let name = provider.keyVariable.trimmed
+            return name.isKeyVariableName && !variables.contains { $0.name.trimmed == name }
         }
 
         /// Whether the variable `provider` takes its key from is set, or
@@ -862,11 +870,10 @@ package struct HostEditorFeature {
                 return .none
 
             case .addKeyVariableTapped(let id):
-                guard let provider = state.providers[id: id] else { return .none }
-                let name = provider.keyVariable.trimmed
-                guard name.isVariableName, !state.variables.contains(where: { $0.name.trimmed == name }) else {
+                guard let provider = state.providers[id: id], state.offersAddKeyVariable(for: provider) else {
                     return .none
                 }
+                let name = provider.keyVariable.trimmed
                 state.variables.append(Variable(id: state.nextRow, name: name))
                 state.nextRow += 1
                 return .none
@@ -920,6 +927,14 @@ extension String {
     fileprivate var isVariableName: Bool {
         first.map { $0.isLetter || $0 == "_" } == true
             && allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+    }
+
+    /// Whether it can name the variable a provider's key is in: upper-case
+    /// letters, digits and _, not starting with a digit, at most 64
+    /// characters. A key pasted here by mistake rarely passes.
+    fileprivate var isKeyVariableName: Bool {
+        count <= 64 && first.map { $0.isUppercase || $0 == "_" } == true
+            && allSatisfy { $0.isASCII && ($0.isUppercase || $0.isNumber || $0 == "_") }
     }
 }
 

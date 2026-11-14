@@ -230,6 +230,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
                 commit: commit.clone(),
             })
             .collect(),
+        follows_base: record.follows_base,
         shares_code: record
             .checkouts
             .iter()

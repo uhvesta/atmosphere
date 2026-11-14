@@ -235,7 +235,8 @@ package struct SessionView: View {
             }
             // Shows only once the agent has started a subagent.
             AgentsButton(store: store, names: names)
-            if store.session.projectID != nil {
+            // Only where the plan can show: beside this session's chat.
+            if store.session.projectID != nil, store.tab == .chat, !store.beside {
                 PlanPanelToggle(store: store.scope(state: \.planPanel, action: \.planPanel))
             }
             actions(names: names)
@@ -354,7 +355,7 @@ package struct SessionView: View {
                     .help(
                         "A side chat: its agent reads and searches, and every write or command it asks for is "
                             + "refused")
-            } else if store.session.plansWithCode {
+            } else if store.session.followsBase {
                 // Nothing to allow: it plans, and writes nothing.
                 Label("Planning: Reads Only", systemImage: "eye")
                     .foregroundStyle(.secondary)
@@ -367,7 +368,7 @@ package struct SessionView: View {
                     Label("Planning: Reads Only", systemImage: "eye")
                         .foregroundStyle(.secondary)
                         .fixedSize()
-                        .help("Plan mode: the agent reads and proposes, and every write or command is refused")
+                        .help(planModeHelp)
                 }
                 Picker("Approvals", selection: approvalMode) {
                     ForEach(ApprovalMode.offered(for: store.session.backend), id: \.self) { mode in
@@ -377,7 +378,12 @@ package struct SessionView: View {
                 .pickerStyle(.menu)
                 .modifier(HidesLabel(hidden: !names))
                 .fixedSize()
-                .help("What the agent may do without asking")
+                // Plan mode asks about everything, whatever is picked here.
+                .disabled(store.session.access == .plan)
+                .help(
+                    store.session.access == .plan
+                        ? "What the agent may do without asking, once Plan is off: in plan mode it asks every time"
+                        : "What the agent may do without asking")
             }
             if store.session.backend == .copilot {
                 Toggle(
@@ -400,6 +406,16 @@ package struct SessionView: View {
     private var codeAt: String {
         let commits = store.session.codeCommits.map { "\($0.repository) at \($0.commit.prefix(8))" }
         return commits.isEmpty ? "" : ". Last turn read " + commits.formatted(.list(type: .and))
+    }
+
+    /// What plan mode refuses, and from when: a Claude turn already
+    /// running keeps what the person's own settings allow until it ends.
+    private var planModeHelp: String {
+        let refused =
+            "Plan mode: the agent reads and proposes, and every write or command it asks for "
+            + "is refused from now"
+        guard store.session.backend == .claude else { return refused }
+        return refused + ". A turn already running keeps what your own Claude settings always allow until it ends"
     }
 
     private func copy(_ text: String) {

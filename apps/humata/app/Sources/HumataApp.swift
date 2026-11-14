@@ -102,14 +102,7 @@ struct HumataApp: App {
                 TextSizeCommands(store: store)
             }
             CommandMenu("Go") {
-                Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
-                    .keyboardShortcut("0", modifiers: .command)
-                Button("Next Waiting Session") { store.send(.sidebar(.nextWaitingTapped)) }
-                    .keyboardShortcut("]", modifiers: .command)
-                Divider()
-                Button("Search Sessions") { store.send(.sidebar(.selected(.search))) }
-                    .keyboardShortcut("f", modifiers: [.command, .shift])
-                Button("Hosts") { store.send(.sidebar(.selected(.hosts))) }
+                GoCommands(store: store)
             }
             CommandMenu("Session") {
                 SessionCommands(store: store)
@@ -125,7 +118,9 @@ private struct NewCommands: View {
     let store: StoreOf<AppFeature>
 
     var body: some View {
-        let presenting = store.sidebar.presenting
+        // Greyed out while the installer takes the window: there's no
+        // sidebar to show what they'd open.
+        let presenting = store.sidebar.presenting || store.installer != nil
         Button("New Chat") { store.send(.sidebar(.newChatTapped)) }
             .keyboardShortcut("n", modifiers: .command)
             .disabled(presenting)
@@ -136,6 +131,26 @@ private struct NewCommands: View {
         ProjectCommands(store: store)
         Button("Import Session…") { store.send(.sidebar(.importTapped)) }
             .disabled(presenting)
+    }
+}
+
+/// The Inbox, the next waiting session, Search and Hosts; greyed out
+/// while the installer takes the window.
+private struct GoCommands: View {
+    let store: StoreOf<AppFeature>
+
+    var body: some View {
+        Group {
+            Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
+                .keyboardShortcut("0", modifiers: .command)
+            Button("Next Waiting Session") { store.send(.sidebar(.nextWaitingTapped)) }
+                .keyboardShortcut("]", modifiers: .command)
+            Divider()
+            Button("Search Sessions") { store.send(.sidebar(.selected(.search))) }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            Button("Hosts") { store.send(.sidebar(.selected(.hosts))) }
+        }
+        .disabled(store.installer != nil)
     }
 }
 
@@ -170,7 +185,7 @@ private struct ProjectCommands: View {
     var body: some View {
         let id = store.sidebar.commandProject
         let name = id.flatMap { store.sidebar.projects[id: $0]?.name } ?? ""
-        let off = id == nil || store.sidebar.presenting
+        let off = id == nil || store.sidebar.presenting || store.installer != nil
         Button(name.isEmpty ? "New Session…" : "New Session in \(name)…") {
             if let id { store.send(.sidebar(.newSessionTapped(projectID: id))) }
         }
@@ -193,6 +208,13 @@ private struct SessionCommands: View {
     let store: StoreOf<AppFeature>
 
     var body: some View {
+        // Greyed out while the installer takes the window, over panes that
+        // aren't drawn.
+        Group { commands }
+            .disabled(store.installer != nil)
+    }
+
+    @ViewBuilder private var commands: some View {
         let session = store.commandSession
         let side = store.focusedColumn == .side && store.side != nil
         let live = session.map { !$0.session.archived } ?? false

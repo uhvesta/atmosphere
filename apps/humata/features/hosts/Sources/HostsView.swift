@@ -588,6 +588,10 @@ struct HostEditorSections: View {
                         Text(problem)
                             .font(.caption)
                             .foregroundStyle(.red)
+                    } else if !store.state.keyIsSet(for: provider), !store.state.offersAddKeyVariable(for: provider) {
+                        Text("Type the key in the \(provider.keyVariable) row under Variables, then save.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else if !store.state.keyIsSet(for: provider) {
                         HStack {
                             Text(

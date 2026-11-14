@@ -1,6 +1,6 @@
 //! Variables for the programs agents start.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, PoisonError, RwLock};
 
 /// Variables set for the programs agents start: the Copilot CLI and the
@@ -8,20 +8,46 @@ use std::sync::{Arc, PoisonError, RwLock};
 /// connects, so a token reaches the agents without being written to a file
 /// on the host. Clones share the same variables.
 #[derive(Clone, Debug, Default)]
-pub struct Env(Arc<RwLock<BTreeMap<String, String>>>);
+pub struct Env {
+    vars: Arc<RwLock<BTreeMap<String, String>>>,
+    /// The names of the variables the host's model providers take their
+    /// keys from: a session on no provider is never given them.
+    provider_variables: Arc<RwLock<BTreeSet<String>>>,
+}
 
 impl Env {
     pub fn new(vars: impl IntoIterator<Item = (String, String)>) -> Self {
-        Self(Arc::new(RwLock::new(vars.into_iter().collect())))
+        Self {
+            vars: Arc::new(RwLock::new(vars.into_iter().collect())),
+            provider_variables: Arc::default(),
+        }
     }
 
     /// Replaces every variable; programs started from now on see the new ones.
     pub fn replace(&self, vars: BTreeMap<String, String>) {
-        *self.0.write().unwrap_or_else(PoisonError::into_inner) = vars;
+        *self.vars.write().unwrap_or_else(PoisonError::into_inner) = vars;
+    }
+
+    /// Replaces the names of the variables the host's providers take their
+    /// keys from.
+    pub fn set_provider_variables(&self, names: impl IntoIterator<Item = String>) {
+        *self
+            .provider_variables
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = names.into_iter().collect();
+    }
+
+    /// The names of the variables the host's providers take their keys
+    /// from.
+    pub fn provider_variables(&self) -> BTreeSet<String> {
+        self.provider_variables
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn vars(&self) -> Vec<(String, String)> {
-        self.0
+        self.vars
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
@@ -31,7 +57,7 @@ impl Env {
 
     /// The value of `name`, if set.
     pub fn get(&self, name: &str) -> Option<String> {
-        self.0
+        self.vars
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(name)
@@ -40,7 +66,7 @@ impl Env {
 
     /// Whether `name` is set to something.
     pub fn has(&self, name: &str) -> bool {
-        self.0
+        self.vars
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(name)
@@ -66,5 +92,18 @@ mod tests {
         );
         assert!(shared.has("GH_TOKEN"));
         assert!(!shared.has("A"));
+    }
+
+    #[test]
+    fn a_clone_sees_the_provider_variables_set() {
+        let env = Env::default();
+        let shared = env.clone();
+        env.set_provider_variables(["ANTHROPIC_API_KEY".to_owned()]);
+        assert_eq!(
+            shared.provider_variables(),
+            BTreeSet::from(["ANTHROPIC_API_KEY".to_owned()])
+        );
+        env.set_provider_variables([]);
+        assert!(shared.provider_variables().is_empty());
     }
 }

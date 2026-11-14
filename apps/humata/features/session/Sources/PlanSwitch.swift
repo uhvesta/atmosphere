@@ -12,7 +12,7 @@ package enum PlanSwitch {
     /// planning session with the code, which only ever read.
     package static func offered(for session: Session, commands: ChatCommands?) -> Bool {
         guard commands?.plan == true, !session.archived, !session.hostOffline else { return false }
-        return !session.readOnly && session.access != .sideChat && !session.plansWithCode
+        return !session.readOnly && session.access != .sideChat && !session.followsBase
     }
 }
 

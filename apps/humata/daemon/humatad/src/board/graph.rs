@@ -15,7 +15,9 @@ use super::{Item, Kind, Status};
 /// round it, starting and ending with the same one. A milestone counts as
 /// waiting on its tasks, and a task on what its milestone depends on, so a
 /// milestone and something one of its tasks holds up can't wait on each
-/// other.
+/// other. Where a task waits on something only because its milestone
+/// does, the milestone is in the path between them, and when `from` is in
+/// the loop the path starts and ends with it.
 pub fn cycle(items: &[Item], from: &str) -> Option<Vec<String>> {
     let by_id: HashMap<&str, &Item> = items.iter().map(|item| (item.id.as_str(), item)).collect();
     let mut waits: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -39,8 +41,58 @@ pub fn cycle(items: &[Item], from: &str) -> Option<Vec<String>> {
     let mut path = Vec::new();
     let mut seen = HashSet::new();
     let start = by_id.get(from)?.id.as_str();
-    round(&waits, start, &mut path, &mut seen)
-        .map(|ids| ids.into_iter().map(str::to_owned).collect())
+    let ids = through_milestones(&by_id, &round(&waits, start, &mut path, &mut seen)?);
+    Some(
+        starting_at(ids, start)
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// `ids`, a loop, with each milestone put back between a task of its and
+/// what the task waits on only because the milestone does.
+fn through_milestones<'a>(by_id: &HashMap<&str, &'a Item>, ids: &[&'a str]) -> Vec<&'a str> {
+    let mut path = Vec::with_capacity(ids.len());
+    for pair in ids.windows(2) {
+        let (at, on) = (pair[0], pair[1]);
+        path.push(at);
+        let Some(item) = by_id.get(at) else {
+            continue;
+        };
+        let direct = item.fields.depends_on.iter().any(|id| id == on)
+            || by_id
+                .get(on)
+                .is_some_and(|task| task.fields.parent_id.as_deref() == Some(at));
+        if direct {
+            continue;
+        }
+        if let Some(milestone) = item
+            .fields
+            .parent_id
+            .as_deref()
+            .and_then(|id| by_id.get(id).copied())
+            .filter(|milestone| milestone.fields.depends_on.iter().any(|id| id == on))
+        {
+            path.push(milestone.id.as_str());
+        }
+    }
+    path.extend(ids.last());
+    path
+}
+
+/// The loop `ids` turned to start and end with `start`, if it goes
+/// through it.
+fn starting_at<'a>(mut ids: Vec<&'a str>, start: &str) -> Vec<&'a str> {
+    let Some(at) = ids.iter().position(|id| *id == start) else {
+        return ids;
+    };
+    ids.pop();
+    ids.rotate_left(at);
+    if let Some(first) = ids.first().copied() {
+        ids.push(first);
+    }
+    ids
 }
 
 /// Follows what `at` waits on, depth first, until it comes back to an item
@@ -82,7 +134,12 @@ fn round<'a>(
 /// The plan's order puts each item after what it depends on, the earliest
 /// added first where the links leave a choice, and each milestone's tasks
 /// right under it in the same order. A link between tasks of two
-/// milestones orders the milestones.
+/// milestones orders the milestones. Because each milestone's tasks are
+/// kept together, tasks that link two milestones both ways can't all come
+/// after what they wait on: the earlier milestone comes first with all its
+/// tasks, so one of them is listed before a task it waits on. Every link
+/// between items under the same milestone, or between items under none, is
+/// still honoured.
 pub fn plan(items: &mut [pb::Item]) {
     let planned = planned(items);
     for (item, planned) in items.iter_mut().zip(planned) {
@@ -150,6 +207,8 @@ fn planned(items: &[pb::Item]) -> Vec<Planned> {
             }
         }
     }
+    // `among` in order, each after what it is sorted after, unless a loop
+    // between milestones leaves no other choice; see [`plan`].
     let in_order = |mut among: Vec<usize>| -> Vec<usize> {
         among.sort_by_key(|at| (items[*at].created_unix_ms, *at));
         let mut left: HashSet<usize> = among.iter().copied().collect();
@@ -384,20 +443,57 @@ mod tests {
     }
 
     #[test]
-    fn every_item_gets_a_place_even_when_tasks_link_two_milestones_both_ways() {
+    fn tasks_linking_two_milestones_both_ways_stay_together_and_other_links_hold() {
         let mut items = [
             item("one", "", 1, &[]),
-            item("o1", "one", 2, &["t1"]),
-            item("o2", "one", 3, &[]),
+            item("o2", "one", 2, &["o1"]),
+            item("o1", "one", 3, &["t1"]),
             item("two", "", 4, &[]),
-            item("t1", "two", 5, &[]),
-            item("t2", "two", 6, &["o2"]),
+            item("t2", "two", 5, &["o2", "t1"]),
+            item("t1", "two", 6, &[]),
+            item("after", "", 7, &["two"]),
         ];
         plan(&mut items);
-        assert_eq!(
-            in_plan_order(&items),
-            ["one", "o1", "o2", "two", "t1", "t2"]
-        );
+        let order = |id: &str| {
+            items
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.plan_order)
+                .unwrap_or_else(|| panic!("no {id}"))
+        };
+        // Every item gets a place of its own.
+        let mut places: Vec<u32> = items.iter().map(|item| item.plan_order).collect();
+        places.sort_unstable();
+        places.dedup();
+        assert_eq!(places.len(), items.len());
+        // Each milestone's tasks come right under it.
+        for milestone in ["one", "two"] {
+            let mut under: Vec<u32> = items
+                .iter()
+                .filter(|item| item.parent_id == milestone)
+                .map(|item| item.plan_order)
+                .collect();
+            under.sort_unstable();
+            let first = order(milestone);
+            assert_eq!(under, [first + 1, first + 2], "{:?}", in_plan_order(&items));
+        }
+        // A link that doesn't cross milestones is honoured.
+        for item in &items {
+            for on in &item.depends_on {
+                let Some(on) = items.iter().find(|other| other.id == *on) else {
+                    continue;
+                };
+                if on.parent_id == item.parent_id {
+                    assert!(
+                        on.plan_order < item.plan_order,
+                        "{} before {}: {:?}",
+                        on.id,
+                        item.id,
+                        in_plan_order(&items)
+                    );
+                }
+            }
+        }
     }
 
     fn stored(id: &str, parent: Option<&str>, depends_on: &[&str]) -> Item {
@@ -452,12 +548,20 @@ mod tests {
         assert_eq!(ids.first(), ids.last());
         assert!(ids.contains(&"task".to_owned()) && ids.contains(&"after".to_owned()));
 
-        // Nor can a task wait on its own milestone, which waits on it.
+        // Nor can a task wait on its own milestone, which waits on it, or
+        // the milestone on its own task; the loop goes through both.
         let own = [
             stored("milestone", None, &[]),
             stored("task", Some("milestone"), &["milestone"]),
         ];
-        assert!(cycle(&own, "task").is_some());
+        let ids = cycle(&own, "task").expect("a loop");
+        assert_eq!(ids, ["task", "milestone", "task"]);
+        let own = [
+            stored("milestone", None, &["task"]),
+            stored("task", Some("milestone"), &[]),
+        ];
+        let ids = cycle(&own, "milestone").expect("a loop");
+        assert_eq!(ids, ["milestone", "task", "milestone"]);
 
         // Tasks of one milestone may wait on each other.
         let siblings = [

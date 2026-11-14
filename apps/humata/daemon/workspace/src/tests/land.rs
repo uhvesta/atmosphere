@@ -304,7 +304,7 @@ async fn a_copy_without_changes_follows_its_origin_to_the_latest_commit() {
         .expect("followed");
 
     assert_eq!(followed.commit, latest);
-    assert!(followed.fetched);
+    assert_eq!(followed.fetch_failed, None);
     assert!(!followed.changed);
     assert_eq!(
         read(&checkout.path.join("new.txt")).as_deref(),
@@ -348,5 +348,63 @@ async fn a_copy_of_a_repository_with_no_origin_follows_the_branch_it_has_checked
         .expect("followed");
 
     assert_eq!(followed.commit, latest);
-    assert!(followed.fetched);
+    assert_eq!(followed.fetch_failed, None);
+}
+
+#[tokio::test]
+async fn a_fetch_that_hangs_is_stopped_once_its_patience_runs_out() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (_, checkout) = copy_of_a_clone(dir.path()).await;
+    let before = head(&checkout.path);
+    // An origin whose transport never answers: the "ssh" sleeps, and its
+    // arguments go into a comment.
+    let clone = dir.path().join("app");
+    git_in(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://humata.invalid/app.git",
+        ],
+    );
+    git_in(&clone, &["config", "core.sshCommand", "exec sleep 30 #"]);
+    git_in(&clone, &["config", "ssh.variant", "simple"]);
+
+    let patience = std::time::Duration::from_secs(1);
+    let started = std::time::Instant::now();
+    let followed = follow(&checkout, patience).await.expect("followed");
+
+    assert!(
+        started.elapsed() < patience + std::time::Duration::from_secs(3),
+        "the fetch went on for {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        followed.fetch_failed,
+        Some(FetchFailed::TimedOut { seconds: 1 })
+    );
+    assert_eq!(followed.commit, before);
+}
+
+#[tokio::test]
+async fn a_fetch_from_an_origin_that_isnt_there_fails_with_gits_reason() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (_, checkout) = copy_of_a_clone(dir.path()).await;
+    let before = head(&checkout.path);
+    let gone = dir.path().join("gone");
+    git_in(
+        &dir.path().join("app"),
+        &["remote", "set-url", "origin", &gone.to_string_lossy()],
+    );
+
+    let followed = follow(&checkout, std::time::Duration::from_secs(60))
+        .await
+        .expect("followed");
+
+    let Some(FetchFailed::Failed { stderr }) = &followed.fetch_failed else {
+        panic!("not a failed fetch: {followed:?}");
+    };
+    assert!(!stderr.is_empty(), "git's reason is kept");
+    assert_eq!(followed.commit, before);
 }

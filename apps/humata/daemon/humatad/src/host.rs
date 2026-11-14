@@ -461,6 +461,19 @@ impl Host {
         self.machine.set_env(env);
     }
 
+    /// Sets the variables this host's model providers take their keys
+    /// from, which a session on no provider is never given.
+    pub fn set_provider_variables(&self, names: impl IntoIterator<Item = String>) {
+        self.env.set_provider_variables(names);
+    }
+
+    /// The variables this host's model providers take their keys from, as
+    /// last set.
+    #[cfg(test)]
+    pub fn provider_variables(&self) -> std::collections::BTreeSet<String> {
+        self.env.provider_variables()
+    }
+
     /// Points this host's local-model sessions at the app's model server
     /// on `port`, kept for when it starts again. Failing to keep it isn't
     /// fatal: sessions use it until the host stops.
@@ -1061,6 +1074,7 @@ impl Host {
                 {
                     self.set_model_server(port);
                 }
+                self.set_provider_variables(configure.provider_variables.clone());
                 Response::HostConfigured(pb::HostConfigured {
                     setup: Some(self.machine.configure(configure).await?),
                 })

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use humata_agent::{
-    Agent, ClaudeOptions, ClaudeRunner, Env, Event, EventKind, ForkOptions, LocalAgent, SendMode,
-    SessionId, SessionState, StartOptions,
+    Access, Agent, ClaudeOptions, ClaudeRunner, Env, Event, EventKind, ForkOptions, LocalAgent,
+    SendMode, SessionId, SessionState, StartOptions,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -21,6 +21,8 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 enum Reply {
     Text(&'static str),
     Shell(&'static str),
+    /// Uses the CLI's tool of that name with that input.
+    Tool(&'static str, Value),
     /// Never answers.
     Hang,
 }
@@ -178,6 +180,11 @@ fn stream_of(reply: &Reply, model: &Value) -> String {
                 "tool_use",
             )
         }
+        Reply::Tool(name, input) => (
+            json!({"type": "tool_use", "id": "toolu_1", "name": name, "input": {}}),
+            vec![json!({"type": "input_json_delta", "partial_json": input.to_string()})],
+            "tool_use",
+        ),
         Reply::Hang => return String::new(),
     };
     let mut events = vec![
@@ -650,4 +657,33 @@ async fn a_session_whose_conversation_claude_code_lost_fails_without_running_it(
         asked,
         "Claude Code wasn't run"
     );
+}
+
+#[tokio::test]
+async fn a_planning_session_never_runs_monitor_or_is_asked_about_it() {
+    let setup = Setup::new(vec![Reply::Tool(
+        "Monitor",
+        json!({"command": "echo hi > made.txt", "description": "watch a command"}),
+    )])
+    .await;
+    let agent = setup.agent();
+    let options = StartOptions {
+        access: Access::Plan,
+        ..setup.start_options()
+    };
+    let session = agent.start(options).await.expect("start");
+
+    agent
+        .send(&session.id, "watch something".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let events = wait_for(&agent, &session.id, idle_turns(1)).await;
+
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::PermissionRequested { .. })),
+        "{events:#?}"
+    );
+    assert!(!setup.work.path().join("made.txt").exists());
 }

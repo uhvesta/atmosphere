@@ -334,6 +334,14 @@ private struct DaemonBanner: View {
             banner("Restarting Humata's daemon…", systemImage: "arrow.triangle.2.circlepath") {
                 ProgressView().controlSize(.small)
             }
+        case .newerRunning:
+            banner(
+                "A newer Humata's daemon is running. This copy of Humata is older and can't use it, so it was left "
+                    + "running. Open the newer Humata from Applications, and quit this copy.",
+                systemImage: "exclamationmark.triangle.fill"
+            ) {
+                Button("Try Again") { store.send(.task) }
+            }
         case .failed(let message, let needsLoginItems):
             banner(message, systemImage: "exclamationmark.triangle.fill") {
                 if needsLoginItems {

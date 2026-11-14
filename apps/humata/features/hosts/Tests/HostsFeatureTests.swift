@@ -349,8 +349,10 @@ final class HostsFeatureTests: XCTestCase {
         let provider = try XCTUnwrap(store.state.editor?.providers.first)
         XCTAssertEqual(provider.keyVariable, HostProvider.Kind.openCodeGo.keyVariable)
         XCTAssertEqual(store.state.editor?.keyIsSet(for: provider), false)
+        XCTAssertEqual(store.state.editor?.offersAddKeyVariable(for: provider), true)
 
         await store.send(\.editor.addKeyVariableTapped, provider.id)
+        XCTAssertEqual(store.state.editor?.offersAddKeyVariable(for: provider), false)
         var variables = store.state.editor?.variables ?? []
         let row = try XCTUnwrap(variables.last)
         XCTAssertEqual(row.name, provider.keyVariable)
@@ -362,7 +364,7 @@ final class HostsFeatureTests: XCTestCase {
         await store.receive(\.editor.delegate.saved)
         XCTAssertEqual(store.state.coordinator.providers.map(\.keyVariable), [provider.keyVariable])
         XCTAssertEqual(store.state.coordinator.providers(for: .local).map(\.id), [provider.id])
-        XCTAssertFalse(store.state.coordinator.providers.contains { "\($0)".contains("sk-secret") })
+        XCTAssertEqual(store.state.coordinator.providers, [provider])
         XCTAssertEqual(daemon.env(of: "")[provider.keyVariable], "sk-secret")
         XCTAssertNil(store.state.editor?.update)
 
@@ -388,6 +390,22 @@ final class HostsFeatureTests: XCTestCase {
         state.providers[id: "p"]?.name = "Mine"
         XCTAssertTrue(state.canSave)
         XCTAssertEqual(state.update?.providers?.first?.baseURL, "https://api.openai.com/v1")
+    }
+
+    func testAKeyPastedAsTheProvidersVariableIsAProblem() throws {
+        var state = HostEditorFeature.State(host: RemoteHost(name: "far", sshDestination: "me@far"))
+        state.providers = [HostProvider(id: "p", kind: .openAI)]
+        let provider = try XCTUnwrap(state.providers[id: "p"])
+        XCTAssertNil(state.problem(with: provider))
+
+        state.providers[id: "p"]?.keyVariable = "sk1234abcd5678efgh"
+        let pasted = try XCTUnwrap(state.providers[id: "p"])
+        XCTAssertNotNil(state.problem(with: pasted))
+        XCTAssertFalse(state.canSave)
+
+        state.providers[id: "p"]?.keyVariable = String(repeating: "K", count: 65)
+        let long = try XCTUnwrap(state.providers[id: "p"])
+        XCTAssertNotNil(state.problem(with: long))
     }
 
     func testAVariableNeedsAName() {

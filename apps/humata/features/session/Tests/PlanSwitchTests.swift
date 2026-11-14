@@ -71,10 +71,39 @@ final class PlanSwitchTests: XCTestCase {
         var withCode = session("plan-code")
         withCode.planning = true
         withCode.access = .plan
+        withCode.followsBase = true
         let commands = ChatCommands(plan: true)
         XCTAssertFalse(PlanSwitch.offered(for: side, commands: commands))
         XCTAssertFalse(PlanSwitch.offered(for: withCode, commands: commands))
         XCTAssertTrue(PlanSwitch.offered(for: session("plan-ordinary"), commands: commands))
+    }
+
+    /// A Plan Only session switched into plan mode doesn't follow its
+    /// base, so it can be switched back; one planning with the code can't.
+    func testOnlyASessionThatFollowsItsBaseLosesTheSwitch() {
+        let commands = ChatCommands(plan: true)
+        var planOnly = session("plan-only")
+        planOnly.planning = true
+        planOnly.access = .plan
+        XCTAssertTrue(PlanSwitch.offered(for: planOnly, commands: commands))
+
+        var withCode = planOnly
+        withCode.followsBase = true
+        XCTAssertFalse(PlanSwitch.offered(for: withCode, commands: commands))
+    }
+
+    func testAPlanOnlySessionInPlanSwitchesBackToFull() async {
+        var planOnly = session("plan-only-back")
+        planOnly.planning = true
+        planOnly.access = .plan
+        let asked = LockIsolated<[SessionUpdate]>([])
+        let store = store(planOnly, asked: asked)
+
+        await store.send(.plan(.toggled))
+        await store.receive(\.plan.changed)
+        XCTAssertEqual(store.state.session.access, .full)
+        XCTAssertEqual(asked.value.map(\.access), [.full])
+        await store.finish()
     }
 
     func testAnArchivedSessionIsAskedNothing() async {

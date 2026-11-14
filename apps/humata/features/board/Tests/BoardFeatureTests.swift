@@ -1175,4 +1175,102 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.unread)
         XCTAssertNotNil(store.state.alert)
     }
+
+    /// An item with `id` as its id and title, under `parent`, waiting on `dependsOn`.
+    private func planItem(
+        _ id: String, parent: String? = nil, kind: ItemKind? = nil, dependsOn: [String] = []
+    ) -> Item {
+        Item(
+            id: id, projectID: "project",
+            fields: ItemFields(parentID: parent, title: id, kind: kind, dependsOn: dependsOn),
+            created: Date(timeIntervalSince1970: 0))
+    }
+
+    func testTheGraphPutsAnItemWaitingOnAMilestoneAfterAllItsTasks() throws {
+        let graph = PlanGraph(planned: [
+            planItem("launch", kind: .milestone),
+            planItem("write", parent: "launch"),
+            planItem("publish", parent: "launch", dependsOn: ["write"]),
+            planItem("celebrate", dependsOn: ["launch"]),
+        ])
+        let publish = try XCTUnwrap(graph.spots["publish"]?.column)
+        let celebrate = try XCTUnwrap(graph.spots["celebrate"]?.column)
+        XCTAssertGreaterThan(celebrate, publish)
+    }
+
+    func testTheGraphPutsAChainInAColumnEach() {
+        let graph = PlanGraph(planned: [
+            planItem("design"), planItem("build", dependsOn: ["design"]), planItem("ship", dependsOn: ["build"]),
+        ])
+        XCTAssertEqual(["design", "build", "ship"].map { graph.spots[$0]?.column }, [0, 1, 2])
+        XCTAssertEqual(graph.columns, [["design"], ["build"], ["ship"]])
+    }
+
+    func testAMilestoneCanLinkNeitherToItsTasksNorTheyToIt() {
+        let milestone = planItem("launch", kind: .milestone)
+        let task = planItem("write", parent: "launch")
+        let other = planItem("design")
+        let board = [milestone, task, other]
+        let project = Project(id: "project", name: "humata", repositories: [], created: Date())
+        let milestonePage = ItemFeature.State(
+            project: project, item: milestone, parent: nil, subtasks: [task], sessions: [], board: board)
+        let taskPage = ItemFeature.State(
+            project: project, item: task, parent: milestone, subtasks: [], sessions: [], board: board)
+        XCTAssertEqual(milestonePage.linkable.map(\.id), ["design"])
+        XCTAssertEqual(taskPage.linkable.map(\.id), ["design"])
+    }
+
+    func testDeletingAnItemOthersWaitOnNamesThemInTheAlert() async throws {
+        let board = try await board()
+        _ = try await board.daemon.client.updateItem(board.subtask.id, ItemUpdate(link: [board.other.id]))
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let copy = try XCTUnwrap(store.state.items[id: board.other.id])
+
+        await store.send(.deleteTapped(board.other.id))
+        XCTAssertEqual(store.state.destination, .alert(.deleting(copy, dependents: ["form"])))
+    }
+
+    /// Unlinking "form" from "copy": the change a revert puts back.
+    private func unlink(_ board: Board) -> BoardChange {
+        BoardChange(
+            id: 7, itemID: board.subtask.id, time: Date(timeIntervalSince1970: 0),
+            before: ItemFields(parentID: board.task.id, title: "form", dependsOn: [board.other.id]),
+            after: ItemFields(parentID: board.task.id, title: "form"), author: .app)
+    }
+
+    func testARevertThatLeavesALinkOutSaysSoAndNamesWhatItPointedAt() async throws {
+        let board = try await board()
+        let change = unlink(board)
+        var state = BoardLogFeature.State(
+            project: board.project, items: IdentifiedArray(uniqueElements: [board.task, board.subtask, board.other]))
+        state.changes = [change]
+        let form = board.subtask
+        let store = TestStore(initialState: state) {
+            BoardLogFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.daemon.revert = { _ in Reverted(item: form, kept: [.dependsOn]) }
+            $0.daemon.boardLog = { _, _, _ in [change] }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.revertTapped(change.id))
+        await store.receive(\.reverted)
+        let expected: AlertState<Never> = BoardLogFeature.linksKeptAlert(leftOut: ["copy"], changedAgain: [])
+        XCTAssertEqual(store.state.alert, expected)
+    }
+
+    func testAnUndoThatLeavesALinkOutSaysSo() async throws {
+        let board = try await board()
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.undone(Reverted(item: board.subtask, kept: [.dependsOn]), of: unlink(board)))
+        XCTAssertEqual(
+            store.state.destination, .alert(BoardLogFeature.linksKeptAlert(leftOut: ["copy"], changedAgain: [])))
+        await store.receive(\.loaded)
+    }
 }

@@ -261,3 +261,115 @@ async fn an_agents_proposed_link_and_milestone_reach_the_board_only_when_applied
         .await;
     assert!(again.is_err(), "{again:?}");
 }
+
+/// Every change to `project`'s board, newest first.
+async fn board_log(client: &Client, project: &str) -> Vec<pb::BoardChange> {
+    let log = client
+        .call(pb::request::Kind::ReadBoardLog(pb::ReadBoardLog {
+            project_id: project.to_owned(),
+            ..Default::default()
+        }))
+        .await;
+    match log {
+        Ok(pb::response::Kind::BoardLog(log)) => log.changes,
+        other => panic!("{other:?}"),
+    }
+}
+
+async fn delete(client: &Client, item: &pb::Item) {
+    let deleted = client
+        .call(pb::request::Kind::DeleteItem(pb::DeleteItem {
+            item_id: item.id.clone(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(deleted.is_ok(), "{deleted:?}");
+}
+
+async fn revert(client: &Client, change: u64) -> pb::BoardChangeReverted {
+    let reverted = client
+        .call(pb::request::Kind::RevertBoardChange(
+            pb::RevertBoardChange {
+                change_id: change,
+                ..Default::default()
+            },
+        ))
+        .await;
+    match reverted {
+        Ok(pb::response::Kind::BoardChangeReverted(reverted)) => reverted,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn undoing_a_deletion_others_waited_on_reverts_all_it_did_and_undo_moves_past_it() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let a = item(&client, &project.id, "", "a").await;
+    let b = item(&client, &project.id, "", "b").await;
+    link(&client, &b, &a)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let before_delete = board_log(&client, &project.id).await[0].id;
+
+    delete(&client, &a).await;
+    let deleting: Vec<u64> = board_log(&client, &project.id)
+        .await
+        .iter()
+        .map(|change| change.id)
+        .filter(|id| *id > before_delete)
+        .collect();
+    let removal = board_log(&client, &project.id)
+        .await
+        .into_iter()
+        .find(|change| change.item_id == a.id && change.after.is_none())
+        .unwrap_or_else(|| panic!("no removal of a"));
+    revert(&client, removal.id).await;
+
+    let log = board_log(&client, &project.id).await;
+    let reverted: Vec<u64> = log
+        .iter()
+        .map(|change| change.reverts)
+        .filter(|reverts| *reverts != 0)
+        .collect();
+    for change in &deleting {
+        assert!(
+            reverted.contains(change),
+            "{change} isn't reverted: {log:?}"
+        );
+    }
+    let listed = items(&client, &project.id).await;
+    let b_now = listed
+        .iter()
+        .find(|item| item.id == b.id)
+        .unwrap_or_else(|| panic!("no b in {listed:?}"));
+    assert_eq!(b_now.depends_on, [a.id.clone()]);
+    // What Undo takes next: the newest change that is no revert and isn't
+    // reverted.
+    let undoable = log
+        .iter()
+        .find(|change| change.reverts == 0 && !reverted.contains(&change.id))
+        .map(|change| change.id);
+    assert_eq!(undoable, Some(before_delete));
+}
+
+#[tokio::test]
+async fn an_item_brought_back_keeps_its_place_in_the_plan() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let first = item(&client, &project.id, "", "first").await;
+    // Added a clear moment later, so the two aren't added in the same
+    // millisecond.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    item(&client, &project.id, "", "second").await;
+
+    delete(&client, &first).await;
+    let removal = board_log(&client, &project.id).await[0].id;
+    revert(&client, removal).await;
+
+    assert_eq!(plan(&client, &project.id).await, ["first", "second"]);
+}

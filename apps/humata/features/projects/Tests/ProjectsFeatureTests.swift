@@ -1059,6 +1059,32 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.providers.map(\.id), ["anthropic"])
     }
 
+    func testPickingAProviderDropsTheModelTheLastSourceServed() async throws {
+        let daemon = InMemoryDaemon()
+        let go = HostProvider(id: "go", kind: .openCodeGo)
+        _ = try await daemon.client.updateHost(
+            "", HostUpdate(setEnv: [go.keyVariable: "go-secret"], providers: [go]))
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        var initial = NewSessionFeature.State(project: project)
+        initial.backend = .copilot
+        let store = TestStore(initialState: initial) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.coordinatorLoaded)
+        await store.send(\.binding.model, "gpt-5-mini")
+        XCTAssertTrue(store.state.canStart)
+
+        await store.send(\.binding.provider, "go")
+        XCTAssertEqual(store.state.model, "")
+        XCTAssertFalse(store.state.canStart)
+    }
+
     func testClaudeRunsOnItsSubscriptionWhereAnAnthropicProviderIsOfferedButNotPicked() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")

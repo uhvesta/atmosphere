@@ -88,12 +88,28 @@ package struct BoardFeature {
             item.sessionIDs.compactMap { sessions[id: $0] }
         }
 
+        /// The items' ids in the plan's order, worked out as they're read
+        /// rather than each time the board draws.
+        package var plan: [Item.ID] = []
+        /// Where the Graph draws each item, worked out with `plan`.
+        package var graph = PlanGraph()
+
         /// The items in the plan's order: each after what it waits on, a
         /// milestone's tasks right under it.
         package var planned: [Item] {
-            items.enumerated()
+            plan.compactMap { items[id: $0] }
+        }
+
+        /// Works out `plan` and `graph` again from the items, setting each
+        /// only if it changed, so the board isn't drawn again for nothing.
+        mutating func replan() {
+            let planned = items.enumerated()
                 .sorted { ($0.element.planOrder, $0.offset) < ($1.element.planOrder, $1.offset) }
                 .map(\.element)
+            let order = planned.map(\.id)
+            if order != plan { plan = order }
+            let laidOut = PlanGraph(planned: planned)
+            if laidOut != graph { graph = laidOut }
         }
 
         /// `item`'s page, with the spec comments and the unsaved edit it was
@@ -198,7 +214,8 @@ package struct BoardFeature {
         /// ⌘Z, or Undo in the toast: reverts the last change made here not
         /// yet undone.
         case undoTapped
-        case undone(Reverted)
+        /// Undo reverted `change`, and this is what it did.
+        case undone(Reverted, of: BoardChange)
         /// Undo found nothing to take back, which it says.
         case undoEnded
         /// Undo couldn't read the changes or take one back, and this is why.
@@ -377,7 +394,7 @@ package struct BoardFeature {
                             await send(.undoEnded)
                             return
                         }
-                        await send(.undone(try await daemon.revert(change.id)))
+                        await send(.undone(try await daemon.revert(change.id), of: change))
                     } catch: { error, send in
                         await send(.undoFailed(error.localizedDescription))
                     })
@@ -391,10 +408,10 @@ package struct BoardFeature {
                 state.undoing = false
                 return .send(.actionFailed("Couldn't undo: \(message)"))
 
-            case .undone(let reverted):
+            case .undone(let reverted, let change):
                 state.undoing = false
                 if !reverted.kept.isEmpty {
-                    state.present(BoardLogFeature.keptAlert(reverted.kept))
+                    state.present(BoardLogFeature.keptAlert(reverted, of: change, items: state.items))
                 }
                 return .send(.refresh)
 
@@ -420,7 +437,10 @@ package struct BoardFeature {
                     }
                     return .none
                 }
-                if itemsChanged { state.items = items }
+                if itemsChanged {
+                    state.items = items
+                    state.replan()
+                }
                 if sessionsChanged { state.sessions = sessions }
                 // A deleted item's comments and edit have nothing to go on.
                 if !state.keptComments.isEmpty {
@@ -555,12 +575,14 @@ package struct BoardFeature {
             case .moved(let item):
                 state.moving[item.id] = nil
                 state.items[id: item.id] = item
+                state.replan()
                 // A task shows its subtasks' sessions, so read it all again.
                 return .merge(.send(.refresh), .send(.changedHere))
 
             case .deleteTapped(let id):
                 guard let item = state.items[id: id] else { return .none }
-                state.destination = .alert(.deleting(item))
+                let dependents = state.items.filter { $0.dependsOn.contains(id) }.map(\.title)
+                state.destination = .alert(.deleting(item, dependents: dependents))
                 return .none
 
             case .destination(.presented(.alert(.delete(let id)))):
@@ -741,9 +763,14 @@ package struct ItemFeature {
         }
 
         /// The items it could come to wait on: the board's others it doesn't
-        /// wait on yet.
+        /// wait on yet. Not its milestone or its own tasks: a task already
+        /// comes after its milestone, and a milestone waits on its tasks,
+        /// so either link would close a loop.
         package var linkable: [Item] {
-            board.filter { $0.id != item.id && !item.dependsOn.contains($0.id) }
+            board.filter { other in
+                other.id != item.id && !item.dependsOn.contains(other.id) && other.id != item.parentID
+                    && other.parentID != item.id
+            }
         }
 
         /// The sessions spec comments can go to: archived ones don't work.
@@ -992,7 +1019,9 @@ package struct ItemFeature {
                 return update(state.item.id, ItemUpdate(status: status))
 
             case .deleteTapped:
-                state.destination = .alert(.deleting(state.item))
+                let id = state.item.id
+                let dependents = state.board.filter { $0.dependsOn.contains(id) }.map(\.title)
+                state.destination = .alert(.deleting(state.item, dependents: dependents))
                 return .none
 
             case .itemTapped(let id):
@@ -1329,9 +1358,10 @@ package struct BoardLogFeature {
                 }
 
             case .reverted(let reverted):
+                let change = state.changes.first { $0.id == state.reverting }
                 state.reverting = nil
                 if !reverted.kept.isEmpty {
-                    state.alert = Self.keptAlert(reverted.kept)
+                    state.alert = Self.keptAlert(reverted, of: change, items: state.items)
                 }
                 return .merge(read(state.project.id), .send(.delegate(.changed)))
 
@@ -1356,15 +1386,67 @@ package struct BoardLogFeature {
         .ifLet(\.$alert, action: \.alert)
     }
 
-    /// Says which fields a revert left alone, and why.
-    static func keptAlert<Action>(_ kept: [ItemField]) -> AlertState<Action> {
-        let names = kept.map(\.name).formatted(.list(type: .and))
+    /// Says what reverting `change` left alone, and why, naming the board's
+    /// `items` a link wasn't put back to.
+    static func keptAlert<Action>(
+        _ reverted: Reverted, of change: BoardChange?, items: IdentifiedArrayOf<Item>
+    ) -> AlertState<Action> {
+        let changedAgain = reverted.kept.filter { $0 != .dependsOn }
+        guard reverted.kept.contains(.dependsOn) else { return changedAgainAlert(changedAgain) }
+        return linksKeptAlert(
+            leftOut: leftOutLinks(of: change, now: reverted.item, items: items), changedAgain: changedAgain)
+    }
+
+    /// Says the `fields` changed again after the change reverted, so they
+    /// were kept.
+    private static func changedAgainAlert<Action>(_ fields: [ItemField]) -> AlertState<Action> {
+        let names = fields.map(\.name).formatted(.list(type: .and))
         return AlertState {
             TextState("Reverted, except the \(names)")
         } message: {
             TextState(
                 "The \(names) changed again after this change, so reverting it there would undo that later "
                     + "change too. Revert the later change first to put it back as well.")
+        }
+    }
+
+    /// Says links weren't put back, as the item one pointed at is gone or
+    /// putting it back would close a loop; `leftOut` names the items they
+    /// pointed at, when known. `changedAgain` are the other fields kept, as
+    /// they changed again since.
+    package static func linksKeptAlert<Action>(leftOut: [String], changedAgain: [ItemField]) -> AlertState<Action> {
+        let names = leftOut.formatted(.list(type: .and))
+        let head =
+            leftOut.isEmpty
+            ? String(localized: "Some links weren't put back")
+            : leftOut.count == 1
+                ? String(localized: "Its link to \(names) wasn't put back")
+                : String(localized: "Its links to \(names) weren't put back")
+        var message =
+            head + ": an item a link joined is gone, or putting the link back would close a loop with one made "
+            + "since. Add a link that's still wanted from the item's page, under Depends On."
+        if !changedAgain.isEmpty {
+            let fields = changedAgain.map(\.name).formatted(.list(type: .and))
+            message +=
+                " The \(fields) changed again after this change and were kept; revert the later change first to "
+                + "put them back too."
+        }
+        return AlertState {
+            TextState("Reverted, Except Some Links")
+        } message: {
+            TextState(message)
+        }
+    }
+
+    /// The titles of the items `change` linked its item to, or took links
+    /// to off, that reverting it didn't link `item`, as it is now, to again.
+    /// One no longer on the board is named as gone.
+    static func leftOutLinks(of change: BoardChange?, now item: Item?, items: IdentifiedArrayOf<Item>) -> [String] {
+        guard let before = change?.before else { return [] }
+        let after = Set(change?.after?.dependsOn ?? [])
+        let linked = Set(item?.dependsOn ?? [])
+        return before.dependsOn.filter { !after.contains($0) && !linked.contains($0) }.map { id in
+            items[id: id]?.title ?? String(localized: "an item that's gone")
         }
     }
 

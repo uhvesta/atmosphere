@@ -14,7 +14,7 @@ extension DaemonService {
         let keeper = DaemonKeeper(socket: socket, programVersion: programVersion)
         return DaemonService(
             start: { try await keeper.start() },
-            isCurrent: { try await keeper.isCurrent() },
+            build: { try await keeper.build() },
             restart: { try await keeper.restart() },
             openLoginItems: { SMAppService.openSystemSettingsLoginItems() },
             stop: { try await keeper.stop() })
@@ -62,19 +62,61 @@ private final class DaemonKeeper: @unchecked Sendable {
         try await waitForAnswer()
     }
 
-    /// Whether the daemon answering is this app's build, or one it should
-    /// keep: a humatad no build of this app started, which speaks its
-    /// protocol, is used as it is, since only whoever started it can replace
-    /// it.
-    func isCurrent() async throws -> Bool {
+    /// How the daemon answering stands against this app's build. A humatad
+    /// no build of this app started, which speaks its protocol, is used as
+    /// it is, since only whoever started it can replace it. Another build is
+    /// replaced unless it's a newer Humata's, whose store this copy's
+    /// humatad couldn't open.
+    func build() async throws -> DaemonBuild {
         let build: String
         do {
             build = try await DaemonClient.daemonBuild(socket: socket, programVersion: programVersion)
-        } catch DaemonError.versionMismatch {
-            return false
+        } catch DaemonError.versionMismatch(let daemon) {
+            return isNewer(daemon) ? .newer : .older
         }
-        if build.hasSuffix("+" + (try bundledDigest())) { return true }
-        return !asLoginItem && runningChild() == nil && startedBefore() == nil
+        if build.hasSuffix("+" + (try bundledDigest())) { return .current }
+        if !asLoginItem && runningChild() == nil && startedBefore() == nil { return .current }
+        return isNewer(build) ? .newer : .older
+    }
+
+    /// Whether the daemon whose hello says `build` is a newer Humata's than
+    /// this app: by the version before the `+` in it, or, as humatad built
+    /// outside a release says 0.0.0, by the app each humatad running sits in.
+    private func isNewer(_ build: String) -> Bool {
+        let said = String(build.prefix { $0 != "+" })
+        if BundleVersion(short: said, build: "0") > BundleVersion(short: programVersion, build: "0") { return true }
+        guard let info = Bundle.main.infoDictionary, let mine = BundleVersion(info: info) else { return false }
+        return runningAppVersions().contains { $0 > mine }
+    }
+
+    /// The versions of the apps, other than this one, whose humatad runs:
+    /// read from the Info.plist of the bundle each sits in, as
+    /// `Humata.app/Contents/Helpers/humatad`.
+    private func runningAppVersions() -> [BundleVersion] {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 16)
+        let filled = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard filled > 0 else { return [] }
+        let ours = executable.resolvingSymlinksInPath().path(percentEncoded: false)
+        return pids.prefix(Int(filled)).compactMap { pid -> BundleVersion? in
+            guard pid > 0, let running = Self.path(of: pid), running.hasSuffix("/Contents/Helpers/humatad"),
+                URL(filePath: running).resolvingSymlinksInPath().path(percentEncoded: false) != ours
+            else { return nil }
+            let contents = URL(filePath: running).deletingLastPathComponent().deletingLastPathComponent()
+            guard let data = try? Data(contentsOf: contents.appending(path: "Info.plist")),
+                let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+            else { return nil }
+            return BundleVersion(info: info)
+        }
+    }
+
+    /// The executable process `pid` runs, if it can be read.
+    private static func path(of pid: pid_t) -> String? {
+        var path = [CChar](repeating: 0, count: 4 * 1024)
+        let length = proc_pidpath(pid, &path, UInt32(path.count))
+        guard length > 0 else { return nil }
+        return String(bytes: path.prefix(Int(length)).map { UInt8(bitPattern: $0) }, encoding: .utf8)
     }
 
     func restart() async throws {
@@ -99,27 +141,61 @@ private final class DaemonKeeper: @unchecked Sendable {
     /// Stops the daemon so the app can be replaced: the login item is
     /// taken off, so launchd doesn't start it again, and the next launch
     /// adds it back from where the app then is. One this app started
-    /// itself is stopped; one nothing here started is left, as the app it
-    /// came from is the one to stop it.
-    func stop() async throws {
+    /// itself is stopped. One nothing here started can't be, and if it
+    /// answers, this throws `stillRunning`, as replacing the app under it
+    /// isn't safe. True when a daemon was stopped.
+    func stop() async throws -> Bool {
+        let stopping: Bool
         if asLoginItem {
-            guard agent.status == .enabled else { return }
-            do {
-                try await agent.unregister()
-            } catch {
-                throw DaemonServiceError.unregisterFailed(underlying: error)
+            if agent.status == .enabled {
+                do {
+                    try await agent.unregister()
+                } catch {
+                    throw DaemonServiceError.unregisterFailed(underlying: error)
+                }
+                stopping = true
+            } else {
+                // Another copy, such as the one in Applications, registered
+                // the login item: launchd keeps it under the same label.
+                stopping = Self.bootOutLoginItem()
             }
         } else if runningChild() != nil {
             stopChild()
+            stopping = true
         } else if let earlier = startedBefore() {
             kill(earlier, SIGTERM)
+            stopping = true
         } else {
-            return
+            stopping = false
         }
-        try await waitUntilGone()
+        if stopping {
+            try await waitUntilGone()
+        } else if await answers() {
+            throw DaemonServiceError.stillRunning(seconds: 0)
+        }
+        return stopping
     }
 
     // MARK: Login item
+
+    /// Takes the login item another copy of this app registered out of
+    /// launchd, so it isn't started again while this copy replaces that
+    /// one. True when launchd had it; the copy that next opens adds it back.
+    private static func bootOutLoginItem() -> Bool {
+        guard let identifier = Bundle.main.bundleIdentifier else { return false }
+        let process = Process()
+        process.executableURL = URL(filePath: "/bin/launchctl")
+        process.arguments = ["bootout", "gui/\(getuid())/\(identifier).daemon"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
 
     private func register() throws {
         switch agent.status {
@@ -164,11 +240,7 @@ private final class DaemonKeeper: @unchecked Sendable {
         guard let noted = try? String(contentsOf: pidFile, encoding: .utf8),
             let pid = pid_t(noted.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0
         else { return nil }
-        var path = [CChar](repeating: 0, count: 4 * 1024)
-        let length = proc_pidpath(pid, &path, UInt32(path.count))
-        guard length > 0 else { return nil }
-        guard let running = String(bytes: path.prefix(Int(length)).map { UInt8(bitPattern: $0) }, encoding: .utf8)
-        else { return nil }
+        guard let running = Self.path(of: pid) else { return nil }
         let ours = executable.resolvingSymlinksInPath().path(percentEncoded: false)
         return URL(filePath: running).resolvingSymlinksInPath().path(percentEncoded: false) == ours ? pid : nil
     }
@@ -211,11 +283,14 @@ private final class DaemonKeeper: @unchecked Sendable {
         throw DaemonServiceError.noAnswer(socket: socket, seconds: Self.answerSeconds)
     }
 
+    /// Waits until nothing answers, and throws `stillRunning` if something
+    /// still does after `answerSeconds`, so nothing is put over it.
     private func waitUntilGone() async throws {
         for _ in 0..<(Self.answerSeconds * 10) {
             if !(await answers()) { return }
             try await Task.sleep(for: .milliseconds(100))
         }
+        if await answers() { throw DaemonServiceError.stillRunning(seconds: Self.answerSeconds) }
     }
 
     // MARK: Builds

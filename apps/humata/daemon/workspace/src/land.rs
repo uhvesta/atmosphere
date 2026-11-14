@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use super::{Checkout, WorkspaceError, git, git_as_person};
+use super::{Checkout, WorkspaceError, git, git_as_person, git_within};
 
 /// One checkout after landing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,11 +157,21 @@ pub async fn upstream(checkout: &Checkout) -> Result<String, WorkspaceError> {
 pub struct Followed {
     /// The commit it is on now.
     pub commit: String,
-    /// False when its origin couldn't be fetched in time, so its base is
-    /// as last fetched. True for a repository with no origin.
-    pub fetched: bool,
+    /// Why its origin couldn't be fetched, so its base is as last
+    /// fetched; None when it was, or for a repository with no origin.
+    pub fetch_failed: Option<FetchFailed>,
     /// It holds changes, so it was left where it was.
     pub changed: bool,
+}
+
+/// Why [`follow`] couldn't fetch a checkout's origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FetchFailed {
+    /// It took longer than the `seconds` it was given, and was stopped.
+    TimedOut { seconds: u64 },
+    /// Git failed, as `stderr`, its standard error, says: the origin
+    /// refused it, couldn't be reached, or isn't where its URL says.
+    Failed { stderr: String },
 }
 
 /// Brings `checkout`, a copy nothing is written in, to its base as its
@@ -180,15 +190,20 @@ pub async fn follow(
     let has_origin = git(&checkout.path, &["remote", "get-url", "origin"])
         .await
         .is_ok();
-    let fetched = !has_origin
-        || matches!(
-            tokio::time::timeout(
-                patience,
-                git(&checkout.path, &["fetch", "--quiet", "origin"]),
-            )
-            .await,
-            Ok(Ok(_))
-        );
+    let fetch_failed = if has_origin {
+        match git_within(&checkout.path, &["fetch", "--quiet", "origin"], patience).await {
+            Some(Ok(_)) => None,
+            Some(Err(WorkspaceError::Git { stderr, .. })) => Some(FetchFailed::Failed { stderr }),
+            Some(Err(other)) => Some(FetchFailed::Failed {
+                stderr: other.to_string(),
+            }),
+            None => Some(FetchFailed::TimedOut {
+                seconds: patience.as_secs(),
+            }),
+        }
+    } else {
+        None
+    };
     let upstream = upstream(checkout).await?;
     // Where its branch is doesn't count: it was made where the
     // repository's own folder happened to be.
@@ -200,7 +215,7 @@ pub async fn follow(
     let commit = git(&checkout.path, &["rev-parse", "HEAD"]).await?;
     Ok(Followed {
         commit: commit.trim().to_owned(),
-        fetched,
+        fetch_failed,
         changed,
     })
 }

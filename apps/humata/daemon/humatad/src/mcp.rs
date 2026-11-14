@@ -789,12 +789,22 @@ impl Place {
     }
 }
 
-/// The board as an agent reads it: the open items and the session's own,
-/// each with its task, unless `all`; and how many are left out.
+/// The board as an agent reads it, in the plan's order: the open items and
+/// the session's own, each with its milestone, unless `all`; each item's
+/// kind, milestone and what it depends on; and how many are left out.
 fn board_text(items: &[pb::Item], own: &str, all: bool) -> String {
     if items.is_empty() {
         return "The board is empty; propose_task to suggest one.".to_owned();
     }
+    let mut ordered = items.to_vec();
+    ordered.sort_by_key(|item| item.plan_order);
+    let items = ordered.as_slice();
+    let named = |id: &str| {
+        items.iter().find(|item| item.id == id).map_or_else(
+            || format!("an item that's gone (id {id})"),
+            |item| format!("{} (id {id})", item.title),
+        )
+    };
     let wanted = |item: &pb::Item| {
         all || item.id == own
             || !matches!(item.status(), pb::ItemStatus::Done | pb::ItemStatus::WontDo)
@@ -808,9 +818,21 @@ fn board_text(items: &[pb::Item], own: &str, all: bool) -> String {
                     .any(|child| child.parent_id == item.id && wanted(child))
         })
         .collect();
-    let mut text = String::from("Tasks, with their subtasks under them:\n");
+    let mut text =
+        String::from("Milestones and tasks in the plan's order, tasks under their milestone:\n");
     for (item, _) in items.iter().zip(&shown).filter(|(_, shown)| **shown) {
         let indent = if item.parent_id.is_empty() { "" } else { "  " };
+        let under = if item.parent_id.is_empty() {
+            String::new()
+        } else {
+            format!(", under {}", named(&item.parent_id))
+        };
+        let depends = if item.depends_on.is_empty() {
+            String::new()
+        } else {
+            let on: Vec<String> = item.depends_on.iter().map(|id| named(id)).collect();
+            format!(", depends on {}", on.join(", "))
+        };
         let yours = if item.id == own {
             "  <- this session works on it"
         } else {
@@ -822,8 +844,9 @@ fn board_text(items: &[pb::Item], own: &str, all: bool) -> String {
             String::new()
         };
         text.push_str(&format!(
-            "{indent}- [{}] {} (id {}){yours}{waits}\n",
+            "{indent}- [{}] {} {} (id {}){under}{depends}{yours}{waits}\n",
             status_name(item.status()),
+            kind_name(item.kind()),
             item.title,
             item.id
         ));
@@ -1334,6 +1357,13 @@ fn asked_for(status: pb::ItemStatus) -> bool {
         status,
         pb::ItemStatus::InReview | pb::ItemStatus::Done | pb::ItemStatus::WontDo
     )
+}
+
+fn kind_name(kind: pb::ItemKind) -> &'static str {
+    match kind {
+        pb::ItemKind::Milestone => "milestone",
+        pb::ItemKind::Task | pb::ItemKind::Unspecified => "task",
+    }
 }
 
 fn status_name(status: pb::ItemStatus) -> &'static str {
@@ -2429,6 +2459,42 @@ mod tests {
 
         let all = board_text(&items, "old-sub", true);
         assert!(all.contains("(id dropped)"), "{all}");
+    }
+
+    #[test]
+    fn the_board_lists_items_in_the_plans_order_with_their_kind_milestone_and_links() {
+        use pb::ItemStatus::{Done, Todo};
+        let mut after = board_item("x", "", Todo);
+        after.depends_on = vec!["m".into()];
+        after.created_unix_ms = 1;
+        let mut milestone = board_item("m", "", Done);
+        milestone.created_unix_ms = 2;
+        let mut task = board_item("t", "m", Todo);
+        task.created_unix_ms = 3;
+        let mut items = [after, milestone, task];
+        for item in &mut items {
+            item.given_status = item.status;
+        }
+        crate::board::plan(&mut items);
+
+        let listed = board_text(&items, "", false);
+        // The line of each item is the one whose first id is its own.
+        let lines: Vec<&str> = listed.lines().collect();
+        let line = |id: &str| {
+            lines
+                .iter()
+                .position(|line| {
+                    line.split("(id ")
+                        .nth(1)
+                        .is_some_and(|rest| rest.starts_with(&format!("{id})")))
+                })
+                .unwrap_or_else(|| panic!("{id} isn't listed: {listed}"))
+        };
+        assert!(line("m") < line("t") && line("t") < line("x"), "{listed}");
+        // The task names its milestone, and x the milestone it depends on,
+        // which no longer blocks it now that it is done.
+        assert!(lines[line("t")].contains("(id m)"), "{listed}");
+        assert!(lines[line("x")].contains("(id m)"), "{listed}");
     }
 
     fn hit(session: &str, turn: u32) -> pb::SearchHit {

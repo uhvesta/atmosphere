@@ -542,6 +542,36 @@ fn changes(kind: PermissionKind) -> bool {
     matches!(kind, PermissionKind::Shell | PermissionKind::Write)
 }
 
+/// Refuses every request still waiting that would change something, as a
+/// session just put in plan mode must: each is recorded as refused
+/// automatically and its turn told no.
+fn refuse_pending_changes(session: &Session, control: &mut Control) {
+    let changing: Vec<String> = control
+        .pending
+        .iter()
+        .filter(|(_, pending)| changes(pending.kind))
+        .map(|(request, _)| request.clone())
+        .collect();
+    for request_id in changing {
+        let Some(Pending { answer, .. }) = control.pending.remove(&request_id) else {
+            continue;
+        };
+        let recorded = session
+            .log
+            .append(Event::now(EventKind::PermissionCompleted {
+                request_id,
+                approved: false,
+                automatic: true,
+                judged: false,
+            }));
+        if let Err(error) = recorded {
+            eprintln!("humata: {}", describe(&error));
+        }
+        // Refused either way; the turn may have stopped meanwhile.
+        let _ = answer.send(false);
+    }
+}
+
 /// Told to a side chat's agent after its other instructions.
 const READ_ONLY_INSTRUCTIONS: &str = "This is a side chat beside the session it was forked from. It is read-only: you can read and search files, but every request to edit or write a file or to run a command is refused. Answer from what you can read, and say what you would change instead of trying to change it.";
 
@@ -903,7 +933,7 @@ async fn drive<R: Runner>(
     loop {
         let prepared = prepare(&session, workspaces.as_deref()).await;
         if prepared.is_ok() {
-            follow(&session).await;
+            follow(&session, workspaces.as_deref()).await;
         }
         let job = {
             let mut control = session.lock();
@@ -1178,20 +1208,24 @@ impl<R: Runner> Agent for LocalAgent<R> {
         approved: bool,
     ) -> Result<(), AgentError> {
         let session = self.session(id)?;
-        let answer = {
+        let (answer, approved) = {
             let mut control = session.lock();
-            let Pending { answer, .. } = control.pending.remove(request_id).ok_or_else(|| {
+            let Pending { kind, answer } = control.pending.remove(request_id).ok_or_else(|| {
                 AgentError::UnknownPermissionRequest {
                     session: id.clone(),
                     request: request_id.to_owned(),
                 }
             })?;
+            // Plan mode turned on while it waited: a change is refused,
+            // whatever the answer.
+            let refused = control.record.reads_only() && changes(kind);
+            let approved = approved && !refused;
             let recorded = session
                 .log
                 .append(Event::now(EventKind::PermissionCompleted {
                     request_id: request_id.to_owned(),
                     approved,
-                    automatic: false,
+                    automatic: refused,
                     judged: false,
                 }));
             if let Err(error) = recorded {
@@ -1199,7 +1233,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 let _ = answer.send(false);
                 return Err(error);
             }
-            answer
+            (answer, approved)
         };
         // The turn may have stopped meanwhile; then nobody is waiting.
         let _ = answer.send(approved);
@@ -1993,6 +2027,9 @@ impl<R: Runner> Agent for LocalAgent<R> {
             for text in switched.into_iter().chain(planning) {
                 session.note(EventKind::Notice { text });
             }
+            if control.record.reads_only() {
+                refuse_pending_changes(&session, &mut control);
+            }
             archiving
         };
         if archiving {
@@ -2642,44 +2679,81 @@ fn access_changed(access: Access, working: bool) -> String {
 /// follows its base, before the turn reads the code as last fetched.
 const FOLLOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// How many of a session's repositories are fetched at once before a turn
+/// of a session that follows its base.
+const FOLLOW_AT_ONCE: usize = 4;
+
 /// For a session that follows its base: fetches each copy it owns and
 /// moves it to its origin's default branch, unless it holds changes, and
 /// records the commit each is on. A copy that can't be fetched or moved
 /// stays where it is and the chat says so; the turn goes on either way.
-async fn follow(session: &Session) {
+/// The code as moved is saved, so a fork or rewind from here starts from
+/// what the turn reads.
+async fn follow(session: &Session, workspaces: Option<&Workspaces>) {
     let record = session.lock().record.clone();
     if !record.follows_base {
         return;
     }
-    let mut code_at = record.code_at.clone();
-    for checkout in &record.checkouts {
+    let limit = Arc::new(tokio::sync::Semaphore::new(FOLLOW_AT_ONCE));
+    let mut following = tokio::task::JoinSet::new();
+    for (position, checkout) in record.checkouts.iter().enumerate() {
         if checkout.owner != session.id.as_str() {
             continue;
         }
-        match humata_workspace::follow(checkout, FOLLOW_TIMEOUT).await {
+        let checkout = checkout.clone();
+        let limit = Arc::clone(&limit);
+        following.spawn(async move {
+            // Never closed, so a permit is always given.
+            let _permit = limit.acquire_owned().await;
+            let followed = humata_workspace::follow(&checkout, FOLLOW_TIMEOUT).await;
+            (position, checkout.name, followed)
+        });
+    }
+    let mut results = Vec::with_capacity(following.len());
+    while let Some(joined) = following.join_next().await {
+        match joined {
+            Ok(result) => results.push(result),
+            Err(error) => eprintln!(
+                "humata: following a repository's origin for session {} stopped: {error}",
+                session.id
+            ),
+        }
+    }
+    // Said in the order the session lists its repositories.
+    results.sort_by_key(|(position, _, _)| *position);
+    let mut code_at = record.code_at.clone();
+    for (_, name, followed) in results {
+        match followed {
             Ok(followed) => {
-                if !followed.fetched {
-                    session.note(EventKind::Notice {
-                        text: format!(
-                            "Couldn't fetch {} from its origin, so this turn reads it as last fetched. If you're offline, reconnect and send again for the latest code",
-                            checkout.name
-                        ),
-                    });
+                match &followed.fetch_failed {
+                    None => {}
+                    Some(humata_workspace::FetchFailed::TimedOut { seconds }) => {
+                        session.note(EventKind::Notice {
+                            text: format!(
+                                "Fetching {name} from its origin took over {seconds} seconds, so this turn reads it as last fetched. Check your connection, then send again for the latest code"
+                            ),
+                        });
+                    }
+                    Some(humata_workspace::FetchFailed::Failed { stderr }) => {
+                        session.note(EventKind::Notice {
+                            text: format!(
+                                "Couldn't fetch {name} from its origin, so this turn reads it as last fetched: {stderr}. Sign in to the remote, or check origin's URL with `git remote -v` in the repository, then send again for the latest code"
+                            ),
+                        });
+                    }
                 }
                 if followed.changed {
                     session.note(EventKind::Notice {
                         text: format!(
-                            "The session's copy of {} has changes, so it wasn't moved to the latest code. Discard them in Review to follow the latest again",
-                            checkout.name
+                            "The session's copy of {name} has changes, so it wasn't moved to the latest code. Discard them in Review to follow the latest again"
                         ),
                     });
                 }
-                code_at.insert(checkout.name.clone(), followed.commit);
+                code_at.insert(name, followed.commit);
             }
             Err(error) => session.note(EventKind::Notice {
                 text: format!(
-                    "Couldn't bring the session's copy of {} up to date, so this turn reads it as it was: {}",
-                    checkout.name,
+                    "Couldn't bring the session's copy of {name} up to date, so this turn reads it as it was: {}",
                     describe(&error)
                 ),
             }),
@@ -2688,15 +2762,19 @@ async fn follow(session: &Session) {
     if code_at == record.code_at {
         return;
     }
-    let mut control = session.lock();
-    let record = SessionRecord {
-        code_at,
-        ..control.record.clone()
-    };
-    match save(&session.dir, &record) {
-        Ok(()) => control.record = record,
-        Err(error) => eprintln!("humata: {}", describe(&error)),
+    {
+        let mut control = session.lock();
+        let record = SessionRecord {
+            code_at,
+            ..control.record.clone()
+        };
+        match save(&session.dir, &record) {
+            Ok(()) => control.record = record,
+            Err(error) => eprintln!("humata: {}", describe(&error)),
+        }
     }
+    // A save, not a checkpoint: checkpoints divide the session's turns.
+    save_now(session, workspaces).await;
 }
 
 /// The error and its causes, on one line.
@@ -3499,5 +3577,154 @@ pub(crate) mod tests {
             .expect("the queued turn started");
         assert!(noted < second, "{events:#?}");
         assert_eq!(notices(&events), 1, "{events:#?}");
+    }
+
+    /// Asks to write its file, and writes it if allowed, keeping each
+    /// answer it got.
+    struct AsksToWrite {
+        file: PathBuf,
+        answers: Arc<std::sync::Mutex<Vec<bool>>>,
+    }
+
+    impl Runner for AsksToWrite {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            let allowed = turn.ask(PermissionKind::Write, "write a.txt").await?;
+            self.answers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(allowed);
+            if allowed {
+                std::fs::write(&self.file, "written").expect("wrote");
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_change_waiting_for_approval_when_plan_mode_goes_on_is_refused() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let file = dir.path().join("a.txt");
+        let answers: Arc<std::sync::Mutex<Vec<bool>>> = Arc::default();
+        let runner = AsksToWrite {
+            file: file.clone(),
+            answers: Arc::clone(&answers),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "write".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&agent, &id, waiting).await;
+        let request = permission_request(&events).expect("a permission request");
+
+        let plan = SessionUpdate {
+            access: Some(Access::Plan),
+            ..SessionUpdate::default()
+        };
+        agent.update(&id, plan).await.expect("plan mode on");
+        // Allowing it now lets nothing through, if it's still asked about.
+        let _ = agent.approve(&id, &request, true).await;
+        let events = wait_for(&agent, &id, idle_turns(1)).await;
+
+        assert_eq!(
+            *answers.lock().unwrap_or_else(PoisonError::into_inner),
+            [false]
+        );
+        assert!(!file.exists(), "nothing is written");
+        assert!(
+            events.iter().any(|event| matches!(
+                &event.kind,
+                EventKind::PermissionCompleted {
+                    request_id,
+                    approved: false,
+                    automatic: true,
+                    ..
+                } if *request_id == request
+            )),
+            "{events:#?}"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(
+                event.kind,
+                EventKind::PermissionCompleted { approved: true, .. }
+            )),
+            "{events:#?}"
+        );
+    }
+
+    /// Runs git in `directory` as a test's person; its output, trimmed.
+    fn run_git(directory: &Path, arguments: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(arguments)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@localhost")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@localhost")
+            .output()
+            .expect("git runs");
+        assert!(output.status.success(), "git {arguments:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn commit_file(repository: &Path, file: &str) -> String {
+        std::fs::write(repository.join(file), "text\n").expect("wrote");
+        run_git(repository, &["add", file]);
+        run_git(repository, &["commit", "--quiet", "-m", file]);
+        run_git(repository, &["rev-parse", "HEAD"])
+    }
+
+    #[tokio::test]
+    async fn a_fork_of_a_session_that_follows_its_base_starts_from_the_code_its_turn_read() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let remote = dir.path().join("remote");
+        std::fs::create_dir_all(&remote).expect("made the folder");
+        run_git(&remote, &["init", "--quiet", "--initial-branch=main"]);
+        commit_file(&remote, "README.md");
+        run_git(
+            dir.path(),
+            &["clone", "--quiet", &remote.to_string_lossy(), "app"],
+        );
+        // Its origin moves on past the clone the session is made from.
+        let latest = commit_file(&remote, "new.txt");
+        let agent = LocalAgent::open(dir.path().join("state"), OnlyReplies)
+            .expect("the agent opens")
+            .with_workspaces(Workspaces::new(dir.path().join("worktrees")));
+        let options = StartOptions {
+            name: "plan".into(),
+            repositories: vec![Repository {
+                name: "app".into(),
+                path: dir.path().join("app"),
+            }],
+            follows_base: true,
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "read".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+
+        let options = ForkOptions {
+            access: Some(Access::Full),
+            ..ForkOptions::default()
+        };
+        let fork = agent.fork(&id, options).await.expect("forked");
+
+        let [copy] = fork.checkouts.as_slice() else {
+            panic!("one copy: {:?}", fork.checkouts);
+        };
+        assert_ne!(copy.owner, id.as_str());
+        assert_eq!(run_git(&copy.path, &["rev-parse", "HEAD"]), latest);
     }
 }

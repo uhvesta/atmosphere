@@ -185,6 +185,7 @@ extension Session {
         // A host from before access levels says only whether it's a side chat.
         access = AccessLevel(info.access) ?? (info.readOnly ? .sideChat : .full)
         codeCommits = info.codeCommits.map { CodeCommit(repository: $0.repository, commit: $0.commit) }
+        followsBase = info.followsBase
     }
 }
 

@@ -750,9 +750,9 @@ pub enum DaemonError {
     ProviderUrl { name: String, base_url: String },
 
     #[error(
-        "the provider {name:?} names {variable:?} as the variable that holds its key, which can't be a variable's name: use letters, digits and _, not starting with a digit. Give the name of the variable, such as OPENCODE_API_KEY, and put the key itself in that variable among the host's variables; a key typed here isn't kept"
+        "the provider {name:?} names a variable for its key that can't be one Humata takes: use upper-case letters, digits and _, not starting with a digit, at most 64 of them. Give the name of the variable, such as OPENCODE_API_KEY, and put the key itself in that variable among the host's variables; what was typed isn't kept or repeated here, in case it was the key"
     )]
-    ProviderVariable { name: String, variable: String },
+    ProviderVariable { name: String },
 
     #[error(
         "the provider {name:?} asks for the API {wire_api:?}; Copilot takes completions or responses. Pick one, then save again"
@@ -927,6 +927,16 @@ pub enum DaemonError {
         "the agent's proposal {proposal} names no item to change, or one no longer on the board; decline it and ask the agent to propose it again"
     )]
     NoProposedItem { proposal: String },
+
+    #[error(
+        "the agent's proposal {proposal} links an item that was deleted ({item}), so it can't be applied; decline it, or undo the deletion on the board and apply it again"
+    )]
+    DependencyOnDeleted {
+        proposal: String,
+        item: String,
+        #[source]
+        source: StoreError,
+    },
 
     #[error(
         "a proposed task needs a title, and a proposed change needs item_id and a new title or spec, or both; give them and propose again"
@@ -1207,6 +1217,7 @@ impl DaemonError {
             | Self::OutOfScope { .. }
             | Self::NoBoard { .. }
             | Self::NoProposedItem { .. }
+            | Self::DependencyOnDeleted { .. }
             | Self::IncompleteProposal => pb::ErrorCode::InvalidRequest,
             Self::Listen { .. } => pb::ErrorCode::Busy,
             Self::NotAPortStream { .. } | Self::BadBackupHistory { .. } => {

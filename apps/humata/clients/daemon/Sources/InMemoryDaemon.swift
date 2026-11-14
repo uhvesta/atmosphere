@@ -855,7 +855,10 @@ package final class InMemoryDaemon: Sendable {
                 approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID,
                 planning: request.planning, effort: request.effort, experimental: request.experimental)
             // It reads the code and never writes there.
-            if plansWithCode { session.access = .plan }
+            if plansWithCode {
+                session.access = .plan
+                session.followsBase = true
+            }
             state.nextSession += 1
             state.sessions.append(session)
             state.histories[session.id] = []
@@ -1205,7 +1208,7 @@ package final class InMemoryDaemon: Sendable {
         if let own = state.sessionCommands[session] { return own }
         guard var commands = state.commands else { return nil }
         // A side chat and a planning session with the code stay as they are.
-        if let asked = state.sessions.first(where: { $0.id == session }), asked.readOnly || asked.plansWithCode {
+        if let asked = state.sessions.first(where: { $0.id == session }), asked.readOnly || asked.followsBase {
             commands.plan = false
         }
         return commands
@@ -1448,7 +1451,7 @@ package final class InMemoryDaemon: Sendable {
             let modelBefore = state.sessions[index].model
             let accessBefore = state.sessions[index].access
             if let access = update.access, access != accessBefore {
-                let fixed = state.sessions[index].readOnly || state.sessions[index].plansWithCode
+                let fixed = state.sessions[index].readOnly || state.sessions[index].followsBase
                 guard access != .sideChat, !fixed else {
                     throw DaemonError.refused(
                         .invalidRequest,

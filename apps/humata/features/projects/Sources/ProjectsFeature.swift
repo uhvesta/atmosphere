@@ -1564,7 +1564,11 @@ package struct NewSessionFeature {
                 return loadModels(&state)
 
             case .binding(\.provider):
-                // A provider lists models of its own.
+                // A provider lists models of its own; the last source's
+                // model and effort may not be served by it.
+                state.picked = true
+                state.model = ""
+                state.effort = ""
                 return loadModels(&state)
 
             case .binding(\.modelServer):

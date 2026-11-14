@@ -32,13 +32,32 @@ package struct InstallerClient: Sendable {
     package var open: @Sendable (_ bundle: URL) async throws -> Void
     /// Quits this copy.
     package var quit: @Sendable () async -> Void
+    /// The other copies of Humata that are open, by bundle identifier,
+    /// whichever folder they're in.
+    package var otherCopies: @Sendable () async -> [RunningCopy] = { [] }
+    /// Asks each of `copies` to quit and waits until they have; throws
+    /// `copyWontQuit` for one that doesn't.
+    package var quitCopies: @Sendable (_ copies: [RunningCopy]) async throws -> Void
+}
+
+/// Another copy of Humata that's open.
+package struct RunningCopy: Equatable, Sendable, Identifiable {
+    /// Its process.
+    package var id: Int32
+    /// Where its bundle is; empty when macOS doesn't say.
+    package var path: String
+
+    package init(id: Int32, path: String) {
+        self.id = id
+        self.path = path
+    }
 }
 
 extension InstallerClient: TestDependencyKey {
     package static let testValue = InstallerClient()
     package static let previewValue = InstallerClient(
         survey: { nil }, stage: { _, destination in destination }, team: { _ in nil }, clearQuarantine: { _ in },
-        swap: { _, _ in }, discard: { _ in }, open: { _ in }, quit: {})
+        swap: { _, _ in }, discard: { _ in }, open: { _ in }, quit: {}, otherCopies: { [] }, quitCopies: { _ in })
 }
 
 extension InstallerClient: DependencyKey {
@@ -51,7 +70,9 @@ extension InstallerClient: DependencyKey {
             swap: { try LiveInstaller.swap($0, into: $1) },
             discard: { LiveInstaller.discard($0) },
             open: { try await LiveInstaller.open($0) },
-            quit: { await MainActor.run { NSApplication.shared.terminate(nil) } })
+            quit: { await MainActor.run { NSApplication.shared.terminate(nil) } },
+            otherCopies: { await LiveInstaller.otherCopies() },
+            quitCopies: { try await LiveInstaller.quit($0) })
     }
 }
 
@@ -74,6 +95,11 @@ package enum InstallerError: LocalizedError, CustomStringConvertible {
     case replaceFailed(path: String, underlying: any Error)
     /// The installed copy couldn't be opened.
     case openFailed(path: String, underlying: any Error)
+    /// Another open copy of Humata, at `path`, didn't quit when asked.
+    case copyWontQuit(path: String)
+    /// `underlying` happened after Humata's daemon was stopped for the
+    /// install; `restarted` when it was started again since.
+    case stoppedDaemon(restarted: Bool, underlying: any Error)
 
     package var errorDescription: String? { description }
 
@@ -81,8 +107,8 @@ package enum InstallerError: LocalizedError, CustomStringConvertible {
         switch self {
         case .noPermission(let folder, _):
             "Humata can't write to \(folder), so it wasn't installed and the copy there is as it was. Sign in "
-                + "as an administrator, or drag Humata into \(folder) in the Finder and enter an administrator's "
-                + "password when asked; or choose Run from Here."
+                + "as an administrator, or drag Humata into Applications in the Finder and enter an "
+                + "administrator's password when asked; or choose Run from Here."
         case .diskFull(let folder, let underlying):
             "There isn't room on the disk holding \(folder) for another copy of Humata "
                 + "(\(underlying.localizedDescription)), so it wasn't installed and the copy there is as it was. "
@@ -97,12 +123,22 @@ package enum InstallerError: LocalizedError, CustomStringConvertible {
         case .openFailed(let path, let underlying):
             "Humata is at \(path) but didn't open: \(underlying.localizedDescription) Open it from Applications "
                 + "yourself, and quit this copy."
+        case .copyWontQuit(let path):
+            "The copy of Humata open at \(path.isEmpty ? "another place" : path) didn't quit, so nothing was "
+                + "installed and Humata's daemon wasn't stopped. Switch to it, save or finish what it shows, quit "
+                + "it, then try again."
+        case .stoppedDaemon(restarted: true, let underlying):
+            "\(underlying.localizedDescription) Humata's daemon was stopped for the install and has been started "
+                + "again, so turns that were in progress have ended."
+        case .stoppedDaemon(restarted: false, let underlying):
+            "\(underlying.localizedDescription) Humata's daemon was stopped for the install and isn't running; "
+                + "opening Humata from Applications starts it again."
         }
     }
 
     /// `error` from writing in `folder`, as a lack of permission or of
     /// space when it's one of those, else as `otherwise`.
-    static func writing(
+    package static func writing(
         in folder: String, _ error: any Error, otherwise: (any Error) -> InstallerError
     ) -> InstallerError {
         let codes = posixCodes(of: error)
@@ -148,25 +184,50 @@ private enum LiveInstaller {
 
     static func survey() -> InstallSurvey? {
         let bundle = Bundle.main
-        guard isRunningDeveloperID(), !InstallFiles.isInstalled(bundle.bundleURL),
+        // Where it is first: the installed app, opened on every launch,
+        // then skips checking its signature before the window opens.
+        guard !InstallFiles.isInstalled(bundle.bundleURL, original: originalPath), isRunningDeveloperID(),
             let info = bundle.infoDictionary, let version = BundleVersion(info: info)
         else { return nil }
         let name = info["CFBundleName"] as? String ?? "Humata"
         let destination = InstallFiles.destination(named: name)
-        let installed = installedInfo(at: destination)
-        // Something else by the name is never replaced.
-        if let installed, installed["CFBundleIdentifier"] as? String != bundle.bundleIdentifier { return nil }
+        let installed: BundleVersion?
+        switch InstallFiles.installed(at: destination, identifier: bundle.bundleIdentifier) {
+        case .nothing: installed = nil
+        case .humata(let version): installed = version
+        // Something else by the name, or unreadable, is never replaced.
+        case .other: return nil
+        }
+        let volume = try? bundle.bundleURL.resourceValues(forKeys: [.volumeIsReadOnlyKey, .volumeIsRemovableKey])
         return InstallSurvey(
-            source: bundle.bundleURL, destination: destination, version: version,
-            installed: installed.flatMap(BundleVersion.init(info:)), team: runningTeam())
+            source: bundle.bundleURL, destination: destination, version: version, installed: installed,
+            team: runningTeam(),
+            sourceIsEjectable: volume?.volumeIsReadOnly == true || volume?.volumeIsRemovable == true)
     }
 
-    /// The Info.plist of the app at `bundle`, read afresh rather than
-    /// from `Bundle`'s cache.
-    private static func installedInfo(at bundle: URL) -> [String: Any]? {
-        let plist = bundle.appending(path: "Contents/Info.plist")
-        guard let data = try? Data(contentsOf: plist) else { return nil }
-        return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+    private typealias IsTranslocated =
+        @convention(c) (CFURL, UnsafeMutablePointer<Bool>, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> UInt8
+    private typealias OriginalPath =
+        @convention(c) (CFURL, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> Unmanaged<CFURL>?
+
+    /// Where a copy macOS runs from a translocated path really is; nil for
+    /// one that isn't translocated. Security.framework has these calls but
+    /// no header for them, so they're looked up by name.
+    private static func originalPath(of url: URL) -> URL? {
+        guard let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY) else {
+            return nil
+        }
+        defer { dlclose(security) }
+        guard let isSymbol = dlsym(security, "SecTranslocateIsTranslocatedURL"),
+            let originalSymbol = dlsym(security, "SecTranslocateCreateOriginalPathForURL")
+        else { return nil }
+        let isTranslocated = unsafeBitCast(isSymbol, to: IsTranslocated.self)
+        let createOriginal = unsafeBitCast(originalSymbol, to: OriginalPath.self)
+        var translocated = false
+        guard isTranslocated(url as CFURL, &translocated, nil) != 0, translocated,
+            let original = createOriginal(url as CFURL, nil)
+        else { return nil }
+        return original.takeRetainedValue() as URL
     }
 
     /// Whether this process is signed with a Developer ID certificate.
@@ -220,6 +281,11 @@ private enum LiveInstaller {
         guard files.isWritableFile(atPath: folderPath) else {
             throw InstallerError.noPermission(folder: folderPath, underlying: nil)
         }
+        // And whether the copy there can be taken away: one owned by
+        // someone else, or locked, would fail only once the daemon stopped.
+        if let blocked = unreplaceable(destination) {
+            throw InstallerError.noPermission(folder: blocked, underlying: nil)
+        }
         let temporary: URL
         do {
             temporary = try files.url(
@@ -240,6 +306,56 @@ private enum LiveInstaller {
             }
         }
         return staged
+    }
+
+    /// The path of the first of `bundle` and its Contents folder that this
+    /// user can't write and remove; nil when both can be, or there's none.
+    private static func unreplaceable(_ bundle: URL) -> String? {
+        let user = geteuid()
+        var groups = Set([getegid()])
+        let count = getgroups(0, nil)
+        if count > 0 {
+            var list = [gid_t](repeating: 0, count: Int(count))
+            let filled = getgroups(count, &list)
+            if filled > 0 { groups.formUnion(list.prefix(Int(filled))) }
+        }
+        for url in [bundle, bundle.appending(path: "Contents")] {
+            let path = url.path(percentEncoded: false)
+            var info = stat()
+            guard lstat(path, &info) == 0 else { continue }
+            let ownership = FileOwnership(
+                owner: info.st_uid, group: info.st_gid, mode: UInt16(info.st_mode & 0o7777), flags: info.st_flags)
+            if !InstallFiles.canReplace([ownership], user: user, groups: groups) { return path }
+        }
+        return nil
+    }
+
+    /// Every other running app with this one's bundle identifier.
+    @MainActor static func otherCopies() -> [RunningCopy] {
+        guard let identifier = Bundle.main.bundleIdentifier else { return [] }
+        let mine = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+            .filter { $0.processIdentifier != mine && !$0.isTerminated }
+            .map { RunningCopy(id: $0.processIdentifier, path: $0.bundleURL?.path(percentEncoded: false) ?? "") }
+    }
+
+    /// How long a copy asked to quit has before it's said not to.
+    private static let quitSeconds = 15
+
+    static func quit(_ copies: [RunningCopy]) async throws {
+        await MainActor.run {
+            for copy in copies { NSRunningApplication(processIdentifier: copy.id)?.terminate() }
+        }
+        var left = copies
+        for _ in 0..<(quitSeconds * 10) {
+            let asked = left
+            left = await MainActor.run {
+                asked.filter { NSRunningApplication(processIdentifier: $0.id)?.isTerminated == false }
+            }
+            if left.isEmpty { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        if let first = left.first { throw InstallerError.copyWontQuit(path: first.path) }
     }
 
     static func clearQuarantine(_ bundle: URL) {

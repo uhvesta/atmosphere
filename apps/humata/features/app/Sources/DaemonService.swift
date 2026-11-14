@@ -7,8 +7,8 @@ import Foundation
 package struct DaemonService: Sendable {
     /// Starts humatad unless one answers already, and waits until it does.
     package var start: @Sendable () async throws -> Void
-    /// Whether the daemon answering is the build inside this app.
-    package var isCurrent: @Sendable () async throws -> Bool = { true }
+    /// How the daemon answering stands against the build inside this app.
+    package var build: @Sendable () async throws -> DaemonBuild = { .current }
     /// Stops the daemon and starts this app's, waiting until it answers.
     /// Turns in progress end.
     package var restart: @Sendable () async throws -> Void
@@ -16,14 +16,27 @@ package struct DaemonService: Sendable {
     package var openLoginItems: @Sendable () -> Void
     /// Stops the daemon for the app's files to be replaced, as the
     /// installer does, and waits until it no longer answers. Turns in
-    /// progress end.
-    package var stop: @Sendable () async throws -> Void
+    /// progress end. True when a daemon was running and was stopped; throws
+    /// `stillRunning` when one still answers.
+    package var stop: @Sendable () async throws -> Bool
+}
+
+/// How the daemon answering stands against the build inside this app.
+package enum DaemonBuild: Equatable, Sendable {
+    /// This app's own build, or one it uses as it is: a humatad no build of
+    /// this app started.
+    case current
+    /// Another build, no newer than this app: it's replaced once no session
+    /// is in a turn.
+    case older
+    /// A newer Humata's: this copy can't use it, and leaves it running.
+    case newer
 }
 
 extension DaemonService: TestDependencyKey {
     package static let testValue = DaemonService()
     package static let previewValue = DaemonService(
-        start: {}, isCurrent: { true }, restart: {}, openLoginItems: {}, stop: {})
+        start: {}, build: { .current }, restart: {}, openLoginItems: {}, stop: { false })
 }
 
 extension DependencyValues {
@@ -50,6 +63,9 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
     case notManaged(socket: String)
     /// macOS didn't take the login item off, so its humatad still runs.
     case unregisterFailed(underlying: any Error)
+    /// A daemon still answers after it was asked to stop, or when nothing
+    /// here could stop it; `seconds` is how long it was waited for.
+    case stillRunning(seconds: Int)
 
     package var errorDescription: String? { description }
 
@@ -78,6 +94,10 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
         case .unregisterFailed(let underlying):
             "macOS didn't stop Humata's daemon: \(underlying.localizedDescription) Turn off Humata in System "
                 + "Settings › General › Login Items, then try again; or choose Run from Here."
+        case .stillRunning(let seconds):
+            "Humata's daemon is still running" + (seconds > 0 ? " after \(seconds) seconds" : "")
+                + ", so nothing in Applications was changed. Quit every other copy of Humata that's open; if the "
+                + "daemon comes back, turn Humata off in System Settings › General › Login Items. Then try again."
         }
     }
 }

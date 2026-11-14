@@ -41,7 +41,7 @@ package struct BoardView: View {
                     .padding()
                 }
             case .graph:
-                BoardGraphView(items: store.state.planned) { store.send(.cardTapped($0)) }
+                BoardGraphView(graph: store.graph, items: store.items) { store.send(.cardTapped($0)) }
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {

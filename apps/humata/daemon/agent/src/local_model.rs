@@ -4,10 +4,11 @@
 //! `edit_file`, which ask the person first, and `read_file`, `list_folder`,
 //! `search_files` and `find_files`, which don't.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -101,8 +102,9 @@ const LARGEST_READ: u64 = 8 * 1024 * 1024;
 const LINES_NOTE_ROOM: usize = 256;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The server a session uses, as JSON:
-/// `{"base_url": "...", "api_key": "..."}`. Both are optional.
+/// The server sessions use unless theirs names another, from the host's
+/// settings: `base_url` and `api_key`, both optional. Kept by the daemon,
+/// never in a session's record.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalModelConfig {
@@ -110,25 +112,39 @@ pub struct LocalModelConfig {
     pub api_key: Option<String>,
 }
 
-/// A session's backend config, as JSON: a server as in
-/// [`LocalModelConfig`], or `{"provider": {...}}` for a provider whose key
-/// is in one of the host's variables.
+/// A session's backend config, as JSON: `{"base_url": "..."}` for a
+/// server, or `{"provider": {...}}` for a provider whose key is in one of
+/// the host's variables. It holds no key: it is kept in the session's
+/// record, so a key there would be too. A server's key comes from the
+/// host's defaults, a provider's from its variable.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SessionConfig {
     base_url: Option<String>,
-    api_key: Option<String>,
     provider: Option<Provider>,
 }
 
 impl SessionConfig {
     fn read(json: Option<&str>) -> Result<Self, LocalModelError> {
         match json {
-            Some(json) => {
-                serde_json::from_str(json).map_err(|source| LocalModelError::BadConfig { source })
-            }
+            Some(json) => serde_json::from_str(json).map_err(|source| {
+                let holds_key = serde_json::from_str::<Value>(json)
+                    .is_ok_and(|config| config.get("api_key").is_some());
+                LocalModelError::BadConfig { holds_key, source }
+            }),
             None => Ok(Self::default()),
         }
+    }
+}
+
+/// What's wrong with a session's config that isn't valid, and what to do.
+fn bad_config(holds_key: &bool) -> String {
+    if *holds_key {
+        "the session's local-model config holds a key, which Humata no longer takes there. Start a new session using a provider from Settings › Hosts, whose key is kept in one of the host's variables. The old key stays in this session's record until the session is deleted".to_owned()
+    } else {
+        format!(
+            "the session's local-model config isn't valid; give JSON like {{\"base_url\": \"{DEFAULT_BASE_URL}\"}} and start a new session with it"
+        )
     }
 }
 
@@ -137,10 +153,11 @@ const BACKEND: &str = "A local model's agent";
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocalModelError {
-    #[error(
-        "the session's local-model config isn't valid; give JSON like {{\"base_url\": \"{DEFAULT_BASE_URL}\"}} and start a new session with it"
-    )]
+    #[error("{}", bad_config(.holds_key))]
     BadConfig {
+        /// Whether the config holds a key, as one written before Humata
+        /// took keys only from the host's variables does.
+        holds_key: bool,
         #[source]
         source: serde_json::Error,
     },
@@ -198,7 +215,7 @@ pub enum LocalModelError {
     },
 
     #[error(
-        "the model server at {url} answered {status} when asked for its models: {body}. Check base_url, and api_key if it needs one"
+        "the model server at {url} answered {status} when asked for its models: {body}. Check base_url, and the key in HUMATA_LOCAL_API_KEY on the host if the server needs one; for a provider of your own, start a session with one from Settings › Hosts"
     )]
     ListStatus {
         url: String,
@@ -278,6 +295,10 @@ pub struct LocalModelRunner {
     stall: Duration,
     /// How often a turn waiting for the app's model server asks again.
     retry: Duration,
+    /// How many tokens each provider's model takes in, by where its
+    /// provider lists its models and the model, once the listing has said:
+    /// a provider's models don't change their context, so it's asked once.
+    contexts: Mutex<HashMap<(String, String), u64>>,
 }
 
 impl LocalModelRunner {
@@ -296,6 +317,7 @@ impl LocalModelRunner {
             mcp: None,
             stall: STALL,
             retry: SERVER_RETRY,
+            contexts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -361,7 +383,7 @@ impl Runner for LocalModelRunner {
             return Ok(provider.models(self.http.clone(), &self.env).await?);
         }
         let (base_url, apps) = self.base_url(own.base_url);
-        let api_key = own.api_key.or_else(|| self.defaults.api_key.clone());
+        let api_key = self.defaults.api_key.clone();
         match server_models(self.http.clone(), &base_url, api_key).await {
             Err(LocalModelError::Connect { url, source }) if apps => {
                 Err(LocalModelError::AppServerDown { url, source }.into())
@@ -399,7 +421,7 @@ impl Runner for LocalModelRunner {
         self.run_skill(&turn, humata.as_mut()).await?;
 
         // Sized once a turn, so what's left out moves only a step at a time.
-        let context = server_context(self.http.clone(), &request).await;
+        let context = self.context(&request).await;
         let budget = budget(context, &offered);
 
         let mut calls = 0_usize;
@@ -460,7 +482,7 @@ impl Runner for LocalModelRunner {
         let (request, apps) = self.request(&turn)?;
         // It's asked to write, not to work, so it's offered no tools.
         let offered = json!([]);
-        let context = server_context(self.http.clone(), &request).await;
+        let context = self.context(&request).await;
         let budget = budget(context, &offered);
         let mut asked = SUMMARIZE.to_owned();
         if !turn.text().is_empty() {
@@ -526,8 +548,10 @@ pub(crate) fn provider_fault(error: LocalModelError, variable: &str) -> LocalMod
             model,
             status,
             body,
-        } => match ProviderError::refusal(&url, variable, status, &body) {
-            Some(refusal) => refusal.into(),
+        } => match ProviderError::refusal(&url, variable, status, &body)
+            .or_else(|| ProviderError::failure(&url, &model, status, &body))
+        {
+            Some(fault) => fault.into(),
             None => LocalModelError::Status {
                 url,
                 model,
@@ -649,7 +673,7 @@ impl LocalModelRunner {
         let request = Request {
             url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
             models: format!("{}/models", base_url.trim_end_matches('/')),
-            api_key: own.api_key.or_else(|| self.defaults.api_key.clone()),
+            api_key: self.defaults.api_key.clone(),
             model: record.model.ok_or(LocalModelError::NoModel)?,
             headers: Vec::new(),
             key_variable: None,
@@ -720,6 +744,31 @@ impl LocalModelRunner {
                 Err(error) => return Err(request.fault(error)),
                 reply => return reply,
             }
+        }
+    }
+
+    /// How many tokens `request`'s model takes in. A server is asked each
+    /// turn, as a model can be loaded again with another context; None if
+    /// it doesn't say. A provider is asked once for each model, and its
+    /// model is taken to take [`PROVIDER_CONTEXT`] when it doesn't say,
+    /// as an OpenAI-style listing doesn't.
+    async fn context(&self, request: &Request) -> Option<u64> {
+        if request.key_variable.is_none() {
+            return server_context(self.http.clone(), request).await.flatten();
+        }
+        let known = (request.models.clone(), request.model.clone());
+        let contexts = || self.contexts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(tokens) = contexts().get(&known) {
+            return Some(*tokens);
+        }
+        match server_context(self.http.clone(), request).await {
+            Some(listed) => {
+                let tokens = listed.unwrap_or(PROVIDER_CONTEXT);
+                contexts().insert(known, tokens);
+                Some(tokens)
+            }
+            // Not answered, so asked again next turn.
+            None => Some(PROVIDER_CONTEXT),
         }
     }
 
@@ -920,8 +969,9 @@ pub(crate) async fn server_models(
 
 /// How many tokens `request`'s model takes in, if its server lists it:
 /// llama.cpp, vLLM, LM Studio and others each name it differently. None
-/// when the server is down or doesn't say.
-async fn server_context(http: ureq::Agent, request: &Request) -> Option<u64> {
+/// when the server is down or didn't answer; Some(None) when it answered
+/// and doesn't say.
+async fn server_context(http: ureq::Agent, request: &Request) -> Option<Option<u64>> {
     let url = request.models.clone();
     let api_key = request.api_key.clone();
     let headers = request.headers.clone();
@@ -929,7 +979,7 @@ async fn server_context(http: ureq::Agent, request: &Request) -> Option<u64> {
     tokio::task::spawn_blocking(move || {
         listing_with(&http, &url, api_key.as_deref(), &headers)
             .ok()
-            .and_then(|listed| listed_context(&listed, &model))
+            .map(|listed| listed_context(&listed, &model))
     })
     .await
     .ok()
@@ -1456,6 +1506,11 @@ const BYTES_PER_TOKEN: usize = 3;
 /// What's sent of the conversation when the server doesn't say how much
 /// the model takes in.
 const UNKNOWN_CONTEXT_SENT: usize = 64 * 1024;
+/// How many tokens a provider's model is taken to take in when its
+/// provider doesn't list it: what the models providers serve to agents
+/// take in at least, and far more than [`UNKNOWN_CONTEXT_SENT`], which is
+/// sized for a small model on the person's own machine.
+const PROVIDER_CONTEXT: u64 = 128_000;
 /// The least that's sent, however small the model's context, so a step
 /// still leaves room for a turn's work.
 const LEAST_SENT: usize = 8 * 1024;
@@ -2721,11 +2776,94 @@ mod tests {
             provider_answering(429).await,
             LocalModelError::Provider(ProviderError::Limited { .. })
         ));
-        // Not about the key: left as the server's own answer.
+        // Not about the key: the model asked for, or the provider's fault.
+        assert!(matches!(
+            provider_answering(404).await,
+            LocalModelError::Provider(ProviderError::ModelRefused { status: 404, .. })
+        ));
         assert!(matches!(
             provider_answering(500).await,
-            LocalModelError::Status { status: 500, .. }
+            LocalModelError::Provider(ProviderError::ServerFailed { status: 500, .. })
         ));
+        assert!(matches!(
+            provider_answering(409).await,
+            LocalModelError::Status { status: 409, .. }
+        ));
+    }
+
+    #[test]
+    fn a_session_config_holding_a_key_is_refused_and_one_without_is_taken() {
+        let held = json!({"base_url": "http://127.0.0.1:11434/v1", "api_key": "sk"});
+        assert!(matches!(
+            SessionConfig::read(Some(&held.to_string())),
+            Err(LocalModelError::BadConfig {
+                holds_key: true,
+                ..
+            })
+        ));
+        let server = json!({"base_url": "http://127.0.0.1:11434/v1"});
+        let config = SessionConfig::read(Some(&server.to_string())).expect("taken");
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("http://127.0.0.1:11434/v1")
+        );
+        let other = json!({"base_url": 3});
+        assert!(matches!(
+            SessionConfig::read(Some(&other.to_string())),
+            Err(LocalModelError::BadConfig {
+                holds_key: false,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_provider_whose_listing_gives_no_context_gets_a_long_history_and_is_asked_once() {
+        let mut replies: Vec<(u16, String)> = (1..=6)
+            .map(|index| {
+                let id = format!("c{index}");
+                (
+                    200,
+                    sse(&call(&id, "read_file", json!({"path": "big.txt"}))),
+                )
+            })
+            .collect();
+        replies.push((200, sse(&[text("Read.")])));
+        replies.push((200, sse(&[text("Again.")])));
+        // Lists its models without saying how much they take in.
+        let listing = json!({"object": "list", "data": [{"id": "kimi"}]});
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let server = serve_listing(listener, listing, replies);
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let line = "x".repeat(99);
+        let contents = vec![line.as_str(); 400].join("\n");
+        std::fs::write(state.path().join("big.txt"), contents).expect("a file");
+        let env = Env::new([("GO_KEY".to_owned(), "sk".to_owned())]);
+        let (agent, id) = go_session(&server, state.path(), env).await;
+        for (turn, text) in ["read it", "and again"].into_iter().enumerate() {
+            agent
+                .send(&id, text.into(), SendMode::Enqueue)
+                .await
+                .expect("sent");
+            wait_for(&agent, &id, idle_turns(turn + 1)).await;
+        }
+
+        let requests = server.requests();
+        let last = requests.last().expect("a request");
+        assert!(
+            last.to_string().len() > UNKNOWN_CONTEXT_SENT,
+            "{} bytes sent",
+            last.to_string().len()
+        );
+        let results = results(last);
+        assert_eq!(results.len(), 6);
+        assert!(results.iter().all(|result| result != DROPPED));
+        let listings = server
+            .heads()
+            .iter()
+            .filter(|head| head.starts_with("get "))
+            .count();
+        assert_eq!(listings, 1);
     }
 
     struct Fixture {

@@ -1930,6 +1930,10 @@ message SessionInfo {
   // For a planning session with the code: the commit each repository's
   // copy was on as its last turn started. Empty before its first turn.
   repeated CodeCommit code_commits = 34;
+  // It plans in a copy that follows its origin (a planning session with
+  // the code), so it can't leave plan mode. False for a session switched
+  // into plan mode.
+  bool follows_base = 35;
 }
 
 // A session's git worktree of one repository.
@@ -2761,6 +2765,9 @@ message ConfigureHost {
   // The port of the Mac's model server, forwarded to the same port on the
   // host's 127.0.0.1; 0 leaves the one it has.
   uint32 model_server_port = 3;
+  // The variables this host's model providers take their keys from. A
+  // session that runs on no provider never gets them.
+  repeated string provider_variables = 4;
 }
 
 message SetModelServer {

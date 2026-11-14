@@ -167,6 +167,9 @@ impl Daemon {
         let (tool_calls, calls) = mpsc::unbounded_channel();
         let (pull_refresh_changed, pull_refresh_told) = tokio::sync::watch::channel(());
         local.set_env(hosts.coordinator_env.clone());
+        local.set_provider_variables(crate::hosts::provider_variables(
+            &hosts.coordinator_providers,
+        ));
         let coordinator_env = std::sync::Mutex::new(hosts.coordinator_env);
         let coordinator_providers = std::sync::Mutex::new(hosts.coordinator_providers);
         let model_server = local.model_server();
@@ -316,6 +319,12 @@ impl Daemon {
         }
     }
 
+    /// The host on this Mac.
+    #[cfg(test)]
+    pub(crate) fn local(&self) -> &Host {
+        &self.local
+    }
+
     /// Sets or unsets variables for the coordinator's agents. It has no
     /// setup script: the person sets their Mac up themselves.
     fn update_coordinator(&self, update: pb::UpdateHost) -> Result<pb::HostInfo, DaemonError> {
@@ -346,6 +355,8 @@ impl Daemon {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = env;
         if let Some(providers) = providers {
+            self.local
+                .set_provider_variables(hosts::provider_variables(&providers));
             *self
                 .coordinator_providers
                 .lock()

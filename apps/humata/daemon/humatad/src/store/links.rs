@@ -116,7 +116,8 @@ pub(super) fn relink(
 
 /// Removes `item` and every link to and from it. Each item that waited on
 /// it gets a change of its own for the link it lost, and the removal, the
-/// last change logged, keeps their ids for [`restore_dependents`].
+/// last change logged, keeps each one's id with that change's, a tab
+/// between them, a line each, for [`restore_dependents`].
 pub(super) fn remove_item(
     transaction: &Transaction<'_>,
     item: &Item,
@@ -129,6 +130,7 @@ pub(super) fn remove_item(
         )?
         .query_map([&item.id], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
+    let mut unlinked = Vec::with_capacity(dependents.len());
     for dependent in &dependents {
         let Some(was) = read_item(transaction, dependent)? else {
             continue;
@@ -144,6 +146,7 @@ pub(super) fn remove_item(
             reverts,
             author,
         )?;
+        unlinked.push(format!("{dependent}\t{}", transaction.last_insert_rowid()));
     }
     transaction.execute(
         "DELETE FROM item_dependencies WHERE item_id = ?1",
@@ -160,33 +163,43 @@ pub(super) fn remove_item(
     )?;
     transaction.execute(
         "UPDATE board_changes SET dependents = ?1 WHERE id = last_insert_rowid()",
-        [dependents.join("\n")],
+        [unlinked.join("\n")],
     )?;
     Ok(())
 }
 
 /// Links the items that waited on `item` when change `removal` removed it
-/// to it again, each as a change that reverts `removal`. One that is gone,
-/// or whose link would now close a loop, is left out.
+/// to it again, each as a change that reverts the change that took its
+/// link off (or `removal`, for a removal logged before those were kept).
+/// One that is gone, or whose link would now close a loop, is left out,
+/// and says so by returning true.
 pub(super) fn restore_dependents(
     transaction: &Transaction<'_>,
     project: &str,
     item: &str,
     removal: u64,
     author: &Author,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<bool> {
     let dependents: String = transaction.query_row(
         "SELECT dependents FROM board_changes WHERE id = ?1",
         [i64::try_from(removal).unwrap_or(i64::MAX)],
         |row| row.get(0),
     )?;
-    for dependent in dependents.lines() {
+    let mut left_out = false;
+    for line in dependents.lines() {
+        let (dependent, unlinking) = match line.split_once('\t') {
+            Some((dependent, change)) => (dependent, change.parse::<u64>().unwrap_or(removal)),
+            None => (line, removal),
+        };
         let Some(was) = read_item(transaction, dependent)? else {
+            left_out = true;
             continue;
         };
-        if was.fields.depends_on.iter().any(|on| on == item)
-            || relink(transaction, project, dependent, &[item.to_owned()])?.is_empty()
-        {
+        if was.fields.depends_on.iter().any(|on| on == item) {
+            continue;
+        }
+        if relink(transaction, project, dependent, &[item.to_owned()])?.is_empty() {
+            left_out = true;
             continue;
         }
         let mut now = was.fields.clone();
@@ -197,11 +210,11 @@ pub(super) fn restore_dependents(
             project,
             dependent,
             (Some(&was.fields), Some(&now)),
-            Some(removal),
+            Some(unlinking),
             author,
         )?;
     }
-    Ok(())
+    Ok(left_out)
 }
 
 #[cfg(test)]
@@ -477,6 +490,45 @@ mod tests {
         assert_eq!(reverted.kept, [pb::ItemField::DependsOn]);
         assert!(depends_on(&store, &a).is_empty());
         assert_eq!(depends_on(&store, &b), [a.id.clone()]);
+    }
+
+    #[test]
+    fn a_dependent_gone_since_the_deletion_is_left_out_of_the_revert_and_said_to_be() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (store, project) = with_project(dir.path());
+        let a = add(&store, &project, "a", None);
+        let b = add(&store, &project, "b", None);
+        link(&store, &b, &a).expect("linked");
+        store.delete_item(&a.id, &author(), &[]).expect("deleted");
+        let deletion = last_change(&store, &project, &a);
+        store.delete_item(&b.id, &author(), &[]).expect("deleted");
+
+        let reverted = store.revert(deletion, &author()).expect("reverted");
+        assert!(reverted.kept.contains(&pb::ItemField::DependsOn));
+        assert_eq!(
+            reverted.item.map(|item| item.id),
+            Some(a.id.clone()),
+            "the item itself comes back"
+        );
+    }
+
+    #[test]
+    fn a_milestone_and_its_own_task_cant_wait_on_each_other_and_the_loop_names_both() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (store, project) = with_project(dir.path());
+        let milestone = add(&store, &project, "milestone", None);
+        let task = add(&store, &project, "task", Some(&milestone));
+
+        for (item, on) in [(&milestone, &task), (&task, &milestone)] {
+            let refused = link(&store, item, on);
+            let Err(StoreError::DependencyCycle { path, .. }) = refused else {
+                panic!("expected a loop, got {refused:?}");
+            };
+            assert_eq!(path.first(), path.last());
+            for title in ["milestone", "task"] {
+                assert!(path.iter().any(|named| named == title), "{path:?}");
+            }
+        }
     }
 
     #[test]

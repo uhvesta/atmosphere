@@ -68,8 +68,10 @@ const LEFT_OUT: &str = "AskUserQuestion,EnterPlanMode,ExitPlanMode,EnterWorktree
 /// covers the CLI's own tools only: a tool of an MCP server the person set
 /// up could change things too, and their settings may always allow it, so
 /// a read-only session is started with Humata's server alone
-/// (`--strict-mcp-config`, in [`ClaudeRunner::command`]).
-const LEFT_OUT_READ_ONLY: &str = "Bash,Edit,MultiEdit,Write,NotebookEdit";
+/// (`--strict-mcp-config`, in [`ClaudeRunner::command`]). Monitor and
+/// PowerShell run commands as Bash does. Unknown tools aren't all left out:
+/// that would take Task, which subagents need, too.
+const LEFT_OUT_READ_ONLY: &str = "Bash,Monitor,PowerShell,Edit,MultiEdit,Write,NotebookEdit";
 
 /// What the model is told when the person denies a tool.
 const DENIED: &str = "The person directing this session didn't allow this.";
@@ -199,13 +201,29 @@ impl ClaudeRunner {
     /// says: with a provider, on the key in the host's variable it names,
     /// read now and set for this process alone; with a subscription, on
     /// the login, with no key from the host's variables or humatad's own;
-    /// with neither, as the variables have it.
-    fn sign_in(&self, config: Option<&str>, command: &mut Command) -> Result<(), ClaudeError> {
+    /// with neither, as the variables have it, less any key variable one
+    /// of the host's providers names: that key is paid for by the provider
+    /// and only a session on it is given it.
+    /// Says which provider, if any, it signed in on, so a refusal of the
+    /// key is told apart from a refusal of the login.
+    fn sign_in(
+        &self,
+        config: Option<&str>,
+        command: &mut Command,
+    ) -> Result<Option<OnProvider>, ClaudeError> {
         let config: ClaudeConfig = match config {
             Some(json) => {
                 serde_json::from_str(json).map_err(|source| ClaudeError::BadConfig { source })?
             }
-            None => return Ok(()),
+            None => {
+                let named = self.options.env.provider_variables();
+                for variable in KEY_VARIABLES {
+                    if named.contains(variable) {
+                        command.env_remove(variable);
+                    }
+                }
+                return Ok(None);
+            }
         };
         if let Some(provider) = &config.provider {
             let base_url = provider.anthropic_base("Claude Code")?;
@@ -214,15 +232,22 @@ impl ClaudeRunner {
                 command.env_remove(variable);
             }
             command.env("ANTHROPIC_API_KEY", key);
-            if let Some(base_url) = base_url {
-                command.env("ANTHROPIC_BASE_URL", base_url);
-            }
+            let url = base_url.clone().unwrap_or_else(|| ANTHROPIC_URL.to_owned());
+            // Anthropic's own address: not one the host's variables name.
+            match base_url {
+                Some(base_url) => command.env("ANTHROPIC_BASE_URL", base_url),
+                None => command.env_remove("ANTHROPIC_BASE_URL"),
+            };
+            return Ok(Some(OnProvider {
+                url,
+                variable: provider.api_key_variable.clone(),
+            }));
         } else if config.subscription {
             for variable in KEY_VARIABLES {
                 command.env_remove(variable);
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// The CLI for a turn of `record`, in the session `links` say: resumed,
@@ -352,7 +377,7 @@ impl ClaudeRunner {
             }
         }
         let (mut command, session) = self.command(&record, &mut links);
-        self.sign_in(record.backend_config.as_deref(), &mut command)?;
+        let provider = self.sign_in(record.backend_config.as_deref(), &mut command)?;
         let mut child = command.spawn().map_err(|source| ClaudeError::Start {
             program: self.options.program.clone(),
             source,
@@ -420,12 +445,80 @@ impl ClaudeRunner {
                 Err(_) => "still running".to_owned(),
             };
             let stderr = stderr.await.unwrap_or_default();
-            return Err(ClaudeError::Exited {
-                status,
-                stderr: stderr.trim().to_owned(),
-            });
+            return Err(on_provider(
+                provider.as_ref(),
+                ClaudeError::Exited {
+                    status,
+                    stderr: stderr.trim().to_owned(),
+                },
+            ));
         }
-        playing.failure.take().map_or(Ok(()), Err)
+        playing.failure.take().map_or(Ok(()), |failure| {
+            Err(on_provider(provider.as_ref(), failure))
+        })
+    }
+}
+
+/// Anthropic's own address, which a provider is served at unless it says
+/// otherwise.
+const ANTHROPIC_URL: &str = "https://api.anthropic.com";
+
+/// The provider a turn's CLI was signed in on: where it is served and the
+/// host's variable its key is in.
+struct OnProvider {
+    url: String,
+    variable: String,
+}
+
+/// `failure` as it is for a session on `provider`: the CLI's failure for a
+/// key the provider refuses, a balance it has run out of or a limit it
+/// puts on the key is the provider's, whose advice is about the key, not
+/// about signing in to Claude.
+fn on_provider(provider: Option<&OnProvider>, failure: ClaudeError) -> ClaudeError {
+    let Some(provider) = provider else {
+        return failure;
+    };
+    let said = match &failure {
+        ClaudeError::Turn { message } => message,
+        ClaudeError::Exited { stderr, .. } => stderr,
+        _ => return failure,
+    };
+    let refusal = refused_status(said)
+        .and_then(|status| ProviderError::refusal(&provider.url, &provider.variable, status, said));
+    match refusal {
+        Some(refusal) => ClaudeError::Provider(refusal),
+        None => failure,
+    }
+}
+
+/// The status the provider answered with, as the CLI's failure says it,
+/// when it's about the key or its account.
+fn refused_status(said: &str) -> Option<u16> {
+    let said = said.to_ascii_lowercase();
+    let any = |words: &[&str]| words.iter().any(|word| said.contains(word));
+    // A bare number could be anything, such as part of a request's id.
+    let status = |code: u16| {
+        ["error: ", "status ", "status: ", "status code "]
+            .iter()
+            .any(|lead| said.contains(&format!("{lead}{code}")))
+    };
+    if status(402) || any(&["credit balance", "billing"]) {
+        Some(402)
+    } else if status(429) || any(&["rate_limit", "rate limit", "rate-limit"]) {
+        Some(429)
+    } else if status(401)
+        || any(&[
+            "authentication_error",
+            "invalid api key",
+            "invalid x-api-key",
+            "invalid bearer token",
+        ])
+    {
+        Some(401)
+    } else if status(403) || any(&["permission_error"]) {
+        Some(403)
+    } else {
+        None
     }
 }
 
@@ -916,7 +1009,7 @@ impl Playing<'_> {
         let field = |name: &str| input[name].as_str().map(str::to_owned);
         let tool = request["tool_name"].as_str().unwrap_or_default();
         let (kind, summary) = match tool {
-            "Bash" => (PermissionKind::Shell, field("command")),
+            "Bash" | "Monitor" | "PowerShell" => (PermissionKind::Shell, field("command")),
             "Edit" | "MultiEdit" | "Write" => (PermissionKind::Write, field("file_path")),
             "NotebookEdit" => (PermissionKind::Write, field("notebook_path")),
             "Read" => (PermissionKind::Read, field("file_path")),
@@ -1118,16 +1211,32 @@ mod tests {
 
     /// What a session with `config` sets (Some) or takes away (None) of
     /// the CLI's variables, on a host whose variables hold a key of its
-    /// own in `ANTHROPIC_API_KEY` and another in `WORK_KEY`.
+    /// own in `ANTHROPIC_API_KEY` and another in `WORK_KEY`, and a gateway
+    /// in `ANTHROPIC_BASE_URL`.
     fn signed_in(config: Option<Value>) -> Result<Vec<(String, Option<String>)>, ClaudeError> {
+        signed_in_where(config, &[])
+    }
+
+    /// As [`signed_in`], on a host whose providers take their keys from
+    /// the variables `provider_variables`.
+    fn signed_in_where(
+        config: Option<Value>,
+        provider_variables: &[&str],
+    ) -> Result<Vec<(String, Option<String>)>, ClaudeError> {
         let dir = tempfile::tempdir().expect("a temporary folder");
+        let env = Env::new([
+            ("ANTHROPIC_API_KEY".to_owned(), "hosts-key".to_owned()),
+            ("WORK_KEY".to_owned(), "work-key".to_owned()),
+            (
+                "ANTHROPIC_BASE_URL".to_owned(),
+                "https://hosts-gateway.example".to_owned(),
+            ),
+        ]);
+        env.set_provider_variables(provider_variables.iter().map(|&name| name.to_owned()));
         let runner = ClaudeRunner::new(ClaudeOptions {
             program: "claude".into(),
             state: dir.path().join("state"),
-            env: Env::new([
-                ("ANTHROPIC_API_KEY".to_owned(), "hosts-key".to_owned()),
-                ("WORK_KEY".to_owned(), "work-key".to_owned()),
-            ]),
+            env,
             mcp: None,
         });
         let record: SessionRecord = serde_json::from_value(json!({
@@ -1174,7 +1283,8 @@ mod tests {
         );
         // A bearer token of humatad's own would outrank the key.
         assert_eq!(variable(&variables, "ANTHROPIC_AUTH_TOKEN"), Some(&None));
-        assert_eq!(variable(&variables, "ANTHROPIC_BASE_URL"), None);
+        // Anthropic's own address, not the host's gateway.
+        assert_eq!(variable(&variables, "ANTHROPIC_BASE_URL"), Some(&None));
     }
 
     #[test]
@@ -1191,6 +1301,79 @@ mod tests {
             variable(&variables, "ANTHROPIC_API_KEY"),
             Some(&Some("hosts-key".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_session_with_no_config_never_gets_a_key_a_provider_takes() {
+        let variables = signed_in_where(None, &["ANTHROPIC_API_KEY"]).expect("signed in");
+        assert_eq!(variable(&variables, "ANTHROPIC_API_KEY"), Some(&None));
+
+        let elsewhere = signed_in_where(None, &["WORK_KEY"]).expect("signed in");
+        assert_eq!(
+            variable(&elsewhere, "ANTHROPIC_API_KEY"),
+            Some(&Some("hosts-key".to_owned()))
+        );
+    }
+
+    fn on_anthropic() -> OnProvider {
+        OnProvider {
+            url: ANTHROPIC_URL.to_owned(),
+            variable: "WORK_KEY".to_owned(),
+        }
+    }
+
+    fn failed(message: &str) -> ClaudeError {
+        ClaudeError::Turn {
+            message: message.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_provider_refusing_its_key_is_the_providers_failure() {
+        let refused = on_provider(
+            Some(&on_anthropic()),
+            failed(r#"API Error: 401 {"type":"error","error":{"type":"authentication_error"}}"#),
+        );
+        assert!(matches!(
+            refused,
+            ClaudeError::Provider(ProviderError::KeyRefused { status: 401, .. })
+        ));
+        let exited = on_provider(
+            Some(&on_anthropic()),
+            ClaudeError::Exited {
+                status: "exit status: 1".to_owned(),
+                stderr: "Invalid API key".to_owned(),
+            },
+        );
+        assert!(matches!(
+            exited,
+            ClaudeError::Provider(ProviderError::KeyRefused { .. })
+        ));
+    }
+
+    #[test]
+    fn a_provider_out_of_credit_or_limiting_the_key_is_told_apart() {
+        let credit = on_provider(Some(&on_anthropic()), failed("Credit balance is too low"));
+        assert!(matches!(
+            credit,
+            ClaudeError::Provider(ProviderError::NoCredit { .. })
+        ));
+        let limited = on_provider(
+            Some(&on_anthropic()),
+            failed(r#"API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}"#),
+        );
+        assert!(matches!(
+            limited,
+            ClaudeError::Provider(ProviderError::Limited { .. })
+        ));
+    }
+
+    #[test]
+    fn a_failure_on_the_login_or_not_about_the_key_stays_the_clis() {
+        let login = on_provider(None, failed("API Error: 401 authentication_error"));
+        assert!(matches!(login, ClaudeError::Turn { .. }));
+        let other = on_provider(Some(&on_anthropic()), failed("request req_4019 timed out"));
+        assert!(matches!(other, ClaudeError::Turn { .. }));
     }
 
     #[test]
@@ -1323,7 +1506,15 @@ mod tests {
 
     #[test]
     fn a_turn_goes_without_every_tool_that_writes_or_runs_a_command_while_its_session_plans() {
-        let changing = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"];
+        let changing = [
+            "Bash",
+            "Monitor",
+            "PowerShell",
+            "Edit",
+            "MultiEdit",
+            "Write",
+            "NotebookEdit",
+        ];
 
         let plan = left_out_with("Plan");
         let side = left_out_with("SideChat");

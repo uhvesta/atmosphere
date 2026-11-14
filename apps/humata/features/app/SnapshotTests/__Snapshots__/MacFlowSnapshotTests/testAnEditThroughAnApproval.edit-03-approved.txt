@@ -27,6 +27,10 @@
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [OpaqueProviderGroup/OpaqueProviderList] ""
+    [StaticText] "" value: "Write the release notes for M1"
+    [Button] "Thoughts" help: "Shows the thinking"
+    [Button, selected] "/code/humata/NOTES.md"
+    [StaticText] "" value: "Approved"
     [Button, disabled] "cat > CHANGELOG.md <<'EOF'
 # Changelog
 

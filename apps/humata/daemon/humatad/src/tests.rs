@@ -2501,6 +2501,7 @@ async fn a_claude_code_session_on_the_host_is_listed_and_imported_once() {
             ],
             setup_script: String::new(),
             model_server_port: 0,
+            provider_variables: Vec::new(),
         }))
         .await
         .unwrap_or_else(|error| panic!("{error}"));
@@ -4915,4 +4916,83 @@ async fn a_watcher_that_has_the_history_up_to_an_event_is_sent_only_what_follows
         );
         assert_eq!(replayed(&client, &session, "").await, all, "on {host:?}");
     }
+}
+
+fn names(names: &[&str]) -> std::collections::BTreeSet<String> {
+    names.iter().map(|&name| name.to_owned()).collect()
+}
+
+#[tokio::test]
+async fn a_host_keeps_the_variables_its_providers_take_keys_from_as_it_is_configured() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let host = match Host::open(state.path(), &state.path().join("worktrees"), None).await {
+        Ok(host) => Arc::new(host),
+        Err(error) => panic!("couldn't open the host: {error}"),
+    };
+    let client = client_of(host.clone()).await;
+    let configure = |variables: &[&str]| {
+        pb::request::Kind::ConfigureHost(pb::ConfigureHost {
+            provider_variables: variables.iter().map(|&name| name.to_owned()).collect(),
+            ..Default::default()
+        })
+    };
+
+    client
+        .call(configure(&["ANTHROPIC_API_KEY", "WORK_KEY"]))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        host.provider_variables(),
+        names(&["ANTHROPIC_API_KEY", "WORK_KEY"])
+    );
+
+    client
+        .call(configure(&[]))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(host.provider_variables().is_empty());
+}
+
+#[tokio::test]
+async fn the_macs_host_knows_the_variables_its_providers_take_keys_from() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let provider = |variable: &str| pb::Provider {
+        id: variable.to_lowercase(),
+        name: variable.to_owned(),
+        kind: pb::ProviderKind::Anthropic.into(),
+        base_url: "https://api.anthropic.com".to_owned(),
+        key_variable: variable.to_owned(),
+        wire_api: String::new(),
+    };
+    let saved = Hosts {
+        coordinator_providers: crate::hosts::read_providers(pb::ProviderList {
+            providers: vec![provider("SAVED_KEY")],
+        })
+        .unwrap_or_else(|error| panic!("{error}")),
+        ..Hosts::default()
+    };
+    let daemon = daemon_itself(state.path(), saved).await;
+    assert_eq!(daemon.local().provider_variables(), names(&["SAVED_KEY"]));
+    let client = client_of(daemon.clone()).await;
+
+    let providers = |list: Vec<pb::Provider>| {
+        pb::request::Kind::UpdateHost(pb::UpdateHost {
+            providers: Some(pb::ProviderList { providers: list }),
+            ..Default::default()
+        })
+    };
+    client
+        .call(providers(vec![provider("ANTHROPIC_API_KEY")]))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        daemon.local().provider_variables(),
+        names(&["ANTHROPIC_API_KEY"])
+    );
+
+    client
+        .call(providers(Vec::new()))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(daemon.local().provider_variables().is_empty());
 }

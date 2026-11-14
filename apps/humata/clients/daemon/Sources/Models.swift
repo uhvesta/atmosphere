@@ -442,8 +442,12 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var nestsUnder: String? { parentID ?? startedBy }
 
     /// A planning session that reads a copy of the code kept at origin's
-    /// default branch, and writes nothing there.
-    package var plansWithCode: Bool { planning && access == .plan }
+    /// default branch, and writes nothing there: it can't leave plan mode.
+    /// A session only switched into plan mode doesn't follow its base.
+    package var followsBase = false
+
+    /// The same as `followsBase`: a planning session with the code.
+    package var plansWithCode: Bool { followsBase }
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,

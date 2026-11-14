@@ -75,9 +75,9 @@ pub struct CopilotOptions {
     pub mcp: Option<McpServer>,
 }
 
-/// An OpenAI-compatible model server, as JSON:
-/// `{"type": "openai", "base_url": "...", "api_key": "..."}`. The type and key
-/// are optional.
+/// An OpenAI-compatible model server for sessions that name none, from the
+/// host's settings: its type, `openai` if not given, its base URL and its
+/// key, if it needs one. Kept by the daemon, never in a session's record.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CopilotProvider {
@@ -91,6 +91,18 @@ fn openai() -> String {
     "openai".to_owned()
 }
 
+/// A model server a session's config names, as JSON:
+/// `{"type": "openai", "base_url": "..."}`, the type optional. It holds no
+/// key: the config is kept in the session's record, so a key there would
+/// be too. A server that needs a key is named as a provider instead.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionServer {
+    #[serde(rename = "type", default = "openai")]
+    kind: String,
+    base_url: String,
+}
+
 /// A session's backend config, as JSON: `{"provider": {...}}`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -101,11 +113,30 @@ struct CopilotConfig {
 impl CopilotConfig {
     fn read(json: Option<&str>) -> Result<Self, CopilotError> {
         match json {
-            Some(json) => {
-                serde_json::from_str(json).map_err(|source| CopilotError::BadConfig { source })
-            }
+            Some(json) => serde_json::from_str(json).map_err(|source| {
+                let holds_key = serde_json::from_str::<Value>(json)
+                    .is_ok_and(|config| config["provider"].get("api_key").is_some());
+                CopilotError::BadConfig { holds_key, source }
+            }),
             None => Ok(Self::default()),
         }
+    }
+
+    /// The provider it names whose key is in one of the host's variables.
+    fn keyed(&self) -> Option<&Provider> {
+        match &self.provider {
+            Some(ProviderChoice::Keyed(provider)) => Some(provider),
+            Some(ProviderChoice::Server(_)) | None => None,
+        }
+    }
+}
+
+/// What's wrong with a session's config that isn't valid, and what to do.
+fn bad_config(holds_key: &bool) -> &'static str {
+    if *holds_key {
+        "the session's Copilot config holds a key, which Humata no longer takes there. Start a new session using a provider from Settings › Hosts, whose key is kept in one of the host's variables. The old key stays in this session's record until the session is deleted"
+    } else {
+        "the session's Copilot config isn't valid; give JSON like {\"provider\": {\"base_url\": \"http://127.0.0.1:11434/v1\"}}, or none, and start a new session with it"
     }
 }
 
@@ -115,8 +146,8 @@ impl CopilotConfig {
 enum ProviderChoice {
     /// A provider whose key is in one of the host's variables.
     Keyed(Provider),
-    /// A model server, given whole.
-    Server(CopilotProvider),
+    /// A model server that takes no key.
+    Server(SessionServer),
 }
 
 /// What Copilot takes as a session's provider for `choice`, or for
@@ -127,20 +158,41 @@ fn provider_params(
     fallback: Option<&CopilotProvider>,
     env: &Env,
 ) -> Result<Option<Value>, ProviderError> {
-    let server = match &choice {
-        Some(ProviderChoice::Keyed(provider)) => {
-            return Ok(Some(provider.copilot(&provider.key(env)?)));
+    match &choice {
+        Some(ProviderChoice::Keyed(provider)) => Ok(Some(provider.copilot(&provider.key(env)?))),
+        Some(ProviderChoice::Server(server)) => Ok(Some(
+            json!({"type": server.kind, "baseUrl": server.base_url}),
+        )),
+        None => Ok(fallback.map(|server| {
+            let mut params = json!({"type": server.kind, "baseUrl": server.base_url});
+            if let Some(key) = &server.api_key {
+                params["apiKey"] = json!(key);
+            }
+            params
+        })),
+    }
+}
+
+/// What Copilot's `session.error` event, of `data`, says went wrong. For
+/// a session on a provider with a key of the person's own, a refused key,
+/// no credit or a limit is told as the provider's, with what to do about
+/// the key in its variable, and not as a fault in signing in to GitHub.
+fn session_failure(data: &Value, keyed: Option<&Provider>) -> CopilotError {
+    let message = data["message"].as_str().unwrap_or_default().to_owned();
+    if let Some(provider) = keyed {
+        let status = data["statusCode"]
+            .as_u64()
+            .and_then(|status| u16::try_from(status).ok());
+        if let Some(refusal) = ProviderError::from_cli(
+            provider.base(),
+            &provider.api_key_variable,
+            status,
+            &message,
+        ) {
+            return refusal.into();
         }
-        Some(ProviderChoice::Server(server)) => Some(server),
-        None => fallback,
-    };
-    Ok(server.map(|server| {
-        let mut params = json!({"type": server.kind, "baseUrl": server.base_url});
-        if let Some(key) = &server.api_key {
-            params["apiKey"] = json!(key);
-        }
-        params
-    }))
+    }
+    CopilotError::Session { message }
 }
 
 /// Tells one provider's params from another's, to open a live session
@@ -207,10 +259,11 @@ pub enum CopilotError {
     )]
     Session { message: String },
 
-    #[error(
-        "the session's Copilot config isn't valid; give JSON like {{\"provider\": {{\"base_url\": \"http://127.0.0.1:11434/v1\"}}}}, or none, and start a new session with it"
-    )]
+    #[error("{}", bad_config(.holds_key))]
     BadConfig {
+        /// Whether the config holds a key, as one written before Humata
+        /// took keys only from the host's variables does.
+        holds_key: bool,
         #[source]
         source: serde_json::Error,
     },
@@ -388,6 +441,7 @@ impl CopilotRunner {
     async fn begin(&self, turn: &Turn) -> Result<Begun, CopilotError> {
         let record = turn.record();
         let config = CopilotConfig::read(record.backend_config.as_deref())?;
+        let keyed = config.keyed().cloned();
         let provider = provider_params(
             config.provider,
             self.options.provider.as_ref(),
@@ -406,6 +460,7 @@ impl CopilotRunner {
             links,
             path,
             after_abort,
+            keyed,
         })
     }
 
@@ -438,6 +493,8 @@ struct Begun {
     /// Whether the session's last turn was stopped, and its abort waited
     /// for.
     after_abort: bool,
+    /// The provider the session runs on with a key of the person's own.
+    keyed: Option<Provider>,
 }
 
 /// The call `cli` has that sums up a session's conversation; None if it
@@ -453,7 +510,7 @@ async fn compact_method(cli: &Cli) -> Option<&'static str> {
 
 /// What one of Copilot's events says of the summing up that was asked for;
 /// None for an event that doesn't end it.
-fn summed_up(event: &Value) -> Option<Result<(), CopilotError>> {
+fn summed_up(event: &Value, keyed: Option<&Provider>) -> Option<Result<(), CopilotError>> {
     let data = &event["data"];
     match event["type"].as_str()? {
         "session.compaction_complete" if data["success"].as_bool() == Some(false) => {
@@ -462,9 +519,7 @@ fn summed_up(event: &Value) -> Option<Result<(), CopilotError>> {
             }))
         }
         "session.compaction_complete" => Some(Ok(())),
-        "session.error" => Some(Err(CopilotError::Session {
-            message: data["message"].as_str().unwrap_or_default().to_owned(),
-        })),
+        "session.error" => Some(Err(session_failure(data, keyed))),
         _ => None,
     }
 }
@@ -704,30 +759,26 @@ impl Runner for CopilotRunner {
 
     async fn models(&self, config: Option<String>) -> Result<Vec<crate::Model>, AgentError> {
         let config = CopilotConfig::read(config.as_deref())?;
-        let server = match config.provider {
-            Some(ProviderChoice::Keyed(provider)) => {
-                let http = ureq::Agent::config_builder()
-                    .http_status_as_error(false)
-                    .timeout_connect(Some(Duration::from_secs(10)))
-                    .build()
-                    .into();
-                return Ok(provider.models(http, &self.options.env).await?);
-            }
-            Some(ProviderChoice::Server(server)) => Some(server),
-            None => self.options.provider.clone(),
-        };
-        if let Some(provider) = server {
-            let http = ureq::Agent::config_builder()
+        let http = || -> ureq::Agent {
+            ureq::Agent::config_builder()
                 .http_status_as_error(false)
                 .timeout_connect(Some(Duration::from_secs(10)))
                 .build()
-                .into();
-            return Ok(crate::local_model::server_models(
-                http,
-                &provider.base_url,
-                provider.api_key,
-            )
-            .await?);
+                .into()
+        };
+        let server = match config.provider {
+            Some(ProviderChoice::Keyed(provider)) => {
+                return Ok(provider.models(http(), &self.options.env).await?);
+            }
+            Some(ProviderChoice::Server(server)) => Some((server.base_url, None)),
+            None => self
+                .options
+                .provider
+                .as_ref()
+                .map(|server| (server.base_url.clone(), server.api_key.clone())),
+        };
+        if let Some((base_url, api_key)) = server {
+            return Ok(crate::local_model::server_models(http(), &base_url, api_key).await?);
         }
         let listed = self
             .cli(false)
@@ -807,6 +858,7 @@ impl Runner for CopilotRunner {
             links,
             path,
             after_abort,
+            keyed,
         } = self.begin(&turn).await?;
 
         let mut events = cli.subscribe(&session);
@@ -862,6 +914,7 @@ impl Runner for CopilotRunner {
             started: !after_abort,
             subagents: self.earlier_subagents(&session),
             kept: &self.subagents,
+            keyed: keyed.as_ref(),
         };
         let mut mode = permission_mode(turn.approval());
         let mut steer = tokio::time::interval(STEER_EVERY);
@@ -918,6 +971,7 @@ impl Runner for CopilotRunner {
             session,
             links,
             path,
+            keyed,
             ..
         } = self.begin(&turn).await?;
         let cannot = || CopilotError::CannotCompact {
@@ -940,6 +994,7 @@ impl Runner for CopilotRunner {
             started: true,
             subagents: self.earlier_subagents(&session),
             kept: &self.subagents,
+            keyed: keyed.as_ref(),
         };
         // Copilot says it's done as the call's answer and as an event of
         // the session, in either order; the event is the one a fork or a
@@ -954,7 +1009,7 @@ impl Runner for CopilotRunner {
                         let Some(event) = event else {
                             return Err(CopilotError::Exited);
                         };
-                        if let Some(outcome) = summed_up(&event) {
+                        if let Some(outcome) = summed_up(&event, keyed.as_ref()) {
                             stop.cli = None;
                             outcome?;
                             return playing.compacted(Some(&event));
@@ -980,7 +1035,7 @@ impl Runner for CopilotRunner {
         let said = tokio::time::timeout(COMPACT_EVENT_WAIT, async {
             loop {
                 let event = events.recv().await?;
-                if let Some(outcome) = summed_up(&event) {
+                if let Some(outcome) = summed_up(&event, keyed.as_ref()) {
                     return Some((event, outcome));
                 }
             }
@@ -1071,6 +1126,8 @@ struct Playing<'a> {
     subagents: subagents::Subagents,
     /// Where the session's subagents are kept for its next turn.
     kept: &'a Mutex<HashMap<String, subagents::Subagents>>,
+    /// The provider the session runs on with a key of the person's own.
+    keyed: Option<&'a Provider>,
 }
 
 /// Copilot's usage totals for `session` so far; None if it doesn't say, as
@@ -1146,9 +1203,7 @@ impl Playing<'_> {
                 return Ok(false);
             }
             "session.error" => {
-                self.failure = Some(CopilotError::Session {
-                    message: text("message"),
-                });
+                self.failure = Some(session_failure(data, self.keyed));
                 return Ok(false);
             }
             "permission.requested" => {
@@ -1385,6 +1440,80 @@ mod tests {
                 .expect("no key needed")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_session_config_holding_a_key_is_refused_and_one_without_is_taken() {
+        let held = json!({"provider": {"base_url": "http://127.0.0.1:11434/v1", "api_key": "sk"}});
+        assert!(matches!(
+            CopilotConfig::read(Some(&held.to_string())),
+            Err(CopilotError::BadConfig {
+                holds_key: true,
+                ..
+            })
+        ));
+        let server =
+            json!({"provider": {"type": "openai", "base_url": "http://127.0.0.1:11434/v1"}});
+        assert!(matches!(
+            CopilotConfig::read(Some(&server.to_string())),
+            Ok(CopilotConfig {
+                provider: Some(ProviderChoice::Server(_))
+            })
+        ));
+        let other = json!({"provider": {"base_url": 3}});
+        assert!(matches!(
+            CopilotConfig::read(Some(&other.to_string())),
+            Err(CopilotError::BadConfig {
+                holds_key: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_provider_sessions_refused_key_no_credit_and_limit_are_the_providers() {
+        let config = CopilotConfig::read(Some(
+            &json!({"provider": {
+                "kind": "openai",
+                "base_url": "https://models.example/v1",
+                "api_key_variable": "MY_KEY",
+            }})
+            .to_string(),
+        ))
+        .expect("a config");
+        let keyed = config.keyed();
+        assert!(keyed.is_some());
+        let failed = |data: Value| session_failure(&data, keyed);
+        assert!(matches!(
+            failed(json!({"errorType": "authentication", "message": "Unauthorized", "statusCode": 401})),
+            CopilotError::Provider(ProviderError::KeyRefused { status: 401, ref variable, .. })
+                if variable == "MY_KEY"
+        ));
+        assert!(matches!(
+            failed(json!({"message": "Request failed with status 401"})),
+            CopilotError::Provider(ProviderError::KeyRefused { .. })
+        ));
+        assert!(matches!(
+            failed(json!({"message": "Payment required", "statusCode": 402})),
+            CopilotError::Provider(ProviderError::NoCredit { .. })
+        ));
+        assert!(matches!(
+            failed(json!({"message": "rate limit exceeded", "statusCode": 429})),
+            CopilotError::Provider(ProviderError::Limited { .. })
+        ));
+        assert!(matches!(
+            failed(json!({"message": "the model stopped"})),
+            CopilotError::Session { .. }
+        ));
+    }
+
+    #[test]
+    fn a_session_without_a_provider_keeps_the_sign_in_failure() {
+        let data = json!({"message": "Unauthorized", "statusCode": 401});
+        assert!(matches!(
+            session_failure(&data, None),
+            CopilotError::Session { .. }
+        ));
     }
 
     #[test]

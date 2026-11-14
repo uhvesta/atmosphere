@@ -116,15 +116,9 @@ impl ProviderConfig {
             return Err(DaemonError::ProviderUrl { name, base_url });
         }
         let variable = provider.key_variable.trim().to_owned();
-        let named = variable
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-            && variable
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !named {
-            return Err(DaemonError::ProviderVariable { name, variable });
+        if !is_key_variable(&variable) {
+            // What was typed may be the key itself, so it isn't repeated.
+            return Err(DaemonError::ProviderVariable { name });
         }
         let wire_api = provider.wire_api.trim().to_owned();
         if !matches!(wire_api.as_str(), "" | "completions" | "responses") {
@@ -150,6 +144,28 @@ pub fn read_providers(list: pb::ProviderList) -> Result<Vec<ProviderConfig>, Dae
         .into_iter()
         .map(ProviderConfig::read)
         .collect()
+}
+
+/// The longest name a provider's key variable may have.
+const KEY_VARIABLE_LONGEST: usize = 64;
+
+/// Whether `name` can be the variable a provider's key is in: upper-case
+/// letters, digits and `_`, not starting with a digit, as such variables
+/// are named. A key pasted where the name goes almost never is one.
+fn is_key_variable(name: &str) -> bool {
+    let upper = |c: char| c.is_ascii_uppercase() || c == '_';
+    name.len() <= KEY_VARIABLE_LONGEST
+        && name.chars().next().is_some_and(upper)
+        && name.chars().all(|c| upper(c) || c.is_ascii_digit())
+}
+
+/// The variables `providers` take their keys from, each once.
+pub fn provider_variables(providers: &[ProviderConfig]) -> Vec<String> {
+    let names: std::collections::BTreeSet<&str> = providers
+        .iter()
+        .map(|provider| provider.key_variable.as_str())
+        .collect();
+    names.into_iter().map(str::to_owned).collect()
 }
 
 /// `providers` as clients are told of them.
@@ -232,10 +248,12 @@ impl HostConfig {
     }
 
     /// What the host is sent on connecting: its variables, its setup
-    /// script, and the port the app's model server is forwarded to.
+    /// script, the port the app's model server is forwarded to, and which
+    /// of its variables its providers take their keys from.
     fn configure(&self, model_server: Option<u16>) -> pb::ConfigureHost {
         pb::ConfigureHost {
             model_server_port: model_server.map_or(0, u32::from),
+            provider_variables: provider_variables(&self.providers),
             env: self
                 .env
                 .iter()
@@ -1131,6 +1149,28 @@ Host !bad *.internal build
             }),
             Err(DaemonError::ProviderVariable { .. })
         ));
+        // Even one that is letters and digits alone.
+        assert!(matches!(
+            read(pb::Provider {
+                key_variable: "skAnt0123abcdEFGH".to_owned(),
+                ..good.clone()
+            }),
+            Err(DaemonError::ProviderVariable { .. })
+        ));
+        assert!(matches!(
+            read(pb::Provider {
+                key_variable: "A".repeat(65),
+                ..good.clone()
+            }),
+            Err(DaemonError::ProviderVariable { .. })
+        ));
+        assert!(
+            read(pb::Provider {
+                key_variable: "ANTHROPIC_API_KEY".to_owned(),
+                ..good.clone()
+            })
+            .is_ok()
+        );
         assert!(matches!(
             read(pb::Provider {
                 wire_api: "chat".to_owned(),
@@ -1138,6 +1178,36 @@ Host !bad *.internal build
             }),
             Err(DaemonError::ProviderWireApi { .. })
         ));
+    }
+
+    #[test]
+    fn a_host_is_told_each_variable_its_providers_take_keys_from_once() {
+        let provider = |id: &str, variable: &str| ProviderConfig {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            kind: ProviderKind::Anthropic,
+            base_url: "https://api.anthropic.com".to_owned(),
+            key_variable: variable.to_owned(),
+            wire_api: String::new(),
+        };
+        let config = HostConfig {
+            providers: vec![
+                provider("a", "WORK_KEY"),
+                provider("b", "ANTHROPIC_API_KEY"),
+                provider("c", "WORK_KEY"),
+            ],
+            ..HostConfig::default()
+        };
+        assert_eq!(
+            config.configure(None).provider_variables,
+            ["ANTHROPIC_API_KEY".to_owned(), "WORK_KEY".to_owned()]
+        );
+        assert!(
+            HostConfig::default()
+                .configure(None)
+                .provider_variables
+                .is_empty()
+        );
     }
 
     #[test]

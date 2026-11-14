@@ -12,6 +12,9 @@ use crate::board::{Author, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::DaemonError;
 use crate::store::{Decision, Project};
 
+/// What a proposal's card calls an item that is no longer on the board.
+const DELETED_ITEM: &str = "a deleted item";
+
 impl Daemon {
     /// `session`'s proposals, oldest first, with what the person did about
     /// each.
@@ -127,14 +130,14 @@ impl Daemon {
                 .map(|on| {
                     self.store
                         .item(on)
-                        .map_or_else(|_| on.clone(), |item| item.fields.title)
+                        .map_or_else(|_| DELETED_ITEM.to_owned(), |item| item.fields.title)
                 })
                 .collect();
-            if proposal.kind() == pb::ProposalKind::Dependency
-                && proposal.title.is_empty()
-                && let Ok(item) = self.store.item(&proposal.item_id)
-            {
-                proposal.title = item.fields.title;
+            if proposal.kind() == pb::ProposalKind::Dependency && proposal.title.is_empty() {
+                proposal.title = self
+                    .store
+                    .item(&proposal.item_id)
+                    .map_or_else(|_| DELETED_ITEM.to_owned(), |item| item.fields.title);
             }
             // A spec edit shows the item's title when it proposes none, and
             // while pending the spec it would replace.
@@ -241,7 +244,27 @@ impl Daemon {
             pb::ProposalKind::Dependency => {
                 // Only within the board the proposal is for; a loop, or an
                 // item gone since, is refused and the proposal stays open.
-                let waits = self.store.item(&proposal.item_id)?;
+                let deleted = |item: &str, source| DaemonError::DependencyOnDeleted {
+                    proposal: proposal.id.clone(),
+                    item: item.to_owned(),
+                    source,
+                };
+                let waits = match self.store.item(&proposal.item_id) {
+                    Ok(item) => item,
+                    Err(source @ crate::error::StoreError::UnknownItem { .. }) => {
+                        return Err(deleted(&proposal.item_id, source));
+                    }
+                    Err(source) => return Err(source.into()),
+                };
+                for on in &proposal.depends_on {
+                    match self.store.item(on) {
+                        Ok(_) => {}
+                        Err(source @ crate::error::StoreError::UnknownItem { .. }) => {
+                            return Err(deleted(on, source));
+                        }
+                        Err(source) => return Err(source.into()),
+                    }
+                }
                 if waits.project_id != project {
                     return Err(crate::error::StoreError::UnknownItem {
                         id: proposal.item_id.clone(),
@@ -361,12 +384,38 @@ impl Daemon {
             .into());
         }
         let project = self.store.project(&item.project_id)?;
+        // The copies a planning session with the code reads, where the
+        // fork's skills are looked for.
+        let mut copies = Vec::new();
         if self.store.planning(&fork.session_id)? {
             // It works on the task: in a copy of its own, which it may
             // change, even when the planning session had the code to read.
             fork.access = pb::AccessLevel::Full.into();
             fork.chat_only = false;
-            fork.repositories = if host.is_empty() {
+            // A planning session with the code has copies of its own, which
+            // the fork is made from at the commits its last turn read: a
+            // clone for it would go unused.
+            copies = self
+                .list_on("", Some(host))
+                .await?
+                .sessions
+                .into_iter()
+                .find(|session| session.id == fork.session_id)
+                .map(|session| {
+                    session
+                        .checkouts
+                        .into_iter()
+                        .map(|checkout| pb::Repository {
+                            name: checkout.name,
+                            path: checkout.path,
+                            url: String::new(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            fork.repositories = if !copies.is_empty() {
+                Vec::new()
+            } else if host.is_empty() {
                 project
                     .repositories
                     .iter()
@@ -380,9 +429,12 @@ impl Daemon {
             Some(parent) => Some(self.store.item(parent)?),
             None => None,
         };
-        let skills = self
-            .session_skills(&project, host, &fork.repositories, "")
-            .await?;
+        let looked_in = if copies.is_empty() {
+            &fork.repositories
+        } else {
+            &copies
+        };
+        let skills = self.session_skills(&project, host, looked_in, "").await?;
         // Instructions the fork was given stay, below the project's.
         let own = fork.instructions.take().unwrap_or_default();
         fork.instructions = Some(instructions(

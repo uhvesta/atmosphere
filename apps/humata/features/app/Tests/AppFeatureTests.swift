@@ -876,6 +876,49 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.session?.draft, "half written")
     }
 
+    func testTheOpenSessionFollowsTheCommitsItsLastTurnReadAsTheSidebarListsThem() async throws {
+        var session = Session(
+            id: "s1", name: "plan", backend: .scripted, workingDirectory: "/work", projectID: "p1")
+        session.codeCommits = [CodeCommit(repository: "humata", commit: "aaaa1111")]
+        var listed = session
+        listed.codeCommits = [CodeCommit(repository: "humata", commit: "bbbb2222")]
+        var state = AppFeature.State()
+        state.session = SessionFeature.State(session: session)
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.sidebar(.loaded(projects: [], sessions: [listed], inbox: [])))
+        XCTAssertEqual(store.state.session?.session.codeCommits, listed.codeCommits)
+    }
+
+    func testANewerHumatasDaemonIsLeftRunningAndSaidSo() async throws {
+        let restarts = LockIsolated(0)
+        let starts = LockIsolated(0)
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.daemonService = DaemonService(
+                start: { starts.withValue { $0 += 1 } }, build: { .newer },
+                restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {}, stop: { false })
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.newerDaemonFound)
+        await store.finish()
+        XCTAssertEqual(store.state.daemon, .newerRunning)
+        XCTAssertEqual(restarts.value, 0)
+        // This copy's login item isn't put over the newer one's either.
+        XCTAssertEqual(starts.value, 0)
+    }
+
     func testOpeningATaskOnABoardKeptShowsTheBoardAsItWasLeft() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
@@ -1505,11 +1548,11 @@ final class AppFeatureTests: XCTestCase {
                 starts.withValue { $0 += 1 }
                 try start()
             },
-            isCurrent: {
+            build: {
                 if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
-                return true
+                return .current
             },
-            restart: {}, openLoginItems: {}, stop: {})
+            restart: {}, openLoginItems: {}, stop: { false })
     }
 
     func testASidebarReadThatFailsWithTheDaemonGoneStartsItAgain() async throws {
@@ -1720,8 +1763,9 @@ final class AppFeatureTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = InMemoryDaemon().client
             $0.daemonService = DaemonService(
-                start: {}, isCurrent: { true },
-                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {}, stop: {})
+                start: {}, build: { .current },
+                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {},
+                stop: { false })
         }
         store.exhaustivity = .off
 
@@ -1746,8 +1790,9 @@ final class AppFeatureTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = InMemoryDaemon().client
             $0.daemonService = DaemonService(
-                start: {}, isCurrent: { false },
-                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {}, stop: {})
+                start: {}, build: { .older },
+                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {},
+                stop: { false })
         }
         store.exhaustivity = .off
 
@@ -1812,8 +1857,8 @@ final class AppFeatureTests: XCTestCase {
                     environmentProblem: restarts.value == 0 ? "the shell didn't answer" : nil)
             }
             $0.daemonService = DaemonService(
-                start: {}, isCurrent: { true }, restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {},
-                stop: {})
+                start: {}, build: { .current }, restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {},
+                stop: { false })
         }
         store.exhaustivity = .off
 

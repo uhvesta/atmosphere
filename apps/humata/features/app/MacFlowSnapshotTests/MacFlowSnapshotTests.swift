@@ -67,7 +67,15 @@ final class MacFlowSnapshotTests: XCTestCase {
             return XCTFail("the write isn't waiting")
         }
         store.send(.session(.presented(.answerPermission(requestID: request, approved: true))))
-        try await until { store.session?.isWaiting == true && daemon.files(of: session.id).isEmpty == false }
+        // Waits for the command's own request, not the write's, which can
+        // still show as waiting before its answer is seen.
+        try await until {
+            guard case .tool(let run)? = store.session?.items.last, let next = run.permission?.requestID else {
+                return false
+            }
+            return next != request && store.session?.isWaiting == true
+                && daemon.files(of: session.id).isEmpty == false
+        }
         try await sidebarShows(.waitingForApproval, store, session)
         await flow.step("approved")
 

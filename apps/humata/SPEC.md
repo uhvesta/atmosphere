@@ -2121,7 +2121,15 @@ view of the board.
   by which items, and its place in the plan: each after what it
   depends on, the earliest added first where links leave a choice, a
   milestone's tasks right under it. An item is finished once Done or
-  Won't Do, a milestone also once all its tasks are
+  Won't Do, a milestone also once all its tasks are. Keeping a
+  milestone's tasks together means that when tasks link two milestones
+  both ways, one may be listed before a task it waits on; links within
+  a milestone, or between items under none, always hold
+- [x] Undo after reverting a deletion moves on to the change before it:
+  the relinks revert each dependent's lost-link change. An item brought
+  back keeps its place in the plan, and the revert says when a
+  dependent gone since, or a link that would loop, was left out. A loop
+  through a milestone's wait on its own tasks names the milestone
 - [x] An item's page has Depends On: what it waits on, with each one's
   status, to open or remove, Add Dependency to pick another, and what
   blocks it; a refused link says why. Its kind is picked there
@@ -2138,7 +2146,8 @@ view of the board.
   reaches the board until applied
 - [x] `humata board link`, `board unlink` and `board plan`, `item add
   --milestone --depends-on`, and MCP's `plan` (reads) and
-  `propose_dependency` (changes)
+  `propose_dependency` (changes). MCP's `board` lists in plan order,
+  with each item's kind, milestone and what it depends on
 - [ ] Not built: the graph lays steps out left to right only, without
   dragging; the plan panel doesn't follow a session moved to another
   item until it opens again

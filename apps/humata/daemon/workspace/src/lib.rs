@@ -25,8 +25,8 @@ use tokio::process::Command;
 
 pub use error::WorkspaceError;
 pub use land::{
-    Followed, Landed, Merged, base, branch_of, delete_branch, follow, held_elsewhere, holds_only,
-    land, merge, upstream,
+    FetchFailed, Followed, Landed, Merged, base, branch_of, delete_branch, follow, held_elsewhere,
+    holds_only, land, merge, upstream,
 };
 pub use review::{
     Action, Changes, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind, Query,
@@ -541,19 +541,102 @@ async fn git_as_person(directory: &Path, arguments: &[&str]) -> Result<String, W
     spawn(directory, None, arguments, None, false).await
 }
 
-async fn spawn(
+/// How long a git stopped for running out of patience is given to exit by
+/// itself, removing the lock files it holds, before it's killed.
+const STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Runs git as Humata, giving it `patience`; None if it ran out. A git
+/// that runs out is asked to stop, so it removes its lock files, as a
+/// `refs/...lock` that a kill leaves behind breaks every later fetch,
+/// the person's own included; only one that won't stop within
+/// [`STOP_GRACE`] is killed.
+async fn git_within(
+    directory: &Path,
+    arguments: &[&str],
+    patience: Duration,
+) -> Option<Result<String, WorkspaceError>> {
+    use tokio::io::{AsyncRead, AsyncReadExt};
+
+    async fn read_all(pipe: Option<impl AsyncRead + Unpin>) -> Vec<u8> {
+        let mut read = Vec::new();
+        if let Some(mut pipe) = pipe {
+            // What it wrote before the pipe failed is all there is.
+            let _ = pipe.read_to_end(&mut read).await;
+        }
+        read
+    }
+
+    let mut child = match command(directory, None, arguments, false, true).spawn() {
+        Ok(child) => child,
+        Err(source) => return Some(Err(WorkspaceError::GitMissing { source })),
+    };
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let running = async {
+        let (status, stdout, stderr) =
+            tokio::join!(child.wait(), read_all(stdout), read_all(stderr));
+        (status, stdout, stderr)
+    };
+    let ran = tokio::time::timeout(patience, running).await;
+    match ran {
+        Ok((status, stdout, stderr)) => {
+            let status = match status {
+                Ok(status) => status,
+                Err(source) => return Some(Err(WorkspaceError::GitMissing { source })),
+            };
+            Some(if status.success() {
+                Ok(String::from_utf8_lossy(&stdout).into_owned())
+            } else {
+                Err(WorkspaceError::Git {
+                    directory: directory.to_owned(),
+                    command: arguments.join(" "),
+                    stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
+                })
+            })
+        }
+        Err(_) => {
+            stop(&mut child).await;
+            None
+        }
+    }
+}
+
+/// Asks `child` to stop, and kills it if it hasn't within [`STOP_GRACE`].
+async fn stop(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        // Through kill(1), which every host has, as git does its own
+        // clean-up on SIGTERM and not on the SIGKILL tokio sends.
+        let asked = Command::new("kill")
+            .args(["-s", "TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if asked.is_ok_and(|status| status.success())
+            && tokio::time::timeout(STOP_GRACE, child.wait()).await.is_ok()
+        {
+            return;
+        }
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+/// The git command for `arguments` in `directory`, its output piped.
+fn command(
     directory: &Path,
     index: Option<&Path>,
     arguments: &[&str],
-    input: Option<&str>,
+    takes_input: bool,
     as_humata: bool,
-) -> Result<String, WorkspaceError> {
+) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
         .arg(directory)
         .args(arguments)
-        .stdin(if input.is_some() {
+        .stdin(if takes_input {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -577,7 +660,17 @@ async fn spawn(
         // with what waits for it, before that index is removed.
         command.env("GIT_INDEX_FILE", index).kill_on_drop(true);
     }
-    let mut child = command
+    command
+}
+
+async fn spawn(
+    directory: &Path,
+    index: Option<&Path>,
+    arguments: &[&str],
+    input: Option<&str>,
+    as_humata: bool,
+) -> Result<String, WorkspaceError> {
+    let mut child = command(directory, index, arguments, input.is_some(), as_humata)
         .spawn()
         .map_err(|source| WorkspaceError::GitMissing { source })?;
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {

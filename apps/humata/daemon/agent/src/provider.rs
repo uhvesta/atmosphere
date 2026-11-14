@@ -94,7 +94,7 @@ pub enum ProviderError {
     },
 
     #[error(
-        "couldn't reach the provider at {url}. Check the provider's base URL in Settings › Environments, and that the host this session runs on is online and can reach it, then send again"
+        "couldn't reach the provider at {url}. Check that the host this session runs on is online and can reach that address, then send again. If the address itself is wrong, fix the provider's base URL in Settings › Hosts and start a new session: a session keeps the provider it was started with, so a change there applies to new sessions only"
     )]
     Unreachable {
         url: String,
@@ -103,7 +103,7 @@ pub enum ProviderError {
     },
 
     #[error(
-        "the provider at {url} refused the key in the variable {variable} ({status}): {body}. Check that the variable holds a key for this provider that hasn't been revoked, and that the provider's base URL is the one the key is for; set the variable again in Settings › Environments, then send again"
+        "the provider at {url} refused the key in the variable {variable} ({status}): {body}. The key is read from {variable} at each turn: set a working key for this provider there, in Settings › Environments for the host this session runs on, then send again. If the key is right and the provider's base URL or wire API is what's wrong, fix the provider in Settings › Hosts and start a new session: a session keeps the provider it was started with, so a change there applies to new sessions only"
     )]
     KeyRefused {
         url: String,
@@ -127,6 +127,26 @@ pub enum ProviderError {
     Limited {
         url: String,
         variable: String,
+        body: String,
+    },
+
+    #[error(
+        "the provider at {url} refused the model {model} ({status}): {body}. Check the model's name: pick one the provider lists for this chat, or fix the session's model or the provider's in Settings › Hosts, then send again"
+    )]
+    ModelRefused {
+        url: String,
+        model: String,
+        status: u16,
+        body: String,
+    },
+
+    #[error(
+        "the provider at {url} failed while answering with {model} ({status}): {body}. It's a fault on the provider's side, not in the key or the chat: wait a little and send again, and if it keeps failing, check the provider's status page or pick another model"
+    )]
+    ServerFailed {
+        url: String,
+        model: String,
+        status: u16,
         body: String,
     },
 }
@@ -156,6 +176,79 @@ impl ProviderError {
             _ => None,
         }
     }
+
+    /// What the provider's `status` to a request for `model` means, when
+    /// it's about the model asked for or a fault of the provider's own.
+    pub(crate) fn failure(url: &str, model: &str, status: u16, body: &str) -> Option<Self> {
+        let (url, model, body) = (url.to_owned(), model.to_owned(), body.to_owned());
+        match status {
+            400 | 404 | 422 => Some(Self::ModelRefused {
+                url,
+                model,
+                status,
+                body,
+            }),
+            500..=599 => Some(Self::ServerFailed {
+                url,
+                model,
+                status,
+                body,
+            }),
+            _ => None,
+        }
+    }
+
+    /// What an agent's CLI reports of a failed request to the provider at
+    /// `url`, asked with the key in `variable`, when it's about the key, its
+    /// account or a limit: by `status`, when the CLI gives it, or else by
+    /// what its `message` says.
+    pub(crate) fn from_cli(
+        url: &str,
+        variable: &str,
+        status: Option<u16>,
+        message: &str,
+    ) -> Option<Self> {
+        let status = status
+            .filter(|status| matches!(status, 401..=403 | 429))
+            .or_else(|| said_status(message))?;
+        Self::refusal(url, variable, status, message)
+    }
+}
+
+/// The status a CLI's failure `message` names, of those that are about a
+/// key, its account or a limit: as a number, or in the words Anthropic's
+/// and OpenAI's APIs use for it.
+fn said_status(message: &str) -> Option<u16> {
+    let numbered = message
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|word| word.parse::<u16>().ok())
+        .find(|status| matches!(status, 401..=403 | 429));
+    if numbered.is_some() {
+        return numbered;
+    }
+    let message = message.to_ascii_lowercase();
+    let says = |words: &[&str]| words.iter().any(|word| message.contains(word));
+    if says(&[
+        "credit balance",
+        "insufficient credit",
+        "out of credit",
+        "payment required",
+    ]) {
+        Some(402)
+    } else if says(&["rate limit", "rate_limit", "too many requests"]) {
+        Some(429)
+    } else if says(&[
+        "authentication_error",
+        "invalid api key",
+        "invalid x-api-key",
+        "incorrect api key",
+        "invalid_api_key",
+        "unauthorized",
+    ]) {
+        Some(401)
+    } else {
+        None
+    }
 }
 
 /// How a request to a provider says who asks: the key sent as a bearer
@@ -167,7 +260,7 @@ pub(crate) struct Access {
 
 impl Provider {
     /// Where it is served, without a trailing slash.
-    fn base(&self) -> &str {
+    pub(crate) fn base(&self) -> &str {
         let preset = match self.kind {
             ProviderKind::Anthropic => ANTHROPIC_URL,
             ProviderKind::Openai => OPENAI_URL,
@@ -406,6 +499,51 @@ mod tests {
         assert!(matches!(refusal(402), Some(ProviderError::NoCredit { .. })));
         assert!(matches!(refusal(429), Some(ProviderError::Limited { .. })));
         assert!(refusal(500).is_none());
+    }
+
+    #[test]
+    fn a_refused_model_and_a_providers_own_fault_are_told_apart() {
+        let failure = |status| ProviderError::failure("http://x", "kimi", status, "no");
+        for status in [400, 404, 422] {
+            assert!(matches!(
+                failure(status),
+                Some(ProviderError::ModelRefused { model, status: refused, .. })
+                    if model == "kimi" && refused == status
+            ));
+        }
+        assert!(matches!(
+            failure(503),
+            Some(ProviderError::ServerFailed { status: 503, .. })
+        ));
+        assert!(failure(401).is_none());
+    }
+
+    #[test]
+    fn a_clis_failure_is_read_by_its_status_or_what_it_says() {
+        let from_cli =
+            |status, message| ProviderError::from_cli("http://x", "MY_KEY", status, message);
+        assert!(matches!(
+            from_cli(Some(401), "failed"),
+            Some(ProviderError::KeyRefused { status: 401, .. })
+        ));
+        assert!(matches!(
+            from_cli(None, "API Error: 401 {\"type\":\"error\"}"),
+            Some(ProviderError::KeyRefused { status: 401, .. })
+        ));
+        assert!(matches!(
+            from_cli(None, "Invalid API key · Please run /login"),
+            Some(ProviderError::KeyRefused { .. })
+        ));
+        assert!(matches!(
+            from_cli(None, "Your credit balance is too low"),
+            Some(ProviderError::NoCredit { .. })
+        ));
+        assert!(matches!(
+            from_cli(Some(429), "slow down"),
+            Some(ProviderError::Limited { .. })
+        ));
+        assert!(from_cli(None, "the model stopped mid-reply").is_none());
+        assert!(from_cli(Some(500), "internal error").is_none());
     }
 
     #[tokio::test]

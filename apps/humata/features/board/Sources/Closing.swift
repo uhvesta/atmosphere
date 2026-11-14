@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import Foundation
 import HumataDaemonClient
 import HumataProjects
 
@@ -69,9 +70,17 @@ extension AlertState where Action == BoardAlert {
         }
     }
 
-    /// Confirms deleting `item`.
-    static func deleting(_ item: Item) -> Self {
-        AlertState {
+    /// Confirms deleting `item`, naming its `dependents`, the titles of the
+    /// items that wait on it, which stop waiting once it's gone.
+    package static func deleting(_ item: Item, dependents: [String]) -> Self {
+        let names = dependents.formatted(.list(type: .and))
+        let waiting =
+            dependents.isEmpty
+            ? ""
+            : dependents.count == 1
+                ? String(localized: "\(names) waits on it and stops waiting once it's deleted. ")
+                : String(localized: "\(names) wait on it and stop waiting once it's deleted. ")
+        return AlertState {
             TextState("Delete \(item.title)?")
         } actions: {
             ButtonState(role: .destructive, action: .delete(item.id)) {
@@ -82,7 +91,8 @@ extension AlertState where Action == BoardAlert {
             }
         } message: {
             TextState(
-                "Its archived sessions move to the project. Board History can bring it back. "
+                waiting + "Its archived sessions move to the project. Board History can bring it back"
+                    + (dependents.isEmpty ? ". " : ", with what waited on it that's still there. ")
                     + "One with subtasks or unarchived sessions can't be deleted until they're gone.")
         }
     }

@@ -301,6 +301,9 @@ package struct AppFeature {
         /// once no session is working or waiting, since that ends their turns.
         case updatePending
         case restarting
+        /// The daemon running is a newer Humata's, which this copy can't
+        /// use and leaves running.
+        case newerRunning
         /// Why it couldn't be started or replaced, and what to do about it.
         case failed(String, needsLoginItems: Bool)
     }
@@ -310,6 +313,8 @@ package struct AppFeature {
         /// and checks its build.
         case task
         case daemonChecked(isCurrent: Bool, sessions: [Session])
+        /// The daemon answering is a newer Humata's: it isn't replaced.
+        case newerDaemonFound
         case daemonFailed(String, needsLoginItems: Bool)
         /// Replaces the daemon now, ending the turns in progress.
         case restartTapped
@@ -421,6 +426,7 @@ package struct AppFeature {
                 return .none
             }
         }
+        Reduce(Self.followDaemonAndListing)
         Reduce<State, Action> { state, action in
             switch action {
             case .task:
@@ -430,14 +436,7 @@ package struct AppFeature {
                 case .running, .updatePending: break
                 default: state.daemon = .starting
                 }
-                return .run { send in
-                    try await service.start()
-                    let current = try await service.isCurrent()
-                    await send(
-                        .daemonChecked(isCurrent: current, sessions: current ? [] : try await daemon.sessions(nil)))
-                } catch: { error, send in
-                    await send(Self.failed(error))
-                }
+                return check()
 
             case .daemonChecked(isCurrent: true, _):
                 state.daemon = .running
@@ -485,13 +484,13 @@ package struct AppFeature {
                     guard state.daemonStartedAgain else { return .none }
                     state.daemonStartedAgain = false
                     return .run { send in
-                        if (try? await service.isCurrent()) != nil { await send(.daemonAnswered) }
+                        if (try? await service.build()) != nil { await send(.daemonAnswered) }
                     }
                 }
                 state.daemonRetried = true
                 return .run { send in
                     do {
-                        _ = try await service.isCurrent()
+                        _ = try await service.build()
                         await send(.daemonAnswered)
                     } catch {
                         await send(.daemonGone)
@@ -845,7 +844,7 @@ package struct AppFeature {
                 return .none
 
             case .sidebar, .session, .side, .sendFailure, .board, .hosts, .search, .settings, .approvals, .storage,
-                .github, .agentAccess, .repositories, .skills, .plugins, .models, .textSize:
+                .github, .agentAccess, .repositories, .skills, .plugins, .models, .textSize, .newerDaemonFound:
                 return .none
             }
         }
@@ -888,6 +887,44 @@ package struct AppFeature {
         }
     }
 
+    /// Starts the daemon and checks its build. A newer Humata's daemon
+    /// answering is left as it is and not started over, since this copy's
+    /// login item would take its place.
+    private func check() -> Effect<Action> {
+        .run { send in
+            if (try? await service.build()) == .newer {
+                await send(.newerDaemonFound)
+                return
+            }
+            try await service.start()
+            switch try await service.build() {
+            case .current: await send(.daemonChecked(isCurrent: true, sessions: []))
+            case .older: await send(.daemonChecked(isCurrent: false, sessions: try await daemon.sessions(nil)))
+            case .newer: await send(.newerDaemonFound)
+            }
+        } catch: { error, send in
+            await send(Self.failed(error))
+        }
+    }
+
+    /// What's kept apart from the main reducer: a newer daemon found, and
+    /// the commits the open session's last turn read, as the listing has
+    /// them. Its access is SessionFeature's, so it's left alone.
+    private static func followDaemonAndListing(_ state: inout State, _ action: Action) -> Effect<Action> {
+        switch action {
+        case .newerDaemonFound:
+            state.daemon = .newerRunning
+        case .sidebar(.loaded(_, let sessions, _, _)):
+            guard let open = state.session, let listed = sessions.first(where: { $0.id == open.session.id }),
+                listed.codeCommits != open.session.codeCommits
+            else { break }
+            state.session?.session.codeCommits = listed.codeCommits
+        default:
+            break
+        }
+        return .none
+    }
+
     private func restart(_ state: inout State, askedInHosts: Bool = false) -> Effect<Action> {
         state.daemon = .restarting
         return .run { send in
@@ -907,7 +944,7 @@ package struct AppFeature {
     /// Whether any session on this Mac is in a turn, which replacing the
     /// daemon would end. Hosts' sessions run in their own daemons and outlive
     /// this one, and an offline host's state is only what was last heard.
-    private static func anyBusy(_ sessions: [Session]) -> Bool {
+    static func anyBusy(_ sessions: [Session]) -> Bool {
         sessions.contains { session in
             (session.host ?? "").isEmpty && !session.hostOffline
                 && (session.state == .working || session.state == .waitingForApproval)

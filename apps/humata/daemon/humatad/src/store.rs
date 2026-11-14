@@ -1290,7 +1290,7 @@ impl Store {
         let mut looped = None;
         let added = (|| {
             let transaction = connection.transaction()?;
-            insert_item(&transaction, &id, project, &fields, now)?;
+            insert_item(&transaction, &id, project, &fields, (now, now))?;
             for on in &waits_on {
                 links::add(&transaction, &id, &on.id)?;
                 if let Some(path) = links::looped(&transaction, project, &id)? {
@@ -1719,8 +1719,24 @@ impl Store {
                 // With the links it had that can still be made.
                 let mut before = before;
                 let wanted = std::mem::take(&mut before.depends_on);
-                insert_item(&transaction, &change.item_id, &project, &before, now)
+                // Where it was in the plan: added when it first was.
+                let created: Option<i64> = transaction
+                    .query_row(
+                        "SELECT time_unix_ms FROM board_changes
+                         WHERE item_id = ?1 AND before IS NULL ORDER BY id LIMIT 1",
+                        [&change.item_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
                     .map_err(self.failed())?;
+                insert_item(
+                    &transaction,
+                    &change.item_id,
+                    &project,
+                    &before,
+                    (created.unwrap_or(now), now),
+                )
+                .map_err(self.failed())?;
                 before.depends_on = links::relink(&transaction, &project, &change.item_id, &wanted)
                     .map_err(self.failed())?;
                 before.depends_on.sort();
@@ -1753,9 +1769,13 @@ impl Store {
                     author,
                 )
                 .map_err(self.failed())?;
-                // What waited on it waits on it again.
-                links::restore_dependents(&transaction, &project, &change.item_id, id, author)
-                    .map_err(self.failed())?;
+                // What waited on it waits on it again, where it still can.
+                let left_out =
+                    links::restore_dependents(&transaction, &project, &change.item_id, id, author)
+                        .map_err(self.failed())?;
+                if left_out && !kept.contains(&pb::ItemField::DependsOn) {
+                    kept.push(pb::ItemField::DependsOn);
+                }
             }
         }
         transaction.commit().map_err(self.failed())?;
@@ -1933,12 +1953,12 @@ fn insert_item(
     id: &str,
     project: &str,
     fields: &ItemFields,
-    now: i64,
+    (created, updated): (i64, i64),
 ) -> rusqlite::Result<()> {
     transaction.execute(
         "INSERT INTO items (id, project_id, parent_id, title, spec, status, priority,
              created_unix_ms, updated_unix_ms, kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
             project,
@@ -1947,7 +1967,8 @@ fn insert_item(
             fields.spec,
             text::<Status>(fields.status),
             text::<Priority>(fields.priority),
-            now,
+            created,
+            updated,
             text::<Kind>(fields.kind),
         ],
     )?;

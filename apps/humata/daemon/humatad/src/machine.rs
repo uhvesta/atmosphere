@@ -817,6 +817,7 @@ mod tests {
                 .collect(),
             setup_script: script.to_owned(),
             model_server_port: 0,
+            provider_variables: Vec::new(),
         }
     }
 

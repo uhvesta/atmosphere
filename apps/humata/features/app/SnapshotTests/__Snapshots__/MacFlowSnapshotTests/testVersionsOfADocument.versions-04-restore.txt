@@ -25,7 +25,6 @@
     [RadioButton/Segment] "Files" value: "1"
     [RadioButton/Segment] "Spec" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
-  [Button] "Show Plan" help: "Show the project's items beside the chat, in the order to take them"
   [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is" id: arrow.triangle.branch
   [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in" id: shippingbox
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself" id: folder

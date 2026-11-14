@@ -80,16 +80,51 @@ package struct InstallSurvey: Equatable, Sendable {
     /// The team that signed this copy, whose copies alone have their
     /// quarantine cleared; nil when it has no team.
     package var team: String?
+    /// Whether this copy is on a read-only or removable volume, as a disk
+    /// image is: a daemon run from it stops when it's ejected.
+    package var sourceIsEjectable: Bool
 
-    package init(source: URL, destination: URL, version: BundleVersion, installed: BundleVersion?, team: String?) {
+    package init(
+        source: URL, destination: URL, version: BundleVersion, installed: BundleVersion?, team: String?,
+        sourceIsEjectable: Bool = false
+    ) {
         self.source = source
         self.destination = destination
         self.version = version
         self.installed = installed
         self.team = team
+        self.sourceIsEjectable = sourceIsEjectable
     }
 
     package var offer: InstallOffer { InstallFiles.offer(running: version, installed: installed) }
+}
+
+/// What's at the place in Applications a copy would go.
+package enum InstalledItem: Equatable, Sendable {
+    /// Nothing: the copy goes in.
+    case nothing
+    /// Humata, by this app's bundle identifier, at this version.
+    case humata(BundleVersion)
+    /// Another app by that name, or something whose Info.plist or version
+    /// can't be read: never replaced.
+    case other
+}
+
+/// Who owns a file and how it may be changed, as `lstat` gives them.
+package struct FileOwnership: Equatable, Sendable {
+    package var owner: UInt32
+    package var group: UInt32
+    /// The permission bits, as 0o755.
+    package var mode: UInt16
+    /// The file's flags, as `chflags` sets them.
+    package var flags: UInt32
+
+    package init(owner: UInt32, group: UInt32, mode: UInt16, flags: UInt32 = 0) {
+        self.owner = owner
+        self.group = group
+        self.mode = mode
+        self.flags = flags
+    }
 }
 
 /// The installer's choices about paths and versions, kept apart from the
@@ -100,8 +135,13 @@ package enum InstallFiles {
 
     /// Whether `bundle` sits directly in `applications`, after symlinks,
     /// so the installer leaves it be. One in a folder under it, or in
-    /// `~/Applications`, doesn't count.
-    package static func isInstalled(_ bundle: URL, in applications: URL = applications) -> Bool {
+    /// `~/Applications`, doesn't count. `original` gives where a copy
+    /// macOS runs from a translocated, random path really is, so one in
+    /// Applications opened that way counts too.
+    package static func isInstalled(
+        _ bundle: URL, in applications: URL = applications, original: (URL) -> URL? = { _ in nil }
+    ) -> Bool {
+        let bundle = original(bundle) ?? bundle
         let folder = bundle.standardizedFileURL.resolvingSymlinksInPath().deletingLastPathComponent()
         let target = applications.standardizedFileURL.resolvingSymlinksInPath()
         return folder.path(percentEncoded: false).trimmingSlash == target.path(percentEncoded: false).trimmingSlash
@@ -114,6 +154,33 @@ package enum InstallFiles {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let file = (trimmed.isEmpty ? "Humata" : trimmed) + ".app"
         return applications.appending(path: file)
+    }
+
+    /// What's at `destination`, for an app whose bundle identifier is
+    /// `identifier`. Only Humata with a version it can read is replaced.
+    package static func installed(at destination: URL, identifier: String?) -> InstalledItem {
+        let path = destination.path(percentEncoded: false)
+        // Not following a symlink, so one that points nowhere is something.
+        guard (try? FileManager.default.attributesOfItem(atPath: path)) != nil else { return .nothing }
+        guard let identifier,
+            let data = try? Data(contentsOf: destination.appending(path: "Contents/Info.plist")),
+            let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+            info["CFBundleIdentifier"] as? String == identifier, let version = BundleVersion(info: info)
+        else { return .other }
+        return .humata(version)
+    }
+
+    /// Whether `user`, in `groups`, can write and remove every file in
+    /// `items`, as replacing a bundle takes: each is writable by them, by
+    /// owner, group or anyone, and none is locked or append-only.
+    package static func canReplace(_ items: [FileOwnership], user: UInt32, groups: Set<UInt32>) -> Bool {
+        let fixed = UInt32(UF_IMMUTABLE) | UInt32(SF_IMMUTABLE) | UInt32(UF_APPEND) | UInt32(SF_APPEND)
+        return items.allSatisfy { item in
+            guard item.flags & fixed == 0 else { return false }
+            if item.owner == user { return item.mode & 0o200 != 0 }
+            if groups.contains(item.group) { return item.mode & 0o020 != 0 }
+            return item.mode & 0o002 != 0
+        }
     }
 
     /// Install unless the copy there is as new as this one or newer.

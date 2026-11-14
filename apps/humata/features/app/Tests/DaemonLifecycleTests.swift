@@ -10,8 +10,8 @@ final class DaemonLifecycleTests: XCTestCase {
 
     private func service(current: Bool, restarts: LockIsolated<Int>) -> DaemonService {
         DaemonService(
-            start: {}, isCurrent: { current && restarts.value == 0 }, restart: { restarts.withValue { $0 += 1 } },
-            openLoginItems: {}, stop: {})
+            start: {}, build: { current || restarts.value > 0 ? .current : .older },
+            restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {}, stop: { false })
     }
 
     func testTheAppsOwnDaemonIsUsedAsItIs() async {
@@ -145,8 +145,8 @@ final class DaemonLifecycleTests: XCTestCase {
         } withDependencies: {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = DaemonService(
-                start: { if !approved.value { throw DaemonServiceError.needsApproval } }, isCurrent: { true },
-                restart: {}, openLoginItems: { opened.setValue(true) }, stop: {})
+                start: { if !approved.value { throw DaemonServiceError.needsApproval } }, build: { .current },
+                restart: {}, openLoginItems: { opened.setValue(true) }, stop: { false })
             $0.daemon = InMemoryDaemon().client
         }
         store.exhaustivity = .off
@@ -163,5 +163,30 @@ final class DaemonLifecycleTests: XCTestCase {
         await store.send(.task)
         await store.receive(\.daemonChecked)
         XCTAssertEqual(store.state.daemon, .running)
+    }
+
+    func testARestartWhoseOldDaemonWontGoFailsWithoutStartingAnother() async {
+        var state = AppFeature.State()
+        state.daemon = .updatePending
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemonService = DaemonService(
+                start: {}, build: { .older },
+                restart: {
+                    throw DaemonServiceError.stillRunning(seconds: 60)
+                },
+                openLoginItems: {}, stop: { false })
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+        await store.send(.restartTapped)
+        await store.receive(\.daemonFailed)
+        await store.finish()
+        // Nothing said it restarted, which would leave it running.
+        guard case .failed = store.state.daemon else {
+            return XCTFail("expected the restart to fail, got \(store.state.daemon)")
+        }
     }
 }

@@ -98,6 +98,9 @@ async fn a_planning_session_with_the_code_reads_the_latest_changes_nothing_and_s
     let session = started(&client, planning(&project.id, true)).await;
     assert_eq!(session.access(), pb::AccessLevel::Plan);
     assert!(!session.read_only);
+    // It plans in a copy that follows the repository, so it can't leave.
+    assert!(session.follows_base);
+    assert!(listed(&client, &session.id).await.follows_base);
     send(&client, &session.id, "plan").await;
     after_turns(&client, &session.id, 1).await;
 
@@ -172,6 +175,7 @@ async fn a_planning_session_without_the_code_gets_no_copy_of_it() {
     let session = started(&client, planning(&project.id, false)).await;
 
     assert!(session.checkouts.is_empty(), "{session:?}");
+    assert!(!session.follows_base);
     assert!(
         !Path::new(&session.working_directory)
             .join("README.md")
@@ -204,9 +208,14 @@ async fn plan_mode_holds_a_working_session_to_reading_from_its_next_turn_until_i
 
     let planning = update(&client, access(&session.id, pb::AccessLevel::Plan)).await;
     assert_eq!(
-        planning.map(|session| session.access()).ok(),
-        Some(pb::AccessLevel::Plan)
+        planning
+            .as_ref()
+            .map(|session| (session.access(), session.follows_base))
+            .ok(),
+        Some((pb::AccessLevel::Plan, false))
     );
+    // Switched into plan mode, it can be switched back.
+    assert!(!listed(&client, &session.id).await.follows_base);
     send(&client, &session.id, "two").await;
     after_turns(&client, &session.id, 2).await;
     // Its own copy, with what it wrote before, is what it reads.

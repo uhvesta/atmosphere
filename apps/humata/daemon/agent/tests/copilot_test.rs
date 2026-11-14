@@ -16,6 +16,9 @@ use tokio::net::{TcpListener, TcpStream};
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The host's variable a provider session's key is in.
+const KEY_VARIABLE: &str = "HUMATA_TEST_PROVIDER_KEY";
+
 /// What the fake model answers, in order; then "Done.".
 #[derive(Clone)]
 enum Reply {
@@ -23,6 +26,8 @@ enum Reply {
     Shell(&'static str),
     /// Never answers.
     Hang,
+    /// Refuses the request with this status, as a provider refusing its key.
+    Refuse(u16),
 }
 
 #[derive(Default)]
@@ -130,6 +135,25 @@ async fn connection(stream: TcpStream, model: Arc<Model>) {
                     tokio::time::sleep(Duration::from_secs(3600)).await;
                     return;
                 }
+                Reply::Refuse(status) => {
+                    let refusal = json!({"error": {
+                        "message": "Incorrect API key provided",
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                    }});
+                    let response = refusal.to_string();
+                    let head = format!(
+                        "HTTP/1.1 {status} Refused\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                        response.len()
+                    );
+                    let stream = stream.get_mut();
+                    if stream.write_all(head.as_bytes()).await.is_err()
+                        || stream.write_all(response.as_bytes()).await.is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
                 reply => ("text/event-stream", stream_of(&reply)),
             }
         };
@@ -162,7 +186,7 @@ fn stream_of(reply: &Reply) -> String {
                 json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
             ]
         }
-        Reply::Hang => Vec::new(),
+        Reply::Hang | Reply::Refuse(_) => Vec::new(),
     };
     let mut body = String::new();
     for mut chunk in chunks {
@@ -222,6 +246,8 @@ impl Setup {
                 ("COPILOT_OFFLINE".into(), "true".into()),
                 ("COPILOT_PROVIDER_BASE_URL".into(), self.base_url.clone()),
                 ("COPILOT_MODEL".into(), "fake".into()),
+                // The key of a session whose provider names this variable.
+                (KEY_VARIABLE.into(), "sk-test-key".into()),
             ]),
             provider: Some(CopilotProvider {
                 kind: "openai".into(),
@@ -622,4 +648,74 @@ async fn a_turn_cut_off_by_a_crash_isnt_run_again_on_resume() {
         .count();
     assert_eq!(said, 1, "{after:#?}");
     assert_eq!(asked_apricot(&setup.model.requests()), 1);
+}
+
+#[tokio::test]
+async fn a_provider_session_whose_key_is_refused_says_to_fix_the_key_in_its_variable() {
+    let setup = Setup::with_model(Model {
+        answers: vec![("apricot", Reply::Refuse(401))],
+        ..Model::default()
+    })
+    .await;
+    let agent = setup.agent();
+    let config = json!({"provider": {
+        "kind": "openai",
+        "base_url": setup.base_url,
+        "api_key_variable": KEY_VARIABLE,
+    }});
+    let session = agent
+        .start(StartOptions {
+            backend_config: Some(config.to_string()),
+            ..setup.start_options()
+        })
+        .await
+        .expect("start");
+
+    agent
+        .send(&session.id, "apricot".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let events = wait_for(&agent, &session.id, idle_turns(1)).await;
+
+    // Told as the provider's refusal of the key in its variable, not as
+    // a fault in signing in to GitHub; the key itself is never shown.
+    let failures = failures(&events);
+    assert!(
+        failures
+            .iter()
+            .any(|failure| failure.contains(KEY_VARIABLE)),
+        "{failures:?}"
+    );
+    assert!(
+        failures
+            .iter()
+            .all(|failure| !failure.contains("sk-test-key")),
+        "{failures:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_session_without_a_provider_whose_server_refuses_keeps_the_sign_in_failure() {
+    let setup = Setup::with_model(Model {
+        answers: vec![("apricot", Reply::Refuse(401))],
+        ..Model::default()
+    })
+    .await;
+    let agent = setup.agent();
+    let session = agent.start(setup.start_options()).await.expect("start");
+
+    agent
+        .send(&session.id, "apricot".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let events = wait_for(&agent, &session.id, idle_turns(1)).await;
+
+    let failures = failures(&events);
+    assert!(!failures.is_empty(), "{events:#?}");
+    assert!(
+        failures
+            .iter()
+            .all(|failure| !failure.contains(KEY_VARIABLE)),
+        "{failures:?}"
+    );
 }
