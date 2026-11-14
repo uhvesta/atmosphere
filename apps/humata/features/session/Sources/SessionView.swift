@@ -395,8 +395,6 @@ private struct Fills: Layout {
 
 /// The end of the chat, kept in view as it grows.
 private enum ChatEnd {
-    static let id = "chat.end"
-
     static func inView(_ geometry: ScrollGeometry) -> Bool {
         geometry.visibleRect.maxY >= geometry.contentSize.height - 40
     }
@@ -434,6 +432,9 @@ private struct ChatList: View {
     /// Whether the chat keeps to its end as it grows: on while the end is in
     /// view, off once the person scrolls up to read.
     @State private var following = true
+    /// Moves the chat to its end. Not `scrollTo` by id: that looks for the
+    /// id past every row before it, and ran on each frame of a reply.
+    @State private var position = ScrollPosition(idType: String.self)
 
     var body: some View {
         let highlighted = store.highlightedItem
@@ -455,10 +456,10 @@ private struct ChatList: View {
                         .id(line.id)
                     }
                     TurnInProgress(store: store)
-                    Color.clear.frame(height: 0).id(ChatEnd.id)
                 }
                 .padding()
             }
+            .scrollPosition($position)
             // At its end when it opens; as it grows, what's in view stays.
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .onScrollGeometryChange(for: ChatEnd.Place.self) {
@@ -467,7 +468,7 @@ private struct ChatList: View {
                 if new.height != old.height {
                     // Grown or shrunk with its end in view: keep to the end.
                     if old.endInView { following = true }
-                    if following { reader.scrollTo(ChatEnd.id, anchor: .bottom) }
+                    if following { position.scrollTo(edge: .bottom) }
                 } else if new.offset < old.offset - 1, !new.endInView {
                     // Read up, by any means: a mouse wheel has no phases. An
                     // upward move that leaves the end in view is the chat
@@ -516,7 +517,7 @@ private struct ChatList: View {
             .onChange(of: store.sending) { old, new in
                 guard new > old else { return }
                 following = true
-                reader.scrollTo(ChatEnd.id, anchor: .bottom)
+                position.scrollTo(edge: .bottom)
             }
             .onChange(of: store.scrollTarget) { _, item in
                 guard let item else { return }

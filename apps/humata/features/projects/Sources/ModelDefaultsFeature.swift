@@ -72,6 +72,11 @@ package struct ModelDefaultsFeature {
         /// for a project once it has its own.
         package var editable: Bool { projectID == nil || own }
         package var pickedModel: ModelChoice? { models.first { $0.id == defaults.model } }
+        /// The model whose efforts the picker offers, typed or the default
+        /// one too.
+        package var effortModel: ModelChoice? {
+            ModelChoice.effortModel(in: models, id: defaults.model ?? "", backend: defaults.backend)
+        }
         package var fusion: Bool { defaults.backend == .copilot && defaults.model == ModelChoice.fusion }
     }
 
@@ -157,7 +162,7 @@ package struct ModelDefaultsFeature {
                 state.model = model
                 let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.defaults.model = trimmed.isEmpty ? nil : trimmed
-                if let effort = state.defaults.effort, state.pickedModel?.efforts.contains(effort) == false {
+                if let effort = state.defaults.effort, state.effortModel?.efforts.contains(effort) != true {
                     state.defaults.effort = nil
                 }
                 // Typed a letter at a time; saves once it settles.
@@ -365,7 +370,7 @@ package struct ModelDefaultsView: View {
                     Text(detail).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if let picked = store.pickedModel, !picked.efforts.isEmpty {
+            if let picked = store.effortModel {
                 EffortPicker(
                     model: picked, fusion: store.fusion,
                     effort: Binding(
@@ -380,5 +385,19 @@ package struct ModelDefaultsView: View {
                 Text("Copilot's features still being tried out. Fusion needs them to pick local models.")
             }
         }
+    }
+}
+
+extension ModelChoice {
+    /// The model whose efforts a picker offers for `id`: the listed one, or
+    /// for Claude, whose CLI takes an effort for every model but Haiku, one
+    /// typed or left to the default takes the listed models' efforts. Nil
+    /// when it takes none.
+    static func effortModel(in models: [ModelChoice], id: String, backend: Backend?) -> ModelChoice? {
+        if let listed = models.first(where: { $0.id == id }) { return listed.efforts.isEmpty ? nil : listed }
+        guard backend == .claude, !id.lowercased().contains("haiku"),
+            let efforts = models.first(where: { !$0.efforts.isEmpty })?.efforts
+        else { return nil }
+        return ModelChoice(id: id, name: id.isEmpty ? "Default" : id, efforts: efforts)
     }
 }

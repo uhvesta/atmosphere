@@ -120,6 +120,32 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.effort, "")
     }
 
+    func testAClaudeModelTypedOrLeftToTheDefaultTakesAnEffort() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setModels(
+            [
+                ModelChoice(id: "opus", name: "Opus", efforts: ["low", "max"]),
+                ModelChoice(id: "haiku", name: "Haiku"),
+            ], for: .claude)
+        let store = TestStore(initialState: NewSessionFeature.State(project: nil)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.backend, .claude)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.effortModel?.efforts, ["low", "max"])
+        await store.send(\.binding.effort, "max")
+        await store.send(\.binding.model, "claude-opus-5-5")
+        XCTAssertEqual(store.state.effort, "max")
+        XCTAssertEqual(store.state.request.effort, "max")
+        await store.send(\.binding.model, "claude-haiku-5-5")
+        XCTAssertNil(store.state.effortModel)
+        XCTAssertEqual(store.state.effort, "")
+    }
+
     func testANewChatWorksInTheFolderPickedOrOneOfItsOwn() async throws {
         let daemon = InMemoryDaemon()
         let store = TestStore(initialState: ProjectsFeature.State()) {
@@ -283,6 +309,7 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.receive(\.loaded) {
             $0.failure = nil
             $0.loadedOnce = true
+            $0.badged = 0
             $0.now = Date(timeIntervalSince1970: 1_794_000_600)
         }
     }
@@ -1020,6 +1047,32 @@ final class ProjectsFeatureTests: XCTestCase {
             })
         XCTAssertFalse(
             store.state.inbox.contains { $0.id == session.id && $0.session.pending.contains(request) })
+    }
+
+    func testTheDockCountGoesDownWhenARequestIsAnsweredFromTheInbox() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let badges = LockIsolated<[Int]>([])
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+            $0.appActivity = AppActivity(
+                isActive: { true }, activations: { AsyncStream { $0.finish() } },
+                setBadge: { count in badges.withValue { $0.append(count) } })
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let request = try XCTUnwrap(store.state.inbox.first { $0.id == session.id }?.session.pending.first)
+        await store.send(.inboxAnswered(session.id, request: request.requestID, approved: true))
+        await store.receive(\.loaded)
+        await store.finish()
+        XCTAssertEqual(badges.value, [1, 0])
     }
 
     private func inboxStore(_ daemon: InMemoryDaemon) -> TestStoreOf<ProjectsFeature> {

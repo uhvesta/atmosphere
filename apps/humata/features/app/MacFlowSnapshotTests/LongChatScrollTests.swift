@@ -38,7 +38,7 @@ final class LongChatScrollTests: XCTestCase {
     /// Prints the frames' times; checks them only with `HUMATA_PERF` set.
     func testScrollingWhileAReplyStreams() async throws {
         var maker = ChatMaker(seed: 5)
-        var history = maker.history(turns: 60)
+        var history = maker.history(turns: 400)
         func add(_ kind: SessionEvent.Kind) {
             history.append(SessionEvent(id: "x\(history.count)", time: Date(timeIntervalSince1970: 0), kind: kind))
         }

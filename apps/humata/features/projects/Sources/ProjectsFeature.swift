@@ -25,6 +25,10 @@ package struct ProjectsFeature {
         /// Permission requests answered here, by request id, kept out of
         /// reads begun before the answer for the same reason.
         var answeredPermissions: Set<String> = []
+        /// The count last put on the Dock; an answer given here lowers the
+        /// inbox before the read that follows, so the read compares with
+        /// this, not with the inbox.
+        package var badged: Int?
         /// Admin approvals decided here, kept out the same way.
         var decidedApprovals: Set<AdminApproval.ID> = []
         /// Sessions whose last message is being sent again from the inbox.
@@ -362,7 +366,8 @@ package struct ProjectsFeature {
                 // The Dock counts only the sessions that can't go on without
                 // the person.
                 let blocked = inbox.count(where: \.reason.blocks) + approvals.count
-                let badge = !state.loadedOnce || blocked != state.blockedCount ? blocked : nil
+                let badge = blocked != state.badged ? blocked : nil
+                if badge != nil { state.badged = blocked }
                 if !state.loadedOnce {
                     state.loadedOnce = true
                     // Humata opens on what waits on the person, if anything
@@ -1227,6 +1232,11 @@ package struct NewSessionFeature {
 
         /// The model picked, if the backend lists it.
         package var pickedModel: ModelChoice? { models.first { $0.id == model.trimmed } }
+        /// The model whose efforts the picker offers, typed or the default
+        /// one too.
+        package var effortModel: ModelChoice? {
+            ModelChoice.effortModel(in: models, id: model.trimmed, backend: backend)
+        }
         /// Copilot Fusion, which takes a tier for its effort.
         package var fusion: Bool { backend == .copilot && model.trimmed == ModelChoice.fusion }
 
@@ -1335,7 +1345,7 @@ package struct NewSessionFeature {
             case .binding(\.model):
                 state.picked = true
                 // Another model's effort may not be one this one takes.
-                if let picked = state.pickedModel, !picked.efforts.contains(state.effort) {
+                if !state.effort.isEmpty, state.effortModel?.efforts.contains(state.effort) != true {
                     state.effort = ""
                 }
                 return .none

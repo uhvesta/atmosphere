@@ -553,7 +553,7 @@ package struct NewSessionView: View {
                         }
                     }
                 }
-                if let picked = store.pickedModel, !picked.efforts.isEmpty {
+                if let picked = store.effortModel {
                     EffortPicker(model: picked, fusion: store.fusion, effort: $store.effort)
                 }
                 if store.backend == .copilot {

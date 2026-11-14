@@ -235,8 +235,9 @@ impl ClaudeRunner {
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// Claude Code's model aliases, which follow the newest of each.
-const CLAUDE_MODELS: [(&str, &str, &str); 4] = [
-    ("opus", "Opus", "The most capable"),
+const CLAUDE_MODELS: [(&str, &str, &str); 5] = [
+    ("fable", "Fable", "The most capable, for the hardest work"),
+    ("opus", "Opus", "Very capable, and quicker than Fable"),
     ("sonnet", "Sonnet", "Fast and capable"),
     ("haiku", "Haiku", "The fastest and cheapest"),
     (
