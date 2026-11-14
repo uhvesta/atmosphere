@@ -5,16 +5,18 @@ import Observation
 /// The session list as the core last told it, on the main actor.
 @MainActor
 @Observable
-final class SessionsModel {
-    private(set) var list = SessionList(rows: [], loading: true, error: nil, selected: nil)
+public final class SessionsModel {
+    public private(set) var list = SessionList(rows: [], loading: true, error: nil, selected: nil)
     /// Why the core couldn't start; nothing else works then.
-    private(set) var startError: String?
+    public private(set) var startError: String?
+    /// The chat of the session picked.
+    public let chat: ChatModel
 
     @ObservationIgnored private let core: Core?
     @ObservationIgnored private var watch: Watch?
 
-    init() {
-        let socket = ProcessInfo.processInfo.environment["HUMATA_SOCKET"]
+    /// Reaches the daemon at `socket`, or at its usual place.
+    public init(socket: String? = ProcessInfo.processInfo.environment["HUMATA_SOCKET"]) {
         let core: Core?
         do {
             core = try Core(socket: socket)
@@ -23,13 +25,16 @@ final class SessionsModel {
             startError = "\(error)"
         }
         self.core = core
+        chat = ChatModel(core: core)
         watch = core?.observe(
             observer: Relay { [weak self] list in
-                Task { @MainActor in self?.list = list }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.list = list }
+                }
             })
     }
 
-    func send(_ event: SessionsEvent) {
+    public func send(_ event: SessionsEvent) {
         core?.send(event: event)
     }
 }

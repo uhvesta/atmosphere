@@ -1,3 +1,4 @@
+import Humata2Models
 import SwiftUI
 
 /// Humata 2: the window lays out what the Rust core holds and sends it what

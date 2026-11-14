@@ -166,9 +166,10 @@ original spec; lettered ones were added since.
 | X Admin mode, gated by approvals | Done |
 | F2 Fresh clones | Done |
 | TR tca-rust, a Rust take on TCA | Done (ff6ee013) |
-| H2-0 Humata 2 skeleton | Done |
-| H2-1 Humata 2 chat | Next |
-| H2-2 to H2-5 Humata 2 screens, then the swap | Planned |
+| H2-0 Humata 2 skeleton | Done (e6ac1c84) |
+| H2-1 Humata 2 chat | Done |
+| H2-2 Humata 2 projects and board | Next |
+| H2-3 to H2-5 Humata 2 screens, then the swap | Planned |
 | TR2 tca-rust speed | Planned, after Humata 2 runs |
 
 ## Done milestones
@@ -1362,8 +1363,17 @@ is ready to replace it; code duplicated between them meanwhile is fine.
   on tca-rust, talks to `humatad` with the daemon's `wire` crate. UniFFI
   bindings built in Bazel; `apps/humata2/app` is a Swift app with its own
   bundle id that lists sessions from the core's store.
-- **H2-1 Chat.** A session's chat in Humata 2, with the cost of crossing
-  from Rust to Swift measured while a long reply streams.
+- **H2-1 Chat.** A session's chat in Humata 2: the history read with
+  its progress, then live events; tools, permissions, queued messages,
+  Stop, and a message that failed to send put back in the field. The
+  core tells Swift only what changed since it last told: rows that came,
+  went or changed, the reply's new text, and the status when it changed.
+  Measured on a fastbuild through the real bindings with a stand-in daemon
+  (`apps/humata2/rehearsal`, the test `//apps/humata2/app:tests`): 5,000
+  rows reach Swift in 47 ms, and a reply of 20,000 parts in 120 ms, 6 µs a
+  part, with no gap over 13 ms while it grows. Each update still compares
+  every row's pointer, so TR2 looks at that first. Answering permissions,
+  markdown, images and rewind come with H2-5.
 - **H2-2** projects and the board; **H2-3** review, docs and specs;
   **H2-4** hosts, the terminal and the browser; **H2-5** the rest. Then the
   swap: Humata 2 ships as Humata.

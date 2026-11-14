@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# A stand-in humatad with one session: its history is `--rows` messages,
+# and each message sent to it is answered in `--deltas` parts, so Humata 2
+# can be timed on a long chat with a long reply.
+rust_binary(
+    name = "rehearsal",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata2/app:__pkg__"],
+    deps = [
+        "//apps/humata/daemon/wire",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

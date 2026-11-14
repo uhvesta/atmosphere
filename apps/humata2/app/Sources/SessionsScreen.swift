@@ -1,4 +1,5 @@
 import Humata2Core
+import Humata2Models
 import SwiftUI
 
 /// The sessions, newest first, and the one picked.
@@ -54,10 +55,9 @@ struct SessionsScreen: View {
 
     @ViewBuilder private var detail: some View {
         if let id = model.list.selected, let session = model.list.rows.first(where: { $0.id == id }) {
-            VStack(spacing: 8) {
-                Text(session.name).font(.title2)
-                Text(session.state.title).foregroundStyle(.secondary)
-            }
+            ChatScreen(chat: model.chat)
+                .navigationTitle(session.name)
+                .navigationSubtitle(Text(session.state.title))
         } else {
             ContentUnavailableView("Pick a Session", systemImage: "sidebar.left")
         }

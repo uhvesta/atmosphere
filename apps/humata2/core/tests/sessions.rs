@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use humata_core::{
-    Daemon, DaemonError, LiveDaemon, Session, SessionState, Sessions, SessionsAction,
+    ChatItems, Daemon, DaemonError, LiveDaemon, Session, SessionState, Sessions, SessionsAction,
     SessionsFeature,
 };
 use humata_wire::{Reply, Service, ServiceFuture, pb};
@@ -37,6 +37,23 @@ impl Daemon for FakeDaemon {
                 None => std::future::pending().await,
             }
         })
+    }
+
+    fn watch(&self, _session: String) -> ChatItems {
+        tokio::sync::mpsc::unbounded_channel().1
+    }
+
+    fn send_message(
+        &self,
+        _session: String,
+        _text: String,
+        _client_id: String,
+    ) -> BoxFuture<Result<(), DaemonError>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn abort(&self, _session: String) -> BoxFuture<Result<(), DaemonError>> {
+        Box::pin(std::future::pending())
     }
 }
 

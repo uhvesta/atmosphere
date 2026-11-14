@@ -1192,6 +1192,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-rehearsal"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "humatad"
 version = "0.0.0"
 dependencies = [

@@ -13,6 +13,7 @@ members = [
     "apps/humata/e2e/sshd",
     "apps/humata2/core",
     "apps/humata2/bindgen",
+    "apps/humata2/rehearsal",
     "libs/tca-rust",
 ]
 resolver = "3"

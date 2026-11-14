@@ -1,5 +1,5 @@
 {
-  "checksum": "ea52e8dbf774c0f5dcf651599f8d7b38321b147b4b57187ef483187adfff0c39",
+  "checksum": "20241188a9a9b18da1d4977844fdb82ebaf27a6d10e01e9e46af385c29d742bb",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -5474,6 +5474,25 @@
           }
         }
       ],
+      "version": "0.0.0"
+    },
+    "humata2-rehearsal 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "name": "humata2-rehearsal",
+      "repository": null,
+      "targets": [],
       "version": "0.0.0"
     },
     "humatad 0.0.0": {
@@ -14844,6 +14863,7 @@
     "humata-workspace 0.0.0": "apps/humata/daemon/workspace",
     "humata2-bindgen 0.0.0": "apps/humata2/bindgen",
     "humata2-core 0.0.0": "apps/humata2/core",
+    "humata2-rehearsal 0.0.0": "apps/humata2/rehearsal",
     "humatad 0.0.0": "apps/humata/daemon/humatad",
     "swift-catalog 0.0.0": "tools/swift_catalog",
     "tca-rust 0.1.0": "libs/tca-rust"

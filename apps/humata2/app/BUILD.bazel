@@ -1,6 +1,16 @@
 load("@lifr_identity//:defs.bzl", "HUMATA2_BUNDLE_ID")
-load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_apple//apple:macos.bzl", "macos_application", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# What the screens watch: what the Rust core last told, kept on the main
+# actor, and what the person does sent back to it.
+swift_library(
+    name = "models",
+    srcs = glob(["Models/*.swift"]),
+    module_name = "Humata2Models",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = ["//apps/humata2/core:swift"],
+)
 
 # Humata 2 for the Mac: SwiftUI lays out what the Rust core holds and sends
 # it what the person does. Reaches the humatad that Humata runs, and doesn't
@@ -10,7 +20,10 @@ swift_library(
     srcs = glob(["Sources/*.swift"]),
     module_name = "Humata2App",
     target_compatible_with = ["//bazel/xcode"],
-    deps = ["//apps/humata2/core:swift"],
+    deps = [
+        ":models",
+        "//apps/humata2/core:swift",
+    ],
 )
 
 macos_application(
@@ -21,6 +34,40 @@ macos_application(
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
     deps = [":app_lib"],
+)
+
+genrule(
+    name = "binaries_swift",
+    testonly = True,
+    srcs = ["//apps/humata2/rehearsal"],
+    outs = ["Binaries.swift"],
+    cmd = """cat > $@ <<'EOF'
+enum Binaries {
+    static let rehearsal = "$(rlocationpath //apps/humata2/rehearsal)"
+}
+EOF""",
+)
+
+swift_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]) + [":binaries_swift"],
+    module_name = "Humata2Tests",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":models",
+        "//apps/humata2/core:swift",
+    ],
+)
+
+# The models through the real core, on a stand-in daemon; prints how long
+# a long chat and a long reply take to reach them.
+macos_unit_test(
+    name = "tests",
+    data = ["//apps/humata2/rehearsal"],
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
 )
 
 filegroup(

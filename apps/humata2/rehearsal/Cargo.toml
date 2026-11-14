@@ -1,0 +1,17 @@
+[package]
+name = "humata2-rehearsal"
+description = "A stand-in humatad with one scripted session, to time Humata 2 against."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Also depends on Humata's wire crate, which Bazel builds, so this builds
+# with Bazel only.
+[[bin]]
+name = "humata2-rehearsal"
+path = "src/main.rs"
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
