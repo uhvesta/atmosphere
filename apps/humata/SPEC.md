@@ -170,7 +170,7 @@ original spec; lettered ones were added since.
 | H2-1 Humata 2 chat | Done (5b95b95f) |
 | H2-2 to H2-5 Humata 2 screens, then the swap | Stopped |
 | TR2 tca-rust speed | Stopped |
-| P2 Humata 1 speed, measured | Next |
+| P2 Humata 1 speed, measured | In progress |
 
 ## Done milestones
 
@@ -1384,6 +1384,41 @@ built stays in `apps/humata2` and `libs/tca-rust` for now.
 - **TR2 tca-rust speed.** Once Humata 2 runs: benchmarks first, then make
   the store, effects and `IdentifiedVec` as fast as Rust allows, past big O:
   allocations, copies, locks and wakeups.
+
+### P2 Humata 1 speed, measured
+
+The owner, 2026-11-13: make Humata 1 fast, measured first, with a real
+chat played through the app: long replies, long histories, and turns with
+many tool calls. The scripted agent writes a reply a word every few
+milliseconds to rehearse it.
+
+Streaming a 6,000-word reply at a word every 8 ms, 60 seconds under Time
+Profiler on the optimized app:
+
+| Build | Main thread busy | Stalls over 80 ms | Over 50 ms |
+| --- | --- | --- | --- |
+| Before | about 760 ms a second | 204 | 597 |
+| Deltas taken in once a frame | about 350 ms | 0 | 134 |
+| The chat lays out only itself | about 250 ms | 0 | 2 |
+| The reply as lazy parts | about 260 ms | 0 | 4 |
+
+The first two runs also scrolled the chat while it streamed; the last two
+only streamed.
+
+- [x] Streamed deltas are taken in at most once a frame (33 ms)
+- [x] The chat lays out only itself, not the window around it
+- [x] The reply being written is rows of finished parts and a last part
+  drawn again; the total cost stayed about the same
+- [x] The chat follows its end while a reply is written; scrolling up stops
+  that, and scrolling back to the end starts it
+- [x] Sending a message takes the chat to its end, wherever it was
+  scrolled
+- [x] A tool call opened shows all its output: whether it's open is kept in
+  the session, so the chat's kept row heights see the change, tested in a
+  window
+- [ ] What's left each frame: the window's own sizing
+  (`NavigationStackLayout`, `NSHostingView.minSize`), copying the session's
+  state for the streaming text, and comparing full rows for kept heights
 
 ## Later
 

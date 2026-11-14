@@ -474,6 +474,13 @@ private struct ChatList: View {
                 following = false
                 reader.scrollTo(item, anchor: .center)
             }
+            // A message sent takes the chat to its end to show it and what
+            // the agent says to it, wherever the person had scrolled.
+            .onChange(of: store.sending) { old, new in
+                guard new > old else { return }
+                following = true
+                reader.scrollTo(ChatEnd.id, anchor: .bottom)
+            }
             .onChange(of: store.scrollTarget) { _, item in
                 guard let item else { return }
                 following = false
