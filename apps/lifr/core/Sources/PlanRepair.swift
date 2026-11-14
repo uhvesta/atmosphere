@@ -348,13 +348,22 @@ private struct PlaceNames {
         avenues.first { $0.name.caseInsensitiveCompare(name.trimmingCharacters(in: .whitespaces)) == .orderedSame }
     }
 
-    /// The key of the Avenue `text` names: its key in any case, or its
-    /// name. Nil when it names none.
+    /// The key of the Avenue `text` names: its key in any case, its name,
+    /// or the start of one Avenue's key or name, three letters or more,
+    /// such as "Hom" for Home: a model cuts names short. A key a letter
+    /// off, such as WEALTH for HEALTH, isn't guessed. Nil when it names
+    /// none.
     func avenueKey(_ text: String) -> String? {
         if let avenue = avenues.first(where: { $0.key.rawValue.caseInsensitiveCompare(text) == .orderedSame }) {
             return avenue.key.rawValue
         }
-        return avenue(named: text)?.key.rawValue
+        if let avenue = avenue(named: text) { return avenue.key.rawValue }
+        let start = text.trimmingCharacters(in: .whitespaces).lowercased()
+        guard start.count >= 3 else { return nil }
+        let starting = avenues.filter {
+            $0.key.rawValue.lowercased().hasPrefix(start) || $0.name.lowercased().hasPrefix(start)
+        }
+        return starting.count == 1 ? starting.first?.key.rawValue : nil
     }
 
     /// "KEY" or "KEY/Project name" for `text`, or `text` when it can't

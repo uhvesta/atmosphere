@@ -56,6 +56,8 @@ package struct ChatFeature {
         @Presents package var manageSkills: SkillsFeature.State?
         /// What the conversation runs on, being picked.
         @Presents package var model: ChatModelFeature.State?
+        /// A prompt for planning with another assistant, being made.
+        @Presents package var export: PlanExportFeature.State?
         /// Whether the draft's editor is open.
         package var editsDraft = false
         /// The draft as it was when its editor opened, put back on Cancel.
@@ -331,11 +333,10 @@ package struct ChatFeature {
         /// place.
         case compactTapped
         case compacted(through: UUID, Result<String, any Error>)
-        /// Asks which tasks a prompt for another assistant to plan `goal`
-        /// lists.
+        /// Opens a prompt for another assistant to plan `goal`, to pick
+        /// the tasks it lists and copy or share it.
         case exportPlanTapped(goal: String)
-        /// Copies the prompt for `goal`, listing the tasks in `scope`.
-        case exportPlanScoped(goal: String, scope: PlanPrompt.Scope)
+        case export(PresentationAction<PlanExportFeature.Action>)
         /// Reads the clipboard for another assistant's reply.
         case pastePlanTapped
         /// A command picked from the Mac's menu: runs as if typed, with
@@ -402,8 +403,6 @@ package struct ChatFeature {
             case retry(UUID, undo: Bool)
             /// Copies a prompt for the other assistant to fix its plan.
             case copyFixUp(String)
-            /// Copies a prompt to plan `goal`, listing the tasks in `scope`.
-            case exportPlan(goal: String, scope: PlanPrompt.Scope)
             /// Puts a pasted plan on the draft card in place of the draft.
             case replaceDraft(Plan)
         }
@@ -790,26 +789,10 @@ package struct ChatFeature {
                 return .none
 
             case .exportPlanTapped(let goal):
-                state.alert = Self.scopeAlert(goal: goal, preset: state.preset, workspace: state.workspace)
+                state.export = PlanExportFeature.State(
+                    goal: goal, preset: state.preset, workspace: state.workspace,
+                    today: CalendarDate(now, in: timeZone), timeZone: timeZone)
                 return .none
-
-            case .exportPlanScoped(let goal, let scope):
-                let prompt = PlanPrompt.make(
-                    goal: goal, scope: scope, instructions: state.preset?.instructions ?? "",
-                    workspace: state.workspace, today: CalendarDate(now, in: timeZone), timeZone: timeZone)
-                state.alert = AlertState {
-                    TextState("Prompt Copied")
-                } actions: {
-                    ButtonState(role: .cancel) { TextState("OK") }
-                } message: {
-                    TextState(
-                        "Paste it into any chat assistant. Then copy its whole reply and type /paste here to "
-                            + "review the plan.")
-                }
-                return .run { [pasteboard] _ in await pasteboard.copy(prompt) }
-
-            case .alert(.presented(.exportPlan(let goal, let scope))):
-                return .send(.exportPlanScoped(goal: goal, scope: scope))
 
             case .commandChosen(let command):
                 guard command.isAvailable(in: state) else { return .none }
@@ -1186,13 +1169,14 @@ package struct ChatFeature {
             case .core(let action):
                 return core(action, &state)
 
-            case .binding, .alert, .manageSkills, .model, .delegate:
+            case .binding, .alert, .manageSkills, .model, .export, .delegate:
                 return .none
             }
         }
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$manageSkills, action: \.manageSkills) { SkillsFeature() }
         .ifLet(\.$model, action: \.model) { ChatModelFeature() }
+        .ifLet(\.$export, action: \.export) { PlanExportFeature() }
         Reduce { state, _ in
             state.sync()
             return .none
@@ -1356,34 +1340,6 @@ package struct ChatFeature {
         return .run { [assistant] send in
             await send(
                 .compacted(through: through, Result { try await assistant.compact(messages, earlier, choice) }))
-        }
-    }
-
-    /// Asks which open tasks the prompt lists: none, all, or one Avenue's,
-    /// for each Avenue an assistant may add to.
-    private static func scopeAlert(goal: String, preset: Skill?, workspace: Workspace) -> AlertState<Action.Alert> {
-        let avenues = workspace.avenues.values
-            .filter { $0.archivedAt == nil && $0.agentAccess == .full }
-            .sorted { $0.sortOrder < $1.sortOrder }
-        return AlertState {
-            TextState("Copy a Plan Prompt")
-        } actions: {
-            ButtonState(action: .exportPlan(goal: goal, scope: .names)) { TextState("Names Only") }
-            ButtonState(action: .exportPlan(goal: goal, scope: .everything)) { TextState("With All Open Tasks") }
-            for avenue in avenues {
-                ButtonState(action: .exportPlan(goal: goal, scope: .avenue(avenue.id))) {
-                    TextState("With Tasks in \(avenue.name)")
-                }
-            }
-            ButtonState(role: .cancel) { TextState("Cancel") }
-        } message: {
-            let about =
-                "The prompt names your Avenues, Projects and labels. Listing your open tasks too keeps the "
-                + "assistant from planning them again, but copies their titles out of Lifr."
-            if let preset {
-                return TextState(about + " It also carries the instructions of your skill \(preset.title).")
-            }
-            return TextState(about)
         }
     }
 

@@ -13,6 +13,22 @@ package enum PlanPrompt {
         case everything
         /// The open tasks in one of them.
         case avenue(UUID)
+        /// The open tasks in one of their Projects.
+        case project(UUID)
+    }
+
+    /// What a prompt says of each task `Scope` lists.
+    package struct Listing: Hashable, Sendable {
+        /// Lists closed tasks too, with their status, so the reply knows
+        /// what's been done.
+        package var closed = false
+        /// Adds each task's description.
+        package var descriptions = false
+
+        package init(closed: Bool = false, descriptions: Bool = false) {
+            self.closed = closed
+            self.descriptions = descriptions
+        }
     }
 
     /// The most tasks a prompt lists, so a big workspace stays pasteable.
@@ -21,10 +37,10 @@ package enum PlanPrompt {
     /// A prompt asking for a plan for `goal`, in the TOML `PlanFile` reads.
     /// It names the Avenues an assistant may add to, their active Projects
     /// and every label, so the reply reuses them, and the open tasks in
-    /// `scope`.
+    /// `scope`, as `listing` says.
     package static func make(
-        goal: String, scope: Scope = .names, instructions: String = "", workspace: Workspace, today: CalendarDate,
-        timeZone: TimeZone
+        goal: String, scope: Scope = .names, listing: Listing = Listing(), instructions: String = "",
+        workspace: Workspace, today: CalendarDate, timeZone: TimeZone
     ) -> String {
         let avenues = workspace.avenues.values
             .filter { $0.archivedAt == nil && $0.agentAccess == .full }
@@ -41,7 +57,7 @@ package enum PlanPrompt {
         }
         if avenues.isEmpty { context.append("- none yet: add an [[avenue]] for the tasks") }
         context.append("Labels: " + (labels.isEmpty ? "none yet" : labels.joined(separator: ", ")))
-        context += tasks(in: scope, avenues: avenues, workspace: workspace)
+        context += tasks(in: scope, listing: listing, avenues: avenues, workspace: workspace)
         let goal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         let extra = instructions.isEmpty ? "" : "Also follow these instructions: \(instructions)\n\n"
@@ -68,28 +84,49 @@ package enum PlanPrompt {
             """
     }
 
-    /// The lines listing the open tasks in `scope`, Avenue by Avenue, or
-    /// none for `.names`.
-    private static func tasks(in scope: Scope, avenues: [Avenue], workspace: Workspace) -> [String] {
+    /// The lines listing the tasks in `scope`, Avenue by Avenue, or none
+    /// for `.names`.
+    private static func tasks(
+        in scope: Scope, listing: Listing, avenues: [Avenue], workspace: Workspace
+    ) -> [String] {
         let listed: [Avenue]
+        var project: UUID?
         switch scope {
         case .names: return []
         case .everything: listed = avenues
         case .avenue(let id): listed = avenues.filter { $0.id == id }
+        case .project(let id):
+            let avenue = workspace.projects[id]?.avenueID
+            listed = avenues.filter { $0.id == avenue }
+            project = id
         }
         let ids = Set(listed.map(\.id))
-        let open = workspace.tasks.values
-            .filter { ids.contains($0.avenueID) && $0.isOpen && $0.deletedAt == nil }
+        let found = workspace.tasks.values
+            .filter { task in
+                ids.contains(task.avenueID) && task.deletedAt == nil && (listing.closed || task.isOpen)
+                    && (project == nil || task.projectID == project)
+            }
             .sorted { $0.title < $1.title }
-        var lines = ["", "Open tasks already in Lifr, which the plan shouldn't add again:"]
-        if open.isEmpty { lines.append("- none") }
+        var lines = [
+            "",
+            listing.closed
+                ? "Tasks already in Lifr, which the plan shouldn't add again:"
+                : "Open tasks already in Lifr, which the plan shouldn't add again:",
+        ]
+        if found.isEmpty { lines.append("- none") }
+        var count = 0
         for avenue in listed {
-            let titles = open.filter { $0.avenueID == avenue.id }.map(\.title)
-            lines += titles.map { "- \(avenue.key): \($0)" }
+            for task in found where task.avenueID == avenue.id {
+                count += 1
+                guard count <= taskLimit else { continue }
+                let status = task.isOpen && task.status == .todo ? "" : " (\(PlanFile.statusName(task.status)))"
+                lines.append("- \(avenue.key): \(task.title)\(status)")
+                let details = task.details.split(whereSeparator: \.isNewline).joined(separator: " ")
+                    .trimmingCharacters(in: .whitespaces)
+                if listing.descriptions, !details.isEmpty { lines.append("  \(details.prefix(500))") }
+            }
         }
-        if lines.count > taskLimit + 2 {
-            lines = Array(lines.prefix(taskLimit + 2)) + ["- and \(open.count - taskLimit) more"]
-        }
+        if count > taskLimit { lines.append("- and \(count - taskLimit) more") }
         return lines
     }
 

@@ -27,5 +27,5 @@
 [button] "/model, Pick the model, thinking and context window."
 [button] "/skills, Turn skills on or off, or write your own."
 [button] "/new, Start a new conversation."
-[button] "/export, Copy a prompt to plan with another chat assistant."
+[button] "/export, Make a prompt to plan with another chat assistant."
 [button] "/paste, Review the plan in another assistant's reply, copied to the clipboard."

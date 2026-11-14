@@ -54,49 +54,56 @@ final class ChatPlanPromptTests: XCTestCase {
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
         }
         store.exhaustivity = .off
         return (store, workspace)
     }
 
-    func testExportTypedWithAGoalCopiesAPromptNamingTheAvenuesAndTheGoal() async throws {
+    func testExportTypedWithAGoalShowsAPromptNamingTheAvenuesAndTheGoalAndCopiesIt() async throws {
         let clipboard = LockIsolated<String?>(nil)
         let (store, _) = chat(clipboard)
 
         await store.send(.core(.binding(.set(\.input, "/export Move flat"))))
         await store.receive(\.exportPlanTapped)
-        XCTAssertNil(clipboard.value, "nothing is copied before the scope is picked")
-        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .names))))
-        await store.receive(\.exportPlanScoped)
-        await store.finish()
-
-        let prompt = try XCTUnwrap(clipboard.value)
+        XCTAssertNil(clipboard.value, "nothing is copied before Copy")
+        let prompt = try XCTUnwrap(store.state.export?.prompt)
         XCTAssertTrue(prompt.contains("HOME: Home"))
         XCTAssertTrue(prompt.contains("Move flat"))
+
+        await store.send(.export(.presented(.copyTapped)))
+        await store.finish()
+        XCTAssertEqual(clipboard.value, prompt)
+        XCTAssertEqual(store.state.export?.copied, true)
         XCTAssertEqual(store.state.input, "")
-        XCTAssertNotNil(store.state.alert)
         XCTAssertTrue(store.state.conversation.messages.isEmpty, "nothing was sent")
     }
 
     func testExportFromTheMenuPlansWhatsTypedInTheField() async throws {
-        let clipboard = LockIsolated<String?>(nil)
-        let (store, _) = chat(clipboard)
+        let (store, _) = chat(LockIsolated<String?>(nil))
 
         await store.send(.core(.binding(.set(\.input, "Move flat"))))
         await store.send(.commandChosen(.export))
         await store.receive(\.exportPlanTapped)
-        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .names))))
-        await store.receive(\.exportPlanScoped)
-        await store.finish()
 
-        XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("Move flat"))
+        XCTAssertTrue(try XCTUnwrap(store.state.export?.prompt).contains("Move flat"))
         XCTAssertEqual(store.state.input, "")
         XCTAssertTrue(store.state.conversation.messages.isEmpty, "nothing was sent")
     }
 
-    func testExportWithOneOfThePersonsSkillsPickedCarriesItsInstructions() async throws {
+    func testEditingTheGoalRemakesThePromptToCopyAgain() async throws {
         let clipboard = LockIsolated<String?>(nil)
         let (store, _) = chat(clipboard)
+        await store.send(.exportPlanTapped(goal: "Move flat"))
+        await store.send(.export(.presented(.copyTapped)))
+        await store.send(.export(.presented(.binding(.set(\.goal, "Paint the hall")))))
+
+        XCTAssertEqual(store.state.export?.copied, false)
+        XCTAssertTrue(try XCTUnwrap(store.state.export?.prompt).contains("Paint the hall"))
+    }
+
+    func testExportWithOneOfThePersonsSkillsPickedCarriesItsInstructions() async throws {
+        let (store, _) = chat(LockIsolated<String?>(nil))
         let errands = try XCTUnwrap(
             Skill(
                 userNamed: "errands", summary: "Plan errands.", instructions: "Every task needs a due date.",
@@ -105,39 +112,34 @@ final class ChatPlanPromptTests: XCTestCase {
         await store.send(.pickSkillTapped(errands.id))
 
         await store.send(.exportPlanTapped(goal: "Saturday"))
-        await store.send(.alert(.presented(.exportPlan(goal: "Saturday", scope: .names))))
-        await store.receive(\.exportPlanScoped)
-        await store.finish()
-        XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("Every task needs a due date."))
+        XCTAssertTrue(try XCTUnwrap(store.state.export?.prompt).contains("Every task needs a due date."))
 
         let builtIn = try XCTUnwrap(Skill.builtIn.first { $0.isOn })
         await store.send(.pickSkillTapped(builtIn.id))
         await store.send(.exportPlanTapped(goal: "Saturday"))
-        await store.send(.alert(.presented(.exportPlan(goal: "Saturday", scope: .names))))
-        await store.receive(\.exportPlanScoped)
-        await store.finish()
-        XCTAssertFalse(try XCTUnwrap(clipboard.value).contains(builtIn.instructions))
+        XCTAssertFalse(try XCTUnwrap(store.state.export?.prompt).contains(builtIn.instructions))
     }
 
-    func testExportListsAnAvenuesOpenTasksOnlyWhenThatScopeIsPicked() async throws {
-        let clipboard = LockIsolated<String?>(nil)
+    func testExportListsTheTasksInThePickedScopeAndClosedOnesOnlyWhenAsked() async throws {
         var records = RecordsBuilder(now: now, timeZone: .gmt)
         let home = records.avenue("HOME", "Home")
         _ = records.task("Fix the gate", in: home, due: 0)
-        let (store, _) = chat(clipboard, records.workspace)
-
-        await store.send(.core(.binding(.set(\.input, "/export Move flat"))))
-        await store.receive(\.exportPlanTapped)
-        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .names))))
-        await store.receive(\.exportPlanScoped)
-        await store.finish()
-        XCTAssertFalse(try XCTUnwrap(clipboard.value).contains("Fix the gate"))
+        let keys = records.task("Return the keys", in: home, due: 0)
+        records.setStatus(.done, of: keys)
+        let (store, _) = chat(LockIsolated<String?>(nil), records.workspace)
 
         await store.send(.exportPlanTapped(goal: "Move flat"))
-        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .avenue(home.id)))))
-        await store.receive(\.exportPlanScoped)
-        await store.finish()
-        XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("HOME: Fix the gate"))
+        XCTAssertFalse(try XCTUnwrap(store.state.export?.prompt).contains("Fix the gate"))
+
+        await store.send(.export(.presented(.binding(.set(\.listed, .avenue(home.id))))))
+        var prompt = try XCTUnwrap(store.state.export?.prompt)
+        XCTAssertTrue(prompt.contains("HOME: Fix the gate"))
+        XCTAssertFalse(prompt.contains("Return the keys"))
+
+        await store.send(.export(.presented(.binding(.set(\.openOnly, false)))))
+        prompt = try XCTUnwrap(store.state.export?.prompt)
+        XCTAssertTrue(prompt.contains("Fix the gate"))
+        XCTAssertTrue(prompt.contains("Return the keys"))
     }
 
     func testPasteFromTheMenuPutsTheReplysPlanOnTheDraftCard() async throws {
@@ -160,6 +162,33 @@ final class ChatPlanPromptTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.draft?.tasks.map(\.title), ["Book the van"])
         XCTAssertNil(store.state.alert)
         XCTAssertEqual(store.state.workspace, workspace)
+    }
+
+    func testAReplyNamingAnAvenueCutShortPutsItsTasksInThatAvenue() async throws {
+        let (store, _) = chat(LockIsolated<String?>(reply.replacingOccurrences(of: "\"HOME\"", with: "\"Hom\"")))
+
+        await store.send(.pastePlanTapped)
+        await store.receive(\.planPasted)
+
+        XCTAssertEqual(store.state.conversation.draft?.tasks.map(\.place), ["HOME"])
+        XCTAssertNil(store.state.problem)
+    }
+
+    func testApplyingAPastedPlanThenUndoingLeavesTheTasksAsTheyWere() async throws {
+        let (store, _) = chat(LockIsolated<String?>(reply))
+        let open = { store.state.workspace.tasks.values.filter { $0.deletedAt == nil }.map(\.title).sorted() }
+        let before = open()
+
+        await store.send(.pastePlanTapped)
+        await store.receive(\.planPasted)
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        XCTAssertEqual(open(), (before + ["Book the van"]).sorted())
+
+        await store.send(.undoAddTapped)
+        await store.skipReceivedActions()
+        XCTAssertEqual(open(), before)
+        XCTAssertEqual(store.state.conversation.draft?.tasks.map(\.title), ["Book the van"])
     }
 
     func testPastingAMalformedReplyChangesNothingAndCopiesAFixUpPrompt() async throws {

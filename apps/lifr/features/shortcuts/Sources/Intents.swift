@@ -536,6 +536,47 @@ package struct CopyPlanPromptIntent: AppIntent {
     }
 }
 
+/// Opens another assistant's reply in a new Lifr chat, with its plan on the
+/// draft card. Nothing is added until the person reviews it and taps Add.
+package struct ReviewPlanIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Review a Plan"
+    package static let description = IntentDescription(
+        """
+        Opens a new Lifr chat with the plan in another chat assistant's reply on its draft card. Review \
+        it there, then tap Add.
+        """)
+    package static let openAppWhenRun = true
+
+    @Parameter(
+        title: "Reply", inputOptions: String.IntentInputOptions(multiline: true),
+        requestValueDialog: "What's the assistant's reply?")
+    package var reply: String
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Review the plan in \(\.$reply)")
+    }
+
+    @MainActor
+    package func perform() async throws -> some IntentResult & OpensIntent {
+        guard let url = DeepLink(plan: reply)?.url else { throw ReviewPlanError.notAPlan }
+        var open = OpenURLIntent()
+        open.url = url
+        return .result(opensIntent: open)
+    }
+}
+
+/// Why Review a Plan couldn't open the reply.
+enum ReviewPlanError: Error, CustomLocalizedStringResourceConvertible {
+    /// The reply is empty, or longer than any plan.
+    case notAPlan
+
+    var localizedStringResource: LocalizedStringResource {
+        "That reply is empty or too long to be one plan. Copy only the assistant's reply, then try again."
+    }
+}
+
 /// What Siri offers without setting anything up.
 package struct LifrAppShortcuts: AppShortcutsProvider {
     package static var appShortcuts: [AppShortcut] {
@@ -567,6 +608,10 @@ package struct LifrAppShortcuts: AppShortcutsProvider {
             intent: CopyPlanPromptIntent(),
             phrases: ["Copy a plan prompt in \(.applicationName)", "Plan something with \(.applicationName)"],
             shortTitle: "Copy a Plan Prompt", systemImageName: "doc.on.clipboard")
+        AppShortcut(
+            intent: ReviewPlanIntent(),
+            phrases: ["Review a plan in \(.applicationName)"],
+            shortTitle: "Review a Plan", systemImageName: "doc.badge.plus")
     }
 }
 

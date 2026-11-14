@@ -61,6 +61,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":root",
+        "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
     ] + _DEPS,
 )

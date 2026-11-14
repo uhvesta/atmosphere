@@ -6,7 +6,7 @@
 [button] "Plan my week"
 [button] "What's overdue?"
 [button] "What did I finish this week?"
-[button] "/export, Copy a prompt to plan with another chat assistant."
+[button] "/export, Make a prompt to plan with another chat assistant."
 [element] "" value: "/ex"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"

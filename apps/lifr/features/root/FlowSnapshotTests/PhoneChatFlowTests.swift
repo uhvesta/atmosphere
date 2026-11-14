@@ -150,8 +150,8 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
-    /// Planning with another chat assistant: /export copies a prompt and
-    /// says so, then /paste puts the plan in its reply on the draft card,
+    /// Planning with another chat assistant: /export opens the prompt to
+    /// copy, then /paste puts the plan in its reply on the draft card,
     /// and a reply that can't be read offers a fix-up prompt.
     func testPlanWithAnotherAssistant() async throws {
         let (store, flow) = app("plan-elsewhere")
@@ -162,11 +162,11 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         chat(.core(.binding(.set(\.input, "/ex"))))
         await flow.step("command")
         chat(.pickCommandTapped(.export))
-        await flow.step("scope")
-        chat(.alert(.presented(.exportPlan(goal: "", scope: .names))))
+        await flow.step("sheet")
+        chat(.export(.presented(.copyTapped)))
         await flow.step("copied")
         XCTAssertTrue(copied.value?.contains("HOME: Home") ?? false)
-        chat(.alert(.dismiss))
+        chat(.export(.dismiss))
 
         copied.setValue(
             """

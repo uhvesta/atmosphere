@@ -1928,13 +1928,20 @@ package struct RootFeature {
     /// each in the Avenue picked, or the Inbox when that one's gone.
     private func saveSharedTasks() -> Effect<Action> {
         .run { [glance, store] send in
-            let shared: [SharedTask]
+            let taken: [SharedTask]
             do {
-                shared = try await glance.takeShared()
+                taken = try await glance.takeShared()
             } catch {
                 Logger(subsystem: "lifr", category: "share").error("\(String(describing: error), privacy: .public)")
                 return
             }
+            // Another assistant's reply, shared from its app, goes to a chat
+            // to review rather than in as one task.
+            let plans = taken.filter(\.holdsPlan)
+            for plan in plans {
+                if let url = DeepLink(plan: plan.details)?.url { await send(.urlOpened(url)) }
+            }
+            let shared = taken.filter { !$0.holdsPlan }
             guard !shared.isEmpty else { return }
             let avenues: [UUID: Avenue]
             do {
@@ -2068,7 +2075,7 @@ package struct RootFeature {
     }
 
     /// Follows a link: a task from wherever the person is, Today, a day in
-    /// the calendar, or Quick Add. Before the records load, a task waits
+    /// the calendar, Quick Add, or another assistant's plan to review. Before the records load, a task waits
     /// like a reminder's and anything else waits in `pendingLink`.
     private func open(_ link: DeepLink, in state: inout State) -> Effect<Action> {
         if case .task(let id, let picksStatus) = link {
@@ -2125,6 +2132,8 @@ package struct RootFeature {
             showQuickAdd(.task, in: &state)
             if let title { state.quickAdd?.title = title }
             return .none
+        case .plan(let text):
+            return .concatenate(.send(.goTo(.conversations)), .send(.conversations(.planReceived(text))))
         }
     }
 
@@ -2353,6 +2362,19 @@ package struct Announcement: Equatable, Sendable {
         default:
             let text = AttributedString(localized: "^[\(closed.count) task](inflect: true) closed elsewhere.")
             return String(text.characters)
+        }
+    }
+}
+
+extension SharedTask {
+    /// Whether what was shared is a plan Lifr can read, such as another
+    /// assistant's reply.
+    fileprivate var holdsPlan: Bool {
+        guard details.contains("[[") else { return false }
+        do {
+            return try !PlanPrompt.read(details).isEmpty
+        } catch {
+            return false
         }
     }
 }

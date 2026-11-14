@@ -48,6 +48,15 @@ struct DraftCard: View {
                 }
                 TaskLines(tasks: plan.tasks, showsPlace: true, meanings: meanings)
             }
+            if closed > 0 {
+                Label(
+                    "^[\(closed) task](inflect: true) will be added already closed, as Done or Won't Do.",
+                    systemImage: "checkmark.circle"
+                )
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .accessibilityIdentifier(ModelText.identifier)
+            }
             if let problem {
                 Label(problem, systemImage: "exclamationmark.triangle")
                     .font(.callout)
@@ -72,6 +81,15 @@ struct DraftCard: View {
         .background(.background, in: .rect(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator))
     }
+
+    /// The tasks and Sub tasks the plan adds as Done or Won't Do, which
+    /// another assistant's reply can carry over from the tasks it was sent.
+    private var closed: Int {
+        let tasks = plan.projects.flatMap(\.tasks) + plan.tasks
+        return tasks.reduce(0) { count, task in
+            count + (task.status.isClosed ? 1 : 0) + task.subtasks.count { $0.status.isClosed }
+        }
+    }
 }
 
 /// Tasks as lines, each with its Sub tasks under it.
@@ -83,17 +101,29 @@ private struct TaskLines: View {
     var body: some View {
         ForEach(Array(tasks.enumerated()), id: \.offset) { _, task in
             Line(
-                symbol: "circle", title: Text(task.title),
-                detail: meanings.details(
-                    due: task.due,
-                    place: showsPlace ? task.parent.map { String(localized: "Under \($0)") } ?? task.place : nil,
-                    priority: task.priority, resolvesPlace: task.parent == nil))
+                symbol: task.status.symbol, title: Text(task.title),
+                detail: status(
+                    task.status,
+                    meanings.details(
+                        due: task.due,
+                        place: showsPlace ? task.parent.map { String(localized: "Under \($0)") } ?? task.place : nil,
+                        priority: task.priority, resolvesPlace: task.parent == nil)))
             ForEach(Array(task.subtasks.enumerated()), id: \.offset) { _, subtask in
-                Line(symbol: "circle", title: Text(subtask.title), detail: nil, small: true)
-                    .padding(.leading, 28)
+                Line(
+                    symbol: subtask.status.symbol, title: Text(subtask.title), detail: status(subtask.status, nil),
+                    small: true
+                )
+                .padding(.leading, 28)
             }
         }
     }
+}
+
+/// `detail` led by the status, unless it's To Do.
+private func status(_ status: TaskStatus, _ detail: String?) -> String? {
+    guard status != .todo else { return detail }
+    guard let detail else { return status.title }
+    return String(localized: "\(status.title) · \(detail)")
 }
 
 /// One thing the plan adds: a symbol, its title and what's set on it.

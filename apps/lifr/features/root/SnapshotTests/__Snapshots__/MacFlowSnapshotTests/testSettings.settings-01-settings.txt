@@ -31,6 +31,8 @@
   [StaticText] "" value: "Reports you saved, encrypted on this Mac. Choose Help › Report a Bug to make one."
   [Button] "Reset Tips"
   [StaticText] "" value: "Shows the tips about swiping a task and dragging one onto a day again."
+  [Button] "Data"
+  [StaticText] "" value: "Export your tasks, import a file, or bring back a daily backup."
   [Heading] "About"
   [StaticText] "" value: "Version"
   [StaticText] "" value: "1.0 (1)"

@@ -1331,6 +1331,9 @@
     "Copy List" : {
 
     },
+    "Copy Prompt" : {
+
+    },
     "Copy a Fix-up Prompt" : {
 
     },
@@ -1409,6 +1412,12 @@
     "Couldn't dictate" : {
 
     },
+    "Couldn't export" : {
+
+    },
+    "Couldn't import" : {
+
+    },
     "Couldn't install the command-line tool" : {
 
     },
@@ -1456,6 +1465,12 @@
       }
     },
     "Couldn't open that file: %@ Try picking it again." : {
+
+    },
+    "Couldn't open the backup" : {
+
+    },
+    "Couldn't open the file" : {
 
     },
     "Couldn't read it aloud" : {
@@ -1520,6 +1535,9 @@
 
     },
     "Couldn't undo" : {
+
+    },
+    "Couldn't undo the import" : {
 
     },
     "Counted by the model as it ran." : {
@@ -1640,6 +1658,9 @@
 
     },
     "Description" : {
+
+    },
+    "Descriptions" : {
 
     },
     "Deselect All" : {
@@ -1935,6 +1956,9 @@
 
     },
     "Export as Markdown…" : {
+
+    },
+    "Export your tasks, import a file, or bring back a daily backup." : {
 
     },
     "Face ID" : {
@@ -2235,6 +2259,9 @@
 
     },
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
+
+    },
+    "It carries the instructions of your skill %@. Paste it into any chat assistant, then copy its whole reply and choose Paste Plan Reply here to review it." : {
 
     },
     "It changed again since, here or on another device, and redoing would lose that change. Open it to make the change again by hand." : {
@@ -2546,6 +2573,9 @@
     "Listening…" : {
 
     },
+    "Listing tasks keeps the assistant from planning them again, but copies their titles out of Lifr, and their descriptions when that's on." : {
+
+    },
     "Live Activities are off for Lifr. Turn them on in Settings › Lifr, then try again." : {
 
     },
@@ -2604,6 +2634,9 @@
 
     },
     "Make a Plan Prompt" : {
+
+    },
+    "Make a prompt to plan with another chat assistant." : {
 
     },
     "Make changes" : {
@@ -2758,6 +2791,9 @@
 
     },
     "Move between tasks" : {
+
+    },
+    "Move house by March" : {
 
     },
     "Move to" : {
@@ -3229,6 +3265,9 @@
     "Open Task in New Window" : {
 
     },
+    "Open Tasks Only" : {
+
+    },
     "Open a List" : {
 
     },
@@ -3251,6 +3290,9 @@
 
     },
     "Opens Quick Add in Lifr." : {
+
+    },
+    "Opens a new Lifr chat with the plan in another chat assistant's reply on its draft card. Review it there, then tap Add." : {
 
     },
     "Opens a task in Lifr." : {
@@ -3300,6 +3342,9 @@
 
     },
     "Paste Plan Reply" : {
+
+    },
+    "Paste it into any chat assistant, then copy its whole reply and choose Paste Plan Reply here to review it." : {
 
     },
     "Pause" : {
@@ -3354,6 +3399,12 @@
 
     },
     "Plan new tasks, Projects and Avenues." : {
+
+    },
+    "Plan with Another Assistant" : {
+
+    },
+    "Plan with Another Assistant…" : {
 
     },
     "Plus" : {
@@ -3608,6 +3659,9 @@
     "Replace the Draft?" : {
 
     },
+    "Reply" : {
+
+    },
     "Replying…" : {
 
     },
@@ -3722,6 +3776,9 @@
 
     },
     "Review Changes…" : {
+
+    },
+    "Review a Plan" : {
 
     },
     "Review the plan in another assistant's reply, copied to the clipboard." : {
@@ -3880,6 +3937,9 @@
 
     },
     "Share List" : {
+
+    },
+    "Share Prompt…" : {
 
     },
     "Share the Details" : {
@@ -4197,6 +4257,9 @@
     "Tasks" : {
 
     },
+    "Tasks Listed" : {
+
+    },
     "Tasks are deleted 30 days after they're moved to the trash." : {
 
     },
@@ -4231,6 +4294,9 @@
 
     },
     "That photo is no longer in your library, or access to it was turned off. Pick another." : {
+
+    },
+    "That reply is empty or too long to be one plan. Copy only the assistant's reply, then try again." : {
 
     },
     "That task isn't in Lifr" : {
@@ -4323,6 +4389,9 @@
 
     },
     "The pasted plan takes the place of the draft on the card, which isn't added yet." : {
+
+    },
+    "The prompt names your Avenues, Projects and labels only." : {
 
     },
     "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {
@@ -4725,6 +4794,9 @@
     "What the assistant does while this skill is attached." : {
 
     },
+    "What the other assistant plans. Leave it empty to say it there instead." : {
+
+    },
     "What this widget showed was archived, finished or deleted. Edit the widget to pick another." : {
 
     },
@@ -4741,6 +4813,9 @@
 
     },
     "What's overdue?" : {
+
+    },
+    "What's the assistant's reply?" : {
 
     },
     "What's the comment?" : {
@@ -4930,6 +5005,9 @@
     "^[%lld task](inflect: true) today" : {
 
     },
+    "^[%lld task](inflect: true) will be added already closed, as Done or Won't Do." : {
+
+    },
     "^[%lld week](inflect: true) after closing" : {
 
     },
@@ -4988,6 +5066,12 @@
 
     },
     "is in an Avenue that's neither here nor in the file" : {
+
+    },
+    "it has no columns" : {
+
+    },
+    "it isn't text" : {
 
     },
     "micro-batch %lld" : {

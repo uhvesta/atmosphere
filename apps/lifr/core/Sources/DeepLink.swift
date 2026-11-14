@@ -11,6 +11,9 @@ import Foundation
 /// - `lifr://filter/<id>` shows a saved filter's tasks.
 /// - `lifr://calendar/2026-11-09` shows that day in the calendar.
 /// - `lifr://add?title=Buy%20milk` opens Quick Add, with the title if given.
+/// - `lifr://plan?text=…` opens a new conversation with the plan in another
+///   assistant's reply on its draft card, to review before adding. Nothing
+///   is added until the person taps Add.
 package enum DeepLink: Hashable, Sendable {
     case task(UUID, picksStatus: Bool)
     case today
@@ -20,6 +23,7 @@ package enum DeepLink: Hashable, Sendable {
     case filter(UUID)
     case calendar(CalendarDate)
     case add(title: String?)
+    case plan(String)
 
     package static let scheme = "lifr"
 
@@ -27,6 +31,19 @@ package enum DeepLink: Hashable, Sendable {
     /// `userInfo` under `handoffKey`.
     package static let handoffType = "lifr.open-task"
     package static let handoffKey = "link"
+
+    /// The most characters a plan link carries, well past any plan a reply
+    /// holds.
+    static let planLimit = 200_000
+
+    /// A link to review `text`, or nil when it's empty or longer than
+    /// `planLimit`.
+    package init?(plan text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= Self.planLimit else {
+            return nil
+        }
+        self = .plan(text)
+    }
 
     /// The link `url` names, or nil when it isn't a Lifr link or names
     /// nothing Lifr has.
@@ -59,6 +76,9 @@ package enum DeepLink: Hashable, Sendable {
         case ("add", 0):
             let title = items.first { $0.name == "title" }?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
             self = .add(title: title?.isEmpty == false ? title : nil)
+        case ("plan", 0):
+            guard let text = items.first(where: { $0.name == "text" })?.value else { return nil }
+            self.init(plan: text)
         default:
             return nil
         }
@@ -92,6 +112,9 @@ package enum DeepLink: Hashable, Sendable {
         case .add(let title):
             components.host = "add"
             if let title { components.queryItems = [URLQueryItem(name: "title", value: title)] }
+        case .plan(let text):
+            components.host = "plan"
+            components.queryItems = [URLQueryItem(name: "text", value: text)]
         }
         return components.url
     }

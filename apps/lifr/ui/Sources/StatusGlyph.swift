@@ -13,22 +13,12 @@ package struct StatusGlyph: View {
     }
 
     package var body: some View {
-        Image(systemName: symbol)
+        Image(systemName: status.symbol)
             .font(font)
             .foregroundStyle(color)
             .contentTransition(.symbolEffect(.replace))
             .animation(.default, value: status)
             .accessibilityHidden(true)
-    }
-
-    private var symbol: String {
-        switch status {
-        case .todo: "circle"
-        case .inProgress: "circle.lefthalf.filled"
-        case .procrastinated: "hourglass.circle"
-        case .done: "checkmark.circle.fill"
-        case .wontDo: "xmark.circle"
-        }
     }
 
     private var color: Color {
@@ -38,6 +28,19 @@ package struct StatusGlyph: View {
         case .procrastinated: .orange
         case .done: .green
         case .wontDo: .gray
+        }
+    }
+}
+
+extension TaskStatus {
+    /// The symbol `StatusGlyph` shows.
+    package var symbol: String {
+        switch self {
+        case .todo: "circle"
+        case .inProgress: "circle.lefthalf.filled"
+        case .procrastinated: "hourglass.circle"
+        case .done: "checkmark.circle.fill"
+        case .wontDo: "xmark.circle"
         }
     }
 }

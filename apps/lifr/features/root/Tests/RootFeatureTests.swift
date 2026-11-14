@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAPI
+import LifrAssistantClient
 import LifrAvenue
 import LifrBackupClient
 import LifrCore
@@ -1832,6 +1833,26 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAPlanLinkOpensANewChatWithThePlanOnItsDraftCardAndAddsNothing() async throws {
+        _ = health
+        let store = makeStore(.phone)
+        store.dependencies.conversations = .inMemory()
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        let before = try XCTUnwrap(store.state.workspace).tasks
+
+        let link = try XCTUnwrap(DeepLink(plan: "[[task]]\ntitle = \"Book a physio\"\nin = \"HEALTH\"\n"))
+        await store.send(.urlOpened(try XCTUnwrap(link.url)))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.tab, .conversations)
+        let id = try XCTUnwrap(store.state.conversations.openID)
+        let draft = try XCTUnwrap(store.state.conversations.chats[id: id]?.conversation.draft)
+        XCTAssertEqual(draft.tasks.map(\.title), ["Book a physio"])
+        XCTAssertEqual(store.state.workspace?.tasks, before)
+        await task.cancel()
+    }
+
     func testALinkBeforeTheRecordsLoadIsFollowedOnceTheyDo() async throws {
         let stretch = records.task("Stretch", in: health, due: 3)
         let store = makeStore(.phone)
@@ -2000,12 +2021,16 @@ final class RootFeatureTests: XCTestCase {
             .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id), .project(id),
             .filter(id),
             .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
+            .plan("[[task]]\ntitle = \"Book a physio & a massage?\"\nin = \"HEALTH\"\n"),
         ]
         for link in links {
             XCTAssertEqual(try XCTUnwrap(link.url).absoluteString.hasPrefix("lifr://"), true)
             XCTAssertEqual(DeepLink(try XCTUnwrap(link.url)), link)
         }
-        for bad in ["lifr://task/not-an-id", "lifr://calendar/9-11-2026", "lifr://nowhere", "https://lifr.app/today"] {
+        for bad in [
+            "lifr://task/not-an-id", "lifr://calendar/9-11-2026", "lifr://nowhere", "https://lifr.app/today",
+            "lifr://plan?text=%20%0A", "lifr://plan",
+        ] {
             XCTAssertNil(DeepLink(try XCTUnwrap(URL(string: bad))), bad)
         }
     }
@@ -2299,6 +2324,30 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(article.dueDate, try CalendarDate("2026-11-20"))
         XCTAssertEqual(tasks.first { $0.title == "Gift idea" }?.avenueID, Avenue.inboxID)
         XCTAssertNil(store.state.notice)
+    }
+
+    func testAPlanSharedFromAnotherAssistantOpensForReviewInsteadOfBecomingATask() async throws {
+        _ = health
+        let reply = "Here you go:\n\n```toml\n[[task]]\ntitle = \"Book a physio\"\nin = \"HEALTH\"\n```\n"
+        let shared = [
+            SharedTask(id: UUID(), title: "Here you go:", details: reply, avenueID: nil, due: nil, sharedAt: now)
+        ]
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        store.dependencies.glance = GlanceClient.inMemory(shared: shared).client
+        store.dependencies.conversations = .inMemory()
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.skipReceivedActions(strict: false)
+
+        let tasks = try await client.load().tasks.values
+        XCTAssertFalse(tasks.contains { $0.title == "Here you go:" })
+        XCTAssertEqual(store.state.tab, .conversations)
+        let id = try XCTUnwrap(store.state.conversations.openID)
+        XCTAssertEqual(
+            store.state.conversations.chats[id: id]?.conversation.draft?.tasks.map(\.title), ["Book a physio"])
+        await task.cancel()
     }
 
     func testComingToTheFrontSyncs() async {

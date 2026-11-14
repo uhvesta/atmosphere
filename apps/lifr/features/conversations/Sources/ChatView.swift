@@ -64,6 +64,10 @@ package struct ChatView: View {
         .sheet(item: $store.scope(state: \.model, action: \.model)) { store in
             ChatModelView(store: store)
         }
+        .sheet(item: $store.scope(state: \.export, action: \.export)) { store in
+            PlanExportView(store: store)
+                .sheetLayout(height: 620)
+        }
         .sheet(isPresented: $store.editsDraft) {
             if let draft = store.conversation.draft {
                 NavigationStack {
@@ -97,6 +101,10 @@ package struct ChatView: View {
         .chatTitle(store.conversation.title, subtitle: subtitle)
         .toolbarTitleMenu {
             Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
+            Button("Plan with Another Assistant…", systemImage: "square.and.arrow.up") {
+                store.send(.commandChosen(.export))
+            }
+            Button("Paste Plan Reply", systemImage: "doc.on.clipboard") { store.send(.commandChosen(.paste)) }
         }
         #if os(iOS)
             .toolbar {

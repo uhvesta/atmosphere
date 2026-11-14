@@ -47,6 +47,16 @@ func planRepairTests() -> [TestCase] {
             if case .plan(_, .unknownAvenue(key: "WEALTH", _))? = problem { refused = true }
             try expect(refused, "WEALTH wasn't refused: \(String(describing: problem))")
         },
+        TestCase("given an Avenue's name cut short, when repaired, then it's that Avenue") {
+            let fixture = try Fixture()
+            let plan = Plan(
+                projects: [.init(name: "Strength", avenue: "Heal", tasks: [.init(title: "Squats")])],
+                tasks: [.init(title: "Stretch", place: "heal/Half marathon"), .init(title: "Nap", place: "He")])
+            let repaired = plan.repaired(for: fixture.workspace)
+            try expectEqual(repaired.projects.map(\.avenue), ["HEALTH"])
+            // Two letters could start too many names to be sure.
+            try expectEqual(repaired.tasks.map(\.place), ["HEALTH/Half marathon", "He"])
+        },
         TestCase("given tasks placed in a Project their Avenue lacks, when repaired, then the plan adds it") {
             let fixture = try Fixture()
             let plan = Plan(tasks: [

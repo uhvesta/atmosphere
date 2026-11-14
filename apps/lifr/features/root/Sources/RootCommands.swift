@@ -228,7 +228,7 @@ package struct RootCommands: Commands {
                 .disabled(!store.state.canMoveCursorRow)
         }
         CommandMenu("Assistant") {
-            Button("Export Plan Prompt") { store.send(.chatCommandChosen(.export)) }
+            Button("Plan with Another Assistant…") { store.send(.chatCommandChosen(.export)) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(store.state.openChatID == nil)
             Button("Paste Plan Reply") { store.send(.chatCommandChosen(.paste)) }

@@ -33,7 +33,7 @@ package enum ChatCommand: String, CaseIterable, Equatable, Sendable {
         case .model: String(localized: "Pick the model, thinking and context window.")
         case .skills: String(localized: "Turn skills on or off, or write your own.")
         case .new: String(localized: "Start a new conversation.")
-        case .export: String(localized: "Copy a prompt to plan with another chat assistant.")
+        case .export: String(localized: "Make a prompt to plan with another chat assistant.")
         case .paste: String(localized: "Review the plan in another assistant's reply, copied to the clipboard.")
         }
     }

@@ -56,6 +56,22 @@ func planPromptTests() -> [TestCase] {
             try expect(text.contains("HEALTH: Book a checkup"))
             try expect(!text.contains("Quarterly review"))
         },
+        TestCase("given one Project in scope, then the prompt lists its tasks only") {
+            let fixture = try Fixture()
+            let marathon = try fixture.workspace.projects.values.first { $0.name == "Half marathon" }.unwrap()
+            let text = PlanPrompt.make(
+                goal: "", scope: .project(marathon.id), workspace: fixture.workspace,
+                today: try CalendarDate("2026-11-03"), timeZone: .gmt)
+            try expect(text.contains("HEALTH: Training plan"))
+            try expect(!text.contains("Book a checkup"))
+        },
+        TestCase("given descriptions asked for, then the prompt lists each task's description") {
+            let fixture = try Fixture()
+            let text = PlanPrompt.make(
+                goal: "", scope: .everything, listing: PlanPrompt.Listing(descriptions: true),
+                workspace: fixture.workspace, today: try CalendarDate("2026-11-03"), timeZone: .gmt)
+            try expect(text.contains("Ask about knee pain."))
+        },
         TestCase("given an Avenue hidden from assistants in scope, then the prompt lists none of its tasks") {
             let fixture = try Fixture()
             let finance = try fixture.workspace.avenues.values.first { $0.key.rawValue == "FINANCE" }.unwrap()
