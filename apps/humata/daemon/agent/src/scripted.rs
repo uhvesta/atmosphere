@@ -809,6 +809,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_message_sent_apart_waits_as_its_own_and_the_persons_next_queues_behind_it() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        fixture
+            .agent
+            .send(&id, "from an agent".into(), SendMode::EnqueueApart)
+            .await
+            .expect("queued");
+        fixture
+            .agent
+            .send(&id, "third".into(), SendMode::Enqueue)
+            .await
+            .expect("queued");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, ended_turns(4)).await;
+        assert_eq!(
+            user_messages(&events),
+            vec!["first", "second", "from an agent", "third"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_is_working_from_the_moment_it_is_sent_to() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+
+        // Before the turn has had a chance to record anything.
+        let summary = fixture.agent.summary(&id).await.expect("summed up");
+        assert_eq!(summary.state(), SessionState::Working);
+
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        let summary = fixture.agent.summary(&id).await.expect("summed up");
+        assert_eq!(summary.state(), SessionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn a_rewind_to_what_isnt_a_rewind_point_stops_no_turn_and_drops_no_queued_message() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let id = fixture.start().await;
+        let request = queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        let history = fixture.agent.history(&id).await.expect("history");
+        let started = history
+            .iter()
+            .find(|event| event.kind == EventKind::TurnStarted)
+            .expect("the turn started");
+
+        let refused = fixture.agent.rewind(&id, &started.id, false).await;
+
+        assert!(
+            matches!(refused, Err(AgentError::NotARewindPoint { .. })),
+            "{refused:?}"
+        );
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("the turn still waits for its answer");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert_eq!(user_messages(&events), vec!["first", "second"]);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.kind == EventKind::TurnEnded { aborted: true }),
+            "{events:#?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_notice_sent_again_while_it_waits_starts_one_turn() {
         let fixture = fixture(vec![rule("", vec![write_file("a.txt", "one")])]);
         let id = fixture.start().await;
@@ -1576,6 +1660,15 @@ mod tests {
 
         /// One turn per rule; turn `n` writes `a.txt` with `n`.
         fn fixture() -> Fixture {
+            let rules = ["one", "two", "three"]
+                .into_iter()
+                .map(|turn| rule(turn, vec![write_file("a.txt", turn)]))
+                .collect();
+            fixture_with(rules)
+        }
+
+        /// Sessions in a git repository whose agent plays `rules`.
+        fn fixture_with(rules: Vec<Rule>) -> Fixture {
             let dir = tempfile::tempdir().expect("a temporary folder");
             let path = dir.path().join("app");
             std::fs::create_dir_all(&path).expect("made the folder");
@@ -1597,10 +1690,6 @@ mod tests {
                     .expect("git runs");
                 assert!(status.success(), "git {arguments:?}");
             }
-            let rules = ["one", "two", "three"]
-                .into_iter()
-                .map(|turn| rule(turn, vec![write_file("a.txt", turn)]))
-                .collect();
             let agent = LocalAgent::open(
                 dir.path().join("state"),
                 ScriptedRunner::new(Script { rules }),
@@ -1770,6 +1859,56 @@ mod tests {
                 fixture.agent.rewind(&id, &reply.id, false).await,
                 Err(AgentError::NotARewindPoint { .. })
             ));
+        }
+
+        #[tokio::test]
+        async fn a_files_rewind_of_a_fork_in_its_parents_copy_is_refused_and_stops_and_drops_nothing()
+         {
+            let fixture = fixture_with(vec![
+                rule("one", vec![write_file("a.txt", "one")]),
+                rule(
+                    "hold",
+                    vec![Step::WaitFor {
+                        path: "go.txt".into(),
+                    }],
+                ),
+                rule("", vec![say("done")]),
+            ]);
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let options = ForkOptions {
+                chat_only: true,
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            for text in ["hold", "next"] {
+                fixture
+                    .agent
+                    .send(&fork.id, text.into(), SendMode::Enqueue)
+                    .await
+                    .expect("sent");
+            }
+            let events = wait_for(&fixture.agent, &fork.id, |events| {
+                messages(events).iter().any(|text| text == "hold")
+            })
+            .await;
+            let held = user_message(&events, "hold");
+
+            let refused = fixture.agent.rewind(&fork.id, &held.id, true).await;
+
+            assert!(
+                matches!(refused, Err(AgentError::SharedFiles { .. })),
+                "{refused:?}"
+            );
+            std::fs::write(fork.working_directory.join("go.txt"), "").expect("wrote");
+            let events = wait_for(&fixture.agent, &fork.id, idle_turns(2)).await;
+            assert_eq!(messages(&events), ["one", "hold", "next"]);
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| event.kind == EventKind::TurnEnded { aborted: true }),
+                "{events:#?}"
+            );
         }
 
         #[tokio::test]

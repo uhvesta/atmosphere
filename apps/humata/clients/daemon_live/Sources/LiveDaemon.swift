@@ -288,6 +288,16 @@ extension DaemonClient {
                             + "can change files. Archive that fork, update Humata on the host, then start the "
                             + "side chat again.")
                 }
+                // One from before empty chats makes a fork with the whole
+                // conversation: it mustn't pass for a chat that starts anew.
+                if case .empty = kind, child.turns > 0 {
+                    throw DaemonError.refused(
+                        .invalidRequest,
+                        message: "The session's host runs an older Humata that can't start a chat with none of "
+                            + "this one in it, so what it made, “\(child.name)” in the sidebar, is a fork with the "
+                            + "whole conversation, on this session's copy of the code. Archive that fork, update "
+                            + "Humata on the host, then start the chat again.")
+                }
                 return child
             },
             startWork: { session, item in

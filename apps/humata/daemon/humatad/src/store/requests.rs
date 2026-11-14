@@ -112,14 +112,18 @@ impl Store {
         Ok(())
     }
 
-    /// How many sessions `session`'s agent asked to start that still wait
-    /// for the person.
-    pub fn open_starts(&self, session: &str) -> Result<u32, StoreError> {
+    /// How many requests of `kind` from `session`'s agent still wait for
+    /// the person.
+    pub fn open_of_kind(
+        &self,
+        session: &str,
+        kind: pb::AgentRequestKind,
+    ) -> Result<u32, StoreError> {
         self.lock()
             .query_row(
                 "SELECT count(*) FROM agent_requests
                  WHERE session_id = ?1 AND kind = ?2 AND answered_unix_ms IS NULL",
-                params![session, i32::from(pb::AgentRequestKind::StartSession)],
+                params![session, i32::from(kind)],
                 |row| row.get(0),
             )
             .map_err(self.failed())

@@ -228,8 +228,11 @@ impl ClaudeRunner {
                 "env": env,
             }}});
             command.args(["--mcp-config", &config.to_string()]);
-            // Its tools change only Humata's board and review threads, which
-            // the person sees and can revert, so they aren't asked about.
+            // Its tools change Humata's board and review threads, which the
+            // person sees and can revert, so they aren't asked about. They
+            // also start sessions and write to others, as far as the
+            // project's Agent Sessions setting allows: the daemon checks
+            // that on each call, and refuses a read-only session there.
             command.args(["--allowedTools", "mcp__humata"]);
         }
         // Over the person's own settings, for this session alone.

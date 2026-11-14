@@ -231,8 +231,11 @@ struct Chat: Equatable, Sendable {
 
     /// Whether a turn has started and not yet ended.
     private(set) var working = false
-    /// The person's last message.
+    /// The last message sent to the session, whoever sent it.
     private(set) var lastMessage: String?
+    /// Whether that message was the person's own: not another session's
+    /// agent's, and not a notice of Humata's.
+    private(set) var lastMessageOwn = false
     /// The names of the images sent with it.
     private(set) var lastImages: [String] = []
     /// Whether the last turn failed and nothing has started since.
@@ -255,6 +258,12 @@ struct Chat: Equatable, Sendable {
     /// The tool calls proposing a task or a spec edit.
     private(set) var proposals: Set<String> = []
 
+    /// Whether the message `text` is the person's own, going by how the
+    /// daemon starts one that isn't.
+    static func isPersons(_ text: String) -> Bool {
+        AgentSender(text) == nil && HumataNotice(text) == nil
+    }
+
     /// Keeps what the events add up to, as each comes, so nothing reads
     /// the whole history again for a new event.
     private mutating func tally(_ event: SessionEvent) {
@@ -271,6 +280,7 @@ struct Chat: Equatable, Sendable {
             working = false
         case .userMessage(let text, let images):
             lastMessage = text
+            lastMessageOwn = Self.isPersons(text)
             lastImages = images
             lastTurnFailed = false
             compacting = false
@@ -352,6 +362,9 @@ struct Chat: Equatable, Sendable {
             settleRewind()
             if let sender = AgentSender(text) {
                 items.append(.fromSession(id: event.id, sender))
+            } else if let notice = HumataNotice(text) {
+                // Humata's own word, such as that a request was allowed.
+                items.append(.notice(id: event.id, text: notice.text))
             } else {
                 items.append(.person(id: event.id, text: text, images: images))
             }

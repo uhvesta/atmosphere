@@ -123,4 +123,33 @@ final class FoldedHistoryTests: XCTestCase {
         XCTAssertEqual(ahead.items, stepped.items)
         XCTAssertEqual(ahead, stepped)
     }
+
+    func testAChatRestoredFromItsHistoryHasItsThumbnailsAndReadsNoneAgain() async {
+        let picture = Data([1, 2, 3])
+        var left = state()
+        left.receive([
+            event("e1", .userMessage("what is this", images: ["a.png"])), event("e2", .turnStarted),
+            event("e3", .turnEnded(aborted: false)),
+        ])
+        left.historyLoaded = true
+        left.thumbnails["a.png"] = picture
+        let plain = left.history
+        left.thumbnails["b.png"] = Data(repeating: 0, count: 4096)
+        let kept = left.history
+        XCTAssertNotNil(kept)
+        XCTAssertGreaterThanOrEqual((kept?.bytes ?? 0) - (plain?.bytes ?? 0), 4096, "its thumbnails are counted")
+
+        var again = state()
+        if let kept { again.restore(kept) }
+        XCTAssertEqual(again.thumbnails["a.png"], picture)
+
+        // No daemon behind it: reading an image again would fail the test.
+        let store = TestStore(initialState: again) {
+            SessionFeature()
+        }
+        store.exhaustivity = .off
+        await store.send(.thumbnailNeeded("a.png"))
+        await store.finish()
+        XCTAssertEqual(store.state.thumbnails["a.png"], picture)
+    }
 }

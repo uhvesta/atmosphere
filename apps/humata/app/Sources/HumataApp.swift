@@ -91,36 +91,52 @@ struct HumataApp: App {
         }
     }
 
-    /// What can be done to the open session, so it's found in the menu bar
-    /// and has a shortcut; each is greyed out when it can't be done now.
+    /// What can be done to the session of the column the person is in, so
+    /// it's found in the menu bar and has a shortcut; each is greyed out
+    /// when it can't be done now, and says so when it acts on the side chat.
     @ViewBuilder private var sessionCommands: some View {
-        let session = store.session
+        let session = store.commandSession
+        let side = store.focusedColumn == .side && store.side != nil
         let live = session.map { !$0.session.archived } ?? false
-        Button("Stop the Turn") { send(.abortTapped) }
+        Button(side ? "Stop the Side Chat’s Turn" : "Stop the Turn") { send(.abortTapped) }
             .keyboardShortcut(".", modifiers: .command)
             .disabled(session?.canStop != true)
-        Button("Try Again") { send(.retryTapped) }
+        Button(side ? "Try Again in the Side Chat" : "Try Again") { send(.retryTapped) }
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(
                 !live || session?.retryableFailure == nil || session?.isWorking == true
                     || session?.retrying == true)
         Divider()
-        Button("Fork With the Code") { send(.forkTapped(before: nil, chatOnly: false)) }
-            .keyboardShortcut("f", modifiers: [.command, .option])
-            .disabled(session == nil || session?.forking == true)
-        Button("Fork the Chat Only") { send(.forkTapped(before: nil, chatOnly: true)) }
-            .disabled(session == nil || session?.forking == true)
-        Button("New Chat Here") { send(.childTapped(.empty(ownCopy: false), message: "")) }
-            .keyboardShortcut("n", modifiers: [.command, .option])
-            .disabled(!live || session?.forking == true)
-        Button("New Chat Here With Its Own Copy") { send(.childTapped(.empty(ownCopy: true), message: "")) }
-            .disabled(!live || session?.forking == true)
-        // Greyed out until the session's host has said it holds a side
-        // chat to reading only, as when the / list was opened.
-        Button("Side Chat") { send(.childTapped(.side, message: "")) }
-            .keyboardShortcut("s", modifiers: [.command, .option])
-            .disabled(!live || session?.forking == true || session?.chatCommands?.side != true)
+        Button(side ? "Fork the Side Chat With the Code" : "Fork With the Code") {
+            send(.forkTapped(before: nil, chatOnly: false))
+        }
+        .keyboardShortcut("f", modifiers: [.command, .option])
+        .disabled(session == nil || session?.forking == true)
+        Button(side ? "Fork the Side Chat’s Chat Only" : "Fork the Chat Only") {
+            send(.forkTapped(before: nil, chatOnly: true))
+        }
+        .disabled(session == nil || session?.forking == true)
+        Button(side ? "New Chat Under the Side Chat" : "New Chat Here") {
+            send(.childTapped(.empty(ownCopy: false), message: ""))
+        }
+        .keyboardShortcut("n", modifiers: [.command, .option])
+        .disabled(!live || session?.forking == true)
+        Button(side ? "New Chat Under the Side Chat With Its Own Copy" : "New Chat Here With Its Own Copy") {
+            send(.childTapped(.empty(ownCopy: true), message: ""))
+        }
+        .disabled(!live || session?.forking == true)
+        // Greyed out unless the session's host has said it holds a side
+        // chat to reading only.
+        Button(side ? "Side Chat of the Side Chat, in Its Place" : "Side Chat") {
+            send(.childTapped(.side, message: ""))
+        }
+        .keyboardShortcut("s", modifiers: [.command, .option])
+        .disabled(!live || session?.forking == true || session?.chatCommands?.side != true)
+        Button("Close Side Chat") { store.send(.side(.dismiss)) }
+            .keyboardShortcut("w", modifiers: [.command, .option])
+            .disabled(store.side == nil)
         Divider()
+        // A side chat has no code of its own to land or update.
         Button("Land…") { send(.landTapped) }
             .disabled(session?.ships != true || session?.isWorking == true)
         Button("Update from the Base Branch") { send(.updateFromBaseTapped) }
@@ -129,6 +145,6 @@ struct HumataApp: App {
     }
 
     private func send(_ action: SessionFeature.Action) {
-        store.send(.session(.presented(action)))
+        store.send(.sessionCommand(action))
     }
 }

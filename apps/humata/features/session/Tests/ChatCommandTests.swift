@@ -203,12 +203,92 @@ final class ChatCommandTests: XCTestCase {
     func testRewindWithNothingToRewindToSaysSoInsteadOfOpeningAnEmptyPicker() async throws {
         let daemon = InMemoryDaemon()
         let store = store(daemon, try await started(daemon))
+        let watching = await store.send(.task)
+        await store.receive(\.receivedAll, timeout: .seconds(1))
+        XCTAssertTrue(store.state.historyLoaded)
 
         await store.send(\.binding.draft, "/rewind")
         await store.send(.sendTapped(.enqueue))
         await store.receive(\.slashPicked)
         XCTAssertNil(store.state.rewindPicker)
         XCTAssertNotNil(store.state.alert)
+        XCTAssertEqual(store.state.draft, "")
+        await watching.cancel()
+    }
+
+    func testRewindWhileTheChatIsStillOpeningStaysInTheBoxUntilTheChatShows() async {
+        let store = fed("rewind-opening")
+        XCTAssertFalse(store.state.historyLoaded)
+
+        await store.send(\.binding.draft, "/rewind one")
+        await store.send(.sendTapped(.enqueue))
+        XCTAssertNil(store.state.rewindPicker)
+        XCTAssertNotNil(store.state.alert, "it says the chat isn't here yet")
+        XCTAssertEqual(store.state.draft, "/rewind one")
+
+        await store.send(.alert(.dismiss))
+        await store.send(.receivedAll([event("e1", .userMessage("one"))]))
+        await store.send(.sendTapped(.enqueue))
+        XCTAssertEqual(messages(store.state.rewindPicker), ["one"])
+        XCTAssertEqual(store.state.draft, "")
+    }
+
+    func testReturnInTheEmptyBoxUnderThePickerPicksTheHighlightedPoint() async {
+        let store = fed("rewind-return")
+        await store.send(
+            .receivedAll([
+                event("e1", .userMessage("one")), event("e2", .turnStarted), event("e3", .turnEnded(aborted: false)),
+                event("e4", .userMessage("two")), event("e5", .turnStarted), event("e6", .turnEnded(aborted: false)),
+            ]))
+        await store.send(\.binding.draft, "/rewind ")
+        await store.send(.sendTapped(.enqueue))
+        XCTAssertEqual(messages(store.state.rewindPicker), ["two", "one"])
+        await store.send(.rewindPickerMoved(by: 1))
+
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.rewindPickerPicked)
+        await store.receive(\.rewindTapped)
+        XCTAssertNil(store.state.rewindPicker)
+        XCTAssertEqual(rewindChoices(store), [.chat("e1")], "the one the arrows moved to")
+    }
+
+    /// What the rewind dialog showing offers, but Cancel.
+    private func rewindChoices(_ store: TestStoreOf<SessionFeature>) -> [SessionFeature.Action.RewindChoice] {
+        (store.state.rewindDialog?.buttons ?? []).compactMap(\.action.action)
+    }
+
+    func testRewindingFilesIsOfferedOnlyToASessionWithItsOwnCopyOfTheCode() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject(
+            "App", [Repository(name: "app", path: "/code/app")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "first", approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let shared = try await daemon.client.fork(session.id, nil, "chat only", true)
+        let own = try await daemon.client.fork(session.id, nil, "with the code", false)
+        let side = try await daemon.client.newChild(session.id, "side", .side)
+        XCTAssertTrue(shared.sharesCode)
+        XCTAssertFalse(own.sharesCode)
+
+        func offered(_ session: Session) async throws -> [SessionFeature.Action.RewindChoice] {
+            let store = store(daemon, session)
+            let watching = await store.send(.task)
+            await store.receive(\.receivedAll, timeout: .seconds(1))
+            let message = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("one") })
+            await store.send(.rewindTapped(message.id))
+            await watching.cancel()
+            return rewindChoices(store)
+        }
+
+        let one = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("one") }).id
+        let rewinds = try await [offered(session), offered(own), offered(shared), offered(side)]
+        XCTAssertEqual(rewinds[0], [.chat(one), .chatAndFiles(one)])
+        XCTAssertEqual(rewinds[1].count, 2, "a fork with its own copy rewinds its files too")
+        XCTAssertEqual(rewinds[2].count, 1, "a chat-only fork works in a copy that isn't its own")
+        XCTAssertEqual(rewinds[3].count, 1, "a side chat only reads")
+        for choices in rewinds[1...] {
+            guard case .chat? = choices.first else { return XCTFail("The chat alone isn't offered first") }
+        }
     }
 
     func testThePickerListsCompactionsAndLeavesOutASubagentsEvents() {
@@ -564,5 +644,163 @@ final class ChatCommandTests: XCTestCase {
         XCTAssertFalse(store.state.forking)
         XCTAssertEqual(store.state.draft, "/side why is it slow?")
         XCTAssertEqual(daemon.sessions.count, 1)
+    }
+
+    func testSideSentBeforeTheHostHasSaidWhatItTakesOpensTheSideChatOnceItHas() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let before = daemon.history(session.id)
+        let store = store(daemon, session)
+        XCTAssertNil(store.state.chatCommands, "the host hasn't been asked yet")
+
+        // Pasted whole, so the / list never opened and asked.
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(.sendTapped(.enqueue))
+        var opened: Session?
+        await store.receive(
+            { action in
+                guard case .delegate(.openSide(let side)) = action else { return false }
+                opened = side
+                return true
+            }, timeout: .seconds(1))
+        let side = try XCTUnwrap(opened)
+        XCTAssertTrue(side.readOnly)
+        XCTAssertFalse(store.state.holdingSend)
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertTrue(daemon.history(side.id).contains { $0.kind == .userMessage("why is it slow?") })
+        XCTAssertEqual(daemon.history(session.id), before, "nothing went to the session itself")
+    }
+
+    func testACommandHeldForTheHostsAnswerGoesToTheAgentAsTypedWhenTheHostDoesntTakeIt() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setChatCommands(ChatCommands())
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/compact the notes")
+        await store.send(.sendTapped(.enqueue))
+        var sent: String?
+        await store.receive(
+            { action in
+                guard case .delegate(.send(let outgoing)) = action else { return false }
+                sent = outgoing.text
+                return true
+            }, timeout: .seconds(1))
+        XCTAssertEqual(sent, "/compact the notes")
+    }
+
+    func testSideChatIsOfferedOnceTheChatOpensAndAHostThatCantSayLaterKeepsWhatItSaid() async throws {
+        let daemon = skilled("release")
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+
+        let watching = await store.send(.task)
+        await store.receive(\.commandsLoaded, timeout: .seconds(1))
+        XCTAssertEqual(store.state.chatCommands?.side, true, "with nothing typed")
+        XCTAssertEqual(store.state.chatCommands?.compact, true)
+
+        // The host can't be asked the next time the / list looks.
+        daemon.setChatCommands(nil)
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertEqual(store.state.chatCommands?.side, true)
+        XCTAssertTrue(store.state.slashChoices.contains { $0.builtIn == .side })
+        XCTAssertTrue(store.state.slashChoices.contains { $0.builtIn == .compact })
+        await watching.cancel()
+    }
+
+    func testAChatOpenedAgainKnowsItsCommandsAtOnce() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+        let watching = await store.send(.task)
+        await store.receive(\.commandsLoaded, timeout: .seconds(1))
+        await watching.cancel()
+
+        let again = SessionFeature.State(session: session)
+        XCTAssertEqual(again.chatCommands, store.state.chatCommands)
+        XCTAssertNotNil(again.chatCommands)
+    }
+
+    func testASideChatWhoseQuestionCouldntBeSentOpensAndSaysTheQuestionWaitsInItsBox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.send = { _, _, _ in throw DaemonError.disconnected }
+            $0.continuousClock = ImmediateClock()
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_000))
+        }
+        store.exhaustivity = .off
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(.sendTapped(.enqueue))
+        var opened: Session?
+        await store.receive(
+            { action in
+                guard case .delegate(.openSide(let side)) = action else { return false }
+                opened = side
+                return true
+            }, timeout: .seconds(1))
+        let side = try XCTUnwrap(opened)
+        XCTAssertNotNil(store.state.alert, "it says the question didn't reach the side chat")
+        XCTAssertFalse(store.state.forking)
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertFalse(daemon.history(side.id).contains { $0.kind == .userMessage("why is it slow?") })
+        XCTAssertTrue(SessionFeature.State(session: side).draft.contains("why is it slow?"))
+    }
+
+    // MARK: What the agent asks for, answered from the strip
+
+    func testAllowingOrDecliningASessionTheAgentAsksForFromTheStripAnswersTheRequest() async {
+        let store = fed("strip-request")
+        let request = AgentRequest(
+            id: "r1", sessionID: "strip-request", kind: .startSession(name: "Tests"), text: "Write the tests.",
+            created: Date(timeIntervalSince1970: 0))
+        await store.send(\.binding.request, request)
+
+        func answered(_ expected: RequestAnswer) -> (SessionFeature.Action) -> Bool {
+            { action in
+                guard case .delegate(.answerRequest("r1", let answer)) = action else { return false }
+                return answer == expected
+            }
+        }
+        await store.send(.requestAllowed)
+        await store.receive(answered(.approve))
+        await store.send(.requestDeclined)
+        await store.receive(answered(.dismiss))
+    }
+
+    func testAQuestionIsntAllowedOrDeclinedFromTheStrip() async {
+        let store = fed("strip-question")
+        let request = AgentRequest(
+            id: "r1", sessionID: "strip-question", kind: .question, text: "Which one?",
+            created: Date(timeIntervalSince1970: 0))
+        await store.send(\.binding.request, request)
+        await store.send(.requestAllowed)
+        await store.send(.requestDeclined)
+        await store.finish()
+    }
+
+    // MARK: The /rewind picker's search
+
+    func testThePickerFindsAMessageWhateverTheCaseOfItOrOfWhatIsTyped() {
+        let events = [
+            event("e1", .userMessage("Fix the Parser")), event("e2", .userMessage("add tests\nfor the PARSER")),
+            event("e3", .userMessage("ship it")), event("e4", .compacted),
+        ]
+        let points = RewindPoint.points(in: events)
+        XCTAssertEqual(RewindPoint.matching("parser", in: points).map(\.id), ["e2", "e1"])
+        XCTAssertEqual(RewindPoint.matching("PARSER", in: points).map(\.id), ["e2", "e1"])
+        XCTAssertEqual(RewindPoint.matching("Fix", in: points).map(\.id), ["e1"])
+        XCTAssertEqual(RewindPoint.matching("COMPACT", in: points).map(\.id), ["e4"])
+        // Its letters in order alone don't find a message.
+        XCTAssertEqual(RewindPoint.matching("fxp", in: points), [])
+        XCTAssertEqual(RewindPoint.matching("", in: points).map(\.id), ["e4", "e3", "e2", "e1"])
     }
 }

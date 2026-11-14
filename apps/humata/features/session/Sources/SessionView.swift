@@ -128,7 +128,13 @@ package struct SessionView: View {
     private var progress: LocalizedStringKey? {
         if store.rewinding { return "Rewinding…" }
         if store.compactStarting { return "Starting to compact…" }
-        if store.forking { return "Forking…" }
+        if store.forking {
+            switch store.makingChild {
+            case .side?: return "Opening a side chat…"
+            case .empty?: return "Starting the chat…"
+            case nil: return "Forking…"
+            }
+        }
         if store.updating { return "Updating from the base branch…" }
         return nil
     }
@@ -241,7 +247,7 @@ package struct SessionView: View {
                     }
                     .help("An empty chat under this one, in its own copy of the code as it was last saved")
                     // Only once the session's host has said it holds one
-                    // to reading, as when the / list was opened.
+                    // to reading; it's asked as the chat opens.
                     if store.chatCommands?.side == true {
                         Button("Side Chat") { store.send(.childTapped(.side, message: "")) }
                             .help("A read-only chat beside this one, with the chat so far: it can't change files")
@@ -1674,19 +1680,36 @@ private struct WaitingStrip: View {
                     .buttonStyle(.borderedProminent)
             }
         case .startSession(let name):
-            VStack(alignment: .leading, spacing: 2) {
-                Label("Asks to start a session, “\(name)”", systemImage: "plus.bubble")
-                Text("Allow or decline it in the Inbox.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            sessionRequest(
+                Label("Asks to start a session, “\(name)”, with this message", systemImage: "plus.bubble"),
+                text: request.text)
         case .sendMessage(let to, let name):
+            sessionRequest(
+                Label(
+                    "Asks to write this to “\(name.isEmpty ? to : name)”", systemImage: "arrow.left.arrow.right"),
+                text: request.text)
+        }
+    }
+
+    /// A session the agent asks to start, or a message it asks to send:
+    /// what it would say, and Allow or Decline, as the Inbox offers.
+    private func sessionRequest(_ title: some View, text: String) -> some View {
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Label("Asks to write to “\(name.isEmpty ? to : name)”", systemImage: "arrow.left.arrow.right")
-                Text("Allow or decline it in the Inbox.")
+                title
+                // A few lines only, as for a permission: the Inbox shows
+                // it whole.
+                Text(verbatim: text)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Decline") { store.send(.requestDeclined) }
+                .help("Tell the agent it wasn’t allowed; to say why, decline it in the Inbox")
+            Button("Allow") { store.send(.requestAllowed) }
+                .buttonStyle(.borderedProminent)
         }
     }
 
@@ -1706,28 +1729,35 @@ private struct WaitingStrip: View {
                 if answering {
                     ProgressView().controlSize(.small)
                 }
+                // Beside another session, only the column in use takes
+                // the shortcuts, and says so.
+                let shortcuts = store.takesShortcuts
                 Button("Deny") { store.send(.answerPermission(requestID: id, approved: false)) }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcuts ? KeyboardShortcut("d", modifiers: [.command, .shift]) : nil)
                     .disabled(answering)
-                    .help("Deny (⇧⌘D)")
+                    .help(shortcuts ? "Deny (⇧⌘D)" : "Deny")
                 Button("Approve") { store.send(.answerPermission(requestID: id, approved: true)) }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .keyboardShortcut(shortcuts ? KeyboardShortcut("a", modifiers: [.command, .shift]) : nil)
                     .disabled(answering)
-                    .help("Approve (⇧⌘A)")
-                Menu {
-                    let widened: ApprovalMode = kind == .write ? .allowEdits : .allowEverything
-                    Button(kind == .write ? "Allow Edits from Now On" : "Allow Everything from Now On") {
-                        store.send(.approvalModePicked(widened))
+                    .help(shortcuts ? "Approve (⇧⌘A)" : "Approve")
+                // Not in a side chat: what it may do without asking has
+                // no effect there, as it only reads.
+                if !store.session.readOnly {
+                    Menu {
+                        let widened: ApprovalMode = kind == .write ? .allowEdits : .allowEverything
+                        Button(kind == .write ? "Allow Edits from Now On" : "Allow Everything from Now On") {
+                            store.send(.approvalModePicked(widened))
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .accessibilityLabel("More Answers")
                     }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .accessibilityLabel("More Answers")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Stop asking in this session")
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Stop asking in this session")
             }
             if more > 0 {
                 Text("and \(more) more")
@@ -1906,32 +1936,27 @@ private struct SessionComposer: View {
             stop: { store.send(.abortTapped) })
     }
 
-    /// With + for images only when the model can see them.
-    @ViewBuilder private var composer: some View {
-        if store.takesImages {
-            ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {
-                store.send(.sendTapped(.enqueue))
-            } top: {
-                top
-            } attach: {
-                Button("Choose Images…", systemImage: "photo") { choosing = true }
-                // Always on: the clipboard can change while the menu is
-                // closed, so it's read only when picked.
-                Button("Paste Image", systemImage: "doc.on.clipboard") {
-                    if let data = ClipboardImage.image {
-                        store.send(.imagePasted(data))
-                    } else {
-                        store.send(.noImageToPaste)
-                    }
+    /// With + for images only when the model can see them. One composer
+    /// either way, so learning that it can doesn't make the field anew,
+    /// which would drop the caret and lay the box out again.
+    private var composer: some View {
+        ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {
+            store.send(.sendTapped(.enqueue))
+        } top: {
+            top
+        } attach: {
+            Button("Choose Images…", systemImage: "photo") { choosing = true }
+            // Always on: the clipboard can change while the menu is
+            // closed, so it's read only when picked.
+            Button("Paste Image", systemImage: "doc.on.clipboard") {
+                if let data = ClipboardImage.image {
+                    store.send(.imagePasted(data))
+                } else {
+                    store.send(.noImageToPaste)
                 }
             }
-        } else {
-            ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {
-                store.send(.sendTapped(.enqueue))
-            } top: {
-                top
-            }
         }
+        .showingPlus(store.takesImages)
     }
 
     /// What sits over the field: the / list, the message's images and
@@ -1939,6 +1964,16 @@ private struct SessionComposer: View {
     @ViewBuilder private var top: some View {
         if store.slashOpen {
             slash
+        }
+        if store.holdingSend {
+            Label {
+                Text("Asking the session’s host whether its agent takes this command…")
+            } icon: {
+                ProgressView().controlSize(.small)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
         }
         if let picker = store.rewindPicker {
             RewindPoints(
@@ -1969,7 +2004,7 @@ private struct SessionComposer: View {
                     remove: { store.send(.unqueueTapped(queued.id)) })
             }
         }
-        if store.isWorking, !store.isCompacting, store.draft.isEmpty, store.lastMessage != nil {
+        if store.isWorking, !store.isCompacting, store.draft.isEmpty, store.lastMessageOwn {
             HStack {
                 Spacer()
                 Button("Stop and Edit") { store.send(.stopAndEditTapped) }
@@ -1991,10 +2026,11 @@ private struct SessionComposer: View {
                 .foregroundStyle(.secondary)
                 Spacer()
                 if store.images.isEmpty {
+                    let shortcuts = store.takesShortcuts
                     Button("Steer Now") { store.send(.sendTapped(.steer)) }
                         .font(.caption.weight(.semibold))
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .help("Send it to the running turn (⌘↩)")
+                        .keyboardShortcut(shortcuts ? KeyboardShortcut(.return, modifiers: .command) : nil)
+                        .help(shortcuts ? "Send it to the running turn (⌘↩)" : "Send it to the running turn")
                 }
             }
             .padding(.horizontal, 4)
@@ -2062,7 +2098,8 @@ private struct RewindPoints: View {
     private var rows: some View {
         ScrollViewReader { reader in
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                // Only the rows in view are made, of up to a hundred.
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(picker.points) { point in
                         row(point, selected: point.id == selectedID)
                     }
@@ -2088,12 +2125,36 @@ private struct RewindPoints: View {
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 switch point.kind {
-                case .message(let text):
-                    Image(systemName: "text.bubble")
-                        .foregroundStyle(.secondary)
-                    Text(verbatim: Self.firstLine(of: text))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                case .message:
+                    switch point.sender {
+                    case .person:
+                        Image(systemName: "text.bubble")
+                            .foregroundStyle(.secondary)
+                    case .session(let name):
+                        Image(systemName: "arrow.left.arrow.right")
+                            .foregroundStyle(.secondary)
+                            .help("Sent by that session’s agent, not by you")
+                        Text("From \(name):")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    case .humata:
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                            .help("A notice from Humata, not a message of yours")
+                        Text("Humata:")
+                            .foregroundStyle(.secondary)
+                            .layoutPriority(1)
+                    }
+                    // Worked out once when the picker opened.
+                    if point.firstLine.isEmpty {
+                        Text("A message with images only")
+                            .lineLimit(1)
+                    } else {
+                        Text(verbatim: point.firstLine)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 case .compaction:
                     Image(systemName: "rectangle.compress.vertical")
                         .foregroundStyle(.secondary)
@@ -2116,13 +2177,6 @@ private struct RewindPoints: View {
         .buttonStyle(.plain)
         .id(point.id)
         .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    /// The first line of `text` with anything on it; a message of images
-    /// alone has none.
-    private static func firstLine(of text: String) -> String {
-        let line = text.split(whereSeparator: \.isNewline).first { !$0.allSatisfy(\.isWhitespace) }
-        return line.map(String.init) ?? String(localized: "A message with images only")
     }
 }
 

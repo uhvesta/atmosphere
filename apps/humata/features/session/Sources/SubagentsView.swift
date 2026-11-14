@@ -230,7 +230,11 @@ private struct MainAgentRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if store.isWorking {
+            if store.isWaiting {
+                // It stands still until the person answers, under this sheet.
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(.orange)
+            } else if store.isWorking {
                 ProgressView().controlSize(.mini)
             } else {
                 Image(systemName: "bubble.left.and.text.bubble.right")
@@ -239,6 +243,11 @@ private struct MainAgentRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Main")
                     .font(.callout.weight(.semibold))
+                if store.isWaiting {
+                    Text("Waiting for you: answer in the chat")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let usage = store.usage {
                     Text(SessionView.describe(usage))
                         .font(.caption.monospacedDigit())

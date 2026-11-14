@@ -157,11 +157,14 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
 
     /// How well `name` answers `query`, both in lower case; lower is
     /// better, nil not at all.
-    fileprivate static func rank(of name: String, for query: String) -> Int? {
+    /// Without `lettersInOrder`, a name that only has the query's letters
+    /// in order doesn't answer it, and isn't looked through for them.
+    fileprivate static func rank(of name: String, for query: String, lettersInOrder: Bool = true) -> Int? {
         if name.hasPrefix(query) { return 0 }
         let words = name.split { $0 == "-" || $0 == "_" || $0 == ":" || $0 == "." || $0.isWhitespace }
         if words.contains(where: { $0.hasPrefix(query) }) { return 1 }
         if name.contains(query) { return 2 }
+        guard lettersInOrder else { return nil }
         var rest = query[...]
         for character in name where rest.first == character { rest = rest.dropFirst() }
         return rest.isEmpty ? 3 : nil
@@ -175,19 +178,56 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
     }
 }
 
-/// Somewhere a chat can be cut back to: before a message the person sent,
-/// or before a compaction.
+/// Somewhere a chat can be cut back to: before a message sent to the
+/// session, the person's or not, or before a compaction.
 package struct RewindPoint: Identifiable, Hashable, Sendable {
     package enum Kind: Hashable, Sendable {
-        /// The message's start: enough to tell it by and to search.
+        /// The message's start: enough to tell it by and to search. What
+        /// it says, without the line naming who sent it when that wasn't
+        /// the person.
         case message(String)
         case compaction
+    }
+
+    /// Who sent a message the chat can be cut back to.
+    package enum Sender: Hashable, Sendable {
+        case person
+        /// Another session's agent, by the session's name.
+        case session(String)
+        /// Humata itself, as a notice.
+        case humata
     }
 
     /// The event rewound to.
     package var id: String
     package var kind: Kind
     package var time: Date
+    /// Who sent the message; the person for a compaction.
+    package var sender = Sender.person
+    /// The first line of the message with anything on it, to list it by;
+    /// empty for a message of images alone and for a compaction.
+    package var firstLine = ""
+    /// What a search looks through, in lower case; worked out once, not
+    /// for each key typed.
+    var search = ""
+
+    private init(id: String, time: Date, message: String, sender: Sender) {
+        self.id = id
+        self.time = time
+        self.sender = sender
+        let start = String(message.prefix(Self.kept))
+        kind = .message(start)
+        firstLine =
+            start.split(whereSeparator: \.isNewline).first { !$0.allSatisfy(\.isWhitespace) }.map(String.init) ?? ""
+        search = start.lowercased()
+    }
+
+    private init(compactionAt id: String, time: Date) {
+        self.id = id
+        self.time = time
+        kind = .compaction
+        search = "compaction context compacted"
+    }
 
     /// Characters of a message kept: one can be megabytes of pasted text.
     private static let kept = 2000
@@ -199,9 +239,17 @@ package struct RewindPoint: Identifiable, Hashable, Sendable {
         for event in events where event.parentCallID == nil {
             switch event.kind {
             case .userMessage(let text, _):
-                points.append(RewindPoint(id: event.id, kind: .message(String(text.prefix(kept))), time: event.time))
+                if let sent = AgentSender(text) {
+                    let name = sent.name.isEmpty ? sent.sessionID : sent.name
+                    points.append(
+                        RewindPoint(id: event.id, time: event.time, message: sent.text, sender: .session(name)))
+                } else if let notice = HumataNotice(text) {
+                    points.append(RewindPoint(id: event.id, time: event.time, message: notice.text, sender: .humata))
+                } else {
+                    points.append(RewindPoint(id: event.id, time: event.time, message: text, sender: .person))
+                }
             case .compacted:
-                points.append(RewindPoint(id: event.id, kind: .compaction, time: event.time))
+                points.append(RewindPoint(compactionAt: event.id, time: event.time))
             default:
                 continue
             }
@@ -217,13 +265,10 @@ package struct RewindPoint: Identifiable, Hashable, Sendable {
         guard !query.isEmpty else { return Array(points.prefix(limit)) }
         var scored: [(rank: Int, index: Int)] = []
         for (index, point) in points.enumerated() {
-            let text =
-                switch point.kind {
-                case .message(let text): text.lowercased()
-                case .compaction: "compaction context compacted"
-                }
             // Letters in order alone would find nearly every long message.
-            if let rank = SlashChoice.rank(of: text, for: query), rank < 3 { scored.append((rank, index)) }
+            if let rank = SlashChoice.rank(of: point.search, for: query, lettersInOrder: false) {
+                scored.append((rank, index))
+            }
         }
         scored.sort { $0.rank != $1.rank ? $0.rank < $1.rank : $0.index < $1.index }
         return scored.prefix(limit).map { points[$0.index] }

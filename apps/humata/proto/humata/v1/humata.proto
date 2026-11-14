@@ -898,6 +898,10 @@ enum SendMode {
   // As ENQUEUE, unless the same text already waits in the queue, so a
   // repeated notice starts one turn, not one each time.
   SEND_MODE_ENQUEUE_ONCE = 3;
+  // As ENQUEUE, but always as a message of its own: it joins nothing that
+  // waits, and the person's next message queues behind it. A host that
+  // doesn't know it reads ENQUEUE.
+  SEND_MODE_ENQUEUE_APART = 4;
 }
 
 message SendMessage {
@@ -1820,6 +1824,9 @@ message SessionInfo {
   // What its agent may do to other sessions, by its project. The daemon
   // fills it in.
   AgentSessionsMode agent_sessions = 31;
+  // It works in another session's copy of the code, as a side chat and a
+  // chat-only fork do, so its files can't be rewound.
+  bool shares_code = 32;
 }
 
 // A session's git worktree of one repository.

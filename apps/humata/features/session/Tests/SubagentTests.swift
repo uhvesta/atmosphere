@@ -197,4 +197,36 @@ final class SubagentTests: XCTestCase {
         XCTAssertEqual(texts(store.state.subagentItems), ["rg parser", "It's in src/parser.rs"])
         await watching.cancel()
     }
+
+    func testAStepThatShowsNothingNewLeavesARunningSubagentsRunAsItWas() {
+        var state = state()
+        state.receive(Array(history.prefix(7)))
+        let before = state.subagents[id: "a"]
+        XCTAssertEqual(before?.status, .running)
+
+        // Its tool's result, seconds later: nothing its card shows changes.
+        state.receive(
+            event("e9", .toolCompleted(callID: "a1", success: true, output: "src/parser.rs"), under: "a", at: 30))
+        XCTAssertEqual(state.subagents[id: "a"], before)
+        XCTAssertNil(state.subagents[id: "a"]?.duration)
+    }
+
+    func testASubagentThatStoppedRanFromItsFirstEventToItsLast() {
+        var state = state()
+        state.receive(Array(history.prefix(7)))
+        state.receive(
+            event("e9", .toolCompleted(callID: "a1", success: true, output: "src/parser.rs"), under: "a", at: 30))
+        // Its backend says it failed, and reports no time of its own.
+        state.receive(
+            event(
+                "e13", .subagent(Subagent(agentType: "Explore", description: "Find the parser", status: .failed)),
+                under: "a", at: 40))
+        XCTAssertEqual(state.subagents[id: "a"]?.duration, .seconds(40))
+
+        // The other never said it finished: it ran until its last event.
+        state.receive(event("e12", .reasoning("Which tests?"), under: "b", at: 12))
+        state.receive(event("e16", .turnEnded(aborted: true), at: 50))
+        XCTAssertEqual(state.subagents[id: "b"]?.status, .stopped)
+        XCTAssertEqual(state.subagents[id: "b"]?.duration, .seconds(12))
+    }
 }

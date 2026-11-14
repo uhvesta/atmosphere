@@ -119,6 +119,17 @@ impl Summary {
         }
     }
 
+    /// This summary while the session's driver runs: working, when the
+    /// events alone say it's idle or failed, as they do before a turn's
+    /// first event and between queued turns.
+    #[must_use]
+    pub(crate) fn working(mut self) -> Self {
+        if matches!(self.settled, SessionState::Idle | SessionState::Failed) {
+            self.settled = SessionState::Working;
+        }
+        self
+    }
+
     /// The same as [`SessionState::after`] the events added.
     pub fn state(&self) -> SessionState {
         if self.settled == SessionState::Working && self.open > 0 {

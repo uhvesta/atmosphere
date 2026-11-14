@@ -1345,7 +1345,10 @@ package final class InMemoryDaemon: Sendable {
             state.nextSession += 1
             if chatOnly {
                 state.copyOf[fork.id] = state.copyOf[parent.id]
+                // The copy stays its owner's: only that session rewinds it.
+                fork.sharesCode = parent.projectID != nil
             } else {
+                fork.sharesCode = false
                 let kept = empty ? saved : Set(history.map(\.id))
                 let writes = state.copyOf[parent.id].flatMap { state.copies[$0] } ?? []
                 state.copies[fork.id] = writes.filter { kept.contains($0.event) }

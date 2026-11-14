@@ -178,6 +178,7 @@ final class AppFeatureTests: XCTestCase {
         } withDependencies: {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
         }
         store.exhaustivity = .off
         await store.send(.session(.presented(.childTapped(.side, message: question))))
@@ -231,6 +232,146 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.sidebar.delegate.openSession)
         XCTAssertEqual(store.state.session?.session.id, side.id)
         XCTAssertNil(store.state.side)
+    }
+
+    /// A store with `first` open and `side` beside it, whose daemon notes
+    /// in `stopped` each session told to stop its turn.
+    private func besideEachOther(
+        _ first: Session, _ side: Session, stopped: LockIsolated<[Session.ID]>
+    ) -> TestStoreOf<AppFeature> {
+        var beside = SessionFeature.State(session: side)
+        beside.beside = true
+        var state = AppFeature.State()
+        state.sidebar.sessions = [first, side]
+        state.sidebar.selection = .session(first.id)
+        state.session = SessionFeature.State(session: first)
+        state.side = beside
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.abort = { session in stopped.withValue { $0.append(session) } }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testWithTheSideColumnFocusedStopTheTurnStopsTheSideChatsTurnAndNotTheSessions() async throws {
+        let first = Session(id: "column-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "column-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+        let stopped = LockIsolated<[Session.ID]>([])
+        let store = besideEachOther(first, side, stopped: stopped)
+
+        await store.send(.columnFocused(.side))
+        XCTAssertEqual(store.state.side?.takesShortcuts, true)
+        XCTAssertEqual(store.state.session?.takesShortcuts, false, "one column answers a shortcut, not both")
+
+        await store.send(.sessionCommand(.abortTapped))
+        await store.receive(\.side.abortTapped)
+        await store.finish()
+        XCTAssertEqual(stopped.value, [side.id], "the session's own turn keeps running")
+
+        // Out of both columns, as in the sidebar, the commands stay with
+        // the one last in.
+        await store.send(.columnFocused(nil))
+        XCTAssertEqual(store.state.commandSession?.session.id, side.id)
+
+        await store.send(.columnFocused(.main))
+        XCTAssertEqual(store.state.session?.takesShortcuts, true)
+        XCTAssertEqual(store.state.side?.takesShortcuts, false)
+        await store.send(.sessionCommand(.abortTapped))
+        await store.receive(\.session.abortTapped)
+        await store.finish()
+        XCTAssertEqual(stopped.value, [side.id, first.id])
+    }
+
+    func testClosingTheSideChatGivesCommandsAndShortcutsBackToTheSession() async throws {
+        let first = Session(id: "closed-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "closed-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+        let stopped = LockIsolated<[Session.ID]>([])
+        let store = besideEachOther(first, side, stopped: stopped)
+
+        await store.send(.columnFocused(.side))
+        await store.send(.side(.dismiss))
+        XCTAssertNil(store.state.side)
+        XCTAssertEqual(store.state.session?.takesShortcuts, true)
+        XCTAssertEqual(store.state.commandSession?.session.id, first.id)
+
+        await store.send(.sessionCommand(.abortTapped))
+        await store.receive(\.session.abortTapped)
+        await store.finish()
+        XCTAssertEqual(stopped.value, [first.id])
+
+        // With none open, there's no side column to go into.
+        await store.send(.columnFocused(.side))
+        XCTAssertEqual(store.state.session?.takesShortcuts, true)
+        XCTAssertEqual(store.state.commandSession?.session.id, first.id)
+    }
+
+    func testAMessageFromASideChatClosedBeforeItsSendFailsGoesBackInItsBox() async throws {
+        let first = Session(id: "unsent-beside", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "unsent-side", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.parentID = first.id
+        side.readOnly = true
+        var beside = SessionFeature.State(session: side)
+        beside.beside = true
+        var state = AppFeature.State()
+        state.sidebar.sessions = [first, side]
+        state.sidebar.selection = .session(first.id)
+        state.session = SessionFeature.State(session: first)
+        state.side = beside
+        // The send is still under way when the side chat closes.
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, _, _ in
+                for await _ in answered { break }
+                throw DaemonError.disconnected
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.side.binding.draft, "and why?")
+        await store.send(\.side.sendTapped, .enqueue)
+        await store.receive(\.side.delegate.send)
+        await store.send(.side(.dismiss))
+        XCTAssertNil(store.state.side)
+
+        answer.yield()
+        await store.receive(\.sendFailed)
+        XCTAssertNotNil(store.state.sendFailure, "it says which chat's message wasn't sent")
+        XCTAssertEqual(store.state.session?.draft, "", "the session it was beside is left alone")
+        XCTAssertEqual(SessionFeature.State(session: side).draft, "and why?")
+
+        // The alert opens the side chat as a session, the message in its box.
+        await store.send(.sendFailure(.presented(.openSession(side.id))))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, side.id)
+        XCTAssertEqual(store.state.session?.draft, "and why?")
+    }
+
+    func testASideChatShowsWhatItsAgentAsksAndClosesWhenArchivedElsewhere() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "first"))
+        let store = try await withASideChat(daemon, of: session)
+        let side = try XCTUnwrap(store.state.side?.session)
+
+        let asked = daemon.addRequest(side.id, .question, "Which of the two?")
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        XCTAssertEqual(store.state.side?.request?.id, asked.id)
+        XCTAssertNil(store.state.session?.request, "the session it's beside wasn't asked")
+
+        _ = try await daemon.client.update(side.id, SessionUpdate(archived: true))
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        XCTAssertNil(store.state.side)
+        XCTAssertEqual(store.state.session?.session.id, session.id, "the session stays open")
     }
 
     func testHostsOpenBesideTheSidebarAndCloseForASession() async throws {
@@ -653,6 +794,7 @@ final class AppFeatureTests: XCTestCase {
                 for await _ in answered { break }
                 throw DaemonError.disconnected
             }
+            $0.daemon.chatCommands = { _ in ChatCommands() }
         }
         store.exhaustivity = .off
 
@@ -804,6 +946,7 @@ final class AppFeatureTests: XCTestCase {
                 }
             }
             $0.daemon.markSeen = { _, _ in }
+            $0.daemon.chatCommands = { _ in ChatCommands() }
         }
         store.exhaustivity = .off
         return store

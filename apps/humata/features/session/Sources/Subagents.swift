@@ -16,8 +16,9 @@ package struct SubagentRun: Identifiable, Hashable, Sendable {
     package var status = Subagent.Status.running
     /// When its first event happened.
     package var started: Date
-    /// When its latest event happened.
-    package var lastActive: Date
+    /// When its last event happened, once it stopped; nil while it runs,
+    /// so a step that shows nothing new leaves the run as it was.
+    package var ended: Date?
     /// What its backend reports it used; 0 when it hasn't said.
     var reportedTokens: UInt64 = 0
     var reportedToolUses: UInt64 = 0
@@ -46,7 +47,7 @@ package struct SubagentRun: Identifiable, Hashable, Sendable {
     package var duration: Duration? {
         guard status != .running else { return nil }
         if reportedDuration > .zero { return reportedDuration }
-        return .milliseconds(Int64(max(0, lastActive.timeIntervalSince(started)) * 1000))
+        return .milliseconds(Int64(max(0, (ended ?? started).timeIntervalSince(started)) * 1000))
     }
 }
 
@@ -59,14 +60,18 @@ struct SubagentLog: Equatable, Sendable {
     /// Everything the subagents' own steps report used; nil if they report
     /// nothing.
     private(set) var usage: Usage?
+    /// When each subagent's latest event happened, by its call. Kept here
+    /// and not in its run, which what draws it compares whole.
+    private var latest: [String: Date] = [:]
 
     /// What `call`'s subagent did, oldest first.
     func items(of call: String) -> [ChatItem] { chats[call]?.items ?? [] }
 
     /// Takes in an event of the subagent `call` started.
     mutating func add(_ event: SessionEvent, under call: String) {
-        var run = runs[id: call] ?? SubagentRun(id: call, started: event.time, lastActive: event.time)
-        if event.time > run.lastActive { run.lastActive = event.time }
+        var run = runs[id: call] ?? SubagentRun(id: call, started: event.time)
+        let latest = self.latest[call].map { max($0, event.time) } ?? event.time
+        if self.latest[call] != latest { self.latest[call] = latest }
         switch event.kind {
         case .subagent(let reported):
             if !reported.agentType.isEmpty { run.agentType = reported.agentType }
@@ -97,6 +102,9 @@ struct SubagentLog: Equatable, Sendable {
             if let step = Self.step(event, in: chat) { run.latestStep = step }
             chats[call] = chat
         }
+        // Its run ends at its last event only once it's no longer running.
+        let ended = run.status == .running ? nil : latest
+        if run.ended != ended { run.ended = ended }
         runs[id: call] = run
     }
 
@@ -105,6 +113,7 @@ struct SubagentLog: Equatable, Sendable {
     mutating func turnEnded() {
         for id in runs.ids where runs[id: id]?.status == .running {
             runs[id: id]?.status = .stopped
+            runs[id: id]?.ended = latest[id]
         }
     }
 

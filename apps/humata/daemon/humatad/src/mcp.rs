@@ -7,12 +7,16 @@
 //! session's history, and the daemon reads it from there as it reads
 //! `[thread N]` tags, so it gets the turn whose changes are the fix.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use humata_wire::{Client, WireError, pb};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::sync::OnceCell;
+use tokio::task::{AbortHandle, JoinSet};
 
 /// The MCP versions this server speaks, newest first.
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -57,46 +61,120 @@ pub async fn mcp_stdio(socket: &Path, session: Option<String>) -> Result<(), Mcp
     let (reader, writer) = stream.into_split();
     let client = Client::connect(reader, writer, pb::Role::Client, crate::VERSION).await?;
     serve(
-        &Server { client, session },
+        Arc::new(Server::new(client, session)),
         tokio::io::stdin(),
         tokio::io::stdout(),
     )
     .await
 }
 
-/// Answers each JSON-RPC message, one per line, until the input ends.
+/// Answers each JSON-RPC message, one per line, until the input ends. Each
+/// request is answered as its own task, so one that waits, as read_session
+/// may, holds up no other; answers go out as they're ready, each naming
+/// its request. When the input ends, calls already under way still have
+/// [`ENDED_GRACE`] to be answered, since a client may close its input as
+/// soon as it has written; those still waiting then, such as a long
+/// read_session, stop.
 async fn serve(
-    server: &Server,
+    server: Arc<Server>,
     input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
 ) -> Result<(), McpError> {
     let mut lines = BufReader::new(input).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|source| McpError::Pipe { source })?
-    {
-        if line.trim().is_empty() {
-            continue;
+    let mut answering: JoinSet<Option<Value>> = JoinSet::new();
+    // The requests being answered, by their ids as JSON, to cancel one.
+    let mut asked: HashMap<String, AbortHandle> = HashMap::new();
+    let mut ended: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    loop {
+        if ended.is_some() && answering.is_empty() {
+            break;
         }
-        let answer = match serde_json::from_str::<Value>(&line) {
-            Ok(message) => server.handle(&message).await,
-            Err(_) => Some(error(&Value::Null, -32700, "that isn't JSON")),
+        let answer = tokio::select! {
+            () = async {
+                match ended.as_mut() {
+                    Some(grace) => grace.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => break,
+            line = lines.next_line(), if ended.is_none() => {
+                let Some(line) = line.map_err(|source| McpError::Pipe { source })? else {
+                    ended = Some(Box::pin(tokio::time::sleep(ENDED_GRACE)));
+                    continue;
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    write(&mut output, &error(&Value::Null, -32700, "that isn't JSON")).await?;
+                    continue;
+                };
+                let Some(id) = message.get("id") else {
+                    // A notification is answered with nothing; this one
+                    // stops the request it names.
+                    if message["method"] == json!("notifications/cancelled")
+                        && let Some(cancelled) =
+                            asked.remove(&message["params"]["requestId"].to_string())
+                    {
+                        cancelled.abort();
+                    }
+                    continue;
+                };
+                let id = id.to_string();
+                let server = Arc::clone(&server);
+                let handle = answering.spawn(async move { server.handle(&message).await });
+                asked.insert(id, handle);
+                continue;
+            }
+            Some(done) = answering.join_next_with_id() => {
+                let task = match &done {
+                    Ok((task, _)) => *task,
+                    Err(stopped) => stopped.id(),
+                };
+                let id = asked
+                    .iter()
+                    .find(|(_, handle)| handle.id() == task)
+                    .map(|(id, _)| id.clone());
+                if let Some(id) = &id {
+                    asked.remove(id);
+                }
+                match done {
+                    Ok((_, answer)) => answer,
+                    // Cancelled: the agent no longer waits for it.
+                    Err(stopped) if stopped.is_cancelled() => None,
+                    Err(_) => id
+                        .and_then(|id| serde_json::from_str::<Value>(&id).ok())
+                        .map(|id| {
+                            error(
+                                &id,
+                                -32603,
+                                "humata's MCP server failed on this call; call it again",
+                            )
+                        }),
+                }
+            }
         };
         if let Some(answer) = answer {
-            let mut text = answer.to_string();
-            text.push('\n');
-            output
-                .write_all(text.as_bytes())
-                .await
-                .map_err(|source| McpError::Pipe { source })?;
-            output
-                .flush()
-                .await
-                .map_err(|source| McpError::Pipe { source })?;
+            write(&mut output, &answer).await?;
         }
     }
     Ok(())
+}
+
+/// How long calls under way when the input ends still have to be answered.
+const ENDED_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Writes one answer on its line.
+async fn write(output: &mut (impl AsyncWrite + Unpin), answer: &Value) -> Result<(), McpError> {
+    let mut text = answer.to_string();
+    text.push('\n');
+    output
+        .write_all(text.as_bytes())
+        .await
+        .map_err(|source| McpError::Pipe { source })?;
+    output
+        .flush()
+        .await
+        .map_err(|source| McpError::Pipe { source })
 }
 
 fn error(id: &Value, code: i64, message: &str) -> Value {
@@ -106,9 +184,21 @@ fn error(id: &Value, code: i64, message: &str) -> Value {
 struct Server {
     client: Client,
     session: String,
+    /// This session as humatad first listed it. Listing every session to
+    /// find it is asked once, not for each call; what it's kept for, where
+    /// the session is and whether it only reads, doesn't change.
+    known: OnceCell<pb::SessionInfo>,
 }
 
 impl Server {
+    fn new(client: Client, session: String) -> Self {
+        Self {
+            client,
+            session,
+            known: OnceCell::new(),
+        }
+    }
+
     /// The answer to one message; none for a notification.
     async fn handle(&self, message: &Value) -> Option<Value> {
         let id = message.get("id")?;
@@ -153,6 +243,21 @@ impl Server {
     /// What a tool answers, or why it failed, for the model to read.
     async fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
         let text = |field: &str| arguments[field].as_str().map(str::trim).map(str::to_owned);
+        // A side chat isn't offered these; one called all the same is
+        // refused, and humatad refuses the two that reach it besides.
+        if matches!(
+            name,
+            "propose_task"
+                | "propose_spec_edit"
+                | "request_move"
+                | "start_session"
+                | "send_message"
+        ) && self.session().await.is_ok_and(|session| session.read_only)
+        {
+            return Err(format!(
+                "this is a side chat, which only reads and answers questions, so it has no {name}. Say what you'd propose or hand over, and the person can do it from the session this chat is beside"
+            ));
+        }
         match name {
             "board" => self.board(arguments["all"] == json!(true)).await,
             "search_sessions" => {
@@ -422,7 +527,8 @@ impl Server {
     /// Session `id`'s recent conversation, once it stops working or `wait`
     /// seconds pass.
     async fn read_session(&self, id: &str, wait: u64) -> Result<String, String> {
-        if self.session().await?.agent_sessions() == pb::AgentSessionsMode::Off {
+        // Asked anew: the person may have changed the setting mid-turn.
+        if self.listed_now().await?.agent_sessions() == pb::AgentSessionsMode::Off {
             return Err(
                 "this project has agents' sessions off, so read_session isn't offered; only the person can turn it on, in the project's settings under Agent Sessions"
                     .to_owned(),
@@ -492,7 +598,16 @@ impl Server {
             .map_err(|error| humata_wire::describe(&error))
     }
 
+    /// This session, as first listed; asked again only until it's found.
     async fn session(&self) -> Result<pb::SessionInfo, String> {
+        self.known
+            .get_or_try_init(|| self.listed_now())
+            .await
+            .cloned()
+    }
+
+    /// This session as humatad lists it now.
+    async fn listed_now(&self) -> Result<pb::SessionInfo, String> {
         self.listed(&self.session).await?.ok_or_else(|| {
             format!(
                 "humatad doesn't know the session {}; it may have been removed",
@@ -520,6 +635,7 @@ impl Server {
             return Offered {
                 place: Place::Unknown,
                 sessions: true,
+                read_only: false,
             };
         };
         Offered {
@@ -531,6 +647,7 @@ impl Server {
                 Place::Task
             },
             sessions: session.agent_sessions() != pb::AgentSessionsMode::Off,
+            read_only: session.read_only,
         }
     }
 
@@ -563,6 +680,9 @@ struct Offered {
     /// Whether its project lets agents start, write to and read other
     /// sessions, asking the person or not.
     sessions: bool,
+    /// Whether it is a side chat, which only reads and answers: it starts
+    /// and writes to no session, and proposes and asks to move nothing.
+    read_only: bool,
 }
 
 /// Where a session is, which decides the tools it gets: one outside a
@@ -792,7 +912,10 @@ fn event_text(event: &pb::SessionEvent, message: usize, tool: usize) -> Option<S
                 from.id,
                 cut(from.text, message)
             ),
-            None => format!("The person: {}", cut(&sent.text, message)),
+            None => match crate::sender::notice(&sent.text) {
+                Some(told) => format!("Humata: {}", cut(told, message)),
+                None => format!("The person: {}", cut(&sent.text, message)),
+            },
         }),
         Some(Kind::AssistantMessage(reply)) => {
             Some(format!("Agent: {}", cut(&reply.text, message)))
@@ -971,12 +1094,16 @@ fn instructions(offered: Offered) -> String {
     if place.has_board() {
         text.push_str(
             " board and read_item show the project's tasks, subtasks and specs; you can't \
-             change them, but propose_task and propose_spec_edit suggest changes the person \
-             applies.",
+             change them",
         );
+        text.push_str(if offered.read_only {
+            "."
+        } else {
+            ", but propose_task and propose_spec_edit suggest changes the person applies."
+        });
     }
     text.push_str(" ask_person asks the person something.");
-    if place.has_task() {
+    if place.has_task() && !offered.read_only {
         text.push_str(" request_move asks them to move your task once it's done.");
     }
     if place.has_board() {
@@ -986,7 +1113,9 @@ fn instructions(offered: Offered) -> String {
     if place.has_board() {
         text.push_str(" read_skill reads a project skill your instructions list.");
     }
-    if offered.sessions {
+    if offered.sessions && offered.read_only {
+        text.push_str(" read_session reads what another session did.");
+    } else if offered.sessions {
         text.push_str(
             " start_session hands work to a new session of your own, send_message writes to \
              it and read_session reads what it did; the person may have to allow each.",
@@ -997,15 +1126,20 @@ fn instructions(offered: Offered) -> String {
 
 /// The tools a session has: outside a project, none for a board,
 /// proposals, review or project skills; on no task, none to ask to move it;
-/// where its project has agents' sessions off, none for other sessions.
+/// where its project has agents' sessions off, none for other sessions. A
+/// side chat, which only reads and answers, gets none that starts or writes
+/// to a session, proposes a change or asks for a move; it still reads other
+/// sessions and asks the person.
 /// Each listed tool costs tokens on every request, so only those that work
 /// there are offered.
 fn tools(offered: Offered) -> Value {
     let place = offered.place;
     let wanted = |tool: &Value| match tool["name"].as_str().unwrap_or_default() {
         "ask_person" | "search_sessions" | "read_turn" => true,
-        "start_session" | "send_message" | "read_session" => offered.sessions,
-        "request_move" => place.has_task(),
+        "start_session" | "send_message" => offered.sessions && !offered.read_only,
+        "read_session" => offered.sessions,
+        "propose_task" | "propose_spec_edit" => place.has_board() && !offered.read_only,
+        "request_move" => place.has_task() && !offered.read_only,
         _ => place.has_board(),
     };
     let Value::Array(every) = every_tool() else {
@@ -1147,23 +1281,56 @@ fn every_tool() -> Value {
 mod tests {
     use super::*;
 
-    /// The server's answers to `messages`, one per line in and out.
-    async fn exchange(server: &Server, messages: &[Value]) -> Vec<Value> {
-        let input: String = messages
-            .iter()
-            .map(|message| format!("{message}\n"))
-            .collect();
-        let mut output = Vec::new();
-        serve(server, input.as_bytes(), &mut output)
-            .await
-            .unwrap_or_else(|error| panic!("{error}"));
-        String::from_utf8_lossy(&output)
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}")))
-            .collect()
+    const PIPE: usize = 1024 * 1024;
+    const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// The next answer the server writes.
+    async fn next_answer(
+        answers: &mut tokio::io::Lines<BufReader<tokio::io::DuplexStream>>,
+    ) -> Value {
+        match tokio::time::timeout(ANSWER_WAIT, answers.next_line()).await {
+            Ok(Ok(Some(line))) => {
+                serde_json::from_str(&line).unwrap_or_else(|error| panic!("{error}"))
+            }
+            other => panic!("no answer: {other:?}"),
+        }
     }
 
-    pub(crate) async fn call(server: &Server, tool: &str, arguments: Value) -> (String, bool) {
+    /// The server's answers to `messages`, one per line in and out, in the
+    /// order of the requests they answer. The input stays open until each
+    /// request is answered.
+    async fn exchange(server: &Arc<Server>, messages: &[Value]) -> Vec<Value> {
+        let (mut requests, input) = tokio::io::duplex(PIPE);
+        let (output, answers) = tokio::io::duplex(PIPE);
+        let serving = tokio::spawn(serve(Arc::clone(server), input, output));
+        for message in messages {
+            requests
+                .write_all(format!("{message}\n").as_bytes())
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        let asked = |answer: &Value| {
+            messages
+                .iter()
+                .position(|message| message.get("id") == answer.get("id"))
+        };
+        let expected = messages
+            .iter()
+            .filter(|message| message.get("id").is_some())
+            .count();
+        let mut answers = BufReader::new(answers).lines();
+        let mut answered = Vec::new();
+        while answered.len() < expected {
+            answered.push(next_answer(&mut answers).await);
+        }
+        drop(requests);
+        let served = tokio::time::timeout(ANSWER_WAIT, serving).await;
+        assert!(matches!(served, Ok(Ok(Ok(())))), "{served:?}");
+        answered.sort_by_key(asked);
+        answered
+    }
+
+    pub(crate) async fn call(server: &Arc<Server>, tool: &str, arguments: Value) -> (String, bool) {
         let message = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                              "params": {"name": tool, "arguments": arguments}});
         let answers = exchange(server, &[message]).await;
@@ -1177,11 +1344,8 @@ mod tests {
         )
     }
 
-    pub(crate) fn server(client: Client, session: &str) -> Server {
-        Server {
-            client,
-            session: session.to_owned(),
-        }
+    pub(crate) fn server(client: Client, session: &str) -> Arc<Server> {
+        Arc::new(Server::new(client, session.to_owned()))
     }
 
     fn said(id: &str, kind: pb::session_event::Kind) -> pb::SessionEvent {
@@ -1234,6 +1398,7 @@ mod tests {
         offered_names(Offered {
             place,
             sessions: false,
+            read_only: false,
         })
     }
 
@@ -1267,11 +1432,222 @@ mod tests {
         let with = offered_names(Offered {
             place: Place::Alone,
             sessions: true,
+            read_only: false,
         });
         for tool in ["start_session", "send_message", "read_session"] {
             assert!(with.iter().any(|name| name == tool), "{tool}: {with:?}");
             assert!(!names(Place::Task).iter().any(|name| name == tool));
         }
+    }
+
+    #[test]
+    fn a_side_chat_reads_other_sessions_and_asks_but_starts_writes_and_proposes_nothing() {
+        let side = offered_names(Offered {
+            place: Place::Task,
+            sessions: true,
+            read_only: true,
+        });
+        for tool in ["read_session", "ask_person", "board", "read_item"] {
+            assert!(side.iter().any(|name| name == tool), "{tool}: {side:?}");
+        }
+        for tool in [
+            "start_session",
+            "send_message",
+            "propose_task",
+            "propose_spec_edit",
+            "request_move",
+        ] {
+            assert!(!side.iter().any(|name| name == tool), "{tool}: {side:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_side_chat_that_calls_a_tool_it_isnt_offered_is_refused_and_nothing_waits() {
+        use crate::tests::{daemon, git_repository, project, start_on};
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let repository = git_repository();
+        let client = daemon(state.path(), crate::hosts::Hosts::default()).await;
+        let project = project(&client, repository.path()).await;
+        let task = crate::tests::item(&client, &project.id, "", "login").await;
+        let session = crate::tests::started(&client, start_on(&task.id)).await;
+        let sent = client
+            .call(pb::request::Kind::SendMessage(pb::SendMessage {
+                session_id: session.id.clone(),
+                text: "hello".to_owned(),
+                mode: pb::SendMode::Enqueue.into(),
+                ..Default::default()
+            }))
+            .await;
+        assert!(sent.is_ok(), "{sent:?}");
+        crate::tests::after_turns(&client, &session.id, 1).await;
+        let side = match client
+            .call(pb::request::Kind::ForkSession(pb::ForkSession {
+                session_id: session.id.clone(),
+                read_only: true,
+                ..Default::default()
+            }))
+            .await
+        {
+            Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+                session: Some(side),
+            })) => side,
+            other => panic!("not forked: {other:?}"),
+        };
+        let server = server(client, &side.id);
+
+        for (tool, arguments) in [
+            ("propose_task", json!({"title": "copy", "spec": "Words."})),
+            (
+                "propose_spec_edit",
+                json!({"item_id": task.id, "title": "sign-in"}),
+            ),
+            (
+                "request_move",
+                json!({"status": "done", "summary": "Login works."}),
+            ),
+            (
+                "start_session",
+                json!({"name": "Tests", "message": "hello"}),
+            ),
+            (
+                "send_message",
+                json!({"session_id": session.id, "text": "hello"}),
+            ),
+        ] {
+            let (_, failed) = call(&server, tool, arguments.clone()).await;
+            assert!(failed, "{tool} {arguments}");
+        }
+        // It still reads, and asks the person.
+        let (read, failed) = call(&server, "read_session", json!({"session_id": session.id})).await;
+        assert!(!failed, "{read}");
+        let (_, failed) = call(&server, "ask_person", json!({"question": "Which one?"})).await;
+        assert!(!failed);
+        let inbox = match server
+            .client
+            .call(pb::request::Kind::ListInbox(pb::ListInbox {}))
+            .await
+        {
+            Ok(pb::response::Kind::Inbox(inbox)) => inbox,
+            other => panic!("{other:?}"),
+        };
+        let kinds: Vec<pb::AgentRequestKind> = inbox
+            .entries
+            .iter()
+            .filter_map(|entry| entry.request.as_ref())
+            .map(pb::AgentRequest::kind)
+            .collect();
+        assert_eq!(kinds, [pb::AgentRequestKind::Question]);
+    }
+
+    /// A session in a project, and another whose turn is held working.
+    async fn beside_a_working_session(state: &Path) -> (Arc<Server>, String, tempfile::TempDir) {
+        use crate::tests::{daemon, git_repository, project, start_on};
+        let repository = git_repository();
+        let client = daemon(state, crate::hosts::Hosts::default()).await;
+        let project = project(&client, repository.path()).await;
+        let task = crate::tests::item(&client, &project.id, "", "login").await;
+        let session = crate::tests::started(&client, start_on(&task.id)).await;
+        let mut held = start_on(&task.id);
+        if let pb::request::Kind::StartSession(start) = &mut held {
+            start.backend_config = r#"{"rules": [
+                {"when": "", "steps": [{"step": "wait_for", "path": "never-made"}]}
+            ]}"#
+            .to_owned();
+        }
+        let held = crate::tests::started(&client, held).await;
+        let sent = client
+            .call(pb::request::Kind::SendMessage(pb::SendMessage {
+                session_id: held.id.clone(),
+                text: "work".to_owned(),
+                mode: pb::SendMode::Enqueue.into(),
+                ..Default::default()
+            }))
+            .await;
+        assert!(sent.is_ok(), "{sent:?}");
+        // Until it lists as working, a read of it wouldn't wait.
+        let mut working = false;
+        for _ in 0..400 {
+            let listed = client
+                .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+                .await;
+            let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+                panic!("{listed:?}")
+            };
+            working = sessions
+                .sessions
+                .iter()
+                .any(|info| info.id == held.id && info.state() == pb::SessionState::Working);
+            if working {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(working, "the held session never worked");
+        (server(client, &session.id), held.id, repository)
+    }
+
+    #[tokio::test]
+    async fn a_call_is_answered_while_a_read_of_a_working_session_waits() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (server, held, _repository) = beside_a_working_session(state.path()).await;
+        let (mut requests, input) = tokio::io::duplex(PIPE);
+        let (output, answers) = tokio::io::duplex(PIPE);
+        let serving = tokio::spawn(serve(server, input, output));
+        let mut answers = BufReader::new(answers).lines();
+
+        let read = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "read_session",
+                                     "arguments": {"session_id": held, "wait_seconds": 600}}});
+        let ping = json!({"jsonrpc": "2.0", "id": 2, "method": "ping"});
+        requests
+            .write_all(format!("{read}\n{ping}\n").as_bytes())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        // The session never stops working, so the read is still waiting.
+        assert_eq!(next_answer(&mut answers).await["id"], json!(2));
+
+        // A read the agent gave up on is answered with nothing, and the
+        // server goes on answering.
+        let cancelled = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                               "params": {"requestId": 1}});
+        let again = json!({"jsonrpc": "2.0", "id": 3, "method": "ping"});
+        requests
+            .write_all(format!("{cancelled}\n{again}\n").as_bytes())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(next_answer(&mut answers).await["id"], json!(3));
+
+        drop(requests);
+        let served = tokio::time::timeout(ANSWER_WAIT, serving).await;
+        assert!(matches!(served, Ok(Ok(Ok(())))), "{served:?}");
+    }
+
+    #[tokio::test]
+    async fn the_server_stops_when_its_input_ends_though_a_read_still_waits() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let (server, held, _repository) = beside_a_working_session(state.path()).await;
+        let (mut requests, input) = tokio::io::duplex(PIPE);
+        let (output, answers) = tokio::io::duplex(PIPE);
+        let serving = tokio::spawn(serve(server, input, output));
+        let mut answers = BufReader::new(answers).lines();
+
+        let read = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "read_session",
+                                     "arguments": {"session_id": held, "wait_seconds": 600}}});
+        let ping = json!({"jsonrpc": "2.0", "id": 2, "method": "ping"});
+        requests
+            .write_all(format!("{read}\n{ping}\n").as_bytes())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Both were taken in, and the read is the one still under way.
+        assert_eq!(next_answer(&mut answers).await["id"], json!(2));
+
+        drop(requests);
+        let served = tokio::time::timeout(ANSWER_WAIT, serving).await;
+        assert!(matches!(served, Ok(Ok(Ok(())))), "{served:?}");
+        // The read was never answered.
+        let rest = answers.next_line().await;
+        assert!(matches!(rest, Ok(None)), "{rest:?}");
     }
 
     #[test]
@@ -1309,6 +1685,30 @@ mod tests {
 
         let short = session_text("child-id", None, &events[..1]);
         assert!(short.contains("The person: the oldest ask"), "{short}");
+    }
+
+    #[test]
+    fn what_humata_told_a_session_isnt_read_as_the_persons() {
+        use pb::session_event::Kind;
+        let message = |text: String| {
+            said(
+                "told",
+                Kind::UserMessage(pb::UserMessage {
+                    text,
+                    ..Default::default()
+                }),
+            )
+        };
+        let own = session_text("s", None, &[message("it was declined".to_owned())]);
+        let told = session_text(
+            "s",
+            None,
+            &[message(crate::sender::noticed("it was declined"))],
+        );
+        assert!(told.contains("it was declined"), "{told}");
+        // Named apart from the person's own message of the same words.
+        assert_ne!(told, own);
+        assert!(!told.contains("The person: "), "{told}");
     }
 
     #[tokio::test]

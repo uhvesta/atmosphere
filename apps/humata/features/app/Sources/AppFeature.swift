@@ -21,6 +21,10 @@ package struct AppFeature {
         /// A side chat of the open session, shown beside it until it's
         /// closed or another session opens; it stays in the sidebar.
         @Presents package var side: SessionFeature.State?
+        /// The column the person is in, whose session the Session menu and
+        /// the chat's shortcuts act on: the side chat's only while one is
+        /// open.
+        package private(set) var focusedColumn = SessionColumn.main
         /// The open board; nil unless one is picked.
         @Presents package var board: BoardFeature.State?
         /// The hosts; nil unless they're open.
@@ -56,6 +60,35 @@ package struct AppFeature {
 
         package init() {}
 
+        /// The session the Session menu acts on: the side chat while the
+        /// person is in its column, the open session otherwise.
+        package var commandSession: SessionFeature.State? {
+            focusedColumn == .side ? side ?? session : session
+        }
+
+        /// Puts the person in `column`, the main one when no side chat is
+        /// open, so only its session takes the chat's shortcuts. Sets only
+        /// what changed, so neither chat is drawn again for nothing.
+        mutating func focus(_ column: SessionColumn) {
+            let column = side == nil ? .main : column
+            if focusedColumn != column { focusedColumn = column }
+            if let open = session, open.takesShortcuts != (column == .main) {
+                session?.takesShortcuts = column == .main
+            }
+            if let beside = side, beside.takesShortcuts != (column == .side) {
+                side?.takesShortcuts = column == .side
+            }
+        }
+
+        /// Closes the side chat, keeping what it showed and what was being
+        /// written to it for when it's opened from the sidebar, unless
+        /// it's gone for good; the open session takes the shortcuts again.
+        mutating func closeSide(keeping: Bool = true) {
+            if keeping, let side { left[side.session.id] = side.left }
+            side = nil
+            focus(.main)
+        }
+
         /// Puts away the open board, hosts and search, to show again as they
         /// were, but for what they were waiting on: that stops with them.
         mutating func putAway() {
@@ -88,7 +121,7 @@ package struct AppFeature {
         /// closed was showing; nil closes it.
         mutating func show(_ next: SessionFeature.State?) {
             // A side chat is beside the session it was opened from only.
-            if session?.session.id != next?.session.id { side = nil }
+            if session?.session.id != next?.session.id { closeSide() }
             if let open = session {
                 if open.session.id != next?.session.id { left[open.session.id] = open.left }
                 // Kept for the session opened again in its own place too,
@@ -104,7 +137,18 @@ package struct AppFeature {
             }
             if let id = next?.session.id, let history = histories.take(id) { next?.restore(history) }
             session = next
+            // One opened in its own place, beside a side chat the person
+            // is in, leaves the shortcuts with the side chat.
+            focus(focusedColumn)
         }
+    }
+
+    /// The two chats the window can show side by side.
+    package enum SessionColumn: Hashable, Sendable {
+        /// The open session.
+        case main
+        /// The side chat beside it.
+        case side
     }
 
     /// The histories of the chats last looked away from, the one left
@@ -171,6 +215,12 @@ package struct AppFeature {
         case session(PresentationAction<SessionFeature.Action>)
         /// The side chat beside the open session; dismissing it closes it.
         case side(PresentationAction<SessionFeature.Action>)
+        /// The person went into a column, or out of both, which is nil
+        /// and leaves the commands with the one they were last in.
+        case columnFocused(SessionColumn?)
+        /// Something picked in the Session menu, for the session of the
+        /// column the person is in.
+        case sessionCommand(SessionFeature.Action)
         /// A message from a session's box reached the daemon.
         case sendFinished(Session.ID)
         /// It didn't, and this is why: the message goes back in its
@@ -284,6 +334,22 @@ package struct AppFeature {
                     let request = Self.request(of: open.session.id, in: inbox)
                     if request != open.request { state.session?.request = request }
                 }
+                if let beside = state.side {
+                    let listed = sessions.first { $0.id == beside.session.id }
+                    if let listed, listed.archived, !beside.session.archived {
+                        // Archived elsewhere, it takes no more questions.
+                        state.closeSide()
+                    } else {
+                        if let listed {
+                            if listed.hostOffline != beside.session.hostOffline {
+                                state.side?.session.hostOffline = listed.hostOffline
+                            }
+                            if listed.host != beside.session.host { state.side?.session.host = listed.host }
+                        }
+                        let request = Self.request(of: beside.session.id, in: inbox)
+                        if request != beside.request { state.side?.request = request }
+                    }
+                }
                 let shown = show(&state)
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return shown }
                 return .merge(shown, restart(&state))
@@ -299,7 +365,7 @@ package struct AppFeature {
                 }
                 if state.side?.session.id == session.id {
                     // Archived, it takes no more questions.
-                    if session.archived { state.side = nil } else { state.side?.session = session }
+                    if session.archived { state.closeSide() } else { state.side?.session = session }
                 }
                 // A session moved to another host is read from there.
                 switch action {
@@ -314,11 +380,12 @@ package struct AppFeature {
                 // written to it: it won't open again.
                 state.left[id] = nil
                 state.histories.forget(id)
+                // A side chat of the one deleted is closed as any other is.
+                if state.side?.session.id == id { state.closeSide(keeping: false) }
                 if state.session?.session.id == id {
+                    state.closeSide()
                     state.session = nil
-                    state.side = nil
                 }
-                if state.side?.session.id == id { state.side = nil }
                 SessionFeature.State.forgetDraft(of: id)
                 return .none
 
@@ -416,8 +483,30 @@ package struct AppFeature {
                 if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
                 var side = SessionFeature.State(session: session)
                 side.beside = true
+                side.request = Self.request(of: session.id, in: state.sidebar.inbox)
                 state.side = side
+                // The shortcuts stay where the person is until they go
+                // into the new chat, which the window says when they do.
+                state.focus(state.focusedColumn)
                 return .send(.sidebar(.refresh))
+
+            case .side(.dismiss):
+                // Ahead of the side chat's own reducer, which then finds it
+                // closed: what it showed is kept as any session's is.
+                state.closeSide()
+                return .none
+
+            case .columnFocused(let column):
+                if let column { state.focus(column) }
+                return .none
+
+            case .sessionCommand(let action):
+                switch state.focusedColumn {
+                case .side where state.side != nil: return .send(.side(.presented(action)))
+                case .main, .side: break
+                }
+                guard state.session != nil else { return .none }
+                return .send(.session(.presented(action)))
 
             case .session(.presented(.delegate(.openSession(let session)))),
                 .side(.presented(.delegate(.openSession(let session)))),
@@ -471,9 +560,17 @@ package struct AppFeature {
                                     text: outgoing.typed, pastes: outgoing.pastes, images: outgoing.images,
                                     message: message))))
                 }
-                // Deleted since, if nothing was kept of it: there's no box
-                // to put the message back in.
-                guard var left = state.left[outgoing.session] else { return .none }
+                // Closed since. Deleted, there's no box to put the message
+                // back in; otherwise it goes back even if nothing was kept
+                // of the session when it closed.
+                var left: SessionFeature.State.Left
+                if let kept = state.left[outgoing.session] {
+                    left = kept
+                } else if let listed = state.sidebar.sessions[id: outgoing.session] {
+                    left = SessionFeature.State(session: listed).left
+                } else {
+                    return .none
+                }
                 SessionFeature.State.keepUnsent(outgoing, in: &left)
                 state.left[outgoing.session] = left
                 let whose = outgoing.name.isEmpty ? "another session" : "“\(outgoing.name)”"

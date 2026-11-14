@@ -172,6 +172,7 @@ extension Session {
             asking: info.asking, lastMessage: optional(info.lastMessage), itemTitle: optional(info.itemTitle),
             effort: optional(info.effort), experimental: info.experimental)
         readOnly = info.readOnly
+        sharesCode = info.sharesCode
         startedBy = optional(info.startedBySessionID)
     }
 }

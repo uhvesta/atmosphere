@@ -309,6 +309,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     continuation.yield(.loading(read: 0, total: 0))
@@ -339,6 +340,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in AsyncThrowingStream { $0.finish(throwing: DaemonError.disconnected) } }
             $0.continuousClock = clock
         }
@@ -371,6 +373,7 @@ final class SessionFeatureTests: XCTestCase {
         } withDependencies: {
             // As the daemon does: the history past `after`, then the
             // connection drops.
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, after in
                 asked.withValue { $0.append(after) }
                 let events = history.value
@@ -408,6 +411,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in stream }
             $0.daemon.markSeen = { _, _ in }
             $0.continuousClock = clock
@@ -447,6 +451,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     for event in kept { continuation.yield(.event(event)) }
@@ -639,6 +644,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: state ?? SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in AsyncThrowingStream { _ in } }
             $0.daemon.markSeen = { _, _ in }
         }
@@ -691,6 +697,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in
                 watches.withValue { $0 += 1 }
                 return watches.value == 1 ? stream : AsyncThrowingStream { _ in }
@@ -781,6 +788,7 @@ final class SessionFeatureTests: XCTestCase {
                 seen.withValue { $0.append(turns) }
                 marked.fulfill()
             }
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in AsyncThrowingStream { _ in } }
             $0.appActivity = AppActivity(
                 isActive: { active.value }, activations: { activations }, setBadge: { _ in })
@@ -1491,6 +1499,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     continuation.yield(.event(said))
@@ -1734,6 +1743,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in stream }
             $0.daemon.markSeen = { _, _ in }
         }
@@ -1766,6 +1776,7 @@ final class SessionFeatureTests: XCTestCase {
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
             $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
                     for event in kept { continuation.yield(.event(event)) }
@@ -2067,5 +2078,30 @@ final class SessionFeatureTests: XCTestCase {
 extension ChatItem {
     fileprivate func isPerson(_ text: String) -> Bool {
         if case .person(_, text, _) = self { true } else { false }
+    }
+
+    func testAClaudeSessionTakesImagesBeforeItsChatOpens() {
+        let claude = Session(id: "images-claude", name: "first", backend: .claude, workingDirectory: "/work")
+        XCTAssertTrue(SessionFeature.State(session: claude).takesImages)
+        let local = Session(id: "images-local", name: "first", backend: .local, workingDirectory: "/work")
+        XCTAssertFalse(SessionFeature.State(session: local).takesImages, "not known until its models are listed")
+    }
+
+    func testACopilotSessionOpenedAgainTakesImagesAtOnceWhenItsModelDidBefore() async {
+        let session = Session(
+            id: "images-again", name: "first", backend: .copilot, workingDirectory: "/work", model: "gpt-5")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        }
+        store.exhaustivity = .off
+        XCTAssertFalse(store.state.takesImages)
+        await store.send(.readsImagesFound(true))
+        XCTAssertTrue(store.state.takesImages)
+
+        XCTAssertTrue(SessionFeature.State(session: session).takesImages, "opened again, before it's asked")
+        // What was found for one model says nothing of another.
+        var other = session
+        other.model = "small"
+        XCTAssertFalse(SessionFeature.State(session: other).takesImages)
     }
 }

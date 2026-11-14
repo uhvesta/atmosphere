@@ -351,6 +351,9 @@ pub enum SendMode {
     /// As `Enqueue`, but in place of a notice waiting in the queue whose
     /// first line, which says what it's about, is the same.
     EnqueueOnce,
+    /// As `Enqueue`, but always as a message of its own: it joins nothing
+    /// waiting, replaces nothing, and the person's next doesn't join it.
+    EnqueueApart,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

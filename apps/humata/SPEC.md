@@ -1688,6 +1688,40 @@ Tests: the daemon starts, asks, refuses at each limit and for another's
 session, and lets only the app allow; TestStore tests allow one from the
 inbox, nest the child and save the project's setting.
 
+### Review after v0.7.0
+
+Haiku gathered, Fable found and judged: 29 kept, 4 deferred, 3 dropped.
+
+- [x] A side chat changes nothing through agents' tools either: it can
+  read sessions and ask the person, but starts, writes to and proposes
+  nothing, and calling such a tool by name is refused
+- [x] An agent's message to a working session waits as its own, apart
+  from what the person queued; one is at most 32 KiB, and at most 8 wait
+  in the inbox for one asking session
+- [x] What Humata tells an agent (allowed, declined) is marked as
+  Humata's notice; the chat shows it as Humata's, and Stop, Edit and
+  Rewind treat only the person's own messages as theirs
+- [x] Rewinding the chat and files is offered, and done by the host, only
+  for a session with its own copy of the code (`SessionInfo.shares_code`);
+  a refused rewind stops no turn and drops nothing queued
+- [x] A session reads as working from the moment it is sent to
+- [x] The MCP server answers calls while a `read_session` waits, and
+  stops one the client cancels
+- [x] The Session menu and ⌘. and friends act on the column the keyboard
+  is in, the side chat's or the session's; closing the side chat gives
+  them back. A side chat keeps a failed send in its box, shows what its
+  agent asks, and closes when archived elsewhere; its width is kept and
+  Close Side Chat is in the menu
+- [x] The chat's commands are asked for when it opens and kept per
+  session; `/compact` or `/side` typed before the host has answered waits
+  for the answer. `/rewind` before the history has loaded stays in the box
+- [x] Start and write requests are allowed or declined from the chat's
+  strip; Decline in the inbox takes an optional reason
+- [x] A local model in a read-only session is offered no tool that writes
+  or runs a command; search catches up correctly and counts less
+- Deferred: a second SQLite read connection, the history from an event
+  id, no-project chats' agent-session setting (they keep Ask)
+
 ### Milestone AC: agent access
 
 The owner, 2026-11-13: gate what the `humata` command line and its MCP

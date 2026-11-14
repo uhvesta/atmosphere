@@ -215,6 +215,10 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
         effort: record.effort.clone().unwrap_or_default(),
         experimental: record.experimental,
         read_only: record.read_only,
+        shares_code: record
+            .checkouts
+            .iter()
+            .any(|checkout| checkout.owner != record.id.as_str()),
         turns: summary.turns,
         seen_turns: 0,
         pending: summary
@@ -249,6 +253,7 @@ pub fn send_mode(mode: pb::SendMode) -> SendMode {
     match mode {
         pb::SendMode::Immediate => SendMode::Immediate,
         pb::SendMode::EnqueueOnce => SendMode::EnqueueOnce,
+        pb::SendMode::EnqueueApart => SendMode::EnqueueApart,
         pb::SendMode::Enqueue | pb::SendMode::Unspecified => SendMode::Enqueue,
     }
 }

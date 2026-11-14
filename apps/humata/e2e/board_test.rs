@@ -113,7 +113,13 @@ fn a_session_on_a_subtask_moves_it_and_its_task() {
         &statuses(["in_progress", "in_progress", "todo"]),
     );
 
+    // A session reads as working as soon as it's sent to, which may be
+    // before its copy of the code is made.
     let copy = humata.working_directory(session);
+    let made = std::time::Instant::now();
+    while !copy.is_dir() && made.elapsed() < std::time::Duration::from_secs(30) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     std::fs::write(copy.join("go"), "").unwrap_or_else(|error| panic!("{error}"));
     until(
         &humata,

@@ -973,6 +973,59 @@ async fn a_session_in_a_project_works_in_its_own_copy_and_lists_under_it() {
 }
 
 #[tokio::test]
+async fn a_chat_only_fork_lists_as_sharing_its_code_and_a_fork_with_its_own_copy_doesnt() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let session = started(&client, start_in(&project.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    let forked = |fork: pb::ForkSession| {
+        let client = &client;
+        async move {
+            match client.call(pb::request::Kind::ForkSession(fork)).await {
+                Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+                    session: Some(fork),
+                })) => fork,
+                other => panic!("not forked: {other:?}"),
+            }
+        }
+    };
+    let chat_only = forked(pb::ForkSession {
+        session_id: session.id.clone(),
+        chat_only: true,
+        ..Default::default()
+    })
+    .await;
+    let own = forked(pb::ForkSession {
+        session_id: session.id.clone(),
+        ..Default::default()
+    })
+    .await;
+
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions {
+            project_id: project.id.clone(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::Sessions(listed)) = listed else {
+        panic!("{listed:?}")
+    };
+    let shares = |id: &str| {
+        listed
+            .sessions
+            .iter()
+            .find(|listed| listed.id == id)
+            .unwrap_or_else(|| panic!("{id} isn't listed: {listed:?}"))
+            .shares_code
+    };
+    assert!(shares(&chat_only.id));
+    assert!(!shares(&own.id));
+    assert!(!shares(&session.id));
+}
+
+#[tokio::test]
 async fn a_files_versions_come_from_its_turns_and_one_is_restored_as_a_new_change() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();

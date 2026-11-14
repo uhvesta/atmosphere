@@ -176,7 +176,11 @@ impl Daemon {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             match catching_up.as_ref() {
-                Some(running) if !*running.borrow() => running.clone(),
+                // One whose task ended without saying so, as by a panic,
+                // would never finish: another is started in its place.
+                Some(running) if !*running.borrow() && running.has_changed().is_ok() => {
+                    running.clone()
+                }
                 _ => {
                     let (finished, done) = tokio::sync::watch::channel(false);
                     tokio::spawn(async move {
@@ -280,16 +284,20 @@ impl Daemon {
             let had = indexed.as_ref().map(|indexed| &indexed.indexed);
             let id = session.id.clone();
             if follows_on(&events, had) {
-                let entries = entries(&events, from);
                 self.store
-                    .apart(move |store| store.index(&id, &whereabouts, from, &now, &entries))
+                    .apart(move |store| {
+                        let entries = entries(&events, from);
+                        store.index(&id, &whereabouts, from, &now, &entries)
+                    })
                     .await?;
             } else {
                 // Cut back since, as by a rewind: what was indexed is no
                 // longer its history, so its entries are made again.
-                let entries = entries(&events, 0);
                 self.store
-                    .apart(move |store| store.index_afresh(&id, &whereabouts, &now, &entries))
+                    .apart(move |store| {
+                        let entries = entries(&events, 0);
+                        store.index_afresh(&id, &whereabouts, &now, &entries)
+                    })
                     .await?;
             }
             if !settled {
@@ -354,17 +362,25 @@ fn entries(events: &[pb::SessionEvent], from: usize) -> Vec<Entry> {
         if !event.parent_call_id.is_empty() {
             continue;
         }
-        let found = match &event.kind {
-            Some(Kind::UserMessage(message)) => Some((EntryKind::Message, message.text.clone())),
-            Some(Kind::AssistantMessage(message)) => Some((EntryKind::Reply, message.text.clone())),
-            Some(Kind::ToolStarted(started)) => Some((EntryKind::ToolCall, tool_call(started))),
-            Some(Kind::ToolCompleted(completed)) => {
-                Some((EntryKind::ToolOutput, start_of(&completed.output)))
+        // Those indexed before are only counted, not copied.
+        let found = if index < from {
+            None
+        } else {
+            match &event.kind {
+                Some(Kind::UserMessage(message)) => {
+                    Some((EntryKind::Message, message.text.clone()))
+                }
+                Some(Kind::AssistantMessage(message)) => {
+                    Some((EntryKind::Reply, message.text.clone()))
+                }
+                Some(Kind::ToolStarted(started)) => Some((EntryKind::ToolCall, tool_call(started))),
+                Some(Kind::ToolCompleted(completed)) => {
+                    Some((EntryKind::ToolOutput, start_of(&completed.output)))
+                }
+                _ => None,
             }
-            _ => None,
         };
-        if index >= from
-            && let Some((kind, text)) = found
+        if let Some((kind, text)) = found
             && !text.trim().is_empty()
         {
             entries.push(Entry {

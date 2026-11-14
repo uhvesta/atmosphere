@@ -4,11 +4,25 @@
 //! is: a host stores the message as any other, so one needs no update to
 //! carry it.
 //!
-//! The app reads the same line in `AgentSender` (clients/daemon); change
-//! both together.
+//! What Humata itself tells a session, such as what became of something
+//! its agent asked for, starts with a line of its own in the same way.
+//!
+//! The app reads the same lines, in `AgentSender` and `HumataNotice`
+//! (clients/daemon); change both together.
 
 const START: &str = "Message from the agent of session ";
 const END: &str = "\", not from the person:\n\n";
+const NOTICE: &str = "Notice from Humata, not from the person:\n\n";
+
+/// `text` as Humata's own notice to a session.
+pub(crate) fn noticed(text: &str) -> String {
+    format!("{NOTICE}{text}")
+}
+
+/// What a notice of Humata's says; None for any other message.
+pub(crate) fn notice(text: &str) -> Option<&str> {
+    text.strip_prefix(NOTICE)
+}
 
 /// `text` as session `id`, named `name`, sends it.
 pub(crate) fn headed(id: &str, name: &str, text: &str) -> String {
@@ -54,6 +68,19 @@ mod tests {
         assert_eq!(sent.text, text);
         // The name survives but for what would end it early.
         assert!(sent.name.starts_with("Build") && sent.name.ends_with("app"));
+    }
+
+    #[test]
+    fn a_notice_is_humatas_and_keeps_its_text() {
+        let text = "Your request was declined.\n\nCarry on without it.";
+        let noticed = noticed(text);
+        assert_eq!(notice(&noticed), Some(text));
+        // It is neither another agent's message nor the person's.
+        assert_eq!(sender(&noticed), None);
+        assert_eq!(notice(text), None);
+        assert_eq!(notice(&headed("s-1", "Build", text)), None);
+        // Quoting the line later in a message doesn't make it one.
+        assert_eq!(notice(&format!("See: {noticed}")), None);
     }
 
     #[test]

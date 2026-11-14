@@ -424,7 +424,7 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     let submit: () -> Void
     let top: Top
     let attach: Attach
-    let plus: Plus
+    var plus: Plus
     private var token: String?
     private var removeToken: () -> Void = {}
 
@@ -434,6 +434,16 @@ public struct ChatComposer<Top: View, Attach: View>: View {
         var composer = self
         composer.token = name
         composer.removeToken = remove
+        return composer
+    }
+
+    /// Shows + only while `shown`, such as while the model can take what
+    /// it adds. The composer stays the same view either way, so the field
+    /// keeps what's typed and the keyboard.
+    public func showingPlus(_ shown: Bool) -> Self {
+        guard !shown else { return self }
+        var composer = self
+        composer.plus = .none
         return composer
     }
 

@@ -12,6 +12,8 @@ import SwiftUI
 /// them when it needs the person.
 package struct AppView: View {
     @Bindable var store: StoreOf<AppFeature>
+    /// The chat column the keyboard is in; nil when it's in neither.
+    @FocusedValue(\.sessionColumn) private var column
 
     package init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -39,6 +41,8 @@ package struct AppView: View {
         .alert($store.scope(state: \.sendFailure, action: \.sendFailure))
         // Mermaid blocks in chats drawn as diagrams.
         .environment(\.codeBlockRenderer, MermaidRenderer.codeBlocks)
+        // The Session menu and the chat's shortcuts follow the column.
+        .onChange(of: column) { store.send(.columnFocused(column)) }
         .task {
             store.send(.task)
             // Not awaited, so the sidebar's poll, its notices and the Dock
@@ -67,8 +71,10 @@ package struct AppView: View {
                     SessionView(store: session)
                         .id(session.session.id)
                 }
+                .focusedValue(\.sessionColumn, .main)
                 if let side = store.scope(state: \.side, action: \.side.presented) {
                     SideChatColumn(store: side) { store.send(.side(.dismiss)) }
+                        .focusedValue(\.sessionColumn, .side)
                 }
             }
         } else {
@@ -79,16 +85,31 @@ package struct AppView: View {
     }
 }
 
+extension FocusedValues {
+    /// Which of the window's two chats the keyboard is in.
+    @Entry fileprivate var sessionColumn: AppFeature.SessionColumn?
+}
+
 /// A side chat beside the open session: a bar that says what it is and
-/// closes it, over its chat, as wide as it's dragged.
+/// closes it, over its chat, as wide as it's dragged and as wide the next
+/// time one opens.
 private struct SideChatColumn: View {
     let store: StoreOf<SessionFeature>
     let close: () -> Void
-    @State private var width: CGFloat = 440
+    /// The width it was last left at, kept between runs.
+    @AppStorage("sideChatWidth") private var keptWidth = 440.0
+    /// The width while it's dragged; nil between drags, so only the end
+    /// of a drag is written down.
+    @State private var dragged: CGFloat?
     /// The width when a drag began; nil between drags.
     @State private var dragFrom: CGFloat?
 
     private static let widths: ClosedRange<CGFloat> = 360...900
+
+    /// What's kept may be from another build, or edited: held to the range.
+    private var width: CGFloat {
+        dragged ?? min(max(CGFloat(keptWidth), Self.widths.lowerBound), Self.widths.upperBound)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -104,9 +125,13 @@ private struct SideChatColumn: View {
                                     let from = dragFrom ?? width
                                     dragFrom = from
                                     let next = from - drag.translation.width
-                                    width = min(max(next, Self.widths.lowerBound), Self.widths.upperBound)
+                                    dragged = min(max(next, Self.widths.lowerBound), Self.widths.upperBound)
                                 }
-                                .onEnded { _ in dragFrom = nil }
+                                .onEnded { _ in
+                                    if let dragged { keptWidth = Double(dragged) }
+                                    dragged = nil
+                                    dragFrom = nil
+                                }
                         )
                         .help("Drag to make the side chat wider or narrower")
                 }
@@ -122,7 +147,6 @@ private struct SideChatColumn: View {
                         Button("Close", systemImage: "xmark", action: close)
                             .labelStyle(.iconOnly)
                             .buttonStyle(.borderless)
-                            .keyboardShortcut("w", modifiers: [.command, .option])
                             .help("Close the side chat; it stays under its session in the sidebar (⌥⌘W)")
                     }
                     .padding(.horizontal, 12)

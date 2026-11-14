@@ -209,11 +209,18 @@ private struct RequestRow: View {
                 .textSelection(.enabled)
                 .padding(.leading, 30)
             HStack {
-                TextField(isQuestion ? "Reply" : "Feedback to carry on from", text: $reply)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(sendReply)
-                Button(isQuestion ? "Reply" : "Send Feedback", action: sendReply)
-                    .disabled(trimmed.isEmpty)
+                if request.kind.asksForSession {
+                    // A reply to one of these is a decline, so it's sent by
+                    // Decline alone; Return does nothing.
+                    TextField("Why not (optional)", text: $reply)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    TextField(isQuestion ? "Reply" : "Feedback to carry on from", text: $reply)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(sendReply)
+                    Button(isQuestion ? "Reply" : "Send Feedback", action: sendReply)
+                        .disabled(trimmed.isEmpty)
+                }
                 if case .move(_, let status) = request.kind {
                     Button("Open Changes", action: openChanges)
                     Menu("Move To") {
@@ -233,8 +240,11 @@ private struct RequestRow: View {
                             .buttonStyle(.borderedProminent)
                     }
                 } else if request.kind.asksForSession {
-                    Button("Decline") { answer(.dismiss) }
-                        .help("Don’t; the agent is told you declined")
+                    Button("Decline") { answer(trimmed.isEmpty ? .dismiss : .reply(trimmed)) }
+                        .help(
+                            trimmed.isEmpty
+                                ? "Don’t; the agent is told you declined"
+                                : "Don’t; the agent is told you declined, and why")
                     if shortcuts {
                         ShortcutHint(deny: false)
                         Button("Allow") { answer(.approve) }

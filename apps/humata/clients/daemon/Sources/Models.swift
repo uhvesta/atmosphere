@@ -189,6 +189,29 @@ package struct AgentSender: Hashable, Sendable {
     }
 }
 
+/// A notice Humata itself sent a session as a message, such as that the
+/// person allowed or declined what its agent asked for: the daemon starts
+/// it with a line saying so, which the agent reading it understands as it
+/// is, and the chat shows as a notice, not as the person's message.
+///
+/// The daemon writes the line in `sender.rs` (daemon/humatad); change both
+/// together.
+package struct HumataNotice: Hashable, Sendable {
+    /// What it says, without the line saying whose it is.
+    package var text: String
+
+    private static let start = "Notice from Humata, not from the person:\n\n"
+
+    /// Nil for a message that isn't Humata's notice.
+    package init?(_ message: String) {
+        guard message.hasPrefix(Self.start) else { return nil }
+        text = String(message.dropFirst(Self.start.count))
+    }
+
+    /// `text` as Humata sends it.
+    package static func headed(_ text: String) -> String { start + text }
+}
+
 /// What New Session starts from, for every project or for one.
 package struct SessionDefaults: Hashable, Sendable {
     /// Nil for none.
@@ -361,6 +384,9 @@ package struct Session: Identifiable, Hashable, Sendable {
     /// A side chat: its agent reads, and every write or command it asks
     /// for is refused.
     package var readOnly = false
+    /// It works in a copy of the code that belongs to another session, as
+    /// a chat-only fork does: its files can't be rewound from here.
+    package var sharesCode = false
     /// The session whose agent started it, with start_session; nil when
     /// the person did. It isn't a fork: it has none of that one's history.
     package var startedBy: String?

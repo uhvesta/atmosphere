@@ -922,6 +922,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                     session.queue(&mut control, text, images, false, false);
                 }
             }
+            SendMode::EnqueueApart => session.queue(&mut control, text, images, false, false),
             SendMode::Immediate
                 if control.turn_open && !control.compacting && images.is_empty() =>
             {
@@ -1081,20 +1082,24 @@ impl<R: Runner> Agent for LocalAgent<R> {
         options: ForkOptions,
     ) -> Result<SessionRecord, AgentError> {
         let parent = self.session(id)?;
-        let mut events = parent.log.events()?;
         let empty = options.empty;
         // A side chat reads its parent's copy of the code.
         let chat_only = options.chat_only || options.read_only;
         let before = options.before.filter(|_| !empty);
-        if empty {
+        // Read off the executor when the parent's history is at rest.
+        let mut events = if empty {
             // None of the chat; with its own copy of the code, where the
             // parent last saved it, as the checkpoint it starts from.
-            let code = last_checkpoint(&events);
-            events.clear();
+            let code = peek(&parent, last_checkpoint).await?;
             if !chat_only && !code.is_empty() {
-                events.push(Event::now(EventKind::Checkpoint { snapshots: code }));
+                vec![Event::now(EventKind::Checkpoint { snapshots: code })]
+            } else {
+                Vec::new()
             }
-        } else if let Some(before) = &before {
+        } else {
+            peek(&parent, <[Event]>::to_vec).await?
+        };
+        if let Some(before) = &before {
             let index = events
                 .iter()
                 .position(|event| &event.id == before)
@@ -1184,13 +1189,48 @@ impl<R: Runner> Agent for LocalAgent<R> {
         files: bool,
     ) -> Result<(), AgentError> {
         let session = self.session(id)?;
+        // Every refusal comes before anything is dropped or stopped, so a
+        // rewind that can't be made leaves the turn and the queue alone.
         {
             let control = session.lock();
-            if control.record.archived {
+            let record = &control.record;
+            if record.archived {
                 return Err(AgentError::Archived {
                     session: id.clone(),
                 });
             }
+            // A side chat never restores files, whoever's copy it reads.
+            let shared = record.read_only
+                || record
+                    .checkouts
+                    .iter()
+                    .any(|checkout| checkout.owner != id.as_str());
+            if files && shared {
+                return Err(AgentError::SharedFiles {
+                    session: id.clone(),
+                });
+            }
+        }
+        let wanted = before.clone();
+        let point = peek(&session, move |events| {
+            let index = events.iter().position(|event| event.id == wanted)?;
+            Some(rewind_point(events, index).is_some())
+        })
+        .await?;
+        match point {
+            None => {
+                return Err(AgentError::UnknownEvent {
+                    session: id.clone(),
+                    event: before.clone(),
+                });
+            }
+            Some(false) => {
+                return Err(AgentError::NotARewindPoint {
+                    session: id.clone(),
+                    event: before.clone(),
+                });
+            }
+            Some(true) => {}
         }
         // What waits to be sent goes with what is cut.
         drop_queued(&session);
@@ -1573,7 +1613,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn summary(&self, id: &SessionId) -> Result<Summary, AgentError> {
-        Ok(self.session(id)?.log.summary())
+        let session = self.session(id)?;
+        let summary = session.log.summary();
+        // A driver is running before its turn's first event and between
+        // queued turns, when the events alone say the session is idle.
+        if session.lock().running.is_some() {
+            return Ok(summary.working());
+        }
+        Ok(summary)
     }
 
     async fn watch(&self, id: &SessionId) -> Result<Watch, AgentError> {

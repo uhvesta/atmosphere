@@ -908,7 +908,8 @@ pub enum DaemonError {
 }
 
 /// Why a session's agent may not start or write to another session, for
-/// the agent to read, or why a client may not decide it.
+/// the agent to read; why a client may not decide it; or why the person
+/// can't allow what one asked for, for the person to read.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentSessionsError {
     #[error(
@@ -956,6 +957,47 @@ pub enum AgentSessionsError {
         "only the Humata app can allow an agent to start or write to a session, or change what a project's agents may do. Open Humata: allow it in the inbox, or change it in the project's settings under Agent Sessions"
     )]
     AppOnly,
+
+    #[error(
+        "this is a side chat, which only reads, so it can't start sessions or write to other sessions. Say what you'd hand over, and to which session, and the person can do it from the session this chat is beside"
+    )]
+    ReadOnly,
+
+    #[error(
+        "the message is {bytes} bytes and the most one session's agent may send another is {limit}. Put the detail in a file the other session can read, and name the file in a shorter message"
+    )]
+    MessageTooLong { bytes: usize, limit: usize },
+
+    #[error(
+        "{waiting} of this session's messages to other sessions already wait for the person to allow them, the most that may wait at once. End your turn and wait for their answers; each comes as a message, and makes room for another"
+    )]
+    TooManyWaiting { waiting: u32 },
+
+    #[error(
+        "session {name:?} is started, with id {id}, but your first message didn't reach it. Send the message with send_message to that id, and don't start the session again"
+    )]
+    StartedUnsent {
+        name: String,
+        id: String,
+        #[source]
+        source: Box<DaemonError>,
+    },
+
+    /// As `TooManyChildren`, for the person allowing a start.
+    #[error(
+        "session {name:?} already has {limit} sessions it started that aren't archived, counting those it asked for that still wait, and that is the most this project lets one session have. Archive one of its sessions, or raise the limit in the project's settings under Agent Sessions, then allow this again; or decline it"
+    )]
+    AllowTooManyChildren { name: String, limit: u32 },
+
+    /// As `TooDeep`, for the person allowing a start.
+    #[error(
+        "session {name:?} is {depth} deep under the one you started, and this project lets agents' sessions nest {limit} deep, so it can't start another. Raise the limit in the project's settings under Agent Sessions, then allow this again; or decline it"
+    )]
+    AllowTooDeep {
+        name: String,
+        depth: u32,
+        limit: u32,
+    },
 }
 
 fn said(stderr: &str) -> String {

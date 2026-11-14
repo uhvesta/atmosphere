@@ -315,7 +315,7 @@ impl Runner for LocalModelRunner {
         let (request, base_url, apps) = self.request(&turn)?;
 
         // Without Humata's tools the turn still has the files to work on.
-        let mut offered = tools();
+        let mut offered = tools(turn.record().read_only);
         let mut humata = match &self.mcp {
             None => None,
             Some(server) => {
@@ -1312,7 +1312,26 @@ impl Said {
 /// The result given a tool call that was cut off before it finished.
 const INTERRUPTED: &str = "This tool call was interrupted before it finished, so its result is unknown. Check what it was meant to change before relying on it.";
 
-fn tools() -> Value {
+/// The tools that write a file or run a command, which a read-only
+/// session's model isn't offered. The dispatcher refuses them all the same.
+const CHANGING_TOOLS: [&str; 3] = ["shell", "write_file", "edit_file"];
+
+/// The tools offered to the model; only those that read when `read_only`.
+fn tools(read_only: bool) -> Value {
+    let Value::Array(mut all) = all_tools() else {
+        return Value::Array(Vec::new());
+    };
+    if read_only {
+        all.retain(|tool| {
+            tool["function"]["name"]
+                .as_str()
+                .is_none_or(|name| !CHANGING_TOOLS.contains(&name))
+        });
+    }
+    Value::Array(all)
+}
+
+fn all_tools() -> Value {
     let tool = |name: &str, description: &str, parameters: Value| {
         json!({"type": "function", "function": {
             "name": name, "description": description, "parameters": parameters,
@@ -2393,6 +2412,45 @@ mod tests {
         );
     }
 
+    /// The names of the tools a request offers the model.
+    fn offered(request: &Value) -> Vec<String> {
+        request["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_read_only_session_offers_the_model_no_tool_that_writes_or_runs_a_command() {
+        let server = serve(vec![
+            (200, sse(&[text("One.")])),
+            (200, sse(&[text("Two.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "one").await;
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        let options = ForkOptions {
+            read_only: true,
+            ..ForkOptions::default()
+        };
+        let side = fixture.agent.fork(&id, options).await.expect("forked");
+        fixture.send(&side.id, "two").await;
+        wait_for(&fixture.agent, &side.id, idle_turns(2)).await;
+
+        let requests = server.requests();
+        let writes = |name: &String| ["shell", "write_file", "edit_file"].contains(&name.as_str());
+        let own = offered(&requests[0]);
+        let read_only = offered(&requests[1]);
+        assert!(own.iter().any(writes), "{own:?}");
+        assert!(!read_only.iter().any(writes), "{read_only:?}");
+        assert!(read_only.contains(&"read_file".to_owned()), "{read_only:?}");
+    }
+
     fn event_of(events: &[Event], found: impl Fn(&EventKind) -> bool) -> Event {
         events
             .iter()
@@ -3217,7 +3275,7 @@ mod tests {
 
     #[test]
     fn the_budget_is_sized_from_the_models_context() {
-        let tools = tools();
+        let tools = tools(false);
         let small = budget(Some(8_192), &tools);
         let large = budget(Some(131_072), &tools);
         assert!(small < large, "{small} {large}");

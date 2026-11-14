@@ -6,8 +6,8 @@ use std::sync::Arc;
 use humata_wire::{Client, ClientError, pb};
 
 use super::{
-    after_turns, client_of, daemon, daemon_itself, git_repository, item, project, refused_with,
-    start_on, started,
+    after_turns, client_of, daemon, daemon_itself, git_repository, history_of, item, project,
+    refused_with, send, sent_to, start_on, started, waiting,
 };
 use crate::daemon::{Connection, Daemon};
 use crate::hosts::Hosts;
@@ -80,11 +80,20 @@ async fn start_child(
 }
 
 async fn write(client: &Client, from: &str, to: &str) -> Result<pb::AgentActed, ClientError> {
+    write_text(client, from, to, "hello").await
+}
+
+async fn write_text(
+    client: &Client,
+    from: &str,
+    to: &str,
+    text: &str,
+) -> Result<pb::AgentActed, ClientError> {
     let asked = client
         .call(pb::request::Kind::AgentSendMessage(pb::AgentSendMessage {
             session_id: from.to_owned(),
             to_session_id: to.to_owned(),
-            text: "hello".to_owned(),
+            text: text.to_owned(),
         }))
         .await?;
     match asked {
@@ -506,4 +515,275 @@ async fn only_the_app_allows_what_an_agent_asked_or_changes_what_agents_may_do()
     let by_app = app.call(allow()).await;
     assert!(by_app.is_ok(), "{by_app:?}");
     assert_eq!(sessions(&app).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_side_chat_starts_no_session_and_writes_to_none_whatever_its_project_allows() {
+    let Setup {
+        client,
+        project,
+        session,
+        ..
+    } = &setup().await;
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            message_others: true,
+            ..allowing()
+        },
+    )
+    .await;
+    send(client, &session.id, "hello").await;
+    after_turns(client, &session.id, 1).await;
+    let side = match client
+        .call(pb::request::Kind::ForkSession(pb::ForkSession {
+            session_id: session.id.clone(),
+            read_only: true,
+            ..Default::default()
+        }))
+        .await
+    {
+        Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+            session: Some(side),
+        })) => side,
+        other => panic!("not forked: {other:?}"),
+    };
+    assert!(side.read_only);
+
+    let start = start_child(client, &side.id, "Tests").await;
+    assert!(start.is_err(), "{start:?}");
+    let sent = write(client, &side.id, &session.id).await;
+    assert!(sent.is_err(), "{sent:?}");
+    // Nothing started, nothing waits, and the session it is beside was
+    // sent only what the person sent it.
+    assert_eq!(sessions(client).await.len(), 2);
+    assert!(requests(client).await.is_empty());
+    assert_eq!(sent_to(client, &session.id).await, ["hello"]);
+
+    // Nor where each would wait for the person.
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            mode: pb::AgentSessionsMode::Ask.into(),
+            message_others: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(start_child(client, &side.id, "Tests").await.is_err());
+    assert!(write(client, &side.id, &session.id).await.is_err());
+    assert!(requests(client).await.is_empty());
+}
+
+/// The messages waiting in a session's queue as they last stood, in the
+/// order they were queued.
+fn queued(events: &[pb::SessionEvent]) -> Vec<String> {
+    let mut waiting: Vec<(String, String)> = Vec::new();
+    for event in events {
+        if let Some(pb::session_event::Kind::MessageQueued(queued)) = &event.kind {
+            match waiting.iter_mut().find(|(id, _)| *id == queued.queue_id) {
+                Some((_, text)) => text.clone_from(&queued.text),
+                None => waiting.push((queued.queue_id.clone(), queued.text.clone())),
+            }
+        }
+    }
+    waiting.into_iter().map(|(_, text)| text).collect()
+}
+
+#[tokio::test]
+async fn an_agents_message_to_a_working_session_waits_apart_from_what_its_person_queued() {
+    let Setup {
+        client,
+        project,
+        task,
+        session,
+        ..
+    } = &setup().await;
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            message_others: true,
+            ..allowing()
+        },
+    )
+    .await;
+    // A session held mid-turn, with a message of the person's waiting.
+    let busy = {
+        let mut request = start_on(task);
+        if let pb::request::Kind::StartSession(start) = &mut request {
+            start.backend_config = r#"{"rules": [
+                {"when": "write", "steps": [{"step": "write_file", "path": "a.txt", "contents": "a"}]},
+                {"when": "", "steps": [{"step": "say", "text": "ok"}]}
+            ]}"#
+            .to_owned();
+        }
+        started(client, request).await
+    };
+    send(client, &busy.id, "write").await;
+    waiting(client, &busy.id).await;
+    send(client, &busy.id, "then the tests").await;
+
+    let sent = write(client, &session.id, &busy.id).await;
+    assert!(
+        matches!(&sent, Ok(acted) if acted.session.is_some()),
+        "{sent:?}"
+    );
+    // And what the person writes after doesn't join the agent's.
+    send(client, &busy.id, "and the docs").await;
+
+    let waits = queued(&history_of(client, &busy.id).await);
+    let [persons, agents, after] = waits.as_slice() else {
+        panic!("{waits:?}")
+    };
+    // The person's is as they wrote it; the agent's is its own, named as
+    // the agent's.
+    assert_eq!(persons, "then the tests");
+    let from = crate::sender::sender(agents).unwrap_or_else(|| panic!("no sender in {agents:?}"));
+    assert_eq!((from.id, from.text), (session.id.as_str(), "hello"));
+    assert_eq!(after, "and the docs");
+}
+
+#[tokio::test]
+async fn only_so_many_messages_wait_for_the_person_and_none_over_the_size() {
+    let Setup {
+        client,
+        project,
+        task,
+        session,
+        ..
+    } = &setup().await;
+    let other = started(client, start_on(task)).await;
+    let_agents(
+        client,
+        project,
+        pb::AgentSessions {
+            mode: pb::AgentSessionsMode::Ask.into(),
+            message_others: true,
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // A message far over the size waits nowhere, and neither does a
+    // session asked to start with one.
+    let long = "word ".repeat(20_000);
+    let refused = write_text(client, &session.id, &other.id, &long).await;
+    assert!(refused.is_err(), "{refused:?}");
+    let refused = client
+        .call(pb::request::Kind::AgentStartSession(
+            pb::AgentStartSession {
+                session_id: session.id.clone(),
+                name: "Tests".to_owned(),
+                text: long,
+            },
+        ))
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(requests(client).await.is_empty());
+
+    // Messages wait until one more is refused.
+    let mut kept = 0usize;
+    while write(client, &session.id, &other.id).await.is_ok() {
+        kept += 1;
+        assert!(kept < 1000, "nothing limits the messages waiting");
+    }
+    assert!(kept > 0);
+    assert_eq!(requests(client).await.len(), kept);
+
+    // Answering one makes room for one.
+    let request = requests(client).await.remove(0);
+    let declined = client
+        .call(answer(
+            &request.id,
+            pb::answer_request::Answer::Dismiss(true),
+        ))
+        .await;
+    assert!(declined.is_ok(), "{declined:?}");
+    assert!(write(client, &session.id, &other.id).await.is_ok());
+    assert!(write(client, &session.id, &other.id).await.is_err());
+    assert_eq!(requests(client).await.len(), kept);
+}
+
+#[tokio::test]
+async fn what_became_of_a_request_reaches_its_agent_as_humatas_notice() {
+    let Setup {
+        client, session, ..
+    } = &setup().await;
+    let acted = start_child(client, &session.id, "Tests")
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let request = acted.request.unwrap_or_else(|| panic!("nothing waits"));
+    let declined = client
+        .call(answer(
+            &request.id,
+            pb::answer_request::Answer::Dismiss(true),
+        ))
+        .await;
+    assert!(declined.is_ok(), "{declined:?}");
+
+    let events = after_turns(client, &session.id, 1).await;
+    let told = sent_to(client, &session.id).await;
+    let [told] = told.as_slice() else {
+        panic!("{told:?}")
+    };
+    // It is marked as Humata's: neither the person's own words nor
+    // another agent's.
+    assert!(crate::sender::notice(told).is_some(), "{told:?}");
+    assert!(crate::sender::sender(told).is_none(), "{told:?}");
+    assert_eq!(received(&events).len(), 1);
+}
+
+#[tokio::test]
+async fn allowing_a_start_past_the_projects_limit_is_refused_and_it_stays_in_the_inbox() {
+    let Setup {
+        client,
+        project,
+        session,
+        ..
+    } = &setup().await;
+    let asking = |max_children| pb::AgentSessions {
+        mode: pb::AgentSessionsMode::Ask.into(),
+        message_others: false,
+        max_children,
+        max_depth: 0,
+    };
+    let_agents(client, project, asking(2)).await;
+    for name in ["First", "Second"] {
+        let asked = start_child(client, &session.id, name).await;
+        assert!(
+            matches!(&asked, Ok(acted) if acted.request.is_some()),
+            "{asked:?}"
+        );
+    }
+    // The person lowers the limit before answering either.
+    let_agents(client, project, asking(1)).await;
+
+    let request = requests(client).await.remove(0);
+    let allowed = client
+        .call(answer(
+            &request.id,
+            pb::answer_request::Answer::Approve(true),
+        ))
+        .await;
+    assert!(allowed.is_err(), "{allowed:?}");
+    assert_eq!(sessions(client).await.len(), 1);
+    assert_eq!(requests(client).await.len(), 2);
+
+    // Declining the other makes room, and it can be allowed after all.
+    let other = requests(client).await.remove(1);
+    let declined = client
+        .call(answer(&other.id, pb::answer_request::Answer::Dismiss(true)))
+        .await;
+    assert!(declined.is_ok(), "{declined:?}");
+    let allowed = client
+        .call(answer(
+            &request.id,
+            pb::answer_request::Answer::Approve(true),
+        ))
+        .await;
+    assert!(allowed.is_ok(), "{allowed:?}");
+    assert_eq!(sessions(client).await.len(), 2);
 }

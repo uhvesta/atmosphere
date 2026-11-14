@@ -403,7 +403,7 @@ struct SessionRow: View {
             }
             Label(session.title, systemImage: icon)
                 .lineLimit(1)
-                .help(session.itemTitle.map { "Works on \($0)" } ?? "")
+                .help(help)
             if session.keeper {
                 Image(systemName: "star.fill")
                     .foregroundStyle(.yellow)
@@ -454,8 +454,18 @@ struct SessionRow: View {
         return active.relativeTime(to: now)
     }
 
+    /// What it works on, and for a side chat that it only reads.
+    private var help: String {
+        let works = session.itemTitle.map { String(localized: "Works on \($0)") }
+        guard session.readOnly else { return works ?? "" }
+        let reads = String(localized: "A side chat: it reads the code and the conversation, and changes nothing")
+        return works.map { "\(reads). \($0)" } ?? reads
+    }
+
     private var icon: String {
-        // A fork, a session another's agent started, or one the person did.
+        // A side chat, a fork, a session another's agent started, or one
+        // the person did.
+        if session.readOnly { return "rectangle.righthalf.inset.filled" }
         if session.parentID != nil { return "arrow.triangle.branch" }
         return session.startedBy == nil ? "bubble.left.and.text.bubble.right" : "arrow.turn.down.right"
     }

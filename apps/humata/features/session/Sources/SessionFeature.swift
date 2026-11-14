@@ -103,19 +103,25 @@ package struct SessionFeature {
             /// still being written goes on from where it was.
             fileprivate var streaming: String
             fileprivate var streamed: Set<String>
-            /// About how much memory it holds: the text of its events.
+            /// The small copies of its sent images read so far, so they
+            /// aren't read whole from the daemon again.
+            fileprivate var thumbnails: [String: Data]
+            /// About how much memory it holds: the text of its events and
+            /// its thumbnails.
             package let bytes: Int
 
             fileprivate init(
                 log: IdentifiedArrayOf<SessionEvent>, chat: Chat, subagents: SubagentLog, streaming: String,
-                streamed: Set<String>
+                streamed: Set<String>, thumbnails: [String: Data]
             ) {
                 self.log = log
                 self.chat = chat
                 self.subagents = subagents
                 self.streaming = streaming
                 self.streamed = streamed
-                bytes = log.reduce(streaming.utf8.count) { $0 + $1.kind.bytes + Self.eventBytes }
+                self.thumbnails = thumbnails
+                let images = thumbnails.reduce(0) { $0 + $1.key.utf8.count + $1.value.count }
+                bytes = log.reduce(streaming.utf8.count + images) { $0 + $1.kind.bytes + Self.eventBytes }
             }
         }
 
@@ -124,7 +130,9 @@ package struct SessionFeature {
         /// is here isn't the whole of it.
         package var history: History? {
             guard historyLoaded, !replaying, !rewinding, !log.isEmpty else { return nil }
-            return History(log: log, chat: chat, subagents: subagentLog, streaming: streaming, streamed: streamed)
+            return History(
+                log: log, chat: chat, subagents: subagentLog, streaming: streaming, streamed: streamed,
+                thumbnails: thumbnails)
         }
 
         /// Shows `history`, kept when the chat was last looked away from,
@@ -135,6 +143,7 @@ package struct SessionFeature {
             subagentLog = history.subagents
             streaming = history.streaming
             streamed = history.streamed
+            thumbnails = history.thumbnails
             derive()
             review.turns = max(review.turns, chat.turnsStarted)
             historyLoaded = true
@@ -170,7 +179,12 @@ package struct SessionFeature {
         /// runs, not with the saved draft: they can be large.
         package var images: IdentifiedArrayOf<DraftImage> = []
         /// Whether the session's model can see images; nil until known.
+        /// Claude's all can, so it's known from the start; for the others
+        /// it starts as what was last found for the session's model.
         package var readsImages: Bool?
+        /// What was last found, kept per session while Humata runs, so a
+        /// chat opened again offers images at once, or doesn't.
+        @Shared var savedReadsImages: ModelReadsImages?
         /// Small copies of the images sent in the chat, by name.
         package var thumbnails: [String: Data] = [:]
         /// Sent images being read for their thumbnails.
@@ -198,8 +212,21 @@ package struct SessionFeature {
         var slashQuery: String?
 
         /// The chat commands the session's agent takes, as its host last
-        /// said; nil until asked, and when its host couldn't say.
+        /// said; nil until it has. Asked as the chat opens, and kept per
+        /// session while Humata runs; a host that can't say leaves what it
+        /// said before.
         package var chatCommands: ChatCommands?
+        @Shared var savedCommands: ChatCommands?
+        /// Whether the host has been asked and the answer has come, even
+        /// if it couldn't say: until then a command it may take waits.
+        var commandsAnswered = false
+        /// The host is being asked which commands it takes.
+        var commandsLoading = false
+        /// The message Return was pressed on that may be /compact or
+        /// /side, held until the host has said whether it takes them.
+        var heldSend: HeldSend?
+        /// Whether a message is held so, which the box shows.
+        package var holdingSend: Bool { heldSend != nil }
         /// Where the chat can be rewound to, to pick from, after /rewind;
         /// nil while closed. Only the box reads it.
         package var rewindPicker: RewindPicker?
@@ -257,6 +284,13 @@ package struct SessionFeature {
         /// A fork, an edited message's fork or a new chat under this one
         /// is being made.
         package var forking = false
+        /// The kind of chat being made under this one, while one is, so
+        /// what's shown over the view says which.
+        package var makingChild: ChildChat?
+        /// Whether its Approve, Deny and Steer Now take their keyboard
+        /// shortcuts: only the column in use does, when two sessions show
+        /// side by side. Whoever shows the session sets it.
+        package var takesShortcuts = true
         /// Shown beside another session, as a side chat is: its chat
         /// alone, under whatever bar its column gives it.
         package var beside = false
@@ -293,6 +327,18 @@ package struct SessionFeature {
             _savedPastes = pasted
             pastes = Paste.decode(pasted.wrappedValue)
             _slashOffered = Shared(wrappedValue: nil, .inMemory("slash_" + session.id))
+            let commands = Shared<ChatCommands?>(wrappedValue: nil, .inMemory("commands_" + session.id))
+            _savedCommands = commands
+            chatCommands = commands.wrappedValue
+            commandsAnswered = commands.wrappedValue != nil
+            let images = Shared<ModelReadsImages?>(wrappedValue: nil, .inMemory("reads_images_" + session.id))
+            _savedReadsImages = images
+            switch session.backend {
+            case .claude, .scripted: readsImages = true
+            case .copilot, .local:
+                // Only for the model it was found for.
+                readsImages = images.wrappedValue.flatMap { $0.model == session.model ? $0.reads : nil }
+            }
         }
 
         /// Whether there's anything to send.
@@ -412,6 +458,7 @@ package struct SessionFeature {
             if stopping, !working { stopping = false }
             if let land, land.turnRunning != working { self.land?.turnRunning = working }
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
+            if lastMessageOwn != chat.lastMessageOwn { lastMessageOwn = chat.lastMessageOwn }
             if lastImages != chat.lastImages { lastImages = chat.lastImages }
             if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
             if !lastTurnFailed, retrying { retrying = false }
@@ -455,8 +502,12 @@ package struct SessionFeature {
             proposals.proposals.filter { $0.state == .pending }
         }
 
-        /// The person's last message, to send again after a failed turn.
+        /// The last message sent to the session, to send again after a
+        /// failed turn.
         package private(set) var lastMessage: String?
+        /// Whether it was the person's own, to stop and edit: not another
+        /// session's agent's or a notice of Humata's.
+        package private(set) var lastMessageOwn = false
         /// The names of the images sent with it, which go with it again.
         package private(set) var lastImages: [String] = []
 
@@ -671,6 +722,12 @@ package struct SessionFeature {
         }
     }
 
+    /// A message Return was pressed on, held as it was typed.
+    struct HeldSend: Equatable, Sendable {
+        var draft: String
+        var mode: SendMode
+    }
+
     /// A message handed on to be sent, with what it was made of, so it can
     /// go back in its session's box if it isn't sent.
     package struct Outgoing: Equatable, Sendable {
@@ -707,6 +764,9 @@ package struct SessionFeature {
         /// The skills were looked for, and the agent's host asked which
         /// chat commands it takes; nil when it couldn't say.
         case slashLoaded(Result<[SlashChoice], SlashLoadFailure>, commands: ChatCommands?)
+        /// The agent's host said which chat commands it takes, asked as
+        /// the chat opened; nil when it couldn't say.
+        case commandsLoaded(ChatCommands?)
         /// An arrow moved the / list's pick by `by` rows.
         case slashMoved(by: Int)
         case slashPicked(String)
@@ -777,6 +837,11 @@ package struct SessionFeature {
         case retryTapped
         /// Makes the move the agent asked for, from the strip over the box.
         case moveApproved
+        /// Allows the session the agent asked to start or the message it
+        /// asked to send, from the strip over the box.
+        case requestAllowed
+        /// Declines it.
+        case requestDeclined
         /// Scrolls the chat to the first proposal waiting to be decided.
         case showProposalsTapped
         /// The chat scrolled to the target.
@@ -829,8 +894,9 @@ package struct SessionFeature {
         /// beside it and is sent `message` unless that's empty.
         case childTapped(ChildChat, message: String)
         /// The side chat was made. `unsent` is its first message if that
-        /// couldn't be sent: it waits in the side chat's box.
-        case sideMade(Session, unsent: String)
+        /// couldn't be sent, with `failure` saying why: it waits in the
+        /// side chat's box.
+        case sideMade(Session, unsent: String, failure: String = "")
         case failed(Doing, String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
@@ -935,9 +1001,11 @@ package struct SessionFeature {
         guard stale || retry, !state.slashLoading else { return .none }
         state.slashLoading = true
         let session = state.session
+        let known = state.chatCommands
         return .run { send in
             // A host from before chat commands can't say which it takes:
-            // it's offered none of them, and its skills all the same.
+            // it's offered none of them, and its skills all the same. One
+            // that couldn't be asked this time is offered what it last said.
             async let asked = daemon.chatCommands(session.id)
             do {
                 async let skills = daemon.skills()
@@ -947,7 +1015,7 @@ package struct SessionFeature {
                 let project = try await projects.first { $0.id == session.projectID }
                 let offered = SlashChoice.offered(
                     to: session, skills: try await skills, plugins: try await plugins, project: project,
-                    commands: commands)
+                    commands: commands ?? known)
                 await send(.slashLoaded(.success(offered), commands: commands))
             } catch {
                 let failure = SlashLoadFailure(
@@ -979,6 +1047,31 @@ package struct SessionFeature {
         SlashChoice.builtIns(for: state.session, commands: state.chatCommands).contains { $0.builtIn == command }
     }
 
+    /// Asks the session's host which chat commands its agent takes, unless
+    /// it's being asked already, by this or by the / list.
+    private func askCommands(_ state: inout State) -> Effect<Action> {
+        guard !state.commandsLoading, !state.slashLoading else { return .none }
+        state.commandsLoading = true
+        let session = state.session.id
+        return .run { send in
+            await send(.commandsLoaded(try? await daemon.chatCommands(session)))
+        }
+    }
+
+    /// Takes in what the host said of its chat commands, nil when it
+    /// couldn't say, which leaves what it said before. A message held for
+    /// the answer is sent now, unless the box has changed since.
+    private func commandsAnswered(_ commands: ChatCommands?, _ state: inout State) -> Effect<Action> {
+        if !state.commandsAnswered { state.commandsAnswered = true }
+        if let commands, state.chatCommands != commands {
+            state.chatCommands = commands
+            state.$savedCommands.withLock { $0 = commands }
+        }
+        guard let held = state.heldSend else { return .none }
+        state.heldSend = nil
+        return held.draft == state.draft ? .send(.sendTapped(held.mode)) : .none
+    }
+
     private func clearDraft(_ state: inout State) {
         state.draft = ""
         state.$savedDraft.withLock { $0 = "" }
@@ -988,6 +1081,15 @@ package struct SessionFeature {
     /// Opens the /rewind picker on what `query` finds, in place of what's
     /// typed in the box.
     private func rewindPickerOpened(_ query: String, _ state: inout State) {
+        // The chat isn't all here yet, so neither is what it can be cut
+        // back to: the command stays in the box for when it is.
+        guard state.historyLoaded else {
+            state.alert = Self.alert(
+                "The chat is still opening",
+                "What it can be rewound to isn't known until the chat shows. The command is still in the box: "
+                    + "press Return again once the chat is here.")
+            return
+        }
         clearDraft(&state)
         let points = RewindPoint.points(in: state.events)
         guard !points.isEmpty else {
@@ -1124,13 +1226,14 @@ package struct SessionFeature {
     /// all can; Copilot and model servers say for each model, and a local
     /// model that doesn't say is taken as not.
     private func readsImages(_ state: inout State) -> Effect<Action> {
-        guard state.readsImages == nil else { return .none }
         let session = state.session
         switch session.backend {
         case .claude, .scripted:
-            state.readsImages = true
+            if state.readsImages == nil { state.readsImages = true }
             return .none
         case .copilot, .local:
+            // Asked each time the chat opens, behind what was last found:
+            // the model, or what it can do, may have changed.
             return .run { send in
                 let models = try? await daemon.models(session.host, session.backend, nil)
                 let choice = models?.first { $0.id == session.model } ?? (session.model == nil ? models?.first : nil)
@@ -1176,12 +1279,22 @@ package struct SessionFeature {
                     state.$savedPastes.withLock { $0 = pastes }
                 }
                 state.$savedDraft.withLock { $0 = state.draft }
+                // A message held for the host's answer was changed: it
+                // waits for Return again.
+                if let held = state.heldSend, held.draft != state.draft { state.heldSend = nil }
                 return slashFollows(&state)
+
+            case .commandsLoaded(let commands):
+                state.commandsLoading = false
+                let held = commandsAnswered(commands, &state)
+                // Refreshes a list showing, which may list more now.
+                guard state.slashOpen else { return held }
+                return .merge(held, slashFollows(&state))
 
             case .slashLoaded(let result, let commands):
                 state.slashLoading = false
                 state.slashLoadedAt = date.now
-                if state.chatCommands != commands { state.chatCommands = commands }
+                let held = commandsAnswered(commands, &state)
                 switch result {
                 case .success(let offered):
                     if state.slashOffered != offered { state.$slashOffered.withLock { $0 = offered } }
@@ -1190,8 +1303,8 @@ package struct SessionFeature {
                     state.slashFailure = failure.message
                 }
                 // Refreshes a list showing; one closed since stays closed.
-                guard state.slashOpen else { return .none }
-                return slashFollows(&state)
+                guard state.slashOpen else { return held }
+                return .merge(held, slashFollows(&state))
 
             case .slashMoved(let by):
                 guard !state.slashChoices.isEmpty else { return .none }
@@ -1204,7 +1317,7 @@ package struct SessionFeature {
                 case .rewind?:
                     rewindPickerOpened("", &state)
                     return .none
-                case .compact? where state.chatCommands?.compactTakesFocus != true:
+                case .compact? where state.chatCommands?.compactTakesFocus == false:
                     // Nothing more to type: it's asked for at once.
                     clearDraft(&state)
                     return .send(.compactAsked(focus: ""))
@@ -1388,8 +1501,13 @@ package struct SessionFeature {
                 // A chat opened again, or a watch started over, has the
                 // history up to its last event; only what follows is sent.
                 let after = state.events.last?.id
+                // Which chat commands the agent takes, once for a session
+                // while Humata runs: again only if its host couldn't say.
+                let commands: Effect<Action> =
+                    state.chatCommands == nil && !state.session.archived ? askCommands(&state) : .none
                 return .merge(
                     readsImages(&state),
+                    commands,
                     .run { send in
                         // The history goes as one batch once it has all
                         // come; after it, what comes while a batch is shown
@@ -1488,6 +1606,24 @@ package struct SessionFeature {
                 if state.slashOpen, state.slashChoices.indices.contains(state.slashSelected) {
                     return .send(.slashPicked(state.slashChoices[state.slashSelected].id))
                 }
+                // Return in the box with the /rewind picker over it picks
+                // the highlighted point, as Return in the picker does.
+                if let picker = state.rewindPicker, state.pastes.isEmpty, state.images.isEmpty,
+                    state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    picker.points.indices.contains(picker.selected)
+                {
+                    return .send(.rewindPickerPicked(picker.points[picker.selected].id))
+                }
+                // A command only some hosts take waits until this one has
+                // said whether it does, and stays in the box till then:
+                // sent now, it would go to the agent as a message.
+                if state.pastes.isEmpty, state.images.isEmpty, !state.commandsAnswered, !state.session.archived,
+                    let command = SlashChoice.command(in: state.draft)?.command,
+                    command == .compact || command == .side
+                {
+                    state.heldSend = HeldSend(draft: state.draft, mode: mode)
+                    return askCommands(&state)
+                }
                 // One of Humata's own commands is carried out, not sent;
                 // one the session isn't offered goes to the agent as typed.
                 if state.pastes.isEmpty, state.images.isEmpty,
@@ -1556,7 +1692,9 @@ package struct SessionFeature {
                 return .none
 
             case .readsImagesFound(let reads):
-                state.readsImages = reads
+                if state.readsImages != reads { state.readsImages = reads }
+                let found = ModelReadsImages(model: state.session.model, reads: reads)
+                if state.savedReadsImages != found { state.$savedReadsImages.withLock { $0 = found } }
                 // Those added before it was known come out, with why.
                 guard !reads, !state.images.isEmpty else { return .none }
                 state.images = []
@@ -1660,6 +1798,14 @@ package struct SessionFeature {
                 guard let request = state.request, case .move = request.kind else { return .none }
                 return .send(.delegate(.answerRequest(request.id, .approve)))
 
+            case .requestAllowed:
+                guard let request = state.request, request.kind.asksForSession else { return .none }
+                return .send(.delegate(.answerRequest(request.id, .approve)))
+
+            case .requestDeclined:
+                guard let request = state.request, request.kind.asksForSession else { return .none }
+                return .send(.delegate(.answerRequest(request.id, .dismiss)))
+
             case .showProposalsTapped:
                 state.scrollTarget = state.pendingProposals.first?.id
                 return .none
@@ -1732,9 +1878,10 @@ package struct SessionFeature {
                 return .none
 
             case .stopAndEditTapped:
-                guard state.isWorking, !state.isCompacting, !state.stopping, let text = state.lastMessage else {
-                    return .none
-                }
+                // Only the person's own message goes back in the box.
+                guard state.isWorking, !state.isCompacting, !state.stopping, state.lastMessageOwn,
+                    let text = state.lastMessage
+                else { return .none }
                 state.stopping = true
                 let session = state.session.id
                 putInBox(text, ahead: true, &state)
@@ -1761,18 +1908,30 @@ package struct SessionFeature {
                     return .none
                 }
                 let compaction: Bool
+                // Another session's agent's message, or a notice of
+                // Humata's, isn't the person's to edit.
+                var own = true
                 switch event.kind {
-                case .userMessage: compaction = false
+                case .userMessage(let text, _):
+                    compaction = false
+                    own = Chat.isPersons(text)
                 case .compacted: compaction = true
                 default: return .none
                 }
-                let files = state.session.projectID != nil && !state.session.archived
+                // The files only where the daemon rewinds them: never for
+                // a side chat, and not in a copy that's another session's.
+                let files =
+                    state.session.projectID != nil && !state.session.archived && !state.session.readOnly
+                    && !state.session.sharesCode
                 let stops = state.isWorking ? "The agent’s turn stops and queued messages are dropped. " : ""
                 let cuts =
                     compaction
                     ? "The agent gets back everything from before it was summed up, and what came after the "
                         + "compaction leaves the chat. "
-                    : "Everything after it leaves the chat, and the message goes back in the box to edit. "
+                    : own
+                        ? "Everything after it leaves the chat, and the message goes back in the box to edit. "
+                        : "It and everything after it leave the chat. It wasn’t your message, so nothing goes "
+                            + "back in the box. "
                 let code =
                     files
                     ? "Rewinding files too puts the code back as it was then, uncommitted changes included. "
@@ -1802,8 +1961,13 @@ package struct SessionFeature {
                 var images: [String] = []
                 switch state.events[id: before]?.kind {
                 case .userMessage(let sent, let names):
-                    text = sent
-                    if state.takesImages { images = names }
+                    // Only the person's own message goes back in the box.
+                    if Chat.isPersons(sent) {
+                        text = sent
+                        if state.takesImages { images = names }
+                    } else {
+                        text = ""
+                    }
                 case .compacted: text = ""
                 default: return .none
                 }
@@ -1878,12 +2042,8 @@ package struct SessionFeature {
 
             case .rewindFailed(let message):
                 state.rewinding = false
-                state.alert = AlertState {
-                    TextState("Couldn’t rewind")
-                } message: {
-                    TextState(
-                        "\(message)\n\nTry again once Humata’s daemon answers.")
-                }
+                // The daemon says why and what to do about it.
+                state.alert = Self.alert("Couldn’t rewind", message)
                 return .none
 
             case .answerPermission(let request, let approved):
@@ -1963,7 +2123,9 @@ package struct SessionFeature {
                 return .none
 
             case .editTapped(let id):
-                guard case .userMessage(let text, _)? = state.events[id: id]?.kind else { return .none }
+                guard case .userMessage(let text, _)? = state.events[id: id]?.kind, Chat.isPersons(text) else {
+                    return .none
+                }
                 state.editing = id
                 state.edited = text
                 return .none
@@ -1995,6 +2157,7 @@ package struct SessionFeature {
 
             case .forked(let fork):
                 state.forking = false
+                state.makingChild = nil
                 state.editing = nil
                 state.edited = ""
                 return .send(.delegate(.openSession(fork)))
@@ -2008,6 +2171,7 @@ package struct SessionFeature {
             case .childTapped(let kind, let message):
                 guard !state.forking, !state.session.archived else { return .none }
                 state.forking = true
+                state.makingChild = kind
                 let session = state.session
                 let name = kind == .side ? "\(session.name) side" : "New chat"
                 let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2018,32 +2182,41 @@ package struct SessionFeature {
                         return
                     }
                     var unsent = ""
+                    var failure = ""
                     if !text.isEmpty {
                         do {
                             try await daemon.send(child.id, text, .enqueue)
                         } catch {
                             unsent = text
+                            failure = error.localizedDescription
                         }
                     }
-                    await send(.sideMade(child, unsent: unsent))
+                    await send(.sideMade(child, unsent: unsent, failure: failure))
                 } catch: { error, send in
                     await send(.failed(.startingChild, error.localizedDescription))
                 }
 
-            case .sideMade(let side, let unsent):
+            case .sideMade(let side, let unsent, let failure):
                 state.forking = false
+                state.makingChild = nil
                 if SlashChoice.command(in: state.draft)?.command == .side { clearDraft(&state) }
                 if !unsent.isEmpty {
                     // The side chat's box keeps it, to send from there.
                     let draft = Shared(wrappedValue: "", .appStorage(State.draftKey(side.id)))
                     draft.withLock { $0 = $0.isEmpty ? unsent : $0 + "\n\n" + unsent }
+                    state.alert = Self.alert(
+                        "The side chat is open, but your question didn’t reach it",
+                        (failure.isEmpty ? "" : failure + " ")
+                            + "The question is in the side chat’s box: send it from there.")
                 }
                 return .send(.delegate(.openSide(side)))
 
             case .failed(let doing, let message):
                 switch doing {
                 case .updating: state.updating = false
-                case .forking, .startingChild: state.forking = false
+                case .forking, .startingChild:
+                    state.forking = false
+                    state.makingChild = nil
                 case .retrying: state.retrying = false
                 case .answering(let request): state.answering.remove(request)
                 case .stopping: state.stopping = false
@@ -2241,6 +2414,13 @@ package struct FoldedHistory: Sendable {
         self.subagents = subagents
         self.count = count
     }
+}
+
+/// Whether a session's model was found to see images, with the model it
+/// was found for: the session may be given another since.
+struct ModelReadsImages: Equatable, Sendable {
+    var model: String?
+    var reads: Bool
 }
 
 /// How much of a session's history kept on disk is read as it opens.
