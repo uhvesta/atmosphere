@@ -167,10 +167,10 @@ original spec; lettered ones were added since.
 | F2 Fresh clones | Done |
 | TR tca-rust, a Rust take on TCA | Done (ff6ee013) |
 | H2-0 Humata 2 skeleton | Done (e6ac1c84) |
-| H2-1 Humata 2 chat | Done |
-| H2-2 Humata 2 projects and board | Next |
-| H2-3 to H2-5 Humata 2 screens, then the swap | Planned |
-| TR2 tca-rust speed | Planned, after Humata 2 runs |
+| H2-1 Humata 2 chat | Done (5b95b95f) |
+| H2-2 to H2-5 Humata 2 screens, then the swap | Stopped |
+| TR2 tca-rust speed | Stopped |
+| P2 Humata 1 speed, measured | Next |
 
 ## Done milestones
 
@@ -1346,11 +1346,15 @@ not an OAuth app.
 **Done when:** a release is on GitHub whose download Gatekeeper accepts
 and whose daemon and command line run.
 
-### Humata 2: the app's logic in Rust
+### Humata 2: the app's logic in Rust (stopped)
 
 The owner, 2026-11-13: most of Humata in Rust, with Swift laying out
 screens and sending events to Rust. Humata 1 keeps shipping until Humata 2
 is ready to replace it; code duplicated between them meanwhile is fine.
+
+Stopped by the owner the same day, after H2-1: rewriting the app in Rust
+isn't worth it; the effort goes into making Humata 1 fast (P2). What was
+built stays in `apps/humata2` and `libs/tca-rust` for now.
 
 - **TR tca-rust.** `libs/tca-rust` (the `tca-rust` crate, library `tca`)
   takes the ideas of The Composable Architecture, not its Swift: reducers
