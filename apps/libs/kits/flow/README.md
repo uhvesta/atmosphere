@@ -63,6 +63,10 @@ References live next to the tests in `SnapshotTests/__Snapshots__/`.
   `assertScreenImages` checks a view at several screen sizes.
 - Text a model wrote changes from run to run. Give it the accessibility
   identifier `modelTextIdentifier` (`"model-text"`), and flows leave it out.
+- A control whose state comes from the machine, such as the system's Paste
+  button, which is on only while the clipboard holds text: give it the
+  identifier `machineStateIdentifier` (`"machine-state"`), and flows leave
+  out whether it's on.
 - All iOS tests render on one pinned simulator
   (`//apps/libs/kits/flow:iphone_17`), so references don't drift from one
   machine to another.

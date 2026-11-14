@@ -49,6 +49,10 @@ package struct QuickAddView: View {
                         }
                         .labelStyle(.titleAndIcon)
                         .accessibilityHint("Adds a task for each line copied")
+                        // It's on only while the clipboard holds text, so flow
+                        // tests leave its state out: FlowKit's
+                        // machineStateIdentifier.
+                        .accessibilityIdentifier("machine-state")
                     }
                 }
             } footer: {

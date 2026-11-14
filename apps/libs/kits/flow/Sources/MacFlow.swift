@@ -100,7 +100,7 @@
             guard image else { return }
             let rendered: NSImage
             do {
-                rendered = try await render()
+                rendered = try await stillImage()
             } catch {
                 XCTFail("\(label) couldn't be captured: \(error)", file: file, line: line)
                 return
@@ -142,6 +142,25 @@
         private var windows: [NSWindow] {
             [window]
                 + NSApplication.shared.windows.filter { $0 !== window && $0.isVisible && $0.sheetParent == nil }
+        }
+
+        /// The screen once two captures in a row match: the tree settles
+        /// before a transition's last frames draw, later still on a busy
+        /// machine. The last capture if it's still moving after `timeout`.
+        private func stillImage() async throws -> NSImage {
+            let clock = ContinuousClock()
+            let deadline = clock.now + timeout
+            var last = try await render()
+            var lastData = last.tiffRepresentation
+            while clock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+                let next = try await render()
+                let nextData = next.tiffRepresentation
+                if nextData == lastData { return next }
+                last = next
+                lastData = nextData
+            }
+            return last
         }
 
         /// The windows stacked top to bottom, as the window server draws
@@ -307,12 +326,15 @@
                 states[0] += "/" + subrole.replacingOccurrences(of: "AX", with: "")
             }
             if attribute(element, kAXSelectedAttribute) as? Bool == true { states.append("selected") }
-            if attribute(element, kAXEnabledAttribute) as? Bool == false { states.append("disabled") }
+            let identifier = text(attribute(element, kAXIdentifierAttribute))
+            if attribute(element, kAXEnabledAttribute) as? Bool == false, identifier != machineStateIdentifier {
+                states.append("disabled")
+            }
             var parts = ["[\(states.joined(separator: ", "))]", "\"\(title ?? label ?? "")\""]
             if let title, let label, title != label { parts.append("label: \"\(label)\"") }
             if let value { parts.append("value: \"\(value)\"") }
             if let help = text(attribute(element, kAXHelpAttribute)) { parts.append("help: \"\(help)\"") }
-            if let identifier = text(attribute(element, kAXIdentifierAttribute)), identifier != modelText {
+            if let identifier, identifier != modelText, identifier != machineStateIdentifier {
                 parts.append("id: \(identifier)")
             }
             return parts.joined(separator: " ")

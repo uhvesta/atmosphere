@@ -94,14 +94,17 @@
         }
 
         static func describe(_ element: NSObject) -> String {
-            var parts = [traits(element.accessibilityTraits)]
+            let identifier = (element as? UIAccessibilityIdentification)?.accessibilityIdentifier
+            var shown = element.accessibilityTraits
+            if identifier == machineStateIdentifier { shown.remove(.notEnabled) }
+            var parts = [traits(shown)]
             parts.append(quoted(element.accessibilityLabel))
             if let value = element.accessibilityValue, !value.isEmpty { parts.append("value: \(quoted(value))") }
             if let hint = element.accessibilityHint, !hint.isEmpty { parts.append("hint: \(quoted(hint))") }
-            if let identifiable = element as? UIAccessibilityIdentification,
-                let identifier = identifiable.accessibilityIdentifier, !identifier.isEmpty,
-                // What the app marks as written by the model.
-                identifier != modelTextIdentifier
+            if let identifier, !identifier.isEmpty,
+                // What the app marks as written by the model, or as the
+                // machine's.
+                identifier != modelTextIdentifier, identifier != machineStateIdentifier
             {
                 parts.append("id: \(identifier)")
             }

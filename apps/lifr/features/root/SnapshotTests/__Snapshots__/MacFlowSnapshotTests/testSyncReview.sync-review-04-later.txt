@@ -36,6 +36,7 @@
   [StaticText] "" value: "Nothing due today"
   [StaticText] "" value: "Tasks due today, and overdue ones, show up here."
   [Button] "Add a Task for Today"
+  [Button] "Plan from Anytime"
   [Outline] ""
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
