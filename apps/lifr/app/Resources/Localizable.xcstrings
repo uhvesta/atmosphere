@@ -47,6 +47,9 @@
     "%@ Nothing changed. Try it from Settings > Activity." : {
 
     },
+    "%@ Open Lifr on the iPhone and make it there." : {
+
+    },
     "%@ Try again in a moment." : {
 
     },
@@ -137,12 +140,32 @@
         }
       }
     },
+    "%@ isn't allowed to recognize speech. Turn on Speech Recognition for %@ in Settings › %@, then tap the microphone again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ isn't allowed to recognize speech. Turn on Speech Recognition for %2$@ in Settings › %3$@, then tap the microphone again."
+          }
+        }
+      }
+    },
     "%@ isn't allowed to use the microphone. Turn on %@ in System Settings › Privacy & Security › Microphone, then tap the microphone again." : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$@ isn't allowed to use the microphone. Turn on %2$@ in System Settings › Privacy & Security › Microphone, then tap the microphone again."
+          }
+        }
+      }
+    },
+    "%@ isn't allowed to use the microphone. Turn on Microphone for %@ in Settings › %@, then tap the microphone again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ isn't allowed to use the microphone. Turn on Microphone for %2$@ in Settings › %3$@, then tap the microphone again."
           }
         }
       }
@@ -762,7 +785,13 @@
     "Add an Avenue first, on the Avenues tab." : {
 
     },
+    "Add context" : {
+
+    },
     "Add details, or just send" : {
+
+    },
+    "Add files" : {
 
     },
     "Add photos or files" : {
@@ -854,6 +883,9 @@
     "All Checkpoints" : {
 
     },
+    "All Months" : {
+
+    },
     "All clear" : {
 
     },
@@ -890,6 +922,9 @@
     "An agent" : {
 
     },
+    "Answer in the background" : {
+
+    },
     "Answer questions about your tasks." : {
 
     },
@@ -906,6 +941,12 @@
 
     },
     "Anywhere" : {
+
+    },
+    "App Icon" : {
+
+    },
+    "App icon" : {
 
     },
     "App icon badge" : {
@@ -1007,6 +1048,9 @@
     "Attach skills to a conversation to tell the assistant what to do and which tools it may use." : {
 
     },
+    "Attaches it to the message" : {
+
+    },
     "Attachment" : {
 
     },
@@ -1029,6 +1073,9 @@
 
     },
     "Avenue or KEY/Project" : {
+
+    },
+    "Avenue, Project or Filter" : {
 
     },
     "Avenue: %@" : {
@@ -1101,6 +1148,9 @@
 
     },
     "Calendar" : {
+
+    },
+    "Camera" : {
 
     },
     "Can't Show This Photo" : {
@@ -1185,6 +1235,9 @@
 
     },
     "Choose" : {
+
+    },
+    "Choose what tapping a task's circle does." : {
 
     },
     "Clean up titles, priorities, dates and labels." : {
@@ -1272,6 +1325,9 @@
 
     },
     "Complete the Project once its tasks are closed." : {
+
+    },
+    "Complete with One Tap" : {
 
     },
     "Completed" : {
@@ -1495,6 +1551,9 @@
 
     },
     "Couldn't save" : {
+
+    },
+    "Couldn't save the change made on the Watch" : {
 
     },
     "Couldn't save the conversation" : {
@@ -2039,6 +2098,9 @@
     "Focus on This" : {
 
     },
+    "Focusing" : {
+
+    },
     "For chats" : {
 
     },
@@ -2199,6 +2261,9 @@
 
     },
     "How many tasks are due today, and how many are overdue." : {
+
+    },
+    "How many tasks are open in each Avenue, or in the one you pick." : {
 
     },
     "How many tasks are open in each Avenue." : {
@@ -2409,6 +2474,9 @@
     "Lifr couldn't add ^[%lld shared task](inflect: true)" : {
 
     },
+    "Lifr couldn't change its icon: %@ Try again." : {
+
+    },
     "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again." : {
 
     },
@@ -2530,6 +2598,9 @@
 
     },
     "Lifr isn't allowed to use the microphone. Turn on Lifr in System Settings › Privacy & Security › Microphone, then record again." : {
+
+    },
+    "Lifr isn't allowed to use the microphone. Turn on Microphone for Lifr in Settings › Lifr, then record again." : {
 
     },
     "Lifr on %@" : {
@@ -2669,7 +2740,13 @@
     "Mark Done" : {
 
     },
+    "Mark Done from the Widget" : {
+
+    },
     "Mark To Do" : {
+
+    },
+    "Mark the Task You're Focusing On Done" : {
 
     },
     "Marked %@ %@." : {
@@ -2823,7 +2900,13 @@
     "Move to Trash" : {
 
     },
+    "Move to another Avenue or Project" : {
+
+    },
     "Move to the Trash" : {
+
+    },
+    "Move to…" : {
 
     },
     "Moved %@ to %@" : {
@@ -3032,6 +3115,9 @@
 
     },
     "No bug reports. Choose Help › Report a Bug to make one." : {
+
+    },
+    "No bug reports. Shake your iPhone to report one." : {
 
     },
     "No change" : {
@@ -3383,6 +3469,9 @@
     "Pick a skill for a message to tell the assistant what to do and which tools it may use." : {
 
     },
+    "Pick an Avenue, Project or Filter" : {
+
+    },
     "Pick several tasks" : {
 
     },
@@ -3629,6 +3718,9 @@
     "Removed Sub task %@" : {
 
     },
+    "Removes it from the message" : {
+
+    },
     "Rename" : {
 
     },
@@ -3671,6 +3763,9 @@
     "Replying…" : {
 
     },
+    "Report Bug" : {
+
+    },
     "Report a Bug" : {
 
     },
@@ -3678,6 +3773,9 @@
 
     },
     "Reports you saved, encrypted on this Mac. Choose Help › Report a Bug to make one." : {
+
+    },
+    "Reports you saved, encrypted on this iPhone. Shake it to report a bug." : {
 
     },
     "Reschedule" : {
@@ -4008,7 +4106,13 @@
     "Shows after the next reply" : {
 
     },
+    "Shows every month to scroll through" : {
+
+    },
     "Shows its statuses" : {
+
+    },
+    "Shows one Avenue's, Project's or saved filter's tasks, or every Avenue when none is picked." : {
 
     },
     "Shows the thinking" : {
@@ -4194,7 +4298,16 @@
     "Sunset" : {
 
     },
+    "Swipe a task" : {
+
+    },
+    "Swipe left on a change, or touch and hold it, to revert it." : {
+
+    },
     "Swipe left on a conversation to archive it." : {
+
+    },
+    "Swipe right to start it, or left to close it or pick another status." : {
 
     },
     "Symbol" : {
@@ -4252,6 +4365,9 @@
 
     },
     "Tap the circle to pick a status" : {
+
+    },
+    "Tapping a task's circle marks it Done, and tapping it again undoes that. Lifr saves it the next time it opens. When off, the circle opens the task with its statuses to pick." : {
 
     },
     "Task" : {
@@ -4315,6 +4431,9 @@
 
     },
     "The Watch couldn't read Today from the iPhone (%@). Update Lifr on both, then open it on the iPhone to send Today again." : {
+
+    },
+    "The accent and icon are for this iPhone only." : {
 
     },
     "The assistant couldn't answer" : {
@@ -4529,6 +4648,19 @@
     "This iPhone" : {
 
     },
+    "This iPhone can't dictate %@ on the device, and %@ doesn't send your voice anywhere else. In Settings › General › Keyboard, turn on Dictation and add a %@ keyboard so it downloads, or type your message." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This iPhone can't dictate %1$@ on the device, and %2$@ doesn't send your voice anywhere else. In Settings › General › Keyboard, turn on Dictation and add a %3$@ keyboard so it downloads, or type your message."
+          }
+        }
+      }
+    },
+    "This iPhone has no passcode, so Lifr can't lock. Set one in Settings › Face ID & Passcode, then turn the lock on." : {
+
+    },
     "This model doesn't count its tokens, so the counts are guessed from the text's length." : {
 
     },
@@ -4672,6 +4804,9 @@
       }
     },
     "Undo" : {
+
+    },
+    "Undo %@" : {
 
     },
     "Undo Changes" : {
@@ -4933,6 +5068,9 @@
 
     },
     "Your tasks stay on your devices and in your iCloud, encrypted end to end. To see or remove what iCloud keeps, open System Settings, click your name, then iCloud › Manage." : {
+
+    },
+    "Your tasks stay on your devices and in your iCloud, encrypted end to end. To see or remove what iCloud keeps, open the Settings app, tap your name, then iCloud › Manage Account Storage." : {
 
     },
     "Your tasks sync to your other devices through your iCloud, encrypted end to end." : {

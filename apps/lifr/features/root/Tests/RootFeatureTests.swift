@@ -1602,6 +1602,13 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.detailShortcut(.avenue(home.id)))
         await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.avenueID, home.id)
+
+        // Move to… only shows the pickers; it moves nothing itself.
+        XCTAssertEqual(store.state.openDetail?.isMoving, false)
+        await store.send(.detailShortcut(.move))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.openDetail?.isMoving, true)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.avenueID, home.id)
         await task.cancel()
     }
 

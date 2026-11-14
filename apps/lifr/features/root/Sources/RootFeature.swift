@@ -450,6 +450,8 @@ package struct RootFeature {
         case customReminder
         case avenue(UUID)
         case label(UUID)
+        /// Move to…: the open task's Avenue and Project, in a sheet.
+        case move
     }
 
     /// Where a task list lives in `State`.
@@ -1068,6 +1070,7 @@ package struct RootFeature {
                     case .customReminder: .reminderCustomTapped
                     case .avenue(let id): .avenuePicked(id)
                     case .label(let id): .labelToggled(id)
+                    case .move: .binding(.set(\.isMoving, true))
                     }
                 return .send(list(slot, .detail(.presented(action))))
 

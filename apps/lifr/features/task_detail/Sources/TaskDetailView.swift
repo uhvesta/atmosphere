@@ -3,6 +3,7 @@ import LifrCore
 import LifrStoreClient
 import LifrUI
 import SwiftUI
+
 #if os(iOS)
     import UIKit
 #endif
@@ -52,6 +53,19 @@ package struct TaskDetailView: View {
         .alert($store.scope(state: \.prompt, action: \.prompt))
         .alert($store.scope(state: \.alert, action: \.alert))
         .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
+        .sheet(isPresented: $store.isMoving) {
+            NavigationStack {
+                Form { place }
+                    .formStyle(.grouped)
+                    .navigationTitle("Move to")
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { store.isMoving = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 360, minHeight: 240)
+        }
         .task { store.send(.appeared) }
     }
 

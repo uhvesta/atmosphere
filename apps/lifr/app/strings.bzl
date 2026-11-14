@@ -25,9 +25,33 @@ _strings_aspect = aspect(
     attr_aspects = ["deps"],
 )
 
+def _ios_impl(_settings, _attr):
+    return {
+        "//command_line_option:apple_platform_type": "ios",
+        "//command_line_option:cpu": "ios_sim_arm64",
+        "//command_line_option:ios_minimum_os": "18.0",
+        "//command_line_option:platforms": ["//bazel/xcode:ios_sim_arm64"],
+    }
+
+# The iPhone's own words, such as the Live Activity's, are only in code
+# built for iOS.
+_ios = transition(
+    implementation = _ios_impl,
+    inputs = [],
+    outputs = [
+        "//command_line_option:apple_platform_type",
+        "//command_line_option:cpu",
+        "//command_line_option:ios_minimum_os",
+        "//command_line_option:platforms",
+    ],
+)
+
 def _lifr_strings_impl(ctx):
     output = ctx.actions.declare_file(ctx.label.name + "/" + ctx.file.catalog.basename)
-    directories = depset(transitive = [dep[_StringsInfo].directories for dep in ctx.attr.deps])
+    directories = depset(transitive = [
+        dep[_StringsInfo].directories
+        for dep in ctx.attr.deps + ctx.attr.ios_deps
+    ])
     args = ctx.actions.args()
     args.add(output)
     args.add(ctx.file.catalog)
@@ -67,6 +91,11 @@ feature, which `--config=xcode` turns on.""",
         "deps": attr.label_list(
             aspects = [_strings_aspect],
             doc = "The app's libraries.",
+        ),
+        "ios_deps": attr.label_list(
+            aspects = [_strings_aspect],
+            cfg = _ios,
+            doc = "The libraries whose words differ on iOS, built for it too.",
         ),
     } | apple_support.action_required_attrs(),
     fragments = ["apple"],

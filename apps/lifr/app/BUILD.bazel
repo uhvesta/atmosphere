@@ -276,6 +276,11 @@ xcarchive(
 lifr_strings(
     name = "strings",
     catalog = "Resources/Localizable.xcstrings",
+    ios_deps = [
+        ":app_lib",
+        "//apps/lifr/share:share_lib",
+        "//apps/lifr/widgets:extension_lib",
+    ],
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":app_lib",

@@ -559,6 +559,10 @@ private struct MacRootView: View {
 
     private var sidebar: some View {
         Sidebar(store: store)
+            // Names stay on one line, a little smaller before they're cut
+            // short, rather than breaking a word such as Procrastinated.
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
     }
 

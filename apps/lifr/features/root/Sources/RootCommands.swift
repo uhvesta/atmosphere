@@ -80,6 +80,9 @@ package struct RootCommands: Commands {
             }
         }
         .disabled(detail == nil)
+        Button("Move to…") { store.send(.detailShortcut(.move)) }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .disabled(detail == nil || detail?.isSubtask == true)
         Menu("Labels") {
             ForEach(detail?.labelChoices ?? []) { choice in
                 Toggle(

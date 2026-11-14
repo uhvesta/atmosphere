@@ -83,6 +83,8 @@ package struct TaskDetailFeature {
         package var canFocus = false
         /// Whether it shows one now.
         package var isFocusing = false
+        /// Whether Move to… shows the Avenue and Project pickers in a sheet.
+        package var isMoving = false
         @Presents package var subtask: TaskDetailFeature.State?
 
         /// The title and description as typed but not saved yet, as one

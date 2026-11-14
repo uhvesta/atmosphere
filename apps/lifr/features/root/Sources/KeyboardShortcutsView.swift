@@ -20,6 +20,7 @@ struct KeyboardShortcutsView: View {
                 ("⌥⌘1 – ⌥⌘5", "To Do, In Progress, Procrastinated, Done, Won't Do"),
                 ("⌃0 – ⌃4", "No priority, Low, Medium, High, Urgent"),
                 ("⌘T", "Due Today"), ("⇧⌘T", "Due Tomorrow"),
+                ("⇧⌘M", "Move to another Avenue or Project"),
             ]
         ),
         (
