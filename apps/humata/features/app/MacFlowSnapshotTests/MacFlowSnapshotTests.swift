@@ -482,6 +482,52 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// The / list starts with Humata's commands; /compact sums the chat up
+    /// in a turn of its own, and /rewind opens a picker of the messages and
+    /// the compaction, which goes on to the rewind's question.
+    func testChatCommands() async throws {
+        let daemon = InMemoryDaemon { text in [.say("Done: \(text).")] }
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "Notes"))
+        try await daemon.client.send(session.id, "Write the API notes", .enqueue)
+        try await daemon.client.send(session.id, "Add the changelog", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("chat-commands", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.isWorking == false && store.session?.items.count ?? 0 >= 4 }
+        store.send(.session(.presented(.binding(.set(\.draft, "/")))))
+        try await until { store.session?.slashOpen == true && store.session?.slashChoices.isEmpty == false }
+        await flow.step("the list")
+
+        store.send(.session(.presented(.binding(.set(\.draft, "/compact keep the API notes")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until {
+            store.session?.isWorking == false
+                && daemon.history(session.id).contains { $0.kind == .compacted }
+        }
+        await flow.step("compacted")
+
+        store.send(.session(.presented(.binding(.set(\.draft, "/rewind")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until { store.session?.rewindPicker != nil }
+        await flow.step("the picker")
+
+        store.send(.session(.presented(.rewindPickerQueryChanged("api"))))
+        try await until { store.session?.rewindPicker?.query == "api" }
+        await flow.step("narrowed")
+        flow.finish()
+    }
+
     /// A session's changes reviewed: a comment on a changed line is sent as
     /// a review, the agent answers in the thread and edits the line, and its
     /// fix is shown. A Markdown file reads rendered, commented on by block.

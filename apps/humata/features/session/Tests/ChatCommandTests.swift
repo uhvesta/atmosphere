@@ -156,6 +156,10 @@ final class ChatCommandTests: XCTestCase {
         XCTAssertEqual(messages(store.state.rewindPicker), ["three", "two", "one"])
         XCTAssertEqual(store.state.draft, "")
         XCTAssertFalse(store.state.slashOpen)
+        // The box handing back the empty draft leaves it open; typing in
+        // the box is what closes it.
+        await store.send(\.binding.draft, "")
+        XCTAssertNotNil(store.state.rewindPicker)
 
         await store.send(.rewindPickerQueryChanged("tw"))
         XCTAssertEqual(messages(store.state.rewindPicker), ["two"])
@@ -171,6 +175,14 @@ final class ChatCommandTests: XCTestCase {
         await store.send(.rewindPickerClosed)
         XCTAssertNil(store.state.rewindPicker)
         XCTAssertNil(store.state.rewindDialog)
+
+        await store.send(\.binding.draft, "/rewind")
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.slashPicked)
+        XCTAssertNotNil(store.state.rewindPicker)
+        await store.send(\.binding.draft, "x")
+        XCTAssertNil(store.state.rewindPicker)
+        await store.send(\.binding.draft, "")
 
         // What's typed after the command is what the picker looks for.
         await store.send(\.binding.draft, "/rewind two")

@@ -867,7 +867,9 @@ package struct SessionFeature {
         state.slashQuery = nil
         state.slashChoices = []
         state.slashSelected = 0
-        if state.rewindPicker != nil { state.rewindPicker = nil }
+        // Text in the box closes the /rewind picker; the box echoing back
+        // the empty draft the picker left it with doesn't.
+        if !state.draft.isEmpty, state.rewindPicker != nil { state.rewindPicker = nil }
     }
 
     /// Whether the session is offered `command`, as the / list would list
