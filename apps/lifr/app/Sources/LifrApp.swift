@@ -50,6 +50,8 @@ import UserNotifications
 
 @main
 struct LifrApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     init() {
         let shortcuts = Storage.shortcuts
         AppDependencyManager.shared.add { shortcuts }
@@ -63,7 +65,6 @@ struct LifrApp: App {
             }
             NSApplication.shared.servicesProvider = Storage.services
         #else
-            Storage.scheduleRefresh()
             if case .success = Storage.opened {
                 WatchSession.shared.activate { await Storage.saveFromWatch($0) }
             }
@@ -102,6 +103,11 @@ struct LifrApp: App {
                 // widgets follow what other devices changed.
                 .backgroundTask(.appRefresh(Storage.refreshID)) {
                     await Storage.refresh()
+                }
+                // Asked for on leaving, once the refresh above is registered:
+                // asking before then, as from init, aborts the app.
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .background { Storage.scheduleRefresh() }
                 }
             // The iPad's other windows; the iPhone opens none.
             WindowGroup(id: WindowPlace.sceneID, for: WindowPlace.self) { $place in
