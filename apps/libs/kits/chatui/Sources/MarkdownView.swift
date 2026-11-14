@@ -137,6 +137,29 @@ extension EnvironmentValues {
     /// A block still being written, so drawn as it reads rather than by a
     /// renderer, which would redraw with every word.
     @Entry var markdownUnfinished = false
+    /// Tells the list a row is in that the row is about to change its own
+    /// height, such as opening, so it's measured again rather than kept at
+    /// the height it had.
+    @Entry public var rowResizing: RowResizing?
+}
+
+/// What a row calls before it changes its own height. Two are the same
+/// for the same row of the same list, so a list setting one each time it
+/// draws doesn't draw its rows again.
+public struct RowResizing: Equatable, Sendable {
+    let row: String
+    let list: ObjectIdentifier
+    let forget: @MainActor @Sendable (String) -> Void
+
+    public init(row: String, list: ObjectIdentifier, forget: @escaping @MainActor @Sendable (String) -> Void) {
+        self.row = row
+        self.list = list
+        self.forget = forget
+    }
+
+    @MainActor public func callAsFunction() { forget(row) }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.row == rhs.row && lhs.list == rhs.list }
 }
 
 private struct MarkdownBlockView: View, Equatable {

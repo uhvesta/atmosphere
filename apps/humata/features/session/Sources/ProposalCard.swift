@@ -17,6 +17,7 @@ package struct ProposalCard: View {
     /// Bumped when a change worked out off the main thread is kept, to draw
     /// it.
     @State private var diffs = 0
+    @Environment(\.rowResizing) private var resizing
     /// Lines of the spec shown until the person asks for all of them.
     private static let shownLines = 8
 
@@ -61,9 +62,12 @@ package struct ProposalCard: View {
                     .lineLimit(showsAll ? nil : Self.shownLines)
                     .textSelection(.enabled)
                 if TextPreview.lines(in: proposal.spec, atMost: Self.shownLines + 1) > Self.shownLines {
-                    Button(showsAll ? "Show Less" : "Show All") { showsAll.toggle() }
-                        .buttonStyle(.link)
-                        .font(.caption)
+                    Button(showsAll ? "Show Less" : "Show All") {
+                        resizing?()
+                        showsAll.toggle()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
                 }
             }
             if !proposal.note.isEmpty {
@@ -120,6 +124,7 @@ package struct ProposalCard: View {
         let change = await Task.detached(priority: .userInitiated) { ToolCall.Change.between(old, new) }.value
         guard !Task.isCancelled else { return }
         Self.changes.setObject(KeptChange(old: old, new: new, change: change), forKey: proposal.id as NSString)
+        resizing?()
         diffs += 1
     }
 

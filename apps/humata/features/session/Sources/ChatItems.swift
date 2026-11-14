@@ -37,7 +37,12 @@ package enum ChatItem: Identifiable, Hashable, Sendable {
 }
 
 package struct ToolCall: Hashable, Sendable {
+    /// The row's own id: the event that started the call. Not the agent's
+    /// id for it, which can come again in a later turn: two rows with one
+    /// id in the chat's lazy list leave one of them blank.
     package var id: String
+    /// The agent's id for the call, that its output and proposals name.
+    package var callID: String
     package var tool: String
     /// The command it runs or the file it writes, when its arguments say;
     /// otherwise nil.
@@ -56,10 +61,12 @@ package struct ToolCall: Hashable, Sendable {
     package var change: Change?
 
     package init(
-        id: String, tool: String, subject: String? = nil, output: String? = nil, succeeded: Bool? = nil,
+        id: String, callID: String? = nil, tool: String, subject: String? = nil, output: String? = nil,
+        succeeded: Bool? = nil,
         permission: Permission? = nil, change: Change? = nil
     ) {
         self.id = id
+        self.callID = callID ?? id
         self.tool = tool
         self.subject = subject
         self.output = output
@@ -339,7 +346,8 @@ struct Chat: Equatable {
             calls[callID] = items.count
             running = callID
             let parts = ToolCall.parts(of: arguments)
-            items.append(.tool(ToolCall(id: callID, tool: tool, subject: parts.subject, change: parts.change)))
+            items.append(
+                .tool(ToolCall(id: event.id, callID: callID, tool: tool, subject: parts.subject, change: parts.change)))
         case .toolCompleted(let callID, let success, let output):
             if running == callID { running = nil }
             guard let index = calls[callID], case .tool(var call) = items[index] else { return }

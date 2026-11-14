@@ -86,6 +86,7 @@ struct PersonText: View {
     /// Opens all of it to select from, for a message too long to show whole.
     var select: ((String) -> Void)?
     @State private var expanded = false
+    @Environment(\.rowResizing) private var resizing
 
     /// The lines a long message shows until it's opened.
     static let shownLines = 10
@@ -119,10 +120,17 @@ struct PersonText: View {
             }
             // Closes from anywhere in it, without scrolling back to the
             // button; dragging still selects.
-            .simultaneousGesture(TapGesture(count: 2).onEnded { if expanded { expanded = false } })
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    if expanded {
+                        resizing?()
+                        expanded = false
+                    }
+                })
             if long {
                 HStack(spacing: 12) {
                     Button(expanded ? "Show Less" : "Show More") {
+                        resizing?()
                         expanded.toggle()
                     }
                     .font(.callout.weight(.semibold))

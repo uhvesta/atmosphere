@@ -1,3 +1,4 @@
+import ChatUI
 import SwiftUI
 
 /// A `mermaid` block drawn as its diagram, no wider than the text around
@@ -9,6 +10,7 @@ package struct MermaidDiagram: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openWindow) private var openWindow
     @State private var drawn: Drawn?
+    @Environment(\.rowResizing) private var resizing
 
     private enum Drawn: Equatable {
         case image(NSImage)
@@ -54,11 +56,21 @@ package struct MermaidDiagram: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: "\(dark)\n\(source)") {
+            // A spinner shows until it's drawn, unless it was drawn before.
+            let spinning =
+                drawn == nil && MermaidRenderer.shared.cached(source, dark: dark) == nil
+                && MermaidRenderer.shared.cachedFailure(source, dark: dark) == nil
+            let next: Drawn
             do throws(DiagramError) {
-                self.drawn = .image(try await MermaidRenderer.shared.image(source, dark: dark))
+                next = .image(try await MermaidRenderer.shared.image(source, dark: dark))
             } catch {
-                self.drawn = .failed(error)
+                next = .failed(error)
             }
+            guard next != drawn else { return }
+            // A spinner, or another diagram, gives way to one of another
+            // height.
+            if spinning || drawn != nil { resizing?() }
+            self.drawn = next
         }
     }
 }

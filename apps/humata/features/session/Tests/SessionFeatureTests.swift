@@ -1701,6 +1701,29 @@ final class SessionFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    /// An agent can use one id for calls in different turns; the chat's
+    /// lazy list leaves a row blank when two rows share an id.
+    func testToolCallsWithAnIdUsedAgainInALaterTurnAreTheirOwnRowsAndGetTheirOwnOutput() {
+        let events = [
+            event("e1", .turnStarted),
+            event("e2", .toolStarted(callID: "call-0", tool: "shell", argumentsJSON: #"{"command":"one"}"#)),
+            event("e3", .toolCompleted(callID: "call-0", success: true, output: "first")),
+            event("e4", .turnEnded(aborted: false)),
+            event("e5", .turnStarted),
+            event("e6", .toolStarted(callID: "call-0", tool: "shell", argumentsJSON: #"{"command":"two"}"#)),
+            event("e7", .toolCompleted(callID: "call-0", success: false, output: "second")),
+            event("e8", .turnEnded(aborted: false)),
+        ]
+        let items = ChatItem.items(events)
+        XCTAssertEqual(Set(items.map(\.id)).count, items.count)
+        let calls = items.compactMap { item -> ToolCall? in
+            if case .tool(let call) = item { call } else { nil }
+        }
+        XCTAssertEqual(calls.map(\.output), ["first", "second"])
+        XCTAssertEqual(calls.map(\.succeeded), [true, false])
+        XCTAssertEqual(calls.map(\.callID), ["call-0", "call-0"])
+    }
+
     /// The chat's tool calls for `calls`, each a tool and its arguments.
     private func toolCalls(_ calls: [(tool: String, arguments: [String: Any])]) throws -> [ToolCall] {
         var events: [SessionEvent] = []

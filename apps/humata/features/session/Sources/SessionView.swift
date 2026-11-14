@@ -452,6 +452,7 @@ private struct ChatList: View {
                                 .equatable()
                                 // A reply's parts sit as close as its blocks do.
                                 .padding(.top, line.continues ? -4 : 0)
+                                .environment(\.rowResizing, heights.resizing(line.id))
                         }
                         .id(line.id)
                     }
@@ -554,11 +555,11 @@ private struct ChatList: View {
             shows.thinkingOpen = store.expandedThinking.contains(id)
         case .tool(let call):
             shows.toolOpen = store.expandedTools.contains(call.id)
-            if let proposal = store.proposals.proposals[id: call.id] {
+            if let proposal = store.proposals.proposals[id: call.callID] {
                 shows.proposal = proposal
-                shows.deciding = store.proposals.deciding.contains(call.id)
+                shows.deciding = store.proposals.deciding.contains(call.callID)
                 shows.canStartWork = store.session.planning
-            } else if let failure = store.proposals.listFailure, store.proposingCalls.contains(call.id) {
+            } else if let failure = store.proposals.listFailure, store.proposingCalls.contains(call.callID) {
                 shows.proposalFailure = failure
             }
         case .rewound:
@@ -594,7 +595,9 @@ private struct ChatList: View {
 /// it had: a row scrolled back to, unchanged, isn't measured again. Without
 /// them the stack measured each row it passed, and its guesses at heights
 /// it hadn't measured were what made scrolling stall.
-private final class RowHeights {
+private final class RowHeights: @unchecked Sendable {
+    // Only read and changed on the main thread, by the chat's layout and
+    // its rows; `@unchecked` so a row can hold it in its `RowResizing`.
     private var kept: [String: (row: ChatRow, width: CGFloat, height: CGFloat)] = [:]
 
     func height(of id: String, row: ChatRow, width: CGFloat) -> CGFloat? {
@@ -606,6 +609,11 @@ private final class RowHeights {
         // Enough for a very long chat; past it, rows are measured again.
         if kept.count >= Self.limit { kept.removeAll(keepingCapacity: true) }
         kept[id] = (row, width, height)
+    }
+
+    /// What the row `id` calls before it changes its own height.
+    func resizing(_ id: String) -> RowResizing {
+        RowResizing(row: id, list: ObjectIdentifier(self)) { [self] in kept[$0] = nil }
     }
 
     private static let limit = 20_000
