@@ -29,7 +29,9 @@ message Envelope {
     StreamItem item = 5;
     // The stream a request opened has ended, normally or with an error.
     StreamEnd end = 6;
-    // The sender no longer wants the stream its request opened.
+    // The sender no longer wants the stream its request opened, or the
+    // answer to its request. A request that only reads is stopped; one
+    // that changes something runs to the end, its answer dropped.
     Cancel cancel = 7;
   }
 }
@@ -1731,6 +1733,10 @@ message ListSessions {
 
 message Sessions {
   repeated SessionInfo sessions = 1;
+  // Every host answered this listing, so a session left out of it is gone.
+  // False when one was shown as it last was: then a session missing may
+  // still be there.
+  bool complete = 2;
 }
 
 message AbortTurn {

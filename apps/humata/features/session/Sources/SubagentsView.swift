@@ -248,7 +248,7 @@ private struct MainAgentRow: View {
                         .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let usage = store.usage {
+                if let usage = store.mainUsage {
                     Text(SessionView.describe(usage))
                         .scaledFont(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -323,33 +323,38 @@ private struct SubagentChat: View {
     var body: some View {
         let items = store.subagentItems
         let select: (String) -> Void = { selecting = SelectedText(text: $0) }
-        if items.isEmpty {
-            ContentUnavailableView(
-                "No Steps Yet", systemImage: "person.2",
-                description: Text(
-                    "This agent's own steps show here as it takes them. What it returns goes to the main agent, "
-                        + "under its call in the chat.")
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(items) { item in
-                        SubagentChatRow(
-                            item: item, thinkingOpen: openThinking.contains(item.id),
-                            toolOpen: openTools.contains(item.id), nested: nested(item),
-                            toggleThinking: { openThinking.formSymmetricDifference([item.id]) },
-                            toggleTool: { openTools.formSymmetricDifference([item.id]) },
-                            open: { store.send(.subagentTapped(callID: $0)) }, select: select
-                        )
-                        .equatable()
+        VStack(spacing: 0) {
+            if items.isEmpty {
+                ContentUnavailableView(
+                    "No Steps Yet", systemImage: "person.2",
+                    description: Text(
+                        "This agent's own steps show here as it takes them. What it returns goes to the main agent, "
+                            + "under its call in the chat.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(items) { item in
+                            SubagentChatRow(
+                                item: item, thinkingOpen: openThinking.contains(item.id),
+                                toolOpen: openTools.contains(item.id), nested: nested(item),
+                                toggleThinking: { openThinking.formSymmetricDifference([item.id]) },
+                                toggleTool: { openTools.formSymmetricDifference([item.id]) },
+                                open: { store.send(.subagentTapped(callID: $0)) }, select: select
+                            )
+                            .equatable()
+                        }
                     }
+                    .padding()
                 }
-                .padding()
+                .defaultScrollAnchor(.bottom)
             }
-            .defaultScrollAnchor(.bottom)
-            .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+            if let result = store.shownSubagentResult, !result.isEmpty {
+                ReturnedResult(text: result, select: select)
+            }
         }
+        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
     }
 
     /// The subagent `item`'s tool call started itself, if it did.
@@ -362,6 +367,32 @@ private struct SubagentChat: View {
 private struct SelectedText: Identifiable {
     let id = UUID()
     let text: String
+}
+
+/// What the open subagent's call returned to the main agent, under the chat
+/// of its steps. Its whole text opens to select from.
+private struct ReturnedResult: View {
+    let text: String
+    let select: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider()
+            Text("Returned to the main agent")
+                .scaledFont(.callout.weight(.semibold))
+            Text(text)
+                .scaledFont(.callout.monospaced())
+                .lineLimit(8)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Spacer(minLength: 0)
+                Button("Show Whole Result") { select(text) }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 10)
+    }
 }
 
 /// One row of a subagent's chat. Equal when what it shows is, so a new

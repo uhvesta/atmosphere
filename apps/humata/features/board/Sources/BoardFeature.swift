@@ -55,6 +55,9 @@ package struct BoardFeature {
         var heldAlert: AlertState<BoardAlert>?
         /// Columns by status, or the plan's graph.
         package var layout = BoardLayout.columns
+        /// The card the arrow keys are on: Return opens it, Space asks for
+        /// its status. Nil until a card is clicked or an arrow pressed.
+        package var selected: Item.ID?
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
@@ -69,6 +72,11 @@ package struct BoardFeature {
             case nil, .alert: destination = .alert(alert)
             default: heldAlert = alert
             }
+        }
+
+        /// The cards' ids, a list per column in the columns' order.
+        package var columns: [[Item.ID]] {
+            ItemStatus.allCases.map { status in cards(in: status).map(\.id) }
         }
 
         /// The items the board shows in `status`'s column, in the board's order.
@@ -175,6 +183,13 @@ package struct BoardFeature {
         case newItem(NewItemFeature)
         case log(BoardLogFeature)
         case alert(AlertState<BoardAlert>)
+        /// The selected card's status to pick, as Space asks for.
+        case statusPicker(ConfirmationDialogState<StatusPick>)
+    }
+
+    /// A status picked for an item from the status picker.
+    package enum StatusPick: Equatable {
+        case set(Item.ID, ItemStatus)
     }
 
     package enum Action {
@@ -193,6 +208,13 @@ package struct BoardFeature {
         /// Adds a task, or a subtask under `parent`.
         case addTapped(parent: Item.ID?)
         case cardTapped(Item.ID)
+        /// An arrow key: moves the selection to the next card that way.
+        case selectionMoved(BoardMove)
+        /// Return: opens the selected card's page.
+        case openSelectedTapped
+        /// Space: asks which status the selected card gets. It never sets
+        /// one by itself, so a stray key changes nothing.
+        case statusPickerTapped
         /// Starts a session on the item with the last New Session settings,
         /// and has it start, staying on the board.
         case startWorkTapped(Item.ID)
@@ -516,7 +538,25 @@ package struct BoardFeature {
                     NewItemFeature.State(project: state.project, parent: parent.flatMap { state.items[id: $0] }))
                 return .none
 
+            case .selectionMoved(let move):
+                let next = Self.selection(after: move, from: state.selected, in: state.columns)
+                if next != state.selected { state.selected = next }
+                return .none
+
+            case .openSelectedTapped:
+                guard let id = state.selected else { return .none }
+                return .send(.cardTapped(id))
+
+            case .statusPickerTapped:
+                guard let id = state.selected, let item = state.items[id: id] else { return .none }
+                state.destination = .statusPicker(.status(of: item))
+                return .none
+
+            case .destination(.presented(.statusPicker(.set(let id, let status)))):
+                return .send(.dropped(id, on: status))
+
             case .cardTapped(let id):
+                if state.items[id: id] != nil, state.selected != id { state.selected = id }
                 // Its page is open already; opening it again would drop what
                 // is being written there.
                 if case .item(let page)? = state.destination, page.item.id == id { return .none }
@@ -631,6 +671,36 @@ package struct BoardFeature {
         .ifLet(\.$destination, action: \.destination)
     }
 
+    /// The card an arrow key moves the selection to, `columns` being the
+    /// cards' ids per column. Up and down move within the column and stop at
+    /// its ends; left and right go to the nearest column that way with
+    /// cards, at the same row or its last card, and stop at the board's
+    /// edges. With nothing selected, or a card no longer on the board, it's
+    /// the first card.
+    static func selection(after move: BoardMove, from selected: Item.ID?, in columns: [[Item.ID]]) -> Item.ID? {
+        guard let selected,
+            let column = columns.firstIndex(where: { $0.contains(selected) }),
+            let row = columns[column].firstIndex(of: selected)
+        else {
+            return columns.first { !$0.isEmpty }?.first
+        }
+        switch move {
+        case .up:
+            return columns[column][max(row - 1, 0)]
+        case .down:
+            return columns[column][min(row + 1, columns[column].count - 1)]
+        case .left, .right:
+            let step = move == .left ? -1 : 1
+            var next = column + step
+            while columns.indices.contains(next) {
+                let cards = columns[next]
+                if !cards.isEmpty { return cards[min(row, cards.count - 1)] }
+                next += step
+            }
+            return selected
+        }
+    }
+
     /// The newest change made in this app from `from` on that isn't
     /// itself a revert and hasn't been reverted, in `changes`, newest first.
     /// A revert is always newer than the change it reverts, so the changes
@@ -686,6 +756,29 @@ package struct BoardFeature {
 }
 
 extension BoardFeature.Destination.State: Equatable {}
+
+/// Which way an arrow key moves the board's selection.
+package enum BoardMove: Hashable, Sendable {
+    case up, down, left, right
+}
+
+extension ConfirmationDialogState where Action == BoardFeature.StatusPick {
+    /// Asks which status `item` gets: each but the one it has.
+    static func status(of item: Item) -> Self {
+        ConfirmationDialogState(titleVisibility: .visible) {
+            TextState("Set the Status of \(item.title)")
+        } actions: {
+            for status in ItemStatus.allCases where status != item.fields.status {
+                ButtonState(action: .set(item.id, status)) {
+                    TextState(status.title)
+                }
+            }
+            ButtonState(role: .cancel) {
+                TextState("Cancel")
+            }
+        }
+    }
+}
 
 /// How the board shows its items.
 package enum BoardLayout: Hashable, Sendable {

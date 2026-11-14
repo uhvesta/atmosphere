@@ -474,6 +474,25 @@ impl Daemon {
     }
 
     async fn check_host(&self, name: &str) -> Result<pb::HostHealth, DaemonError> {
+        if name.is_empty() {
+            // This Mac: its own host answers, never over a connection.
+            let request = pb::request::Kind::ReadHostStatus(pb::ReadHostStatus {});
+            let status = match self.local.clone().handle(request).await {
+                Reply::Response(pb::response::Kind::HostStatus(status)) => Some(status),
+                _ => None,
+            };
+            return Ok(pb::HostHealth {
+                name: String::new(),
+                reachable: true,
+                problem: if status.is_some() {
+                    String::new()
+                } else {
+                    "this Mac couldn't read its own status; restart Humata to restart its daemon"
+                        .to_owned()
+                },
+                status,
+            });
+        }
         let remote = self.remote(name)?;
         remote.retry_now();
         let status = match remote.client(&self.hosts_file, &self.build).await {
@@ -1242,6 +1261,10 @@ impl Daemon {
             answers.push((host, answer.map(pb::response::Kind::Sessions)));
         }
         let mut listed = Vec::new();
+        // Whole only when every host answered: one shown as it last was,
+        // or this Mac's own that failed, may leave out a session that's
+        // still there.
+        let mut complete = true;
         for (host, answer) in answers {
             let sessions = match answer {
                 Some(pb::response::Kind::Sessions(sessions)) => {
@@ -1250,9 +1273,15 @@ impl Daemon {
                     }
                     Some(sessions.sessions)
                 }
-                _ if host.is_empty() => Some(Vec::new()),
+                _ if host.is_empty() => {
+                    complete = false;
+                    Some(Vec::new())
+                }
                 // Shown as it last was, read with the rest below.
-                _ => None,
+                _ => {
+                    complete = false;
+                    None
+                }
             };
             listed.push((host, sessions));
         }
@@ -1329,7 +1358,10 @@ impl Daemon {
                 }
             }
         }
-        Ok(pb::Sessions { sessions: all })
+        Ok(pb::Sessions {
+            sessions: all,
+            complete,
+        })
     }
 
     /// `session`'s history from its host, or, while it can't be reached, as

@@ -2,8 +2,9 @@ import ComposableArchitecture
 import HumataDaemonClient
 import SwiftUI
 
-/// Settings > Environments: the machines in ~/.ssh/config, each added or
-/// not, beside the selected one's health, variables and setup script.
+/// Settings > Environments: This Mac, then the machines in ~/.ssh/config,
+/// each added or not, beside the selected one's health, variables and setup
+/// script.
 package struct EnvironmentsView: View {
     @Bindable var store: StoreOf<EnvironmentsFeature>
 
@@ -14,6 +15,10 @@ package struct EnvironmentsView: View {
     package var body: some View {
         HStack(spacing: 0) {
             List(selection: $store.selection.sending(\.selected)) {
+                Section {
+                    ThisMacRow(health: store.health[store.coordinator.id])
+                        .tag(store.coordinator.id as RemoteHost.ID?)
+                }
                 Section {
                     ForEach(store.environments) { environment in
                         EnvironmentRow(
@@ -62,7 +67,18 @@ package struct EnvironmentsView: View {
     }
 
     @ViewBuilder private var detail: some View {
-        if let id = store.selection, let host = store.hosts[id: id] {
+        if store.selection == store.coordinator.id {
+            Form {
+                HealthSection(
+                    host: store.coordinator, health: store.health[store.coordinator.id],
+                    check: { store.send(.checkTapped(store.coordinator.id)) },
+                    install: {})
+                if let editor = store.scope(state: \.editor, action: \.editor) {
+                    HostEditorSections(store: editor)
+                }
+            }
+            .formStyle(.grouped)
+        } else if let id = store.selection, let host = store.hosts[id: id] {
             Form {
                 HealthSection(
                     host: host, health: store.health[id],
@@ -80,6 +96,38 @@ package struct EnvironmentsView: View {
             ContentUnavailableView(
                 "No Environment Selected", systemImage: "server.rack",
                 description: Text("Add a host to run sessions on it. Humata installs its program there over SSH."))
+        }
+    }
+}
+
+/// This Mac in the list: how its own daemon says it is.
+private struct ThisMacRow: View {
+    let health: HostsFeature.Health?
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Label("This Mac", systemImage: "laptopcomputer")
+                    .lineLimit(1)
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            if health == .checking || health == nil {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel(status)
+            }
+        }
+    }
+
+    private var status: String {
+        switch health {
+        case .checking, .installing, nil: return "Checking…"
+        case .installFailed: return "Couldn't install Humata"
+        case .known(.reachable(let status)): return "Humata \(status.programVersion) · \(status.platform)"
+        case .known(.unreachable): return "Its daemon didn't answer"
         }
     }
 }

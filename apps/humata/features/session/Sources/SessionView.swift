@@ -133,6 +133,18 @@ package struct SessionView: View {
             ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
         }
         .sheet(isPresented: readingSubagent) { SubagentsSheet(store: store) }
+        .sheet(item: editingPaste) { paste in
+            PasteEditor(
+                paste: paste, save: { store.send(.pasteEdited(id: paste.id, text: $0)) },
+                moveToBox: { store.send(.pasteMovedToBox(id: paste.id, text: $0)) })
+        }
+    }
+
+    /// The pasted chip open in its editor, while it's still in the box.
+    private var editingPaste: Binding<Paste?> {
+        Binding(
+            get: { store.editingPaste.flatMap { id in store.pastes.first { $0.id == id } } },
+            set: { if $0 == nil, store.editingPaste != nil { store.send(.pasteEditorClosed) } })
     }
 
     /// Whether the plan shows: only beside the chat of a session in a
@@ -1776,12 +1788,12 @@ private struct ImageChips: View {
 private struct PasteChips: View {
     let pastes: [Paste]
     let remove: (String) -> Void
-    /// A chip's id and its text as changed.
-    let edit: (String, String) -> Void
+    /// Opens a chip short enough to change in its editor, which the
+    /// session presents: held here, it closed as the box was drawn again.
+    let edit: (String) -> Void
     let moveToBox: (String, String) -> Void
     /// A chip too long to edit, open to read.
     @State private var open: OpenAttachment?
-    @State private var editing: Paste?
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -1821,15 +1833,11 @@ private struct PasteChips: View {
         }
         .scrollIndicators(.never)
         .attachmentViewer($open)
-        .sheet(item: $editing) { paste in
-            PasteEditor(
-                paste: paste, save: { edit(paste.id, $0) }, moveToBox: { moveToBox(paste.id, $0) })
-        }
     }
 
     private func show(_ paste: Paste) {
         if paste.isEditable {
-            editing = paste
+            edit(paste.id)
         } else {
             open = .file(name: "Pasted Text", text: paste.text)
         }
@@ -2360,7 +2368,7 @@ private struct SessionComposer: View {
             // Always on: the clipboard can change while the menu is
             // closed, so it's read only when picked.
             Button("Paste Image", systemImage: "doc.on.clipboard") {
-                if let data = ClipboardImage.image {
+                if let data = ClipboardImage.image() {
                     store.send(.imagePasted(data))
                 } else {
                     store.send(.noImageToPaste)
@@ -2405,7 +2413,7 @@ private struct SessionComposer: View {
         if !store.pastes.isEmpty {
             PasteChips(
                 pastes: store.pastes, remove: { store.send(.removePasteTapped($0)) },
-                edit: { store.send(.pasteEdited(id: $0, text: $1)) },
+                edit: { store.send(.pasteChipTapped(id: $0)) },
                 moveToBox: { store.send(.pasteMovedToBox(id: $0, text: $1)) })
         }
         ForEach(store.dropped) { dropped in

@@ -249,6 +249,25 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
+    /// The sessions, or only `project`'s, complete while no host is
+    /// offline: one that is shows as it last was.
+    private func listed(_ project: String?) -> SessionListing {
+        state.withValue { state in
+            let sessions = state.sessions.filter {
+                (project == nil || $0.projectID == project) && !state.lost.contains($0.id)
+            }.map { session in
+                var session = session
+                session.hostOffline = session.host.map(state.offline.contains) ?? false
+                session.asking = state.requests.contains { $0.sessionID == session.id }
+                session.itemTitle = session.itemID.flatMap { item in
+                    state.items.first { $0.id == item }?.title
+                }
+                return session
+            }
+            return SessionListing(sessions: sessions, complete: state.offline.isEmpty)
+        }
+    }
+
     /// The variables set for `host`'s agents, values and all, which the
     /// client never sees.
     package func env(of host: String) -> [String: String] {
@@ -482,21 +501,8 @@ package final class InMemoryDaemon: Sendable {
             },
             deleteProject: { project in try self.deleteProject(project) },
             updateProject: { project, update in try self.updateProject(project, update) },
-            sessions: { project in
-                self.state.withValue { state in
-                    state.sessions.filter {
-                        (project == nil || $0.projectID == project) && !state.lost.contains($0.id)
-                    }.map { session in
-                        var session = session
-                        session.hostOffline = session.host.map(state.offline.contains) ?? false
-                        session.asking = state.requests.contains { $0.sessionID == session.id }
-                        session.itemTitle = session.itemID.flatMap { item in
-                            state.items.first { $0.id == item }?.title
-                        }
-                        return session
-                    }
-                }
-            },
+            sessions: { project in self.listed(project).sessions },
+            listing: { self.listed(nil) },
             start: { request in try self.startSession(request) },
             importable: { host in
                 try self.reachable(host)
@@ -2009,6 +2015,18 @@ extension InMemoryDaemon {
 
     private func checkHost(_ name: String) throws -> HostHealth {
         try state.withValue { state in
+            // This Mac, "", answers from its own daemon.
+            if name.isEmpty {
+                let env = state.env[name] ?? [:]
+                return .reachable(
+                    HostStatus(
+                        programVersion: "0.0.0", platform: "Darwin arm64", freeDiskBytes: 500_000_000_000,
+                        copilot: .success("1.0.0"),
+                        githubToken: ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"].contains { env[$0] != nil },
+                        setup: nil,
+                        claude: .success("2.1.322 (Claude Code)"),
+                        anthropicKey: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"].contains { env[$0] != nil }))
+            }
             guard let host = state.hosts.first(where: { $0.name == name }) else { throw Self.unknownHost(name) }
             if state.offline.contains(name) {
                 return .unreachable("ssh couldn't connect to \(host.sshDestination ?? name). Check that it is up.")

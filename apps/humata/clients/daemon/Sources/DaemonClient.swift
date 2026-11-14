@@ -16,6 +16,9 @@ package struct DaemonClient: Sendable {
     package var updateProject: @Sendable (_ project: String, _ update: ProjectUpdate) async throws -> Project
     /// Every host's sessions, or only the project's.
     package var sessions: @Sendable (_ project: String?) async throws -> [Session]
+    /// Every host's sessions, and whether every host answered: only then is
+    /// a session left out gone.
+    package var listing: @Sendable () async throws -> SessionListing
     /// Starts a session, idle until the first message.
     package var start: @Sendable (_ request: StartRequest) async throws -> Session
     /// The Claude Code and Copilot sessions on `host`, or this Mac if nil,
@@ -312,6 +315,19 @@ package struct DaemonClient: Sendable {
         @Sendable (_ session: String, _ after: String?) async -> AsyncThrowingStream<WatchItem, any Error> = { _, _ in
             AsyncThrowingStream { $0.finish() }
         }
+}
+
+/// Every host's sessions, as one listing read them.
+package struct SessionListing: Equatable, Sendable {
+    package var sessions: [Session]
+    /// Every host answered. When one didn't, it's shown as it last was, and
+    /// a session missing from the listing may still be there.
+    package var complete: Bool
+
+    package init(sessions: [Session], complete: Bool) {
+        self.sessions = sessions
+        self.complete = complete
+    }
 }
 
 extension DaemonClient: TestDependencyKey {

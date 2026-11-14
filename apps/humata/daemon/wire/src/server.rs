@@ -38,6 +38,8 @@ const OUTGOING: usize = 1024;
 /// Serves `service` on a connection until the other side closes it. A request
 /// still being answered then is answered to the end, so a step that changes
 /// state isn't cut off half way; only its reply and any stream are dropped.
+/// A request that only reads ([`abandonable`]) is stopped instead, as it is
+/// when the other side cancels it: nobody waits for what it would find.
 pub async fn serve<R, W, S>(
     mut reader: R,
     mut writer: W,
@@ -127,8 +129,12 @@ async fn answer<S: Service + ?Sized>(
     tasks: Arc<Mutex<HashMap<u64, AbortHandle>>>,
 ) {
     // On its own task, so aborting this one (the connection closed, or the
-    // stream was cancelled) never stops the service half way through.
-    let reply = match tokio::spawn(service.handle(kind)).await {
+    // request or its stream was cancelled) never stops the service half way
+    // through a change; a request that only reads is stopped along with it.
+    let abandonable = abandonable(&kind);
+    let handling = tokio::spawn(service.handle(kind));
+    let _stop = abandonable.then(|| StopOnDrop(handling.abort_handle()));
+    let reply = match handling.await {
         Ok(reply) => reply,
         Err(_) => Reply::Response(error(
             pb::ErrorCode::BackendFailed,
@@ -184,5 +190,62 @@ fn respond(id: u64, kind: pb::response::Kind) -> pb::Envelope {
         body: Some(pb::envelope::Body::Response(pb::Response {
             kind: Some(kind),
         })),
+    }
+}
+
+/// Aborts a task when dropped: when the task waiting on it is aborted.
+struct StopOnDrop(AbortHandle);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Whether a request's handler may be stopped part way when nobody waits for
+/// its answer any more: it only reads, so stopping it leaves nothing half
+/// changed. Every other request, including one not listed here, runs to the
+/// end. The app's own list of what it stops waiting for (`onlyReads` in
+/// clients/daemon_live) matches this one, apart from refreshing pull
+/// requests, which the app stops waiting for but which runs to the end
+/// here, as it records what it read and cleans up merged sessions.
+fn abandonable(request: &pb::request::Kind) -> bool {
+    use pb::request::Kind;
+    match request {
+        Kind::ListPullRequests(list) => !list.refresh,
+        Kind::ListProjects(_)
+        | Kind::ListSessions(_)
+        | Kind::ListImportable(_)
+        | Kind::ListModels(_)
+        | Kind::ListSkipped(_)
+        | Kind::ReadHistory(_)
+        | Kind::ReadImage(_)
+        | Kind::GetChatCommands(_)
+        | Kind::ListProposals(_)
+        | Kind::ReadChanges(_)
+        | Kind::ListThreads(_)
+        | Kind::ListFiles(_)
+        | Kind::ReadFile(_)
+        | Kind::ListFileVersions(_)
+        | Kind::ListFolder(_)
+        | Kind::ListItems(_)
+        | Kind::ReadBoardLog(_)
+        | Kind::ListInbox(_)
+        | Kind::ListApprovals(_)
+        | Kind::GetStorage(_)
+        | Kind::ListSkills(_)
+        | Kind::ListPlugins(_)
+        | Kind::GetSessionDefaults(_)
+        | Kind::ListHosts(_)
+        | Kind::ListSshHosts(_)
+        | Kind::ListRecoveries(_)
+        | Kind::ListTerminals(_)
+        | Kind::ListForwards(_)
+        | Kind::Search(_)
+        | Kind::GetPullRefresh(_)
+        | Kind::GetAgentAccess(_)
+        | Kind::ListSavedRepositories(_)
+        | Kind::ListRepositoryOwners(_) => true,
+        _ => false,
     }
 }

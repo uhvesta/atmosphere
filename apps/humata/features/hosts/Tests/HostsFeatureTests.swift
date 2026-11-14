@@ -227,6 +227,30 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertNil(store.state.commandLinks)
     }
 
+    func testThisMacShowsItsHealthFromItsOwnDaemon() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.selected(""))
+        XCTAssertEqual(store.state.health[""], .checking)
+        await store.receive(\.checked)
+        guard case .known(.reachable) = store.state.health[""] else {
+            return XCTFail("This Mac isn't reachable: \(String(describing: store.state.health[""]))")
+        }
+
+        await store.send(.checkTapped(""))
+        XCTAssertEqual(store.state.health[""], .checking)
+        await store.receive(\.checked)
+        guard case .known(.reachable) = store.state.health[""] else {
+            return XCTFail("checked again, This Mac is \(String(describing: store.state.health[""]))")
+        }
+    }
+
     func testTheListChecksEveryHost() async throws {
         let daemon = InMemoryDaemon()
         for name in ["a", "b"] {

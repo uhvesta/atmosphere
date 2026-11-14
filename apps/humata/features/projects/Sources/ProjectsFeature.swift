@@ -187,6 +187,20 @@ package struct ProjectsFeature {
             sessions.filter(\.archived)
         }
 
+        /// What's picked, as the sidebar's list shows it: nothing while the
+        /// session or project picked isn't listed. A read that takes the
+        /// picked row out then takes its pick out in the same change, so the
+        /// list's table isn't left to drop the pick itself mid-update and be
+        /// told to pick it again while it's still changing its rows. What
+        /// `selection` holds stays, for a row that's listed again.
+        var listedSelection: SidebarItem? {
+            switch selection {
+            case .session(let id): sessions[id: id] == nil ? nil : selection
+            case .board(let id): projects[id: id] == nil ? nil : selection
+            case .inbox, .hosts, .search, nil: selection
+            }
+        }
+
         /// The sessions `session` can be compared with: the others in its
         /// project.
         package func comparable(to session: Session) -> [Session] {
@@ -223,7 +237,10 @@ package struct ProjectsFeature {
         case task
         /// Reads the list once.
         case refresh
-        case loaded(projects: [Project], sessions: [Session], inbox: [InboxEntry], approvals: [AdminApproval] = [])
+        /// `complete` when every host answered, so a session left out is gone.
+        case loaded(
+            projects: [Project], sessions: [Session], inbox: [InboxEntry], approvals: [AdminApproval] = [],
+            complete: Bool = false)
         case loadFailed(String)
         case addProjectTapped
         case newSessionTapped(projectID: Project.ID)
@@ -329,13 +346,13 @@ package struct ProjectsFeature {
     /// from one to take in: the lists as the sidebar keeps them, and the
     /// minute its times are shown against.
     private enum Shown: Equatable {
-        case lists([Project], [Session], [InboxEntry], [AdminApproval], minute: Date)
+        case lists([Project], [Session], [InboxEntry], [AdminApproval], minute: Date, complete: Bool)
         case failure(String)
         case other
 
         init(_ read: Action, at now: Date) {
             switch read {
-            case .loaded(let projects, let sessions, let inbox, let approvals):
+            case .loaded(let projects, let sessions, let inbox, let approvals, let complete):
                 // As `.loaded` keeps them: times to the minute, and not what
                 // a session last said, which only the inbox's entries show.
                 let sessions = sessions.map { session -> Session in
@@ -349,7 +366,9 @@ package struct ProjectsFeature {
                     entry.session.lastActive = entry.session.lastActive?.toTheMinute
                     return entry
                 }
-                self = .lists(projects, sessions, inbox, approvals, minute: now.toTheMinute)
+                // A listing whole again is taken at once, as the app then
+                // closes a session deleted elsewhere.
+                self = .lists(projects, sessions, inbox, approvals, minute: now.toTheMinute, complete: complete)
             case .loadFailed(let message):
                 self = .failure(message)
             default:
@@ -405,7 +424,7 @@ package struct ProjectsFeature {
             case .refresh:
                 return .run { send in await send(await load()) }
 
-            case .loaded(let projects, let sessions, let inbox, let approvals):
+            case .loaded(let projects, let sessions, let inbox, let approvals, _):
                 if state.failure != nil { state.failure = nil }
                 // Answered here, a request stays hidden, even from a read
                 // that began before the answer and arrives after a newer one.
@@ -1042,12 +1061,13 @@ package struct ProjectsFeature {
     private func load() async -> Action {
         do {
             async let projects = daemon.projects()
-            async let sessions = daemon.sessions(nil)
+            async let listing = daemon.listing()
             async let inbox = daemon.inbox()
             let read = try await inbox
+            let listed = try await listing
             return .loaded(
-                projects: try await projects, sessions: try await sessions, inbox: read.entries,
-                approvals: read.approvals)
+                projects: try await projects, sessions: listed.sessions, inbox: read.entries,
+                approvals: read.approvals, complete: listed.complete)
         } catch {
             return .loadFailed(error.localizedDescription)
         }

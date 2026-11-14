@@ -59,9 +59,11 @@ public struct BoardColumn<Cards: View, Footer: View>: View {
 /// VoiceOver's default action, calls `onTap`; it drags as `id`, and its
 /// context menu is `menu`, such as a button per column to move it to.
 /// With `onDrop`, cards dragged onto it hand their ids to it, which says
-/// whether it took them, such as to reorder.
+/// whether it took them, such as to reorder. A `selected` card, the one
+/// the board's arrow keys are on, has a ring.
 public struct BoardCard<Content: View, Menu: View>: View {
     private let id: String
+    private let selected: Bool
     private let onDrop: (([String]) -> Bool)?
     private let onTap: () -> Void
     private let content: Content
@@ -73,10 +75,11 @@ public struct BoardCard<Content: View, Menu: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
-        id: String, onDrop: (([String]) -> Bool)? = nil, @ViewBuilder content: () -> Content,
+        id: String, selected: Bool = false, onDrop: (([String]) -> Bool)? = nil, @ViewBuilder content: () -> Content,
         @ViewBuilder menu: () -> Menu, onTap: @escaping () -> Void
     ) {
         self.id = id
+        self.selected = selected
         self.onDrop = onDrop
         self.onTap = onTap
         self.content = content()
@@ -99,11 +102,12 @@ public struct BoardCard<Content: View, Menu: View>: View {
             }
             .modifier(CardDrop(onDrop: onDrop, isTargeted: $isTargeted))
             .overlay {
-                if isTargeted {
+                if isTargeted || selected {
                     RoundedRectangle(cornerRadius: 8).strokeBorder(.tint, lineWidth: 2).accessibilityHidden(true)
                 }
             }
             .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityAction { onTap() }
             .contextMenu { menu }
     }

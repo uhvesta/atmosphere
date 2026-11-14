@@ -223,7 +223,9 @@ private struct SessionCommands: View {
         let readOnly = session?.session.readOnly == true
         Button(side ? "Stop the Side Chat’s Turn" : "Stop the Turn") { send(.abortTapped) }
             .keyboardShortcut(".", modifiers: .command)
-            .disabled(session?.canStop != true)
+            // Read from the window's state, not the copy above: told when
+            // a stop is asked, it greys out while the turn is stopping.
+            .disabled(!store.commandCanStop)
         Button(side ? "Try Again in the Side Chat" : "Try Again") { send(.retryTapped) }
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(

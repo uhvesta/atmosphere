@@ -1383,11 +1383,15 @@ the box's loose ends.
   to local models only, as the CLIs run only the skills they find
 - [x] A paste's chip opens to edit its text (up to 200 KB; longer opens to
   read), and Put in the Message moves it into the box while it's short
-  enough to edit there
+  enough to edit there. The session presents the editor (reducer state),
+  so it stays open and takes typing while the box is drawn again
 - [x] ⌘V with an image on the clipboard and no text, or image files copied
   in the Finder, adds the image as a drop does; a model that can't see
   images says so
 - [x] Stop the Turn in the Session menu is off while the turn is stopping
+  (the menu reads a value kept on the window's state; unconfirmed live)
+- [x] A daemon that won't stay is started again after 1 s, 2 s, 4 s … up
+  to 30 s, not once per outage; the wait resets once it answers
 - [x] Picking in the sidebar is sent after its table has reported the pick,
   so opening a chat no longer changes the table inside its own callback
   (the reentrant NSTableView warning)
@@ -1772,7 +1776,8 @@ Fable found and judged: 33 kept, 4 deferred, 1 dropped.
 - [x] Closing a live terminal tab asks first; Undo with nothing to undo
   says so; settings that couldn't be read are not saved over and offer
   Try Again; saving a project shows its progress
-- Deferred: D12–D14, U8
+- [x] U8: This Mac's agent health shows in Hosts, read from its own daemon
+- Deferred: D12–D14
 
 ### Review after v0.9.0
 
@@ -1838,10 +1843,13 @@ Fable found and judged, with two items from a live run on Alpine hosts:
   return and opens no second
 - [x] Lost and skipped sessions that can't be read say so; a failure during
   a clean-up stays shown
-- Deferred: cancelling a daemon call, the file browser's line split, a
-  keyboard model for the board, agent health for This Mac, a This Mac row
-  in Settings › Environments, the GitHub token's status, a steer's exact
-  place in later requests
+- [x] Agent health for This Mac in Hosts, and a This Mac row in Settings ›
+  Environments with its health and variables
+- [x] The board by keyboard: arrows move the selection between cards
+  (stopping at the edges), Return opens it, Space asks for its status and
+  never sets one by itself
+- Deferred: the file browser's line split, the GitHub token's status, a
+  steer's exact place in later requests
 
 ### Review after v0.11.0
 
@@ -1910,6 +1918,9 @@ profile of opening a long chat found.
 - [x] The file browser splits a file into lines away from the main thread
 - [x] A cancelled read on the daemon's connection ends at once, and writes
   to it go out one at a time, in order
+- [x] A cancelled read tells the daemon (`Cancel` on its id), which stops
+  its handler; a change still runs to the end and its caller still waits
+  for the answer, and refreshing pull requests isn't stopped
 - [x] Settings › GitHub says where the host's token comes from; an agent
   session's children count only those it lists; `humata host add` says how
   to fix a host it can't reach
@@ -1918,8 +1929,11 @@ profile of opening a long chat found.
 - [x] A reply's text is selectable once the pointer rests on it, and code
   blocks', rows' and Show Earlier Messages' buttons are drawn by SwiftUI:
   each of those was an AppKit view measured as a long chat was laid out
-- Deferred: closing a session deleted elsewhere, earlier rows kept across
-  tabs
+- [x] A session deleted elsewhere, as from the humata CLI, closes with its
+  side chat once a listing every host answered leaves it out, and a read
+  made after it does too (`Sessions.complete`); a host shown as it last
+  was closes nothing
+- Deferred: earlier rows kept across tabs
 
 ### Requests after v0.11.0
 

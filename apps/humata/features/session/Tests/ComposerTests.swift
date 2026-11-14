@@ -1,6 +1,8 @@
+import AppKit
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataSession
+import UniformTypeIdentifiers
 import XCTest
 
 /// The box's chips, what ⌘V brings into it, and when a turn can be stopped.
@@ -92,14 +94,81 @@ final class ComposerTests: XCTestCase {
         XCTAssertEqual(store.state.draft, "")
     }
 
+    func testAChipOpensToEditAndClosesOnceSavedOrPutInTheMessage() async {
+        let store = store("composer-chip-open")
+        await store.send(\.binding.draft, log)
+        let id = store.state.pastes.first?.id ?? ""
+
+        await store.send(.pasteChipTapped(id: id))
+        XCTAssertEqual(store.state.editingPaste, id)
+        // Typing in the box while it's open leaves it open.
+        await store.send(\.binding.draft, "and why")
+        XCTAssertEqual(store.state.editingPaste, id)
+
+        await store.send(.pasteEdited(id: id, text: "line 30"))
+        XCTAssertNil(store.state.editingPaste)
+        XCTAssertEqual(store.state.pastes.map(\.text), ["line 30"])
+
+        await store.send(.pasteChipTapped(id: id))
+        await store.send(.pasteEditorClosed)
+        XCTAssertNil(store.state.editingPaste)
+        XCTAssertEqual(store.state.pastes.map(\.text), ["line 30"], "closing without saving keeps it as it was")
+
+        // A chip taken out while open closes its editor.
+        await store.send(.pasteChipTapped(id: id))
+        await store.send(.removePasteTapped(id))
+        XCTAssertNil(store.state.editingPaste)
+    }
+
     func testPasteBringsAnImageOnlyWhenTheFieldWouldPasteNothing() {
         let shot = Data([1, 2, 3])
         let file = URL(fileURLWithPath: "/tmp/shot.png")
-        XCTAssertEqual(ClipboardImage.pasted(imageFiles: [], hasText: false) { shot }, .data(shot))
-        XCTAssertNil(ClipboardImage.pasted(imageFiles: [], hasText: true) { shot }, "text is the field's to paste")
-        XCTAssertNil(ClipboardImage.pasted(imageFiles: [], hasText: false) { nil })
+        XCTAssertEqual(ClipboardImage.pasted(imageFiles: [], text: nil) { shot }, .data(shot))
+        XCTAssertNil(ClipboardImage.pasted(imageFiles: [], text: "hello") { shot }, "text is the field's to paste")
+        XCTAssertNil(ClipboardImage.pasted(imageFiles: [], text: nil) { nil })
         // A file copied in the Finder comes with its name as text.
-        XCTAssertEqual(ClipboardImage.pasted(imageFiles: [file], hasText: true) { nil }, .files([file]))
+        XCTAssertEqual(ClipboardImage.pasted(imageFiles: [file], text: "shot.png") { nil }, .files([file]))
+    }
+
+    /// A pasteboard of the test's own, holding `items`.
+    private func pasteboard(_ write: (NSPasteboard) -> Void) -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("humata-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        write(pasteboard)
+        addTeardownBlock { pasteboard.releaseGlobally() }
+        return pasteboard
+    }
+
+    private var jpeg: Data {
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        return rep?.representation(using: .jpeg, properties: [:]) ?? Data()
+    }
+
+    func testPasteBringsAnImageOfAnyKindTheClipboardHolds() {
+        // Copy Image in Preview or Photos can give JPEG, HEIC or PDF, not PNG.
+        let jpeg = self.jpeg
+        XCTAssertFalse(jpeg.isEmpty)
+        let copied = pasteboard { $0.setData(jpeg, forType: NSPasteboard.PasteboardType(UTType.jpeg.identifier)) }
+        XCTAssertNotNil(ClipboardImage.image(on: copied))
+        guard case .data = ClipboardImage.onClipboard(copied) else {
+            return XCTFail("a JPEG on the clipboard brings nothing to the message")
+        }
+        // Text alone is still the field's to paste.
+        let text = pasteboard { $0.setString("hello", forType: .string) }
+        XCTAssertNil(ClipboardImage.onClipboard(text))
+    }
+
+    func testAnImageCopiedFromABrowserIsPastedThoughItsAddressComesAsText() {
+        // Copy Image in a browser puts the image's address beside it as text.
+        let shot = Data([1, 2, 3])
+        XCTAssertEqual(
+            ClipboardImage.pasted(imageFiles: [], text: "https://example.com/cat.png") { shot }, .data(shot))
+        XCTAssertNil(
+            ClipboardImage.pasted(imageFiles: [], text: "see https://example.com/cat.png") { shot },
+            "text that isn't only an address is the field's")
+        XCTAssertNil(ClipboardImage.pasted(imageFiles: [], text: "hello") { shot })
     }
 
     func testATurnCanBeStoppedOnlyUntilItIsToldTo() async {

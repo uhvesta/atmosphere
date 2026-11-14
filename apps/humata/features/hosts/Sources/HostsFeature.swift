@@ -200,8 +200,11 @@ package struct HostsFeature {
             case .loaded(let hosts):
                 state.failure = nil
                 state.hosts = IdentifiedArray(hosts, uniquingIDsWith: { _, last in last })
-                let selecting =
-                    state.selected == nil ? select(state.hosts.first?.id ?? state.coordinator.id, in: &state) : .none
+                // This Mac, still selected, is checked again like the hosts.
+                let selecting: Effect<Action> =
+                    state.selected == nil
+                    ? select(state.hosts.first?.id ?? state.coordinator.id, in: &state)
+                    : state.selection == state.coordinator.id ? check(state.coordinator.id, in: &state) : .none
                 return .merge([selecting] + hosts.map { check($0.id, in: &state) })
 
             case .coordinatorLoaded(let coordinator):
@@ -510,7 +513,7 @@ package struct HostsFeature {
                 // A session it couldn't open before may open now, so those
                 // are read again as well.
                 guard let id = state.selection, id == state.coordinator.id else { return .none }
-                return .merge(loadCommandLinks(), loadSkipped(id))
+                return .merge(loadCommandLinks(), loadSkipped(id), check(id, in: &state, again: true))
 
             case .restartRefused(let message):
                 state.destination = .alert(
@@ -552,7 +555,8 @@ package struct HostsFeature {
         state.recoveriesFailure = nil
         state.commandLinks = nil
         guard let id else { return .none }
-        guard !id.isEmpty else { return .merge(loadSkipped(id), loadCommandLinks()) }
+        // This Mac's health shows beside its settings, read from its daemon.
+        guard !id.isEmpty else { return .merge(loadSkipped(id), loadCommandLinks(), check(id, in: &state)) }
         return .merge(loadSkipped(id), loadRecoveries(id))
     }
 
@@ -591,7 +595,8 @@ package struct HostsFeature {
     /// Notes how the host is, and reads what it skipped once it can say.
     private func known(_ health: HostHealth, of id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
         state.health[id] = .known(health)
-        guard id == state.selection else { return .none }
+        // This Mac's skipped sessions are read when it's selected.
+        guard id == state.selection, id != state.coordinator.id else { return .none }
         guard case .reachable = health else {
             // Its page says it can't be reached, which is why.
             state.skippedFailure = nil

@@ -7,7 +7,9 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
+      [Heading] "humata"
+      [Button] "New Session" help: "Start a session in humata"
+      [MenuButton] "Project Actions" help: "New session, plan, settings or delete for humata"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
@@ -15,7 +17,9 @@
       [StaticText] "" value: "Active 10 mins ago"
       [Image] "Waiting for you" help: "Waiting for you to answer a request" id: hand.raised.fill
     [Row/OutlineRow] ""
-      [Heading] "Chats" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history, Start a chat in no project, in a folder you pick or one of its own (⌘N)"
+      [Heading] "Chats"
+      [Button] "Import Session…" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history"
+      [Button] "New Chat" help: "Start a chat in no project, in a folder you pick or one of its own (⌘N)"
   [TextField/SearchField] ""
     [Button] "Search"
   [StaticText] "" value: "Release notes"
@@ -27,10 +31,6 @@
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [OpaqueProviderGroup/OpaqueProviderList] ""
-    [StaticText] "" value: "Write the release notes for M1"
-    [Button] "Thoughts" help: "Shows the thinking"
-    [Button, selected] "/code/humata/NOTES.md"
-    [StaticText] "" value: "Approved"
     [Button, disabled] "cat > CHANGELOG.md <<'EOF'
 # Changelog
 

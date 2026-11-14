@@ -1547,7 +1547,11 @@ impl Host {
                     }
                 }
                 sessions.sort_by(|a, b| a.id.cmp(&b.id));
-                Response::Sessions(pb::Sessions { sessions })
+                // A host lists only its own, all of them.
+                Response::Sessions(pb::Sessions {
+                    sessions,
+                    complete: true,
+                })
             }
             Request::WatchToolCalls(_) => return Ok(self.relay.watch()),
             Request::AnswerToolCall(answer) => {

@@ -6,7 +6,8 @@ import HumataDaemonClient
 /// names them in ~/.ssh/config. Adding one installs humatad there and checks
 /// it; one that runs an older build than this app's offers Update; the
 /// selected one's agents' variables and setup script are edited beside it,
-/// and it can be removed, after asking.
+/// and it can be removed, after asking. This Mac is listed first, with its
+/// health and its agents' variables.
 @Reducer
 package struct EnvironmentsFeature {
     @ObservableState
@@ -15,6 +16,8 @@ package struct EnvironmentsFeature {
         package var sshHosts: [String] = []
         /// The hosts Humata has, from the config or typed.
         package var hosts: IdentifiedArrayOf<RemoteHost> = []
+        /// This Mac, the coordinator: its id, "", selects it.
+        package var coordinator = RemoteHost.coordinator()
         package var health: [RemoteHost.ID: HostsFeature.Health] = [:]
         /// What `ssh` connects to, while it's being added.
         package var adding: Set<String> = []
@@ -76,6 +79,9 @@ package struct EnvironmentsFeature {
         case task
         case loaded(sshHosts: [String], hosts: [RemoteHost])
         case loadFailed(String)
+        case coordinatorLoaded(RemoteHost)
+        /// How This Mac is, as its own daemon says.
+        case thisMacChecked(HostHealth)
         /// Adds the config's host by its name, installs humatad there and
         /// checks it.
         case addTapped(destination: String)
@@ -108,13 +114,26 @@ package struct EnvironmentsFeature {
         Reduce { state, action in
             switch action {
             case .task:
-                return .run { send in
+                let hosts = Effect<Action>.run { send in
                     // Without a config, hosts are typed in with Add Other.
                     let sshHosts = (try? await daemon.sshHosts()) ?? []
                     await send(.loaded(sshHosts: sshHosts, hosts: try await daemon.hosts()))
+                    await send(.coordinatorLoaded(try await daemon.coordinator()))
                 } catch: { error, send in
                     await send(.loadFailed(error.localizedDescription))
                 }
+                return .merge(hosts, checkThisMac(in: &state))
+
+            case .coordinatorLoaded(let coordinator):
+                state.coordinator = coordinator
+                if state.selection == coordinator.id, state.editor?.update == nil {
+                    state.editor = HostEditorFeature.State(host: coordinator)
+                }
+                return .none
+
+            case .thisMacChecked(let health):
+                state.health[state.coordinator.id] = .known(health)
+                return .none
 
             case .loaded(let sshHosts, let hosts):
                 state.failure = nil
@@ -158,6 +177,7 @@ package struct EnvironmentsFeature {
                 return install(id, in: &state)
 
             case .checkTapped(let id):
+                if id == state.coordinator.id { return checkThisMac(in: &state, again: true) }
                 return check(id, in: &state, again: true)
 
             case .checked(let id, let health):
@@ -226,6 +246,12 @@ package struct EnvironmentsFeature {
                 state.destination = nil
                 return .send(.added(host))
 
+            case .editor(.delegate(.saved(let host))) where host.isCoordinator:
+                state.coordinator = host
+                state.unsaved[host.id] = nil
+                // Its agents' variables changed, which its health reports.
+                return checkThisMac(in: &state, again: true)
+
             case .editor(.delegate(.saved(let host))):
                 state.hosts[id: host.id] = host
                 state.unsaved[host.id] = nil
@@ -250,7 +276,7 @@ package struct EnvironmentsFeature {
     private func select(_ id: RemoteHost.ID?, in state: inout State) {
         if let unsaved = state.editor?.unsaved { state.unsaved[unsaved.host.id] = unsaved }
         state.selection = id
-        if let id, let host = state.hosts[id: id] {
+        if let id, let host = id == state.coordinator.id ? Optional(state.coordinator) : state.hosts[id: id] {
             state.editor = state.unsaved.removeValue(forKey: id) ?? HostEditorFeature.State(host: host)
         } else {
             state.editor = nil
@@ -289,6 +315,20 @@ package struct EnvironmentsFeature {
             await send(.checked(id, try await daemon.checkHost(id)))
         } catch: { error, send in
             await send(.checked(id, .unreachable(error.localizedDescription)))
+        }
+    }
+}
+
+extension EnvironmentsFeature {
+    /// Asks This Mac's daemon how This Mac is. Shown again, it keeps what
+    /// was known until the answer; `again`, it shows it's checking.
+    fileprivate func checkThisMac(in state: inout State, again: Bool = false) -> Effect<Action> {
+        let id = state.coordinator.id
+        if again || state.health[id] == nil { state.health[id] = .checking }
+        return .run { send in
+            await send(.thisMacChecked(try await daemon.checkHost(id)))
+        } catch: { error, send in
+            await send(.thisMacChecked(.unreachable(error.localizedDescription)))
         }
     }
 }

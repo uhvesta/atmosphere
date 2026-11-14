@@ -21,6 +21,43 @@ final class EnvironmentsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.environments.map { $0.host?.name }, [nil, nil, "lab"])
     }
 
+    func testThisMacIsListedWithItsHealthAndItsVariablesAreEdited() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: EnvironmentsFeature.State()) {
+            EnvironmentsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.finish()
+        await store.skipReceivedActions()
+        guard case .known(.reachable(let before)) = store.state.health[""] else {
+            return XCTFail("This Mac isn't reachable: \(String(describing: store.state.health[""]))")
+        }
+        XCTAssertFalse(before.githubToken)
+
+        await store.send(.selected(""))
+        XCTAssertEqual(store.state.editor?.host.isCoordinator, true)
+        await store.send(\.editor.addVariableTapped)
+        var variables = store.state.editor?.variables ?? []
+        let row = try XCTUnwrap(variables.last)
+        variables[id: row.id]?.name = "GH_TOKEN"
+        variables[id: row.id]?.value = "secret"
+        await store.send(\.editor.binding.variables, variables)
+        await store.send(\.editor.saveTapped)
+        await store.receive(\.editor.delegate.saved)
+        XCTAssertEqual(daemon.env(of: ""), ["GH_TOKEN": "secret"])
+        XCTAssertEqual(store.state.coordinator.envNames, ["GH_TOKEN"])
+        XCTAssertTrue(store.state.hosts.isEmpty, "This Mac isn't one of the remote hosts")
+        await store.receive(\.thisMacChecked)
+        guard case .known(.reachable(let after)) = store.state.health[""] else {
+            return XCTFail("saved, This Mac is \(String(describing: store.state.health[""]))")
+        }
+        XCTAssertTrue(after.githubToken)
+    }
+
     func testAddingAConfigHostInstallsHumataThere() async throws {
         let daemon = InMemoryDaemon(sshHosts: ["build-box", "gpu"])
         let store = TestStore(initialState: EnvironmentsFeature.State()) {

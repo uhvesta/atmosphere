@@ -16,6 +16,19 @@ struct Echo {
     /// SendMessage to "gated" waits for this, then reports on `finished`.
     gate: Mutex<Option<oneshot::Receiver<()>>>,
     finished: Mutex<Option<oneshot::Sender<()>>>,
+    /// ReadHistory waits forever, and reports on this once it is stopped.
+    stopped: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+/// Reports on its sender when dropped.
+struct Report(Option<oneshot::Sender<()>>);
+
+impl Drop for Report {
+    fn drop(&mut self) {
+        if let Some(stopped) = self.0.take() {
+            let _ = stopped.send(());
+        }
+    }
 }
 
 /// Events a "flood" watch sends: more than a stream holds unread.
@@ -53,6 +66,10 @@ impl Service for Echo {
                 }
                 pb::request::Kind::SendMessage(_) => {
                     Reply::Response(error(pb::ErrorCode::UnknownSession, "no such session"))
+                }
+                pb::request::Kind::ReadHistory(_) => {
+                    let _report = Report(self.stopped.lock().await.take());
+                    std::future::pending::<Reply>().await
                 }
                 pb::request::Kind::WatchSession(watch) => {
                     let (sender, items) = mpsc::channel(8);
@@ -97,6 +114,7 @@ impl Service for Echo {
                 }
                 _ => Reply::Response(pb::response::Kind::Sessions(pb::Sessions {
                     sessions: vec![],
+                    complete: true,
                 })),
             }
         })
@@ -371,6 +389,108 @@ async fn a_request_is_answered_to_the_end_when_its_caller_goes_away() {
     assert!(
         matches!(finished, Ok(Ok(()))),
         "the service was stopped half way"
+    );
+}
+
+/// Says hello to a served `service` by hand, for a test that sends what
+/// [`Client`] doesn't.
+async fn raw_connection(service: Arc<Echo>) -> DuplexStream {
+    let (mut ours, theirs) = duplex(64 * 1024);
+    let (reader, writer) = split(theirs);
+    tokio::spawn(async move { serve(reader, writer, pb::Role::Host, "test", service).await });
+    let hello = pb::Envelope {
+        id: 0,
+        body: Some(pb::envelope::Body::Hello(pb::Hello {
+            protocol_version: pb::ProtocolVersion::Current.into(),
+            role: pb::Role::Daemon.into(),
+            program_version: "test".to_owned(),
+            ..Default::default()
+        })),
+    };
+    crate::write(&mut ours, &hello, false)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    match crate::read(&mut ours).await {
+        Ok(Some(pb::Envelope {
+            body: Some(pb::envelope::Body::Hello(_)),
+            ..
+        })) => ours,
+        other => panic!("no hello: {other:?}"),
+    }
+}
+
+async fn send_envelope(stream: &mut DuplexStream, id: u64, body: pb::envelope::Body) {
+    crate::write(
+        stream,
+        &pb::Envelope {
+            id,
+            body: Some(body),
+        },
+        false,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+}
+
+fn request(kind: pb::request::Kind) -> pb::envelope::Body {
+    pb::envelope::Body::Request(pb::Request { kind: Some(kind) })
+}
+
+fn cancel() -> pb::envelope::Body {
+    pb::envelope::Body::Cancel(pb::Cancel {})
+}
+
+#[tokio::test]
+async fn cancelling_a_read_stops_its_handler_and_the_connection_still_answers() {
+    let (stopped, handler_stopped) = oneshot::channel();
+    let service = Arc::new(Echo {
+        stopped: Mutex::new(Some(stopped)),
+        ..Echo::default()
+    });
+    let mut connection = raw_connection(service).await;
+    let history = pb::request::Kind::ReadHistory(pb::ReadHistory::default());
+    send_envelope(&mut connection, 1, request(history)).await;
+    // Let the request reach the service, then cancel it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    send_envelope(&mut connection, 1, cancel()).await;
+    let stopped = tokio::time::timeout(Duration::from_secs(5), handler_stopped).await;
+    assert!(matches!(stopped, Ok(Ok(()))), "the read kept running");
+
+    send_envelope(&mut connection, 2, request(send("known"))).await;
+    let answer = tokio::time::timeout(Duration::from_secs(5), crate::read(&mut connection)).await;
+    assert!(
+        matches!(
+            answer,
+            Ok(Ok(Some(pb::Envelope {
+                id: 2,
+                body: Some(pb::envelope::Body::Response(pb::Response {
+                    kind: Some(pb::response::Kind::MessageSent(_)),
+                })),
+            })))
+        ),
+        "{answer:?}"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_change_lets_it_finish() {
+    let (open, gate) = oneshot::channel();
+    let (finished, done) = oneshot::channel();
+    let service = Arc::new(Echo {
+        gate: Mutex::new(Some(gate)),
+        finished: Mutex::new(Some(finished)),
+        ..Echo::default()
+    });
+    let mut connection = raw_connection(service).await;
+    send_envelope(&mut connection, 1, request(send("gated"))).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    send_envelope(&mut connection, 1, cancel()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = open.send(());
+    let finished = tokio::time::timeout(Duration::from_secs(5), done).await;
+    assert!(
+        matches!(finished, Ok(Ok(()))),
+        "the change was stopped half way"
     );
 }
 

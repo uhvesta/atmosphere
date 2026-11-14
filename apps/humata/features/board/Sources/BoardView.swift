@@ -21,8 +21,12 @@ extension Priority {
 
 /// A project's board: a column per status. Drag a card to another column,
 /// or use its context menu, to set its status; tap it to open its page.
+/// The arrow keys move between cards, Return opens one and Space asks for
+/// its status.
 package struct BoardView: View {
     @Bindable var store: StoreOf<BoardFeature>
+    /// The columns have the keyboard, so the arrow keys move the selection.
+    @FocusState private var columnsFocused: Bool
 
     package init(store: StoreOf<BoardFeature>) {
         self.store = store
@@ -32,13 +36,43 @@ package struct BoardView: View {
         Group {
             switch store.layout {
             case .columns:
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(ItemStatus.allCases, id: \.self) { status in
-                            column(status)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(ItemStatus.allCases, id: \.self) { status in
+                                column(status)
+                            }
+                        }
+                        .padding()
+                    }
+                    .focusable()
+                    .focused($columnsFocused)
+                    // The selected card's ring shows where the keys are.
+                    .focusEffectDisabled()
+                    .defaultFocus($columnsFocused, true)
+                    .onMoveCommand { direction in
+                        switch direction {
+                        case .up: store.send(.selectionMoved(.up))
+                        case .down: store.send(.selectionMoved(.down))
+                        case .left: store.send(.selectionMoved(.left))
+                        case .right: store.send(.selectionMoved(.right))
+                        @unknown default: break
                         }
                     }
-                    .padding()
+                    .onKeyPress(.return) {
+                        guard store.selected != nil else { return .ignored }
+                        store.send(.openSelectedTapped)
+                        return .handled
+                    }
+                    .onKeyPress(.space) {
+                        guard store.selected != nil else { return .ignored }
+                        store.send(.statusPickerTapped)
+                        return .handled
+                    }
+                    .onChange(of: store.selected) { _, id in
+                        guard let id else { return }
+                        withAnimation(.default) { proxy.scrollTo(id) }
+                    }
                 }
             case .graph:
                 BoardGraphView(graph: store.graph, items: store.items) { store.send(.cardTapped($0)) }
@@ -128,6 +162,7 @@ package struct BoardView: View {
             }
         }
         .alert($store.scope(state: \.destination?.alert, action: \.destination.alert))
+        .confirmationDialog($store.scope(state: \.destination?.statusPicker, action: \.destination.statusPicker))
         .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
         .task { await store.send(.task).finish() }
         .sheet(isPresented: editingProposal) {
@@ -213,7 +248,7 @@ package struct BoardView: View {
     }
 
     private func card(_ item: Item) -> some View {
-        BoardCard(id: item.id) {
+        BoardCard(id: item.id, selected: columnsFocused && store.selected == item.id) {
             ItemCard(
                 item: item, parent: store.state.parent(of: item), sessions: store.state.sessions(on: item),
                 starting: store.starting.contains(item.id), startingStatus: store.project.startingStatus)
@@ -231,6 +266,7 @@ package struct BoardView: View {
             Divider()
             Button("Delete…", role: .destructive) { store.send(.deleteTapped(item.id)) }
         } onTap: {
+            columnsFocused = true
             store.send(.cardTapped(item.id))
         }
     }

@@ -90,12 +90,24 @@ package struct SessionFeature {
         /// session's `usage`, which holds it only where the backend's own
         /// count leaves it out.
         package private(set) var subagentUsage: Usage?
+        /// What the main agent alone used, leaving its subagents out, so
+        /// the main agent's row in the Agents list adds up with theirs.
+        package private(set) var mainUsage: Usage?
         /// The subagent whose chat is open to read, by the call that
         /// started it.
         package var shownSubagent: String?
         /// The open subagent's chat, oldest first.
         package var subagentItems: [ChatItem] {
             shownSubagent.map { subagentLog.items(of: $0) } ?? []
+        }
+        /// What the open subagent's call returned to the agent that started
+        /// it: nil while it runs, or when no subagent is open.
+        package var shownSubagentResult: String? {
+            guard let shown = shownSubagent else { return nil }
+            for item in chat.items {
+                if case .tool(let call) = item, call.callID == shown { return call.output }
+            }
+            return nil
         }
 
         /// Adds `event` to the chat, or, as a subagent's, to that
@@ -203,6 +215,9 @@ package struct SessionFeature {
         /// what's typed; kept with the draft.
         package var pastes: [Paste]
         @Shared var savedPastes: String
+        /// The chip open in its editor, which the session presents so it
+        /// stays open while the box is drawn again.
+        package var editingPaste: Paste.ID?
         /// Images put in the box for the next message. Kept while Humata
         /// runs, not with the saved draft: they can be large.
         package var images: IdentifiedArrayOf<DraftImage> = []
@@ -565,6 +580,7 @@ package struct SessionFeature {
             if let shown = shownSubagent, subagents[id: shown] == nil { shownSubagent = nil }
             let usage = totalUsage
             if self.usage != usage { self.usage = usage }
+            if mainUsage != chat.usage { mainUsage = chat.usage }
             if pendingPermissions != chat.pendingPermissions { pendingPermissions = chat.pendingPermissions }
             if !answering.isEmpty {
                 let ids = Set(
@@ -985,6 +1001,10 @@ package struct SessionFeature {
         /// A pasted chip's text, as last changed, goes into the box after
         /// what's typed, to edit there, if it's short enough for the field.
         case pasteMovedToBox(id: String, text: String)
+        /// Opens a pasted chip, short enough to change, in its editor.
+        case pasteChipTapped(id: String)
+        /// The chip's editor was closed without saving.
+        case pasteEditorClosed
         /// Opens the queued message to edit in place.
         case editQueuedTapped(String)
         case editQueuedCancelled
@@ -1674,12 +1694,23 @@ package struct SessionFeature {
                 return .send(.quoted(text))
 
             case .removePasteTapped(let id):
+                if state.editingPaste == id { state.editingPaste = nil }
                 state.pastes.removeAll { $0.id == id }
                 let pastes = Paste.encode(state.pastes)
                 state.$savedPastes.withLock { $0 = pastes }
                 return .none
 
+            case .pasteChipTapped(let id):
+                guard let paste = state.pastes.first(where: { $0.id == id }), paste.isEditable else { return .none }
+                state.editingPaste = id
+                return .none
+
+            case .pasteEditorClosed:
+                state.editingPaste = nil
+                return .none
+
             case .pasteEdited(let id, let text):
+                state.editingPaste = nil
                 guard let index = state.pastes.firstIndex(where: { $0.id == id }) else { return .none }
                 if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     state.pastes.remove(at: index)
@@ -1691,6 +1722,7 @@ package struct SessionFeature {
                 return .none
 
             case .pasteMovedToBox(let id, let text):
+                state.editingPaste = nil
                 guard let index = state.pastes.firstIndex(where: { $0.id == id }), Paste.fitsInBox(text) else {
                     return .none
                 }

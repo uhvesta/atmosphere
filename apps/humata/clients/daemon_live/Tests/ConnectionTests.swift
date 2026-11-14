@@ -86,6 +86,8 @@ final class ConnectionTests: XCTestCase {
         read.cancel()
         let result = try await within { await read.result }
         XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
+        let cancel = try await daemon.next()
+        XCTAssertEqual(cancel.id, asked.id)
 
         try await daemon.answer(asked.id, .sessions(Humata_V1_Sessions()))
         let send = Task { try await client.send("s", "still here", .enqueue) }
@@ -93,6 +95,22 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(Self.message(next)?.text, "still here")
         try await daemon.answer(next.id, .messageSent(Humata_V1_MessageSent()))
         try await within { try await send.value }
+    }
+
+    func testCancellingAReadTellsTheDaemonAndThrowsCancellationError() async throws {
+        let (daemon, client) = try await connected()
+
+        let read = Task { try await client.sessions(nil) }
+        let asked = try await daemon.next()
+        read.cancel()
+        let result = try await within { await read.result }
+        XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
+
+        let cancel = try await daemon.next()
+        XCTAssertEqual(cancel.id, asked.id)
+        guard case .cancel = cancel.body else {
+            return XCTFail("expected a cancel, got \(String(describing: cancel.body))")
+        }
     }
 
     func testAReadWhoseTaskIsNotCancelledGetsItsAnswer() async throws {

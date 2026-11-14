@@ -100,6 +100,10 @@ package struct HostsView: View {
             let editor = store.scope(state: \.editor, action: \.editor)
         {
             Form {
+                HealthSection(
+                    host: host, health: store.health[host.id],
+                    check: { store.send(.checkTapped(host.id)) },
+                    install: {})
                 if let links = store.commandLinks {
                     CommandsSection(
                         links: links, linking: store.linking, restarts: store.restartsDaemon,
@@ -550,7 +554,7 @@ struct HealthSection: View {
             }
         } header: {
             HStack {
-                Text(host.name)
+                Text(host.isCoordinator ? "This Mac" : host.name)
                 Spacer()
                 if case .installFailed = health, host.sshDestination != nil {
                     Button("Try the Install Again", action: install)

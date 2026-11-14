@@ -120,4 +120,23 @@ final class SessionChatTests: XCTestCase {
         fresh.receive(history)
         XCTAssertEqual(Summary(changed), Summary(fresh))
     }
+
+    func testAToolCompletingMovesOnOnlyItsOwnItemsVersion() throws {
+        var chat = Chat()
+        for next in [
+            event("e1", .userMessage("look around")),
+            event("e2", .turnStarted),
+            event("e3", .toolStarted(callID: "c1", tool: "Bash", argumentsJSON: #"{"command":"ls"}"#)),
+            event("e4", .toolStarted(callID: "c2", tool: "Bash", argumentsJSON: #"{"command":"pwd"}"#)),
+            event("e5", .assistantMessage("Looking.")),
+        ] {
+            chat.add(next)
+        }
+        XCTAssertEqual(chat.versions.count, chat.items.count)
+        let before = chat.versions
+        chat.add(event("e6", .toolCompleted(callID: "c1", success: true, output: "README.md")))
+        let first = try XCTUnwrap(chat.items.firstIndex { $0.id == "e3" })
+        let changed = chat.versions.indices.filter { chat.versions[$0] != before[$0] }
+        XCTAssertEqual(changed, [first])
+    }
 }

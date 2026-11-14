@@ -861,6 +861,22 @@ async fn a_host_that_failed_is_left_alone_for_a_while_unless_checked() {
     assert_eq!(attempts(), 2);
 }
 
+#[tokio::test]
+async fn checking_this_mac_reads_its_own_status() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let checked = client
+        .call(pb::request::Kind::CheckHost(pb::CheckHost {
+            name: String::new(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::HostHealth(health)) = checked else {
+        panic!("{checked:?}")
+    };
+    assert!(health.reachable, "{health:?}");
+    assert!(health.status.is_some(), "{health:?}");
+}
+
 fn create_project(repository: &Path) -> pb::request::Kind {
     pb::request::Kind::CreateProject(pb::CreateProject {
         name: "humata".to_owned(),
@@ -4995,4 +5011,67 @@ async fn the_macs_host_knows_the_variables_its_providers_take_keys_from() {
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(daemon.local().provider_variables().is_empty());
+}
+
+async fn listing(client: &Client) -> pb::Sessions {
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    match listed {
+        Ok(pb::response::Kind::Sessions(sessions)) => sessions,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_listing_with_a_host_that_didnt_answer_is_not_complete() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts.hosts.insert(
+        "broken".to_owned(),
+        HostConfig {
+            command: vec!["sh".to_owned(), "-c".to_owned(), "exit 1".to_owned()],
+            ..HostConfig::default()
+        },
+    );
+    let client = daemon(state.path(), hosts).await;
+    let local = started(&client, start(state.path(), "")).await;
+
+    let sessions = listing(&client).await;
+    assert!(!sessions.complete);
+    assert!(
+        sessions
+            .sessions
+            .iter()
+            .any(|session| session.id == local.id)
+    );
+}
+
+#[tokio::test]
+async fn a_listing_every_host_answered_is_complete() {
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts
+        .hosts
+        .insert("far".to_owned(), host_reached_by_command(dir.path()).await);
+    let (mac, work) = (dir.path().join("mac"), dir.path().join("work"));
+    for folder in [&mac, &work] {
+        std::fs::create_dir_all(folder).unwrap_or_else(|error| panic!("{error}"));
+    }
+    let client = daemon(&mac, hosts).await;
+    let far = started(&client, start(&work, "far")).await;
+    let local = started(&client, start(&work, "")).await;
+
+    let sessions = listing(&client).await;
+    assert!(sessions.complete);
+    let ids: Vec<&str> = sessions
+        .sessions
+        .iter()
+        .map(|session| session.id.as_str())
+        .collect();
+    assert!(ids.contains(&far.id.as_str()), "{ids:?}");
+    assert!(ids.contains(&local.id.as_str()), "{ids:?}");
 }

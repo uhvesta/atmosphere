@@ -21,6 +21,9 @@ final class Connection: Sendable {
 
     private struct State {
         var pending: [UInt64: Pending] = [:]
+        /// Requests the writer skipped, as nothing waited for them by their
+        /// turn, until their cancel is dropped too: the daemon never had them.
+        var skipped: Set<UInt64> = []
         var nextID: UInt64 = 1
         var closed = false
     }
@@ -113,10 +116,11 @@ final class Connection: Sendable {
     /// `DaemonError.refused`.
     ///
     /// A request that only reads (`onlyReads`) is cut when the caller's task
-    /// is cancelled: it throws `CancellationError` at once and its answer is
-    /// dropped when it comes. One that changes something waits for its
-    /// answer whatever happens to the task, so the caller always learns
-    /// whether it was done.
+    /// is cancelled: it throws `CancellationError` at once, the daemon is
+    /// told so it stops the read, and an answer that still comes is
+    /// dropped. One that changes something waits for its answer whatever
+    /// happens to the task, so the caller always learns whether it was
+    /// done; the daemon finishes it either way.
     func call(_ request: Humata_V1_Request.OneOf_Kind) async throws -> Humata_V1_Response.OneOf_Kind {
         guard Self.onlyReads(request) else {
             let response = try await withCheckedThrowingContinuation { continuation in
@@ -171,17 +175,19 @@ final class Connection: Sendable {
         }
     }
 
-    /// Stops waiting for the call `id`: its caller gets `CancellationError`
-    /// and its answer, if one still comes, is dropped. Nothing happens if it
-    /// was already answered. The daemon isn't told, as it finishes a plain
-    /// call's work either way.
+    /// Stops waiting for the call `id`, which only reads: its caller gets
+    /// `CancellationError`, the daemon is told so it stops the read, and its
+    /// answer, if one still comes, is dropped. Nothing happens if it was
+    /// already answered.
     private func abandon(_ id: UInt64) {
         let waiting = state.withLock { state -> CheckedContinuation<Humata_V1_Response.OneOf_Kind, any Error>? in
             guard case .call(let answer) = state.pending[id] else { return nil }
             state.pending[id] = nil
             return answer
         }
-        waiting?.resume(throwing: CancellationError())
+        guard let waiting else { return }
+        waiting.resume(throwing: CancellationError())
+        sendCancel(id)
     }
 
     /// Sends a request answered with a response and a stream of items, and
@@ -209,6 +215,13 @@ final class Connection: Sendable {
     private func cancel(_ id: UInt64) {
         let removed = state.withLock { $0.pending.removeValue(forKey: id) != nil }
         guard removed else { return }
+        sendCancel(id)
+    }
+
+    /// Tells the daemon nobody waits for `id` any more. Handed to the
+    /// writer, so it follows the request itself, and dropped if the writer
+    /// skipped that request: the daemon never had it.
+    private func sendCancel(_ id: UInt64) {
         var envelope = Humata_V1_Envelope()
         envelope.id = id
         envelope.cancel = Humata_V1_Cancel()
@@ -216,6 +229,8 @@ final class Connection: Sendable {
         // Holds the connection until the write is over, so its descriptor
         // is still open then.
         writer.async { [self] in
+            let skipped = state.withLock { $0.skipped.remove(id) != nil }
+            guard !skipped else { return }
             _ = Self.write(cancel, to: descriptor)
         }
     }
@@ -249,7 +264,14 @@ final class Connection: Sendable {
     private func writeRequest(_ request: Humata_V1_Request.OneOf_Kind, id: UInt64) {
         // Nothing waits for it any more: a read cut before its turn, or
         // the connection closed.
-        guard state.withLock({ $0.pending[id] != nil }) else { return }
+        let waited = state.withLock { state -> Bool in
+            guard state.pending[id] != nil else {
+                state.skipped.insert(id)
+                return false
+            }
+            return true
+        }
+        guard waited else { return }
         var envelope = Humata_V1_Envelope()
         envelope.id = id
         var body = Humata_V1_Request()

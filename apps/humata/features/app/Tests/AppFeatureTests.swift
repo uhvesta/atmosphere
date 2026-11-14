@@ -7,6 +7,7 @@ import HumataProjects
 import HumataReview
 import HumataSearch
 import HumataSession
+import Observation
 import XCTest
 
 @MainActor
@@ -309,6 +310,41 @@ final class AppFeatureTests: XCTestCase {
         await store.send(.columnFocused(.side))
         XCTAssertEqual(store.state.session?.takesShortcuts, true)
         XCTAssertEqual(store.state.commandSession?.session.id, first.id)
+    }
+
+    func testStopTheTurnGreysOutInTheMenuOnceAsked() async throws {
+        let open = Session(id: "menu-stop", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [open]
+        state.sidebar.selection = .session(open.id)
+        state.session = SessionFeature.State(session: open)
+        // A live store, as the menu reads one; its sends aren't awaited, as
+        // the session's watches never end.
+        let store = Store(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = .previewValue
+            $0.daemon.abort = { _ in }
+        }
+        func event(_ id: String, _ kind: SessionEvent.Kind) -> SessionEvent {
+            SessionEvent(id: id, time: Date(timeIntervalSince1970: 0), kind: kind)
+        }
+        store.send(.session(.presented(.received(event("e1", .userMessage("write the notes"))))))
+        store.send(.session(.presented(.received(event("e2", .turnStarted)))))
+        XCTAssertTrue(store.commandCanStop)
+
+        let told = LockIsolated(false)
+        withObservationTracking {
+            _ = store.commandCanStop
+        } onChange: {
+            told.setValue(true)
+        }
+        store.send(.sessionCommand(.abortTapped))
+        // The command reaches the session as an action of its own.
+        for _ in 0..<100 where store.commandCanStop { await Task.yield() }
+        XCTAssertFalse(store.commandCanStop)
+        XCTAssertEqual(store.commandSession?.canStop, false)
+        XCTAssertTrue(told.value, "what reads Stop's state isn't told it changed, so the menu item stays on")
     }
 
     func testTwoMessagesSentQuicklyReachTheSessionInTheOrderTheyWereSent() async {
@@ -719,7 +755,8 @@ final class AppFeatureTests: XCTestCase {
     }
 
     /// A store with `open` open, `beside` beside it if given, and both in
-    /// the sidebar with `others`, over a daemon that lists none of them.
+    /// the sidebar with `others`, over a daemon that lists none of them, in
+    /// listings that aren't complete, so they aren't closed as deleted.
     private func withOpen(
         _ open: Session, beside: Session? = nil, others: [Session] = []
     ) -> TestStoreOf<AppFeature> {
@@ -737,6 +774,7 @@ final class AppFeatureTests: XCTestCase {
         } withDependencies: {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = InMemoryDaemon().client
+            $0.daemon.listing = { SessionListing(sessions: [], complete: false) }
             $0.notifications.post = { _ in }
         }
         store.exhaustivity = .off
@@ -781,6 +819,66 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.session?.session.id, session.id)
         XCTAssertNil(store.state.side)
         XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+    }
+
+    /// A session with another beside it, both open and in the sidebar, then
+    /// both deleted elsewhere, as from the humata CLI.
+    private func deletedElsewhere() async throws -> (TestStoreOf<AppFeature>, InMemoryDaemon, Session) {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let side = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session, side]
+        state.sidebar.selection = .session(session.id)
+        state.session = SessionFeature.State(session: session)
+        var beside = SessionFeature.State(session: side)
+        beside.beside = true
+        state.side = beside
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+        for id in [session.id, side.id] {
+            _ = try await daemon.client.update(id, SessionUpdate(archived: true))
+            try await daemon.client.delete(id)
+        }
+        return (store, daemon, session)
+    }
+
+    func testASessionDeletedElsewhereClosesWithItsSideChatOnceEveryHostAnswers() async throws {
+        let (store, _, _) = try await deletedElsewhere()
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        await store.receive(\.sidebar.sessionDeleted)
+        await store.receive(\.sidebar.sessionDeleted)
+        XCTAssertNil(store.state.session)
+        XCTAssertNil(store.state.side)
+        XCTAssertNil(store.state.sidebar.selection)
+    }
+
+    func testASessionMissingFromAListingAHostDidntAnswerStaysOpen() async throws {
+        let (store, daemon, session) = try await deletedElsewhere()
+        daemon.setOffline("far", true)
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        await store.skipInFlightEffects()
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+        XCTAssertNotNil(store.state.side)
+
+        // Once every host answers, it's known to be gone.
+        daemon.setOffline("far", false)
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        await store.receive(\.sidebar.sessionDeleted)
+        await store.receive(\.sidebar.sessionDeleted)
+        XCTAssertNil(store.state.session)
+        XCTAssertNil(store.state.side)
     }
 
     func testDeletingAProjectClosesItsBoardAndLeavesItsOpenSessionOnNoProject() async throws {
@@ -1475,6 +1573,7 @@ final class AppFeatureTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon.projects = { [] }
             $0.daemon.sessions = { _ in listed }
+            $0.daemon.listing = { SessionListing(sessions: listed, complete: true) }
             $0.daemon.inbox = { Inbox() }
             $0.notifications.post = { _ in }
         }
@@ -1606,15 +1705,17 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(starts.value, 0)
     }
 
-    func testTheDaemonIsStartedAgainOnceUntilTheSidebarReadsAgain() async throws {
+    func testADaemonThatWontStayIsStartedAgainEachTimeLaterUntilItAnswers() async throws {
         let gone = LockIsolated(true)
         let starts = LockIsolated(0)
+        let clock = TestClock()
         var state = AppFeature.State()
         state.daemon = .running
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.continuousClock = clock
             $0.daemon = InMemoryDaemon().client
             let projects = $0.daemon.projects
             $0.daemon.projects = {
@@ -1626,24 +1727,43 @@ final class AppFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
 
+        // The first start is at once.
         await store.send(\.sidebar.refresh)
         await store.receive(\.restarted)
-        // The read after the start fails too, and so does one more.
-        await store.finish()
-        await store.send(\.sidebar.refresh)
-        await store.receive(\.sidebar.loadFailed)
-        await store.finish()
         XCTAssertEqual(starts.value, 1)
 
-        // Once the sidebar has read, a daemon that goes is started again.
+        // Each read after a start fails, so it's started again, each
+        // time twice as long after the last, up to half a minute.
+        for (index, seconds) in [1, 2, 4, 8, 16, 30, 30].enumerated() {
+            await store.receive(\.daemonGone)
+            XCTAssertEqual(store.state.daemon, .restarting)
+            await clock.advance(by: .seconds(seconds) - .milliseconds(1))
+            XCTAssertEqual(starts.value, index + 1, "started again before its wait was up")
+            await clock.advance(by: .milliseconds(1))
+            await store.receive(\.restarted)
+            XCTAssertEqual(starts.value, index + 2)
+        }
+
+        // It comes back while a start waits: that one isn't made, and the
+        // sidebar reads.
+        await store.receive(\.daemonGone)
         gone.setValue(false)
-        await store.send(\.sidebar.refresh)
+        await clock.advance(by: .seconds(30))
+        await store.receive(\.daemonAnswered)
         await store.receive(\.sidebar.loaded)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 8)
+
+        // Gone again, it's started at once, then a second later.
         gone.setValue(true)
         await store.send(\.sidebar.refresh)
         await store.receive(\.restarted)
-        await store.finish()
-        XCTAssertEqual(starts.value, 2)
+        XCTAssertEqual(starts.value, 9)
+        await store.receive(\.daemonGone)
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.restarted)
+        XCTAssertEqual(starts.value, 10)
+        await store.skipInFlightEffects()
     }
 
     func testADaemonGoneWhileAnUpdateWaitsIsStartedAgain() async throws {

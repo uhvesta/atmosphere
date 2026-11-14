@@ -207,6 +207,13 @@ impl Subagents {
                     known.duration_ms = count("durationMs").unwrap_or(known.duration_ms);
                 });
             }
+            // A background task's result names the task id its end notice
+            // will use, which is not the id its steps carry.
+            "tool.execution_complete" if self.known.contains_key(&call) => {
+                if let Some(task) = task_id_of(&data["result"]) {
+                    self.calls.entry(task.to_owned()).or_insert(call);
+                }
+            }
             _ => {}
         }
         tagged
@@ -242,10 +249,9 @@ impl Subagents {
             "agent_completed" | "agent_idle" => SubagentStatus::Completed,
             _ => return,
         };
-        let Some(agent) = notice["agentId"].as_str() else {
+        let Some(call) = self.notified_call(notice) else {
             return;
         };
-        let call = self.call_of(agent);
         // What its own end said, if that came first, stands.
         let running = self
             .known
@@ -253,6 +259,27 @@ impl Subagents {
             .is_some_and(|known| known.status == SubagentStatus::Running);
         if running {
             self.update(&call, tagged, |known| known.status = status);
+        }
+    }
+
+    /// The call whose subagent a notice is about: the one its id was heard
+    /// under, else the one running background subagent with the notice's
+    /// type and description, if exactly one fits. None when neither does.
+    fn notified_call(&self, notice: &Value) -> Option<String> {
+        let agent = notice["agentId"].as_str()?;
+        if let Some(call) = self.calls.get(agent) {
+            return Some(call.clone());
+        }
+        let agent_type = notice["agentType"].as_str()?;
+        let description = notice["description"].as_str()?;
+        let mut fits = self.known.iter().filter(|(_, known)| {
+            known.status == SubagentStatus::Running
+                && known.agent_type == agent_type
+                && known.description == description
+        });
+        match (fits.next(), fits.next()) {
+            (Some((call, _)), None) => Some(call.clone()),
+            _ => None,
         }
     }
 
@@ -323,6 +350,20 @@ impl Subagents {
             tagged.push((call.to_owned(), known.kind()));
         }
     }
+}
+
+/// The task id a background task's result names, as in "...with agent_id:
+/// explore-0. Use read_agent...".
+fn task_id_of(result: &Value) -> Option<&str> {
+    let text = result["content"]
+        .as_str()
+        .or_else(|| result["detailedContent"].as_str())?;
+    let id = text
+        .split("agent_id: ")
+        .nth(1)?
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .next()?;
+    (!id.is_empty()).then_some(id)
 }
 
 impl Known {
@@ -561,6 +602,83 @@ mod tests {
                 subagents.take(&json!({"type": "system.notification", "data": {"kind": notice}}));
             assert!(tagged.is_empty());
         }
+    }
+
+    /// A task call left in the background as real Copilot reports it: its
+    /// events carry the subagent's instance id, while its call's result and
+    /// the notice that it's done name its task id, which is another.
+    fn left_in_the_background_by_task_id(subagents: &mut Subagents) {
+        let events = [
+            json!({"type": "tool.execution_start", "data": {"toolCallId": "call-1", "toolName": "task",
+                "arguments": {"agent_type": "explore", "description": "Find the parser", "mode": "background"}}}),
+            json!({"type": "subagent.started", "agentId": "5b1e0c2a-instance", "data": {"toolCallId": "call-1",
+                "agentName": "explore", "agentDisplayName": "Find the parser", "executionMode": "background"}}),
+            json!({"type": "tool.execution_complete", "data": {"toolCallId": "call-1", "success": true,
+                "result": {"content": "Agent started in background with agent_id: explore-0. Use read_agent to check on it."}}}),
+        ];
+        for event in &events {
+            subagents.take(event);
+        }
+    }
+
+    #[test]
+    fn a_background_subagent_ends_when_told_its_done_by_its_task_id() {
+        for (notice, status) in [
+            (
+                json!({"type": "agent_completed", "agentId": "explore-0", "agentType": "explore",
+                    "description": "Find the parser", "status": "completed"}),
+                SubagentStatus::Completed,
+            ),
+            (
+                json!({"type": "agent_completed", "agentId": "explore-0", "agentType": "explore",
+                    "status": "failed"}),
+                SubagentStatus::Failed,
+            ),
+            (
+                json!({"type": "agent_idle", "agentId": "explore-0", "agentType": "explore"}),
+                SubagentStatus::Completed,
+            ),
+        ] {
+            let mut subagents = Subagents::default();
+            left_in_the_background_by_task_id(&mut subagents);
+            let ended = subagents.take(&json!({"type": "system.notification",
+                "data": {"content": "<system_notification>...</system_notification>", "kind": notice}}));
+            assert_eq!(statuses(&ended), [("call-1".to_owned(), status)]);
+            // Nothing is left running for the turn's end to stop.
+            assert!(subagents.finish().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_notice_for_a_task_id_never_heard_of_ends_the_one_background_subagent_it_describes() {
+        // The call's result didn't say the task id: the notice's type and
+        // description pick the one running background subagent they fit.
+        let mut subagents = Subagents::default();
+        for event in [
+            json!({"type": "tool.execution_start", "data": {"toolCallId": "call-1", "toolName": "task",
+                "arguments": {"agent_type": "explore", "description": "Find the parser", "mode": "background"}}}),
+            json!({"type": "tool.execution_start", "data": {"toolCallId": "call-2", "toolName": "task",
+                "arguments": {"agent_type": "general-purpose", "description": "Run the tests", "mode": "background"}}}),
+        ] {
+            subagents.take(&event);
+        }
+        let ended = subagents.take(&json!({"type": "system.notification", "data": {"kind":
+            {"type": "agent_completed", "agentId": "general-purpose-1", "agentType": "general-purpose",
+                "description": "Run the tests", "status": "completed"}}}));
+        assert_eq!(
+            statuses(&ended),
+            [("call-2".to_owned(), SubagentStatus::Completed)]
+        );
+        // Two that fit equally: neither is guessed at.
+        let mut twins = Subagents::default();
+        for call in ["call-1", "call-2"] {
+            twins.take(&json!({"type": "tool.execution_start", "data": {"toolCallId": call, "toolName": "task",
+                "arguments": {"agent_type": "explore", "description": "Look", "mode": "background"}}}));
+        }
+        let ended = twins.take(&json!({"type": "system.notification", "data": {"kind":
+            {"type": "agent_completed", "agentId": "explore-7", "agentType": "explore",
+                "description": "Look", "status": "completed"}}}));
+        assert!(statuses(&ended).is_empty());
     }
 
     #[test]

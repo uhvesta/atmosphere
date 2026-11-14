@@ -179,6 +179,76 @@ final class RedrawTests: XCTestCase {
         #endif
     }
 
+    func testTheSidebarDoesNothingReentrantInItsTableWhileReadAndPicked() async throws {
+        let minute = Date(timeIntervalSince1970: 1_794_000_600)
+        let project = Project(id: "p1", name: "Parser", repositories: [], created: minute)
+        func listed(_ count: Int, archived: Int) -> [Session] {
+            (0..<count).map { index in
+                var session = Session(
+                    id: "s\(index)", name: "Session \(index)", backend: .scripted, workingDirectory: "/work",
+                    projectID: index.isMultiple(of: 2) ? project.id : nil,
+                    lastActive: minute.addingTimeInterval(TimeInterval(-60 * index)))
+                session.archived = index >= count - archived
+                return session
+            }
+        }
+        UserDefaults.standard.set(true, forKey: "archivedShown")
+        defer { UserDefaults.standard.removeObject(forKey: "archivedShown") }
+        let store = Store(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(minute)
+            $0.daemon = .previewValue
+            $0.notifications = .previewValue
+        }
+        let window = Self.window(
+            NavigationSplitView {
+                ProjectsView(store: store)
+            } detail: {
+                Text("No Session Open")
+            })
+        defer {
+            window.close()
+            window.contentViewController = nil
+        }
+        let written = try await Self.stderr(during: {
+            store.send(.loaded(projects: [project], sessions: listed(10, archived: 3), inbox: []))
+            await settle(window)
+            // As flows do: picked by the store, not clicked.
+            store.send(.selected(.session("s1")))
+            await drawn(window)
+            // A read that adds, takes out and archives rows while one is picked.
+            store.send(.loaded(projects: [project], sessions: listed(14, archived: 5), inbox: []))
+            await drawn(window)
+            store.send(.selected(.session("s12")))
+            store.send(.loaded(projects: [project], sessions: listed(6, archived: 1), inbox: []))
+            await settle(window)
+        })
+        XCTAssertFalse(
+            written.contains("reentrant operation in its NSTableView delegate"),
+            "the sidebar changed its list from inside the table's own update:\n\(written)")
+    }
+
+    /// What's written to stderr while `body` runs, which still goes on to
+    /// the test's log afterwards.
+    private static func stderr(during body: () async -> Void) async throws -> String {
+        let url = FileManager.default.temporaryDirectory.appending(path: "stderr-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let file = try FileHandle(forWritingTo: url)
+        let saved = dup(STDERR_FILENO)
+        fflush(Darwin.stderr)
+        dup2(file.fileDescriptor, STDERR_FILENO)
+        await body()
+        fflush(Darwin.stderr)
+        dup2(saved, STDERR_FILENO)
+        close(saved)
+        try file.close()
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(at: url)
+        FileHandle.standardError.write(Data(text.utf8))
+        return text
+    }
+
     /// How many more times each view was drawn in `after` than in `before`.
     private static func drew<Body: Hashable>(since before: [Body: Int], _ after: [Body: Int]) -> (Body) -> Int {
         { after[$0, default: 0] - before[$0, default: 0] }

@@ -78,6 +78,13 @@ extension DaemonClient {
                 }
                 return try sessions.sessions.map(Session.init)
             },
+            listing: {
+                guard case .sessions(let sessions) = try await daemon.call(.listSessions(Humata_V1_ListSessions()))
+                else {
+                    throw DaemonError.unexpected("something other than the sessions")
+                }
+                return SessionListing(sessions: try sessions.sessions.map(Session.init), complete: sessions.complete)
+            },
             start: { request in
                 var start = Humata_V1_StartSession()
                 start.backend = request.backend.proto

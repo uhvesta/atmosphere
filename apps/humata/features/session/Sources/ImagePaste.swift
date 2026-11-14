@@ -12,33 +12,58 @@ package enum ClipboardImage: Equatable {
 
     /// What ⌘V brings as an image, given what the clipboard holds: image
     /// files ahead of all else, as their names are the only text with
-    /// them; then an image, unless there is text, which the field pastes
-    /// as it always does. Nil when the paste is the field's.
-    package static func pasted(imageFiles: [URL], hasText: Bool, image: () -> Data?) -> ClipboardImage? {
+    /// them; then an image, unless the text is one the field pastes as it
+    /// always does. Text that is only a web address, as a browser puts
+    /// beside a copied image, doesn't count. Nil when the paste is the field's.
+    package static func pasted(imageFiles: [URL], text: String?, image: () -> Data?) -> ClipboardImage? {
         if !imageFiles.isEmpty { return .files(imageFiles) }
-        guard !hasText else { return nil }
+        guard !isTextTheFieldPastes(text) else { return nil }
         return image().map { .data($0) }
     }
 
-    /// The image on the clipboard itself, if there is one. Read only when
-    /// asked for, as it can be large.
-    @MainActor static var image: Data? {
-        let pasteboard = NSPasteboard.general
+    /// Whether `text` is something the field would paste: any text but
+    /// blank text or a lone web address.
+    private static func isTextTheFieldPastes(_ text: String?) -> Bool {
+        guard let text else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && !isWebAddress(trimmed)
+    }
+
+    /// Whether `text`, already trimmed, is one http or https address.
+    private static func isWebAddress(_ text: String) -> Bool {
+        guard !text.contains(where: { $0.isWhitespace }),
+            let url = URL(string: text),
+            let scheme = url.scheme?.lowercased(),
+            url.host != nil
+        else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
+    /// The image on `pasteboard` itself, if there is one: PNG or TIFF
+    /// first, then any other image type (JPEG, HEIC, GIF and so on), then
+    /// whatever AppKit can make of it, such as a PDF. Read only when asked
+    /// for, as it can be large.
+    package static func image(on pasteboard: NSPasteboard = .general) -> Data? {
         for type in [NSPasteboard.PasteboardType.png, .tiff] {
             if let data = pasteboard.data(forType: type) { return data }
         }
-        return nil
+        let imageTypes = (pasteboard.types ?? []).filter { type in
+            UTType(type.rawValue)?.conforms(to: .image) == true
+        }
+        for type in imageTypes {
+            if let data = pasteboard.data(forType: type) { return data }
+        }
+        return NSImage(pasteboard: pasteboard)?.tiffRepresentation
     }
 
-    /// What ⌘V brings as an image from the clipboard as it is now.
-    @MainActor static var onClipboard: ClipboardImage? {
-        let pasteboard = NSPasteboard.general
+    /// What ⌘V brings as an image from `pasteboard` as it is now.
+    package static func onClipboard(_ pasteboard: NSPasteboard = .general) -> ClipboardImage? {
         let options: [NSPasteboard.ReadingOptionKey: Any] = [
             .urlReadingFileURLsOnly: true, .urlReadingContentsConformToTypes: [UTType.image.identifier],
         ]
         let files = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
-        let hasText = pasteboard.availableType(from: [.string]) != nil
-        return pasted(imageFiles: files, hasText: hasText) { image }
+        let text = pasteboard.string(forType: .string)
+        return pasted(imageFiles: files, text: text) { image(on: pasteboard) }
     }
 }
 
@@ -82,7 +107,7 @@ struct ImagePasteCatcher: NSViewRepresentable {
         /// over this view and the clipboard has one. False to let the key
         /// go on as usual.
         private func take(_ event: NSEvent) -> Bool {
-            guard isPaste(event), let image = ClipboardImage.onClipboard else { return false }
+            guard isPaste(event), let image = ClipboardImage.onClipboard() else { return false }
             paste?(image)
             return true
         }

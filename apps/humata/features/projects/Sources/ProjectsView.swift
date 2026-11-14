@@ -41,11 +41,15 @@ package struct ProjectsView: View {
     /// What's picked. A pick is sent once the list's table is done telling
     /// of it: opening what was picked changes rows, and a table changed
     /// while it reports its selection warns of a reentrant operation and
-    /// can draw rows wrong.
+    /// can draw rows wrong. The table telling of the pick it already shows,
+    /// as it does once picked by the store or when a picked row goes, sends
+    /// nothing: sent, it would open what's open again and change the list
+    /// once more.
     private var selection: Binding<SidebarItem?> {
         Binding(
-            get: { store.selection },
+            get: { store.state.listedSelection },
             set: { picked in
+                guard picked != store.state.listedSelection else { return }
                 Task { @MainActor in store.send(.selected(picked)) }
             })
     }
@@ -101,11 +105,83 @@ private struct InboxLabel: View {
 /// The sidebar's rows: the inbox, hosts and search, then what the name
 /// search found or every project with its sessions.
 ///
-/// It holds the store and nothing else, so drawn again by the sidebar for
-/// another pick it's the same as it was and isn't worked out again; with
-/// the archived section's stored setting here it never was the same.
+/// It holds whether the archived sessions show and nothing else, and hands
+/// that to the rows, which hold the store and that: drawn again by the
+/// sidebar for another pick they're the same as they were and aren't worked
+/// out again.
 private struct SidebarItems: View {
     let store: StoreOf<ProjectsFeature>
+    @AppStorage("archivedShown") private var archivedShown = false
+    @State private var generations = RowGenerations()
+
+    var body: some View {
+        SidebarRows(store: store, archivedShown: archivedShown, generations: generations)
+    }
+}
+
+/// Counts the times the sidebar's rows changed. The sidebar's table
+/// moving, adding or taking out rows as it's read, as a session that's
+/// new, archived or active again goes in or to another place, does so from
+/// inside its own update, which AppKit warns of as a reentrant operation
+/// and can draw rows wrong. Each row's id carries the count, so rows that
+/// change are all put in again at once; a read that changes only what rows
+/// show keeps their ids and draws only those rows again.
+@MainActor
+private final class RowGenerations {
+    private var last: [String] = []
+    private var generation = 0
+
+    /// The count for rows in the order of `ids`: one more than before when
+    /// they aren't the last rows, in their order.
+    func generation(for ids: [String]) -> Int {
+        guard ids != last else { return generation }
+        generation += 1
+        last = ids
+        return generation
+    }
+}
+
+/// A sidebar row with its id for this order of rows.
+private struct PlacedRow: Identifiable {
+    let id: String
+    let row: SidebarRow
+}
+
+/// A row of the sidebar's list below the inbox, hosts and search.
+private enum SidebarRow: Identifiable {
+    case failure(String)
+    case noMatches
+    case heading(String)
+    case project(Project)
+    case chats
+    case archived(count: Int)
+    case board(Project)
+    /// A project the name search found, which opens its board.
+    case found(Project)
+    case session(Session, depth: Int)
+
+    var id: String {
+        switch self {
+        case .failure: "failure"
+        case .noMatches: "no matches"
+        case .heading(let title): "heading \(title)"
+        case .project(let project): "project \(project.id)"
+        case .chats: "chats"
+        case .archived: "archived"
+        case .board(let project): "board \(project.id)"
+        case .found(let project): "found \(project.id)"
+        case .session(let session, _): "session \(session.id)"
+        }
+    }
+}
+
+/// The sidebar's rows, worked out as one list, headings among them, and
+/// drawn by one `ForEach`, so that rows changing order is known and they
+/// aren't moved.
+private struct SidebarRows: View {
+    let store: StoreOf<ProjectsFeature>
+    let archivedShown: Bool
+    let generations: RowGenerations
 
     var body: some View {
         // swiftlint:disable:next redundant_discardable_let
@@ -116,47 +192,91 @@ private struct SidebarItems: View {
             .tag(SidebarItem.hosts)
         Label("Search Sessions", systemImage: "text.magnifyingglass")
             .tag(SidebarItem.search)
-        // With nothing listed the notice over the list says it; with a
-        // list, the list is as it was last read.
-        if let failure = store.failure, !(store.projects.isEmpty && store.sessions.isEmpty) {
-            HStack {
-                Label("Can't reach Humata's daemon", systemImage: "bolt.horizontal.circle")
-                    .foregroundStyle(.orange)
-                    .help(failure)
-                Spacer()
-                Button("Try Again") { store.send(.refresh) }
-                    .buttonStyle(.borderless)
+        ForEach(placed) { placed in
+            switch placed.row {
+            case .failure(let failure):
+                HStack {
+                    Label("Can't reach Humata's daemon", systemImage: "bolt.horizontal.circle")
+                        .foregroundStyle(.orange)
+                        .help(failure)
+                    Spacer()
+                    Button("Try Again") { store.send(.refresh) }
+                        .buttonStyle(.borderless)
+                }
+                .selectionDisabled()
+            case .noMatches:
+                Text("No project or session is named like that.")
+                    .foregroundStyle(.secondary)
+                    .selectionDisabled()
+            case .heading(let title):
+                SidebarHeader(title: Text(title))
+            case .project(let project):
+                projectHeader(project)
+            case .chats:
+                chatsHeader
+            case .archived(let count):
+                archivedHeader(count)
+            case .board(let project):
+                Label("Board", systemImage: "rectangle.split.3x1")
+                    .tag(SidebarItem.board(project.id))
+            case .found(let project):
+                Label(project.name, systemImage: "rectangle.split.3x1")
+                    .tag(SidebarItem.board(project.id))
+            case .session(let session, let depth):
+                SidebarSessionRow.row(session, in: store)
+                    .padding(.leading, CGFloat(depth) * 14)
             }
-            .selectionDisabled()
-        }
-        if let matches = store.state.matches {
-            results(matches)
-        } else {
-            everything
         }
     }
 
-    /// What the search found, or that it found nothing.
-    @ViewBuilder
-    private func results(_ matches: (projects: [Project], sessions: [Session])) -> some View {
-        if matches.projects.isEmpty, matches.sessions.isEmpty {
-            Text("No project or session is named like that.")
-                .foregroundStyle(.secondary)
+    /// The rows below the inbox, hosts and search, each with its id for
+    /// this order.
+    private var placed: [PlacedRow] {
+        let rows = rows
+        let generation = generations.generation(for: rows.map(\.id))
+        return rows.map { PlacedRow(id: "\(generation) \($0.id)", row: $0) }
+    }
+
+    /// Every row below the inbox, hosts and search, in order.
+    private var rows: [SidebarRow] {
+        var rows: [SidebarRow] = []
+        // With nothing listed the notice over the list says it; with a
+        // list, the list is as it was last read.
+        if let failure = store.failure, !(store.projects.isEmpty && store.sessions.isEmpty) {
+            rows.append(.failure(failure))
         }
-        if !matches.projects.isEmpty {
-            Section("Projects") {
-                ForEach(matches.projects) { project in
-                    Label(project.name, systemImage: "rectangle.split.3x1")
-                        .tag(SidebarItem.board(project.id))
-                }
+        if let matches = store.state.matches {
+            if matches.projects.isEmpty, matches.sessions.isEmpty { rows.append(.noMatches) }
+            if !matches.projects.isEmpty {
+                rows.append(.heading("Projects"))
+                rows += matches.projects.map { .found($0) }
             }
+            if !matches.sessions.isEmpty {
+                rows.append(.heading("Sessions"))
+                rows += matches.sessions.map { .session($0, depth: 0) }
+            }
+            return rows
         }
-        if !matches.sessions.isEmpty {
-            Section("Sessions") {
-                ForEach(matches.sessions) { session in
-                    SidebarSessionRow.row(session, in: store)
-                }
-            }
+        for project in store.state.sortedProjects {
+            rows.append(.project(project))
+            rows.append(.board(project))
+            rows += Self.flattened(store.state.tree(in: project.id))
+        }
+        rows.append(.chats)
+        rows += Self.flattened(store.state.tree(in: nil))
+        let archived = store.state.archived
+        if !archived.isEmpty {
+            rows.append(.archived(count: archived.count))
+            if archivedShown { rows += store.state.sorted(archived).map { .session($0, depth: 0) } }
+        }
+        return rows
+    }
+
+    /// Every session in `nodes`, each indented under the one it was forked
+    /// from, so the whole tree shows at once.
+    private static func flattened(_ nodes: [SessionNode], depth: Int = 0) -> [SidebarRow] {
+        nodes.flatMap { node in
+            [.session(node.session, depth: depth)] + flattened(node.children ?? [], depth: depth + 1)
         }
     }
 
@@ -173,103 +293,105 @@ private struct SidebarItems: View {
         }
     }
 
-    /// Every project, then the chats, then what's archived.
-    @ViewBuilder
-    private var everything: some View {
-        Group {
-            ForEach(store.state.sortedProjects) { project in
-                Section {
-                    Label("Board", systemImage: "rectangle.split.3x1")
-                        .tag(SidebarItem.board(project.id))
-                    tree(store.state.tree(in: project.id))
-                } header: {
-                    HStack {
-                        Text(project.name)
-                            .accessibilityAddTraits(.isHeader)
-                        Spacer()
-                        Button {
-                            store.send(.newSessionTapped(projectID: project.id))
-                        } label: {
-                            Label("New Session", systemImage: "plus")
-                                .labelStyle(.iconOnly)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Start a session in \(project.name)")
-                        Menu {
-                            projectActions(project)
-                        } label: {
-                            Label("Project Actions", systemImage: "ellipsis")
-                                .labelStyle(.iconOnly)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
-                        .help("New session, plan, settings or delete for \(project.name)")
-                    }
-                    // The name, New Session and the menu, each its own: one
-                    // element would read as a menu named after the project.
-                    .accessibilityElement(children: .contain)
-                    .contextMenu { projectActions(project) }
-                }
+    private func projectHeader(_ project: Project) -> some View {
+        SidebarHeader(title: Text(project.name)) {
+            Button {
+                store.send(.newSessionTapped(projectID: project.id))
+            } label: {
+                Label("New Session", systemImage: "plus")
+                    .labelStyle(.iconOnly)
             }
-            Section {
-                tree(store.state.tree(in: nil))
-            } header: {
-                HStack {
-                    Text("Chats")
-                    Spacer()
-                    Button {
-                        store.send(.importTapped)
-                    } label: {
-                        Label("Import Session…", systemImage: "square.and.arrow.down")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Bring in a Claude Code or Copilot session started outside Humata, with its history")
-                    Button {
-                        store.send(.newChatTapped)
-                    } label: {
-                        Label("New Chat", systemImage: "plus")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Start a chat in no project, in a folder you pick or one of its own (⌘N)")
-                }
+            .buttonStyle(.borderless)
+            .help("Start a session in \(project.name)")
+            Menu {
+                projectActions(project)
+            } label: {
+                Label("Project Actions", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
             }
-            ArchivedSessions(store: store)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("New session, plan, settings or delete for \(project.name)")
+        }
+        // The name, New Session and the menu, each its own: one element
+        // would read as a menu named after the project.
+        .accessibilityElement(children: .contain)
+        .contextMenu { projectActions(project) }
+    }
+
+    private var chatsHeader: some View {
+        SidebarHeader(title: Text("Chats")) {
+            Button {
+                store.send(.importTapped)
+            } label: {
+                Label("Import Session…", systemImage: "square.and.arrow.down")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("Bring in a Claude Code or Copilot session started outside Humata, with its history")
+            Button {
+                store.send(.newChatTapped)
+            } label: {
+                Label("New Chat", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("Start a chat in no project, in a folder you pick or one of its own (⌘N)")
         }
     }
 
-    /// Every session in `nodes`, each indented under the one it was forked
-    /// from, so the whole tree shows at once.
-    private func tree(_ nodes: [SessionNode]) -> some View {
-        ForEach(Self.flattened(nodes), id: \.session.id) { entry in
-            SidebarSessionRow.row(entry.session, in: store)
-                .padding(.leading, CGFloat(entry.depth) * 14)
-        }
-    }
-
-    private static func flattened(_ nodes: [SessionNode], depth: Int = 0) -> [(session: Session, depth: Int)] {
-        nodes.flatMap { node in
-            [(node.session, depth)] + flattened(node.children ?? [], depth: depth + 1)
+    /// The archived sessions' heading, which folds them away or shows them.
+    private func archivedHeader(_ count: Int) -> some View {
+        SidebarHeader(title: Text("Archived (\(count))")) {
+            ArchivedToggle()
         }
     }
 }
 
-/// The archived sessions, folded away until opened, and as left.
-private struct ArchivedSessions: View {
-    let store: StoreOf<ProjectsFeature>
+/// Folds the archived sessions away or shows them, as kept for next time.
+private struct ArchivedToggle: View {
     @AppStorage("archivedShown") private var shown = false
 
     var body: some View {
-        let archived = store.state.archived
-        if !archived.isEmpty {
-            Section("Archived (\(archived.count))", isExpanded: $shown) {
-                ForEach(store.state.sorted(archived)) { session in
-                    SidebarSessionRow.row(session, in: store)
-                }
-            }
+        Button {
+            shown.toggle()
+        } label: {
+            Label(
+                shown ? "Hide Archived Sessions" : "Show Archived Sessions",
+                systemImage: shown ? "chevron.down" : "chevron.right"
+            )
+            .labelStyle(.iconOnly)
         }
+        .buttonStyle(.borderless)
+        .help(shown ? "Hide the archived sessions" : "Show the archived sessions")
+    }
+}
+
+/// A heading in the sidebar, drawn as a row of its own rather than a
+/// list section's header, so its rows are all in one list.
+private struct SidebarHeader<Trailing: View>: View {
+    let title: Text
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack {
+            title
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+            Spacer()
+            trailing
+        }
+        .padding(.top, 8)
+        .selectionDisabled()
+    }
+}
+
+extension SidebarHeader where Trailing == EmptyView {
+    init(title: Text) {
+        self.init(title: title) { EmptyView() }
     }
 }
 

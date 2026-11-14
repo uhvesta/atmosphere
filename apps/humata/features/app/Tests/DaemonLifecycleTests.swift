@@ -77,6 +77,7 @@ final class DaemonLifecycleTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = service(current: false, restarts: restarts)
             $0.daemon.sessions = { _ in sessions.value }
+            $0.daemon.listing = { SessionListing(sessions: sessions.value, complete: true) }
             $0.daemon.projects = { [] }
             $0.daemon.inbox = { Inbox() }
         }
@@ -109,6 +110,7 @@ final class DaemonLifecycleTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = service(current: false, restarts: restarts)
             $0.daemon.sessions = { _ in [remote] }
+            $0.daemon.listing = { SessionListing(sessions: [remote], complete: true) }
             $0.daemon.projects = { [] }
             $0.daemon.inbox = { Inbox() }
         }

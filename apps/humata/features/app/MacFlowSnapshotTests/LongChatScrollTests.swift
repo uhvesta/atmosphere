@@ -53,6 +53,49 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertEqual(height(), closed, accuracy: 2, "the chat didn't give the room back")
     }
 
+    /// A pasted chip opened shows an editor that takes typing, and stays open
+    /// while the box behind it is drawn again.
+    func testAPastedChipOpensAnEditorThatTakesTyping() async throws {
+        let history = [
+            SessionEvent(id: "x0", time: Date(timeIntervalSince1970: 0), kind: .userMessage("Hello")),
+            SessionEvent(id: "x1", time: Date(timeIntervalSince1970: 0), kind: .assistantMessage("Hi")),
+        ]
+        let (store, window, task) = try await opened(history)
+        defer {
+            task.cancel()
+            window.close()
+            window.contentViewController = nil
+        }
+        let log = (1...30).map { "line \($0)" }.joined(separator: "\n")
+        store.send(.binding(.set(\.draft, log)))
+        await settle(window)
+        let id = try XCTUnwrap(store.pastes.first?.id)
+
+        store.send(.pasteChipTapped(id: id))
+        await settle(window)
+        let sheet = try XCTUnwrap(window.attachedSheet, "the chip opened no editor")
+        let editor = try XCTUnwrap(
+            Self.views(in: sheet.contentView).compactMap { $0 as? NSTextView }.first { $0.isEditable },
+            "the editor can't be typed in")
+        XCTAssertTrue(sheet.makeFirstResponder(editor))
+        editor.insertText("edited ", replacementRange: NSRange(location: 0, length: 0))
+        XCTAssertTrue(editor.string.hasPrefix("edited line 1"))
+
+        // The box behind it is drawn again, as it is for every key typed
+        // in it and every event the chat takes.
+        store.send(.binding(.set(\.draft, "and why")))
+        store.send(.received(SessionEvent(id: "x2", time: Date(timeIntervalSince1970: 1), kind: .turnStarted)))
+        await settle(window)
+        XCTAssertTrue(window.attachedSheet === sheet, "the editor closed when the box was drawn again")
+        XCTAssertTrue(editor.string.hasPrefix("edited line 1"), "what was typed was lost")
+        XCTAssertEqual(store.draft, "and why", "typing in the editor went to the box")
+    }
+
+    private static func views(in root: NSView?) -> [NSView] {
+        guard let root else { return [] }
+        return [root] + root.subviews.flatMap { views(in: $0) }
+    }
+
     /// A row that changes its own height isn't kept at the height it had:
     /// a diagram drawn after its row was laid out, as a spinner, makes the
     /// chat as tall as it is when it opens with the diagram drawn already.
@@ -368,6 +411,7 @@ final class LongChatScrollTests: XCTestCase {
                 }
             }
             $0.daemon.markSeen = { _, _ in }
+            $0.uuid = .incrementing
         }
         let window = NSWindow(
             contentRect: CGRect(x: 80, y: 80, width: 1180, height: 760),

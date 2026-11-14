@@ -27,6 +27,14 @@ package struct AppFeature {
         /// looks once more, so that one found answering, and gone later, is
         /// started again.
         var daemonStartedAgain = false
+        /// How often the daemon was started again since it last answered:
+        /// each start after the first waits twice as long as the one
+        /// before, from a second up to half a minute.
+        var daemonRestarts = 0
+        /// Whether the Session menu's Stop acts now, for the session of
+        /// the column the person is in. Kept here rather than read through
+        /// a copy of that session, so the menu is told when it changes.
+        package internal(set) var commandCanStop = false
         package var sidebar = ProjectsFeature.State()
         /// The open session; nil until one is picked.
         @Presents package var session: SessionFeature.State?
@@ -376,6 +384,7 @@ package struct AppFeature {
     @Dependency(\.daemonService) var service
     @Dependency(\.modelServer) var modelServer
     @Dependency(\.installer) var installer
+    @Dependency(\.continuousClock) var clock
 
     package init() {}
 
@@ -477,19 +486,26 @@ package struct AppFeature {
 
             case .sidebar(.loadFailed):
                 // A read can fail while the daemon answers; only one that
-                // is gone is started again, once until the sidebar reads.
-                // One that goes while an update waits is started again too:
-                // the banner's restart would otherwise never come.
+                // is gone is started again, looked for once until the
+                // sidebar reads. One that goes while an update waits is
+                // started again too: the banner's restart would otherwise
+                // never come.
                 guard state.daemon == .running || state.daemon == .updatePending else { return .none }
                 guard !state.daemonRetried else {
                     // Started again, and a read still fails. If it answers,
                     // the read failed for another reason and the next one
                     // that fails looks for it again; if it doesn't, starting
-                    // it didn't keep it, and it isn't started over and over.
+                    // it didn't keep it, and it's started again, each time
+                    // a while later than the last.
                     guard state.daemonStartedAgain else { return .none }
                     state.daemonStartedAgain = false
                     return .run { send in
-                        if (try? await service.build()) != nil { await send(.daemonAnswered) }
+                        do {
+                            _ = try await service.build()
+                            await send(.daemonAnswered)
+                        } catch {
+                            await send(.daemonGone)
+                        }
                     }
                 }
                 state.daemonRetried = true
@@ -505,9 +521,11 @@ package struct AppFeature {
             case .daemonAnswered:
                 // It was there this time; it may not be at the next failed
                 // read. One found gone leaves this set, so a run of failed
-                // reads starts it once.
+                // reads looks for it once each time it's started; the next
+                // start after this one is at once.
                 state.daemonRetried = false
                 state.daemonStartedAgain = false
+                state.daemonRestarts = 0
                 return .none
 
             case .restartRefused(let message, let askedInHosts):
@@ -524,10 +542,27 @@ package struct AppFeature {
                 guard state.daemon == .running || state.daemon == .updatePending else { return .none }
                 state.daemon = .restarting
                 state.daemonStartedAgain = true
+                // The first start is at once; one that didn't keep it waits
+                // 1 s, 2 s, 4 s … up to 30 s, so a daemon that won't stay
+                // isn't started over and over.
+                let wait = Self.restartWait(after: state.daemonRestarts)
+                state.daemonRestarts += 1
                 return .run { send in
+                    if let wait {
+                        try await clock.sleep(for: wait)
+                        // It may have come back while this waited: it's
+                        // used as it is, not started over a working one.
+                        if (try? await service.build()) != nil {
+                            await send(.daemonAnswered)
+                            await send(.restarted)
+                            return
+                        }
+                    }
                     try await service.start()
                     await send(.restarted)
                 } catch: { error, send in
+                    // A wait cut short by the app going isn't a failure.
+                    guard !(error is CancellationError) else { return }
                     await send(Self.failed(error))
                 }
 
@@ -537,11 +572,12 @@ package struct AppFeature {
             case .quitTapped:
                 return .run { _ in await installer.quit() }
 
-            case .sidebar(.loaded(_, let sessions, _, _)):
+            case .sidebar(.loaded(_, let sessions, _, _, let complete)):
                 // Every two seconds: set only what changed, so the open
                 // session isn't drawn again for nothing.
                 if state.daemonRetried { state.daemonRetried = false }
                 if state.daemonStartedAgain { state.daemonStartedAgain = false }
+                if state.daemonRestarts != 0 { state.daemonRestarts = 0 }
                 if let open = state.session {
                     if let listed = sessions.first(where: { $0.id == open.session.id }) {
                         // What changes outside its chat: its host is lost or
@@ -585,7 +621,7 @@ package struct AppFeature {
                         }
                     }
                 }
-                let shown = show(&state)
+                let shown: Effect<Action> = .merge(show(&state), closeUnlisted(state, sessions, complete: complete))
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return shown }
                 return .merge(shown, restart(&state))
 
@@ -865,6 +901,23 @@ package struct AppFeature {
         .ifLet(\.$search, action: \.search) { SearchFeature() }
         .ifLet(\.$installer, action: \.installer) { InstallerFeature() }
         Reduce(Self.followDaemonInHosts)
+        Reduce(Self.followCommands)
+    }
+
+    /// How long the daemon's start waits after `restarts` starts that
+    /// didn't keep it: none for the first, then 1 s, doubling each time up
+    /// to 30 s.
+    private static func restartWait(after restarts: Int) -> Duration? {
+        guard restarts > 0 else { return nil }
+        return .seconds(min(30, 1 << min(restarts - 1, 5)))
+    }
+
+    /// Keeps what the Session menu's Stop reads up to date with the
+    /// session of the column the person is in, set only when it changes.
+    private static func followCommands(_ state: inout State, _ action: Action) -> Effect<Action> {
+        let canStop = state.commandSession?.canStop == true
+        if state.commandCanStop != canStop { state.commandCanStop = canStop }
+        return .none
     }
 
     /// Hosts offers to restart This Mac's daemon only while it isn't a
@@ -933,7 +986,7 @@ package struct AppFeature {
         switch action {
         case .newerDaemonFound:
             state.daemon = .newerRunning
-        case .sidebar(.loaded(_, let sessions, _, _)):
+        case .sidebar(.loaded(_, let sessions, _, _, _)):
             guard let open = state.session, let listed = sessions.first(where: { $0.id == open.session.id }),
                 listed.codeCommits != open.session.codeCommits
             else { break }
@@ -942,6 +995,25 @@ package struct AppFeature {
             break
         }
         return .none
+    }
+
+    /// Closes the open session and side chat when they were deleted
+    /// elsewhere, as from the humata CLI: left out of a listing every host
+    /// answered, and of one read after it, as the first may have begun
+    /// before the session started. A host that didn't answer is shown as
+    /// it last was, which may leave out a session still there, so a
+    /// listing that isn't complete closes nothing.
+    private func closeUnlisted(_ state: State, _ sessions: [Session], complete: Bool) -> Effect<Action> {
+        guard complete else { return .none }
+        let open = [state.session?.session.id, state.side?.session.id].compactMap { $0 }
+        let gone = open.filter { id in !sessions.contains { $0.id == id } }
+        guard !gone.isEmpty else { return .none }
+        return .run { [daemon] send in
+            guard let again = try? await daemon.listing(), again.complete else { return }
+            for id in gone where !again.sessions.contains(where: { $0.id == id }) {
+                await send(.sidebar(.sessionDeleted(id)))
+            }
+        }
     }
 
     private func restart(_ state: inout State, askedInHosts: Bool = false) -> Effect<Action> {

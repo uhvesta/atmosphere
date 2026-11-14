@@ -146,6 +146,20 @@ final class SubagentTests: XCTestCase {
         }
     }
 
+    func testTheMainAgentsRowShowsOnlyWhatTheMainAgentUsed() {
+        // The sheet lists the main agent and each subagent, each with what
+        // it used; added up they make the session's total, so the main
+        // agent's own row must leave its subagents out.
+        for backend in [Backend.copilot, .claude] {
+            var state = state(backend)
+            state.receive(history)
+            XCTAssertEqual(state.mainUsage, Usage(model: "big", inputTokens: 10, outputTokens: 2), "\(backend)")
+            let rows = [state.mainUsage] + state.subagents.map(\.usage)
+            let added = rows.compactMap { $0 }.reduce(0) { $0 + $1.inputTokens + $1.outputTokens }
+            XCTAssertEqual(added, (state.usage?.inputTokens ?? 0) + (state.usage?.outputTokens ?? 0), "\(backend)")
+        }
+    }
+
     func testOpeningASubagentShowsItsOwnChat() async {
         var initial = state()
         initial.receive(history)
@@ -159,6 +173,27 @@ final class SubagentTests: XCTestCase {
         // A call that started no subagent opens nothing.
         await store.send(.subagentTapped(callID: "a1"))
         await store.send(.subagentClosed) { $0.shownSubagent = nil }
+    }
+
+    func testAnOpenedSubagentShowsWhatItReturnedToTheMainAgent() async {
+        var initial = state()
+        initial.receive(history)
+        let store = TestStore(initialState: initial) { SessionFeature() }
+        XCTAssertNil(store.state.shownSubagentResult, "nothing is open")
+
+        await store.send(.subagentTapped(callID: "a")) { $0.shownSubagent = "a" }
+        XCTAssertEqual(store.state.shownSubagentResult, "src/parser.rs")
+        // Still running: it has returned nothing yet.
+        await store.send(.subagentTapped(callID: "b")) { $0.shownSubagent = "b" }
+        XCTAssertNil(store.state.shownSubagentResult)
+
+        // What it returns shows while it's open; the event lands in the log.
+        store.exhaustivity = .off
+        await store.send(
+            .received(event("e16", .toolCompleted(callID: "b", success: true, output: "3 failing"), at: 6)))
+        XCTAssertEqual(store.state.shownSubagentResult, "3 failing")
+        await store.send(.subagentClosed) { $0.shownSubagent = nil }
+        XCTAssertNil(store.state.shownSubagentResult)
     }
 
     func testAScriptedSubagentShowsUnderItsCallWithItsOwnChat() async throws {

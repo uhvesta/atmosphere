@@ -242,6 +242,10 @@ struct Chat: Equatable, Sendable {
     /// history is worked out off the main thread its rows are too, and the
     /// chat's view cuts no reply as it draws.
     private(set) var lines: [ChatLine] = []
+    /// One for each item, moved on each time the item changes after it's
+    /// added, as a tool call finishing: the chat's view compares these, not
+    /// the items, which can hold a tool's whole output.
+    private(set) var versions: [UInt32] = []
     /// Bytes of Markdown in a part of a long reply, about a screen of it.
     static let partSize = 500
     private var calls: [String: Int] = [:]
@@ -351,10 +355,10 @@ struct Chat: Equatable, Sendable {
         switch items[index] {
         case .tool(var call):
             call.permission?.answer = answer
-            items[index] = .tool(call)
+            change(index, to: .tool(call))
         case .permission(let id, var permission):
             permission.answer = answer
-            items[index] = .permission(id: id, permission)
+            change(index, to: .permission(id: id, permission))
         default: break
         }
     }
@@ -362,7 +366,7 @@ struct Chat: Equatable, Sendable {
     /// The last rewind can't be undone once a message is sent or it was.
     private mutating func settleRewind() {
         guard let index = rewound, case .rewound(let id, let files, _) = items[index] else { return }
-        items[index] = .rewound(id: id, files: files, undoable: false)
+        change(index, to: .rewound(id: id, files: files, undoable: false))
         rewound = nil
     }
 
@@ -371,6 +375,7 @@ struct Chat: Equatable, Sendable {
     private mutating func append(_ item: ChatItem) {
         let index = items.count
         items.append(item)
+        versions.append(0)
         guard case .reply(let id, let text) = item, text.utf8.count > Self.partSize else {
             lines.append(ChatLine(item: index, id: item.id))
             return
@@ -381,6 +386,12 @@ struct Chat: Equatable, Sendable {
                     item: index, part: part.startIndex..<part.endIndex, continues: number > 0,
                     id: number == 0 ? id : "\(id)/\(number)"))
         }
+    }
+
+    /// Puts `item` in place of the one at `index`, moving its version on.
+    private mutating func change(_ index: Int, to item: ChatItem) {
+        items[index] = item
+        versions[index] &+= 1
     }
 
     mutating func add(_ event: SessionEvent) {
@@ -413,7 +424,7 @@ struct Chat: Equatable, Sendable {
             append(.reply(id: event.id, text: text))
         case .reasoning(let text):
             if case .thinking(let id, let before)? = items.last {
-                items[items.count - 1] = .thinking(id: id, text: before + text)
+                change(items.count - 1, to: .thinking(id: id, text: before + text))
             } else {
                 append(.thinking(id: event.id, text: text))
             }
@@ -428,14 +439,14 @@ struct Chat: Equatable, Sendable {
             guard let index = calls[callID], case .tool(var call) = items[index] else { return }
             call.output = output
             call.succeeded = success
-            items[index] = .tool(call)
+            change(index, to: .tool(call))
         case .permissionRequested(let request, let kind, let summary):
             let permission = Permission(requestID: request, kind: kind, summary: summary)
             if let running, let index = calls[running], case .tool(var call) = items[index],
                 call.permission == nil
             {
                 call.permission = permission
-                items[index] = .tool(call)
+                change(index, to: .tool(call))
                 requests[request] = index
             } else {
                 requests[request] = items.count
