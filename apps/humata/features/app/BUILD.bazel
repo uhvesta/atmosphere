@@ -16,6 +16,7 @@ swift_library(
         "//apps/humata/clients/daemon",
         "//apps/humata/features/board",
         "//apps/humata/features/diagram",
+        "//apps/humata/features/docs",
         "//apps/humata/features/hosts",
         "//apps/humata/features/projects",
         "//apps/humata/features/search",

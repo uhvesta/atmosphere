@@ -2,6 +2,7 @@ import ChatUI
 import ComposableArchitecture
 import HumataBoard
 import HumataDiagram
+import HumataDocs
 import HumataHosts
 import HumataProjects
 import HumataSearch
@@ -19,7 +20,26 @@ package struct AppView: View {
         self.store = store
     }
 
+    /// Whether the open session shows a document with its chat beside it,
+    /// which needs more room than the chat alone: the window then asks the
+    /// session how wide it must be instead of answering its fixed least.
+    private var focusesDocument: Bool {
+        guard let session = store.session else { return false }
+        switch session.tab {
+        case .files: return session.docs.focused
+        case .spec: return session.specs.focused != nil
+        default: return false
+        }
+    }
+
     package var body: some View {
+        // The window's own view asks its content for its smallest size on
+        // every change; this answers without measuring the chat, and is here
+        // so that whatever hosts this view lays out what the app does.
+        AtLeast(width: 820, height: 520, fits: focusesDocument) { split }
+    }
+
+    private var split: some View {
         NavigationSplitView {
             Group {
                 if store.daemon == .starting {
@@ -33,7 +53,7 @@ package struct AppView: View {
         } detail: {
             // The column's own window view asks its content for its smallest
             // size on every change; this answers without measuring the chat.
-            AtLeast(width: 360, height: 300) { detail }
+            AtLeast(width: 360, height: 300, fits: focusesDocument) { detail }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             DaemonBanner(store: store)
@@ -67,7 +87,7 @@ package struct AppView: View {
             // The session keeps its place whether or not a side chat is
             // beside it, so opening or closing one doesn't draw it anew.
             HStack(spacing: 0) {
-                AtLeast(width: 360, height: 300) {
+                AtLeast(width: 360, height: 300, fits: focusesDocument) {
                     SessionView(store: session)
                         .id(session.session.id)
                 }
@@ -165,29 +185,46 @@ private struct SideChatColumn: View {
 /// Takes the space it's offered, at least `width` by `height`, without
 /// asking its view. A window view asks its content for its smallest size on
 /// every change; with this as the content, that's this answer, not a measure
-/// of the whole chat each time a reply grows.
+/// of the whole chat each time a reply grows. With `fits`, it is also at
+/// least as wide as its view says it must be at that least width, for a view
+/// that needs more than the least, as a document with its chat beside it
+/// does; the height is never asked.
 package struct AtLeast<Content: View>: View {
     let width: CGFloat
     let height: CGFloat
+    let fits: Bool
     @ViewBuilder let content: () -> Content
 
-    package init(width: CGFloat, height: CGFloat, @ViewBuilder content: @escaping () -> Content) {
+    package init(
+        width: CGFloat, height: CGFloat, fits: Bool = false, @ViewBuilder content: @escaping () -> Content
+    ) {
         self.width = width
         self.height = height
+        self.fits = fits
         self.content = content
     }
 
     package var body: some View {
-        AtLeastLayout(width: width, height: height) { content() }
+        AtLeastLayout(width: width, height: height, fits: fits) { content() }
     }
 }
 
 private struct AtLeastLayout: Layout {
     let width: CGFloat
     let height: CGFloat
+    let fits: Bool
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        CGSize(width: max(proposal.width ?? width, width), height: max(proposal.height ?? height, height))
+        let tall = max(proposal.height ?? height, height)
+        var wide = max(proposal.width ?? width, width)
+        if fits {
+            // What its view answers when offered the least width is the
+            // width it can't go under.
+            for view in subviews {
+                wide = max(wide, view.sizeThatFits(ProposedViewSize(width: width, height: tall)).width)
+            }
+        }
+        return CGSize(width: wide, height: tall)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {

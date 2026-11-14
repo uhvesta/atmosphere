@@ -36,18 +36,39 @@ package struct SpecCommentsFeature {
         }
 
         /// The drafts as the one message they're sent as, in the spec's
-        /// order: each block quoted, then the comment on it.
+        /// order: each block's lines in the spec, the block quoted and cut
+        /// short, then the comment on it. The lines place what the cut
+        /// left out, so a long block isn't sent whole with every comment.
         package var message: String {
             let comments = drafts.sorted { $0.block.startLine < $1.block.startLine }.map { draft in
-                let quote = draft.block.text.split(separator: "\n", omittingEmptySubsequences: false)
+                let block = draft.block
+                let lines =
+                    block.endLine > block.startLine
+                    ? "Lines \(block.startLine)–\(block.endLine):" : "Line \(block.startLine):"
+                let quote = Self.cut(block.text).split(separator: "\n", omittingEmptySubsequences: false)
                     .map { "> \($0)" }.joined(separator: "\n")
-                return quote + "\n" + draft.text
+                return lines + "\n" + quote + "\n" + draft.text
             }
             let intro =
                 drafts.count == 1
                 ? "A comment on the spec of \(title):"
                 : "Comments on the spec of \(title); answer each:"
             return ([intro] + comments).joined(separator: "\n\n")
+        }
+
+        /// The most of a block that's quoted with its comment, as a
+        /// session's files quote a clicked block.
+        private static let quoteLines = 6
+        private static let quoteCharacters = 300
+
+        /// `quote` cut to its first lines and characters, with "…" where it
+        /// was cut.
+        private static func cut(_ quote: String) -> String {
+            let lines = quote.split(separator: "\n", omittingEmptySubsequences: false)
+            let text = lines.prefix(quoteLines).joined(separator: "\n")
+            let kept = text.prefix(quoteCharacters)
+            guard lines.count > quoteLines || kept.endIndex != text.endIndex else { return quote }
+            return String(kept) + "…"
         }
     }
 

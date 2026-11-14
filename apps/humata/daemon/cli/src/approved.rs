@@ -37,6 +37,11 @@ impl Client {
         }
     }
 
+    /// Whether the connection to the daemon is still open.
+    pub fn is_connected(&self) -> bool {
+        self.inner.is_connected()
+    }
+
     /// Sends a request answered with one response, as
     /// [`humata_wire::Client::call`], waiting for the person if it needs
     /// their approval.

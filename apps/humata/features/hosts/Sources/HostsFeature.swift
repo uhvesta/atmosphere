@@ -96,6 +96,9 @@ package struct HostsFeature {
     package enum Health: Equatable, Sendable {
         case checking
         case installing
+        /// Humata's program couldn't be put on the host, and this is why;
+        /// not the same as a host a check couldn't reach.
+        case installFailed(String)
         case known(HostHealth)
     }
 
@@ -124,6 +127,8 @@ package struct HostsFeature {
         case installTapped(RemoteHost.ID)
         /// How the host is once its install ended.
         case installed(RemoteHost.ID, HostHealth)
+        /// Its install failed, and this is why.
+        case installFailed(RemoteHost.ID, String)
         case removeTapped(RemoteHost.ID)
         case removed(RemoteHost.ID)
         case skippedLoaded(RemoteHost.ID, [SkippedSession])
@@ -157,6 +162,9 @@ package struct HostsFeature {
         /// This Mac's daemon was started anew: reads its commands again,
         /// with what it read of the login shell this time.
         case daemonRestarted
+        /// The restart asked for here wasn't made, and this is why; the
+        /// daemon runs as it did.
+        case restartRefused(String)
         case terminals(TerminalsFeature.Action)
         case files(FileBrowserFeature.Action)
         case ports(PortsFeature.Action)
@@ -220,6 +228,13 @@ package struct HostsFeature {
 
             case .installed(let id, let health):
                 return known(health, of: id, in: &state)
+
+            case .installFailed(let id, let message):
+                state.health[id] = .installFailed(message)
+                // Its page says the install failed, which is why nothing of
+                // it is read.
+                if id == state.selection { state.skippedFailure = nil }
+                return .none
 
             case .recoveriesLoaded(let id, let recoveries):
                 guard id == state.selection else { return .none }
@@ -317,6 +332,13 @@ package struct HostsFeature {
 
             case .removeSkippedTapped(let id):
                 guard let session = state.skipped[id: id] else { return .none }
+                // A daemon reads its sessions when it starts, so one that's
+                // fixed opens once its daemon is started anew.
+                let wayBack =
+                    state.selection == state.coordinator.id
+                    ? "restart Humata's daemon with the button under the list."
+                    : "stop humatad on the host (for example `pkill -x humatad`; turns in progress there stop) "
+                        + "and press Check Again, which starts it anew."
                 state.destination = .alert(
                     AlertState {
                         TextState("Remove the session in \(session.folder)?")
@@ -326,7 +348,7 @@ package struct HostsFeature {
                     } message: {
                         TextState(
                             "Its folder and history are deleted, and can't be brought back. To keep the session "
-                                + "instead, fix what's damaged and restart Humata.")
+                                + "instead, fix what's damaged, then \(wayBack)")
                     })
                 return .none
 
@@ -347,10 +369,19 @@ package struct HostsFeature {
                 guard state.health[id] != .installing else { return .none }
                 state.health[id] = .installing
                 return .run { send in
-                    _ = try await daemon.installHost(id)
-                    await send(.installed(id, try await daemon.checkHost(id)))
-                } catch: { error, send in
-                    await send(.installed(id, .unreachable(error.localizedDescription)))
+                    do {
+                        _ = try await daemon.installHost(id)
+                    } catch {
+                        await send(.installFailed(id, error.localizedDescription))
+                        return
+                    }
+                    // Installed; a check that fails now is a host that
+                    // doesn't answer.
+                    do {
+                        await send(.installed(id, try await daemon.checkHost(id)))
+                    } catch {
+                        await send(.installed(id, .unreachable(error.localizedDescription)))
+                    }
                 }
 
             case .removeTapped(let id):
@@ -399,6 +430,9 @@ package struct HostsFeature {
             case .destination(.presented(.add(.delegate(.added(let host))))):
                 state.destination = nil
                 state.hosts.append(host)
+                // Its health, and what to do if the install fails, are on
+                // its settings, whichever pane the last host showed.
+                state.pane = .settings
                 let selecting = select(host.id, in: &state)
                 // Humata's program is copied over SSH; one reached by its
                 // own command has it already, so it's only checked.
@@ -468,8 +502,19 @@ package struct HostsFeature {
                 return .send(.delegate(.restartDaemon))
 
             case .daemonRestarted:
-                guard state.selection == state.coordinator.id else { return .none }
-                return loadCommandLinks()
+                // A session it couldn't open before may open now, so those
+                // are read again as well.
+                guard let id = state.selection, id == state.coordinator.id else { return .none }
+                return .merge(loadCommandLinks(), loadSkipped(id))
+
+            case .restartRefused(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Humata's daemon wasn't restarted")
+                    } message: {
+                        TextState(message)
+                    })
+                return .none
 
             case .editor, .destination, .terminals, .files, .ports, .delegate:
                 return .none

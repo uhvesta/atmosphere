@@ -242,6 +242,27 @@ final class DocsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.picked?.quote, "Ship the reader.\nThen the chat.")
     }
 
+    func testALongSelectionIsQuotedUpToALimitAndAShortOneWhole() async throws {
+        let (daemon, session) = try await chat()
+        let store = store(daemon, session)
+        await store.send(.refresh)
+        await store.receive(\.read)
+        let long = (1...400).map { "Line \($0) of a long selection." }.joined(separator: "\n")
+
+        await store.send(.textSelected(startLine: 1, endLine: 400, quote: long))
+        let quote = try XCTUnwrap(store.state.picked?.quote)
+        XCTAssertLessThan(quote.count, long.count)
+        XCTAssertTrue(quote.hasPrefix("Line 1 of a long selection.\nLine 2 of a long selection."))
+        // More than a clicked block keeps: the person chose these words.
+        XCTAssertTrue(quote.contains("Line 20 of a long selection."))
+        XCTAssertFalse(quote.contains("Line 400"))
+        XCTAssertEqual(store.state.picked?.startLine, 1)
+        XCTAssertEqual(store.state.picked?.endLine, 400)
+
+        await store.send(.textSelected(startLine: 3, endLine: 4, quote: "Ship the reader.\nThen the chat."))
+        XCTAssertEqual(store.state.picked?.quote, "Ship the reader.\nThen the chat.")
+    }
+
     func testAFailedSendKeepsTheDrafts() async throws {
         let (daemon, session) = try await chat()
         let store = store(daemon, session)

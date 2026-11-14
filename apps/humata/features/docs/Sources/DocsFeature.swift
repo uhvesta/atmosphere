@@ -468,9 +468,10 @@ package struct DocsFeature {
                 return .none
 
             case .textSelected(let start, let end, let quote):
-                // Whole: the person chose those words.
+                // Whole up to a limit, since the person chose those words;
+                // past it the comment's path and lines place the rest.
                 guard let path = state.selected else { return .none }
-                state.picked = Picked(path: path, startLine: start, endLine: end, quote: quote)
+                state.picked = Picked(path: path, startLine: start, endLine: end, quote: Self.cut(selection: quote))
                 return .none
 
             case .commentCancelled:
@@ -591,6 +592,15 @@ package struct DocsFeature {
         let kept = text.prefix(quoteCharacters)
         guard lines.count > quoteLines || kept.endIndex != text.endIndex else { return quote }
         return String(kept) + "…"
+    }
+
+    /// The most of a selection that's quoted with its comment.
+    private static let selectionCharacters = 2_000
+
+    /// A selection cut to its first characters, with "…" where it was cut.
+    private static func cut(selection quote: String) -> String {
+        let kept = quote.prefix(selectionCharacters)
+        return kept.endIndex == quote.endIndex ? quote : String(kept) + "…"
     }
 
     /// A version, by its turn, as the person reads it.

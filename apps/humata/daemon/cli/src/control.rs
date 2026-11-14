@@ -39,17 +39,57 @@ const ANSWER_BYTES: usize = 32 * 1024;
 /// How long calls under way when the input ends still have to be answered.
 const ENDED_GRACE: Duration = Duration::from_secs(5);
 
+type Connecting =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Client, CliError>> + Send>>;
+
+/// The daemon as `humata mcp` reaches it for as long as it runs: the
+/// connection in hand, and how to make another once that one has ended, as
+/// it does whenever the daemon is restarted or updated.
+pub struct Connection {
+    client: tokio::sync::Mutex<Arc<Client>>,
+    connect: Box<dyn Fn() -> Connecting + Send + Sync>,
+}
+
+impl Connection {
+    /// `client` is the connection already made; `connect` makes the next.
+    pub fn new<Connect, Made>(client: Arc<Client>, connect: Connect) -> Self
+    where
+        Connect: Fn() -> Made + Send + Sync + 'static,
+        Made: std::future::Future<Output = Result<Client, CliError>> + Send + 'static,
+    {
+        Self {
+            client: tokio::sync::Mutex::new(client),
+            connect: Box::new(move || -> Connecting { Box::pin(connect()) }),
+        }
+    }
+
+    /// The connection in hand while it is open, else a new one, kept in its
+    /// place. Calls that ask at once connect once: the others wait for it.
+    /// A connection that can't be made is the caller's error, and the next
+    /// call tries again.
+    async fn client(&self) -> Result<Arc<Client>, CliError> {
+        let mut client = self.client.lock().await;
+        if !client.is_connected() {
+            *client = Arc::new((self.connect)().await?);
+        }
+        Ok(client.clone())
+    }
+}
+
 /// Answers each JSON-RPC message, one per line, until the input ends. Each
 /// request is answered as its own task, so one that waits, as send_message
 /// does, holds up no other; answers go out as they're ready, each naming
 /// its request, and a request the client cancels stops. When the input
 /// ends, calls already under way still have [`ENDED_GRACE`] to be answered,
-/// since a client may close its input as soon as it has written.
+/// since a client may close its input as soon as it has written. A tool
+/// call made after the daemon's connection ended is made on a new one; a
+/// call under way when it ended is never made again.
 pub async fn serve(
-    client: Arc<Client>,
+    connection: Connection,
     input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
 ) -> Result<(), CliError> {
+    let connection = Arc::new(connection);
     let mut lines = BufReader::new(input).lines();
     let mut answering: JoinSet<Option<Value>> = JoinSet::new();
     // The requests being answered, by their ids as JSON, to cancel one.
@@ -91,8 +131,9 @@ pub async fn serve(
                     continue;
                 };
                 let id = id.to_string();
-                let client = Arc::clone(&client);
-                let handle = answering.spawn(async move { handle(&client, &message).await });
+                let connection = Arc::clone(&connection);
+                let handle =
+                    answering.spawn(async move { handle(&connection, &message).await });
                 asked.insert(id, handle);
                 continue;
             }
@@ -146,7 +187,7 @@ fn failure(id: &Value, code: i64, message: &str) -> Value {
 }
 
 /// The answer to one message; none for a notification.
-async fn handle(client: &Client, message: &Value) -> Option<Value> {
+async fn handle(connection: &Connection, message: &Value) -> Option<Value> {
     let id = message.get("id")?;
     let params = &message["params"];
     let result = match message["method"].as_str().unwrap_or_default() {
@@ -172,9 +213,14 @@ async fn handle(client: &Client, message: &Value) -> Option<Value> {
             let name = params["name"].as_str().unwrap_or_default();
             let empty = json!({});
             let arguments = params.get("arguments").unwrap_or(&empty);
-            let (text, failed) = match call(client, name, &Arguments(arguments)).await {
-                Ok(text) => (text, false),
-                Err(text) => (text, true),
+            // Only a tool needs the daemon, so only here is it reached again
+            // if its connection ended.
+            let (text, failed) = match connection.client().await {
+                Ok(client) => match call(&client, name, &Arguments(arguments)).await {
+                    Ok(text) => (text, false),
+                    Err(text) => (text, true),
+                },
+                Err(error) => (humata_wire::describe(&error), true),
             };
             json!({"content": [{"type": "text", "text": text}], "isError": failed})
         }
@@ -1269,25 +1315,55 @@ mod tests {
         }
     }
 
-    async fn connected() -> (Arc<Client>, Arc<Daemon>, mpsc::UnboundedReceiver<Items>) {
+    fn daemon() -> (Arc<Daemon>, mpsc::UnboundedReceiver<Items>) {
         let (watched, watches) = mpsc::unbounded_channel();
         let daemon = Arc::new(Daemon {
             history: Mutex::default(),
             reads: AtomicUsize::new(0),
             watched,
         });
+        (daemon, watches)
+    }
+
+    /// A connection to `daemon`, served over its own in-memory pipe, and
+    /// the task serving it: stopping the task is the daemon going away.
+    async fn served(daemon: Arc<Daemon>) -> (Client, tokio::task::JoinHandle<()>) {
         let (ours, theirs) = duplex(64 * 1024);
         let (reader, writer) = split(theirs);
-        let serving = daemon.clone();
-        tokio::spawn(async move {
-            humata_wire::serve(reader, writer, pb::Role::Daemon, "test", serving).await
+        let serving = tokio::spawn(async move {
+            let _ = humata_wire::serve(reader, writer, pb::Role::Daemon, "test", daemon).await;
         });
         let (reader, writer) = split(ours);
         let wire = humata_wire::Client::connect(reader, writer, pb::Role::Client, "test")
             .await
             .expect("connects");
         let wait = crate::approved::Wait::For(Duration::ZERO);
-        (Arc::new(Client::new(wire, wait, false)), daemon, watches)
+        (Client::new(wire, wait, false), serving)
+    }
+
+    async fn connected() -> (Arc<Client>, Arc<Daemon>, mpsc::UnboundedReceiver<Items>) {
+        let (daemon, watches) = daemon();
+        let (client, _serving) = served(daemon.clone()).await;
+        (Arc::new(client), daemon, watches)
+    }
+
+    /// A connection with no way to make another.
+    fn only(client: Arc<Client>) -> Connection {
+        Connection::new(client, || async { Err(CliError::NoSocket) })
+    }
+
+    /// A connection whose daemon has gone away, once the client knows.
+    async fn gone() -> Arc<Client> {
+        let (client, serving) = served(daemon().0).await;
+        serving.abort();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while client.is_connected() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the client sees the daemon go");
+        Arc::new(client)
     }
 
     fn item(event: pb::SessionEvent) -> Result<pb::StreamItem, pb::Error> {
@@ -1390,6 +1466,108 @@ mod tests {
         assert_eq!(seen, ["e1"]);
     }
 
+    #[tokio::test]
+    async fn a_wait_ends_at_a_request_already_open_when_it_starts() {
+        let (client, daemon, mut watches) = connected().await;
+        daemon
+            .history
+            .lock()
+            .expect("not poisoned")
+            .push(requested("e1", "r1"));
+        let mut seen = Vec::new();
+        let waiting = crate::call_and_wait(&client, "s", message(), sent, "MessageSent", |event| {
+            seen.push(event.id.clone());
+        });
+        // Nothing is streamed: the session is still stopped at the request.
+        let drive = async { watches.recv().await.expect("the wait watches") };
+        let (waited, _items) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(waiting, drive)
+        })
+        .await
+        .expect("the wait ends");
+
+        waited.expect("waited");
+        assert_eq!(seen, ["e1"]);
+    }
+
+    #[tokio::test]
+    async fn a_request_open_at_the_start_and_answered_since_doesnt_end_the_wait() {
+        let (client, daemon, mut watches) = connected().await;
+        daemon
+            .history
+            .lock()
+            .expect("not poisoned")
+            .push(requested("e1", "r1"));
+        let mut seen = Vec::new();
+        let waiting = crate::call_and_wait(&client, "s", message(), sent, "MessageSent", |event| {
+            seen.push(event.id.clone());
+        });
+        let drive = async {
+            let items = watches.recv().await.expect("the wait watches");
+            let answered = event(
+                "e2",
+                Kind::PermissionCompleted(pb::PermissionCompleted {
+                    request_id: "r1".to_owned(),
+                    approved: true,
+                    automatic: false,
+                    judged: false,
+                }),
+            );
+            daemon
+                .history
+                .lock()
+                .expect("not poisoned")
+                .push(answered.clone());
+            items.send(item(answered)).await.expect("sent");
+            // Longer than a request is held before the history is asked.
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let idle = event("e3", Kind::Idle(pb::SessionIdle {}));
+            items.send(item(idle)).await.expect("sent");
+            items
+        };
+        let (waited, _items) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(waiting, drive)
+        })
+        .await
+        .expect("the wait ends");
+
+        waited.expect("waited");
+        assert_eq!(seen, ["e2", "e3"]);
+    }
+
+    #[tokio::test]
+    async fn a_request_left_by_a_turn_that_ended_doesnt_end_the_wait() {
+        let (client, daemon, mut watches) = connected().await;
+        daemon.history.lock().expect("not poisoned").extend([
+            requested("e1", "r1"),
+            event("e2", Kind::Idle(pb::SessionIdle {})),
+        ]);
+        let mut seen = Vec::new();
+        let waiting = crate::call_and_wait(&client, "s", message(), sent, "MessageSent", |event| {
+            seen.push(event.id.clone());
+        });
+        let drive = async {
+            let items = watches.recv().await.expect("the wait watches");
+            items
+                .send(item(event("e3", reply("on it"))))
+                .await
+                .expect("sent");
+            // Longer than a request is held before the history is asked.
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let idle = event("e4", Kind::Idle(pb::SessionIdle {}));
+            items.send(item(idle)).await.expect("sent");
+            items
+        };
+        let (waited, _items) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(waiting, drive)
+        })
+        .await
+        .expect("the wait ends");
+
+        waited.expect("waited");
+        assert_eq!(seen, ["e3", "e4"]);
+    }
+
     fn line(message: Value) -> Vec<u8> {
         format!("{message}\n").into_bytes()
     }
@@ -1421,7 +1599,7 @@ mod tests {
         };
 
         let answered = tokio::select! {
-            ended = serve(client, input, output) => panic!("it stopped serving: {ended:?}"),
+            ended = serve(only(client), input, output) => panic!("it stopped serving: {ended:?}"),
             answered = tokio::time::timeout(Duration::from_secs(10), drive) => answered,
         };
 
@@ -1458,13 +1636,115 @@ mod tests {
         };
 
         let (ended, (answered, _items)) = tokio::time::timeout(ENDED_GRACE / 2, async {
-            tokio::join!(serve(client, input, output), drive)
+            tokio::join!(serve(only(client), input, output), drive)
         })
         .await
         .expect("it ends once the input does, with no call left waiting");
 
         ended.expect("served");
         assert_eq!(answered, [json!(2)]);
+    }
+
+    /// A send_message that doesn't wait for the session.
+    fn send_and_go(id: u64) -> Vec<u8> {
+        line(json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {
+                "name": "send_message",
+                "arguments": {"session_id": "s", "text": "hi", "wait_seconds": 0},
+            },
+        }))
+    }
+
+    /// A connector that counts its tries; the first `failing` of them can't
+    /// reach a daemon, and each after that reaches a new one.
+    fn connector(
+        failing: usize,
+    ) -> (
+        Arc<AtomicUsize>,
+        impl Fn() -> Connecting + Send + Sync + 'static,
+    ) {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let connect = move || -> Connecting {
+            let attempt = counted.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async move {
+                if attempt < failing {
+                    return Err(CliError::NoSocket);
+                }
+                Ok(served(daemon().0).await.0)
+            })
+        };
+        (tries, connect)
+    }
+
+    #[tokio::test]
+    async fn a_call_after_the_daemon_restarted_is_answered_by_the_new_one() {
+        let (tries, connect) = connector(0);
+        let connection = Connection::new(gone().await, connect);
+        let (mut requests, input) = duplex(4096);
+        let (output, answers) = duplex(64 * 1024);
+        let mut answers = BufReader::new(answers).lines();
+        let drive = async {
+            let mut answered = Vec::new();
+            for id in [1, 2] {
+                requests.write_all(&send_and_go(id)).await.expect("written");
+                let answer = answers.next_line().await.expect("read").expect("an answer");
+                answered.push(serde_json::from_str::<Value>(&answer).expect("JSON"));
+            }
+            answered
+        };
+
+        let answered = tokio::select! {
+            ended = serve(connection, input, output) => panic!("it stopped serving: {ended:?}"),
+            answered = tokio::time::timeout(Duration::from_secs(10), drive) => answered,
+        };
+
+        for answer in answered.expect("the calls are answered") {
+            assert_eq!(answer["result"]["isError"], json!(false), "{answer}");
+        }
+        // The second call found the connection the first one made.
+        assert_eq!(tries.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_cant_be_reached_says_so_and_the_next_call_tries_again() {
+        let (tries, connect) = connector(1);
+        let connection = Connection::new(gone().await, connect);
+        let (mut requests, input) = duplex(4096);
+        let (output, answers) = duplex(64 * 1024);
+        let mut answers = BufReader::new(answers).lines();
+        let drive = async {
+            let mut answered = Vec::new();
+            for id in [1, 2] {
+                requests.write_all(&send_and_go(id)).await.expect("written");
+                let answer = answers.next_line().await.expect("read").expect("an answer");
+                answered.push(serde_json::from_str::<Value>(&answer).expect("JSON"));
+            }
+            answered
+        };
+
+        let answered = tokio::select! {
+            ended = serve(connection, input, output) => panic!("it stopped serving: {ended:?}"),
+            answered = tokio::time::timeout(Duration::from_secs(10), drive) => answered,
+        };
+
+        let answered = answered.expect("the calls are answered");
+        assert_eq!(answered[0]["id"], json!(1));
+        assert_eq!(
+            answered[0]["result"]["isError"],
+            json!(true),
+            "{}",
+            answered[0]
+        );
+        assert_eq!(answered[1]["id"], json!(2));
+        assert_eq!(
+            answered[1]["result"]["isError"],
+            json!(false),
+            "{}",
+            answered[1]
+        );
+        assert_eq!(tries.load(Ordering::Relaxed), 2);
     }
 
     fn link_to(arguments: Value) -> Result<String, String> {

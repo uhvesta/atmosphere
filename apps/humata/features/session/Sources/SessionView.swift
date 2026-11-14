@@ -486,6 +486,10 @@ private struct ChatList: View {
     /// Earlier rows were just asked for: when they come, above what's in
     /// view, the chat stays on what it showed.
     @State private var keepsPlace = false
+    /// A jump to a row was asked for and hasn't landed: until it has, the
+    /// chat's end being in view is where the jump left from, not a reason
+    /// to keep to it.
+    @State private var jumping = false
 
     var body: some View {
         let highlighted = store.highlightedItem
@@ -500,17 +504,24 @@ private struct ChatList: View {
             .scrollPosition($position)
             // At its end when it opens; as it grows, what's in view stays.
             .defaultScrollAnchor(.bottom, for: .initialOffset)
+            // A chat shorter than the pane sits at its bottom, just above
+            // the box.
+            .defaultScrollAnchor(.bottom, for: .alignment)
             .onScrollGeometryChange(for: ChatEnd.Place.self) {
                 ChatEnd.Place(geometry: $0)
             } action: { old, new in
+                // A change that starts away from the end: the jump landed.
+                if jumping, !old.endInView { jumping = false }
                 if new.height > old.height, keepsPlace {
                     // Earlier rows came above what's in view: it moves down
                     // by their height, and the chat with it.
                     keepsPlace = false
                     position.scrollTo(y: old.offset + new.height - old.height)
                 } else if new.height != old.height {
-                    // Grown or shrunk with its end in view: keep to the end.
-                    if old.endInView { following = true }
+                    // Grown or shrunk with its end in view: keep to the end,
+                    // unless a jump is leaving it. The rows a jump brings
+                    // above come as a growth with the end still in view.
+                    if old.endInView, !jumping { following = true }
                     if following { position.scrollTo(edge: .bottom) }
                 } else if new.offset < old.offset - 1, !new.endInView {
                     // Read up, by any means: a mouse wheel has no phases. An
@@ -527,7 +538,9 @@ private struct ChatList: View {
                 switch phase {
                 case .tracking, .interacting:
                     following = false
+                    jumping = false
                 case .idle:
+                    jumping = false
                     // Only on: the stop after the chat's own scroll to its
                     // end can come while rows are still being measured.
                     if ChatEnd.inView(context.geometry) { following = true }
@@ -539,8 +552,12 @@ private struct ChatList: View {
             }
             .overlay { ChatLoading(store: store) }
             .onChange(of: highlighted, initial: true) { _, item in
-                guard let item else { return }
+                guard let item else {
+                    jumping = false
+                    return
+                }
                 following = false
+                jumping = true
                 reader.scrollTo(item, anchor: .center)
             }
             // A message sent takes the chat to its end to show it and what
@@ -548,11 +565,13 @@ private struct ChatList: View {
             .onChange(of: store.sending) { old, new in
                 guard new > old else { return }
                 following = true
+                jumping = false
                 position.scrollTo(edge: .bottom)
             }
             .onChange(of: store.scrollTarget) { _, item in
                 guard let item else { return }
                 following = false
+                jumping = true
                 withAnimation { reader.scrollTo(item, anchor: .top) }
                 store.send(.scrolled)
             }
@@ -638,16 +657,19 @@ private struct ChatRows: View, Equatable {
         let items = store.items
         let all = store.lines
         // Only the chat's last rows are handed to the list, and those above
-        // them once asked for or jumped to: what the list does for every
-        // row it holds, seen or not, is what made a long chat slow to open.
-        let start = tail.start(in: all, earlier: earlier, showing: [highlighted, store.scrollTarget])
+        // them once asked for or jumped to, or with a message left open to
+        // change: what the list does for every row it holds, seen or not,
+        // is what made a long chat slow to open.
+        let start = tail.start(
+            in: all, earlier: earlier, showing: [highlighted, store.scrollTarget, store.editing])
         LazyVStack(alignment: .leading, spacing: 14) {
             if start > 0 {
-                let shown = all.count - start
-                Button("Show Earlier Messages") { showEarlier(max(ChatTail.rows, shown)) }
+                // As many again as are shown, and no more than there are.
+                let more = min(max(ChatTail.rows, all.count - start), start)
+                Button("Show Earlier Messages") { showEarlier(more) }
                     .buttonStyle(.borderless)
                     .frame(maxWidth: .infinity)
-                    .help("Only the latest part of a long chat is laid out until you ask for more")
+                    .help(more == 1 ? "Show the row before these" : "Show the \(more) rows before these")
                     .accessibilityIdentifier("chat.earlier")
             }
             ForEach(Self.whole(highlighted, in: all[start...])) { line in
@@ -705,6 +727,7 @@ private struct ChatRows: View, Equatable {
             shows.subagent = store.subagents[id: call.callID]
             if let proposal = store.proposals.proposals[id: call.callID] {
                 shows.proposal = proposal
+                shows.proposalChange = store.proposals.changes[call.callID]
                 shows.deciding = store.proposals.deciding.contains(call.callID)
                 shows.canStartWork = store.session.planning
             } else if let failure = store.proposals.listFailure, store.proposingCalls.contains(call.callID) {
@@ -846,7 +869,7 @@ private struct StreamedPart: View, Equatable {
 /// opened, those that came since, and those above that the person asked
 /// for or was taken to. Where they start stays put as rows are added, so
 /// what's in view doesn't move.
-@MainActor private final class ChatTail {
+@MainActor final class ChatTail {
     /// How many rows a chat opens with: a few screens of them.
     static let rows = 300
     /// Rows shown above one the chat is taken to, so it isn't the first.
@@ -902,6 +925,9 @@ private struct ChatRow: View, Equatable {
         var toolOpen = false
         /// The proposal the tool call made, shown as a card.
         var proposal: Proposal?
+        /// What the proposal changes in its item's spec, for a spec edit,
+        /// once it has been worked out.
+        var proposalChange: ToolCall.Change?
         var deciding = false
         var canStartWork = false
         /// Why the proposal the call made couldn't be read.
@@ -988,7 +1014,10 @@ private struct ChatRow: View, Equatable {
                 toggle: { store.send(.thinkingToggled(id: id)) }, select: select, answering: true)
         case .tool(let call):
             if let proposal = shows.proposal {
-                ProposalCard(proposal: proposal, deciding: shows.deciding, canStartWork: shows.canStartWork) {
+                ProposalCard(
+                    proposal: proposal, change: shows.proposalChange, deciding: shows.deciding,
+                    canStartWork: shows.canStartWork
+                ) {
                     store.send(.proposals($0))
                 }
             } else if let subagent = shows.subagent {

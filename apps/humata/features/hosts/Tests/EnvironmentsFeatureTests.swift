@@ -234,4 +234,81 @@ final class EnvironmentsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.editor?.setupScript, "apt-get install -y ripgrep\n")
         await store.skipReceivedActions(strict: false)
     }
+
+    func testAnInstallThatFailsSaysSoAndIsNotCalledUnreachable() async throws {
+        let daemon = InMemoryDaemon(sshHosts: ["gpu"])
+        _ = try await daemon.client.addHost("gpu", "gpu")
+        daemon.setOffline("gpu", true)
+        let store = TestStore(initialState: EnvironmentsFeature.State()) {
+            EnvironmentsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.checked)
+        await store.send(.updateTapped("gpu"))
+        await store.receive(\.installFailed)
+        guard case .installFailed = store.state.health["gpu"] else {
+            return XCTFail("the install failed, but gpu is \(String(describing: store.state.health["gpu"]))")
+        }
+
+        // Tried again once the host is up, it installs.
+        daemon.setOffline("gpu", false)
+        await store.send(.updateTapped("gpu"))
+        await store.receive(\.installed)
+        guard case .known(.reachable) = store.state.health["gpu"] else {
+            return XCTFail("installed, gpu isn't reachable: \(String(describing: store.state.health["gpu"]))")
+        }
+    }
+
+    func testAHostThatDoesntAnswerAfterItsInstallIsUnreachable() async throws {
+        let daemon = InMemoryDaemon(sshHosts: ["gpu"])
+        _ = try await daemon.client.addHost("gpu", "gpu")
+        var state = EnvironmentsFeature.State()
+        state.hosts = [RemoteHost(name: "gpu", sshDestination: "gpu")]
+        let store = TestStore(initialState: state) {
+            EnvironmentsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.checkHost = { _ in throw DaemonError.unexpected("it stopped answering") }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.updateTapped("gpu"))
+        await store.receive(\.installed)
+        guard case .known(.unreachable) = store.state.health["gpu"] else {
+            return XCTFail("installed and not answering, gpu is \(String(describing: store.state.health["gpu"]))")
+        }
+    }
+
+    func testShowingThePaneAgainKeepsWhatWasKnownUntilTheCheckAnswers() async throws {
+        let daemon = InMemoryDaemon(sshHosts: ["gpu"])
+        _ = try await daemon.client.addHost("gpu", "gpu")
+        _ = try await daemon.client.installHost("gpu")
+        let store = TestStore(initialState: EnvironmentsFeature.State()) {
+            EnvironmentsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.health["gpu"], .checking, "nothing is known of it yet")
+        await store.receive(\.checked)
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        guard case .known(.reachable) = store.state.health["gpu"] else {
+            return XCTFail("shown again, gpu is \(String(describing: store.state.health["gpu"]))")
+        }
+        await store.receive(\.checked)
+
+        // Asked for, the check shows it's checking.
+        await store.send(.checkTapped("gpu"))
+        XCTAssertEqual(store.state.health["gpu"], .checking)
+        await store.receive(\.checked)
+    }
 }

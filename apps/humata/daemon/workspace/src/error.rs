@@ -72,7 +72,7 @@ pub enum WorkspaceError {
     ChangeGone { path: String },
 
     #[error(
-        "{path:?} isn't a file in the session's copy of {repository}, so nothing was changed. Name the file by its path from the repository's folder, with no `..` and no leading `/`, as the session's changes list it"
+        "{path:?} isn't a file in the session's copy of {repository}, so nothing was changed. Name the file by its path from the repository's folder, with no `..` and no leading `/`, as the session's changes list it. Git's own `.git` isn't one of the repository's files"
     )]
     OutsideCopy { path: String, repository: String },
 

@@ -59,6 +59,11 @@ package struct ProjectsFeature {
         /// shown once the sheet goes.
         var heldAlert: AlertState<Destination.Alert>?
 
+        /// Whether a sheet or an alert of the sidebar's is up. The menu bar
+        /// greys out its commands that open one, which would otherwise
+        /// take the place of what the person is filling in.
+        package var presenting: Bool { destination != nil }
+
         package init() {}
 
         /// Shows `alert` now, or once the sheet that's open goes, so a late

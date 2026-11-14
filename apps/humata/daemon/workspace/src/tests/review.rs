@@ -351,6 +351,180 @@ async fn reverting_a_path_outside_the_copy_is_refused_and_deletes_nothing() {
         );
         assert_eq!(read(file).as_deref(), Some("kept\n"), "{path}");
     }
+
+    // Git's own `.git`, which in a copy is a file git doesn't list.
+    for path in [".git", ".GIT", ".git/config"] {
+        let refused = workspaces
+            .edit(
+                &checkouts,
+                &Edit {
+                    file: FileRef {
+                        repository: "app".to_owned(),
+                        path: path.to_owned(),
+                    },
+                    action: Action::Revert,
+                    hunk: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(WorkspaceError::OutsideCopy { .. })),
+            "{path}: {refused:?}"
+        );
+        assert!(work.join(".git").exists(), "{path}");
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(work)
+            .args(["status", "--porcelain"])
+            .output()
+            .expect("git runs");
+        assert!(status.status.success(), "{path}: {status:?}");
+    }
+}
+
+/// Runs git in a copy, for what a test sets up.
+fn git_in(work: &Path, arguments: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(work)
+        .args(arguments)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "git {arguments:?}");
+}
+
+/// The paths of the files a range lists as changed, in order.
+async fn listed(
+    workspaces: &Workspaces,
+    repositories: &[Repository],
+    checkouts: &[Checkout],
+    checkpoints: &[Vec<Snapshot>],
+    range: Range,
+) -> Vec<String> {
+    let changes = workspaces
+        .changes("s", repositories, checkpoints, checkouts, &query(range))
+        .await
+        .expect("compared");
+    let mut paths: Vec<String> = changes
+        .iter()
+        .flat_map(|repository| &repository.files)
+        .map(|file| file.path.clone())
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn edit_of(path: &str, action: Action) -> Edit {
+    Edit {
+        file: FileRef {
+            repository: "app".to_owned(),
+            path: path.to_owned(),
+        },
+        action,
+        hunk: None,
+    }
+}
+
+#[tokio::test]
+async fn reverting_a_file_whose_name_is_a_pattern_leaves_the_files_it_would_match() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (workspaces, repositories, checkouts, checkpoints) = session(dir.path()).await;
+    let work = &checkouts[0].path;
+    // As a pattern, `a[b].txt` is also `ab.txt`.
+    std::fs::write(work.join("a[b].txt"), "first\n").expect("wrote");
+    std::fs::write(work.join("ab.txt"), "first\n").expect("wrote");
+
+    // Stage takes the one file.
+    workspaces
+        .edit(&checkouts, &edit_of("a[b].txt", Action::Stage))
+        .await
+        .expect("staged");
+    assert_eq!(
+        listed(
+            &workspaces,
+            &repositories,
+            &checkouts,
+            &checkpoints,
+            Range::Staged
+        )
+        .await,
+        ["a[b].txt"]
+    );
+
+    // Unstage, with both staged, takes the one file back.
+    git_in(work, &["add", "--all"]);
+    workspaces
+        .edit(&checkouts, &edit_of("a[b].txt", Action::Unstage))
+        .await
+        .expect("unstaged");
+    assert_eq!(
+        listed(
+            &workspaces,
+            &repositories,
+            &checkouts,
+            &checkpoints,
+            Range::Staged
+        )
+        .await,
+        ["ab.txt"]
+    );
+
+    // Revert, with both staged and then changed, puts the one file back.
+    git_in(work, &["add", "--all"]);
+    std::fs::write(work.join("a[b].txt"), "second\n").expect("wrote");
+    std::fs::write(work.join("ab.txt"), "second\n").expect("wrote");
+    workspaces
+        .edit(&checkouts, &edit_of("a[b].txt", Action::Revert))
+        .await
+        .expect("reverted");
+    assert_eq!(read(&work.join("a[b].txt")).as_deref(), Some("first\n"));
+    assert_eq!(read(&work.join("ab.txt")).as_deref(), Some("second\n"));
+}
+
+#[tokio::test]
+async fn a_path_that_is_all_pattern_changes_nothing() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (workspaces, repositories, checkouts, checkpoints) = session(dir.path()).await;
+    let work = &checkouts[0].path;
+    let edited = TEN.replace("two\n", "TWO\n");
+    std::fs::write(work.join("list.txt"), &edited).expect("wrote");
+    std::fs::write(work.join("NEW.md"), "new\n").expect("wrote");
+    std::fs::write(work.join("staged.txt"), "staged\n").expect("wrote");
+    git_in(work, &["add", "staged.txt"]);
+
+    for action in [Action::Stage, Action::Unstage, Action::Revert] {
+        for path in [":/", "*"] {
+            // Refused or not, it names no file here, so nothing changes.
+            let _ = workspaces.edit(&checkouts, &edit_of(path, action)).await;
+            assert_eq!(
+                listed(
+                    &workspaces,
+                    &repositories,
+                    &checkouts,
+                    &checkpoints,
+                    Range::Staged
+                )
+                .await,
+                ["staged.txt"],
+                "{action:?} {path}"
+            );
+            assert_eq!(
+                read(&work.join("list.txt")).as_deref(),
+                Some(edited.as_str()),
+                "{action:?} {path}"
+            );
+            assert_eq!(
+                read(&work.join("NEW.md")).as_deref(),
+                Some("new\n"),
+                "{action:?} {path}"
+            );
+            assert_eq!(
+                read(&work.join("staged.txt")).as_deref(),
+                Some("staged\n"),
+                "{action:?} {path}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -363,7 +537,7 @@ async fn staging_a_path_outside_the_copy_is_refused() {
     std::fs::write(&beside, "kept\n").expect("wrote");
 
     for action in [Action::Stage, Action::Unstage] {
-        for path in ["../beside.txt", "", "./../beside.txt"] {
+        for path in ["../beside.txt", "", "./../beside.txt", ".git"] {
             let refused = workspaces
                 .edit(
                     &checkouts,

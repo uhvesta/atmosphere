@@ -112,6 +112,30 @@ package struct AppFeature {
             self.side = nil
         }
 
+        /// Closes the side chat and the open session if they run on `host`,
+        /// which Humata forgot with its sessions, and keeps nothing of any
+        /// session on it: none of them opens again.
+        mutating func closeSessions(on host: RemoteHost.ID) {
+            if let beside = side, beside.session.host == host {
+                left[beside.session.id] = nil
+                closeSide(keeping: false)
+            }
+            if let open = session, open.session.host == host {
+                let id = open.session.id
+                // A side chat of it on another host is kept as any closed
+                // one is.
+                closeSide()
+                session = nil
+                left[id] = nil
+                histories.forget(id)
+                if sidebar.selection == .session(id) { sidebar.selection = nil }
+            }
+            for listed in sidebar.sessions where listed.host == host {
+                left[listed.id] = nil
+                histories.forget(listed.id)
+            }
+        }
+
         /// Shows `session` beside the open one, in the place of a side chat
         /// already there, which is kept as any closed one is. The person
         /// stays in the column they were in.
@@ -279,6 +303,13 @@ package struct AppFeature {
         case restarted
         /// Nothing answers where the daemon was: it's started again.
         case daemonGone
+        /// The daemon answers though a read of it failed, so the next read
+        /// that fails looks for it again.
+        case daemonAnswered
+        /// The daemon answering isn't one Humata started, so it wasn't
+        /// stopped, and this is why. `askedInHosts` when the person asked
+        /// for the restart there, where it's then said.
+        case restartRefused(String, askedInHosts: Bool)
         case openLoginItemsTapped
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
@@ -424,18 +455,40 @@ package struct AppFeature {
             case .sidebar(.loadFailed):
                 // A read can fail while the daemon answers; only one that
                 // is gone is started again, once until the sidebar reads.
-                guard state.daemon == .running, !state.daemonRetried else { return .none }
+                // One that goes while an update waits is started again too:
+                // the banner's restart would otherwise never come.
+                guard state.daemon == .running || state.daemon == .updatePending, !state.daemonRetried else {
+                    return .none
+                }
                 state.daemonRetried = true
                 return .run { send in
                     do {
                         _ = try await service.isCurrent()
+                        await send(.daemonAnswered)
                     } catch {
                         await send(.daemonGone)
                     }
                 }
 
+            case .daemonAnswered:
+                // It was there this time; it may not be at the next failed
+                // read. One found gone leaves this set, so a run of failed
+                // reads starts it once.
+                state.daemonRetried = false
+                return .none
+
+            case .restartRefused(let message, let askedInHosts):
+                guard askedInHosts, state.hosts != nil else {
+                    state.daemon = .failed(message, needsLoginItems: false)
+                    return .none
+                }
+                // Nothing was stopped: the daemon runs as it did, and Hosts,
+                // where the restart was asked for, says why.
+                state.daemon = .running
+                return .send(.hosts(.presented(.restartRefused(message))))
+
             case .daemonGone:
-                guard state.daemon == .running else { return .none }
+                guard state.daemon == .running || state.daemon == .updatePending else { return .none }
                 state.daemon = .restarting
                 return .run { send in
                     try await service.start()
@@ -617,15 +670,17 @@ package struct AppFeature {
                 // Its sessions went with it.
                 return .send(.sidebar(.refresh))
 
-            case .settings(.removed):
-                // Its sessions went with it, and Hosts lists it no more.
+            case .settings(.removed(let host)):
+                // Its sessions went with it, the open one too, whose watch
+                // would otherwise retry without end; Hosts lists it no more.
+                state.closeSessions(on: host)
                 guard state.hosts != nil else { return .send(.sidebar(.refresh)) }
                 return .merge(.send(.sidebar(.refresh)), .send(.hosts(.presented(.task))))
 
             case .hosts(.presented(.delegate(.restartDaemon))):
                 // Asked for and confirmed in Hosts.
                 guard state.daemon != .restarting else { return .none }
-                return restart(&state)
+                return restart(&state, askedInHosts: true)
 
             case .session(.presented(.delegate(.openSide(let session)))),
                 .side(.presented(.delegate(.openSide(let session)))):
@@ -797,13 +852,19 @@ package struct AppFeature {
         }
     }
 
-    private func restart(_ state: inout State) -> Effect<Action> {
+    private func restart(_ state: inout State, askedInHosts: Bool = false) -> Effect<Action> {
         state.daemon = .restarting
         return .run { send in
             try await service.restart()
             await send(.restarted)
         } catch: { error, send in
-            await send(Self.failed(error))
+            // A daemon Humata didn't start is refused before anything is
+            // stopped, so it still runs.
+            if case DaemonServiceError.notManaged = error {
+                await send(.restartRefused(error.localizedDescription, askedInHosts: askedInHosts))
+            } else {
+                await send(Self.failed(error))
+            }
         }
     }
 

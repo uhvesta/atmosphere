@@ -41,8 +41,8 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
     case launchFailed(path: String, underlying: any Error)
     /// humatad was started but nothing answered on the socket in time.
     case noAnswer(socket: String, seconds: Int)
-    /// A humatad the app didn't start answers, from another build, so the app
-    /// can't replace it.
+    /// A humatad the app didn't start answers, so the app can't stop it to
+    /// start its own.
     case notManaged(socket: String)
 
     package var errorDescription: String? { description }
@@ -66,8 +66,9 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
                 + "another humatad is running, quit it (for example with `pkill -x humatad`; its turns in progress "
                 + "stop), then try again."
         case .notManaged(let socket):
-            "A humatad from another build of Humata, which this app didn't start, is answering at \(socket). Quit "
-                + "it (for example with `pkill -x humatad`; its turns in progress stop), then try again."
+            "Humata didn't start the humatad answering at \(socket), so it can't restart it, and it's still "
+                + "running. Stop it yourself (for example with `pkill -x humatad`; its turns in progress stop) and "
+                + "Humata starts its own: within a few seconds, or when you press Try Again if that's offered."
         }
     }
 }

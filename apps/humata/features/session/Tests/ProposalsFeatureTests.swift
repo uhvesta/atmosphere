@@ -157,4 +157,49 @@ final class ProposalsFeatureTests: XCTestCase {
         let board = try await daemon.client.items(project.id)
         XCTAssertEqual(board.map(\.title), ["Sign-in form"])
     }
+
+    func testASpecEditIsListedWithWhatItTakesOutAndPutsIn() async {
+        let edit = Proposal(
+            id: "c1", kind: .specEdit, title: "Login form",
+            spec: "Email and password.\nLock after three tries.\nSay why it locked.", itemID: "i1",
+            currentSpec: "Email and password.\nLock after five tries.")
+        let store = TestStore(initialState: ProposalsFeature.State(sessionID: "s1")) {
+            ProposalsFeature()
+        } withDependencies: {
+            $0.daemon.proposals = { _ in [edit] }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.listed)
+        let change = store.state.changes["c1"]
+        XCTAssertEqual(change?.removed, ["Lock after five tries."])
+        XCTAssertEqual(change?.added, ["Lock after three tries.", "Say why it locked."])
+        XCTAssertEqual(change?.removedCount, 1)
+        XCTAssertEqual(change?.addedCount, 2)
+
+        // Listed again as it was, it still has its change.
+        await store.send(.refresh)
+        await store.receive(\.listed)
+        XCTAssertEqual(store.state.changes["c1"], change)
+    }
+
+    func testAProposedTaskHasNoChange() async {
+        let task = Proposal(id: "c1", title: "Login form", spec: "Email and password.")
+        // A spec edit already decided comes without the spec it replaced.
+        let decided = Proposal(
+            id: "c2", kind: .specEdit, title: "Dark mode", spec: "Follow the system.", itemID: "i2",
+            state: .applied(itemID: "i2"))
+        let store = TestStore(initialState: ProposalsFeature.State(sessionID: "s1")) {
+            ProposalsFeature()
+        } withDependencies: {
+            $0.daemon.proposals = { _ in [task, decided] }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.listed)
+        XCTAssertEqual(store.state.proposals.map(\.id), ["c1", "c2"])
+        XCTAssertTrue(store.state.changes.isEmpty)
+    }
 }

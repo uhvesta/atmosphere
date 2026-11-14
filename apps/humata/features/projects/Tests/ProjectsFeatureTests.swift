@@ -176,6 +176,32 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertNil(own.projectID)
     }
 
+    func testTheSidebarSaysWhenASheetOrAnAlertIsUp() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        _ = try await daemon.client.update(session.id, SessionUpdate(archived: true))
+        var state = ProjectsFeature.State()
+        state.sessions = IdentifiedArray(uniqueElements: try await daemon.client.sessions(nil))
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        XCTAssertFalse(store.state.presenting)
+
+        await store.send(.newChatTapped)
+        XCTAssertTrue(store.state.presenting)
+        await store.send(.destination(.dismiss))
+        XCTAssertFalse(store.state.presenting)
+
+        await store.send(.deleteSessionTapped(session.id))
+        XCTAssertTrue(store.state.presenting)
+        await store.send(.destination(.dismiss))
+        XCTAssertFalse(store.state.presenting)
+    }
+
     func testAProjectNeedsANameAndAbsoluteFolders() {
         var state = NewProjectFeature.State()
         state.name = "humata"

@@ -1063,7 +1063,7 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.forking)
     }
 
-    func testAnEditWhoseMessageIsntSentOpensTheForkWithItInTheBox() async throws {
+    func testAnEditWhoseMessageIsntSentSaysSoThenOpensTheForkWithItInTheBox() async throws {
         let daemon = InMemoryDaemon()
         let session = try await started(daemon)
         try await daemon.client.send(session.id, "one", .enqueue)
@@ -1083,10 +1083,18 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(.editSent)
         await store.receive(\.forkSendFailed)
         let fork = try XCTUnwrap(daemon.sessions.last)
+        // Said first, in the session the edit was made in: no fork opens
+        // under the alert.
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.editing)
+        XCTAssertFalse(store.state.forking)
+        await store.finish()
+
+        await store.send(.alert(.dismiss))
         await store.receive(\.delegate.openSession, fork)
         // The fork's message box has the edit, to send from there.
         XCTAssertEqual(SessionFeature.State(session: fork).draft, "uno")
-        XCTAssertNil(store.state.editing)
+        XCTAssertNil(store.state.alert)
     }
 
     func testAPermissionIsAnsweredOnce() async throws {
@@ -2405,6 +2413,28 @@ extension SessionFeatureTests {
         XCTAssertEqual(store.state.edited, "and this?")
         XCTAssertEqual(store.state.editedImages, ["a.png"])
         XCTAssertFalse(store.state.forking)
+    }
+
+    func testAnEditWithImagesThatDidntReachItsForkStillOpensTheFork() async {
+        let calls = LockIsolated<[String]>([])
+        let store = editStore(images: ["a.png"], calls: calls) {
+            $0.daemon.readImage = { _, _ in ImageAttachment(mediaType: "image/png", data: Data([1])) }
+            $0.daemon.sendImages = { _, _, _, _ in throw DaemonError.disconnected }
+        }
+        await store.send(.editTapped("e1"))
+        await store.send(.binding(.set(\.edited, "and this?")))
+        await store.send(.editSent)
+        await store.receive(\.forkSendFailed)
+        XCTAssertEqual(calls.value, ["fork"])
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.editing)
+        XCTAssertEqual(store.state.editedImages, [])
+
+        await store.send(.alert(.dismiss))
+        await store.receive(\.delegate.openSession)
+        // The fork's message box has the edit's text.
+        let fork = Session(id: "s2", name: "first edit", backend: .scripted, workingDirectory: "/work")
+        XCTAssertTrue(SessionFeature.State(session: fork).draft.hasSuffix("and this?"))
     }
 
     func testAnEditedMessageWithNoImagesIsSentAsText() async {

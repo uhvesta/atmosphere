@@ -143,8 +143,8 @@ package struct BoardView: View {
                 HStack(alignment: .top, spacing: 8) {
                     ForEach(proposed) { proposal in
                         ProposalCard(
-                            proposal: proposal, deciding: store.proposals.deciding.contains(proposal.id),
-                            canStartWork: false
+                            proposal: proposal, change: store.proposals.changes[proposal.id],
+                            deciding: store.proposals.deciding.contains(proposal.id), canStartWork: false
                         ) { store.send(.proposals($0)) }
                         .frame(width: 320)
                     }

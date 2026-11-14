@@ -108,9 +108,10 @@ package struct HostsView: View {
                 }
                 HostEditorSections(store: editor)
                 SkippedSection(
-                    skipped: store.skipped, failure: store.skippedFailure,
+                    skipped: store.skipped, failure: store.skippedFailure, thisMac: true,
                     remove: { store.send(.removeSkippedTapped($0)) },
-                    retry: { store.send(.skippedRetryTapped) })
+                    retry: { store.send(.skippedRetryTapped) },
+                    restart: { store.send(.restartDaemonTapped) })
             }
             .formStyle(.grouped)
             .id(host.id)
@@ -129,9 +130,10 @@ package struct HostsView: View {
                     retry: { store.send(.recoveriesRetryTapped) })
                 HostEditorSections(store: editor)
                 SkippedSection(
-                    skipped: store.skipped, failure: store.skippedFailure,
+                    skipped: store.skipped, failure: store.skippedFailure, thisMac: false,
                     remove: { store.send(.removeSkippedTapped($0)) },
-                    retry: { store.send(.skippedRetryTapped) })
+                    retry: { store.send(.skippedRetryTapped) },
+                    restart: {})
                 Section {
                     Button("Remove Host…", role: .destructive) { store.send(.removeTapped(host.id)) }
                 }
@@ -286,13 +288,19 @@ private struct RecoverySection: View {
 
 /// The host's sessions whose files couldn't be read, with why; none shows
 /// nothing, unless the list itself couldn't be read, which it says with a
-/// way to read it again.
+/// way to read it again. A daemon reads its sessions when it starts, so the
+/// way back for one that's fixed is the daemon started anew: a button for
+/// This Mac's, and for a host's what stops it there.
 private struct SkippedSection: View {
     let skipped: IdentifiedArrayOf<SkippedSession>
     /// Why the list couldn't be read; nil when it was.
     let failure: String?
+    /// Whether these are This Mac's, whose daemon Humata can restart.
+    let thisMac: Bool
     let remove: (SkippedSession.ID) -> Void
     let retry: () -> Void
+    /// Asks before restarting This Mac's daemon; not used for a host.
+    let restart: () -> Void
 
     var body: some View {
         if !skipped.isEmpty || failure != nil {
@@ -315,12 +323,21 @@ private struct SkippedSection: View {
                         Button("Remove…", role: .destructive) { remove(session.id) }
                     }
                 }
+                if thisMac, !skipped.isEmpty {
+                    Button("Restart Humata's Daemon…", action: restart)
+                        .help("Start the daemon anew so it reads these sessions again; turns in progress stop")
+                }
             } header: {
                 Text("Sessions That Couldn't Be Opened")
             } footer: {
                 Text(
-                    "Humata left these as they are. Fix what's damaged and restart Humata to open one again, "
-                        + "or remove it to delete its folder and history.")
+                    thisMac
+                        ? "Humata left these as they are. To open one again, fix what's damaged, then restart "
+                            + "Humata's daemon with the button above. Or remove it to delete its folder and history."
+                        : "Humata left these as they are. To open one again, fix what's damaged there, then stop "
+                            + "humatad on the host (for example `pkill -x humatad`; turns in progress there stop) "
+                            + "and press Check Again, which starts it anew. Or remove it to delete its folder and "
+                            + "history.")
             }
         }
     }
@@ -375,9 +392,16 @@ private struct HostRow: View {
             .lineLimit(1)
             Spacer()
             switch health {
-            case .checking, .installing:
+            case .checking:
                 ProgressView().controlSize(.small)
                     .accessibilityLabel("Checking")
+            case .installing:
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("Installing Humata")
+            case .installFailed:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Couldn't install Humata")
             case .known(.reachable(let status)) where !status.needsAttention:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
@@ -443,6 +467,11 @@ struct HealthSection: View {
                         Text("Installing Humata…")
                     }
                 }
+            case .installFailed(let problem):
+                LabeledContent("Status", value: "Couldn't Install Humata")
+                Text(problem)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             case .known(.unreachable(let problem)):
                 LabeledContent("Status", value: "Unreachable")
                 Text(problem)
@@ -499,7 +528,10 @@ struct HealthSection: View {
             HStack {
                 Text(host.name)
                 Spacer()
-                if case .known(.unreachable) = health, host.sshDestination != nil {
+                if case .installFailed = health, host.sshDestination != nil {
+                    Button("Try the Install Again", action: install)
+                        .help("Copy Humata's program to \(host.name) again")
+                } else if case .known(.unreachable) = health, host.sshDestination != nil {
                     Button("Install Humata", action: install)
                         .help("Copy Humata's program to \(host.name)")
                 }

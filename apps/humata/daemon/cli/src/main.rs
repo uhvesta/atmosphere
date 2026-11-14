@@ -1080,6 +1080,9 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
     } else {
         Wait::UntilDecided
     };
+    // `humata mcp` outlives the daemon it first reached, so it keeps where
+    // to find the next one.
+    let socket = arguments.socket.clone();
     let client = connect(arguments.socket, wait, !mcp).await?;
     match arguments.command {
         Command::Project(ProjectCommand::Add {
@@ -1844,8 +1847,10 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             other => return Err(unexpected("the sessions", &other)),
         },
         Command::Mcp => {
-            let client = std::sync::Arc::new(client);
-            control::serve(client, tokio::io::stdin(), tokio::io::stdout()).await?;
+            let connection = control::Connection::new(std::sync::Arc::new(client), move || {
+                connect(socket.clone(), wait, false)
+            });
+            control::serve(connection, tokio::io::stdin(), tokio::io::stdout()).await?;
         }
     }
     Ok(())
@@ -2613,9 +2618,39 @@ impl Unanswered {
     }
 }
 
+/// The permission requests in `history` that nothing there has answered,
+/// in order: the ones since the session was last idle with no completion
+/// after them. A turn that ended left none waiting, whatever it had asked.
+fn open_requests(history: &[pb::SessionEvent]) -> Vec<pb::SessionEvent> {
+    let mut open: Vec<pb::SessionEvent> = Vec::new();
+    for event in history {
+        match &event.kind {
+            Some(pb::session_event::Kind::Idle(_)) => open.clear(),
+            Some(pb::session_event::Kind::PermissionRequested(_)) => open.push(event.clone()),
+            Some(pb::session_event::Kind::PermissionCompleted(completed)) => {
+                open.retain(|asked| request_id(asked) != Some(completed.request_id.as_str()));
+            }
+            _ => {}
+        }
+    }
+    open
+}
+
+/// The id of the permission request `event` asks, if it asks one.
+fn request_id(event: &pb::SessionEvent) -> Option<&str> {
+    match &event.kind {
+        Some(pb::session_event::Kind::PermissionRequested(asked)) => {
+            Some(asked.request_id.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// Makes `request`, then hands each of the session's new events to
 /// `on_event` until it is idle again or waits for a person to answer a
-/// permission request.
+/// permission request. A request that was already open before the call and
+/// still is when the wait ends is handed over too, so the caller sees what
+/// the session is stopped at.
 async fn call_and_wait(
     client: &Client,
     session: &str,
@@ -2631,6 +2666,7 @@ async fn call_and_wait(
         .last()
         .map(|event| event.id.clone())
         .unwrap_or_default();
+    let open = open_requests(&history);
     let seen: HashSet<String> = history.into_iter().map(|event| event.id).collect();
     let watch = pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.to_owned(),
@@ -2639,6 +2675,12 @@ async fn call_and_wait(
     let (_, mut stream) = client.stream(watch).await?;
     expect_ok(client.call(request).await?, answered, expected)?;
     let mut held = Unanswered::default();
+    // What was open before the call may be what the session still waits
+    // at; the call itself may have answered it, so it is checked like a
+    // new one, a while from now.
+    for event in &open {
+        held.see(event);
+    }
     loop {
         let item = match held.check_at {
             // A stream's next item is a channel's, so giving up on it loses
@@ -2646,7 +2688,13 @@ async fn call_and_wait(
             Some(check_at) => match tokio::time::timeout_at(check_at, stream.next()).await {
                 Ok(item) => item,
                 Err(_) => {
-                    if waits_for_a_person(client, session, &held.requests).await? {
+                    let left = unanswered(client, session, &held.requests).await?;
+                    if !left.is_empty() {
+                        for event in &open {
+                            if request_id(event).is_some_and(|id| left.contains(id)) {
+                                on_event(event);
+                            }
+                        }
                         return Ok(());
                     }
                     // Every one was answered; their completions are on
@@ -2674,13 +2722,13 @@ async fn call_and_wait(
     }
 }
 
-/// Whether any of `requests` is still unanswered in the session's history,
-/// read once for them all.
-async fn waits_for_a_person(
+/// Those of `requests` still unanswered in the session's history, read once
+/// for them all: a person has to answer them.
+async fn unanswered(
     client: &Client,
     session: &str,
     requests: &HashSet<String>,
-) -> Result<bool, CliError> {
+) -> Result<HashSet<String>, CliError> {
     let history = history(client, session).await?;
     let answered: HashSet<&str> = history
         .iter()
@@ -2693,7 +2741,9 @@ async fn waits_for_a_person(
         .collect();
     Ok(requests
         .iter()
-        .any(|request| !answered.contains(request.as_str())))
+        .filter(|request| !answered.contains(request.as_str()))
+        .cloned()
+        .collect())
 }
 
 /// The event a watch's item carries; None for its notes on how far the

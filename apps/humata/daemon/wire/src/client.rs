@@ -17,9 +17,28 @@ pub struct Client {
     peer: pb::Hello,
     next_id: AtomicU64,
     outgoing: mpsc::Sender<pb::Envelope>,
-    pending: Arc<Mutex<HashMap<u64, Pending>>>,
+    waiting: Arc<Mutex<Waiting>>,
     reading: JoinHandle<()>,
     writing: JoinHandle<()>,
+}
+
+/// The requests still owed an answer, and whether any more can be.
+#[derive(Default)]
+struct Waiting {
+    pending: HashMap<u64, Pending>,
+    /// Set when reading or writing ended. A request made after that would
+    /// never be answered, so it is refused instead of kept.
+    closed: bool,
+}
+
+impl Waiting {
+    /// Ends the connection for its callers: dropping what is pending tells
+    /// each it was disconnected, and nothing more is taken.
+    fn close(waiting: &Mutex<Self>) {
+        let mut waiting = waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        waiting.closed = true;
+        waiting.pending.clear();
+    }
 }
 
 enum Pending {
@@ -47,23 +66,25 @@ impl Client {
         let peer = handshake(&mut reader, &mut writer, role, program_version).await?;
         let compress = peer.accepts_zstd;
         let (outgoing, mut queue) = mpsc::channel::<pb::Envelope>(STREAM_BUFFER);
+        let waiting: Arc<Mutex<Waiting>> = Arc::default();
+        let written = waiting.clone();
         let writing = tokio::spawn(async move {
             while let Some(envelope) = queue.recv().await {
                 if frame::write(&mut writer, &envelope, compress)
                     .await
                     .is_err()
                 {
+                    Waiting::close(&written);
                     return;
                 }
             }
         });
-        let pending: Arc<Mutex<HashMap<u64, Pending>>> = Arc::default();
-        let reading = tokio::spawn(read_answers(reader, pending.clone()));
+        let reading = tokio::spawn(read_answers(reader, waiting.clone()));
         Ok(Self {
             peer,
             next_id: AtomicU64::new(1),
             outgoing,
-            pending,
+            waiting,
             reading,
             writing,
         })
@@ -76,7 +97,11 @@ impl Client {
 
     /// Whether the connection is still open.
     pub fn is_connected(&self) -> bool {
-        !self.reading.is_finished()
+        !self
+            .waiting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closed
     }
 
     /// Sends a request that is answered with one response. An error response
@@ -122,10 +147,13 @@ impl Client {
 
     async fn send(&self, request: pb::request::Kind, pending: Pending) -> Result<u64, ClientError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, pending);
+        {
+            let mut waiting = self.waiting.lock().unwrap_or_else(PoisonError::into_inner);
+            if waiting.closed {
+                return Err(ClientError::Disconnected);
+            }
+            waiting.pending.insert(id, pending);
+        }
         let envelope = pb::Envelope {
             id,
             body: Some(pb::envelope::Body::Request(pb::Request {
@@ -133,9 +161,10 @@ impl Client {
             })),
         };
         if self.outgoing.send(envelope).await.is_err() {
-            self.pending
+            self.waiting
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
+                .pending
                 .remove(&id);
             return Err(ClientError::Disconnected);
         }
@@ -160,15 +189,13 @@ fn refused(response: pb::response::Kind) -> Result<pb::response::Kind, ClientErr
     }
 }
 
-async fn read_answers<R: AsyncRead + Unpin>(
-    mut reader: R,
-    pending: Arc<Mutex<HashMap<u64, Pending>>>,
-) {
+async fn read_answers<R: AsyncRead + Unpin>(mut reader: R, waiting: Arc<Mutex<Waiting>>) {
     // Ends when the connection does; dropping what is pending tells each
     // caller it was disconnected.
     while let Ok(Some(envelope)) = frame::read(&mut reader).await {
         let id = envelope.id;
-        let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut waiting = waiting.lock().unwrap_or_else(PoisonError::into_inner);
+        let pending = &mut waiting.pending;
         match envelope.body {
             Some(pb::envelope::Body::Response(pb::Response {
                 kind: Some(response),
@@ -226,10 +253,7 @@ async fn read_answers<R: AsyncRead + Unpin>(
             _ => {}
         }
     }
-    pending
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clear();
+    Waiting::close(&waiting);
 }
 
 /// The items of a streamed answer. Dropping it tells the other side to stop.

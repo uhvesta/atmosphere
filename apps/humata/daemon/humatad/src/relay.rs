@@ -55,6 +55,9 @@ struct State {
     specs: HashMap<String, Vec<pb::Spec>>,
     /// The calls waiting for a daemon, oldest first, each by its key.
     queued: Vec<(u64, pb::Request)>,
+    /// The watch a replay of the queue is running for, so a call queued
+    /// while that daemon watches starts one only when none will see it.
+    replaying: Option<u64>,
 }
 
 impl Relay {
@@ -95,10 +98,11 @@ impl Relay {
             let watch = state.next;
             state.watcher = Some((watch, items.clone()));
             state.waiting.clear();
+            state.replaying = Some(watch);
             watch
         };
         let replaying = self.clone();
-        tokio::spawn(async move { replaying.replay().await });
+        tokio::spawn(async move { replaying.replay(watch).await });
         let relay = Arc::downgrade(self);
         tokio::spawn(async move {
             items.closed().await;
@@ -153,14 +157,24 @@ impl Relay {
             .cloned()
     }
 
-    /// Hands the queued calls to the daemon now watching, in order, each
-    /// taken off the queue once the daemon answers it. One unanswered stops
-    /// the replay, and the next watch starts over from it.
-    async fn replay(&self) {
+    /// Hands the queued calls to the daemon whose watch is `watch`, in
+    /// order, each taken off the queue once the daemon answers it. One
+    /// unanswered stops the replay, and the next watch, or the next call
+    /// queued, starts over from it.
+    ///
+    /// It looks at the queue and says it has ended in one hold of the lock,
+    /// so a call queued after its last look finds no replay running and
+    /// starts another.
+    async fn replay(&self, watch: u64) {
         loop {
             let next = {
-                let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-                state.queued.first().cloned()
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                let watched = state.watcher.as_ref().is_some_and(|(id, _)| *id == watch);
+                let next = state.queued.first().filter(|_| watched).cloned();
+                if next.is_none() && state.replaying == Some(watch) {
+                    state.replaying = None;
+                }
+                next
             };
             let Some((key, request)) = next else {
                 return;
@@ -170,10 +184,47 @@ impl Relay {
                 continue;
             };
             if self.send(kind).await.is_err() {
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                if state.replaying == Some(watch) {
+                    state.replaying = None;
+                }
                 return;
             }
             self.unqueue(key);
         }
+    }
+
+    /// Starts a replay of the queue for the daemon now watching, unless one
+    /// is running for it or nothing is queued.
+    fn replay_queued(self: &Arc<Self>) {
+        let watch = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(watch) = state.watcher.as_ref().map(|(id, _)| *id) else {
+                return;
+            };
+            if state.replaying == Some(watch) || state.queued.is_empty() {
+                return;
+            }
+            state.replaying = Some(watch);
+            watch
+        };
+        let replaying = self.clone();
+        tokio::spawn(async move { replaying.replay(watch).await });
+    }
+
+    /// [`Self::call`], then hands over what it left in the queue if a daemon
+    /// watches by now: a question whose answer was lost to a newer watch is
+    /// queued after that watch's replay may have found the queue empty.
+    async fn relayed(
+        self: &Arc<Self>,
+        request: pb::request::Kind,
+    ) -> Result<pb::response::Kind, RelayError> {
+        let asks = asking_session(&request).is_some();
+        let answered = self.call(request).await;
+        if asks {
+            self.replay_queued();
+        }
+        answered
     }
 
     /// Adds `request` to the end of the queue, kept in the file, unless its
@@ -391,7 +442,7 @@ fn write_queue(path: &Path, queued: &[(u64, pb::Request)]) -> Result<(), RelayEr
 impl Service for Relay {
     fn handle(self: Arc<Self>, request: pb::request::Kind) -> ServiceFuture {
         Box::pin(async move {
-            Reply::Response(match self.call(request).await {
+            Reply::Response(match self.relayed(request).await {
                 Ok(response) => response,
                 Err(failure) => error(failure.code(), describe(&failure)),
             })
@@ -606,6 +657,42 @@ mod tests {
             pb::response::Kind::RequestMade(pb::RequestMade::default()),
         );
         until_empty(&file).await;
+    }
+
+    #[tokio::test]
+    async fn a_question_whose_answer_is_lost_to_a_second_watch_reaches_that_watcher() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let file = state.path().join("queued");
+        let relay = Arc::new(Relay::open(file.clone()));
+        let mut first = calls(relay.watch());
+        let asking = tokio::spawn({
+            let relay = relay.clone();
+            async move { relay.relayed(ask("one")).await }
+        });
+        let (_, tried) = next_call(&mut first).await;
+
+        // The Mac connects again while its earlier watch is still open.
+        let mut second = calls(relay.watch());
+        let made = asking.await.unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            matches!(
+                &made,
+                Ok(pb::response::Kind::RequestMade(pb::RequestMade {
+                    request: None
+                }))
+            ),
+            "{made:?}"
+        );
+        let (id, call) = next_call(&mut second).await;
+        assert_eq!(asked(&call), asked(&tried));
+        answer(
+            &relay,
+            id,
+            pb::response::Kind::RequestMade(pb::RequestMade::default()),
+        );
+        until_empty(&file).await;
+        drop(first);
     }
 
     #[tokio::test]

@@ -87,6 +87,8 @@ package struct EnvironmentsFeature {
         case checked(RemoteHost.ID, HostHealth)
         /// How the host is once its install ended.
         case installed(RemoteHost.ID, HostHealth)
+        /// Its install failed, and this is why.
+        case installFailed(RemoteHost.ID, String)
         case selected(RemoteHost.ID?)
         case addOtherTapped
         /// Asks before Humata forgets the host and its sessions.
@@ -156,7 +158,7 @@ package struct EnvironmentsFeature {
                 return install(id, in: &state)
 
             case .checkTapped(let id):
-                return check(id, in: &state)
+                return check(id, in: &state, again: true)
 
             case .checked(let id, let health):
                 // An install under way says how the host is when it ends.
@@ -166,6 +168,10 @@ package struct EnvironmentsFeature {
 
             case .installed(let id, let health):
                 state.health[id] = .known(health)
+                return .none
+
+            case .installFailed(let id, let message):
+                state.health[id] = .installFailed(message)
                 return .none
 
             case .selected(let id):
@@ -224,7 +230,7 @@ package struct EnvironmentsFeature {
                 state.hosts[id: host.id] = host
                 state.unsaved[host.id] = nil
                 // Saving sets it up again, which the check reports on.
-                return check(host.id, in: &state)
+                return check(host.id, in: &state, again: true)
 
             case .editor(.delegate(.saveFailed(let id, let message))):
                 state.destination = .alert(AlertState.saveFailed(id, message, kept: state.unsaved[id] != nil))
@@ -256,18 +262,29 @@ package struct EnvironmentsFeature {
         guard state.health[id] != .installing else { return .none }
         state.health[id] = .installing
         return .run { send in
-            _ = try await daemon.installHost(id)
-            await send(.installed(id, try await daemon.checkHost(id)))
-        } catch: { error, send in
-            await send(.installed(id, .unreachable(error.localizedDescription)))
+            do {
+                _ = try await daemon.installHost(id)
+            } catch {
+                await send(.installFailed(id, error.localizedDescription))
+                return
+            }
+            // Installed; a check that fails now is a host that doesn't
+            // answer.
+            do {
+                await send(.installed(id, try await daemon.checkHost(id)))
+            } catch {
+                await send(.installed(id, .unreachable(error.localizedDescription)))
+            }
         }
     }
 
-    /// Checks the host's health. One being installed on is left to its
-    /// install.
-    private func check(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
+    /// Checks the host's health. Shown again, a host keeps what was known
+    /// until the check answers; `again`, as the person asked or its setup
+    /// changed, it shows it's checking. One being installed on is left to
+    /// its install.
+    private func check(_ id: RemoteHost.ID, in state: inout State, again: Bool = false) -> Effect<Action> {
         guard state.health[id] != .installing else { return .none }
-        state.health[id] = .checking
+        if again || state.health[id] == nil { state.health[id] = .checking }
         return .run { send in
             await send(.checked(id, try await daemon.checkHost(id)))
         } catch: { error, send in

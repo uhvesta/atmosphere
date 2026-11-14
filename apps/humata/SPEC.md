@@ -1841,6 +1841,51 @@ Fable found and judged, with two items from a live run on Alpine hosts:
   in Settings › Environments, the GitHub token's status, a steer's exact
   place in later requests
 
+### Review after v0.11.0
+
+Fable found and judged, with three items from the flow snapshots: 30 kept,
+2 deferred.
+
+- [x] A chat shorter than its pane sits just above the message box again
+- [x] A focused document widens the window for itself and the chat beside it
+- [x] A proposed spec edit shows what it changes as soon as it's listed, in
+  the chat and on the board
+- [x] A search hit or a proposal far up a long chat is gone to and stays in
+  view; an edit left open far up is still in the list; Show Earlier Messages
+  says how many rows it brings
+- [x] An edited message that didn't reach its fork says so, and that its
+  images must be added again, before the fork opens
+- [x] A menu command doesn't replace a sheet that's open; Stop and Archive
+  is in the Session menu; the File menu names the project
+- [x] Removing a host in Settings closes its open session
+- [x] A daemon that dies while an update waits, or after it once answered,
+  is started again; a restart Humata can't make says why and takes nothing
+  down
+- [x] Sessions that couldn't be opened say to restart the daemon, with the
+  button there, and are read again after it
+- [x] A failed install says "Couldn't install Humata" with the reason;
+  Settings › Environments keeps what it knew while it checks again; a host
+  added opens on its settings
+- [x] A long selection or spec block is quoted cut, with its lines
+- [x] Comment buttons and host spinners are named for VoiceOver
+- [x] `humata mcp` connects again after the daemon restarts; a call on a
+  closed connection fails at once instead of waiting
+- [x] A wait that starts while the session already waits for the person
+  ends at once and shows the request
+- [x] A question queued on a host while the Mac is connected reaches the
+  inbox
+- [x] Stage, Unstage and Revert take a path as that file alone, never as a
+  pattern, and never `.git`
+- [x] A local model's request is built without holding up the session's
+  listing, Stop or approvals
+- [x] A failed fetch's notice keeps no variable's value; a setup script's
+  output is bounded, shown when it runs out of time, and a script that
+  leaves a program running finishes
+- Deferred: a terminal's first open that outlives its session, the menu
+  bar's redraws, images read before the history's lock, closing a session
+  deleted elsewhere, earlier rows kept across tabs, the side chat's width in
+  the window's least
+
 ### Milestone AC: agent access
 
 The owner, 2026-11-13: gate what the `humata` command line and its MCP

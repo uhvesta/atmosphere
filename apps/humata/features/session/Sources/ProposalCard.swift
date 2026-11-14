@@ -8,24 +8,25 @@ import SwiftUI
 /// and for an applied task, a way to start work on it.
 package struct ProposalCard: View {
     let proposal: Proposal
+    /// What a spec edit takes out of its item's spec and puts in; nil until
+    /// it has been worked out, and for a task.
+    let change: ToolCall.Change?
     let deciding: Bool
     /// Whether work on an applied task can start from here: only from a
     /// planning session.
     let canStartWork: Bool
     let send: (ProposalsFeature.Action) -> Void
     @State private var showsAll = false
-    /// Bumped when a change worked out off the main thread is kept, to draw
-    /// it.
-    @State private var diffs = 0
     @Environment(\.rowResizing) private var resizing
     /// Lines of the spec shown until the person asks for all of them.
     private static let shownLines = 8
 
     package init(
-        proposal: Proposal, deciding: Bool, canStartWork: Bool,
+        proposal: Proposal, change: ToolCall.Change?, deciding: Bool, canStartWork: Bool,
         send: @escaping (ProposalsFeature.Action) -> Void
     ) {
         self.proposal = proposal
+        self.change = change
         self.deciding = deciding
         self.canStartWork = canStartWork
         self.send = send
@@ -43,17 +44,15 @@ package struct ProposalCard: View {
             Text(proposal.title)
                 .font(.headline)
                 .textSelection(.enabled)
-            if let current = proposal.currentSpec, !proposal.spec.isEmpty {
-                // Read so a change kept off the main thread draws.
-                let _ = diffs
-                if let change = Self.keptChange(proposal.id, current, proposal.spec) {
+            if proposal.currentSpec != nil, !proposal.spec.isEmpty {
+                // The change comes with the proposals' list, worked out off
+                // the main thread; until it does, that it's on its way.
+                if let change {
                     ChangeView(change: change)
                 } else {
                     ProgressView()
                         .controlSize(.small)
-                        .task(id: Diffed(old: current, new: proposal.spec)) {
-                            await diff(current, proposal.spec)
-                        }
+                        .accessibilityLabel("Working out what the edit changes")
                 }
             } else if !proposal.spec.isEmpty {
                 Text(proposal.spec)
@@ -84,48 +83,6 @@ package struct ProposalCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(.blue.opacity(proposal.state == .pending ? 0.3 : 0.1))
         }
-    }
-
-    /// The texts a change was worked out between, to work it out again
-    /// when either changes.
-    private struct Diffed: Equatable {
-        let old: String
-        let new: String
-    }
-
-    /// The change worked out for a proposal, with the texts it was worked
-    /// out between.
-    private final class KeptChange {
-        let old: String
-        let new: String
-        let change: ToolCall.Change
-
-        init(old: String, new: String, change: ToolCall.Change) {
-            self.old = old
-            self.new = new
-            self.change = change
-        }
-    }
-
-    /// The changes worked out lately, by proposal, as a card draws again
-    /// with every change around it.
-    @MainActor private static let changes = NSCache<NSString, KeptChange>()
-
-    /// The change kept for proposal `id`, if it was worked out between
-    /// these texts.
-    @MainActor private static func keptChange(_ id: String, _ old: String, _ new: String) -> ToolCall.Change? {
-        guard let kept = changes.object(forKey: id as NSString), kept.old == old, kept.new == new else { return nil }
-        return kept.change
-    }
-
-    /// Works out the change off the main thread, as a long spec's diff
-    /// would stall the chat, then keeps it and draws it.
-    private func diff(_ old: String, _ new: String) async {
-        let change = await Task.detached(priority: .userInitiated) { ToolCall.Change.between(old, new) }.value
-        guard !Task.isCancelled else { return }
-        Self.changes.setObject(KeptChange(old: old, new: new, change: change), forKey: proposal.id as NSString)
-        resizing?()
-        diffs += 1
     }
 
     private var kind: String {

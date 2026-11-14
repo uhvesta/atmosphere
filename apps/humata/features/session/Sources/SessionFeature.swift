@@ -299,6 +299,9 @@ package struct SessionFeature {
         package var editingQueued: String?
         /// Its text as edited so far.
         package var queuedEdit = ""
+        /// The fork made for an edited message that didn't reach it: it
+        /// opens once the alert that says so is dismissed.
+        package var unsentFork: Session?
         @Presents package var alert: AlertState<Never>?
         /// Asks how far to rewind: the chat, or the chat and its files.
         @Presents package var rewindDialog: ConfirmationDialogState<Action.RewindChoice>?
@@ -1037,8 +1040,10 @@ package struct SessionFeature {
         case editSent
         case forked(Session)
         /// The fork for an edited message was made, but the message
-        /// couldn't be sent to it: the fork opens with it in the box.
-        case forkSendFailed(fork: Session, text: String)
+        /// couldn't be sent to it, for the reason `message` gives: this
+        /// session says so, then the fork opens with the text in its box.
+        /// `images` is how many images the message had, which didn't go.
+        case forkSendFailed(fork: Session, text: String, images: Int, message: String)
         /// Starts a chat as this session's child: an empty one, which
         /// opens in its place, or a read-only side chat, which opens
         /// beside it and is sent `message` unless that's empty.
@@ -1678,6 +1683,12 @@ package struct SessionFeature {
             case .specs(.delegate(.openItem(let item))):
                 guard let project = state.session.projectID else { return .none }
                 return .send(.delegate(.openItem(projectID: project, itemID: item)))
+
+            case .alert(.dismiss):
+                // The alert said an edit didn't reach its fork: now open it.
+                guard let fork = state.unsentFork else { return .none }
+                state.unsentFork = nil
+                return .send(.forked(fork))
 
             case .binding, .delegate, .alert, .review, .docs, .specs, .terminals, .proposals, .land:
                 return .none
@@ -2478,7 +2489,10 @@ package struct SessionFeature {
                             try await daemon.sendImages(fork.id, text, attachments, .enqueue)
                         }
                     } catch {
-                        await send(.forkSendFailed(fork: fork, text: text))
+                        await send(
+                            .forkSendFailed(
+                                fork: fork, text: text, images: attachments.count,
+                                message: error.localizedDescription))
                         return
                     }
                     await send(.forked(fork))
@@ -2495,11 +2509,32 @@ package struct SessionFeature {
                 state.editCaret = false
                 return .send(.delegate(.openSession(fork)))
 
-            case .forkSendFailed(let fork, let text):
+            case .forkSendFailed(let fork, let text, let images, let message):
                 // The fork's box keeps the text, to send from there.
                 let draft = Shared(wrappedValue: "", .appStorage(State.draftKey(fork.id)))
                 draft.withLock { $0 = $0.isEmpty ? text : $0 + "\n\n" + text }
-                return .send(.forked(fork))
+                // The fork is made, so the edit is done with here.
+                state.forking = false
+                state.makingChild = nil
+                state.editing = nil
+                state.edited = ""
+                state.editedImages = []
+                state.editCaret = false
+                // Said here first, where the edit was made: the fork opens
+                // when the alert is dismissed.
+                state.unsentFork = fork
+                var words =
+                    "The fork “\(fork.name)” was made, but your edited message didn’t reach it: \(message) "
+                    + "Its text is in the fork’s message box, which opens next: send it from there."
+                if images > 0 {
+                    words +=
+                        images == 1
+                        ? " Its image didn’t go with it and isn’t in the box: add it again there before you send."
+                        : " Its \(images) images didn’t go with it and aren’t in the box: add them again there "
+                            + "before you send."
+                }
+                state.alert = Self.alert("The edited message wasn’t sent", words)
+                return .none
 
             case .childTapped(let asked, let message):
                 guard !state.forking, !state.session.archived else { return .none }

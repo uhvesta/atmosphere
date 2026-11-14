@@ -48,7 +48,9 @@ struct HumataApp: App {
 
     var body: some Scene {
         WindowGroup("Humata") {
-            AtLeast(width: 820, height: 520) { AppView(store: store) }
+            // The window's least size is the view's own, which widens it for
+            // a focused document.
+            AppView(store: store)
                 .onOpenURL { store.send(.opened($0)) }
                 // A humata:// link goes to this window, not a new one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
@@ -68,15 +70,20 @@ struct HumataApp: App {
         }
         .commands {
             // One window over one store, so New makes a chat or a project in
-            // it rather than another window.
+            // it rather than another window. Each opens a sheet, so each is
+            // greyed out while the sidebar shows a sheet or an alert: it
+            // would take the place of what the person is filling in.
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") { store.send(.sidebar(.newChatTapped)) }
                     .keyboardShortcut("n", modifiers: .command)
+                    .disabled(store.sidebar.presenting)
                 Button("Add Project…") { store.send(.sidebar(.addProjectTapped)) }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(store.sidebar.presenting)
                 Divider()
                 projectCommands
                 Button("Import Session…") { store.send(.sidebar(.importTapped)) }
+                    .disabled(store.sidebar.presenting)
             }
             CommandMenu("Go") {
                 Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
@@ -95,22 +102,24 @@ struct HumataApp: App {
     }
 
     /// What the sidebar offers for a project, for the project of the board
-    /// that's open or of the session that is; greyed out with neither.
+    /// that's open or of the session that is, each naming it; greyed out
+    /// with neither, and while the sidebar shows a sheet or an alert.
     @ViewBuilder private var projectCommands: some View {
         let id = store.sidebar.commandProject
         let name = id.flatMap { store.sidebar.projects[id: $0]?.name } ?? ""
+        let off = id == nil || store.sidebar.presenting
         Button(name.isEmpty ? "New Session…" : "New Session in \(name)…") {
             if let id { store.send(.sidebar(.newSessionTapped(projectID: id))) }
         }
-        .disabled(id == nil)
-        Button("Plan With an Agent…") {
+        .disabled(off)
+        Button(name.isEmpty ? "Plan With an Agent…" : "Plan in \(name) With an Agent…") {
             if let id { store.send(.sidebar(.planTapped(projectID: id))) }
         }
-        .disabled(id == nil)
-        Button("Project Settings…") {
+        .disabled(off)
+        Button(name.isEmpty ? "Project Settings…" : "\(name) Settings…") {
             if let id { store.send(.sidebar(.projectSettingsTapped(id))) }
         }
-        .disabled(id == nil)
+        .disabled(off)
     }
 
     /// What can be done to the session of the column the person is in, so
@@ -211,14 +220,16 @@ struct HumataApp: App {
 
     /// What the sidebar's row offers for the session, as the sidebar has
     /// it; greyed out for one the sidebar doesn't list, and while it's
-    /// being moved, archived or deleted.
+    /// being moved, archived or deleted. Those that open a sheet or an
+    /// alert are also greyed out while the sidebar shows one.
     @ViewBuilder
     private func sidebarCommands(for id: Session.ID?) -> some View {
         let menu = id.flatMap { store.sidebar.menuState(of: $0) }
+        let presenting = store.sidebar.presenting
         Button("Rename…") {
             if let id { store.send(.sidebar(.renameTapped(id))) }
         }
-        .disabled(menu == nil)
+        .disabled(menu == nil || presenting)
         if menu?.archived == true {
             Button("Unarchive") {
                 if let id { store.send(.sidebar(.archiveTapped(id, archived: false))) }
@@ -227,16 +238,24 @@ struct HumataApp: App {
             Button("Delete…") {
                 if let id { store.send(.sidebar(.deleteSessionTapped(id))) }
             }
-            .disabled(menu?.busy != false)
+            .disabled(menu?.busy != false || presenting)
         } else {
             Button("Move to Host…") {
                 if let id { store.send(.sidebar(.moveToHostTapped(id))) }
             }
-            .disabled(menu?.held != false)
+            .disabled(menu?.held != false || presenting)
             Button("Archive") {
                 if let id { store.send(.sidebar(.archiveTapped(id, archived: true))) }
             }
             .disabled(menu?.held != false)
+            // Only while its turn is what holds it, as in the row's menu:
+            // one being moved, archived or deleted already has nothing to
+            // stop.
+            if menu?.held == true, menu?.busy == false {
+                Button("Stop and Archive") {
+                    if let id { store.send(.sidebar(.stopAndArchiveTapped(id))) }
+                }
+            }
         }
     }
 

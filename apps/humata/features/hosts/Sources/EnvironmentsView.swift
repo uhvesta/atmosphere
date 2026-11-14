@@ -106,6 +106,8 @@ private struct EnvironmentRow: View {
             Spacer(minLength: 8)
             if adding || health == .installing || health == .checking {
                 ProgressView().controlSize(.small)
+                    // What it waits for, as the status beside it says.
+                    .accessibilityLabel(status)
             } else if environment.host == nil {
                 Button("Add", action: add)
                     .help("Add \(environment.destination) and install Humata there")
@@ -122,6 +124,7 @@ private struct EnvironmentRow: View {
         switch health {
         case .checking, nil: return "Checking…"
         case .installing: return "Installing Humata…"
+        case .installFailed: return "Couldn't install Humata"
         case .known(.reachable(let status)): return "Humata \(status.programVersion) · \(status.platform)"
         case .known(.unreachable): return "Unreachable"
         }

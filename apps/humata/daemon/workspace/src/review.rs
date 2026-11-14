@@ -373,7 +373,11 @@ async fn diff(
     path: Option<&str>,
 ) -> Result<String, WorkspaceError> {
     let unified = format!("--unified={context}");
-    let mut arguments = vec![
+    let mut arguments = Vec::new();
+    if path.is_some() {
+        arguments.push(LITERAL);
+    }
+    arguments.extend([
         "-c",
         "core.quotePath=false",
         "diff",
@@ -384,7 +388,7 @@ async fn diff(
         &unified,
         from,
         to,
-    ];
+    ]);
     if let Some(path) = path {
         arguments.extend(["--", path]);
     }
@@ -435,12 +439,22 @@ async fn unchanged(
 }
 
 /// Whether a path is made of plain names only, so that joined to a copy's
-/// folder it stays under it (links aside).
+/// folder it stays under it (links aside), and none of them is git's own
+/// `.git`, in any letter case: that isn't one of the repository's files, and
+/// removing it would leave the copy no repository at all.
 fn inside(path: &str) -> bool {
     let mut components = Path::new(path).components().peekable();
     components.peek().is_some()
-        && components.all(|component| matches!(component, std::path::Component::Normal(_)))
+        && components.all(|component| match component {
+            std::path::Component::Normal(name) => !name.eq_ignore_ascii_case(".git"),
+            _ => false,
+        })
 }
+
+/// Makes git take a path as that file's name and nothing else. Without it
+/// `:/` is the whole tree and `pages/[id].tsx` is also a pattern for
+/// `pages/i.tsx`. It goes before the command's name.
+const LITERAL: &str = "--literal-pathspecs";
 
 async fn edit_file(
     directory: &Path,
@@ -450,17 +464,20 @@ async fn edit_file(
 ) -> Result<(), WorkspaceError> {
     match action {
         Action::Stage => {
-            git(directory, &["add", "--all", "--", path]).await?;
+            git(directory, &[LITERAL, "add", "--all", "--", path]).await?;
         }
         Action::Unstage => {
-            git(directory, &["reset", "--quiet", "--", path]).await?;
+            git(directory, &[LITERAL, "reset", "--quiet", "--", path]).await?;
         }
         Action::Revert => {
-            let known = git(directory, &["ls-files", "--error-unmatch", "--", path])
-                .await
-                .is_ok();
+            let known = git(
+                directory,
+                &[LITERAL, "ls-files", "--error-unmatch", "--", path],
+            )
+            .await
+            .is_ok();
             if known {
-                git(directory, &["checkout", "--", path]).await?;
+                git(directory, &[LITERAL, "checkout", "--", path]).await?;
             } else {
                 // Git also calls a path through a linked folder unknown, so
                 // the file is removed only when it is one, or a link, in a

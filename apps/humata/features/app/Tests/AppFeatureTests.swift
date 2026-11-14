@@ -718,6 +718,71 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertNil(store.state.sidebar.selection)
     }
 
+    /// A store with `open` open, `beside` beside it if given, and both in
+    /// the sidebar with `others`, over a daemon that lists none of them.
+    private func withOpen(
+        _ open: Session, beside: Session? = nil, others: [Session] = []
+    ) -> TestStoreOf<AppFeature> {
+        var state = AppFeature.State()
+        state.sidebar.sessions = IdentifiedArray(uniqueElements: [open] + (beside.map { [$0] } ?? []) + others)
+        state.sidebar.selection = .session(open.id)
+        state.session = SessionFeature.State(session: open)
+        if let beside {
+            var side = SessionFeature.State(session: beside)
+            side.beside = true
+            state.side = side
+        }
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testRemovingAHostInSettingsClosesItsOpenSessionAndSideChat() async throws {
+        var session = Session(id: "far-1", name: "first", backend: .scripted, workingDirectory: "/work")
+        session.host = "far"
+        var side = Session(id: "far-2", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.host = "far"
+        let store = withOpen(session, beside: side)
+
+        await store.send(\.settings.removed, "far")
+        XCTAssertNil(store.state.session)
+        XCTAssertNil(store.state.side)
+        XCTAssertNil(store.state.sidebar.selection)
+        // The sidebar reads again, for the sessions that went with the host.
+        await store.receive(\.sidebar.loaded)
+    }
+
+    func testRemovingAHostInSettingsLeavesAnotherHostsSessionOpen() async throws {
+        var session = Session(id: "near-1", name: "first", backend: .scripted, workingDirectory: "/work")
+        session.host = "near"
+        // This Mac's.
+        let side = Session(id: "mac-1", name: "side", backend: .scripted, workingDirectory: "/work")
+        let store = withOpen(session, beside: side)
+
+        await store.send(\.settings.removed, "far")
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+        XCTAssertEqual(store.state.side?.session.id, side.id)
+        XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+    }
+
+    func testRemovingAHostInSettingsClosesASideChatOnItAndLeavesTheSessionItIsBeside() async throws {
+        let session = Session(id: "mac-2", name: "first", backend: .scripted, workingDirectory: "/work")
+        var side = Session(id: "far-3", name: "side", backend: .scripted, workingDirectory: "/work")
+        side.host = "far"
+        let store = withOpen(session, beside: side)
+
+        await store.send(\.settings.removed, "far")
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+        XCTAssertNil(store.state.side)
+        XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+    }
+
     func testDeletingAProjectClosesItsBoardAndLeavesItsOpenSessionOnNoProject() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
@@ -1536,6 +1601,121 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.restarted)
         await store.finish()
         XCTAssertEqual(starts.value, 2)
+    }
+
+    func testADaemonGoneWhileAnUpdateWaitsIsStartedAgain() async throws {
+        let gone = LockIsolated(true)
+        let starts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .updatePending
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            let projects = $0.daemon.projects
+            $0.daemon.projects = {
+                if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
+                return try await projects()
+            }
+            $0.daemonService = service(gone: gone, starts: starts) { gone.setValue(false) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loadFailed)
+        await store.receive(\.daemonGone)
+        await store.receive(\.restarted)
+        // The one started is this app's, so no update waits any more.
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 1)
+        await store.receive(\.sidebar.loaded)
+    }
+
+    func testADaemonThatAnsweredOnceIsLookedForAgainWhenReadsKeepFailing() async throws {
+        let gone = LockIsolated(false)
+        let failing = LockIsolated(true)
+        let starts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            let projects = $0.daemon.projects
+            $0.daemon.projects = {
+                if failing.value { throw DaemonError.unexpected("a list it couldn't make") }
+                return try await projects()
+            }
+            $0.daemonService = service(gone: gone, starts: starts) {
+                gone.setValue(false)
+                failing.setValue(false)
+            }
+        }
+        store.exhaustivity = .off
+
+        // A read fails while the daemon answers: nothing is started.
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loadFailed)
+        await store.finish()
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 0)
+
+        // Then the daemon goes, with no read having succeeded in between.
+        gone.setValue(true)
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.restarted)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 1)
+        await store.receive(\.sidebar.loaded)
+    }
+
+    func testARestartOfADaemonHumataDidntStartLeavesItRunningAndSaysSoInHosts() async throws {
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.daemonService = DaemonService(
+                start: {}, isCurrent: { true },
+                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {})
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .hosts)
+        await store.receive(\.sidebar.delegate.openHosts)
+        await store.send(\.hosts.restartDaemonTapped)
+        await store.send(.hosts(.presented(.destination(.presented(.alert(.confirmRestartDaemon))))))
+        await store.receive(\.hosts.delegate.restartDaemon)
+        XCTAssertNil(store.state.hosts?.destination, "the question is answered")
+        await store.receive(\.restartRefused)
+        XCTAssertEqual(store.state.daemon, .running, "nothing was stopped")
+        await store.receive(\.hosts.restartRefused)
+        XCTAssertNotNil(store.state.hosts?.destination?.alert, "Hosts says why")
+    }
+
+    func testARefusedRestartThatWasntAskedForInHostsSaysWhyAboveTheWindow() async throws {
+        var state = AppFeature.State()
+        state.daemon = .updatePending
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.daemonService = DaemonService(
+                start: {}, isCurrent: { false },
+                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {})
+        }
+        store.exhaustivity = .off
+
+        await store.send(.restartTapped)
+        await store.receive(\.restartRefused)
+        guard case .failed(_, needsLoginItems: false) = store.state.daemon else {
+            return XCTFail("expected it to say why it wasn't restarted, got \(store.state.daemon)")
+        }
     }
 
     func testADaemonThatCantBeStartedAgainShowsWhy() async throws {

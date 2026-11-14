@@ -506,6 +506,7 @@ private struct DraftNote: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel("Remove Comment")
             .help("Remove this comment")
         }
         .padding(8)
@@ -535,6 +536,7 @@ private struct DraftRow: View {
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
+            .accessibilityLabel("Remove Comment")
             .help("Remove this comment")
         }
     }

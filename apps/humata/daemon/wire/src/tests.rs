@@ -304,6 +304,52 @@ async fn a_call_fails_when_the_other_side_goes_away() {
 }
 
 #[tokio::test]
+async fn a_call_made_after_the_other_side_went_away_fails_rather_than_waits() {
+    let (ours, theirs) = duplex(64 * 1024);
+    let (mut their_reader, mut their_writer) = split(theirs);
+    let peer = tokio::spawn(async move {
+        let hello = pb::Hello {
+            protocol_version: pb::ProtocolVersion::Current.into(),
+            role: pb::Role::Host.into(),
+            program_version: "test".to_owned(),
+            accepts_zstd: false,
+        };
+        let envelope = pb::Envelope {
+            id: 0,
+            body: Some(pb::envelope::Body::Hello(hello)),
+        };
+        let _ = crate::write(&mut their_writer, &envelope, false).await;
+        // Reads our hello, then hangs up.
+        let _ = crate::read(&mut their_reader).await;
+    });
+    let (reader, writer) = split(ours);
+    let Ok(client) = Client::connect(reader, writer, pb::Role::Daemon, "test").await else {
+        panic!("couldn't connect")
+    };
+    assert!(peer.await.is_ok());
+    let noticed = tokio::time::timeout(Duration::from_secs(5), async {
+        while client.is_connected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(noticed.is_ok(), "the client never saw the connection end");
+
+    let call = tokio::time::timeout(Duration::from_secs(5), client.call(send("known"))).await;
+    assert!(
+        matches!(call, Ok(Err(ClientError::Disconnected))),
+        "{call:?}"
+    );
+    let stream = tokio::time::timeout(Duration::from_secs(5), client.stream(watch("three")))
+        .await
+        .map(|answer| answer.map(|(response, _)| response));
+    assert!(
+        matches!(stream, Ok(Err(ClientError::Disconnected))),
+        "{stream:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_request_is_answered_to_the_end_when_its_caller_goes_away() {
     let (open, gate) = oneshot::channel();
     let (finished, done) = oneshot::channel();

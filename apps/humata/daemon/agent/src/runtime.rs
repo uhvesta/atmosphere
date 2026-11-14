@@ -232,20 +232,31 @@ impl Turn {
         self.session.log.with_events(read)
     }
 
-    /// [`Self::with_history`], taking in the same hold every message sent
-    /// to steer this turn so far: a steer is logged and kept for the turn
-    /// under the session's lock, so each is in what `read` sees and taken,
-    /// or in neither. For a runner that builds its request from the
-    /// history, which then holds the steers.
+    /// [`Self::with_history`] of the history as it is now, taking every
+    /// message sent to steer this turn so far: a steer is logged and kept
+    /// for the turn under the session's lock, so each is in what `read`
+    /// sees and taken, or in neither. For a runner that builds its request
+    /// from the history, which then holds the steers.
+    ///
+    /// The session's lock is held only to note how long the history is and
+    /// to take the steers. `read` runs under the log's lock alone, on the
+    /// history up to that length, so the session is listed, stopped and
+    /// answered while a long request is built.
     pub(crate) fn with_history_taking_steering<T>(
         &self,
         read: impl FnOnce(&[Event]) -> T,
     ) -> Result<T, AgentError> {
-        // The session's lock, then the log's, as a send takes them.
-        let mut control = self.session.lock();
-        let read = self.session.log.with_events(read)?;
-        control.steering.clear();
-        Ok(read)
+        let length = {
+            // The session's lock, then the log's, as a send takes them.
+            let mut control = self.session.lock();
+            let length = self.session.log.with_events(<[Event]>::len)?;
+            control.steering.clear();
+            length
+        };
+        // A steer sent since is past `length` and still to be taken.
+        self.session
+            .log
+            .with_events(|history| read(&history[..length.min(history.len())]))
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
@@ -2827,6 +2838,71 @@ pub(crate) mod tests {
             .filter(|event| matches!(event.kind, EventKind::TurnStarted))
             .count();
         assert_eq!(turns, 1);
+    }
+
+    /// Says it is reading the history, with the steers, and stays in that
+    /// read until `listed` is told or five seconds pass; then replies with
+    /// whether it was told.
+    struct ReadsSlowly {
+        reading: tokio::sync::mpsc::UnboundedSender<()>,
+        listed: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Runner for ReadsSlowly {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            let listed = turn.with_history_taking_steering(|_| {
+                let _ = self.reading.send(());
+                self.listed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .is_ok()
+            })?;
+            turn.emit(EventKind::AssistantMessage {
+                text: if listed { "listed" } else { "not listed" }.into(),
+            })?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_is_listed_while_its_request_is_built() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (reading, mut reads) = tokio::sync::mpsc::unbounded_channel();
+        let (list, listed) = std::sync::mpsc::channel();
+        let runner = ReadsSlowly {
+            reading,
+            listed: std::sync::Mutex::new(listed),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        reads.recv().await.expect("the runner reads the history");
+
+        let sessions = agent.sessions().await.expect("listed");
+        let _ = list.send(());
+        let events = wait_for(&agent, &id, idle_turns(1)).await;
+
+        assert_eq!(sessions.len(), 1);
+        let replies: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::AssistantMessage { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The listing came back while the read was still under way.
+        assert_eq!(replies, ["listed"]);
     }
 
     #[tokio::test]

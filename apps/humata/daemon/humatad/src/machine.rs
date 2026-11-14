@@ -4,12 +4,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use humata_agent::Env;
 use humata_wire::pb;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tokio::process::Command;
 
 use crate::error::HostError;
@@ -21,6 +23,50 @@ const OUTPUT_KEPT: usize = 8 * 1024;
 
 /// How long a setup script may run.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long what a setup script printed is read for once the script has
+/// ended: a program it left running holds its output open, and the setup
+/// doesn't wait for that program.
+const SETUP_OUTPUT_REST: Duration = Duration::from_secs(1);
+
+/// The most of a running setup script's output held, from its end: more
+/// than is shown, so taking the host's values out still leaves a full
+/// [`OUTPUT_KEPT`].
+const SETUP_OUTPUT_HELD: usize = 4 * OUTPUT_KEPT;
+
+/// The end of what a setup script has printed so far, both streams as they
+/// came.
+#[derive(Default)]
+struct Tail {
+    bytes: Vec<u8>,
+    /// Whether bytes were dropped from its start.
+    dropped: bool,
+}
+
+impl Tail {
+    fn push(&mut self, more: &[u8]) {
+        self.bytes.extend_from_slice(more);
+        if self.bytes.len() > SETUP_OUTPUT_HELD {
+            let over = self.bytes.len() - SETUP_OUTPUT_HELD;
+            self.bytes.drain(..over);
+            self.dropped = true;
+        }
+    }
+}
+
+/// Reads `pipe` into `tail` until it ends.
+async fn keep(mut pipe: impl AsyncRead + Unpin, tail: Arc<Mutex<Tail>>) {
+    let mut buffer = vec![0; 8 * 1024];
+    loop {
+        match pipe.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => tail
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(&buffer[..read]),
+        }
+    }
+}
 
 /// How long a first clone may take: long enough for a large repository on
 /// a slow link, but bounded, so a remote that stops answering doesn't hold
@@ -167,18 +213,49 @@ impl Machine {
     fn printed(&self, output: &std::process::Output) -> String {
         let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&output.stderr));
-        let text = redacted(&text, &self.secrets());
-        let text = text.trim();
-        if text.len() <= OUTPUT_KEPT {
-            return text.to_owned();
-        }
-        let mut start = text.len() - OUTPUT_KEPT;
-        while !text.is_char_boundary(start) {
-            start += 1;
-        }
-        format!("…{}", &text[start..])
+        shown(&text, &self.secrets())
     }
 
+    /// The end of what a setup script printed, as [`Self::printed`] shows
+    /// it. When the start was dropped, as many bytes as the longest value
+    /// has are dropped with it, so half a value at the cut can't show.
+    fn printed_end(&self, tail: &Mutex<Tail>) -> String {
+        let (bytes, dropped) = {
+            let mut tail = tail.lock().unwrap_or_else(PoisonError::into_inner);
+            (std::mem::take(&mut tail.bytes), tail.dropped)
+        };
+        let secrets = self.secrets();
+        let skipped = if dropped {
+            let longest = secrets.iter().map(String::len).max().unwrap_or(0);
+            longest.min(bytes.len())
+        } else {
+            0
+        };
+        let text = shown(&String::from_utf8_lossy(&bytes[skipped..]), &secrets);
+        if dropped && !text.starts_with('…') {
+            format!("…{text}")
+        } else {
+            text
+        }
+    }
+}
+
+/// `text` without `secrets`, trimmed and cut to its last [`OUTPUT_KEPT`]
+/// bytes.
+fn shown(text: &str, secrets: &[String]) -> String {
+    let text = redacted(text, secrets);
+    let text = text.trim();
+    if text.len() <= OUTPUT_KEPT {
+        return text.to_owned();
+    }
+    let mut start = text.len() - OUTPUT_KEPT;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
+}
+
+impl Machine {
     /// Sets the agents' variables, and runs `script` if it changed since it
     /// last ran or failed then.
     pub async fn configure(
@@ -222,31 +299,100 @@ impl Machine {
     }
 
     async fn run_setup(&self, script: &str, digest: String) -> SetupRun {
-        let home = std::env::var_os("HOME").map_or_else(|| self.state.clone(), PathBuf::from);
-        let child = Command::new("/bin/sh")
-            .arg("-c")
-            .arg(script)
-            .current_dir(home)
-            .envs(self.env.vars())
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output();
-        let (succeeded, output) = match tokio::time::timeout(SETUP_TIMEOUT, child).await {
-            Err(_) => (
-                false,
-                format!(
-                    "Stopped after {} minutes without finishing.",
-                    SETUP_TIMEOUT.as_secs() / 60
-                ),
-            ),
-            Ok(Err(error)) => (false, format!("Couldn't run /bin/sh: {error}")),
-            Ok(Ok(output)) => (output.status.success(), self.printed(&output)),
-        };
+        self.run_setup_within(script, digest, SETUP_TIMEOUT).await
+    }
+
+    /// [`Self::run_setup`], stopping the script and what it started when it
+    /// takes longer than `patience`. What it prints is read as it comes and
+    /// only its end is held, so a loud script costs no memory and one that
+    /// is stopped still shows where it was.
+    async fn run_setup_within(&self, script: &str, digest: String, patience: Duration) -> SetupRun {
+        let (succeeded, output) = self.setup_output(script, patience).await;
         SetupRun {
             script: digest,
             succeeded,
             output,
             ran_unix_ms: now(),
+        }
+    }
+
+    /// Runs `script` and says whether it succeeded and what it printed.
+    async fn setup_output(&self, script: &str, patience: Duration) -> (bool, String) {
+        let home = std::env::var_os("HOME").map_or_else(|| self.state.clone(), PathBuf::from);
+        let spawned = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .current_dir(home)
+            .envs(self.env.vars())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            // Its own group, so what it started is stopped with it.
+            .process_group(0)
+            .kill_on_drop(true)
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) => return (false, format!("Couldn't run /bin/sh: {error}")),
+        };
+        let group = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .and_then(rustix::process::Pid::from_raw);
+        let tail = Arc::new(Mutex::new(Tail::default()));
+        let mut readers = Vec::new();
+        if let Some(pipe) = child.stdout.take() {
+            readers.push(tokio::spawn(keep(pipe, tail.clone())));
+        }
+        if let Some(pipe) = child.stderr.take() {
+            readers.push(tokio::spawn(keep(pipe, tail.clone())));
+        }
+        let waited = tokio::time::timeout(patience, child.wait()).await;
+        if waited.is_err() {
+            if let Some(group) = group {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(SETUP_OUTPUT_REST, child.wait()).await;
+        }
+        // A program the script left running keeps the pipes open, so the
+        // readers get a moment to reach what was printed, not the pipes' end.
+        let _ = tokio::time::timeout(SETUP_OUTPUT_REST, async {
+            for reader in &mut readers {
+                let _ = reader.await;
+            }
+        })
+        .await;
+        for reader in &readers {
+            reader.abort();
+        }
+        let printed = self.printed_end(&tail);
+        match waited {
+            Ok(Ok(status)) => (status.success(), printed),
+            Ok(Err(error)) => (
+                false,
+                format!("Couldn't wait for the setup script to finish: {error}\n{printed}")
+                    .trim()
+                    .to_owned(),
+            ),
+            Err(_) => {
+                let long = if patience.as_secs() >= 60 {
+                    format!("{} minutes", minutes(patience))
+                } else {
+                    format!("{} seconds", patience.as_secs())
+                };
+                let stopped = format!(
+                    "Stopped after {long} without finishing, with what it had started. Make the \
+                     script finish sooner: if it starts a program that keeps running, start it in \
+                     the background (`program &`) so the script itself ends. It runs again when \
+                     this host is next set up."
+                );
+                if printed.is_empty() {
+                    (false, stopped)
+                } else {
+                    (false, format!("{stopped} The last it printed:\n{printed}"))
+                }
+            }
         }
     }
 
@@ -355,7 +501,8 @@ impl Machine {
                 let kind = fresh::Kind::Clone;
                 let notice =
                     fresh::update(&git, &path, &repository.name, kind, "on this host").await;
-                notices.extend(notice);
+                // Git's own words are in it, which can hold a value.
+                notices.extend(notice.map(|notice| redacted(&notice, &self.secrets())));
                 cloned.push(pb::Repository {
                     name: repository.name,
                     path: path.display().to_string(),
@@ -719,6 +866,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_setup_script_that_runs_out_of_time_shows_what_it_printed() {
+        let state = scratch();
+        let machine = machine(state.path());
+        let began = std::time::Instant::now();
+
+        let run = machine
+            .run_setup_within(
+                "echo started; sleep 30",
+                "digest".to_owned(),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert!(!run.succeeded);
+        assert!(run.output.contains("started"), "{}", run.output);
+        assert!(began.elapsed() < Duration::from_secs(15));
+    }
+
+    #[tokio::test]
+    async fn a_setup_script_that_leaves_a_program_running_still_finishes() {
+        let state = scratch();
+        let machine = machine(state.path());
+        let began = std::time::Instant::now();
+
+        let run = machine
+            .run_setup_within(
+                "sleep 30 & echo done",
+                "digest".to_owned(),
+                Duration::from_secs(20),
+            )
+            .await;
+
+        assert!(run.succeeded, "{}", run.output);
+        assert!(run.output.contains("done"), "{}", run.output);
+        assert!(began.elapsed() < Duration::from_secs(15));
+    }
+
+    #[tokio::test]
+    async fn a_loud_setup_script_keeps_only_its_end() {
+        let state = scratch();
+        let machine = machine(state.path());
+        let script = "yes 'a loud setup script' | head -c 1048576; echo; echo the last line";
+
+        let result = machine
+            .configure(configure(script, &[]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(result.ran && result.succeeded);
+        assert!(result.output.len() <= OUTPUT_KEPT + 8);
+        assert!(result.output.ends_with("the last line"));
+    }
+
+    #[tokio::test]
     async fn a_setup_scripts_output_keeps_no_variables_value() {
         use std::os::unix::fs::PermissionsExt as _;
         let state = scratch();
@@ -896,6 +1097,64 @@ mod tests {
             machine.clone(request("../escape")).await,
             Err(HostError::NotAName { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_fetch_that_fails_says_so_without_a_variables_value() {
+        let state = scratch();
+        let origin = state.path().join("origin");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@localhost")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@localhost")
+                .status()
+                .unwrap_or_else(|error| panic!("{error}"));
+            assert!(status.success());
+        };
+        let origin_path = origin.display().to_string();
+        git(&["init", "-q", &origin_path]);
+        git(&[
+            "-C",
+            &origin_path,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]);
+        let machine = machine(&state.path().join("host"));
+        let request = || pb::CloneRepositories {
+            folder: "project".to_owned(),
+            repositories: vec![pb::RemoteRepository {
+                name: "app".to_owned(),
+                url: origin_path.clone(),
+            }],
+        };
+        let _ = machine
+            .clone(request())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Git names the remote it couldn't reach, which here is a value.
+        machine.set_env(BTreeMap::from([("MIRROR".to_owned(), origin_path.clone())]));
+        std::fs::remove_dir_all(&origin).unwrap_or_else(|error| panic!("{error}"));
+
+        let again = machine
+            .clone(request())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(!again.notices.is_empty());
+        assert!(
+            again
+                .notices
+                .iter()
+                .all(|notice| !notice.contains(&origin_path)),
+            "{:?}",
+            again.notices
+        );
     }
 
     #[tokio::test]

@@ -692,6 +692,111 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.recoveries[id: session.id]?.onHost, false)
     }
 
+    func testARestartThatWasRefusedSaysWhy() async {
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        XCTAssertNil(store.state.destination)
+        await store.send(.restartRefused("Humata didn't start the daemon that answers."))
+        XCTAssertNotNil(store.state.destination?.alert)
+    }
+
+    func testThisMacsSkippedSessionsAreReadAgainAfterTheDaemonRestarts() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        // With no hosts, This Mac is selected.
+        await store.send(.task)
+        await store.receive(\.skippedLoaded)
+        XCTAssertEqual(store.state.selection, store.state.coordinator.id)
+        XCTAssertEqual(store.state.skipped, [])
+
+        // What the daemon couldn't open is what it found when it started.
+        let damaged = SkippedSession(
+            backend: .claude, id: "5e1f", folder: "/Users/me/.humata/claude/sessions/5e1f",
+            reason: "the session record is damaged")
+        daemon.addSkipped(damaged)
+        await store.send(.daemonRestarted)
+        await store.receive(\.skippedLoaded)
+        XCTAssertEqual(store.state.skipped.elements, [damaged])
+    }
+
+    func testAnInstallThatFailsSaysSoAndIsNotCalledUnreachable() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("gpu", "me@gpu")
+        daemon.setOffline("gpu", true)
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.checked)
+        await store.send(.installTapped("gpu"))
+        await store.receive(\.installFailed)
+        guard case .installFailed = store.state.health["gpu"] else {
+            return XCTFail("the install failed, but gpu is \(String(describing: store.state.health["gpu"]))")
+        }
+
+        // Tried again once the host is up, it installs.
+        daemon.setOffline("gpu", false)
+        await store.send(.installTapped("gpu"))
+        await store.receive(\.installed)
+        guard case .known(.reachable) = store.state.health["gpu"] else {
+            return XCTFail("installed, gpu isn't reachable: \(String(describing: store.state.health["gpu"]))")
+        }
+    }
+
+    func testAHostThatDoesntAnswerAfterItsInstallIsUnreachable() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("gpu", "me@gpu")
+        var state = HostsFeature.State()
+        state.hosts = [RemoteHost(name: "gpu", sshDestination: "me@gpu")]
+        let store = TestStore(initialState: state) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.checkHost = { _ in throw DaemonError.unexpected("it stopped answering") }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.installTapped("gpu"))
+        await store.receive(\.installed)
+        guard case .known(.unreachable) = store.state.health["gpu"] else {
+            return XCTFail("installed and not answering, gpu is \(String(describing: store.state.health["gpu"]))")
+        }
+    }
+
+    func testAHostAddedFromAnotherPaneOpensOnItsSettings() async throws {
+        let daemon = InMemoryDaemon()
+        let added = try await daemon.client.addHost("gpu", "me@gpu")
+        var state = HostsFeature.State()
+        state.pane = .files
+        state.destination = .add(AddHostFeature.State())
+        let store = TestStore(initialState: state) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.destination(.presented(.add(.delegate(.added(added))))))
+        XCTAssertEqual(store.state.selection, "gpu")
+        XCTAssertEqual(store.state.pane, .settings)
+        await store.receive(\.installed)
+    }
+
     func testARefusedHostSaysWhy() async {
         let store = TestStore(initialState: AddHostFeature.State()) {
             AddHostFeature()

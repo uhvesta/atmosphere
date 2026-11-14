@@ -29,6 +29,10 @@ package struct ProposalsFeature {
         /// session's.
         package var projectID: String?
         package var proposals: IdentifiedArrayOf<Proposal> = []
+        /// What each proposed spec edit takes out of the spec and puts in,
+        /// worked out when the proposals are listed. A spec edit without
+        /// one here hasn't had it worked out yet.
+        package var changes: [Proposal.ID: ToolCall.Change] = [:]
         package var editing: Editing?
         /// The proposals being applied or declined, or having work started
         /// on their task, so their buttons wait.
@@ -56,7 +60,8 @@ package struct ProposalsFeature {
         case binding(BindingAction<State>)
         /// Lists them again: on opening, and when the agent proposes more.
         case refresh
-        case listed([Proposal])
+        /// They were read, with what each spec edit among them changes.
+        case listed([Proposal], changes: [Proposal.ID: ToolCall.Change])
         case applyTapped(String)
         case editTapped(String)
         case editCancelled
@@ -98,12 +103,21 @@ package struct ProposalsFeature {
             case .refresh:
                 let session = state.sessionID
                 let project = state.projectID
+                let known = state.proposals
+                let kept = state.changes
                 return .run { send in
+                    let proposals: [Proposal]
                     if let project {
-                        await send(.listed(try await daemon.outsideProposals(project)))
+                        proposals = try await daemon.outsideProposals(project)
                     } else {
-                        await send(.listed(try await daemon.proposals(session)))
+                        proposals = try await daemon.proposals(session)
                     }
+                    // Off the main thread: a long spec's diff would stall
+                    // the chat.
+                    let changes = await Task.detached(priority: .userInitiated) {
+                        Self.changes(of: proposals, known: known, kept: kept)
+                    }.value
+                    await send(.listed(proposals, changes: changes))
                 } catch: { error, send in
                     await send(.listFailed(error.localizedDescription))
                 }
@@ -113,10 +127,11 @@ package struct ProposalsFeature {
                 if state.listFailure != message { state.listFailure = message }
                 return .none
 
-            case .listed(let proposals):
+            case .listed(let proposals, let changes):
                 if state.listFailure != nil { state.listFailure = nil }
                 let listed = IdentifiedArray(uniqueElements: proposals)
                 if listed != state.proposals { state.proposals = listed }
+                if changes != state.changes { state.changes = changes }
                 return .none
 
             case .applyTapped(let id):
@@ -198,6 +213,26 @@ package struct ProposalsFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// What each spec edit among `proposals` changes in its item's spec. One
+    /// whose texts are those of the proposal in `known` keeps the change
+    /// `kept` has for it, so a refresh works out only what is new.
+    private static func changes(
+        of proposals: [Proposal], known: IdentifiedArrayOf<Proposal>, kept: [Proposal.ID: ToolCall.Change]
+    ) -> [Proposal.ID: ToolCall.Change] {
+        var changes: [Proposal.ID: ToolCall.Change] = [:]
+        for proposal in proposals {
+            guard let current = proposal.currentSpec, !proposal.spec.isEmpty else { continue }
+            if let change = kept[proposal.id], let before = known[id: proposal.id],
+                before.currentSpec == current, before.spec == proposal.spec
+            {
+                changes[proposal.id] = change
+            } else {
+                changes[proposal.id] = ToolCall.Change.between(current, proposal.spec)
+            }
+        }
+        return changes
     }
 
     private func apply(_ state: inout State, _ id: String, title: String?, spec: String?) -> Effect<Action> {
