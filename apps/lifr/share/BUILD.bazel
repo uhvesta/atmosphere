@@ -37,7 +37,10 @@ ios_extension(
         "iphone",
         "ipad",
     ],
-    infoplists = ["Extension/Info.plist"],
+    infoplists = [
+        "Extension/Info.plist",
+        "Extension/Info-iOS.plist",
+    ],
     minimum_os_version = "18.0",
     provisioning_profile = select({
         "//apps/lifr:is_app_store": "//apps/lifr/app:ios_share_app_store",
