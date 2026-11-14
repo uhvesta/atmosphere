@@ -18,7 +18,17 @@ package struct DocsView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if store.files.isEmpty {
+            if store.files.isEmpty, let failure = store.listFailure {
+                ContentUnavailableView {
+                    Label("Couldn’t List the Files", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("Try Again") { store.send(.refresh) }
+                        .accessibilityIdentifier("docs.list.retry")
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.files.isEmpty {
                 ContentUnavailableView {
                     Label(store.loading ? "Reading the folder…" : "No files yet", systemImage: "doc.text")
                 } description: {

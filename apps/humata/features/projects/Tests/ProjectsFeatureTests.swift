@@ -1882,6 +1882,77 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.leftChanges?.patches.map(\.shown), [12_000, 1])
     }
 
+    func testAKeepThatFailsLeavesBothChangesShownAndCanBePressedAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let left = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/a"))
+        let right = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/b"))
+        let refuses = LockIsolated(true)
+        var client = daemon.client
+        let update = client.update
+        client.update = { session, change in
+            if refuses.value { throw DaemonDown() }
+            return try await update(session, change)
+        }
+        client.changes = { session, _ in [RepositoryChanges(name: "app", patch: "+from \(session)\n")] }
+        let store = TestStore(initialState: CompareFeature.State(left: left, right: right)) {
+            CompareFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        let (leftChanges, rightChanges) = (store.state.leftChanges, store.state.rightChanges)
+        XCTAssertNotNil(leftChanges)
+        XCTAssertNotNil(rightChanges)
+
+        await store.send(.keepTapped(left.id))
+        await store.receive(\.markFailed)
+        XCTAssertNotNil(store.state.keepFailure)
+        XCTAssertNil(store.state.failure)
+        XCTAssertEqual(store.state.leftChanges, leftChanges)
+        XCTAssertEqual(store.state.rightChanges, rightChanges)
+        XCTAssertFalse(store.state.marking)
+
+        refuses.setValue(false)
+        await store.send(.keepTapped(left.id))
+        await store.receive(\.marked)
+        XCTAssertNil(store.state.keepFailure)
+        XCTAssertTrue(store.state.left.keeper)
+        let kept = try await daemon.client.sessions(nil).first { $0.id == left.id }?.keeper
+        XCTAssertEqual(kept, true)
+    }
+
+    func testSessionsToImportThatCouldntBeReadAreListedOnTryingAgain() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.addImportable(importable("mac1", "fix the login", minutesAgo: 1))
+        let down = LockIsolated(true)
+        var client = daemon.client
+        let read = client.importable
+        client.importable = { host in
+            if down.value { throw DaemonDown() }
+            return try await read(host)
+        }
+        let store = TestStore(initialState: ImportSessionFeature.State(projects: [])) {
+            ImportSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.loadError)
+
+        down.setValue(false)
+        await store.send(.retryTapped)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.loadError)
+        XCTAssertEqual(store.state.sessions?.map(\.id), ["mac1"])
+    }
+
     func testTasksThatCantBeReadSaySoInTheSheetAndAreReadAgainOnAsking() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
@@ -1953,6 +2024,162 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.modelsLoading)
     }
 
+    /// A daemon with the host "far" whose hosts can't be read while
+    /// `down` is true, and a New Session sheet that remembers `host`.
+    private func hostStore(
+        remembering host: String?, down: LockIsolated<Bool>
+    ) async throws -> (InMemoryDaemon, TestStoreOf<NewSessionFeature>) {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        var client = daemon.client
+        let read = client.hosts
+        client.hosts = {
+            if down.value { throw DaemonDown() }
+            return try await read()
+        }
+        var initial = NewSessionFeature.State(project: nil)
+        initial.backend = .scripted
+        // Picked, so the defaults leave the agent as it is.
+        initial.picked = true
+        initial.host = host
+        let store = TestStore(initialState: initial) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+        return (daemon, store)
+    }
+
+    func testARememberedHostIsKeptAndStartWaitsUntilTheHostsAreRead() async throws {
+        let down = LockIsolated(true)
+        let (daemon, store) = try await hostStore(remembering: "far", down: down)
+
+        await store.send(.task)
+        await store.receive(\.hostsFailed)
+        XCTAssertEqual(store.state.host, "far")
+        XCTAssertNotNil(store.state.hostsFailure)
+        XCTAssertFalse(store.state.canStart)
+        await store.send(.startTapped)
+        XCTAssertTrue(daemon.sessions.isEmpty)
+
+        down.setValue(false)
+        await store.send(.hostsRetried)
+        await store.receive(\.hostsLoaded)
+        XCTAssertEqual(store.state.host, "far")
+        XCTAssertNil(store.state.hostsFailure)
+        XCTAssertTrue(store.state.canStart)
+    }
+
+    func testRunOnThisMacStartsHereWhenTheHostsCantBeRead() async throws {
+        let (daemon, store) = try await hostStore(remembering: "far", down: LockIsolated(true))
+
+        await store.send(.task)
+        await store.receive(\.hostsFailed)
+        await store.send(.thisMacPicked)
+        XCTAssertNil(store.state.host)
+        XCTAssertNil(store.state.hostsFailure)
+        XCTAssertTrue(store.state.canStart)
+        await store.send(.startTapped)
+        await store.receive(\.delegate.started)
+        XCTAssertEqual(daemon.sessions.count, 1)
+        XCTAssertNil(daemon.sessions.first?.host)
+    }
+
+    func testWithNoHostRememberedAFailedHostsReadLeavesStartAlone() async throws {
+        let (_, store) = try await hostStore(remembering: nil, down: LockIsolated(true))
+
+        await store.send(.task)
+        await store.receive(\.hostsFailed)
+        XCTAssertNotNil(store.state.hostsFailure)
+        XCTAssertTrue(store.state.canStart)
+    }
+
+    func testTryingAgainFromTheInboxSendsTheMessagesImagesToo() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let picture = ImageAttachment(mediaType: "image/png", data: Data([1, 2, 3]))
+        try await daemon.client.sendImages(session.id, "what is it?", [picture], .enqueue)
+        let store = inboxStore(daemon)
+
+        await store.send(.inboxRetryTapped(session.id))
+        await store.receive(\.loaded)
+        let sent = try await daemon.client.history(session.id).compactMap { event -> [String]? in
+            guard case .userMessage("what is it?", let images) = event.kind else { return nil }
+            return images
+        }
+        XCTAssertEqual(sent.count, 2)
+        let again = try XCTUnwrap(sent.last)
+        XCTAssertEqual(again.count, 1)
+        for name in again {
+            let read = try await daemon.client.readImage(session.id, name)
+            XCTAssertEqual(read, picture)
+        }
+        XCTAssertEqual(store.state.retrying, [])
+    }
+
+    func testTryingAgainFromTheInboxSendsNothingWhenAnImageCantBeRead() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let picture = ImageAttachment(mediaType: "image/png", data: Data([1, 2, 3]))
+        try await daemon.client.sendImages(session.id, "what is it?", [picture], .enqueue)
+        let sent = LockIsolated(0)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemon.readImage = { _, _ in throw DaemonDown() }
+            $0.daemon.send = { _, _, _ in sent.withValue { $0 += 1 } }
+            $0.daemon.sendImages = { _, _, _, _ in sent.withValue { $0 += 1 } }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.inboxRetryTapped(session.id))
+        await store.receive(\.answerFailed)
+        XCTAssertEqual(sent.value, 0)
+        XCTAssertNotNil(store.state.destination?.alert)
+        // The row is no longer being sent, so it can be tried again.
+        XCTAssertEqual(store.state.retrying, [])
+        await settle(store)
+    }
+
+    func testAnArchiveThatFailsAfterTheAnswerLeavesTheRequestAnswered() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, projectID: project.id, itemID: task.id))
+        let move = daemon.addRequest(session.id, .move(item: task.id, status: .done), "Login works.")
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemon.update = { _, _ in throw DaemonDown() }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        await store.send(.requestAnswered(move.id, .approve))
+        await store.send(.destination(.presented(.alert(.closeItem(move.id, .approve, archive: true)))))
+        await store.receive(\.answerFailed)
+        await store.receive(\.loaded)
+
+        let status = try await daemon.client.items(project.id).first?.status
+        XCTAssertEqual(status, .done)
+        XCTAssertTrue(store.state.answered.contains(move.id))
+        XCTAssertFalse(store.state.inbox.contains { $0.request != nil })
+        XCTAssertNotNil(store.state.destination?.alert)
+        let archived = try await daemon.client.sessions(nil).first { $0.id == session.id }?.archived
+        XCTAssertEqual(archived, false)
+    }
+
     func testARepositoryRowSaysWhenItNeedsAFullPath() {
         XCTAssertFalse(RepositoryRow(id: 0).needsFullPath)
         XCTAssertFalse(RepositoryRow(id: 0, path: "  ").needsFullPath)
@@ -1962,3 +2189,6 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertTrue(RepositoryRow(id: 0, path: "code/humata").needsFullPath)
     }
 }
+
+/// The daemon couldn't be reached.
+private struct DaemonDown: Error {}

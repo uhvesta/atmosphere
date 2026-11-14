@@ -941,6 +941,77 @@ final class ChatCommandTests: XCTestCase {
         XCTAssertEqual(store.state.draft, "half a thought")
     }
 
+    func testRewindAskedForWhereTheBoxIsntShownGoesToTheChat() async {
+        let store = fed("rewind-from-review")
+        await store.send(.receivedAll([event("e1", .userMessage("one"))]))
+        await store.send(.tabPicked(.review))
+
+        await store.send(.rewindPickerAsked)
+        await store.receive(\.tabPicked)
+        XCTAssertEqual(store.state.tab, .chat)
+        XCTAssertEqual(messages(store.state.rewindPicker), ["one"])
+    }
+
+    func testRewindAskedForWithNothingToRewindToLeavesTheTabAsItIs() async {
+        let store = fed("rewind-nothing-from-review")
+        await store.send(.receivedAll([event("e1", .idle)]))
+        await store.send(.historyReplayed)
+        await store.send(.tabPicked(.review))
+
+        await store.send(.rewindPickerAsked)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.tab, .review)
+        XCTAssertNil(store.state.rewindPicker)
+        XCTAssertNotNil(store.state.alert, "it says why there's nothing to pick")
+    }
+
+    func testPickingARewindPointHasTheBoxTakeTheCaret() async throws {
+        let store = fed("rewind-picked-caret")
+        await store.send(.receivedAll([event("e1", .userMessage("one"))]))
+        await store.send(.rewindPickerAsked)
+        let point = try XCTUnwrap(store.state.rewindPicker?.points.first?.id)
+        let before = store.state.boxFocus
+
+        await store.send(.rewindPickerPicked(point))
+        XCTAssertNil(store.state.rewindPicker)
+        XCTAssertNotEqual(store.state.boxFocus, before)
+    }
+
+    func testAChatShownAgainAsksItsHostForItsCommandsAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let asked = LockIsolated(0)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
+            // The first answer never comes while its view is there.
+            $0.daemon.chatCommands = { _ in
+                let first = asked.withValue { count in
+                    count += 1
+                    return count == 1
+                }
+                if first { try await Task.sleep(for: .seconds(3600)) }
+                return ChatCommands()
+            }
+        }
+        store.exhaustivity = .off
+
+        let shown = await store.send(.task)
+        for _ in 0..<1000 where asked.value == 0 { await Task.yield() }
+        XCTAssertEqual(asked.value, 1)
+        // The view goes, and its task with it.
+        await shown.cancel()
+        XCTAssertNil(store.state.chatCommands)
+
+        let again = await store.send(.task)
+        await store.receive(\.commandsLoaded, timeout: .seconds(1))
+        XCTAssertEqual(asked.value, 2)
+        XCTAssertNotNil(store.state.chatCommands)
+        await again.cancel()
+    }
+
     func testClosingTheRewindPickerHasTheBoxTakeTheCaret() async {
         let store = fed("rewind-caret")
         await store.send(.receivedAll([event("e1", .userMessage("one"))]))

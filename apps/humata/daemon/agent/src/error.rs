@@ -54,6 +54,11 @@ pub enum AgentError {
     CompactWhileWorking { session: SessionId },
 
     #[error(
+        "session {session}'s turn is being stopped right now, so its conversation can't be summed up yet; ask again in a moment, once the chat shows the turn stopped"
+    )]
+    Stopping { session: SessionId },
+
+    #[error(
         "session {session} has no finished turn yet, so there is nothing to sum up; send it a message first"
     )]
     NothingToCompact { session: SessionId },

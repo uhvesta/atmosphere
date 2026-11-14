@@ -1061,6 +1061,12 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 /// message, reply and tool call in the history. A reply's text and the
 /// calls it made go in one message, each call followed by its result, and
 /// a message the person sent while calls ran comes after their results.
+/// A message sent to steer a turn while a reply was on its way, the
+/// turn's first or the one after a step's calls all had their results,
+/// comes after that reply, which was asked for without it. The history
+/// can't tell one logged between a step's last result and the next request
+/// being built from one logged just after: it was in that request, and is
+/// shown one reply late in later ones.
 /// The images of the latest message that has any, read from `images`, go
 /// with it as data URLs; an earlier message's are only noted, since
 /// sending every image again each turn costs tokens and can make the
@@ -1119,8 +1125,10 @@ fn messages(
     let mut reply = Said::default();
     // Sent while the reply's calls ran, so after their results.
     let mut waiting: Vec<Value> = Vec::new();
-    // Sent to steer a turn while the reply it answers was on its way: the
-    // reply was logged after them but asked for before, so they follow it.
+    // Sent to steer a turn while a reply was on its way, with nothing said
+    // yet in the turn or with every call of the reply before answered: the
+    // reply was logged after them but asked for before, so they follow it,
+    // or end the request if it hasn't come.
     let mut steered: Vec<Value> = Vec::new();
     let mut in_turn = false;
     for (index, event) in history.iter().enumerate() {
@@ -1138,6 +1146,17 @@ fn messages(
                 };
                 let message = json!({"role": "user", "content": content});
                 if in_turn && reply.is_empty() {
+                    steered.push(message);
+                    continue;
+                }
+                if in_turn
+                    && !reply.calls.is_empty()
+                    && reply.calls.iter().all(|(_, result)| result.is_some())
+                {
+                    // The step before is whole, so the next reply was asked
+                    // for already: that step goes out, and this follows
+                    // the reply.
+                    reply.end_after(&mut messages, &mut waiting, &mut steered);
                     steered.push(message);
                     continue;
                 }
@@ -2392,6 +2411,47 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_steer_sent_while_the_reply_after_a_tool_step_is_on_its_way_follows_that_reply() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let held = Arc::new(tokio::sync::Notify::new());
+        let server = serve_held(
+            listener,
+            json!({"object": "list", "data": []}),
+            vec![
+                (200, sse(&call("c1", "list_folder", json!({})))),
+                (200, sse(&[text("Second.")])),
+                (200, sse(&[text("Third.")])),
+            ],
+            Some(held.clone()),
+        );
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "hi").await;
+
+        asked(&server, 1).await;
+        held.notify_one();
+        asked(&server, 2).await;
+        fixture
+            .agent
+            .send(&id, "and this".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        held.notify_one();
+        asked(&server, 3).await;
+        held.notify_one();
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let turns = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::TurnStarted))
+            .count();
+        assert_eq!(turns, 1, "{events:#?}");
+        let mut said = said(&server.requests()[2]);
+        let last = said.split_off(said.len().saturating_sub(2));
+        assert_eq!(last, ["assistant: Second.", "user: and this"]);
+    }
+
     /// The results of the tools the model called, as it was sent them.
     fn results(request: &Value) -> Vec<String> {
         said(request)
@@ -3413,6 +3473,91 @@ mod tests {
         assert_eq!(messages[2]["content"], json!("Looking."));
         assert_eq!(messages[2]["tool_calls"].as_array().map(Vec::len), Some(2));
         assert_eq!(messages[5]["content"], json!("also check the tests"));
+    }
+
+    fn usage() -> EventKind {
+        EventKind::Usage {
+            model: "qwen3".into(),
+            input_tokens: 1,
+            output_tokens: 1,
+            premium_requests: 0.0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        }
+    }
+
+    fn reply(text: &str) -> EventKind {
+        EventKind::AssistantMessage { text: text.into() }
+    }
+
+    /// Each message after the instructions, as its role and what it says.
+    fn spoken(messages: &[Value]) -> Vec<(&str, &str)> {
+        messages
+            .iter()
+            .skip(1)
+            .map(|message| {
+                (
+                    message["role"].as_str().unwrap_or_default(),
+                    message["content"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_steer_logged_after_a_steps_results_comes_after_the_reply_that_followed() {
+        let history = [
+            user("go"),
+            EventKind::TurnStarted,
+            usage(),
+            reply("Looking."),
+            started("c1"),
+            completed("c1", "ok"),
+            user("also check the tests"),
+            usage(),
+            reply("Looked."),
+            EventKind::TurnEnded { aborted: false },
+            EventKind::TurnStarted,
+        ]
+        .map(Event::now);
+        let messages = messages(None, &history, None, UNKNOWN_CONTEXT_SENT);
+        assert_eq!(
+            spoken(&messages),
+            vec![
+                ("user", "go"),
+                ("assistant", "Looking."),
+                ("tool", "ok"),
+                ("assistant", "Looked."),
+                ("user", "also check the tests"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_steer_logged_while_a_call_runs_stays_before_the_reply_that_followed() {
+        let history = [
+            user("go"),
+            EventKind::TurnStarted,
+            usage(),
+            reply("Looking."),
+            started("c1"),
+            user("also check the tests"),
+            completed("c1", "ok"),
+            usage(),
+            reply("Looked."),
+        ]
+        .map(Event::now);
+        let messages = messages(None, &history, None, UNKNOWN_CONTEXT_SENT);
+        assert_eq!(
+            spoken(&messages),
+            vec![
+                ("user", "go"),
+                ("assistant", "Looking."),
+                ("tool", "ok"),
+                ("user", "also check the tests"),
+                ("assistant", "Looked."),
+            ]
+        );
     }
 
     fn outputs(history: &[Event]) -> Vec<String> {

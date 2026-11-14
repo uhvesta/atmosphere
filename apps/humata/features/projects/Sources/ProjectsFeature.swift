@@ -296,6 +296,9 @@ package struct ProjectsFeature {
             case wideningMode
             case retrying(Session.ID)
             case answeringRequest
+            /// The request was answered, but the session named wasn't
+            /// stopped and archived after.
+            case closingAfterAnswer(String)
         }
 
         @CasePathable
@@ -807,11 +810,27 @@ package struct ProjectsFeature {
                 guard state.retrying.insert(id).inserted else { return .none }
                 return .run { send in
                     let history = try await daemon.history(id)
-                    let last = history.reversed().lazy.compactMap { event -> String? in
-                        guard case .userMessage(let text, _) = event.kind else { return nil }
-                        return text
+                    let last = history.reversed().lazy.compactMap { event -> (text: String, images: [String])? in
+                        guard case .userMessage(let text, let images) = event.kind else { return nil }
+                        return (text, images)
                     }.first
-                    if let last { try await daemon.send(id, last, .enqueue) }
+                    guard let last else {
+                        await send(
+                            .answerFailed(
+                                .retrying(id),
+                                "This session has no message of yours to send again. "
+                                    + "Open the session and write to it."))
+                        return
+                    }
+                    if last.images.isEmpty {
+                        try await daemon.send(id, last.text, .enqueue)
+                    } else {
+                        // Its images go with it again; one that can't be
+                        // read fails the retry, as in the chat.
+                        var attachments: [ImageAttachment] = []
+                        for name in last.images { attachments.append(try await daemon.readImage(id, name)) }
+                        try await daemon.sendImages(id, last.text, attachments, .enqueue)
+                    }
                     await send(.inboxRetried(id))
                     await send(await load())
                 } catch: { error, send in
@@ -916,6 +935,8 @@ package struct ProjectsFeature {
                     title = "Couldn't send the message again"
                 case .answeringRequest:
                     title = "Couldn't answer the request"
+                case .closingAfterAnswer(let name):
+                    title = "Couldn't stop and archive \(name)"
                 }
                 state.present(
                     AlertState {
@@ -990,11 +1011,21 @@ package struct ProjectsFeature {
                 throw error
             }
             await send(.requestAnswerSent(id))
-            for session in sessions where session.state == .working || session.state == .waitingForApproval {
-                try await daemon.stopAll(session.id)
-            }
+            // The answer went, so a session that can't be stopped or
+            // archived is its own failure, and the others still close.
             for session in sessions {
-                _ = try await daemon.update(session.id, SessionUpdate(archived: true))
+                do {
+                    if session.state == .working || session.state == .waitingForApproval {
+                        try await daemon.stopAll(session.id)
+                    }
+                    _ = try await daemon.update(session.id, SessionUpdate(archived: true))
+                } catch {
+                    await send(
+                        .answerFailed(
+                            .closingAfterAnswer(session.name),
+                            "The request was answered and the task moved, but this session wasn't stopped "
+                                + "and archived: \(error.localizedDescription) Archive it from the sidebar."))
+                }
             }
             await send(await load())
         } catch: { error, send in
@@ -1281,6 +1312,11 @@ package struct NewSessionFeature {
         package var hosts: [RemoteHost] = []
         /// Where it runs; nil for this Mac.
         package var host: RemoteHost.ID?
+        /// Whether the hosts were read, so a remembered one is known to be
+        /// there still.
+        package var hostsRead = false
+        /// Why the hosts couldn't be read.
+        package var hostsFailure: String?
         package var starting = false
         /// What the backend offers on the host, to pick the model from.
         package var models: [ModelChoice] = []
@@ -1303,7 +1339,9 @@ package struct NewSessionFeature {
 
         /// A local model server has no default model, so one must be named.
         package var needsModel: Bool { backend == .local && model.trimmed.isEmpty }
-        package var canStart: Bool { !starting && !needsModel }
+        /// A session for a host waits until the hosts are read: started
+        /// before, it could run somewhere the person didn't pick.
+        package var canStart: Bool { !starting && !needsModel && (host == nil || hostsRead) }
 
         /// What starting waits on: fetching the project's repositories,
         /// which a planning session or a chat doesn't.
@@ -1383,6 +1421,12 @@ package struct NewSessionFeature {
         /// Every project's defaults, to start from with the project's over.
         case defaultsLoaded(SessionDefaults)
         case hostsLoaded([RemoteHost])
+        /// The hosts couldn't be read, so the one remembered stays.
+        case hostsFailed(String)
+        /// The person asked for the hosts to be read again.
+        case hostsRetried
+        /// The person gave up on the host remembered, for this Mac.
+        case thisMacPicked
         case modelsDue(request: Int)
         case modelsLoaded(request: Int, Result<[ModelChoice], any Error>)
         case startTapped
@@ -1447,10 +1491,7 @@ package struct NewSessionFeature {
                             await send(.defaultsLoaded(defaults))
                         }
                     },
-                    .run { send in
-                        // Without them, the session runs on this Mac.
-                        await send(.hostsLoaded((try? await daemon.hosts()) ?? []))
-                    },
+                    readHosts(),
                     loadModels(&state))
 
             case .defaultsLoaded(let defaults):
@@ -1461,11 +1502,27 @@ package struct NewSessionFeature {
 
             case .hostsLoaded(let hosts):
                 state.hosts = hosts
+                state.hostsRead = true
+                state.hostsFailure = nil
                 if let host = state.host, !hosts.contains(where: { $0.id == host }) {
                     state.host = nil
                     return loadModels(&state)
                 }
                 return .none
+
+            case .hostsFailed(let message):
+                state.hostsFailure = message
+                return .none
+
+            case .hostsRetried:
+                state.hostsFailure = nil
+                return readHosts()
+
+            case .thisMacPicked:
+                state.hostsFailure = nil
+                guard state.host != nil else { return .none }
+                state.host = nil
+                return loadModels(&state)
 
             case .modelsDue(let request):
                 guard request == state.modelsRequest else { return .none }
@@ -1528,6 +1585,14 @@ package struct NewSessionFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    private func readHosts() -> Effect<Action> {
+        .run { send in
+            await send(.hostsLoaded(try await daemon.hosts()))
+        } catch: { error, send in
+            await send(.hostsFailed(error.localizedDescription))
+        }
     }
 
     /// Lists what the backend offers where the session would run, dropping

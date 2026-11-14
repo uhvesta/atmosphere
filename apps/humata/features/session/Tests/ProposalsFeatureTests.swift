@@ -37,6 +37,25 @@ final class ProposalsFeatureTests: XCTestCase {
         await watching.cancel()
     }
 
+    func testAChatOpenedWithItsHistoryAlreadyHereListsWhatWasProposed() async throws {
+        let (daemon, _, session) = try await planning()
+        // As restored after a look away: the events, and no proposals.
+        var state = SessionFeature.State(session: session)
+        state.events = IdentifiedArray(uniqueElements: daemon.history(session.id))
+        XCTAssertTrue(state.pendingProposals.isEmpty)
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await store.receive(\.proposals.listed, timeout: .seconds(1))
+        XCTAssertEqual(store.state.pendingProposals.map(\.title), ["Login form", "Dark mode", "Confetti"])
+        await watching.cancel()
+    }
+
     func testApplyingAsEditedPutsTheEditOnTheBoardAndDecliningPutsNothing() async throws {
         let (daemon, project, session) = try await planning()
         let proposals = try await daemon.client.proposals(session.id)

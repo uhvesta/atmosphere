@@ -323,17 +323,9 @@ private struct DiffLines: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !store.canComment {
-                    HStack {
-                        Text("Comments go on Everything, Unstaged or Against a Branch.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("Show Everything") { store.send(.rangePicked(.session)) }
-                            .buttonStyle(.link)
-                            .controlSize(.small)
-                            .help("Show every change this session made, where lines can be commented on")
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 6)
+                    CommentsGoElsewhere(store: store)
+                        .padding(.horizontal)
+                        .padding(.vertical, 6)
                 }
                 if !elsewhere.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
@@ -524,8 +516,26 @@ extension Highlighter {
     }
 }
 
+/// Said above a file shown in a range that takes no comments, with the way
+/// to one that does.
+private struct CommentsGoElsewhere: View {
+    let store: StoreOf<ReviewFeature>
+
+    var body: some View {
+        HStack {
+            Text("Comments go on Everything, Unstaged or Against a Branch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Show Everything") { store.send(.rangePicked(.session)) }
+                .buttonStyle(.link)
+                .controlSize(.small)
+                .help("Show every change this session made, where lines can be commented on")
+        }
+    }
+}
+
 /// A Markdown file as it reads, block by block; a click on a block comments
-/// on it.
+/// on it where the range shown takes comments.
 private struct RenderedMarkdown: View {
     let store: StoreOf<ReviewFeature>
     let file: FileDiff
@@ -535,10 +545,14 @@ private struct RenderedMarkdown: View {
         let rendered = ReviewFeature.rendered(file)
         let added = Set(rendered.lines.filter { $0.kind == .added }.compactMap(\.new))
         let threads = store.state.shownThreads(on: ref)
+        let canComment = store.canComment
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
+                if !canComment {
+                    CommentsGoElsewhere(store: store)
+                }
                 ForEach(rendered.blocks) { block in
-                    MarkdownBlockView(block: block)
+                    let shown = MarkdownBlockView(block: block)
                         .padding(.leading, 10)
                         .overlay(alignment: .leading) {
                             if (block.startLine...block.endLine).contains(where: added.contains) {
@@ -549,20 +563,26 @@ private struct RenderedMarkdown: View {
                             store.commenting?.covers(block.endLine, in: ref) == true
                                 ? Color.accentColor.opacity(0.15) : .clear, in: .rect(cornerRadius: 4)
                         )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            store.send(
-                                .blockTapped(
-                                    startLine: block.startLine, endLine: block.endLine,
-                                    quote: String(block.text.prefix(200))))
-                        }
-                        .accessibilityAction(named: "Comment") {
-                            store.send(
-                                .blockTapped(
-                                    startLine: block.startLine, endLine: block.endLine,
-                                    quote: String(block.text.prefix(200))))
-                        }
-                        .help("Click to comment on this")
+                    // Offered only where a comment can be made.
+                    if canComment {
+                        shown
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                store.send(
+                                    .blockTapped(
+                                        startLine: block.startLine, endLine: block.endLine,
+                                        quote: String(block.text.prefix(200))))
+                            }
+                            .accessibilityAction(named: "Comment") {
+                                store.send(
+                                    .blockTapped(
+                                        startLine: block.startLine, endLine: block.endLine,
+                                        quote: String(block.text.prefix(200))))
+                            }
+                            .help("Click to comment on this")
+                    } else {
+                        shown
+                    }
                     ForEach(threads.filter { (block.startLine...block.endLine).contains($0.endLine) }) { thread in
                         ThreadView(store: store, thread: thread, showsCode: false)
                     }

@@ -136,12 +136,16 @@ package struct AppFeature {
 
         /// Marks the columns showing request `id` as being answered or not.
         /// One being answered keeps its strip, busy, until the answer lands.
+        /// One no longer answered forgets which answer it was, so the next
+        /// isn't shown under the last one's name.
         mutating func answering(_ id: AgentRequest.ID, _ answering: Bool) {
-            if session?.request?.id == id, session?.answeringRequest != answering {
-                session?.answeringRequest = answering
+            if session?.request?.id == id {
+                if session?.answeringRequest != answering { session?.answeringRequest = answering }
+                if !answering, session?.requestAnswer != nil { session?.requestAnswer = nil }
             }
-            if side?.request?.id == id, side?.answeringRequest != answering {
-                side?.answeringRequest = answering
+            if side?.request?.id == id {
+                if side?.answeringRequest != answering { side?.answeringRequest = answering }
+                if !answering, side?.requestAnswer != nil { side?.requestAnswer = nil }
             }
         }
 

@@ -63,7 +63,8 @@ package struct SavedRepositoriesFeature {
 
     package enum Failure: Equatable, Sendable {
         case load
-        case rename
+        /// The repository and the name typed for it.
+        case rename(SavedRepository.ID, String)
         case remove
         case addOwner
         case removeOwner
@@ -104,8 +105,7 @@ package struct SavedRepositoriesFeature {
                 state.loading = false
                 state.repositories = repositories
                 state.owners = owners
-                Self.settle(&state)
-                return .none
+                return narrowListing(&state)
 
             case .repositoriesChanged(let repositories):
                 state.repositories = repositories
@@ -113,9 +113,7 @@ package struct SavedRepositoriesFeature {
 
             case .ownersChanged(let owners):
                 state.owners = owners
-                state.listing = state.listing.filter { login in Self.pending(login, in: owners) }
-                Self.settle(&state)
-                return state.listing.isEmpty ? .cancel(id: CancelID.listing) : .none
+                return narrowListing(&state)
 
             case .listingEnded:
                 // A minute on, the daemon has neither listed them nor said
@@ -149,7 +147,7 @@ package struct SavedRepositoriesFeature {
                 return .run { send in
                     await send(.repositoriesChanged(try await daemon.renameSavedRepository(id, name)))
                 } catch: { error, send in
-                    await send(.failed(.rename, error.localizedDescription))
+                    await send(.failed(.rename(id, name), error.localizedDescription))
                 }
 
             case .removeTapped(let id):
@@ -210,8 +208,7 @@ package struct SavedRepositoriesFeature {
             case .refreshed(let login, let owners):
                 state.refreshing.remove(login ?? "")
                 state.owners = owners
-                Self.settle(&state)
-                return reloadRepositories()
+                return .merge(narrowListing(&state), reloadRepositories())
 
             case .failed(let failure, let message):
                 state.failure = Self.message(failure, message)
@@ -219,7 +216,14 @@ package struct SavedRepositoriesFeature {
                 case .load: state.loading = false
                 case .addOwner: state.addingOwner = false
                 case .refresh(let login): state.refreshing.remove(login ?? "")
-                case .rename, .remove, .removeOwner: break
+                case .rename(let id, let name):
+                    // What was typed comes back to be changed or sent
+                    // again, unless another name is being typed by now.
+                    if state.renaming == nil, state.repositories?.contains(where: { $0.id == id }) == true {
+                        state.renaming = id
+                        state.newName = name
+                    }
+                case .remove, .removeOwner: break
                 }
                 return .none
             }
@@ -230,6 +234,16 @@ package struct SavedRepositoriesFeature {
     private static func pending(_ login: String, in owners: [RepositoryOwner]) -> Bool {
         guard let owner = owners.first(where: { $0.login == login }) else { return false }
         return owner.refreshed == nil && owner.error == nil
+    }
+
+    /// Takes out of `listing` the owners the latest read shows as listed or
+    /// failed, and stops looking when none is left.
+    private func narrowListing(_ state: inout State) -> Effect<Action> {
+        let owners = state.owners ?? []
+        let before = state.listing
+        state.listing = before.filter { Self.pending($0, in: owners) }
+        Self.settle(&state)
+        return !before.isEmpty && state.listing.isEmpty ? .cancel(id: CancelID.listing) : .none
     }
 
     /// Keeps as unfinished only the owners still neither listed nor
@@ -262,6 +276,9 @@ package struct SavedRepositoriesFeature {
         } catch: { error, send in
             guard !(error is CancellationError) else { return }
             await send(.failed(.load, error.localizedDescription))
+            // Looking stopped, so the owner reads as unfinished, with
+            // Refresh, not as being listed for good.
+            await send(.listingEnded)
         }
         .cancellable(id: CancelID.listing, cancelInFlight: true)
     }

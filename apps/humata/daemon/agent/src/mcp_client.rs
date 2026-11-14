@@ -55,7 +55,7 @@ pub(crate) enum McpClientError {
     TimedOut { method: String, seconds: u64 },
 
     #[error(
-        "{tool} didn't answer within {seconds}s, so Humata stopped waiting and told its server to give the call up. Call it again; if it takes wait_seconds, give a shorter one and call again for the rest"
+        "{tool} didn't answer within {seconds}s, so Humata stopped waiting and told its server to give the call up. If it only reads, call it again; if it takes wait_seconds, give a shorter one and call again for the rest. If it starts or sends something (start_session, send_message, a proposal, a question), it may have been done all the same: check with read_session or board before calling it again, or it may be done twice"
     )]
     CallTimedOut { tool: String, seconds: u64 },
 

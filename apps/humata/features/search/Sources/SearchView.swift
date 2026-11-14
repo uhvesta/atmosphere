@@ -103,6 +103,17 @@ package struct SearchView: View {
                     "Nothing found so far. Humata is still reading what the sessions said, and searches "
                         + "again as it does.")
             }
+        } else if store.hits.isEmpty, store.searched, store.incomplete {
+            // Not "No Results": the index never caught up while it searched.
+            ContentUnavailableView {
+                Label("Nothing Found Yet", systemImage: "text.magnifyingglass")
+            } description: {
+                Text(
+                    "Humata hasn't read every session yet, so what you're looking for may still turn up. "
+                        + "Search again in a moment.")
+            } actions: {
+                searchAgain
+            }
         } else if store.hits.isEmpty, store.searched {
             ContentUnavailableView.search(text: store.words.isEmpty ? store.text : store.words)
         } else {
@@ -115,7 +126,30 @@ package struct SearchView: View {
                 .buttonStyle(.plain)
             }
             .listStyle(.inset)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if store.incomplete {
+                    VStack(spacing: 0) {
+                        Divider()
+                        HStack(spacing: 8) {
+                            Text("Humata hasn't read every session yet, so some hits may be missing.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            searchAgain
+                                .controlSize(.small)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                    }
+                    .background(.bar)
+                }
+            }
         }
+    }
+
+    private var searchAgain: some View {
+        Button("Search Again") { store.send(.submitted) }
+            .accessibilityIdentifier("search.again")
     }
 
     private func named(since: Date, until: Date?) -> String {

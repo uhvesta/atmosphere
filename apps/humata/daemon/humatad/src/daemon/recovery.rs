@@ -256,6 +256,8 @@ impl Daemon {
         // behind mustn't offer it back as a recovery copy. Where it was is
         // kept until the mirrors are clean, so trying again cleans them.
         self.store.forget_all_but_placement(id)?;
+        // Its agent writes to no one any more.
+        self.person_wrote(id);
         let folder = self.mirrors(id, project);
         if project.is_some() {
             for (_, mirror) in mirrors_in(&folder) {

@@ -6,7 +6,8 @@ import HumataDaemonClient
 /// shown in Finder; cleaning up by hand, each part saying what it removes
 /// and how much first; and the daily cleanup, off unless the person turns
 /// it on. A cleanup runs in the daemon, and its progress is read again
-/// every half second until it's done.
+/// every half second until it's done; a read that fails is made again for
+/// about a minute before the cleanup is given up as lost.
 @Reducer
 package struct StorageFeature {
     @ObservableState
@@ -36,6 +37,10 @@ package struct StorageFeature {
         package var total: UInt64 { (storage?.total ?? 0) + modelsBytes }
     }
 
+    /// How many reads of a cleanup's progress may fail in a row, two seconds
+    /// apart, before it's given up: about a minute.
+    static let progressTries = 30
+
     package enum Action {
         case task
         case loaded(Storage)
@@ -45,6 +50,9 @@ package struct StorageFeature {
         case settingsFailed(autoDelete: Bool, days: Int, String)
         /// The cleanup didn't start.
         case cleanupFailed(String)
+        /// A cleanup's progress couldn't be read for too long to keep
+        /// waiting on: it's shown no more, and may still be running.
+        case cleanupLost(String)
         case modelDeleteFailed(String)
         case autoDeleteToggled(Bool)
         case daysPicked(Int)
@@ -92,11 +100,27 @@ package struct StorageFeature {
                 state.storage = storage
                 guard storage.job != nil else { return .cancel(id: CancelID.progress) }
                 return .run { send in
-                    try await clock.sleep(for: .milliseconds(500))
-                    await send(.loaded(try await daemon.storage()))
-                } catch: { error, send in
-                    guard !(error is CancellationError) else { return }
-                    await send(.failed(error.localizedDescription))
+                    var failures = 0
+                    while true {
+                        // Only the sleep throws here, and only when cancelled.
+                        try await clock.sleep(for: failures == 0 ? .milliseconds(500) : .seconds(2))
+                        do {
+                            // The next read is `.loaded`'s to schedule.
+                            await send(.loaded(try await daemon.storage()))
+                            return
+                        } catch is CancellationError {
+                            return
+                        } catch {
+                            failures += 1
+                            guard failures < Self.progressTries else {
+                                await send(.cleanupLost(error.localizedDescription))
+                                return
+                            }
+                            // Shown while it's read again: the cleanup may
+                            // well be running still.
+                            await send(.failed(error.localizedDescription))
+                        }
+                    }
                 }
                 .cancellable(id: CancelID.progress, cancelInFlight: true)
 
@@ -110,6 +134,11 @@ package struct StorageFeature {
                 return .none
 
             case .cleanupFailed(let message):
+                state.failure = message
+                state.storage?.job = nil
+                return .none
+
+            case .cleanupLost(let message):
                 state.failure = message
                 state.storage?.job = nil
                 return .none

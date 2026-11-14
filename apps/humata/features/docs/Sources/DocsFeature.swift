@@ -92,6 +92,8 @@ package struct DocsFeature {
         package var comment = ""
         package var drafts: IdentifiedArrayOf<Draft> = []
         package var loading = false
+        /// Why the folder's files couldn't be listed, until they are.
+        package var listFailure: String?
         package var sending = false
         /// Why the selected file couldn't be read, until it is.
         package var readFailure: String?
@@ -222,6 +224,7 @@ package struct DocsFeature {
 
             case .refresh:
                 state.loading = true
+                state.listFailure = nil
                 state.readFailure = nil
                 let session = state.sessionID
                 let list: Effect<Action> = .run { send in
@@ -234,6 +237,7 @@ package struct DocsFeature {
 
             case .listed(let files):
                 state.loading = false
+                state.listFailure = nil
                 state.files = files.files
                 state.truncated = files.truncated
                 guard state.selected.map({ selected in !files.files.contains { $0.path == selected } }) ?? true else {
@@ -260,6 +264,19 @@ package struct DocsFeature {
             case .failed(.reading(let path), let message):
                 // Said where the file would show, with Try Again.
                 if path == state.selected { state.readFailure = message }
+                return .none
+
+            case .failed(.listing, let message):
+                state.loading = false
+                state.listFailure = message
+                // With no files to show it's said where they would be, with
+                // Try Again; over files already listed it's an alert.
+                guard !state.files.isEmpty else { return .none }
+                state.alert = AlertState {
+                    TextState("Couldn’t list the chat’s files")
+                } message: {
+                    TextState(message)
+                }
                 return .none
 
             case .failed(let doing, let message):

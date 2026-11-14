@@ -319,11 +319,15 @@ impl Server {
                 match self.ask(pb::request::Kind::ReadHistory(read)).await? {
                     pb::response::Kind::History(history) => {
                         let event = text("event_id").unwrap_or_default();
-                        turn_text(&history.events, turn as u32, &event).ok_or_else(|| {
-                            format!(
-                                "session {session_id} has no turn {turn}; take it from a search hit"
-                            )
-                        })
+                        let from_byte = usize::try_from(whole(&arguments["from_byte"], u64::MAX))
+                            .unwrap_or(usize::MAX);
+                        turn_text(&history.events, turn as u32, &event, from_byte).ok_or_else(
+                            || {
+                                format!(
+                                    "session {session_id} has no turn {turn}; take it from a search hit"
+                                )
+                            },
+                        )
                     }
                     other => Err(unexpected(&other)),
                 }
@@ -533,7 +537,7 @@ impl Server {
             }
             "read_session" => {
                 let session_id = required(text("session_id"), "session_id")?;
-                let wait = arguments["wait_seconds"].as_u64().unwrap_or(0);
+                let wait = whole(&arguments["wait_seconds"], LONGEST_READ_WAIT);
                 self.read_session(&session_id, wait).await
             }
             _ => Err(format!("humata has no tool {name:?}; see tools/list")),
@@ -867,10 +871,22 @@ const TURN_TEXT: usize = 16 * 1024;
 const TURN_PART: usize = 1500;
 const EARLIER_LEFT_OUT: &str = "(Earlier in the turn left out.)\n";
 
+/// The most of one message in a turn, which leaves room to say how the
+/// rest of it is read.
+const TURN_MESSAGE: usize = TURN_TEXT - 1024;
+
 /// Turn `turn` of `events` (counted from 1, as search hits count them) as
 /// an agent reads it. When it's too long, it starts at `event`, the hit;
-/// with no event named, it keeps its end, where the reply is.
-fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<String> {
+/// with no event named, it keeps its end, where the reply is. A message
+/// too long to give whole says how to read on, and the message at `event`
+/// is read from `from_byte` of its text; from a byte above 0, the turn
+/// starts at that message however short it is.
+fn turn_text(
+    events: &[pb::SessionEvent],
+    turn: u32,
+    event: &str,
+    from_byte: usize,
+) -> Option<String> {
     use pb::session_event::Kind;
     let mut at = 1;
     let mut parts: Vec<(String, String)> = Vec::new();
@@ -879,8 +895,9 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
         .iter()
         .filter(|found| found.parent_call_id.is_empty())
     {
+        let from = if found.id == event { from_byte } else { 0 };
         if at == turn
-            && let Some(part) = event_text(found, usize::MAX, TURN_PART, None)
+            && let Some(part) = event_text(found, from, TURN_MESSAGE, TURN_PART, Some(turn))
         {
             parts.push((found.id.clone(), part));
         }
@@ -895,9 +912,12 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
         return None;
     }
     let total: usize = parts.iter().map(|(_, part)| part.len() + 1).sum();
-    let from = if total > TURN_TEXT {
-        match parts.iter().position(|(id, _)| id == event) {
+    let named = parts.iter().position(|(id, _)| id == event);
+    let from = if total > TURN_TEXT || from_byte > 0 {
+        match named {
             Some(at) => at,
+            // Nothing to carry on in: the turn as it is.
+            None if total <= TURN_TEXT => 0,
             None => {
                 // As many of its last parts as fit under the line that
                 // says the start is left out, and at least the last.
@@ -940,24 +960,55 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
     Some(text)
 }
 
-/// What `event` said or did, as an agent reads it: a message cut to
-/// `message` bytes, a tool's arguments or output to `tool`. A cut message
-/// says how read_turn reads the rest when `turn`, the turn it is in, is
-/// given. None for events that say nothing.
+/// The part of `text` from byte `from`, moved back to the start of a
+/// character, that is at most `most` bytes long, and where the rest starts
+/// if there is any. It always takes at least one character, so reading
+/// from each rest in turn reaches the end.
+fn part_of(text: &str, from: usize, most: usize) -> (&str, Option<usize>) {
+    let mut from = from.min(text.len());
+    while !text.is_char_boundary(from) {
+        from -= 1;
+    }
+    let mut end = from.saturating_add(most).min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == from {
+        end = text[from..]
+            .chars()
+            .next()
+            .map_or(from, |first| from + first.len_utf8());
+    }
+    (&text[from..end], (end < text.len()).then_some(end))
+}
+
+/// What `event` said or did, as an agent reads it: a message from byte
+/// `from` of its text, cut to `message` bytes, a tool's arguments or
+/// output to `tool`. A cut message says how read_turn reads on from where
+/// it was cut when `turn`, the turn it is in, is given. None for events
+/// that say nothing.
 fn event_text(
     event: &pb::SessionEvent,
+    from: usize,
     message: usize,
     tool: usize,
     turn: Option<u32>,
 ) -> Option<String> {
     use pb::session_event::Kind;
-    let said = |text: &str| match turn {
-        Some(turn) if text.len() > message => format!(
-            "{} Read all of this message with read_turn: turn {turn}, event_id {:?}.",
-            cut(text, message),
-            event.id
-        ),
-        _ => cut(text, message),
+    let said = |text: &str| {
+        let (part, rest) = part_of(text, from, message);
+        // Where the part ends, so what comes before it is its start.
+        let end = rest.unwrap_or(text.len());
+        let earlier = if end > part.len() { "…" } else { "" };
+        match (rest, turn) {
+            (Some(rest), Some(turn)) => format!(
+                "{earlier}{part}… ({} bytes more) Read on with read_turn: turn {turn}, event_id {:?}, from_byte {rest}.",
+                text.len() - rest,
+                event.id
+            ),
+            (Some(rest), None) => format!("{earlier}{part}… ({} bytes more)", text.len() - rest),
+            (None, _) => format!("{earlier}{part}"),
+        }
     };
     match &event.kind {
         Some(Kind::UserMessage(sent)) => Some(match crate::sender::sender(&sent.text) {
@@ -1037,7 +1088,7 @@ fn session_text(id: &str, listed: Option<&pb::SessionInfo>, events: &[pb::Sessio
     });
     let mut answer = last_reply.and_then(|at| {
         let (turn, event) = shown[at];
-        event_text(event, SESSION_REPLY, SESSION_TOOL, Some(turn))
+        event_text(event, 0, SESSION_REPLY, SESSION_TOOL, Some(turn))
     });
     if let Some(answer) = &answer {
         room = room.saturating_sub(answer.len() + 1);
@@ -1050,7 +1101,7 @@ fn session_text(id: &str, listed: Option<&pb::SessionInfo>, events: &[pb::Sessio
             kept.extend(answer.take());
             continue;
         }
-        let Some(part) = event_text(event, SESSION_MESSAGE, SESSION_TOOL, Some(*turn)) else {
+        let Some(part) = event_text(event, 0, SESSION_MESSAGE, SESSION_TOOL, Some(*turn)) else {
             continue;
         };
         if part.len() + 1 > room {
@@ -1079,6 +1130,24 @@ fn session_text(id: &str, listed: Option<&pb::SessionInfo>, events: &[pb::Sessio
         text.push('\n');
     }
     text
+}
+
+/// A whole number from `argument`, which clients send as an integer, a
+/// float or a number in a string: at most `cap`, and 0 for anything else
+/// or below 0.
+fn whole(argument: &Value, cap: u64) -> u64 {
+    let number = match argument {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse::<f64>().ok(),
+        _ => None,
+    };
+    match number {
+        Some(number) if number >= cap as f64 => cap,
+        // Above 0 and below the cap, so it fits; what follows the point
+        // is dropped.
+        Some(number) if number > 0.0 => number as u64,
+        _ => 0,
+    }
 }
 
 fn cut(text: &str, most: usize) -> String {
@@ -1334,6 +1403,7 @@ fn every_tool() -> Value {
                 "session_id": string("From the hit."),
                 "turn": {"type": "integer", "minimum": 1, "description": "From the hit."},
                 "event_id": string("From the hit; where to start when the turn is long."),
+                "from_byte": {"type": "integer", "minimum": 0, "description": "Where to carry on in the message at event_id, from the note a cut message ends with."},
             }), &["session_id", "turn"]),
         },
         {
@@ -1472,12 +1542,12 @@ mod tests {
             message("c", "second ask"),
             ended("d"),
         ];
-        let second = turn_text(&events, 2, "c").unwrap_or_default();
+        let second = turn_text(&events, 2, "c", 0).unwrap_or_default();
         assert!(
             second.contains("second ask") && !second.contains("first ask"),
             "{second}"
         );
-        assert_eq!(turn_text(&events, 4, ""), None);
+        assert_eq!(turn_text(&events, 4, "", 0), None);
     }
 
     #[test]
@@ -1932,11 +2002,11 @@ mod tests {
         assert!(!read.contains("THE-STEERS-END"), "{read}");
         assert!(read.contains("long-steer"), "{read}");
 
-        let opened = turn_text(&events, 2, "long-steer").unwrap_or_default();
+        let opened = turn_text(&events, 2, "long-steer", 0).unwrap_or_default();
         assert!(opened.contains("THE-STEERS-END"), "{opened}");
         assert!(!opened.contains("THE-TURNS-START"), "{opened}");
         // In another turn, the event opens nothing.
-        let other = turn_text(&events, 1, "long-steer").unwrap_or_default();
+        let other = turn_text(&events, 1, "long-steer", 0).unwrap_or_default();
         assert!(!other.contains("THE-STEERS-END"), "{other}");
     }
 
@@ -1968,10 +2038,89 @@ mod tests {
         ));
         events.push(said("end", Kind::TurnEnded(pb::TurnEnded::default())));
 
-        let text = turn_text(&events, 1, "").unwrap_or_default();
+        let text = turn_text(&events, 1, "", 0).unwrap_or_default();
         assert!(text.contains("THE-REPLY"), "{text}");
         assert!(!text.contains("THE-ASK"), "{text}");
         assert!(text.len() <= TURN_TEXT + 1024, "{}", text.len());
+    }
+
+    #[test]
+    fn a_text_read_part_by_part_is_read_whole() {
+        // Characters of two and three bytes, so cuts fall inside them.
+        let text = "héllo wörld ✓ ".repeat(40);
+        for most in [1, 7, 64] {
+            let mut read = String::new();
+            let mut from = Some(0);
+            while let Some(at) = from {
+                let (part, rest) = part_of(&text, at, most);
+                assert!(rest.is_none_or(|rest| rest > at), "no further from {at}");
+                read.push_str(part);
+                from = rest;
+            }
+            assert_eq!(read, text, "{most} bytes at a time");
+        }
+    }
+
+    /// One turn whose agent's reply, event "reply", is `text`.
+    fn replied(text: &str) -> Vec<pb::SessionEvent> {
+        use pb::session_event::Kind;
+        vec![
+            said(
+                "ask",
+                Kind::UserMessage(pb::UserMessage {
+                    text: "THE-ASK".to_owned(),
+                    ..Default::default()
+                }),
+            ),
+            said(
+                "reply",
+                Kind::AssistantMessage(pb::AssistantMessage {
+                    text: text.to_owned(),
+                }),
+            ),
+            said("end", Kind::TurnEnded(pb::TurnEnded::default())),
+        ]
+    }
+
+    #[test]
+    fn a_long_reply_read_from_a_byte_near_its_end_ends_with_its_last_words() {
+        let reply = format!("THE-FIRST-WORDS {}THE-LAST-WORDS", "word ".repeat(8 * 1024));
+        let events = replied(&reply);
+
+        let whole_turn = turn_text(&events, 1, "", 0).unwrap_or_default();
+        assert!(whole_turn.contains("THE-FIRST-WORDS"), "{whole_turn}");
+        assert!(!whole_turn.contains("THE-LAST-WORDS"), "{whole_turn}");
+
+        let end = turn_text(&events, 1, "reply", reply.len() - 2000).unwrap_or_default();
+        assert!(end.contains("THE-LAST-WORDS"), "{end}");
+        assert!(!end.contains("THE-FIRST-WORDS"), "{end}");
+        // It starts at the reply, short as what's left of the turn is.
+        assert!(!end.contains("THE-ASK"), "{end}");
+    }
+
+    #[test]
+    fn a_reply_cut_by_read_session_is_carried_on_by_read_turn_with_nothing_skipped() {
+        // Numbered, so no part of it is found anywhere but in its place.
+        let reply: String = (0..3000).map(|number| format!("word{number} ")).collect();
+        let events = replied(&reply);
+        let (first, rest) = part_of(&reply, 0, SESSION_REPLY);
+        let rest = rest.unwrap_or_else(|| panic!("the reply fits read_session"));
+
+        let read = session_text("child-id", None, &events);
+        assert!(read.contains(first), "{read}");
+        let carried_on = turn_text(&events, 1, "reply", rest).unwrap_or_default();
+        assert!(carried_on.contains(&reply[rest..]), "{carried_on}");
+    }
+
+    #[test]
+    fn a_wait_is_read_from_an_integer_a_float_or_a_string() {
+        for sixty in [json!(60), json!(60.0), json!("60")] {
+            assert_eq!(whole(&sixty, 600), 60, "{sixty}");
+        }
+        for none in [Value::Null, json!(-5), json!("soon")] {
+            assert_eq!(whole(&none, 600), 0, "{none}");
+        }
+        assert_eq!(whole(&json!(1e300), 600), 600);
     }
 
     #[test]

@@ -1285,6 +1285,10 @@ impl Host {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .remove(&session);
+                self.sent
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&session);
                 Response::SessionDeleted(pb::SessionDeleted { kept: false })
             }
             Request::ReadChanges(read) => {

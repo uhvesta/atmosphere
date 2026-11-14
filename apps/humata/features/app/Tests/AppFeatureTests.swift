@@ -1176,11 +1176,13 @@ final class AppFeatureTests: XCTestCase {
         outcome.yield(false)
         await store.receive(\.sidebar.requestNotAnswered)
         XCTAssertEqual(store.state.session?.answeringRequest, false)
+        XCTAssertNil(store.state.session?.requestAnswer, "the answer that failed is no longer the one shown")
         XCTAssertEqual(store.state.session?.request?.id, request.id)
 
         await store.send(\.session.requestAllowed)
         await store.receive(\.sidebar.requestAnswered)
         XCTAssertEqual(store.state.session?.answeringRequest, true)
+        XCTAssertEqual(store.state.session?.requestAnswer, .allowing)
         outcome.yield(true)
         await store.receive(\.sidebar.requestAnswerSent)
         XCTAssertEqual(answers.value, 2)

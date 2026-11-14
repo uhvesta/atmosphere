@@ -711,6 +711,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_image_sent_to_an_archived_session_isnt_kept() {
+        let fixture = fixture(vec![rule("", vec![say("a cat")])]);
+        let id = fixture.start().await;
+        let archive = crate::SessionUpdate {
+            archived: Some(true),
+            ..crate::SessionUpdate::default()
+        };
+        fixture.agent.update(&id, archive).await.expect("archived");
+
+        let sent = fixture
+            .agent
+            .send(&id, with_images("look", vec![png(1)]), SendMode::Enqueue)
+            .await;
+
+        assert!(matches!(sent, Err(AgentError::Archived { .. })), "{sent:?}");
+        let folder = fixture
+            .state
+            .path()
+            .join("sessions")
+            .join(id.as_str())
+            .join("images");
+        // The folder may be there or not; no file is in it.
+        let kept = std::fs::read_dir(&folder).map_or(0, Iterator::count);
+        assert_eq!(kept, 0);
+    }
+
+    #[tokio::test]
     async fn an_image_of_a_kind_the_agents_cant_read_is_refused() {
         let fixture = fixture(vec![]);
         let id = fixture.start().await;
@@ -1713,6 +1740,38 @@ mod tests {
         assert!(stopped < asked && asked < summed && summed < second);
         assert_eq!(user_messages(&events), vec!["hello", "first", "second"]);
         assert!(!fixture.work.path().join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_compaction_asked_for_with_stop_while_a_stop_is_under_way_is_refused_and_sums_nothing_up()
+     {
+        let fixture = fixture(waits_then_replies());
+        let (id, _) = after_a_turn(&fixture).await;
+        queue_behind_a_turn(&fixture, &id, &[]).await;
+
+        // The stop is polled first and waits for the turn to end, so the
+        // compaction is asked for with the stop under way.
+        let (stopped, compacting) = tokio::join!(
+            fixture.agent.abort(&id),
+            fixture.agent.compact(&id, String::new(), true),
+        );
+        stopped.expect("stopped");
+
+        assert!(
+            matches!(compacting, Err(AgentError::Stopping { .. })),
+            "{compacting:?}"
+        );
+        // Time for anything the stop left running to show.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert!(
+            !history.iter().any(|event| matches!(
+                event.kind,
+                EventKind::Compacting { .. } | EventKind::Compacted
+            )),
+            "{history:#?}"
+        );
+        assert_eq!(SessionState::after(&history), SessionState::Idle);
     }
 
     #[tokio::test]

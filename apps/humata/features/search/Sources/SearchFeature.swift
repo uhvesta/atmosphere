@@ -36,6 +36,9 @@ package struct SearchFeature {
         /// Whether the index was still filling when it was last searched:
         /// it's searched again in a moment, as hits may be missing.
         package var indexing = false
+        /// Whether the search ended with the index still filling: what's
+        /// shown may miss hits, until it's searched again.
+        package var incomplete = false
         /// Whether the text was searched since it last changed.
         package var searched = false
         package var failure: String?
@@ -167,12 +170,15 @@ package struct SearchFeature {
 
             case .finished:
                 state.isSearching = false
+                // Given up on while the index still filled: said, not hidden.
+                state.incomplete = state.indexing
                 state.indexing = false
                 return .none
 
             case .failed(_, let message):
                 state.isSearching = false
                 state.indexing = false
+                state.incomplete = false
                 state.searched = true
                 state.failure = message
                 return .none
@@ -196,6 +202,7 @@ package struct SearchFeature {
         let text = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         state.queried = text
         state.searched = false
+        state.incomplete = false
         let stop = Effect<Action>.cancel(id: SearchID(request: state.request))
         state.request += 1
         guard !text.isEmpty else {

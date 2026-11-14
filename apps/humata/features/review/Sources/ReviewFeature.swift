@@ -280,6 +280,8 @@ package struct ReviewFeature {
         /// Shows what the agent changed in the turn it answered the thread.
         case showFixTapped(ReviewThread.ID)
         case viewedToggled(FileRef)
+        /// The daemon didn't take the mark: the file goes back to `was`.
+        case viewedNotMarked(FileRef, was: Bool, String)
         case editTapped(ChangeEdit)
         case edited
         /// Puts the picked lines, with the comment written so far, in the
@@ -570,16 +572,16 @@ package struct ReviewFeature {
                 guard let diff = state.diff(file), !diff.blob.isEmpty else { return .none }
                 let session = state.sessionID
                 let viewed = !diff.viewed
-                if let repository = state.repositories.firstIndex(where: { $0.name == file.repository }),
-                    let index = state.repositories[repository].files.firstIndex(where: { $0.path == file.path })
-                {
-                    state.repositories[repository].files[index].viewed = viewed
-                }
+                Self.mark(file, viewed: viewed, in: &state)
                 return .run { _ in
                     try await daemon.markViewed(session, file, diff.blob, viewed)
                 } catch: { error, send in
-                    await send(.failed(.markingViewed, error.localizedDescription))
+                    await send(.viewedNotMarked(file, was: !viewed, error.localizedDescription))
                 }
+
+            case .viewedNotMarked(let file, let was, let message):
+                Self.mark(file, viewed: was, in: &state)
+                return .send(.failed(.markingViewed, message))
 
             case .editTapped(let edit):
                 guard !state.editing else { return .none }
@@ -599,6 +601,14 @@ package struct ReviewFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// Shows `file` as viewed or not, where it's listed.
+    private static func mark(_ file: FileRef, viewed: Bool, in state: inout State) {
+        guard let repository = state.repositories.firstIndex(where: { $0.name == file.repository }),
+            let index = state.repositories[repository].files.firstIndex(where: { $0.path == file.path })
+        else { return }
+        state.repositories[repository].files[index].viewed = viewed
     }
 
     private func load(_ state: inout State) -> Effect<Action> {

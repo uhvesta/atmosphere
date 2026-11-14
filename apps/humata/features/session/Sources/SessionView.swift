@@ -1095,6 +1095,7 @@ struct SentBySession: View {
 /// only this.
 private struct MessageEditor: View {
     @Bindable var store: StoreOf<SessionFeature>
+    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -1105,17 +1106,42 @@ private struct MessageEditor: View {
                 .padding(6)
                 .background(.fill.quaternary, in: .rect(cornerRadius: 10))
                 .accessibilityLabel("Edited message")
+                .focused($focused)
+                // On the editor, not window-wide: Escape and ⌘Return mean
+                // this only while the caret is here.
+                .onKeyPress(keys: [.escape, .return]) { press in
+                    if press.key == .escape {
+                        store.send(.editCancelled)
+                        return .handled
+                    }
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    if canSend { store.send(.editSent) }
+                    return .handled
+                }
             HStack {
                 Text(caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { store.send(.editCancelled) }
+                    .help("Leave the message as it was (Esc)")
                 Button("Send to a Fork") { store.send(.editSent) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.forking || store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSend)
+                    .help("Send the edited message to a fork (⌘↩)")
             }
         }
+        // Once for an edit: a row scrolled back into view finds the flag
+        // clear, and leaves the caret where the person put it.
+        .onAppear {
+            guard store.editCaret else { return }
+            focused = true
+            store.send(.editCaretTaken)
+        }
+    }
+
+    private var canSend: Bool {
+        !store.forking && !store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// What sending does, which for a read-only chat isn't what it does
@@ -1738,11 +1764,22 @@ private struct WaitingStrip: View {
             }
         case .move(_, let status):
             HStack(alignment: .firstTextBaseline) {
-                Label(LocalizedStringKey(request.text), systemImage: "checkmark.seal")
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(LocalizedStringKey(request.text), systemImage: "checkmark.seal")
+                        .textSelection(.enabled)
+                    Text(
+                        "Not Yet takes this off your list; write to the agent to say what’s left. Feedback "
+                            + "and other columns are in the Inbox."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
                 Spacer()
                 answeringLabel
                 Button("Open Changes") { store.send(.tabPicked(.review)) }
+                Button("Not Yet") { store.send(.movePutOff) }
+                    .disabled(store.answeringRequest)
+                    .help("Leave the task where it is and take this request off your list")
                 Button("Move to \(status.title)") { store.send(.moveApproved) }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.answeringRequest)
@@ -1803,6 +1840,7 @@ private struct WaitingStrip: View {
         case .allowing?: "Allowing…"
         case .declining?: "Declining…"
         case .moving?: "Moving…"
+        case .puttingOff?: "Putting off…"
         // Answered elsewhere, such as in the Inbox.
         case nil: "Answering…"
         }
@@ -2086,6 +2124,10 @@ private struct SessionComposer: View {
         }
         if !store.images.isEmpty {
             ImageChips(images: store.images) { store.send(.removeImageTapped($0)) }
+            // They wait until it's known the model can see them.
+            if store.readsImages == nil {
+                imagesWaiting
+            }
         }
         if !store.pastes.isEmpty {
             PasteChips(
@@ -2136,6 +2178,41 @@ private struct SessionComposer: View {
                         .help(shortcuts ? "Send it to the running turn (⌘↩)" : "Send it to the running turn")
                 }
             }
+            .padding(.horizontal, 4)
+        }
+    }
+}
+
+extension SessionComposer {
+    /// Why the images in the box can't go yet: whether the model can see
+    /// them is being found out, or couldn't be.
+    @ViewBuilder fileprivate var imagesWaiting: some View {
+        if let failure = store.imagesCheckFailure {
+            HStack(alignment: .firstTextBaseline) {
+                Label {
+                    Text(
+                        "Couldn’t check whether this session’s model can see images: \(failure) Try again, or "
+                            + "take the images out to send the text now."
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
+                .foregroundStyle(.secondary)
+                Spacer()
+                Button("Try Again") { store.send(.readsImagesAsked) }
+                    .buttonStyle(.borderless)
+            }
+            .font(.callout)
+            .padding(.horizontal, 4)
+        } else {
+            Label {
+                Text("Checking whether this session’s model can see images…")
+            } icon: {
+                ProgressView().controlSize(.small)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
         }
     }

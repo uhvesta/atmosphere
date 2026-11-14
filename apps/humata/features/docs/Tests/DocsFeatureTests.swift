@@ -138,6 +138,42 @@ final class DocsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.lines?.first, "# Plan")
     }
 
+    func testAFolderThatCouldntBeListedSaysSoWhereItsFilesWouldBeUntilItIs() async throws {
+        let (daemon, session) = try await chat()
+        let reachable = LockIsolated(false)
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            let files = $0.daemon.files
+            $0.daemon.files = { session in
+                guard reachable.value else { throw DaemonError.disconnected }
+                return try await files(session)
+            }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.listFailure)
+        XCTAssertNil(store.state.alert)
+        XCTAssertFalse(store.state.loading)
+
+        reachable.setValue(true)
+        await store.send(.refresh)
+        await store.receive(\.listed)
+        XCTAssertNil(store.state.listFailure)
+        XCTAssertEqual(store.state.files.map(\.path), ["notes.txt", "plan.md"])
+
+        // With its files listed, a later failure leaves them and is an alert.
+        reachable.setValue(false)
+        await store.send(.refresh)
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertEqual(store.state.files.map(\.path), ["notes.txt", "plan.md"])
+    }
+
     func testAFileIsReadWithTheLinesItThenShows() async throws {
         let (daemon, session) = try await chat()
         let store = store(daemon, session)

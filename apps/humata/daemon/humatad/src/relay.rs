@@ -239,6 +239,14 @@ impl Relay {
                     asked => asked,
                 }
             }
+            // A start or a message the daemon didn't answer may have been
+            // made all the same, so the agent is told to look before it
+            // asks again.
+            request @ (pb::request::Kind::AgentStartSession(_)
+            | pb::request::Kind::AgentSendMessage(_)) => match self.send(request).await {
+                Err(RelayError::TimedOut { seconds }) => Err(RelayError::Unanswered { seconds }),
+                asked => asked,
+            },
             request => self.send(request).await,
         }
     }

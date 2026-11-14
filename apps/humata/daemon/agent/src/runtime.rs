@@ -811,7 +811,7 @@ impl<R: Runner> LocalAgent<R> {
 /// for a plain stop, and a refusal for one that was to start `first`.
 fn already_stopping(id: &SessionId, first: Option<Job>) -> Result<(), AgentError> {
     match first {
-        Some(_) => Err(AgentError::CompactWhileWorking {
+        Some(_) => Err(AgentError::Stopping {
             session: id.clone(),
         }),
         None => Ok(()),
@@ -993,19 +993,26 @@ impl<R: Runner> Agent for LocalAgent<R> {
     ) -> Result<(), AgentError> {
         let session = self.session(id)?;
         // Written before the lock, so a large image never holds up the
-        // session's other calls.
+        // session's other calls; a message refused below takes its images
+        // back out, once the lock is let go.
         let images = crate::images::save(id, &session.dir, &message.images)?;
         let text = message.text;
         let mut control = session.lock();
-        if control.record.archived {
-            return Err(AgentError::Archived {
+        let refused = if control.record.archived {
+            Some(AgentError::Archived {
                 session: id.clone(),
-            });
-        }
-        if control.rewinding {
-            return Err(AgentError::Rewinding {
+            })
+        } else if control.rewinding {
+            Some(AgentError::Rewinding {
                 session: id.clone(),
-            });
+            })
+        } else {
+            None
+        };
+        if let Some(refused) = refused {
+            drop(control);
+            crate::images::discard(&session.dir, &images);
+            return Err(refused);
         }
         if control.running.is_none() {
             self.start_driver(&session, &mut control, Job::Message { text, images });

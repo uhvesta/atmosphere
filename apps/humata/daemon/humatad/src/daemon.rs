@@ -125,10 +125,20 @@ pub struct Daemon {
     owners_listing: tokio::sync::Mutex<()>,
     /// Held while an agent's start of a session, or its message that waits
     /// for the person, is counted against its project's limits and then
-    /// made, and while the person's allowing of a start is carried out, so
-    /// ones made together are counted one after another and a start
-    /// allowed twice starts once.
+    /// either kept for the person or given a place in `agent_starting`, so
+    /// ones made together are counted one after another. Never held while
+    /// a session is started: that can take a fetch or a clone, and other
+    /// sessions' agents mustn't wait on it.
     agent_asks: tokio::sync::Mutex<()>,
+    /// How many sessions are being started right now for each session
+    /// whose agent asked, where its project starts them without asking,
+    /// by the asking session. Each counts against its limits until it is
+    /// one of its sessions or has failed.
+    agent_starting: std::sync::Mutex<HashMap<String, u32>>,
+    /// The requests to start a session that the person's allowing is being
+    /// carried out for right now, by request id, so one allowed twice
+    /// starts once.
+    agent_allowing: std::sync::Mutex<HashSet<String>>,
     /// How many messages each session's agent sent straight to other
     /// sessions since the person last wrote to it, by session.
     agent_messages: std::sync::Mutex<HashMap<String, u32>>,
@@ -190,6 +200,8 @@ impl Daemon {
             pull_refresh_changed,
             owners_listing: tokio::sync::Mutex::new(()),
             agent_asks: tokio::sync::Mutex::new(()),
+            agent_starting: std::sync::Mutex::default(),
+            agent_allowing: std::sync::Mutex::default(),
             agent_messages: std::sync::Mutex::default(),
         });
         if let Err(error) = daemon.interrupt_unfinished_approvals() {

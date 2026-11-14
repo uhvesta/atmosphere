@@ -261,6 +261,25 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.diff(sum)?.viewed, true)
     }
 
+    func testAMarkTheDaemonRefusesLeavesTheFileNotViewed() async throws {
+        let (daemon, session) = try await session()
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.markViewed = { _, _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.viewedToggled(sum))
+        await store.receive(\.viewedNotMarked)
+        XCTAssertEqual(store.state.diff(sum)?.viewed, false)
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testAnEmptyReviewIsntSent() async throws {
         let (daemon, session) = try await session()
         let store = store(daemon, session)

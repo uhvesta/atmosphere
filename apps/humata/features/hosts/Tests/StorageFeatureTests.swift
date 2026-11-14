@@ -73,6 +73,78 @@ final class StorageFeatureTests: XCTestCase {
         await store.finish()
     }
 
+    func testACleanupWhoseProgressCouldntBeReadOnceIsReadAgainUntilItsDone() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.startCleanup(Storage.Job(step: "Packing repositories", done: 2, total: 5))
+        let clock = TestClock()
+        let fails = LockIsolated(false)
+        let store = TestStore(initialState: StorageFeature.State()) {
+            StorageFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            let read = $0.daemon.storage
+            $0.daemon.storage = {
+                if fails.value { throw DaemonError.disconnected }
+                return try await read()
+            }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.storage?.job?.done, 2)
+
+        fails.setValue(true)
+        await clock.advance(by: .milliseconds(500))
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertNotNil(store.state.storage?.job, "the cleanup is still shown while its progress is read again")
+
+        // The daemon answers again, and the cleanup has ended meanwhile.
+        fails.setValue(false)
+        _ = try await daemon.client.cleanUpStorage(Storage.Cleanup(compact: true))
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.storage?.job)
+        XCTAssertNotNil(store.state.storage?.cleaned)
+        XCTAssertNil(store.state.failure)
+        await clock.advance(by: .seconds(5))
+        await store.finish()
+    }
+
+    func testACleanupWhoseProgressCantBeReadIsGivenUpAndSaysWhy() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.startCleanup(Storage.Job(step: "Packing repositories", done: 2, total: 5))
+        let clock = TestClock()
+        let fails = LockIsolated(false)
+        let store = TestStore(initialState: StorageFeature.State()) {
+            StorageFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            let read = $0.daemon.storage
+            $0.daemon.storage = {
+                if fails.value { throw DaemonError.disconnected }
+                return try await read()
+            }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.storage?.job)
+
+        fails.setValue(true)
+        await clock.advance(by: .seconds(600))
+        await store.skipReceivedActions()
+        XCTAssertNil(store.state.storage?.job, "the cleanup's buttons come back")
+        XCTAssertNotNil(store.state.failure)
+        // Given up, so nothing is read again.
+        await clock.advance(by: .seconds(600))
+        await store.finish()
+    }
+
     func testDeletingArchivedSessionsAsksFirstAndKeepsKeepers() async throws {
         let daemon = InMemoryDaemon()
         let old = daemon.start.addingTimeInterval(-100 * 86_400)

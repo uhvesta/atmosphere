@@ -74,6 +74,16 @@ pub(crate) fn save(
     Ok(names)
 }
 
+/// Removes the images `names` that [`save`] wrote for a message that wasn't
+/// taken after all. One already gone, or that can't be removed, is left: the
+/// message's refusal is what the sender needs to hear.
+pub(crate) fn discard(session_dir: &Path, names: &[String]) {
+    let folder = folder(session_dir);
+    for name in names.iter().filter(|name| plain(name)) {
+        let _ = std::fs::remove_file(folder.join(name));
+    }
+}
+
 /// Whether `name` is a plain file name, as [`save`] makes, and so can't
 /// reach outside the images folder.
 fn plain(name: &str) -> bool {
@@ -167,6 +177,29 @@ mod tests {
         assert_eq!(names.len(), 1);
         let read = read(&session, dir.path(), &names[0]).expect("read");
         assert_eq!(read, image);
+    }
+
+    #[test]
+    fn discarded_images_are_gone_and_the_others_stay() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let session = SessionId::new("s1");
+        let image = |byte| Image {
+            media_type: "image/png".into(),
+            data: vec![byte],
+        };
+        let dropped = save(&session, dir.path(), &[image(1)]).expect("saved");
+        let kept = save(&session, dir.path(), &[image(2)]).expect("saved");
+        discard(dir.path(), &dropped);
+        // A second time finds nothing, and is no failure.
+        discard(dir.path(), &dropped);
+        assert!(matches!(
+            read(&session, dir.path(), &dropped[0]),
+            Err(AgentError::UnknownImage { .. })
+        ));
+        assert_eq!(
+            read(&session, dir.path(), &kept[0]).expect("read"),
+            image(2)
+        );
     }
 
     #[test]

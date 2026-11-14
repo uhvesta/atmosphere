@@ -174,6 +174,9 @@ package struct CompareFeature {
         /// Why the changes couldn't be read, and what to do about it.
         package var failure: String?
         package var marking = false
+        /// Why the session picked couldn't be marked as the one to keep;
+        /// the changes stay shown, and it can be picked again.
+        package var keepFailure: String?
 
         package init(left: Session, right: Session) {
             self.left = left
@@ -283,14 +286,19 @@ package struct CompareFeature {
                 if id == state.right.id { state.rightChanges?.showAll() }
                 return .none
 
-            case .loadFailed(let message), .markFailed(let message):
-                state.marking = false
+            case .loadFailed(let message):
                 state.failure = message
+                return .none
+
+            case .markFailed(let message):
+                state.marking = false
+                state.keepFailure = message
                 return .none
 
             case .keepTapped(let id):
                 guard !state.marking else { return .none }
                 state.marking = true
+                state.keepFailure = nil
                 let other = id == state.left.id ? state.right : state.left
                 return .run { send in
                     var marked = [try await daemon.update(id, SessionUpdate(keeper: true))]
@@ -304,6 +312,7 @@ package struct CompareFeature {
 
             case .marked(let sessions):
                 state.marking = false
+                state.keepFailure = nil
                 for session in sessions {
                     if session.id == state.left.id { state.left = session }
                     if session.id == state.right.id { state.right = session }

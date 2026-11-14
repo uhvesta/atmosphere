@@ -36,6 +36,8 @@ package struct ImportSessionFeature {
         case task
         case hostsLoaded([RemoteHost])
         case loaded(host: RemoteHost.ID?, Result<[ImportableSession], any Error>)
+        /// The person asked for the sessions to be read again.
+        case retryTapped
         case importTapped
         case failed(String)
         case alert(PresentationAction<Never>)
@@ -84,6 +86,9 @@ package struct ImportSessionFeature {
                     state.loadError = error.localizedDescription
                 }
                 return .none
+
+            case .retryTapped:
+                return load(&state)
 
             case .importTapped:
                 guard !state.importing, let id = state.selection,
@@ -185,8 +190,13 @@ package struct ImportSessionView: View {
     @ViewBuilder private var sessions: some View {
         if let sessions = store.sessions {
             if let error = store.loadError {
-                ContentUnavailableView(
-                    "Couldn't read the sessions", systemImage: "exclamationmark.triangle", description: Text(error))
+                ContentUnavailableView {
+                    Label("Couldn't read the sessions", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("Try Again") { store.send(.retryTapped) }
+                }
             } else if sessions.isEmpty {
                 ContentUnavailableView(
                     "Nothing to import", systemImage: "tray",

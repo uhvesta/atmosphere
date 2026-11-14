@@ -41,6 +41,10 @@ package struct StorageView: View {
             if let failure = store.failure {
                 Text(failure)
                     .foregroundStyle(.red)
+                // A cleanup under way reads its progress again by itself.
+                if store.storage?.job == nil {
+                    Button("Try Again") { store.send(.task) }
+                }
             }
         }
         .formStyle(.grouped)

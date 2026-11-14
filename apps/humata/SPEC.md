@@ -1756,6 +1756,34 @@ Fable found and judged: 33 kept, 4 deferred, 1 dropped.
   Try Again; saving a project shows its progress
 - Deferred: D12–D14, U8
 
+### Review after v0.9.0
+
+Fable found and judged: 24 kept, 1 deferred.
+
+- [x] A chat reopened from its kept history shows its proposals
+- [x] A move request's strip has Not Yet beside Move; a message answers
+  questions, not moves
+- [x] Images wait in the box while the model's sight is checked, with the
+  failure and Try Again if it can't be; the Inbox's Try Again resends them
+- [x] Rewind… from another tab goes to the chat; the box takes the caret
+  after a rewind point is picked or an earlier message's edit is
+  cancelled, and that editor takes Escape and ⌘Return
+- [x] Starts made by agents are made side by side, still counted against
+  the project's limits; a second Allow of a start under way is refused;
+  a relayed start or send that goes unanswered says it may have acted
+- [x] `read_turn` reads on from `from_byte`, so a long reply is read whole;
+  `wait_seconds` is read as a number however it is written
+- [x] A local model's steer after a tool step comes after the reply it
+  interrupted; a compaction during a stop is refused as busy; images of a
+  refused send aren't kept
+- [x] New Session holds Start for a remembered host whose hosts couldn't
+  be read, with Try Again and Run on This Mac
+- [x] A Terminal tab left while its first shell opens opens it on return; a
+  clean-up whose progress can't be read gives up after a minute with Try
+  Again; search says when the index hadn't caught up; Files shows a failed
+  listing in place; Viewed, Keep, renames and imports recover from failures
+- Deferred: `read_session`'s wait lists every session to check one
+
 ### Milestone AC: agent access
 
 The owner, 2026-11-13: gate what the `humata` command line and its MCP

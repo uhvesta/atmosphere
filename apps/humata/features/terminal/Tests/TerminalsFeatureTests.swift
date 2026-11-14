@@ -39,6 +39,74 @@ final class TerminalsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.current?.command, TerminalCommand(line: "show \(id)"))
     }
 
+    func testAFirstShellWhoseOpeningWasCutOffOpensAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
+        // The host's first answer never comes, as on a slow host.
+        let asked = LockIsolated(0)
+        let (held, release) = AsyncStream<Void>.makeStream()
+        let store = store(daemon, TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)) {
+            let open = $0.daemon.openTerminal
+            $0.daemon.openTerminal = { place, profile in
+                let first = asked.withValue { count in
+                    count += 1
+                    return count == 1
+                }
+                if first {
+                    for await _ in held { break }
+                    try Task.checkCancellation()
+                }
+                return try await open(place, profile)
+            }
+        }
+
+        let shown = await store.send(.task)
+        await store.receive(\.listed)
+        await store.receive(\.newTapped)
+        XCTAssertTrue(store.state.opening)
+
+        // The tab is left before the shell opens, and shown again.
+        await shown.cancel()
+        await store.send(.task)
+        XCTAssertFalse(store.state.opening)
+        XCTAssertFalse(store.state.listed)
+        await store.receive(\.listed)
+        await store.receive(\.newTapped)
+        await store.receive(\.opened)
+        XCTAssertFalse(store.state.opening)
+        XCTAssertEqual(store.state.tabs.count, 1)
+        XCTAssertEqual(store.state.selected, store.state.tabs.first?.id)
+        let running = try await daemon.client.terminals(nil)
+        XCTAssertEqual(running.map(\.id), Array(store.state.tabs.ids), "the open that was cut off made no shell")
+        release.finish()
+    }
+
+    func testAShellAskedForStillOpensAfterTheTabIsShownAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let (held, release) = AsyncStream<Void>.makeStream()
+        let store = store(daemon, TerminalsFeature.State(place: HostPlace(), opensFirst: false)) {
+            let open = $0.daemon.openTerminal
+            $0.daemon.openTerminal = { place, profile in
+                for await _ in held { break }
+                return try await open(place, profile)
+            }
+        }
+        await store.send(.task)
+        await store.receive(\.listed)
+
+        await store.send(.newTapped)
+        XCTAssertTrue(store.state.opening)
+        // Shown again while the host is asked: the open is still under way.
+        await store.send(.task)
+        XCTAssertTrue(store.state.opening)
+        await store.receive(\.listed)
+
+        release.yield()
+        await store.receive(\.opened)
+        XCTAssertFalse(store.state.opening)
+        XCTAssertEqual(store.state.tabs.count, 1)
+    }
+
     func testTerminalsStayOpenBetweenViews() async throws {
         let daemon = InMemoryDaemon()
         let terminal = try await daemon.client.openTerminal(HostPlace(host: "build"), .standard)

@@ -249,7 +249,8 @@ impl HostError {
                 | AgentError::LandWhileWorking { .. }
                 | AgentError::UpdateWhileWorking { .. }
                 | AgentError::CompactWhileWorking { .. }
-                | AgentError::Rewinding { .. },
+                | AgentError::Rewinding { .. }
+                | AgentError::Stopping { .. },
             ) => pb::ErrorCode::Busy,
             Self::Agent(
                 AgentError::NoWorkspaces { .. }
@@ -1019,6 +1020,11 @@ pub enum AgentSessionsError {
         depth: u32,
         limit: u32,
     },
+
+    #[error(
+        "session {name:?} is already being started for this request, and shows in the sidebar when it's ready. If it doesn't, the request is still in the Inbox to allow again"
+    )]
+    AllowUnderWay { name: String },
 }
 
 fn said(stderr: &str) -> String {
@@ -1062,6 +1068,7 @@ impl DaemonError {
             Self::GitHub(_) => pb::ErrorCode::Github,
             Self::AppOnly => pb::ErrorCode::AppOnly,
             Self::AgentSessions(AgentSessionsError::AppOnly) => pb::ErrorCode::AppOnly,
+            Self::AgentSessions(AgentSessionsError::AllowUnderWay { .. }) => pb::ErrorCode::Busy,
             Self::AgentSessions(_) => pb::ErrorCode::InvalidRequest,
             Self::UnknownApproval { .. } | Self::UnknownGrant { .. } => {
                 pb::ErrorCode::UnknownApproval
@@ -1336,6 +1343,11 @@ pub enum RelayError {
     TimedOut { seconds: u64 },
 
     #[error(
+        "Humata on the Mac didn't answer within {seconds}s, and it may have started the session or sent the message all the same. Check with read_session or board before asking again: asking again without looking can do it twice"
+    )]
+    Unanswered { seconds: u64 },
+
+    #[error(
         "couldn't read the questions and move requests agents made while the Mac was away, from {path}"
     )]
     ReadQueue {
@@ -1367,7 +1379,9 @@ impl RelayError {
     pub fn code(&self) -> pb::ErrorCode {
         match self {
             Self::NotATool => pb::ErrorCode::InvalidRequest,
-            Self::NotWatched | Self::TimedOut { .. } => pb::ErrorCode::HostUnavailable,
+            Self::NotWatched | Self::TimedOut { .. } | Self::Unanswered { .. } => {
+                pb::ErrorCode::HostUnavailable
+            }
             Self::ReadQueue { .. } | Self::BadQueue { .. } | Self::WriteQueue { .. } => {
                 pb::ErrorCode::StorageFailed
             }

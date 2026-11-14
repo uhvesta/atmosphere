@@ -265,6 +265,7 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(.editTapped(two.id)) {
             $0.editing = two.id
             $0.edited = "two"
+            $0.editCaret = true
         }
         await store.send(.binding(.set(\.edited, "three"))) {
             $0.edited = "three"
@@ -277,6 +278,7 @@ final class SessionFeatureTests: XCTestCase {
             $0.forking = false
             $0.editing = nil
             $0.edited = ""
+            $0.editCaret = false
         }
         await store.receive(\.delegate.openSession)
         let fork = try XCTUnwrap(daemon.sessions.last)
@@ -1692,6 +1694,43 @@ final class SessionFeatureTests: XCTestCase {
         await store.receive(\.delegate.answerRequest)
     }
 
+    func testPuttingAMoveOffFromTheSessionDismissesItsRequestOnce() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.request = AgentRequest(
+            id: "r1", sessionID: "s1", kind: .move(item: "i1", status: .inReview), text: "Done",
+            created: Date(timeIntervalSince1970: 0))
+        // Exhaustive: an answer handed on that isn't received here fails.
+        let store = TestStore(initialState: state) { SessionFeature() }
+
+        await store.send(.movePutOff) {
+            $0.answeringRequest = true
+            $0.requestAnswer = .puttingOff
+        }
+        await store.receive(\.delegate.answerRequest)
+        // Pressed again before the answer lands: nothing more is handed on.
+        await store.send(.movePutOff)
+        await store.send(.moveApproved)
+    }
+
+    func testAnEarlierMessagesEditorTakesTheCaretOnceAndCancellingGivesItToTheBox() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.events = [event("e1", .userMessage("one"))]
+        let store = store(state)
+
+        await store.send(.editTapped("e1"))
+        XCTAssertTrue(store.state.editCaret)
+        await store.send(.editCaretTaken)
+        XCTAssertFalse(store.state.editCaret, "a row scrolled back into view takes nothing")
+        XCTAssertEqual(store.state.editing, "e1")
+
+        let before = store.state.boxFocus
+        await store.send(.editCancelled)
+        XCTAssertNil(store.state.editing)
+        XCTAssertNotEqual(store.state.boxFocus, before)
+    }
+
     func testShowingProposalsScrollsToTheFirstOneWaiting() async {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         var state = SessionFeature.State(session: session)
@@ -2007,16 +2046,48 @@ final class SessionFeatureTests: XCTestCase {
         store.exhaustivity = .off
 
         let watching = await store.send(.task)
-        await until(store) { $0.historyLoaded && listed.value }
-        // Time for an answer to come, were one sent.
-        for _ in 0..<20 {
-            await Task.yield()
-            await store.skipReceivedActions(strict: false)
-        }
+        await store.receive(\.readsImagesUnknown, timeout: .seconds(1))
+        XCTAssertTrue(listed.value)
         XCTAssertEqual(store.state.images.map(\.id), ["i1"])
         XCTAssertEqual(store.state.readsImages, true)
         XCTAssertNil(store.state.alert)
+        XCTAssertNil(store.state.imagesCheckFailure, "what was known still stands, so nothing waits")
+        XCTAssertTrue(store.state.canSend)
         await watching.cancel()
+    }
+
+    func testImagesWaitingOnAModelListThatCantBeReadSayWhyAndGoOnceItIsRead() async {
+        let session = Session(
+            id: "images-wait", name: "local", backend: .local, workingDirectory: "/work", model: "qwen3:8b")
+        var state = SessionFeature.State(session: session)
+        state.images = [readyImage("i1")]
+        XCTAssertNil(state.readsImages)
+        let fails = LockIsolated(true)
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.models = { _, _, _ in
+                if fails.value { throw DaemonError.disconnected }
+                return [ModelChoice(id: "qwen3:8b", name: "Qwen 3", readsImages: true)]
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.readsImagesAsked)
+        await store.receive(\.readsImagesUnknown, timeout: .seconds(1))
+        XCTAssertEqual(store.state.images.map(\.id), ["i1"])
+        XCTAssertNotNil(store.state.imagesCheckFailure)
+        XCTAssertNil(store.state.readsImages)
+        XCTAssertFalse(store.state.canSend)
+
+        // Try Again, with the list readable now.
+        fails.setValue(false)
+        await store.send(.readsImagesAsked)
+        XCTAssertNil(store.state.imagesCheckFailure, "it's being looked for again")
+        await store.receive(\.readsImagesFound, timeout: .seconds(1))
+        XCTAssertNil(store.state.imagesCheckFailure)
+        XCTAssertEqual(store.state.images.map(\.id), ["i1"])
+        XCTAssertTrue(store.state.canSend)
     }
 
     func testAModelListThatSaysTheModelCantSeeImagesTakesTheBoxesImageOut() async throws {

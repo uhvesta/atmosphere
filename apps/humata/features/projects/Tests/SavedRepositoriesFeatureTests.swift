@@ -141,6 +141,82 @@ final class SavedRepositoriesFeatureTests: XCTestCase {
         await settle(store)
     }
 
+    func testAnOwnerWhoseListingCantBeLookedAtIsMarkedUnfinished() async throws {
+        let pending = [RepositoryOwner(login: "octo-org")]
+        let store = TestStore(initialState: SavedRepositoriesFeature.State()) {
+            SavedRepositoriesFeature()
+        } withDependencies: {
+            $0.daemon.savedRepositories = { [] }
+            $0.daemon.addRepositoryOwner = { _ in pending }
+            // The daemon goes away while the owner is being listed.
+            $0.daemon.repositoryOwners = { throw DaemonError.disconnected }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.newOwner, "octo-org")
+        await store.send(.addOwnerTapped)
+        await store.receive(\.ownerAdded)
+        XCTAssertEqual(store.state.listing, ["octo-org"])
+        await store.receive(\.listingEnded, timeout: .seconds(5))
+        XCTAssertEqual(store.state.listing, [])
+        XCTAssertEqual(store.state.unfinished, ["octo-org"])
+        XCTAssertNotNil(store.state.failure)
+        await settle(store)
+    }
+
+    func testARefreshThatListsAnOwnerJustAddedEndsItsListing() async throws {
+        let pending = [RepositoryOwner(login: "octo-org")]
+        let store = TestStore(initialState: SavedRepositoriesFeature.State()) {
+            SavedRepositoriesFeature()
+        } withDependencies: {
+            $0.daemon.savedRepositories = { [] }
+            $0.daemon.addRepositoryOwner = { _ in pending }
+            $0.daemon.repositoryOwners = { pending }
+            $0.daemon.refreshRepositoryOwners = { _ in
+                [RepositoryOwner(login: "octo-org", refreshed: Date(timeIntervalSince1970: 60))]
+            }
+            // Never advanced: looking again waits for as long as it's left to.
+            $0.continuousClock = TestClock()
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.newOwner, "octo-org")
+        await store.send(.addOwnerTapped)
+        await store.receive(\.ownerAdded)
+        XCTAssertEqual(store.state.listing, ["octo-org"])
+
+        await store.send(.refreshTapped("octo-org"))
+        await store.receive(\.refreshed)
+        XCTAssertEqual(store.state.listing, [])
+        XCTAssertEqual(store.state.unfinished, [])
+        // Nothing is left looking, so the effects end with no time passing.
+        await settle(store)
+    }
+
+    func testARenameThatFailsOpensTheFieldAgainWithWhatWasTyped() async throws {
+        let saved = [SavedRepository(id: 1, name: "mine", location: "/code/mine")]
+        let store = TestStore(initialState: SavedRepositoriesFeature.State()) {
+            SavedRepositoriesFeature()
+        } withDependencies: {
+            $0.daemon.savedRepositories = { saved }
+            $0.daemon.repositoryOwners = { [] }
+            $0.daemon.renameSavedRepository = { _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await settle(store)
+
+        await store.send(.renameTapped(1))
+        await store.send(\.binding.newName, "Mine")
+        await store.send(.renameSubmitted)
+        await settle(store)
+        XCTAssertEqual(store.state.renaming, 1)
+        XCTAssertEqual(store.state.newName, "Mine")
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertEqual(store.state.repositories?.map(\.name), ["mine"])
+    }
+
     func testWhenTheDaemonDoesntAnswerItSaysSo() async throws {
         let store = TestStore(initialState: SavedRepositoriesFeature.State()) {
             SavedRepositoriesFeature()

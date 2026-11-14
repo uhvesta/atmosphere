@@ -683,11 +683,44 @@ package struct NewSessionView: View {
                     .help(
                         "An OpenAI-compatible server, such as Ollama's, so turns cost no tokens. Name its model above.")
                 }
-                if !store.hosts.isEmpty {
+                if let failure = store.hostsFailure {
+                    LabeledContent("Runs On") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Couldn't read the hosts: \(failure)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                                .help(failure)
+                            if store.host != nil {
+                                Text(
+                                    "This session was going to run on the host you picked last. "
+                                        + "Start waits until the hosts are read."
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Button("Try Again") { store.send(.hostsRetried) }
+                                if store.host != nil {
+                                    Button("Run on This Mac") { store.send(.thisMacPicked) }
+                                }
+                            }
+                        }
+                    }
+                } else if !store.hosts.isEmpty {
                     Picker("Runs On", selection: $store.host) {
                         Text("This Mac").tag(RemoteHost.ID?.none)
                         ForEach(store.hosts) { host in
                             Text(host.name).tag(RemoteHost.ID?.some(host.id))
+                        }
+                    }
+                } else if store.host != nil, !store.hostsRead {
+                    LabeledContent("Runs On") {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Reading the hosts…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -946,6 +979,19 @@ struct CompareView: View {
                     Button("Try Again") { store.send(.task) }
                 }
             } else {
+                if let failure = store.keepFailure {
+                    Label {
+                        Text("Couldn't mark the session to keep, so neither changed: \(failure)")
+                            .lineLimit(3)
+                            .textSelection(.enabled)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                    }
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    Divider()
+                }
                 HStack(spacing: 0) {
                     side(store.left, store.leftChanges)
                     Divider()

@@ -182,6 +182,10 @@ package struct SessionFeature {
         /// Claude's all can, so it's known from the start; for the others
         /// it starts as what was last found for the session's model.
         package var readsImages: Bool?
+        /// Why the model list couldn't be read, while it still isn't known
+        /// whether the model can see images; nil while it's being looked
+        /// for, and once it's known.
+        package var imagesCheckFailure: String?
         /// What was last found, kept per session while Humata runs, so a
         /// chat opened again offers images at once, or doesn't.
         @Shared var savedReadsImages: ModelReadsImages?
@@ -256,6 +260,10 @@ package struct SessionFeature {
         package var watchRetries = 0
         /// The person's message being edited, by event id; nil when none is.
         package var editing: String?
+        /// Its editor is to take the caret, once: set as the edit starts
+        /// and cleared when the editor has, so a row scrolled back into
+        /// view doesn't take the caret from the box.
+        package var editCaret = false
         /// The edited message's text.
         package var edited = ""
         /// The queued message being edited in place, by queue id.
@@ -361,6 +369,17 @@ package struct SessionFeature {
             guard images.isEmpty || readsImages == true else { return false }
             return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pastes.isEmpty
                 || !images.isEmpty
+        }
+
+        /// Whether the box is on screen, as the view lays it out: under the
+        /// chat, and beside a file or a spec that has the chat next to it.
+        var showsBox: Bool {
+            switch tab {
+            case .chat: true
+            case .files: docs.focused
+            case .spec: specs.focused != nil
+            case .review, .terminal: false
+            }
         }
 
         /// Whether the model is known to see images, so the box offers to
@@ -767,6 +786,9 @@ package struct SessionFeature {
         case allowing
         case declining
         case moving
+        /// A move is being put off: dismissed, with the task left where
+        /// it is.
+        case puttingOff
     }
 
     /// A message handed on to be sent, with what it was made of, so it can
@@ -841,6 +863,10 @@ package struct SessionFeature {
         case sendFailed(text: String, pastes: [Paste], images: [DraftImage], message: String)
         /// The session's model can, or can't, see images.
         case readsImagesFound(Bool)
+        /// Whether it can see them couldn’t be found out, with why.
+        case readsImagesUnknown(String)
+        /// Finds out again, after it couldn't be.
+        case readsImagesAsked
         /// Image files dropped on the box or chosen.
         case imagesAdded([URL])
         /// An image pasted into the box.
@@ -884,6 +910,9 @@ package struct SessionFeature {
         case retryTapped
         /// Makes the move the agent asked for, from the strip over the box.
         case moveApproved
+        /// Puts the move the agent asked for off: takes the request away
+        /// and leaves the task where it is.
+        case movePutOff
         /// Allows the session the agent asked to start or the message it
         /// asked to send, from the strip over the box.
         case requestAllowed
@@ -928,6 +957,8 @@ package struct SessionFeature {
         case highlightDismissed
         /// Starts editing the person's message `event`.
         case editTapped(String)
+        /// The message's editor took the caret.
+        case editCaretTaken
         case editCancelled
         /// Forks before the edited message, with the code as it was, and
         /// sends the fork the edited text.
@@ -1320,7 +1351,13 @@ package struct SessionFeature {
                 // A list that couldn't be read says nothing of the model:
                 // what was last found stands, and images wait if nothing
                 // was.
-                guard let models = try? await daemon.models(session.host, session.backend, nil) else { return }
+                let models: [ModelChoice]
+                do {
+                    models = try await daemon.models(session.host, session.backend, nil)
+                } catch {
+                    await send(.readsImagesUnknown(error.localizedDescription))
+                    return
+                }
                 let choice = models.first { $0.id == session.model } ?? (session.model == nil ? models.first : nil)
                 await send(.readsImagesFound(choice?.readsImages ?? (session.backend == .copilot)))
             }
@@ -1447,6 +1484,9 @@ package struct SessionFeature {
             case .rewindPickerPicked(let id):
                 guard state.rewindPicker != nil else { return .none }
                 state.rewindPicker = nil
+                // Its field had the caret, and is gone: the box has it
+                // after, whatever comes of the rewind.
+                state.boxFocus += 1
                 return .send(.rewindTapped(id))
 
             case .rewindPickerClosed:
@@ -1461,7 +1501,10 @@ package struct SessionFeature {
                 // would take it; anything else in the box stays.
                 let typed = SlashChoice.command(in: state.draft)?.command == .rewind
                 rewindPickerOpened("", typed: typed, &state)
-                return .none
+                // Only the box shows the picker, so a view without the box
+                // gives way to the chat.
+                guard state.rewindPicker != nil, !state.showsBox else { return .none }
+                return .send(.tabPicked(.chat))
 
             case .compactAsked(let focus):
                 guard !state.compactStarting, !state.session.archived else { return .none }
@@ -1610,11 +1653,24 @@ package struct SessionFeature {
                 let after = state.events.last?.id
                 // Which chat commands the agent takes, once for a session
                 // while Humata runs: again only if its host couldn't say.
+                // An ask under way when the chat was last shown went with
+                // that view's task, and its answer never comes: neither
+                // flag may keep this one from asking.
+                state.commandsLoading = false
+                state.slashLoading = false
                 let commands: Effect<Action> =
                     state.chatCommands == nil && !state.session.archived ? askCommands(&state) : .none
+                // A chat that opens with its history already here gets no
+                // proposing call to list its proposals on, so they're
+                // listed now; one that opens empty is listed as its events
+                // come.
+                let proposals: Effect<Action> =
+                    state.proposingCalls.isEmpty ? .none : .send(.proposals(.refresh))
+                if !knowsImages, state.imagesCheckFailure != nil { state.imagesCheckFailure = nil }
                 return .merge(
                     knowsImages ? .none : readsImages(&state),
                     commands,
+                    proposals,
                     .run { send in
                         // The history goes as one batch once it has all
                         // come; after it, what comes while a batch is shown
@@ -1818,7 +1874,19 @@ package struct SessionFeature {
                 state.alert = Self.alert("Couldn’t send the message", message)
                 return .none
 
+            case .readsImagesUnknown(let message):
+                // What was last found still stands, and no image comes
+                // out: the failure is only said while nothing is known.
+                guard state.readsImages == nil else { return .none }
+                if state.imagesCheckFailure != message { state.imagesCheckFailure = message }
+                return .none
+
+            case .readsImagesAsked:
+                if state.imagesCheckFailure != nil { state.imagesCheckFailure = nil }
+                return readsImages(&state)
+
             case .readsImagesFound(let reads):
+                if state.imagesCheckFailure != nil { state.imagesCheckFailure = nil }
                 if state.readsImages != reads { state.readsImages = reads }
                 let found = ModelReadsImages(model: state.session.model, reads: reads)
                 if state.savedReadsImages != found { state.$savedReadsImages.withLock { $0 = found } }
@@ -1928,6 +1996,14 @@ package struct SessionFeature {
                 state.answeringRequest = true
                 state.requestAnswer = .moving
                 return .send(.delegate(.answerRequest(request.id, .approve)))
+
+            case .movePutOff:
+                guard !state.answeringRequest, let request = state.request, case .move = request.kind else {
+                    return .none
+                }
+                state.answeringRequest = true
+                state.requestAnswer = .puttingOff
+                return .send(.delegate(.answerRequest(request.id, .dismiss)))
 
             case .requestAllowed:
                 guard !state.answeringRequest, let request = state.request, request.kind.asksForSession else {
@@ -2275,11 +2351,19 @@ package struct SessionFeature {
                 }
                 state.editing = id
                 state.edited = text
+                state.editCaret = true
+                return .none
+
+            case .editCaretTaken:
+                if state.editCaret { state.editCaret = false }
                 return .none
 
             case .editCancelled:
                 state.editing = nil
                 state.edited = ""
+                state.editCaret = false
+                // Its editor had the caret, and is gone.
+                state.boxFocus += 1
                 return .none
 
             case .editSent:
@@ -2308,6 +2392,7 @@ package struct SessionFeature {
                 state.makingChild = nil
                 state.editing = nil
                 state.edited = ""
+                state.editCaret = false
                 return .send(.delegate(.openSession(fork)))
 
             case .forkSendFailed(let fork, let text):
