@@ -171,6 +171,16 @@ final class LongChatScrollTests: XCTestCase {
     /// Show Earlier Messages brings rows above those the chat opened with,
     /// and what was in view stays in view.
     func testShowingEarlierMessagesKeepsWhatWasInView() async throws {
+        try await showingEarlierMessagesKeepsWhatWasInView(.legacy)
+    }
+
+    /// The same with the scroll bars a trackpad shows, drawn over the
+    /// chat, so its rows are wider and wrap less.
+    func testShowingEarlierMessagesKeepsWhatWasInViewWithOverlayScrollBars() async throws {
+        try await showingEarlierMessagesKeepsWhatWasInView(.overlay)
+    }
+
+    private func showingEarlierMessagesKeepsWhatWasInView(_ style: NSScroller.Style) async throws {
         let (_, window, task) = try await opened(Self.long())
         defer {
             task.cancel()
@@ -178,6 +188,9 @@ final class LongChatScrollTests: XCTestCase {
             window.contentViewController = nil
         }
         let scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
+        // Whatever the Mac's own setting, which follows whether a mouse is in.
+        scroll.scrollerStyle = style
+        await settle(window)
         func height() -> CGFloat { scroll.documentView?.frame.height ?? 0 }
         // To the first of the rows it opened with, where the button is.
         // Twice: the rows passed on the way are measured, which moves them.
@@ -198,7 +211,15 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertGreaterThan(height(), before.height + 500, "no earlier rows came")
         // What's in view is as far from the chat's end as it was, within a
         // row: the rows came above it.
-        XCTAssertEqual(aboveEnd(scroll), before.aboveEnd, accuracy: 60, "what was in view moved")
+        // With the scroll bars over the chat, its rows are wider than
+        // the lazy stack guesses for those out of view, so the place
+        // drifts by about a row; Milestone SW replaces the stack.
+        let expected = XCTExpectedFailure.Options()
+        expected.isEnabled = style == .overlay
+        expected.isStrict = false
+        XCTExpectFailure("the lazy stack guesses rows' heights; SPEC Milestone SW", options: expected) {
+            XCTAssertEqual(aboveEnd(scroll), before.aboveEnd, accuracy: 60, "what was in view moved")
+        }
     }
 
     /// A proposed spec edit shows what it takes out of the spec and puts

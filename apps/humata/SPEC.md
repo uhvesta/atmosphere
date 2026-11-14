@@ -2227,10 +2227,13 @@ hasn't drawn.
 - [ ] A turn of 300 tool calls keeps the main thread under 30% busy and the
   chat at its end
 - [ ] Show Earlier Messages, search hits, Show Proposals and the chat's end
-  work as before
+  work as before, with the scroll bars a trackpad shows over the chat as
+  well as a mouse's beside it: today, with them over it, what was in view
+  drifts by about a row when earlier messages come
 
-Tests: `LongChatScrollTests` (a chat read twice keeps its length, now an
-expected failure), `ChatPerfTests` (open, scroll and tool-heavy limits).
+Tests: `LongChatScrollTests` (a chat read twice keeps its length, and Show
+Earlier Messages keeping its place with overlay scroll bars, both now
+expected failures), `ChatPerfTests` (open, scroll and tool-heavy limits).
 
 ## Later
 
