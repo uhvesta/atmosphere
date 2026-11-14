@@ -237,6 +237,23 @@ actor CloudKitCloud<Snapshot: SyncSnapshot>: CKSyncEngineDelegate {
         } catch {
             throw SyncError(error)
         }
+        await subscribe()
+    }
+
+    /// Asks iCloud for a silent push when another device changes the
+    /// database, so an app with the push entitlement can sync then. Saving
+    /// it again only replaces it. Without the entitlement, or offline, the
+    /// app syncs on its own schedule instead, so a failure is only logged.
+    private func subscribe() async {
+        let subscription = CKDatabaseSubscription(subscriptionID: records.zone.zoneName + ".changes")
+        let notification = CKSubscription.NotificationInfo()
+        notification.shouldSendContentAvailable = true
+        subscription.notificationInfo = notification
+        do {
+            _ = try await container.privateCloudDatabase.modifySubscriptions(saving: [subscription], deleting: [])
+        } catch {
+            logger.notice("Couldn't ask iCloud for pushes: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func updateSystemFields(of record: CKRecord) {

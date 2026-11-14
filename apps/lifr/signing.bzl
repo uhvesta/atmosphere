@@ -1,7 +1,7 @@
 """Entitlements from the signing identity in user.bazelrc (see identity.bzl)."""
 
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
-load("@lifr_identity//:defs.bzl", "APP_GROUP", "ICLOUD_CONTAINER", "IOS_APP_GROUP", "TEAM_ID")
+load("@lifr_identity//:defs.bzl", "APP_GROUP", "ICLOUD_CONTAINER", "IOS_APP_GROUP", "TEAM_ID", "TIME_SENSITIVE")
 
 _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -31,6 +31,17 @@ _ICLOUD = """\t<key>com.apple.developer.icloud-container-identifiers</key>
 # environment; Xcode adds this when it exports one.
 _PRODUCTION = """\t<key>com.apple.developer.icloud-container-environment</key>
 \t<string>Production</string>
+"""
+
+# Pushes from iCloud when another device changes the records. App Store
+# and TestFlight builds use the production service.
+_PUSH = """\t<key>aps-environment</key>
+\t<string>production</string>
+"""
+
+# Reminders that come through a Focus, once the App ID has the capability.
+_TIME_SENSITIVE = """\t<key>com.apple.developer.usernotifications.time-sensitive</key>
+\t<true/>
 """
 
 _KEYCHAIN = """\t<key>keychain-access-groups</key>
@@ -66,6 +77,10 @@ def _lifr_entitlements_impl(ctx):
     groups = [group for group in ctx.attr.keychain_groups if group]
     if groups:
         keys += _KEYCHAIN.format("".join(["\t\t<string>{}</string>\n".format(group) for group in groups]))
+    if ctx.attr.push:
+        keys += _PUSH
+        if TIME_SENSITIVE:
+            keys += _TIME_SENSITIVE
     if ctx.attr.microphone:
         keys += _MICROPHONE
     if ctx.attr.sandbox:
@@ -98,6 +113,10 @@ lifr_entitlements = rule(
         "production": attr.bool(
             doc = "Whether iCloud uses CloudKit's Production environment, as TestFlight and App Store " +
                   "builds must. Off, it uses Development.",
+        ),
+        "push": attr.bool(
+            doc = "Whether iCloud may push to the iPhone app, and, when user.bazelrc says the App ID " +
+                  "has it, send time-sensitive reminders. Needs the App Store profile tools/testflight makes.",
         ),
         "sandbox": attr.bool(
             doc = "Whether to sandbox it, which macOS requires of the widgets' extension.",

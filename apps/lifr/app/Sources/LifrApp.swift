@@ -51,6 +51,9 @@ import UserNotifications
 @main
 struct LifrApp: App {
     @Environment(\.scenePhase) private var scenePhase
+    #if os(iOS)
+        @UIApplicationDelegateAdaptor private var pushes: Pushes
+    #endif
 
     init() {
         let shortcuts = Storage.shortcuts
@@ -193,6 +196,11 @@ private enum Storage {
         /// asks for the next refresh.
         static func refresh() async {
             scheduleRefresh()
+            await caughtUp()
+        }
+
+        /// Syncs, then reschedules reminders and refreshes widgets.
+        static func caughtUp() async {
             guard case .success = opened else { return }
             await root.send(.refreshedInBackground).finish()
         }
@@ -589,6 +597,36 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
             case .done: self = .done
             case .wontDo: self = .wontDo
             }
+        }
+    }
+#endif
+
+#if os(iOS)
+    /// iCloud's silent pushes, sent when another device changes the
+    /// records, so reminders and widgets follow without waiting for the next
+    /// refresh. A build without the push entitlement never gets one, and
+    /// syncs on its own schedule instead.
+    private final class Pushes: NSObject, UIApplicationDelegate {
+        func application(
+            _ application: UIApplication,
+            didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+        ) -> Bool {
+            application.registerForRemoteNotifications()
+            return true
+        }
+
+        func application(
+            _ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error
+        ) {
+            Logger(subsystem: "lifr", category: "push")
+                .notice("No pushes: \(error.localizedDescription, privacy: .public)")
+        }
+
+        func application(
+            _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]
+        ) async -> UIBackgroundFetchResult {
+            await Storage.caughtUp()
+            return .newData
         }
     }
 #endif

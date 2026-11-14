@@ -70,6 +70,10 @@ extension RemindersClient {
                         content.userInfo = [taskIDKey: reminder.taskID.uuidString]
                         content.categoryIdentifier =
                             reminder.hidesTitle ? ReminderAction.hiddenCategory : ReminderAction.category
+                        // A task's own reminder comes through a Focus when
+                        // the build may send time-sensitive ones; otherwise
+                        // the system delivers it as usual.
+                        content.interruptionLevel = .timeSensitive
                     }
                     // With its time zone, so the trigger fires at this
                     // instant even if the device's zone changes first.

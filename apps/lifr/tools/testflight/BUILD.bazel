@@ -46,7 +46,8 @@ sh_binary(
         "lifr_testflight",
         "//apps/lifr/app:ios",
         "lifr",
-        "'" + BUNDLE_ID + "|Lifr|Lifr App Store|lifr-app-store'",
+        # iCloud's pushes when another device changes the records.
+        "'" + BUNDLE_ID + "|Lifr|Lifr App Store|lifr-app-store|PUSH_NOTIFICATIONS'",
         "'" + WIDGETS_BUNDLE_ID + "|Lifr Widgets|Lifr Widgets App Store|lifr-widgets-app-store'",
     ] + ([
         # The share extension, in signed builds.

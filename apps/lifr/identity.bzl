@@ -9,6 +9,9 @@ The team and bundle ID prefix aren't checked in. Set them in a gitignored
     common --repo_env=LIFR_ICLOUD_CONTAINER=iCloud.com.yourname.lifr
     # Optional: the iPhone App Group that the widgets read Today from.
     common --repo_env=LIFR_IOS_APP_GROUP=group.com.yourname.lifr
+    # Optional, once Time Sensitive Notifications is on for the iPhone App ID:
+    # reminders then come through a Focus.
+    common --repo_env=LIFR_TIME_SENSITIVE=1
     # Optional: LangReadr's bundle ID, if not <prefix>.langreadr.
     common --repo_env=LANGREADR_BUNDLE_ID=com.yourname.langreadr
 
@@ -25,6 +28,7 @@ _PREFIX = "LIFR_BUNDLE_PREFIX"
 _DEFAULT_PREFIX = "com.example"
 _ICLOUD = "LIFR_ICLOUD_CONTAINER"
 _IOS_GROUP = "LIFR_IOS_APP_GROUP"
+_TIME_SENSITIVE = "LIFR_TIME_SENSITIVE"
 _LANGREADR = "LANGREADR_BUNDLE_ID"
 
 def _valid_team(team):
@@ -54,6 +58,9 @@ def _lifr_identity_impl(repository_ctx):
     if icloud and not team:
         fail("{} is set without {}. iCloud needs a signed build: set your team too, or remove {} to keep the records on each device.".format(_ICLOUD, _TEAM, _ICLOUD))
     ios_group = repository_ctx.getenv(_IOS_GROUP, "") or ""
+    time_sensitive = repository_ctx.getenv(_TIME_SENSITIVE, "") or ""
+    if time_sensitive not in ("", "0", "1"):
+        fail("{} is \"{}\". Set it to 1 once Time Sensitive Notifications is on for the iPhone App ID at developer.apple.com/account, or remove it.".format(_TIME_SENSITIVE, time_sensitive))
     if ios_group and not _valid_group(ios_group):
         fail("{} is \"{}\", which isn't an App Group ID. Use the one you made under Identifiers at developer.apple.com/account, starting with group., in user.bazelrc: common --repo_env={}=group.com.yourname.lifr".format(_IOS_GROUP, ios_group, _IOS_GROUP))
     if ios_group and not team:
@@ -79,6 +86,8 @@ def _lifr_identity_impl(repository_ctx):
         "ICLOUD_CONTAINER = {}".format(repr(icloud)),
         "# Empty unless user.bazelrc sets one: the iPhone widgets then have no data.",
         "IOS_APP_GROUP = {}".format(repr(ios_group)),
+        "# Whether user.bazelrc says the iPhone App ID has Time Sensitive Notifications.",
+        "TIME_SENSITIVE = {}".format(time_sensitive == "1"),
         "WIDGETS_BUNDLE_ID = {}".format(repr(bundle_id + ".widgets")),
         "SHARE_BUNDLE_ID = {}".format(repr(bundle_id + ".share")),
         "# The share extension needs a signed build: it leaves tasks in a keychain group",
@@ -96,7 +105,7 @@ def _lifr_identity_impl(repository_ctx):
 
 lifr_identity = repository_rule(
     implementation = _lifr_identity_impl,
-    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP, _LANGREADR],
+    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP, _TIME_SENSITIVE, _LANGREADR],
     doc = "Writes @lifr_identity//:defs.bzl from LIFR_TEAM_ID, LIFR_BUNDLE_PREFIX, LIFR_ICLOUD_CONTAINER, " +
           "LIFR_IOS_APP_GROUP and LANGREADR_BUNDLE_ID.",
 )

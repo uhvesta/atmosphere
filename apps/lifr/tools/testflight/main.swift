@@ -25,6 +25,7 @@ enum Failure: Error, CustomStringConvertible {
               app <bundle ID>
               build <bundle ID> <build number>
               register <bundle ID> <name>
+              capability <bundle ID> <capability type>
               certificates
               create-certificate <CSR path> <certificate output path>
               profile <name> <bundle ID> <certificate ID> <profile output path>
@@ -209,6 +210,25 @@ func run(_ arguments: [String]) async throws(Failure) {
             throw .unexpected("no ID for the new bundle ID")
         }
         print(id)
+
+    case ("capability", 3):
+        // Turns a capability on for a registered bundle ID, once.
+        let (identifier, type) = (arguments[1], arguments[2])
+        guard let bundle = try await bundleIDResource(api, identifier) else {
+            throw .unexpected("\(identifier) isn't registered")
+        }
+        let enabled = try await api.list("/v1/bundleIds/\(bundle)/bundleIdCapabilities?limit=200")
+        guard !enabled.contains(where: { attributes($0)["capabilityType"] as? String == type }) else { return }
+        try await api.call(
+            "POST", "/v1/bundleIdCapabilities",
+            [
+                "data": [
+                    "type": "bundleIdCapabilities",
+                    "attributes": ["capabilityType": type],
+                    "relationships": ["bundleId": ["data": ["type": "bundleIds", "id": bundle]]],
+                ]
+            ])
+        FileHandle.standardError.write(Data("Turned on \(type) for \(identifier).\n".utf8))
 
     case ("certificates", 1):
         for certificate in try await api.list("/v1/certificates?filter[certificateType]=DISTRIBUTION&limit=200") {

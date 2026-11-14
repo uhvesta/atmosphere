@@ -214,6 +214,7 @@ lifr_entitlements(
     ios_app_group = True,
     keychain_groups = _SHARED_KEYCHAIN,
     production = True,
+    push = True,
 )
 
 # The team's development profile for the iPhone app. iCloud needs an

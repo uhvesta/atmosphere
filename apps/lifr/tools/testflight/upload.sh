@@ -10,7 +10,8 @@
 # tool, the app's name, the --config that signs it for the App Store, its
 # ios_application label, the prefix of its --embed_label, then for the app
 # and each of its extensions "<bundle ID>|<name>|<profile name>|<profile
-# file>", the app first.
+# file>", the app first, optionally followed by "|" and the capabilities to
+# turn on for that bundle ID, comma-separated, such as PUSH_NOTIFICATIONS.
 set -eu
 
 service=lifr.app-store-connect
@@ -45,6 +46,17 @@ echo "Registering the bundle IDs…"
 for signed in "$@"; do
   rest=${signed#*|}
   api register "${signed%%|*}" "${rest%%|*}" >/dev/null
+  # Turning one on makes Apple invalidate the bundle ID's profiles, which
+  # the profile step below then makes again.
+  rest=${rest#*|}
+  rest=${rest#*|}
+  case $rest in
+    *\|*)
+      for capability in $(printf '%s' "${rest#*|}" | tr ',' ' '); do
+        api capability "${signed%%|*}" "$capability"
+      done
+      ;;
+  esac
 done
 
 # Signing uses a keychain of its own, so codesign never waits on a
@@ -100,7 +112,8 @@ mkdir -p "$profiles"
 for signed in "$@"; do
   rest=${signed#*|}
   rest=${rest#*|}
-  api profile "${rest%%|*}" "${signed%%|*}" "$certificate" "$profiles/${rest#*|}.mobileprovision"
+  file=${rest#*|}
+  api profile "${rest%%|*}" "${signed%%|*}" "$certificate" "$profiles/${file%%|*}.mobileprovision"
 done
 
 echo "Checking the app is in App Store Connect…"
