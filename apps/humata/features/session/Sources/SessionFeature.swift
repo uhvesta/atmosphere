@@ -61,8 +61,9 @@ package struct SessionFeature {
         /// before the history comes.
         package var historyLoading: HistoryLoading?
         /// The streamed parts of the reply taken in, so the history sent
-        /// again on a reconnect doesn't add them twice.
-        var streamed: Set<String> = []
+        /// again on a reconnect doesn't add them twice. Nothing draws it,
+        /// so it's changed in place, not copied and compared each frame.
+        @ObservationStateIgnored var streamed: Set<String> = []
         /// Requests for permission the agent is still waiting on.
         package private(set) var pendingPermissions: [SessionEvent] = []
         /// The failure row offering Try Again: the newest, while the last
@@ -394,11 +395,10 @@ package struct SessionFeature {
             var stale = false
             var turnEnded = false
             var streaming = self.streaming
-            var streamed = self.streamed
             for event in batch {
                 switch event.kind {
                 case .assistantDelta(let text):
-                    if streamed.insert(event.id).inserted { streaming += text }
+                    if self.streamed.insert(event.id).inserted { streaming += text }
                     continue
                 default: break
                 }
@@ -414,7 +414,7 @@ package struct SessionFeature {
                     switch event.kind {
                     case .assistantMessage, .turnEnded:
                         streaming = ""
-                        streamed = []
+                        self.streamed = []
                     default: break
                     }
                     if case .turnEnded = event.kind { turnEnded = true }
@@ -431,7 +431,6 @@ package struct SessionFeature {
             // started in the same batch.
             if turnEnded, stopping { stopping = false }
             if streaming != self.streaming { self.streaming = streaming }
-            if streamed != self.streamed { self.streamed = streamed }
             guard replaced || !added.isEmpty else {
                 self.log = log
                 return

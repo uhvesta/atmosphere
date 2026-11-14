@@ -48,12 +48,12 @@ struct HumataApp: App {
 
     var body: some Scene {
         WindowGroup("Humata") {
-            AppView(store: store)
-                .frame(minWidth: 820, minHeight: 520)
+            AtLeast(width: 820, height: 520) { AppView(store: store) }
                 .onOpenURL { store.send(.opened($0)) }
                 // A humata:// link goes to this window, not a new one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
+        .defaultSize(width: 1180, height: 760)
         .handlesExternalEvents(matching: ["*"])
 
         WindowGroup("Diagram", for: DiagramWindowValue.self) { $value in

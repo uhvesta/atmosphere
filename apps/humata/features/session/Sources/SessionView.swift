@@ -379,6 +379,18 @@ private struct Fills: Layout {
             view.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
         }
     }
+
+    // Without these, a stack asking where this view's alignment guides are
+    // has it place its view to find out, laying out all of it.
+    func explicitAlignment(
+        of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
+        cache: inout ()
+    ) -> CGFloat? { nil }
+
+    func explicitAlignment(
+        of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
+        cache: inout ()
+    ) -> CGFloat? { nil }
 }
 
 /// The end of the chat, kept in view as it grows.
@@ -386,7 +398,20 @@ private enum ChatEnd {
     static let id = "chat.end"
 
     static func inView(_ geometry: ScrollGeometry) -> Bool {
-        geometry.visibleRect.maxY >= geometry.contentSize.height - 24
+        geometry.visibleRect.maxY >= geometry.contentSize.height - 40
+    }
+
+    /// Where the chat is scrolled, and how long it is.
+    struct Place: Equatable {
+        let offset: CGFloat
+        let height: CGFloat
+        let endInView: Bool
+
+        init(geometry: ScrollGeometry) {
+            offset = geometry.contentOffset.y
+            height = geometry.contentSize.height
+            endInView = ChatEnd.inView(geometry)
+        }
     }
 }
 
@@ -434,11 +459,23 @@ private struct ChatList: View {
                 }
                 .padding()
             }
-            .defaultScrollAnchor(.bottom)
-            .onScrollGeometryChange(for: CGFloat.self) {
-                $0.contentSize.height
-            } action: { _, _ in
-                if following { reader.scrollTo(ChatEnd.id, anchor: .bottom) }
+            // At its end when it opens; as it grows, what's in view stays.
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .onScrollGeometryChange(for: ChatEnd.Place.self) {
+                ChatEnd.Place(geometry: $0)
+            } action: { old, new in
+                if new.height != old.height {
+                    // Grown or shrunk with its end in view: keep to the end.
+                    if old.endInView { following = true }
+                    if following { reader.scrollTo(ChatEnd.id, anchor: .bottom) }
+                } else if new.offset < old.offset - 1, !new.endInView {
+                    // Read up, by any means: a mouse wheel has no phases. An
+                    // upward move that leaves the end in view is the chat
+                    // getting shorter, as a row's guessed height is measured.
+                    following = false
+                } else if new.endInView, new.offset > old.offset {
+                    following = true
+                }
             }
             // Only the person's scrolling stops or starts the following:
             // rows measured as they come move what's in view by themselves.
@@ -595,6 +632,18 @@ private struct KeptHeight: Layout {
         subviews.first?.place(
             at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
+
+    // Without these, a stack asking where this view's alignment guides are
+    // has it place its view to find out, laying out all of it.
+    func explicitAlignment(
+        of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
+        cache: inout ()
+    ) -> CGFloat? { nil }
+
+    func explicitAlignment(
+        of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
+        cache: inout ()
+    ) -> CGFloat? { nil }
 }
 
 /// A row of the chat: an item, or one part of a long reply.

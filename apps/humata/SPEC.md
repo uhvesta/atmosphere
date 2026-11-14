@@ -1416,9 +1416,19 @@ only streamed.
 - [x] A tool call opened shows all its output: whether it's open is kept in
   the session, so the chat's kept row heights see the change, tested in a
   window
-- [ ] What's left each frame: the window's own sizing
-  (`NavigationStackLayout`, `NSHostingView.minSize`), copying the session's
-  state for the streaming text, and comparing full rows for kept heights
+- [x] Scrolling while a reply streams, in a split view's column as in the
+  app, with a mouse wheel turned up and back down
+  (`testScrollingWhileAReplyStreams`): the column's window view asked its
+  content for its smallest size on each change, and a custom layout asked
+  for its alignment laid out the whole chat to answer. The window, the
+  column and each kept-height row now answer both without measuring.
+  Frames went from a median of 58 ms (p95 80 ms, 630 of 670 over 33 ms)
+  to 1.3 ms (p95 about 18 ms, 2 to 11 over 33 ms)
+- [x] A mouse wheel has no scroll phases, so the chat kept following while
+  the person read up: any upward move that takes the end out of view now
+  stops it, and the chat is anchored at its end only when it opens
+- [ ] Left each frame: copying the session's state for the streaming text,
+  and comparing full rows for kept heights
 
 ## Later
 

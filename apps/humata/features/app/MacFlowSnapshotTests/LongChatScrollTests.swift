@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import HumataAppFeature
 import HumataDaemonClient
 import HumataSession
 import SwiftUI
@@ -30,6 +31,150 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertLessThan(long.worst, Duration.milliseconds(250), report)
         XCTAssertLessThan(long.slow * 100, long.steps * 5, "more than 5% of steps were slow\n" + report)
         XCTAssertLessThan(long.median, short.median * 2 + Duration.milliseconds(4), report)
+    }
+
+    /// Reading back up a long chat while a reply streams in: the wheel moves
+    /// a few points a frame, and each frame takes what it takes to draw.
+    /// Prints the frames' times; checks them only with `HUMATA_PERF` set.
+    func testScrollingWhileAReplyStreams() async throws {
+        var maker = ChatMaker(seed: 5)
+        var history = maker.history(turns: 60)
+        func add(_ kind: SessionEvent.Kind) {
+            history.append(SessionEvent(id: "x\(history.count)", time: Date(timeIntervalSince1970: 0), kind: kind))
+        }
+        add(.userMessage("Write it all out."))
+        add(.turnStarted)
+        let words = 8_000
+        let session = Session(id: "s1", name: "long", backend: .scripted, workingDirectory: "/work")
+        let store = Store(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = .previewValue
+            $0.continuousClock = ContinuousClock()
+            $0.daemon.watch = { [history] _, _ in
+                AsyncThrowingStream { continuation in
+                    for event in history { continuation.yield(.event(event)) }
+                    continuation.yield(.historyLoaded)
+                    let writer = Task {
+                        for word in 0..<words {
+                            try await Task.sleep(for: .milliseconds(5))
+                            let text = word % 40 == 39 ? "word\(word)\n\n" : "word\(word) "
+                            continuation.yield(
+                                .event(
+                                    SessionEvent(
+                                        id: "d\(word)", time: Date(timeIntervalSince1970: 0),
+                                        kind: .assistantDelta(text))))
+                        }
+                    }
+                    continuation.onTermination = { _ in writer.cancel() }
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        let window = NSWindow(
+            contentRect: CGRect(x: 80, y: 80, width: 1180, height: 760),
+            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        // In a split view's column, as in the app, with the window views'
+        // own size checks on: each column's view asks its content for its
+        // smallest size on every change.
+        let hosting = NSHostingController(
+            rootView: AtLeast(width: 820, height: 520) {
+                NavigationSplitView {
+                    List { Text("Sessions") }
+                } detail: {
+                    AtLeast(width: 360, height: 300) { SessionView(store: store) }
+                }
+            })
+        window.contentViewController = hosting
+        window.setContentSize(CGSize(width: 1180, height: 760))
+        window.orderFrontRegardless()
+        let task = store.send(.task)
+        defer {
+            task.cancel()
+            window.close()
+            window.contentViewController = nil
+        }
+        let clock = ContinuousClock()
+        let start = clock.now
+        while !store.historyLoaded || store.items.isEmpty, clock.now - start < .seconds(60) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await settle(window)
+        let scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
+        // Let the reply get going, then read up and back down.
+        try await Task.sleep(for: .seconds(2))
+        XCTAssertFalse(store.streaming.isEmpty, "the reply didn't stream")
+
+        // A mouse wheel, as the person turns it: in this process, not
+        // posted to the system. Its events have no phases, as a
+        // trackpad's do.
+        var frames: [Duration] = []
+        var last = clock.now
+        func wheel(_ lines: Int32) async {
+            if let event = CGEvent(
+                scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: lines * 12, wheel2: 0,
+                wheel3: 0),
+                let wheel = NSEvent(cgEvent: event)
+            {
+                scroll.scrollWheel(with: wheel)
+            }
+            try? await Task.sleep(for: .milliseconds(8))
+            // The time from one turn of the wheel to the next: what the
+            // chat took to draw it, and the reply's words in between.
+            frames.append(clock.now - last - .milliseconds(8))
+            last = clock.now
+        }
+        func endInView() -> Bool {
+            let visible = scroll.contentView.documentVisibleRect
+            let height = scroll.documentView?.frame.height ?? 0
+            return (scroll.documentView?.isFlipped ?? true) ? visible.maxY >= height - 40 : visible.minY <= 40
+        }
+        // A jump to the end of a lazy list lands short until the rows near
+        // the end are measured, so the end can lag a frame or two behind.
+        func soonAtEnd() async -> Bool {
+            for _ in 0..<100 where !endInView() { try? await Task.sleep(for: .milliseconds(10)) }
+            return endInView()
+        }
+        let atEnd = await soonAtEnd()
+        XCTAssertTrue(atEnd, "the chat wasn't at its end as the reply came")
+        for _ in 0..<300 { await wheel(2) }
+        let stayed = !endInView()
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertTrue(stayed && !endInView(), "the chat went back to its end while the person read up")
+        last = clock.now
+        for _ in 0..<600 where !endInView() { await wheel(-4) }
+        try await Task.sleep(for: .milliseconds(500))
+        let backAtEnd = await soonAtEnd()
+        XCTAssertTrue(backAtEnd, "the chat didn't scroll back to its end")
+        last = clock.now
+
+        // Read up again, then send a message: the chat goes to its end to
+        // show it, and keeps to it as the reply goes on.
+        for _ in 0..<300 { await wheel(2) }
+        XCTAssertFalse(endInView(), "the chat didn't scroll up")
+        store.send(.binding(.set(\.draft, "And the rest, please.")))
+        store.send(.sendTapped(.enqueue))
+        let sentAtEnd = await soonAtEnd()
+        XCTAssertTrue(sentAtEnd, "sending didn't take the chat to its end")
+        try await Task.sleep(for: .seconds(1))
+        let keptAtEnd = await soonAtEnd()
+        XCTAssertTrue(keptAtEnd, "the chat didn't keep to its end after the message was sent")
+
+        let sorted = frames.sorted()
+        let median = sorted[sorted.count / 2]
+        let p95 = sorted[sorted.count * 95 / 100]
+        let worst = sorted.last ?? .zero
+        let slow = frames.filter { $0 > .milliseconds(33) }.count
+        let report =
+            "scrolling while streaming: \(frames.count) frames, median \(median), p95 \(p95), worst \(worst), "
+            + "\(slow) over 33 ms; reply \(store.streaming.utf8.count) bytes"
+        print(report)
+        XCTContext.runActivity(named: report) { _ in }
+
+        guard ProcessInfo.processInfo.environment["HUMATA_PERF"] != nil else { return }
+        XCTAssertLessThan(p95, Duration.milliseconds(33), report)
     }
 
     /// A tool call opened makes room for its output, and closing it gives
