@@ -17,17 +17,18 @@ struct PlanExportView: View {
                     Text("What the other assistant plans. Leave it empty to say it there instead.")
                 }
                 Section {
-                    Picker("Tasks Listed", selection: $store.listed) {
-                        Text("None").tag(PlanPrompt.Scope.names)
-                        Text("All Avenues").tag(PlanPrompt.Scope.everything)
+                    ChipFlow(spacing: 8) {
+                        chip(Text("Names Only"), .names)
+                        chip(Text("Whole Workspace"), .everything)
                         ForEach(store.avenues) { avenue in
-                            Text(avenue.name).tag(PlanPrompt.Scope.avenue(avenue.id))
+                            chip(Text(avenue.name), .avenue(avenue.id))
                         }
                         ForEach(store.projects, id: \.project.id) { pair in
-                            Text("\(pair.avenue.name) › \(pair.project.name)")
-                                .tag(PlanPrompt.Scope.project(pair.project.id))
+                            chip(Text("\(pair.avenue.name) › \(pair.project.name)"), .project(pair.project.id))
                         }
                     }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Tasks Listed")
                     Toggle("Open Tasks Only", isOn: $store.openOnly)
                         .disabled(!store.listsTasks)
                     Toggle("Descriptions", isOn: $store.descriptions)
@@ -76,11 +77,83 @@ struct PlanExportView: View {
             }
             .formStyle(.grouped)
             .navigationTitle("Plan with Another Assistant")
+            #if os(iOS)
+                // A large title is too long for the iPhone's width.
+                .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { store.send(.doneTapped) }
                 }
             }
         }
+    }
+
+    /// One choice of which tasks the prompt lists; the chosen one is filled.
+    private func chip(_ title: Text, _ scope: PlanPrompt.Scope) -> some View {
+        let chosen = store.listed == scope
+        return Button {
+            store.send(.binding(.set(\.listed, scope)))
+        } label: {
+            title
+                .font(.subheadline)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(chosen ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                .background(chosen ? AnyShapeStyle(.tint) : AnyShapeStyle(.tint.opacity(0.12)), in: Capsule())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+    }
+}
+
+/// Lays its views out in rows, starting a new row when one is full.
+private struct ChipFlow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = rows(width: proposal.width ?? .infinity, subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(width: bounds.width, subviews) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row {
+        var indices: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func rows(width: CGFloat, _ subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            // A chip wider than a row is cut short to fit it.
+            let size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil))
+            let needed = row.indices.isEmpty ? size.width : row.width + spacing + size.width
+            if needed > width, !row.indices.isEmpty {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.indices.isEmpty ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+            row.indices.append(index)
+        }
+        if !row.indices.isEmpty { rows.append(row) }
+        return rows
     }
 }

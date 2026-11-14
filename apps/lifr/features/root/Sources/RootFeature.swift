@@ -1091,8 +1091,11 @@ package struct RootFeature {
                 }
 
             case .chatCommandChosen(let command):
-                guard let id = state.openChatID else { return .none }
-                return .send(.conversations(.chats(.element(id: id, action: .commandChosen(command)))))
+                guard !state.isLocked else { return .none }
+                if let id = state.openChatID {
+                    return .send(.conversations(.chats(.element(id: id, action: .commandChosen(command)))))
+                }
+                return .concatenate(.send(.goTo(.conversations)), .send(.conversations(.commandReceived(command))))
 
             case .goToTaskTapped:
                 guard let workspace = state.workspace else { return .none }

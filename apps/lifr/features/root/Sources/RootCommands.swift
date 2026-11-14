@@ -9,9 +9,9 @@ import LifrTaskList
 import LifrUI
 import SwiftUI
 
-/// The File menu's new items, Find, the View menu's Go to items, the Task
-/// menu for the open task, the Chat menu's plan prompt, the Sync menu, and
-/// Help's shortcuts and bug reports. Items that don't apply are disabled,
+/// The File menu's new items and plan prompt, Find, the View menu's Go to
+/// items, the Task menu for the open task, the Sync menu, and Help's
+/// shortcuts and bug reports. Items that don't apply are disabled,
 /// not hidden.
 package struct RootCommands: Commands {
     /// The first window's store, for when no Lifr window is in front.
@@ -102,6 +102,14 @@ package struct RootCommands: Commands {
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
             Button("New Avenue") { store.send(.newAvenueTapped) }
+            Divider()
+            // The chat on screen, or a new one.
+            Button("Plan with Another Assistant…") { store.send(.chatCommandChosen(.export)) }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(store.isLocked)
+            Button("Paste Plan Reply") { store.send(.chatCommandChosen(.paste)) }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .disabled(store.isLocked)
             // The iPhone has one window.
             if store.platform.hasSidebar {
                 Divider()
@@ -226,14 +234,6 @@ package struct RootCommands: Commands {
                 .disabled(!store.state.canMoveCursorRow)
             Button("Move Down") { store.send(.listShortcut(.moveDown)) }
                 .disabled(!store.state.canMoveCursorRow)
-        }
-        CommandMenu("Assistant") {
-            Button("Plan with Another Assistant…") { store.send(.chatCommandChosen(.export)) }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(store.state.openChatID == nil)
-            Button("Paste Plan Reply") { store.send(.chatCommandChosen(.paste)) }
-                .keyboardShortcut("v", modifiers: [.command, .shift])
-                .disabled(store.state.openChatID == nil)
         }
         CommandMenu("Sync") {
             Button("Sync Now") { store.send(.syncNowTapped) }

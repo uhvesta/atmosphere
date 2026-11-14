@@ -1853,6 +1853,22 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testPlanningWithAnotherAssistantFromTheMenuOpensANewChatWithTheSheetWhenNoneIsOpen() async throws {
+        _ = health
+        let store = makeStore(.mac)
+        store.dependencies.conversations = .inMemory()
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.chatCommandChosen(.export))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.selection, .conversations)
+        let id = try XCTUnwrap(store.state.conversations.openID)
+        XCTAssertNotNil(store.state.conversations.chats[id: id]?.export)
+        await task.cancel()
+    }
+
     func testALinkBeforeTheRecordsLoadIsFollowedOnceTheyDo() async throws {
         let stretch = records.task("Stretch", in: health, due: 3)
         let store = makeStore(.phone)

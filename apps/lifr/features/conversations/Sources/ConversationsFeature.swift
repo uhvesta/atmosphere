@@ -167,6 +167,8 @@ package struct ConversationsFeature {
         /// Text from Shortcuts or another app: a new conversation with the
         /// plan in it on the draft card, to review before adding.
         case planReceived(String)
+        /// A menu's chat command, for the chat open here or a new one.
+        case commandReceived(ChatCommand)
         case searched(String)
         /// Finds words related to what's searched for, when they come from
         /// a model and so wait to be asked for.
@@ -258,6 +260,16 @@ package struct ConversationsFeature {
                 let id = uuid()
                 state.open(Conversation(id: id, createdAt: now))
                 return .send(.chats(.element(id: id, action: .planPasted(text))))
+
+            case .commandReceived(let command):
+                let id: UUID
+                if let open = state.openID, state.chats[id: open] != nil {
+                    id = open
+                } else {
+                    id = uuid()
+                    state.open(Conversation(id: id, createdAt: now))
+                }
+                return .send(.chats(.element(id: id, action: .commandChosen(command))))
 
             case .opened(let id):
                 guard let conversation = state.conversations[id: id] else { return .none }

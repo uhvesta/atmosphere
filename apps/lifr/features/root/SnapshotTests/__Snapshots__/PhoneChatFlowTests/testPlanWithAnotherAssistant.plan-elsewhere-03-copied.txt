@@ -6,13 +6,21 @@
 [header] "Plan with Another Assistant"
 [element] "" value: "Move house by March"
 [text] "What the other assistant plans. Leave it empty to say it there instead."
-[button] "Tasks Listed, None"
+[button, selected] "Names Only"
+[button] "Whole Workspace"
+[button] "Inbox"
+[button] "Health"
+[button] "Work"
+[button] "Home"
+[button] "Health › Half marathon"
 [button, notEnabled, toggle] "Open Tasks Only" value: "1"
-[button, notEnabled, toggle] "Descriptions" value: "0"
 [text] "Ask about your tasks, change them, or plan what to add."
-[text] "The prompt names your Avenues, Projects and labels only."
+[button, notEnabled, toggle] "Descriptions" value: "0"
 [button] "Plan my week"
+[text] "The prompt names your Avenues, Projects and labels only."
+[button] "What's overdue?"
 [header, text] "Prompt"
+[button] "What did I finish this week?"
 [text] "You're helping plan tasks for Lifr, a to-do app. Reply with one ```toml block and nothing else, following the format below. Put tasks in the Avenues and Projects listed further down, using their keys and names as written, and reuse the labels listed. Add an Avenue, Project or label only when none of them fits.
 
 The format:
@@ -75,8 +83,6 @@ Labels: none yet
 Today is 2026-11-03, in the time zone GMT.
 
 What to plan: Ask me what to plan, and reply with the plan once I answer."
-[button] "What's overdue?"
-[button] "What did I finish this week?"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
@@ -87,4 +93,3 @@ What to plan: Ask me what to plan, and reply with the plan once I answer."
 [button] "Upcoming"
 [button] "Avenues"
 [button, selected] "Assistant"
-[button] "Copied"
