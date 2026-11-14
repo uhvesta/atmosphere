@@ -102,13 +102,14 @@ package struct HostsView: View {
             Form {
                 if let links = store.commandLinks {
                     CommandsSection(
-                        links: links, linking: store.linking,
+                        links: links, linking: store.linking, restarts: store.restartsDaemon,
                         link: { store.send(.linkCommandsTapped) },
                         restart: { store.send(.restartDaemonTapped) })
                 }
                 HostEditorSections(store: editor)
                 SkippedSection(
                     skipped: store.skipped, failure: store.skippedFailure, thisMac: true,
+                    restarts: store.restartsDaemon,
                     remove: { store.send(.removeSkippedTapped($0)) },
                     retry: { store.send(.skippedRetryTapped) },
                     restart: { store.send(.restartDaemonTapped) })
@@ -131,6 +132,7 @@ package struct HostsView: View {
                 HostEditorSections(store: editor)
                 SkippedSection(
                     skipped: store.skipped, failure: store.skippedFailure, thisMac: false,
+                    restarts: false,
                     remove: { store.send(.removeSkippedTapped($0)) },
                     retry: { store.send(.skippedRetryTapped) },
                     restart: {})
@@ -151,6 +153,9 @@ package struct HostsView: View {
 private struct CommandsSection: View {
     let links: CommandLinks
     let linking: Bool
+    /// Whether the daemon can be restarted from here: not while a newer
+    /// Humata's runs.
+    let restarts: Bool
     let link: () -> Void
     /// Asks before restarting the daemon, which reads the shell again.
     let restart: () -> Void
@@ -158,10 +163,15 @@ private struct CommandsSection: View {
     var body: some View {
         Section {
             if let problem = links.environmentProblem {
-                Label(HostStatus.environment(problem, thisMac: true), systemImage: "exclamationmark.triangle.fill")
-                    .symbolRenderingMode(.multicolor)
-                Button("Restart Humata's Daemon…", action: restart)
-                    .help("Start the daemon anew so it reads your login shell again; turns in progress stop")
+                Label(
+                    HostStatus.environment(problem, thisMac: true, restarts: restarts),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .symbolRenderingMode(.multicolor)
+                if restarts {
+                    Button("Restart Humata's Daemon…", action: restart)
+                        .help("Start the daemon anew so it reads your login shell again; turns in progress stop")
+                }
             }
             ForEach(links.links, id: \.name) { command in
                 LabeledContent {
@@ -297,10 +307,30 @@ private struct SkippedSection: View {
     let failure: String?
     /// Whether these are This Mac's, whose daemon Humata can restart.
     let thisMac: Bool
+    /// Whether This Mac's daemon can be restarted from here: not while a
+    /// newer Humata's runs.
+    let restarts: Bool
     let remove: (SkippedSession.ID) -> Void
     let retry: () -> Void
     /// Asks before restarting This Mac's daemon; not used for a host.
     let restart: () -> Void
+
+    /// How to open one again, which for This Mac's is the daemon started
+    /// anew: with the button above, or from the newer Humata running it.
+    private var footer: String {
+        let left = "Humata left these as they are. To open one again, "
+        let remove = " Or remove it to delete its folder and history."
+        guard thisMac else {
+            return left + "fix what's damaged there, then stop humatad on the host (for example "
+                + "`pkill -x humatad`; turns in progress there stop) and press Check Again, which starts it anew."
+                + remove
+        }
+        guard restarts else {
+            return left + "fix what's damaged, then restart Humata's daemon from the newer Humata that runs it."
+                + remove
+        }
+        return left + "fix what's damaged, then restart Humata's daemon with the button above." + remove
+    }
 
     var body: some View {
         if !skipped.isEmpty || failure != nil {
@@ -323,21 +353,14 @@ private struct SkippedSection: View {
                         Button("Remove…", role: .destructive) { remove(session.id) }
                     }
                 }
-                if thisMac, !skipped.isEmpty {
+                if thisMac, restarts, !skipped.isEmpty {
                     Button("Restart Humata's Daemon…", action: restart)
                         .help("Start the daemon anew so it reads these sessions again; turns in progress stop")
                 }
             } header: {
                 Text("Sessions That Couldn't Be Opened")
             } footer: {
-                Text(
-                    thisMac
-                        ? "Humata left these as they are. To open one again, fix what's damaged, then restart "
-                            + "Humata's daemon with the button above. Or remove it to delete its folder and history."
-                        : "Humata left these as they are. To open one again, fix what's damaged there, then stop "
-                            + "humatad on the host (for example `pkill -x humatad`; turns in progress there stop) "
-                            + "and press Check Again, which starts it anew. Or remove it to delete its folder and "
-                            + "history.")
+                Text(footer)
             }
         }
     }
@@ -437,11 +460,12 @@ extension HostStatus {
 
     /// What it means that the login shell's variables weren't read, and
     /// what reads them again: they're read once, when the daemon starts.
-    static func environment(_ problem: String, thisMac: Bool) -> String {
+    static func environment(_ problem: String, thisMac: Bool, restarts: Bool = true) -> String {
         let found =
             "Agents run without your shell's PATH and exports, so they may not find programs or keys: "
             + "\(problem). "
-        if thisMac { return found + "Fix it, then restart Humata's daemon with the button below." }
+        if thisMac, restarts { return found + "Fix it, then restart Humata's daemon with the button below." }
+        if thisMac { return found + "Fix it, then restart Humata's daemon from the newer Humata that runs it." }
         return found
             + "Fix it there, then stop humatad on the host (for example `pkill -x humatad`; turns in progress "
             + "there stop) and press Check Again, which starts it anew."

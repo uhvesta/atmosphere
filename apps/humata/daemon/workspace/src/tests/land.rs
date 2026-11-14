@@ -388,6 +388,69 @@ async fn a_fetch_that_hangs_is_stopped_once_its_patience_runs_out() {
 }
 
 #[tokio::test]
+async fn a_fetch_is_stopped_with_the_turn_that_waits_for_it() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (_, checkout) = copy_of_a_clone(dir.path()).await;
+    // An origin whose transport never answers, as above, whose "ssh" first
+    // writes down the git that runs it.
+    let clone = dir.path().join("app");
+    let pid_file = dir.path().join("git.pid");
+    git_in(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://humata.invalid/app.git",
+        ],
+    );
+    git_in(
+        &clone,
+        &[
+            "config",
+            "core.sshCommand",
+            &format!("echo $PPID > '{}'; exec sleep 30 #", pid_file.display()),
+        ],
+    );
+    git_in(&clone, &["config", "ssh.variant", "simple"]);
+
+    let following = tokio::spawn(async move {
+        let _ = follow(&checkout, std::time::Duration::from_secs(60)).await;
+    });
+    let waiting_since = std::time::Instant::now();
+    let pid = loop {
+        let written = read(&pid_file).map(|pid| pid.trim().to_owned());
+        if let Some(pid) = written.filter(|pid| !pid.is_empty()) {
+            break pid;
+        }
+        assert!(
+            waiting_since.elapsed() < std::time::Duration::from_secs(10),
+            "the fetch never reached its origin"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    following.abort();
+    let _ = following.await;
+
+    let is_running = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let stopped_since = std::time::Instant::now();
+    while is_running(&pid) {
+        assert!(
+            stopped_since.elapsed() < STOP_GRACE + std::time::Duration::from_secs(1),
+            "git {pid} went on after its turn was stopped"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
 async fn a_fetch_from_an_origin_that_isnt_there_fails_with_gits_reason() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let (_, checkout) = copy_of_a_clone(dir.path()).await;

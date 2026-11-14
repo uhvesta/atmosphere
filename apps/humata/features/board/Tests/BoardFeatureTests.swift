@@ -1220,6 +1220,73 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(taskPage.linkable.map(\.id), ["design"])
     }
 
+    func testAnItemCantLinkToOneThatAlreadyWaitsOnIt() {
+        let design = planItem("design")
+        let build = planItem("build", dependsOn: ["design"])
+        let ship = planItem("ship", dependsOn: ["build"])
+        let other = planItem("other")
+        let board = [design, build, ship, other]
+        let project = Project(id: "project", name: "humata", repositories: [], created: Date())
+        let designPage = ItemFeature.State(
+            project: project, item: design, parent: nil, subtasks: [], sessions: [], board: board)
+        XCTAssertEqual(designPage.linkable.map(\.id), ["other"])
+    }
+
+    func testATaskCantLinkToWhatWaitsOnItsMilestone() {
+        let milestone = planItem("launch", kind: .milestone)
+        let task = planItem("write", parent: "launch")
+        let after = planItem("celebrate", dependsOn: ["launch"])
+        let other = planItem("design")
+        let board = [milestone, task, after, other]
+        let project = Project(id: "project", name: "humata", repositories: [], created: Date())
+        let taskPage = ItemFeature.State(
+            project: project, item: task, parent: milestone, subtasks: [], sessions: [], board: board)
+        XCTAssertFalse(taskPage.linkable.contains { $0.id == "celebrate" })
+        XCTAssertTrue(taskPage.linkable.contains { $0.id == "design" })
+        // Nor the milestone to what waits on it, through one of its tasks.
+        let milestonePage = ItemFeature.State(
+            project: project, item: milestone, parent: nil, subtasks: [task], sessions: [], board: board)
+        XCTAssertEqual(milestonePage.linkable.map(\.id), ["design"])
+    }
+
+    func testUndoMovesPastAChangeARevertLeftAsItWas() async throws {
+        let board = try await board()
+        let time = Date(timeIntervalSince1970: 0)
+        let first = ItemFields(title: "login")
+        let renamed = ItemFields(title: "sign in")
+        let again = ItemFields(title: "log in")
+        let log = [
+            // Reverting the rename put nothing back: a session renamed it
+            // again since.
+            BoardChange(
+                id: 6, itemID: board.task.id, time: time, before: again, after: again, reverts: 4, author: .app),
+            BoardChange(
+                id: 5, itemID: board.task.id, time: time, before: renamed, after: again, author: .session("s1")
+            ),
+            BoardChange(id: 4, itemID: board.task.id, time: time, before: first, after: renamed, author: .app),
+            BoardChange(id: 3, itemID: board.task.id, time: time, before: nil, after: first, author: .app),
+        ]
+        let reverted = LockIsolated<[UInt64]>([])
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.daemon.boardLog = { _, from, _ in log.filter { $0.id >= from ?? 0 } }
+            $0.daemon.revert = { change in
+                reverted.withValue { $0.append(change) }
+                return Reverted(item: nil)
+            }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        await store.send(.logStarted(newest: 2))
+
+        await store.send(.undoTapped)
+        await store.receive(\.undone)
+        XCTAssertEqual(reverted.value, [3])
+        await store.skipInFlightEffects(strict: false)
+    }
+
     func testDeletingAnItemOthersWaitOnNamesThemInTheAlert() async throws {
         let board = try await board()
         _ = try await board.daemon.client.updateItem(board.subtask.id, ItemUpdate(link: [board.other.id]))

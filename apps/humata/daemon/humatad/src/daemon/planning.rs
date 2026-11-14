@@ -395,12 +395,14 @@ impl Daemon {
             // A planning session with the code has copies of its own, which
             // the fork is made from at the commits its last turn read: a
             // clone for it would go unused.
-            copies = self
+            let listed = self
                 .list_on("", Some(host))
                 .await?
                 .sessions
                 .into_iter()
-                .find(|session| session.id == fork.session_id)
+                .find(|session| session.id == fork.session_id);
+            let follows_base = listed.as_ref().is_some_and(|session| session.follows_base);
+            let checkouts = listed
                 .map(|session| {
                     session
                         .checkouts
@@ -413,17 +415,21 @@ impl Daemon {
                         .collect()
                 })
                 .unwrap_or_default();
-            fork.repositories = if !copies.is_empty() {
-                Vec::new()
-            } else if host.is_empty() {
-                project
-                    .repositories
-                    .iter()
-                    .map(crate::convert::wire_repository)
-                    .collect()
-            } else {
-                self.clone_on(host, &project).await?.repositories
-            };
+            let local = project
+                .repositories
+                .iter()
+                .map(crate::convert::wire_repository)
+                .collect();
+            match fork_code(checkouts, follows_base, host.is_empty(), local) {
+                ForkCode::Reuse(read) => {
+                    fork.repositories = Vec::new();
+                    copies = read;
+                }
+                ForkCode::Given(repositories) => fork.repositories = repositories,
+                ForkCode::Clone => {
+                    fork.repositories = self.clone_on(host, &project).await?.repositories;
+                }
+            }
         }
         let parent = match &item.fields.parent_id {
             Some(parent) => Some(self.store.item(parent)?),
@@ -778,6 +784,42 @@ fn proposal(
     complete.then_some(proposal)
 }
 
+/// Where a fork of a planning session gets its code.
+#[derive(Debug, PartialEq)]
+enum ForkCode {
+    /// It's made from the planning session's own copies, as the runtime's
+    /// fork does whenever the parent has repositories. Its skills are looked
+    /// for in these, which are empty on a remote host before the planning
+    /// session's first turn.
+    Reuse(Vec<pb::Repository>),
+    /// It gets these repositories, the project's on the daemon's host.
+    Given(Vec<pb::Repository>),
+    /// It gets a clone of the project on its remote host.
+    Clone,
+}
+
+/// Decides [`ForkCode`] for a fork of a planning session that has
+/// `checkouts`. One that `follows_base` reads the code, so it has copies of
+/// its own (a project always has a repository) even before its first turn
+/// lists them. `local` holds the project's repositories, used when the host
+/// is the daemon's own.
+fn fork_code(
+    checkouts: Vec<pb::Repository>,
+    follows_base: bool,
+    on_local_host: bool,
+    local: Vec<pb::Repository>,
+) -> ForkCode {
+    if !checkouts.is_empty() {
+        ForkCode::Reuse(checkouts)
+    } else if follows_base {
+        ForkCode::Reuse(if on_local_host { local } else { Vec::new() })
+    } else if on_local_host {
+        ForkCode::Given(local)
+    } else {
+        ForkCode::Clone
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -935,5 +977,53 @@ mod tests {
         assert_eq!(found[1].kind(), pb::ProposalKind::SpecEdit);
         assert_eq!(found[1].item_id, "i1");
         assert_eq!(found[1].turn, 1);
+    }
+
+    fn repository(name: &str, path: &str) -> pb::Repository {
+        pb::Repository {
+            name: name.into(),
+            path: path.into(),
+            url: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_fork_of_a_planning_session_with_the_code_is_never_cloned_before_its_first_turn() {
+        let project = vec![repository("app", "/code/app")];
+        assert_eq!(
+            fork_code(Vec::new(), true, false, project.clone()),
+            ForkCode::Reuse(Vec::new())
+        );
+        assert_eq!(
+            fork_code(Vec::new(), true, true, project.clone()),
+            ForkCode::Reuse(project)
+        );
+    }
+
+    #[test]
+    fn a_fork_of_a_planning_session_with_copies_reads_its_copies() {
+        let copies = vec![repository("app", "/copies/app")];
+        let project = vec![repository("app", "/code/app")];
+        assert_eq!(
+            fork_code(copies.clone(), true, false, project.clone()),
+            ForkCode::Reuse(copies.clone())
+        );
+        assert_eq!(
+            fork_code(copies.clone(), false, true, project),
+            ForkCode::Reuse(copies)
+        );
+    }
+
+    #[test]
+    fn a_fork_of_a_plan_only_session_gets_the_projects_code() {
+        let project = vec![repository("app", "/code/app")];
+        assert_eq!(
+            fork_code(Vec::new(), false, false, project.clone()),
+            ForkCode::Clone
+        );
+        assert_eq!(
+            fork_code(Vec::new(), false, true, project.clone()),
+            ForkCode::Given(project)
+        );
     }
 }

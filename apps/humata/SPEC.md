@@ -2130,6 +2130,10 @@ view of the board.
   back keeps its place in the plan, and the revert says when a
   dependent gone since, or a link that would loop, was left out. A loop
   through a milestone's wait on its own tasks names the milestone
+- [x] A revert that can put nothing back, or a dependent it leaves out,
+  is still journaled as reverting its change, so Undo never sticks on it
+- [x] Add Dependency offers only items that don't already wait on this
+  one, or on its tasks
 - [x] An item's page has Depends On: what it waits on, with each one's
   status, to open or remove, Add Dependency to pick another, and what
   blocks it; a refused link says why. Its kind is picked there

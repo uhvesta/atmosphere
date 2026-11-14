@@ -1660,8 +1660,19 @@ impl Store {
                 }
                 links::remove_item(&transaction, &item, Some(id), author).map_err(self.failed())?;
             }
-            // Already gone; nothing to undo.
-            (None, None) => {}
+            // Already gone; nothing to undo, but the change counts as
+            // reverted all the same, so Undo moves past it.
+            (None, None) => {
+                log(
+                    &transaction,
+                    &project,
+                    &change.item_id,
+                    (None, None),
+                    Some(id),
+                    author,
+                )
+                .map_err(self.failed())?;
+            }
             (Some(before), Some(item)) => {
                 let after = change.after.as_ref().unwrap_or(&item.fields);
                 let (mut back, skipped) = put_back(&before, after, &item.fields);
@@ -1693,6 +1704,20 @@ impl Store {
                         &project,
                         &item.id,
                         (Some(&item.fields), Some(&back)),
+                        Some(id),
+                        author,
+                    )
+                    .map_err(self.failed())?;
+                } else {
+                    // Nothing could be put back, as each field changed
+                    // again since. The change still counts as reverted,
+                    // so Undo moves past it: a change that leaves the item
+                    // as it is says so. The item itself isn't touched.
+                    log(
+                        &transaction,
+                        &project,
+                        &item.id,
+                        (Some(&item.fields), Some(&item.fields)),
                         Some(id),
                         author,
                     )

@@ -7,6 +7,7 @@ import HumataDaemonClient
 import HumataDaemonLive
 import Security
 import ServiceManagement
+import os
 
 extension DaemonService {
     /// Keeps the humatad inside this app running on `socket`.
@@ -53,7 +54,7 @@ private final class DaemonKeeper: @unchecked Sendable {
 
     func start() async throws {
         if asLoginItem {
-            try register()
+            try await register()
         } else if await answers() {
             return
         } else {
@@ -123,10 +124,10 @@ private final class DaemonKeeper: @unchecked Sendable {
         if asLoginItem {
             try await agent.unregister()
             try await waitUntilGone()
-            try register()
+            try await register()
         } else {
             if runningChild() != nil {
-                stopChild()
+                await stopChild()
             } else if let earlier = startedBefore() {
                 kill(earlier, SIGTERM)
             } else {
@@ -157,10 +158,10 @@ private final class DaemonKeeper: @unchecked Sendable {
             } else {
                 // Another copy, such as the one in Applications, registered
                 // the login item: launchd keeps it under the same label.
-                stopping = Self.bootOutLoginItem()
+                stopping = await Self.bootOutLoginItem()
             }
         } else if runningChild() != nil {
-            stopChild()
+            await stopChild()
             stopping = true
         } else if let earlier = startedBefore() {
             kill(earlier, SIGTERM)
@@ -181,39 +182,66 @@ private final class DaemonKeeper: @unchecked Sendable {
     /// Takes the login item another copy of this app registered out of
     /// launchd, so it isn't started again while this copy replaces that
     /// one. True when launchd had it; the copy that next opens adds it back.
-    private static func bootOutLoginItem() -> Bool {
-        guard let identifier = Bundle.main.bundleIdentifier else { return false }
-        let process = Process()
-        process.executableURL = URL(filePath: "/bin/launchctl")
-        process.arguments = ["bootout", "gui/\(getuid())/\(identifier).daemon"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return false
-        }
-        process.waitUntilExit()
-        return process.terminationStatus == 0
+    private static func bootOutLoginItem() async -> Bool {
+        guard let label = loginItemLabel else { return false }
+        return await launchctl(["bootout", label]) == 0
     }
 
-    private func register() throws {
+    /// Whether launchd has the login item loaded. One taken out by a
+    /// bootout stays registered, so its status alone still says enabled.
+    private static func loginItemIsLoaded() async -> Bool {
+        guard let label = loginItemLabel else { return false }
+        return await launchctl(["print", label]) == 0
+    }
+
+    private static var loginItemLabel: String? {
+        Bundle.main.bundleIdentifier.map { "gui/\(getuid())/\($0).daemon" }
+    }
+
+    /// Runs launchctl without holding a thread while it does; nil when it
+    /// couldn't be run.
+    private static func launchctl(_ arguments: [String]) async -> Int32? {
+        let process = Process()
+        process.executableURL = URL(filePath: "/bin/launchctl")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        return await withCheckedContinuation { continuation in
+            process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+
+    private func register() async throws {
         switch agent.status {
         case .enabled:
-            return
+            // Registered, but taken out of launchd, as an installer does
+            // before replacing the copy: registered again, it's loaded.
+            if await Self.loginItemIsLoaded() { return }
+            try? await agent.unregister()
+            try registerAnew()
         case .requiresApproval:
             throw DaemonServiceError.needsApproval
         case .notRegistered, .notFound:
-            do {
-                try agent.register()
-            } catch {
-                if agent.status == .requiresApproval { throw DaemonServiceError.needsApproval }
-                throw DaemonServiceError.registerFailed(underlying: error)
-            }
-            if agent.status == .requiresApproval { throw DaemonServiceError.needsApproval }
+            try registerAnew()
         @unknown default:
             try agent.register()
         }
+    }
+
+    private func registerAnew() throws {
+        do {
+            try agent.register()
+        } catch {
+            if agent.status == .requiresApproval { throw DaemonServiceError.needsApproval }
+            throw DaemonServiceError.registerFailed(underlying: error)
+        }
+        if agent.status == .requiresApproval { throw DaemonServiceError.needsApproval }
     }
 
     // MARK: Child
@@ -249,15 +277,28 @@ private final class DaemonKeeper: @unchecked Sendable {
         lock.withLock { child?.isRunning == true ? child : nil }
     }
 
-    /// Asks the child to stop, which ends its turns, and waits for it.
-    private func stopChild() {
+    /// Asks the child to stop, which ends its turns, and waits for it
+    /// without holding a thread while it does.
+    private func stopChild() async {
         let process = lock.withLock {
             defer { child = nil }
             return child
         }
         guard let process, process.isRunning else { return }
-        process.terminate()
-        process.waitUntilExit()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+            let resume = {
+                let first = resumed.withLock { done in
+                    defer { done = true }
+                    return !done
+                }
+                if first { continuation.resume() }
+            }
+            process.terminationHandler = { _ in resume() }
+            process.terminate()
+            // It may have ended before the handler was set.
+            if !process.isRunning { resume() }
+        }
     }
 
     // MARK: Answers

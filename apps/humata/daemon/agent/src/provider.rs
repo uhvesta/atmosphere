@@ -201,39 +201,52 @@ impl ProviderError {
     /// What an agent's CLI reports of a failed request to the provider at
     /// `url`, asked with the key in `variable`, when it's about the key, its
     /// account or a limit: by `status`, when the CLI gives it, or else by
-    /// what its `message` says.
+    /// what its `message` says. A 400 that says the credit is used up is
+    /// out of credit, as Anthropic answers it.
     pub(crate) fn from_cli(
         url: &str,
         variable: &str,
         status: Option<u16>,
         message: &str,
     ) -> Option<Self> {
-        let status = status
-            .filter(|status| matches!(status, 401..=403 | 429))
-            .or_else(|| said_status(message))?;
+        let status = match status {
+            Some(400) if says_no_credit(&message.to_ascii_lowercase()) => 402,
+            Some(status) => status,
+            None => said_status(message)?,
+        };
         Self::refusal(url, variable, status, message)
     }
 }
 
-/// The status a CLI's failure `message` names, of those that are about a
-/// key, its account or a limit: as a number, or in the words Anthropic's
-/// and OpenAI's APIs use for it.
-fn said_status(message: &str) -> Option<u16> {
-    let numbered = message
-        .split(|c: char| !c.is_ascii_digit())
-        .filter_map(|word| word.parse::<u16>().ok())
-        .find(|status| matches!(status, 401..=403 | 429));
-    if numbered.is_some() {
-        return numbered;
-    }
-    let message = message.to_ascii_lowercase();
-    let says = |words: &[&str]| words.iter().any(|word| message.contains(word));
-    if says(&[
+/// Whether a lowercased failure `message` says the account is out of
+/// credit.
+fn says_no_credit(message: &str) -> bool {
+    [
         "credit balance",
         "insufficient credit",
         "out of credit",
         "payment required",
-    ]) {
+    ]
+    .iter()
+    .any(|word| message.contains(word))
+}
+
+/// The status a CLI's failure `message` names, of those that are about a
+/// key, its account or a limit: as a number after a word that leads one,
+/// or in the words Anthropic's and OpenAI's APIs use for it.
+fn said_status(message: &str) -> Option<u16> {
+    let message = message.to_ascii_lowercase();
+    // A bare number could be anything, such as part of a request's id.
+    let numbered = [401, 402, 403, 429].into_iter().find(|code| {
+        ["error: ", "status ", "status: ", "status code "]
+            .iter()
+            .any(|lead| message.contains(&format!("{lead}{code}")))
+    });
+    if numbered.is_some() {
+        return numbered;
+    }
+    let says = |words: &[&str]| words.iter().any(|word| message.contains(word));
+    if says_no_credit(&message) {
         Some(402)
     } else if says(&["rate limit", "rate_limit", "too many requests"]) {
         Some(429)
@@ -544,6 +557,22 @@ mod tests {
         ));
         assert!(from_cli(None, "the model stopped mid-reply").is_none());
         assert!(from_cli(Some(500), "internal error").is_none());
+    }
+
+    #[test]
+    fn a_clis_failure_is_not_read_by_a_stray_number_or_words_its_status_contradicts() {
+        let from_cli =
+            |status, message| ProviderError::from_cli("http://x", "MY_KEY", status, message);
+        assert!(from_cli(Some(500), "too many requests").is_none());
+        assert!(matches!(
+            from_cli(None, "status 429"),
+            Some(ProviderError::Limited { .. })
+        ));
+        assert!(from_cli(None, "request req-429-x failed").is_none());
+        assert!(matches!(
+            from_cli(Some(400), "Your credit balance is too low"),
+            Some(ProviderError::NoCredit { .. })
+        ));
     }
 
     #[tokio::test]

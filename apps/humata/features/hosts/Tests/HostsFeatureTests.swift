@@ -76,6 +76,20 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertNil(store.state.destination)
     }
 
+    func testANewerHumatasDaemonIsNotOfferedARestartFromHosts() async throws {
+        var state = HostsFeature.State()
+        state.restartsDaemon = false
+        let store = TestStore(initialState: state) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+        }
+
+        // Nothing is asked, and the window isn't told to restart.
+        await store.send(.restartDaemonTapped)
+        await store.finish()
+    }
+
     func testOnlyAnEnvironmentProblemOrAFailedSetupMarksAHost() {
         let start = Date(timeIntervalSince1970: 1_794_000_600)
         // A host for Claude Code alone: no Copilot, no GitHub token.

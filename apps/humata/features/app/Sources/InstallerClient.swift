@@ -98,8 +98,8 @@ package enum InstallerError: LocalizedError, CustomStringConvertible {
     /// Another open copy of Humata, at `path`, didn't quit when asked.
     case copyWontQuit(path: String)
     /// `underlying` happened after Humata's daemon was stopped for the
-    /// install; `restarted` when it was started again since.
-    case stoppedDaemon(restarted: Bool, underlying: any Error)
+    /// install; `restart` says what became of the daemon since.
+    case stoppedDaemon(_ restart: DaemonRestart, underlying: any Error)
 
     package var errorDescription: String? { description }
 
@@ -127,13 +127,30 @@ package enum InstallerError: LocalizedError, CustomStringConvertible {
             "The copy of Humata open at \(path.isEmpty ? "another place" : path) didn't quit, so nothing was "
                 + "installed and Humata's daemon wasn't stopped. Switch to it, save or finish what it shows, quit "
                 + "it, then try again."
-        case .stoppedDaemon(restarted: true, let underlying):
+        case .stoppedDaemon(.restarted, let underlying):
             "\(underlying.localizedDescription) Humata's daemon was stopped for the install and has been started "
                 + "again, so turns that were in progress have ended."
-        case .stoppedDaemon(restarted: false, let underlying):
+        case .stoppedDaemon(.installedCopyStartsIt, let underlying):
             "\(underlying.localizedDescription) Humata's daemon was stopped for the install and isn't running; "
                 + "opening Humata from Applications starts it again."
+        case .stoppedDaemon(.notRestarted(let startError), let underlying):
+            "\(underlying.localizedDescription) Humata's daemon was stopped for the install and couldn't be "
+                + "started again: \(startError.localizedDescription) Choose Run from Here to start it from this "
+                + "copy, or try installing again."
         }
+    }
+
+    /// What became of Humata's daemon after an install stopped it and then
+    /// failed.
+    package enum DaemonRestart {
+        /// It was started again.
+        case restarted
+        /// It was left stopped, since the copy in Applications starts its
+        /// own when it opens.
+        case installedCopyStartsIt
+        /// Starting it again failed with `startError`, and nothing in
+        /// Applications would start it.
+        case notRestarted(startError: any Error)
     }
 
     /// `error` from writing in `folder`, as a lack of permission or of

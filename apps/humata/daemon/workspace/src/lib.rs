@@ -566,10 +566,12 @@ async fn git_within(
         read
     }
 
-    let mut child = match command(directory, None, arguments, false, true).spawn() {
+    let child = match command(directory, None, arguments, false, true).spawn() {
         Ok(child) => child,
         Err(source) => return Some(Err(WorkspaceError::GitMissing { source })),
     };
+    let mut guard = StopOnDrop(None);
+    let child = guard.0.insert(child);
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let running = async {
@@ -577,9 +579,17 @@ async fn git_within(
             tokio::join!(child.wait(), read_all(stdout), read_all(stderr));
         (status, stdout, stderr)
     };
-    let ran = tokio::time::timeout(patience, running).await;
+    let ran = match tokio::time::timeout(patience, running).await {
+        Ok(ran) => Some(ran),
+        Err(_) => {
+            stop(child).await;
+            None
+        }
+    };
+    // Git has finished or been stopped: nothing is left to stop.
+    guard.0 = None;
     match ran {
-        Ok((status, stdout, stderr)) => {
+        Some((status, stdout, stderr)) => {
             let status = match status {
                 Ok(status) => status,
                 Err(source) => return Some(Err(WorkspaceError::GitMissing { source })),
@@ -594,9 +604,25 @@ async fn git_within(
                 })
             })
         }
-        Err(_) => {
-            stop(&mut child).await;
-            None
+        None => None,
+    }
+}
+
+/// A git that [`git_within`] is waiting for, stopped as one that runs out
+/// of patience is when what waits for it is dropped, as when its turn is
+/// stopped, so it isn't left running on its own. Not by tokio's
+/// `kill_on_drop`, whose SIGKILL leaves git's lock files behind.
+struct StopOnDrop(Option<tokio::process::Child>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        // Outside a runtime, which the daemon never is, there is nothing to
+        // stop it with, and it's left to finish.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { stop(&mut child).await });
         }
     }
 }

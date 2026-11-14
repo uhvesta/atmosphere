@@ -329,6 +329,9 @@ package struct AppFeature {
         /// for the restart there, where it's then said.
         case restartRefused(String, askedInHosts: Bool)
         case openLoginItemsTapped
+        /// Quits this copy, as the newer-daemon banner asks, so the newer
+        /// Humata can be used instead.
+        case quitTapped
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
         /// The side chat beside the open session; dismissing it closes it.
@@ -372,6 +375,7 @@ package struct AppFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.daemonService) var service
     @Dependency(\.modelServer) var modelServer
+    @Dependency(\.installer) var installer
 
     package init() {}
 
@@ -431,9 +435,10 @@ package struct AppFeature {
             switch action {
             case .task:
                 // Reopening the window checks again without hiding the
-                // sidebar behind the spinner.
+                // sidebar behind the spinner, and trying again with a newer
+                // daemon running keeps its banner while it checks.
                 switch state.daemon {
-                case .running, .updatePending: break
+                case .running, .updatePending, .newerRunning: break
                 default: state.daemon = .starting
                 }
                 return check()
@@ -528,6 +533,9 @@ package struct AppFeature {
 
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
+
+            case .quitTapped:
+                return .run { _ in await installer.quit() }
 
             case .sidebar(.loaded(_, let sessions, _, _)):
                 // Every two seconds: set only what changed, so the open
@@ -708,8 +716,9 @@ package struct AppFeature {
                 return .merge(.send(.sidebar(.refresh)), .send(.hosts(.presented(.task))))
 
             case .hosts(.presented(.delegate(.restartDaemon))):
-                // Asked for and confirmed in Hosts.
-                guard state.daemon != .restarting else { return .none }
+                // Asked for and confirmed in Hosts. A newer Humata's daemon
+                // isn't replaced with this older copy's.
+                guard state.daemon != .restarting, state.daemon != .newerRunning else { return .none }
                 return restart(&state, askedInHosts: true)
 
             case .session(.presented(.delegate(.openSide(let session)))),
@@ -855,6 +864,16 @@ package struct AppFeature {
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
         .ifLet(\.$search, action: \.search) { SearchFeature() }
         .ifLet(\.$installer, action: \.installer) { InstallerFeature() }
+        Reduce(Self.followDaemonInHosts)
+    }
+
+    /// Hosts offers to restart This Mac's daemon only while it isn't a
+    /// newer Humata's, which this older copy would replace with its own.
+    private static func followDaemonInHosts(_ state: inout State, _ action: Action) -> Effect<Action> {
+        let restarts = state.daemon != .newerRunning
+        if let current = state.hosts?.restartsDaemon, current != restarts { state.hosts?.restartsDaemon = restarts }
+        if let kept = state.keptHosts?.restartsDaemon, kept != restarts { state.keptHosts?.restartsDaemon = restarts }
+        return .none
     }
 
     /// Shows the link opened from outside, once the sidebar has read it.

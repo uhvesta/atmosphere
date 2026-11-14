@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import HumataAppFeature
 import HumataDaemonClient
+import HumataHosts
 import XCTest
 
 @MainActor
@@ -189,4 +190,98 @@ final class DaemonLifecycleTests: XCTestCase {
             return XCTFail("expected the restart to fail, got \(store.state.daemon)")
         }
     }
+
+    func testHostsCantReplaceANewerHumatasDaemon() async {
+        let restarts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .newerRunning
+        state.hosts = HostsFeature.State()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemonService = service(current: false, restarts: restarts)
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.hosts(.presented(.delegate(.restartDaemon))))
+        await store.finish()
+        XCTAssertEqual(restarts.value, 0)
+        XCTAssertEqual(store.state.daemon, .newerRunning)
+        XCTAssertEqual(store.state.hosts?.restartsDaemon, false)
+
+        // Once this copy's daemon runs, Hosts offers the restart again.
+        await store.send(.daemonChecked(isCurrent: true, sessions: []))
+        XCTAssertEqual(store.state.hosts?.restartsDaemon, true)
+    }
+
+    func testTryingAgainWithANewerDaemonKeepsItsBannerWhileItChecks() async {
+        var state = AppFeature.State()
+        state.daemon = .newerRunning
+        // Exhaustive: the state never passes through starting.
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemonService = DaemonService(
+                start: {}, build: { .newer }, restart: {}, openLoginItems: {}, stop: { false })
+            $0.daemon = InMemoryDaemon().client
+        }
+
+        await store.send(.task)
+        await store.receive(\.newerDaemonFound)
+        await store.finish()
+    }
+
+    func testANewerDaemonFoundOnceStartedIsLeftRunning() async {
+        // Nothing answered at first; the one that answers once started is
+        // a newer Humata's.
+        let builds = LockIsolated(0)
+        let restarts = LockIsolated(0)
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemonService = DaemonService(
+                start: {},
+                build: {
+                    let build = builds.withValue { count -> Int in
+                        count += 1
+                        return count
+                    }
+                    guard build > 1 else { throw NotAnswering() }
+                    return .newer
+                },
+                restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {}, stop: { false })
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.newerDaemonFound)
+        await store.finish()
+        XCTAssertEqual(store.state.daemon, .newerRunning)
+        XCTAssertEqual(restarts.value, 0)
+    }
+
+    func testQuitInTheNewerDaemonBannerQuitsThisCopy() async {
+        let quit = LockIsolated(false)
+        var state = AppFeature.State()
+        state.daemon = .newerRunning
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.installer.quit = { quit.setValue(true) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.quitTapped)
+        await store.finish()
+        XCTAssertTrue(quit.value)
+    }
 }
+
+private struct NotAnswering: Error {}

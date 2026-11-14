@@ -2765,8 +2765,12 @@ message ConfigureHost {
   // The port of the Mac's model server, forwarded to the same port on the
   // host's 127.0.0.1; 0 leaves the one it has.
   uint32 model_server_port = 3;
-  // The variables this host's model providers take their keys from. A
-  // session that runs on no provider never gets them.
+  // The names of the variables this host's model providers take their
+  // keys from (never their values). A Claude session on neither a provider
+  // nor a subscription has those of Claude's key variables
+  // (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN) taken out; every other
+  // variable, the providers' others included, reaches every session like
+  // any host variable.
   repeated string provider_variables = 4;
 }
 

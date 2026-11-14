@@ -763,14 +763,51 @@ package struct ItemFeature {
         }
 
         /// The items it could come to wait on: the board's others it doesn't
-        /// wait on yet. Not its milestone or its own tasks: a task already
-        /// comes after its milestone, and a milestone waits on its tasks,
-        /// so either link would close a loop.
+        /// wait on yet, and that don't already wait on it, so the link
+        /// wouldn't close a loop. Not its milestone or its own tasks
+        /// either: a task already comes after its milestone, and a
+        /// milestone waits on its tasks.
         package var linkable: [Item] {
-            board.filter { other in
+            let waiting = Self.waiting(on: item.id, in: board)
+            return board.filter { other in
                 other.id != item.id && !item.dependsOn.contains(other.id) && other.id != item.parentID
-                    && other.parentID != item.id
+                    && other.parentID != item.id && !waiting.contains(other.id)
             }
+        }
+
+        /// The ids of the items in `board` that wait on item `id`, or on
+        /// one of its tasks, directly or through others, as the daemon
+        /// finds loops: an item waits on what it depends on, a milestone
+        /// on its tasks, and a task on what its milestone depends on. A
+        /// link from `id` to any of them would close a loop.
+        private static func waiting(on id: Item.ID, in board: [Item]) -> Set<Item.ID> {
+            var parents: [Item.ID: Item.ID] = [:]
+            for item in board {
+                if let parent = item.parentID { parents[item.id] = parent }
+            }
+            let byID = Dictionary(board.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            // Who waits on each item: the reverse of the waits above.
+            var waitedOnBy: [Item.ID: [Item.ID]] = [:]
+            for item in board {
+                var on = item.dependsOn
+                if let parent = parents[item.id], let milestone = byID[parent] {
+                    on += milestone.dependsOn
+                    waitedOnBy[item.id, default: []].append(milestone.id)
+                }
+                for other in on { waitedOnBy[other, default: []].append(item.id) }
+            }
+            let start = [id] + board.filter { $0.parentID == id }.map(\.id)
+            var seen = Set(start)
+            var queue = start
+            var waiting = Set<Item.ID>()
+            while let next = queue.popLast() {
+                for waiter in waitedOnBy[next] ?? [] where !seen.contains(waiter) {
+                    seen.insert(waiter)
+                    waiting.insert(waiter)
+                    queue.append(waiter)
+                }
+            }
+            return waiting
         }
 
         /// The sessions spec comments can go to: archived ones don't work.
@@ -1394,7 +1431,8 @@ package struct BoardLogFeature {
         let changedAgain = reverted.kept.filter { $0 != .dependsOn }
         guard reverted.kept.contains(.dependsOn) else { return changedAgainAlert(changedAgain) }
         return linksKeptAlert(
-            leftOut: leftOutLinks(of: change, now: reverted.item, items: items), changedAgain: changedAgain)
+            leftOut: leftOutLinks(of: change, now: reverted.item, items: items), changedAgain: changedAgain,
+            deletion: change.map { $0.before != nil && $0.after == nil } ?? false)
     }
 
     /// Says the `fields` changed again after the change reverted, so they
@@ -1413,8 +1451,11 @@ package struct BoardLogFeature {
     /// Says links weren't put back, as the item one pointed at is gone or
     /// putting it back would close a loop; `leftOut` names the items they
     /// pointed at, when known. `changedAgain` are the other fields kept, as
-    /// they changed again since.
-    package static func linksKeptAlert<Action>(leftOut: [String], changedAgain: [ItemField]) -> AlertState<Action> {
+    /// they changed again since. `deletion` says the change reverted took
+    /// the item off the board, so items that waited on it may not again.
+    package static func linksKeptAlert<Action>(
+        leftOut: [String], changedAgain: [ItemField], deletion: Bool = false
+    ) -> AlertState<Action> {
         let names = leftOut.formatted(.list(type: .and))
         let head =
             leftOut.isEmpty
@@ -1424,7 +1465,12 @@ package struct BoardLogFeature {
                 : String(localized: "Its links to \(names) weren't put back")
         var message =
             head + ": an item a link joined is gone, or putting the link back would close a loop with one made "
-            + "since. Add a link that's still wanted from the item's page, under Depends On."
+            + "since. Add a link that's still wanted from the page of the item that waits, under Depends On."
+        if deletion {
+            message +=
+                " Items that waited on this one before it was deleted may no longer wait on it; check their "
+                + "pages too."
+        }
         if !changedAgain.isEmpty {
             let fields = changedAgain.map(\.name).formatted(.list(type: .and))
             message +=

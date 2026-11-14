@@ -11,7 +11,10 @@ use std::sync::{Arc, PoisonError, RwLock};
 pub struct Env {
     vars: Arc<RwLock<BTreeMap<String, String>>>,
     /// The names of the variables the host's model providers take their
-    /// keys from: a session on no provider is never given them.
+    /// keys from. A Claude session on neither a provider nor a subscription
+    /// has those of Claude's key variables taken out; every other variable,
+    /// the providers' others included, reaches every session's programs
+    /// like any host variable.
     provider_variables: Arc<RwLock<BTreeSet<String>>>,
 }
 

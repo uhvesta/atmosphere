@@ -36,12 +36,16 @@ final class InstallerFeatureTests: XCTestCase {
         var stagedTeam: String? = appTeam
         var copyFails = false
         var stopFails = false
+        /// Starting the daemon again throws `noAnswer`.
+        var startFails = false
         var swapFails = false
         var openFails = false
         /// Other copies of Humata that are open.
         var others: [RunningCopy] = []
         /// The sessions the daemon lists.
         var sessions: [Session] = []
+        /// Listing the sessions throws `versionMismatch`.
+        var sessionsFail = false
     }
 
     private func survey(installed: BundleVersion?) -> InstallSurvey {
@@ -93,7 +97,10 @@ final class InstallerFeatureTests: XCTestCase {
             InstallerFeature()
         } withDependencies: {
             $0.installer = client
-            $0.daemon.sessions = { _ in fakes.sessions }
+            $0.daemon.sessions = { _ in
+                if fakes.sessionsFail { throw DaemonError.versionMismatch(daemon: "2") }
+                return fakes.sessions
+            }
             $0.daemonService.stop = {
                 if fakes.stopFails { throw DaemonServiceError.stillRunning(seconds: 60) }
                 return disk.withValue {
@@ -102,7 +109,13 @@ final class InstallerFeatureTests: XCTestCase {
                     return $0.daemonRunning
                 }
             }
-            $0.daemonService.start = { disk.withValue { $0.starts += 1 } }
+            $0.daemonService.start = {
+                if fakes.startFails { throw DaemonServiceError.noAnswer(socket: "/tmp/humatad.sock", seconds: 10) }
+                disk.withValue {
+                    $0.starts += 1
+                    $0.daemonRunning = true
+                }
+            }
         }
         return (store, disk)
     }
@@ -208,7 +221,7 @@ final class InstallerFeatureTests: XCTestCase {
         let older = BundleVersion(short: "0.1", build: "1")
         let (store, disk) = makeStore(installed: older, Fakes(swapFails: true))
         let failure = InstallerError.stoppedDaemon(
-            restarted: false,
+            .installedCopyStartsIt,
             underlying: InstallerError.replaceFailed(path: "/Applications", underlying: swapFailure))
 
         await store.send(.installTapped) { $0.phase = .working(.checking) }
@@ -230,7 +243,7 @@ final class InstallerFeatureTests: XCTestCase {
     func testASwapThatFailsWithNothingInstalledStartsTheDaemonAgain() async {
         let (store, disk) = makeStore(installed: nil, Fakes(swapFails: true))
         let failure = InstallerError.stoppedDaemon(
-            restarted: true,
+            .restarted,
             underlying: InstallerError.replaceFailed(path: "/Applications", underlying: swapFailure))
 
         await store.send(.installTapped) { $0.phase = .working(.checking) }
@@ -246,6 +259,57 @@ final class InstallerFeatureTests: XCTestCase {
         XCTAssertTrue(disk.value.staged.isEmpty)
         XCTAssertEqual(disk.value.starts, 1)
         XCTAssertTrue(store.state.offersRunFromHere)
+    }
+
+    func testASwapThatFailsWithNothingInstalledAndNoRestartLeavesRunFromHere() async {
+        let (store, disk) = makeStore(installed: nil, Fakes(startFails: true, swapFails: true))
+        let failure = InstallerError.stoppedDaemon(
+            .notRestarted(startError: DaemonServiceError.noAnswer(socket: "/tmp/humatad.sock", seconds: 10)),
+            underlying: InstallerError.replaceFailed(path: "/Applications", underlying: swapFailure))
+
+        await store.send(.installTapped) { $0.phase = .working(.checking) }
+        await store.receive(\.checked) { $0.phase = .working(.copying) }
+        await store.receive(\.stepped) { $0.phase = .working(.stoppingDaemon) }
+        await store.receive(\.daemonStopped) { $0.daemonStopped = true }
+        await store.receive(\.stepped) { $0.phase = .working(.replacing) }
+        await store.receive(\.failed) { $0.phase = .failed(failure.localizedDescription) }
+        await store.finish()
+
+        XCTAssertNil(disk.value.installed)
+        XCTAssertFalse(disk.value.daemonRunning)
+        XCTAssertTrue(store.state.daemonStopped)
+        XCTAssertTrue(store.state.offersRunFromHere)
+        XCTAssertFalse(store.state.opensInstalled)
+    }
+
+    func testASecondFailedSwapOverAnInstalledCopyStillSaysTheDaemonIsStopped() async {
+        let older = BundleVersion(short: "0.1", build: "1")
+        let (store, disk) = makeStore(installed: older, Fakes(swapFails: true))
+        let failure = InstallerError.stoppedDaemon(
+            .installedCopyStartsIt,
+            underlying: InstallerError.replaceFailed(path: "/Applications", underlying: swapFailure))
+
+        await store.send(.installTapped) { $0.phase = .working(.checking) }
+        await store.receive(\.checked) { $0.phase = .working(.copying) }
+        await store.receive(\.stepped) { $0.phase = .working(.stoppingDaemon) }
+        await store.receive(\.daemonStopped) { $0.daemonStopped = true }
+        await store.receive(\.stepped) { $0.phase = .working(.replacing) }
+        await store.receive(\.failed) { $0.phase = .failed(failure.localizedDescription) }
+
+        // The daemon is already stopped, so this stop stops nothing.
+        await store.send(.installTapped) { $0.phase = .working(.checking) }
+        await store.receive(\.checked) { $0.phase = .working(.copying) }
+        await store.receive(\.stepped) { $0.phase = .working(.stoppingDaemon) }
+        await store.receive(\.stepped) { $0.phase = .working(.replacing) }
+        await store.receive(\.failed) { $0.phase = .failed(failure.localizedDescription) }
+        await store.finish()
+
+        XCTAssertEqual(disk.value.stops, 2)
+        XCTAssertEqual(disk.value.starts, 0)
+        XCTAssertEqual(disk.value.installed, older)
+        XCTAssertTrue(store.state.daemonStopped)
+        XCTAssertTrue(store.state.opensInstalled)
+        XCTAssertFalse(store.state.offersRunFromHere)
     }
 
     func testADaemonThatWontStopLeavesApplicationsAsItWas() async {
@@ -268,7 +332,7 @@ final class InstallerFeatureTests: XCTestCase {
     func testAnInstalledCopyThatWontOpenIsOfferedToOpenAgain() async {
         let (store, disk) = makeStore(installed: nil, Fakes(openFails: true))
         let failure = InstallerError.stoppedDaemon(
-            restarted: false,
+            .installedCopyStartsIt,
             underlying: InstallerError.openFailed(path: "/Applications", underlying: openFailure))
 
         await installThroughSwap(store)
@@ -287,7 +351,7 @@ final class InstallerFeatureTests: XCTestCase {
         let (store, disk) = makeStore(installed: nil, Fakes(others: others))
 
         await store.send(.installTapped) { $0.phase = .working(.checking) }
-        await store.receive(\.checked) { $0.phase = .confirming(others: others, busy: false) }
+        await store.receive(\.checked) { $0.phase = .confirming(others: others, busy: .idle) }
         XCTAssertEqual(disk.value.stops, 0)
         XCTAssertTrue(disk.value.staged.isEmpty)
 
@@ -311,7 +375,7 @@ final class InstallerFeatureTests: XCTestCase {
         let (store, disk) = makeStore(installed: older, Fakes(others: others))
 
         await store.send(.installTapped) { $0.phase = .working(.checking) }
-        await store.receive(\.checked) { $0.phase = .confirming(others: others, busy: false) }
+        await store.receive(\.checked) { $0.phase = .confirming(others: others, busy: .idle) }
         await store.send(.cancelTapped) { $0.phase = .offering }
         await store.finish()
 
@@ -326,8 +390,28 @@ final class InstallerFeatureTests: XCTestCase {
         let (store, disk) = makeStore(installed: nil, Fakes(sessions: [busy]))
 
         await store.send(.installTapped) { $0.phase = .working(.checking) }
-        await store.receive(\.checked) { $0.phase = .confirming(others: [], busy: true) }
+        await store.receive(\.checked) { $0.phase = .confirming(others: [], busy: .busy(1)) }
         XCTAssertEqual(disk.value.stops, 0)
+
+        await store.send(.confirmTapped) { $0.phase = .working(.copying) }
+        await store.receive(\.stepped) { $0.phase = .working(.stoppingDaemon) }
+        await store.receive(\.daemonStopped) { $0.daemonStopped = true }
+        await store.receive(\.stepped) { $0.phase = .working(.replacing) }
+        await store.receive(\.swapped) { $0.survey.installed = copyVersion }
+        await store.receive(\.stepped) { $0.phase = .working(.opening) }
+        await store.finish()
+
+        XCTAssertEqual(disk.value.stops, 1)
+        XCTAssertEqual(disk.value.installed, copyVersion)
+    }
+
+    func testADaemonThatCantSayWhetherItsBusyIsAskedAboutBeforeItStops() async {
+        let (store, disk) = makeStore(installed: nil, Fakes(sessionsFail: true))
+
+        await store.send(.installTapped) { $0.phase = .working(.checking) }
+        await store.receive(\.checked) { $0.phase = .confirming(others: [], busy: .unknown) }
+        XCTAssertEqual(disk.value.stops, 0)
+        XCTAssertTrue(disk.value.staged.isEmpty)
 
         await store.send(.confirmTapped) { $0.phase = .working(.copying) }
         await store.receive(\.stepped) { $0.phase = .working(.stoppingDaemon) }

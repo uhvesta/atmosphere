@@ -754,22 +754,25 @@ impl LocalModelRunner {
     /// as an OpenAI-style listing doesn't.
     async fn context(&self, request: &Request) -> Option<u64> {
         if request.key_variable.is_none() {
-            return server_context(self.http.clone(), request).await.flatten();
+            return match server_context(self.http.clone(), request).await {
+                ContextListing::Listed(tokens) => tokens,
+                ContextListing::NoListing | ContextListing::NotAnswered => None,
+            };
         }
         let known = (request.models.clone(), request.model.clone());
         let contexts = || self.contexts.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(tokens) = contexts().get(&known) {
             return Some(*tokens);
         }
-        match server_context(self.http.clone(), request).await {
-            Some(listed) => {
-                let tokens = listed.unwrap_or(PROVIDER_CONTEXT);
-                contexts().insert(known, tokens);
-                Some(tokens)
-            }
+        let tokens = match server_context(self.http.clone(), request).await {
+            ContextListing::Listed(tokens) => tokens.unwrap_or(PROVIDER_CONTEXT),
+            // It has no listing to ask, so it isn't asked again.
+            ContextListing::NoListing => PROVIDER_CONTEXT,
             // Not answered, so asked again next turn.
-            None => Some(PROVIDER_CONTEXT),
-        }
+            ContextListing::NotAnswered => return Some(PROVIDER_CONTEXT),
+        };
+        contexts().insert(known, tokens);
+        Some(tokens)
     }
 
     /// Waits until the server answers again, asking for its models now and
@@ -967,23 +970,39 @@ pub(crate) async fn server_models(
     .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
+/// What asking a server's `/models` for a model's context came to.
+enum ContextListing {
+    /// It answered: with the tokens the model takes in, if it says.
+    Listed(Option<u64>),
+    /// It has no listing to read, and asking again won't give one: no such
+    /// page, or one that isn't JSON.
+    NoListing,
+    /// It didn't answer, or refused or failed for now: down, too slow, a
+    /// refused key, a limit or a fault of its own.
+    NotAnswered,
+}
+
 /// How many tokens `request`'s model takes in, if its server lists it:
-/// llama.cpp, vLLM, LM Studio and others each name it differently. None
-/// when the server is down or didn't answer; Some(None) when it answered
-/// and doesn't say.
-async fn server_context(http: ureq::Agent, request: &Request) -> Option<Option<u64>> {
+/// llama.cpp, vLLM, LM Studio and others each name it differently.
+async fn server_context(http: ureq::Agent, request: &Request) -> ContextListing {
     let url = request.models.clone();
     let api_key = request.api_key.clone();
     let headers = request.headers.clone();
     let model = request.model.clone();
     tokio::task::spawn_blocking(move || {
-        listing_with(&http, &url, api_key.as_deref(), &headers)
-            .ok()
-            .map(|listed| listed_context(&listed, &model))
+        match listing_with(&http, &url, api_key.as_deref(), &headers) {
+            Ok(listed) => ContextListing::Listed(listed_context(&listed, &model)),
+            Err(
+                LocalModelError::ListStatus {
+                    status: 404 | 405, ..
+                }
+                | LocalModelError::Decode { .. },
+            ) => ContextListing::NoListing,
+            Err(_) => ContextListing::NotAnswered,
+        }
     })
     .await
-    .ok()
-    .flatten()
+    .unwrap_or(ContextListing::NotAnswered)
 }
 
 fn listed_context(listed: &Value, model: &str) -> Option<u64> {
@@ -2439,7 +2458,8 @@ mod tests {
     }
 
     /// Like [`serve_on`], answering each `GET` with `listing` and not
-    /// taking a reply for it.
+    /// taking a reply for it; a `listing` of null answers 404, as a server
+    /// with no `/models` page does.
     fn serve_listing(
         listener: TcpListener,
         listing: Value,
@@ -2493,9 +2513,13 @@ mod tests {
                 }
                 kept_heads.lock().expect("not poisoned").push(head);
                 if get {
-                    let body = listing.to_string();
+                    let (status, body) = if listing.is_null() {
+                        ("404 Not Found", String::new())
+                    } else {
+                        ("200 OK", listing.to_string())
+                    };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
                     let _ = socket.get_mut().write_all(response.as_bytes()).await;
@@ -2819,6 +2843,23 @@ mod tests {
 
     #[tokio::test]
     async fn a_provider_whose_listing_gives_no_context_gets_a_long_history_and_is_asked_once() {
+        // Lists its models without saying how much they take in.
+        let listing = json!({"object": "list", "data": [{"id": "kimi"}]});
+        let listings = long_history_on_a_provider(listing).await;
+        assert_eq!(listings, 1);
+    }
+
+    #[tokio::test]
+    async fn a_provider_with_no_listing_gets_a_long_history_and_is_asked_once() {
+        // Answers 404 for its models.
+        let listings = long_history_on_a_provider(Value::Null).await;
+        assert_eq!(listings, 1);
+    }
+
+    /// Two turns, of six reads of a long file, on a provider whose `/models`
+    /// answers `listing`: checks the history sent wasn't cut to an unknown
+    /// context's, and says how many times its models were asked for.
+    async fn long_history_on_a_provider(listing: Value) -> usize {
         let mut replies: Vec<(u16, String)> = (1..=6)
             .map(|index| {
                 let id = format!("c{index}");
@@ -2830,8 +2871,6 @@ mod tests {
             .collect();
         replies.push((200, sse(&[text("Read.")])));
         replies.push((200, sse(&[text("Again.")])));
-        // Lists its models without saying how much they take in.
-        let listing = json!({"object": "list", "data": [{"id": "kimi"}]});
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
         let server = serve_listing(listener, listing, replies);
         let state = tempfile::tempdir().expect("a temporary folder");
@@ -2858,12 +2897,11 @@ mod tests {
         let results = results(last);
         assert_eq!(results.len(), 6);
         assert!(results.iter().all(|result| result != DROPPED));
-        let listings = server
+        server
             .heads()
             .iter()
             .filter(|head| head.starts_with("get "))
-            .count();
-        assert_eq!(listings, 1);
+            .count()
     }
 
     struct Fixture {

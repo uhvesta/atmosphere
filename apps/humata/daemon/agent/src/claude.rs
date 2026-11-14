@@ -215,15 +215,7 @@ impl ClaudeRunner {
             Some(json) => {
                 serde_json::from_str(json).map_err(|source| ClaudeError::BadConfig { source })?
             }
-            None => {
-                let named = self.options.env.provider_variables();
-                for variable in KEY_VARIABLES {
-                    if named.contains(variable) {
-                        command.env_remove(variable);
-                    }
-                }
-                return Ok(None);
-            }
+            None => ClaudeConfig::default(),
         };
         if let Some(provider) = &config.provider {
             let base_url = provider.anthropic_base("Claude Code")?;
@@ -245,6 +237,15 @@ impl ClaudeRunner {
         } else if config.subscription {
             for variable in KEY_VARIABLES {
                 command.env_remove(variable);
+            }
+        } else {
+            // Neither a provider nor a subscription, however the config
+            // says so: no key a provider pays for.
+            let named = self.options.env.provider_variables();
+            for variable in KEY_VARIABLES {
+                if named.contains(variable) {
+                    command.env_remove(variable);
+                }
             }
         }
         Ok(None)
@@ -1313,6 +1314,15 @@ mod tests {
             variable(&elsewhere, "ANTHROPIC_API_KEY"),
             Some(&Some("hosts-key".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_config_with_neither_a_provider_nor_a_subscription_never_gets_a_key_a_provider_takes() {
+        for config in [json!({}), json!({"subscription": false})] {
+            let variables =
+                signed_in_where(Some(config), &["ANTHROPIC_API_KEY"]).expect("signed in");
+            assert_eq!(variable(&variables, "ANTHROPIC_API_KEY"), Some(&None));
+        }
     }
 
     fn on_anthropic() -> OnProvider {

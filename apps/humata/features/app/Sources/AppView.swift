@@ -337,10 +337,11 @@ private struct DaemonBanner: View {
         case .newerRunning:
             banner(
                 "A newer Humata's daemon is running. This copy of Humata is older and can't use it, so it was left "
-                    + "running. Open the newer Humata from Applications, and quit this copy.",
+                    + "running. Open the newer Humata, and quit this copy.",
                 systemImage: "exclamationmark.triangle.fill"
             ) {
                 Button("Try Again") { store.send(.task) }
+                Button("Quit Humata") { store.send(.quitTapped) }
             }
         case .failed(let message, let needsLoginItems):
             banner(message, systemImage: "exclamationmark.triangle.fill") {

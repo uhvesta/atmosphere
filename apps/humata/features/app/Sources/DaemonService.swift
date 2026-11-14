@@ -95,9 +95,11 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
             "macOS didn't stop Humata's daemon: \(underlying.localizedDescription) Turn off Humata in System "
                 + "Settings › General › Login Items, then try again; or choose Run from Here."
         case .stillRunning(let seconds):
-            "Humata's daemon is still running" + (seconds > 0 ? " after \(seconds) seconds" : "")
-                + ", so nothing in Applications was changed. Quit every other copy of Humata that's open; if the "
-                + "daemon comes back, turn Humata off in System Settings › General › Login Items. Then try again."
+            "Humata's daemon was still running" + (seconds > 0 ? " after \(seconds) seconds" : "")
+                + ", so nothing was put in its place. Quit every other copy of Humata that's open and try again. "
+                + "If it's still running, `pkill -x humatad` stops it, and with it any turn in progress. If it "
+                + "comes back, turn Humata off in System Settings › General › Login Items, and back on once you're "
+                + "done."
         }
     }
 }

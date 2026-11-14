@@ -172,7 +172,9 @@ pub(super) fn remove_item(
 /// to it again, each as a change that reverts the change that took its
 /// link off (or `removal`, for a removal logged before those were kept).
 /// One that is gone, or whose link would now close a loop, is left out,
-/// and says so by returning true.
+/// and says so by returning true. A dependent left out, or already linked
+/// to it again, still gets a change that reverts its unlinking and leaves
+/// it as it is, so Undo doesn't land on that unlinking later.
 pub(super) fn restore_dependents(
     transaction: &Transaction<'_>,
     project: &str,
@@ -191,15 +193,49 @@ pub(super) fn restore_dependents(
             Some((dependent, change)) => (dependent, change.parse::<u64>().unwrap_or(removal)),
             None => (line, removal),
         };
+        // Only an unlinking logged as a change of its own needs marking:
+        // the removal itself is reverted by the caller's change.
+        let marks = unlinking != removal;
         let Some(was) = read_item(transaction, dependent)? else {
             left_out = true;
+            if marks {
+                log(
+                    transaction,
+                    project,
+                    dependent,
+                    (None, None),
+                    Some(unlinking),
+                    author,
+                )?;
+            }
             continue;
         };
+        let unchanged = (Some(&was.fields), Some(&was.fields));
         if was.fields.depends_on.iter().any(|on| on == item) {
+            if marks {
+                log(
+                    transaction,
+                    project,
+                    dependent,
+                    unchanged,
+                    Some(unlinking),
+                    author,
+                )?;
+            }
             continue;
         }
         if relink(transaction, project, dependent, &[item.to_owned()])?.is_empty() {
             left_out = true;
+            if marks {
+                log(
+                    transaction,
+                    project,
+                    dependent,
+                    unchanged,
+                    Some(unlinking),
+                    author,
+                )?;
+            }
             continue;
         }
         let mut now = was.fields.clone();

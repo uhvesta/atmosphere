@@ -373,3 +373,232 @@ async fn an_item_brought_back_keeps_its_place_in_the_plan() {
 
     assert_eq!(plan(&client, &project.id).await, ["first", "second"]);
 }
+
+/// The change Undo takes next in `log`, newest first: the newest made in the
+/// app that is no revert and isn't reverted.
+fn undoable(log: &[pb::BoardChange]) -> Option<u64> {
+    let reverted: Vec<u64> = log
+        .iter()
+        .map(|change| change.reverts)
+        .filter(|reverts| *reverts != 0)
+        .collect();
+    log.iter()
+        .find(|change| {
+            change.surface() == pb::ChangeSurface::App
+                && change.session_id.is_empty()
+                && change.reverts == 0
+                && !reverted.contains(&change.id)
+        })
+        .map(|change| change.id)
+}
+
+/// The changes in `log` that some change in it reverts.
+fn reverted(log: &[pb::BoardChange]) -> Vec<u64> {
+    log.iter()
+        .map(|change| change.reverts)
+        .filter(|reverts| *reverts != 0)
+        .collect()
+}
+
+#[tokio::test]
+async fn reverting_an_edit_a_session_changed_again_still_counts_so_undo_moves_past_it() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let in_app = |change: pb::UpdateItem| pb::UpdateItem {
+        item_id: task.id.clone(),
+        surface: pb::ChangeSurface::App.into(),
+        ..change
+    };
+    update(
+        &client,
+        in_app(pb::UpdateItem {
+            priority: Some(pb::Priority::High.into()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    let earlier = board_log(&client, &project.id).await[0].id;
+    update(
+        &client,
+        in_app(pb::UpdateItem {
+            title: Some("sign in".to_owned()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    let renamed = board_log(&client, &project.id).await[0].id;
+    // A session renames it again, so reverting the person's rename can
+    // put nothing back.
+    update(
+        &client,
+        pb::UpdateItem {
+            item_id: task.id.clone(),
+            title: Some("log in".to_owned()),
+            by_session_id: "s1".to_owned(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        undoable(&board_log(&client, &project.id).await),
+        Some(renamed)
+    );
+
+    let reverted_rename = revert(&client, renamed).await;
+    assert!(
+        reverted_rename
+            .item
+            .is_some_and(|item| item.title == "log in")
+    );
+    let log = board_log(&client, &project.id).await;
+    assert!(reverted(&log).contains(&renamed), "{log:?}");
+    assert_eq!(undoable(&log), Some(earlier));
+}
+
+#[tokio::test]
+async fn undoing_a_deletion_counts_every_unlinking_as_reverted_even_one_that_would_close_a_loop() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let a = item(&client, &project.id, "", "a").await;
+    let b = item(&client, &project.id, "", "b").await;
+    let c = item(&client, &project.id, "", "c").await;
+    let d = item(&client, &project.id, "", "d").await;
+    for (waits, on) in [(&b, &a), (&c, &a), (&a, &d)] {
+        link(&client, waits, on)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    let before_delete = board_log(&client, &project.id).await[0].id;
+    delete(&client, &a).await;
+    let unlinkings: Vec<u64> = board_log(&client, &project.id)
+        .await
+        .iter()
+        .filter(|change| change.id > before_delete && change.item_id != a.id)
+        .map(|change| change.id)
+        .collect();
+    assert_eq!(unlinkings.len(), 2);
+    let removal = board_log(&client, &project.id).await[0].id;
+    // d now waits on c: a, back on d, would close a loop if c waited on it
+    // again.
+    link(&client, &d, &c)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    revert(&client, removal).await;
+
+    let log = board_log(&client, &project.id).await;
+    let reverted = reverted(&log);
+    for change in unlinkings.iter().chain([&removal]) {
+        assert!(
+            reverted.contains(change),
+            "{change} isn't reverted: {log:?}"
+        );
+    }
+    let listed = items(&client, &project.id).await;
+    let depends_on = |id: &str| {
+        listed
+            .iter()
+            .find(|item| item.id == id)
+            .map(|item| item.depends_on.clone())
+            .unwrap_or_else(|| panic!("{id} isn't listed"))
+    };
+    assert_eq!(depends_on(&b.id), [a.id.clone()]);
+    assert!(depends_on(&c.id).is_empty());
+}
+
+#[tokio::test]
+async fn a_dependent_deleted_before_its_unlinking_is_reverted_stays_deleted() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let a = item(&client, &project.id, "", "a").await;
+    let b = item(&client, &project.id, "", "b").await;
+    link(&client, &b, &a)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    delete(&client, &a).await;
+    let log = board_log(&client, &project.id).await;
+    let removal = log[0].id;
+    let unlinking = log
+        .iter()
+        .find(|change| change.item_id == b.id && change.after.is_some())
+        .map(|change| change.id)
+        .unwrap_or_else(|| panic!("no unlinking of b: {log:?}"));
+    delete(&client, &b).await;
+
+    revert(&client, removal).await;
+
+    let log = board_log(&client, &project.id).await;
+    assert!(reverted(&log).contains(&unlinking), "{log:?}");
+    let listed = items(&client, &project.id).await;
+    assert!(listed.iter().any(|item| item.id == a.id));
+    assert!(listed.iter().all(|item| item.id != b.id), "{listed:?}");
+}
+
+#[tokio::test]
+async fn a_proposed_link_to_an_item_deleted_since_is_refused_and_stays_pending() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let design = item(&client, &project.id, "", "design").await;
+    let build = item(&client, &project.id, "", "build").await;
+    let mut request = start_in(&project.id);
+    if let pb::request::Kind::StartSession(start) = &mut request {
+        start.backend_config = serde_json::json!({"rules": [{"when": "", "steps": [
+            {"step": "tool", "tool": "mcp__humata__propose_dependency",
+             "arguments": {"item_id": build.id, "depends_on": [design.id], "note": "Needs the design."}},
+        ]}]})
+        .to_string();
+    }
+    let session = started(&client, request).await;
+    send(&client, &session.id, "plan").await;
+    after_turns(&client, &session.id, 1).await;
+    let proposals = proposals_of(&client, &session.id).await;
+    let [dependency] = proposals.as_slice() else {
+        panic!("one proposal: {proposals:?}")
+    };
+
+    delete(&client, &design).await;
+    let applied = client
+        .call(pb::request::Kind::ApplyProposal(pb::ApplyProposal {
+            session_id: session.id.clone(),
+            proposal_id: dependency.id.clone(),
+            ..Default::default()
+        }))
+        .await;
+
+    assert!(
+        matches!(
+            applied,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{applied:?}"
+    );
+    let proposals = proposals_of(&client, &session.id).await;
+    assert!(
+        proposals.iter().any(|proposal| proposal.id == dependency.id
+            && proposal.state() == pb::ProposalState::Pending),
+        "{proposals:?}"
+    );
+    let listed = items(&client, &project.id).await;
+    assert!(
+        listed
+            .iter()
+            .find(|item| item.id == build.id)
+            .is_some_and(|item| item.depends_on.is_empty()),
+        "{listed:?}"
+    );
+}

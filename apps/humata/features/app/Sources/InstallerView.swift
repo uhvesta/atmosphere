@@ -66,7 +66,7 @@ package struct InstallerView: View {
     }
 
     /// What installing would interrupt, and the choice to go on.
-    private func confirming(others: [RunningCopy], busy: Bool) -> some View {
+    private func confirming(others: [RunningCopy], busy: InstallerFeature.Busy) -> some View {
         VStack(spacing: 12) {
             Text(Self.interrupting(others: others, busy: busy))
                 .font(.callout)
@@ -74,7 +74,7 @@ package struct InstallerView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 460)
             HStack(spacing: 12) {
-                Button(busy ? "Wait" : "Cancel") { store.send(.cancelTapped) }
+                Button("Cancel") { store.send(.cancelTapped) }
                     .keyboardShortcut(.cancelAction)
                 Button(others.isEmpty ? "Stop and Install" : "Quit Them and Install") { store.send(.confirmTapped) }
                     .keyboardShortcut(.defaultAction)
@@ -82,7 +82,7 @@ package struct InstallerView: View {
         }
     }
 
-    private static func interrupting(others: [RunningCopy], busy: Bool) -> String {
+    private static func interrupting(others: [RunningCopy], busy: InstallerFeature.Busy) -> String {
         var said: [String] = []
         if !others.isEmpty {
             let places = others.map { $0.path.isEmpty ? "another place" : $0.path }.joined(separator: ", ")
@@ -90,10 +90,19 @@ package struct InstallerView: View {
                 (others.count == 1 ? "Another copy of Humata is open" : "Other copies of Humata are open")
                     + " (\(places)). Installing quits \(others.count == 1 ? "it" : "them") first.")
         }
-        if busy {
+        switch busy {
+        case .idle:
+            break
+        case .busy(let count):
             said.append(
-                "A session on this Mac is in a turn. Installing stops Humata's daemon, which ends it; wait for it "
-                    + "to finish to keep it.")
+                (count == 1 ? "A session on this Mac is in a turn" : "\(count) sessions on this Mac are in a turn")
+                    + ". Installing stops Humata's daemon, which ends "
+                    + (count == 1 ? "it; cancel and wait for it" : "them; cancel and wait for them")
+                    + " to finish to keep \(count == 1 ? "it" : "them").")
+        case .unknown:
+            said.append(
+                "Humata can't tell whether a turn is in progress. Installing stops Humata's daemon, which ends any "
+                    + "turn that is.")
         }
         return said.joined(separator: " ")
     }

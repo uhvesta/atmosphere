@@ -166,6 +166,40 @@ async fn a_planning_session_with_the_code_reads_the_latest_changes_nothing_and_s
 }
 
 #[tokio::test]
+async fn a_planning_session_whose_origin_is_gone_still_finishes_its_turn_and_says_so() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let mut request = planning(&project.id, true);
+    if let pb::request::Kind::StartSession(start) = &mut request {
+        start.backend_config =
+            r#"{"rules": [{"when": "", "steps": [{"step": "say", "text": "Read."}]}]}"#.to_owned();
+    }
+    let session = started(&client, request).await;
+    send(&client, &session.id, "plan").await;
+    let before = notices(&after_turns(&client, &session.id, 1).await);
+
+    // Its copy shares the repository's remotes: an origin that isn't there
+    // can't be fetched.
+    let gone = state.path().join("gone");
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repository.path())
+        .arg("remote")
+        .arg("add")
+        .arg("origin")
+        .arg(&gone)
+        .status()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(status.success());
+
+    send(&client, &session.id, "again").await;
+    let events = after_turns(&client, &session.id, 2).await;
+    assert_eq!(notices(&events), before + 1, "{events:#?}");
+}
+
+#[tokio::test]
 async fn a_planning_session_without_the_code_gets_no_copy_of_it() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();

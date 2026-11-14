@@ -747,6 +747,12 @@ extension BoardLogFeature {
     /// To Do to Done", "Edited login's spec".
     package static func describe(_ change: BoardChange, items: IdentifiedArrayOf<Item>) -> String {
         let title = change.after?.title ?? change.before?.title ?? items[id: change.itemID]?.title ?? change.itemID
+        // A revert that left the item as it was: each field had changed
+        // again since, or the item was gone. It's logged so the change
+        // counts as reverted.
+        if change.reverts != nil, change.before == change.after {
+            return String(localized: "Nothing put back for \(title)")
+        }
         let what: String
         switch (change.before, change.after) {
         case (nil, _): what = String(localized: "Added \(title)")

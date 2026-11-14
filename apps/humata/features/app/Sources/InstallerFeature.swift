@@ -26,15 +26,27 @@ package struct InstallerFeature {
         /// Says what would happen, and waits for the person.
         case offering
         /// Before anything is copied: `others` are open and would be quit,
-        /// or, when `busy`, sessions on this Mac are in a turn that
-        /// stopping the daemon ends. Waits for the person to go on or not.
-        case confirming(others: [RunningCopy], busy: Bool)
+        /// or sessions on this Mac are in a turn that stopping the daemon
+        /// ends, or the daemon couldn't say. Waits for the person to go on
+        /// or not.
+        case confirming(others: [RunningCopy], busy: Busy)
         /// At work: checking, copying, quitting other copies, stopping the
         /// daemon, putting the copy in place, or opening it.
         case working(Step)
         /// Why it stopped, and what to do; the copy in Applications is as
         /// it was unless the failure says otherwise.
         case failed(String)
+    }
+
+    /// Whether a session on this Mac is in a turn that stopping the daemon
+    /// would end.
+    package enum Busy: Equatable, Sendable {
+        /// None is, or no daemon is running.
+        case idle
+        /// `count` sessions are.
+        case busy(Int)
+        /// The daemon answered with an error, so it can't be told.
+        case unknown
     }
 
     package enum Step: Equatable, Sendable {
@@ -51,7 +63,7 @@ package struct InstallerFeature {
         case installTapped
         /// What installing would interrupt: other open copies, and whether
         /// a session on this Mac is in a turn.
-        case checked(others: [RunningCopy], busy: Bool)
+        case checked(others: [RunningCopy], busy: Busy)
         /// Goes on with the install, quitting the other copies and ending
         /// the turns it was asked about.
         case confirmTapped
@@ -86,24 +98,22 @@ package struct InstallerFeature {
                 state.phase = .working(.checking)
                 return .run { send in
                     let others = await installer.otherCopies()
-                    // No daemon answering has no turns to end.
-                    let sessions = (try? await daemon.sessions(nil)) ?? []
-                    await send(.checked(others: others, busy: AppFeature.anyBusy(sessions)))
+                    await send(.checked(others: others, busy: await busy()))
                 }
 
             case .checked(let others, let busy):
                 guard state.phase == .working(.checking) else { return .none }
-                guard others.isEmpty, !busy else {
+                guard others.isEmpty, busy == .idle else {
                     state.phase = .confirming(others: others, busy: busy)
                     return .none
                 }
                 state.phase = .working(.copying)
-                return install(state.survey, quitting: [])
+                return install(state.survey, quitting: [], alreadyStopped: state.daemonStopped)
 
             case .confirmTapped:
                 guard case .confirming(let others, _) = state.phase else { return .none }
                 state.phase = .working(.copying)
-                return install(state.survey, quitting: others)
+                return install(state.survey, quitting: others, alreadyStopped: state.daemonStopped)
 
             case .cancelTapped:
                 guard case .confirming = state.phase else { return .none }
@@ -148,15 +158,33 @@ package struct InstallerFeature {
         }
     }
 
+    /// Whether a session on this Mac is in a turn. No daemon answering has
+    /// no turns to end; one that answers with an error can't say.
+    private func busy() async -> Busy {
+        let sessions: [Session]
+        do {
+            sessions = try await daemon.sessions(nil)
+        } catch DaemonError.notRunning, DaemonError.disconnected {
+            return .idle
+        } catch {
+            return .unknown
+        }
+        let count = sessions.filter { AppFeature.anyBusy([$0]) }.count
+        return count == 0 ? .idle : .busy(count)
+    }
+
     /// Copies first, so a copy that fails leaves the daemon running and
     /// Applications as it was; only then quits `others`, stops the daemon,
     /// swaps the copy in, and opens it. A failure once the daemon is
-    /// stopped says so; with nothing in Applications, the daemon that ran
-    /// is started again, while one installed starts its own when opened.
-    private func install(_ survey: InstallSurvey, quitting others: [RunningCopy]) -> Effect<Action> {
+    /// stopped, by this try or by one before it (`alreadyStopped`), says
+    /// so; with nothing in Applications, the daemon that ran is started
+    /// again, while one installed starts its own when opened.
+    private func install(
+        _ survey: InstallSurvey, quitting others: [RunningCopy], alreadyStopped: Bool
+    ) -> Effect<Action> {
         .run { send in
             let staged = try await installer.stage(survey.source, survey.destination)
-            var stopped = false
+            var stopped = alreadyStopped
             do {
                 // Only a copy signed by this app's own team is trusted
                 // without Gatekeeper asking again.
@@ -168,8 +196,10 @@ package struct InstallerFeature {
                     try await installer.quitCopies(others)
                 }
                 await send(.stepped(.stoppingDaemon))
-                stopped = try await service.stop()
-                if stopped { await send(.daemonStopped(true)) }
+                if try await service.stop() {
+                    stopped = true
+                    await send(.daemonStopped(true))
+                }
                 await send(.stepped(.replacing))
                 try await installer.swap(staged, survey.destination)
             } catch {
@@ -178,11 +208,15 @@ package struct InstallerFeature {
                 // Never this copy's daemon over an installed copy's login
                 // item: that copy, opened, starts its own.
                 guard survey.installed == nil else {
-                    throw InstallerError.stoppedDaemon(restarted: false, underlying: error)
+                    throw InstallerError.stoppedDaemon(.installedCopyStartsIt, underlying: error)
                 }
-                let restarted = (try? await service.start()) != nil
-                if restarted { await send(.daemonStopped(false)) }
-                throw InstallerError.stoppedDaemon(restarted: restarted, underlying: error)
+                do {
+                    try await service.start()
+                } catch let startError {
+                    throw InstallerError.stoppedDaemon(.notRestarted(startError: startError), underlying: error)
+                }
+                await send(.daemonStopped(false))
+                throw InstallerError.stoppedDaemon(.restarted, underlying: error)
             }
             await send(.swapped)
             await send(.stepped(.opening))
@@ -190,7 +224,7 @@ package struct InstallerFeature {
                 try await installer.open(survey.destination)
             } catch {
                 guard stopped else { throw error }
-                throw InstallerError.stoppedDaemon(restarted: false, underlying: error)
+                throw InstallerError.stoppedDaemon(.installedCopyStartsIt, underlying: error)
             }
             await installer.quit()
         } catch: { error, send in

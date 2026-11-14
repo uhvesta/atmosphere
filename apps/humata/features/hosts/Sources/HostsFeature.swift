@@ -49,6 +49,10 @@ package struct HostsFeature {
         /// How this Mac's commands are linked, while it's selected.
         package var commandLinks: CommandLinks?
         package var linking = false
+        /// Whether This Mac's daemon can be restarted from here: not while
+        /// a newer Humata's runs, which this older copy would replace with
+        /// its own.
+        package var restartsDaemon = true
         @Presents package var destination: Destination.State?
 
         package init() {}
@@ -485,6 +489,7 @@ package struct HostsFeature {
                 return .none
 
             case .restartDaemonTapped:
+                guard state.restartsDaemon else { return .none }
                 state.destination = .alert(
                     AlertState {
                         TextState("Restart Humata's daemon?")

@@ -461,8 +461,12 @@ impl Host {
         self.machine.set_env(env);
     }
 
-    /// Sets the variables this host's model providers take their keys
-    /// from, which a session on no provider is never given.
+    /// Sets the names of the variables this host's model providers take
+    /// their keys from. A Claude session on neither a provider nor a
+    /// subscription has those of Claude's key variables (`ANTHROPIC_API_KEY`,
+    /// `ANTHROPIC_AUTH_TOKEN`) taken out; every other variable, the
+    /// providers' others included, reaches every session like any host
+    /// variable.
     pub fn set_provider_variables(&self, names: impl IntoIterator<Item = String>) {
         self.env.set_provider_variables(names);
     }
