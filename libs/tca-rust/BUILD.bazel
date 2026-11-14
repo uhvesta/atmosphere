@@ -1,0 +1,44 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# A Rust take on The Composable Architecture, not tied to any app: reducers,
+# effects that can be cancelled, a store on its own thread and an exhaustive
+# test store. Published as the tca-rust crate.
+rust_library(
+    name = "tca",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "tca",
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "tca_test",
+    crate = ":tca",
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":tca",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = ["README.md"],
+    tags = ["markdown"],
+)

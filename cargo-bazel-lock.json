@@ -1,5 +1,5 @@
 {
-  "checksum": "9a1f472da2d5e32c1883006375b8e9064501c870690b1d46ae073da566134eeb",
+  "checksum": "ca0bd7d1f9b28e5e5b3c4f5fc921d9ca1e536d9c56730273e4d6f2716335b1a6",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -4675,6 +4675,10 @@
           {
             "id": "rustix 1.1.6",
             "target": "rustix"
+          },
+          {
+            "id": "ruzstd 0.9.1",
+            "target": "ruzstd"
           },
           {
             "id": "serde 1.0.229",
@@ -10666,6 +10670,38 @@
       ],
       "version": "0.4.46"
     },
+    "tca-rust 0.1.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "tca",
+      "license": "MIT",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "tca-rust",
+      "package_url": "https://github.com/uhvesta/atmosphere",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "tca",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.1.0"
+    },
     "tempfile 3.27.0": {
       "common_attrs": {
         "crate_features": [
@@ -13304,6 +13340,7 @@
     "humata-wire 0.0.0": "apps/humata/daemon/wire",
     "humata-workspace 0.0.0": "apps/humata/daemon/workspace",
     "humatad 0.0.0": "apps/humata/daemon/humatad",
-    "swift-catalog 0.0.0": "tools/swift_catalog"
+    "swift-catalog 0.0.0": "tools/swift_catalog",
+    "tca-rust 0.1.0": "libs/tca-rust"
   }
 }

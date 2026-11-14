@@ -1,0 +1,19 @@
+[package]
+name = "tca-rust"
+description = "A Rust take on The Composable Architecture: reducers, effects that can be cancelled, a store on its own thread, and an exhaustive test store."
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/uhvesta/atmosphere"
+readme = "README.md"
+keywords = ["architecture", "reducer", "state", "effects", "testing"]
+categories = ["asynchronous", "gui", "development-tools::testing"]
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tca"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+thiserror = "2.0.21"
