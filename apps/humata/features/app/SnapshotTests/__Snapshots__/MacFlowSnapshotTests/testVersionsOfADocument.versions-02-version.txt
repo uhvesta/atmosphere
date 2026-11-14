@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "reader" help: "Start a session in reader"
+      [MenuButton] "reader" help: "Start a session in reader, New session, plan, settings or delete for reader" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
@@ -25,10 +25,12 @@
     [RadioButton/Segment] "Files" value: "1"
     [RadioButton/Segment] "Spec" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
+  [Button] "Show Plan" help: "Show the project's items beside the chat, in the order to take them"
+  [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is"
   [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
-  [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"
+  [StaticText] "" value: "Approvals"
+  [PopUpButton] "" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [CheckBox/Toggle] "Focus" value: "1" help: "Show the folder's files beside the document again" id: arrow.up.left.and.arrow.down.right
   [PopUpButton] "File" value: "SPEC.md" help: "The file shown"
@@ -68,6 +70,7 @@
     [StaticText] "" value: "The spec now asks for a passkey."
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Plan Mode" help: "Plan mode: from the next message, the agent reads and proposes, and changes no files"
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

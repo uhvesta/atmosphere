@@ -8,12 +8,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
-    Agent, AgentError, ApprovalMode, BackendFile, Backup, BackupSince, Checkout, ClaudeOptions,
-    ClaudeRunner, Compaction, CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event,
-    EventId, ForkOptions, Held, Image, Importable, Landed, LocalAgent, LocalModelConfig,
-    LocalModelRunner, McpServer, Merged, Message, ModelServer, Query, Repository, Script,
-    ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Summary,
-    Watch, Workspaces, bundle,
+    Access, Agent, AgentError, ApprovalMode, BackendFile, Backup, BackupSince, Checkout,
+    ClaudeOptions, ClaudeRunner, Compaction, CopilotOptions, CopilotProvider, CopilotRunner, Edit,
+    Env, Event, EventId, ForkOptions, Held, Image, Importable, Landed, LocalAgent,
+    LocalModelConfig, LocalModelRunner, McpServer, Merged, Message, ModelServer, Query, Repository,
+    Script, ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions,
+    Summary, Watch, Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -906,6 +906,10 @@ impl Host {
                     start.backend_config = like.backend_config.unwrap_or_default();
                 }
                 let agent = self.backend(backend)?;
+                // A planning session with the code plans in a copy that
+                // follows its origin, and never writes there.
+                let follows_base =
+                    start.planning && start.with_code && !start.repositories.is_empty();
                 let record = agent
                     .start(StartOptions {
                         name: start.name,
@@ -923,6 +927,12 @@ impl Host {
                         effort: convert::optional(start.effort),
                         experimental: start.experimental,
                         notices: start.notices,
+                        access: if follows_base {
+                            Access::Plan
+                        } else {
+                            Access::Full
+                        },
+                        follows_base,
                     })
                     .await?;
                 self.owners
@@ -1130,11 +1140,12 @@ impl Host {
             }
             Request::GetChatCommands(get) => {
                 let session = SessionId::new(get.session_id);
-                let (compact, compact_takes_focus) =
-                    match self.owner(&session)?.1.compaction(&session).await? {
-                        Compaction::Unsupported => (false, false),
-                        Compaction::Supported { focus } => (true, focus),
-                    };
+                let agent = self.owner(&session)?.1;
+                let (compact, compact_takes_focus) = match agent.compaction(&session).await? {
+                    Compaction::Unsupported => (false, false),
+                    Compaction::Supported { focus } => (true, focus),
+                };
+                let record = record(agent.as_ref(), &session).await?;
                 Response::ChatCommands(pb::ChatCommands {
                     compact,
                     compact_takes_focus,
@@ -1142,6 +1153,11 @@ impl Host {
                     // runs a command, and a read-only session's requests
                     // are refused as they're asked.
                     side: true,
+                    // Every backend here takes its tools anew for each
+                    // turn, or opens its session again when they change.
+                    // A side chat stays one, and a planning session with
+                    // the code stays in plan mode.
+                    plan: record.access != Access::SideChat && !record.follows_base,
                 })
             }
             Request::ListImportable(_) => {
@@ -1234,6 +1250,7 @@ impl Host {
                 })
             }
             Request::ForkSession(fork) => {
+                let access = convert::access(fork.access());
                 let session = SessionId::new(fork.session_id);
                 let (backend, agent) = self.owner(&session)?;
                 let options = ForkOptions {
@@ -1248,6 +1265,7 @@ impl Host {
                     instructions: fork.instructions,
                     empty: fork.empty,
                     read_only: fork.read_only,
+                    access,
                 };
                 let record = agent.fork(&session, options).await?;
                 self.owners
@@ -1268,6 +1286,10 @@ impl Host {
                     effort: update.effort.map(convert::optional),
                     experimental: update.experimental,
                     model: update.model.map(convert::optional),
+                    access: update
+                        .access
+                        .and_then(|level| pb::AccessLevel::try_from(level).ok())
+                        .and_then(convert::access),
                 };
                 let record = agent.update(&session, changes).await?;
                 Response::SessionUpdated(pb::SessionUpdated {

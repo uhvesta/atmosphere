@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
@@ -23,12 +23,11 @@
     [RadioButton/Segment] "Files" value: "0"
     [RadioButton/Segment] "Spec" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
-  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself" id: folder
+  [Button] "Show Plan" help: "Show the project's items beside the chat, in the order to take them"
+  [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is"
+  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [StaticText] "" value: "2 proposals wait for you"
-  [Button] "Show" help: "Scroll to the first proposal not decided yet"
   [OpaqueProviderGroup/OpaqueProviderList] ""
     [StaticText] "" value: "Plan sign in for the app"
     [StaticText] "" value: "Here's the work as I'd split it."
@@ -61,8 +60,11 @@
     [Button] "Edit…"
     [Button] "Apply"
     [StaticText] "" value: "Here's a tighter spec."
+  [StaticText] "" value: "2 proposals wait for you"
+  [Button] "Show" help: "Scroll to the first proposal not decided yet"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Plan Mode" help: "Plan mode: from the next message, the agent reads and proposes, and changes no files"
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

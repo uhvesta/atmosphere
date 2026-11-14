@@ -14,12 +14,16 @@ package struct DaemonService: Sendable {
     package var restart: @Sendable () async throws -> Void
     /// Opens Login Items in System Settings.
     package var openLoginItems: @Sendable () -> Void
+    /// Stops the daemon for the app's files to be replaced, as the
+    /// installer does, and waits until it no longer answers. Turns in
+    /// progress end.
+    package var stop: @Sendable () async throws -> Void
 }
 
 extension DaemonService: TestDependencyKey {
     package static let testValue = DaemonService()
     package static let previewValue = DaemonService(
-        start: {}, isCurrent: { true }, restart: {}, openLoginItems: {})
+        start: {}, isCurrent: { true }, restart: {}, openLoginItems: {}, stop: {})
 }
 
 extension DependencyValues {
@@ -44,6 +48,8 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
     /// A humatad the app didn't start answers, so the app can't stop it to
     /// start its own.
     case notManaged(socket: String)
+    /// macOS didn't take the login item off, so its humatad still runs.
+    case unregisterFailed(underlying: any Error)
 
     package var errorDescription: String? { description }
 
@@ -69,6 +75,9 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
             "Humata didn't start the humatad answering at \(socket), so it can't restart it, and it's still "
                 + "running. Stop it yourself (for example with `pkill -x humatad`; its turns in progress stop) and "
                 + "Humata starts its own: within a few seconds, or when you press Try Again if that's offered."
+        case .unregisterFailed(let underlying):
+            "macOS didn't stop Humata's daemon: \(underlying.localizedDescription) Turn off Humata in System "
+                + "Settings › General › Login Items, then try again; or choose Run from Here."
         }
     }
 }

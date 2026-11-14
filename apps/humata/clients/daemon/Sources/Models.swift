@@ -87,6 +87,9 @@ package struct Project: Identifiable, Hashable, Sendable {
     /// What its sessions' agents may do to other sessions.
     package var agentSessions: AgentSessions
     package var created: Date
+    /// Whether Plan With an Agent starts with the code, until the person
+    /// says otherwise for a session.
+    package var planWithCode = false
 
     package init(
         id: String, name: String, repositories: [Repository], instructions: String = "", skills: [Skill] = [],
@@ -267,16 +270,19 @@ package struct ProjectUpdate: Hashable, Sendable {
     package var repositories: [Repository]?
     /// What its agents may do to other sessions. Only the app may set it.
     package var agentSessions: AgentSessions?
+    /// Whether Plan With an Agent starts with the code in it.
+    package var planWithCode: Bool?
 
     package init(
         name: String? = nil, instructions: String? = nil, skills: [Skill]? = nil, repositories: [Repository]? = nil,
-        agentSessions: AgentSessions? = nil
+        agentSessions: AgentSessions? = nil, planWithCode: Bool? = nil
     ) {
         self.name = name
         self.instructions = instructions
         self.skills = skills
         self.repositories = repositories
         self.agentSessions = agentSessions
+        self.planWithCode = planWithCode
     }
 }
 
@@ -286,6 +292,8 @@ package struct Proposal: Identifiable, Hashable, Sendable {
     package enum Kind: Hashable, Sendable {
         case task
         case specEdit
+        /// That `itemID` waits on `dependsOn`.
+        case dependency
     }
 
     package enum State: Hashable, Sendable {
@@ -310,11 +318,21 @@ package struct Proposal: Identifiable, Hashable, Sendable {
     package var state: State
     /// For a pending spec edit, the item's spec as it is now.
     package var currentSpec: String?
+    /// For a task, whether it is proposed as a milestone.
+    package var itemKind: ItemKind?
+    /// The items a proposed task, or a dependency's item, would wait on.
+    package var dependsOn: [Item.ID]
+    /// Their titles, in the same order.
+    package var dependsOnTitles: [String]
 
     package init(
         id: String, kind: Kind = .task, title: String, spec: String = "", parentID: String? = nil,
-        itemID: String? = nil, note: String = "", state: State = .pending, currentSpec: String? = nil
+        itemID: String? = nil, note: String = "", state: State = .pending, currentSpec: String? = nil,
+        itemKind: ItemKind? = nil, dependsOn: [Item.ID] = [], dependsOnTitles: [String] = []
     ) {
+        self.itemKind = itemKind
+        self.dependsOn = dependsOn
+        self.dependsOnTitles = dependsOnTitles
         self.id = id
         self.kind = kind
         self.title = title
@@ -332,6 +350,29 @@ package enum SessionState: Hashable, Sendable {
     case working
     case waitingForApproval
     case failed
+}
+
+/// What a session's agent may do to files and with commands.
+package enum AccessLevel: Hashable, Sendable {
+    /// It writes files and runs commands, as its approval mode lets it.
+    case full
+    /// Plan mode: it reads, searches and proposes; every write and command
+    /// is refused without asking.
+    case plan
+    /// A side chat: held to reading as `plan` is, and it proposes nothing.
+    case sideChat
+}
+
+/// The commit a session's copy of a repository is on.
+package struct CodeCommit: Hashable, Sendable {
+    /// The repository's name in the session.
+    package var repository: String
+    package var commit: String
+
+    package init(repository: String, commit: String) {
+        self.repository = repository
+        self.commit = commit
+    }
 }
 
 package struct Session: Identifiable, Hashable, Sendable {
@@ -390,10 +431,19 @@ package struct Session: Identifiable, Hashable, Sendable {
     /// The session whose agent started it, with start_session; nil when
     /// the person did. It isn't a fork: it has none of that one's history.
     package var startedBy: String?
+    /// What its agent may do to files and with commands.
+    package var access: AccessLevel = .full
+    /// For a planning session with the code: the commit each repository's
+    /// copy was on as its last turn started; empty before its first turn.
+    package var codeCommits: [CodeCommit] = []
 
     /// The session it shows under in the sidebar: the one it was forked
     /// from, or the one whose agent started it.
     package var nestsUnder: String? { parentID ?? startedBy }
+
+    /// A planning session that reads a copy of the code kept at origin's
+    /// default branch, and writes nothing there.
+    package var plansWithCode: Bool { planning && access == .plan }
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
@@ -454,10 +504,13 @@ package struct SessionUpdate: Hashable, Sendable {
     /// The model, from the next turn; "" for the backend's default. A turn
     /// that is running finishes on the one it started with.
     package var model: String?
+    /// `.full` or `.plan`, from the next turn; what the session asks to
+    /// change meanwhile is refused at once in `.plan`.
+    package var access: AccessLevel?
 
     package init(
         name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil, placement: Placement? = nil,
-        experimental: Bool? = nil, effort: String? = nil, model: String? = nil
+        experimental: Bool? = nil, effort: String? = nil, model: String? = nil, access: AccessLevel? = nil
     ) {
         self.name = name
         self.archived = archived
@@ -466,6 +519,7 @@ package struct SessionUpdate: Hashable, Sendable {
         self.experimental = experimental
         self.effort = effort
         self.model = model
+        self.access = access
     }
 }
 
@@ -506,20 +560,33 @@ package enum Priority: Int, CaseIterable, Comparable, Hashable, Sendable {
     package static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
+/// Whether an item is a milestone, which holds tasks under it, or a task.
+package enum ItemKind: Hashable, Sendable {
+    case milestone
+    case task
+}
+
 /// What the board's changes record of an item.
 package struct ItemFields: Hashable, Sendable {
-    /// The task a subtask is under; nil for a task.
+    /// The milestone a task is under; nil for a milestone or a lone task.
     package var parentID: String?
     package var title: String
     /// Markdown.
     package var spec: String
     package var status: ItemStatus
     package var priority: Priority
+    /// Nil when it wasn't set: a milestone once it has tasks under it. On
+    /// an item as the daemon lists it, what it reads as.
+    package var kind: ItemKind?
+    /// The items it waits on.
+    package var dependsOn: [String]
 
     package init(
         parentID: String? = nil, title: String, spec: String = "", status: ItemStatus = .todo,
-        priority: Priority = .none
+        priority: Priority = .none, kind: ItemKind? = nil, dependsOn: [String] = []
     ) {
+        self.kind = kind
+        self.dependsOn = dependsOn
         self.parentID = parentID
         self.title = title
         self.spec = spec
@@ -541,11 +608,23 @@ package struct Item: Identifiable, Hashable, Sendable {
     package var updated: Date
     /// The sessions on it, archived ones too.
     package var sessionIDs: [String]
+    /// It isn't finished and waits on unfinished items, its milestone's
+    /// among them. Worked out by the daemon.
+    package var blocked: Bool
+    /// The unfinished items it waits on; empty unless blocked.
+    package var waitingOn: [String]
+    /// Its place in the project's plan, from 1: after what it depends on,
+    /// a milestone's tasks right after it. 0 when the daemon gave none.
+    package var planOrder: Int
 
     package init(
         id: String, projectID: String, fields: ItemFields, status: ItemStatus? = nil, created: Date,
-        updated: Date? = nil, sessionIDs: [String] = []
+        updated: Date? = nil, sessionIDs: [String] = [], blocked: Bool = false, waitingOn: [String] = [],
+        planOrder: Int = 0
     ) {
+        self.blocked = blocked
+        self.waitingOn = waitingOn
+        self.planOrder = planOrder
         self.id = id
         self.projectID = projectID
         self.fields = fields
@@ -559,6 +638,12 @@ package struct Item: Identifiable, Hashable, Sendable {
     package var title: String { fields.title }
     package var spec: String { fields.spec }
     package var priority: Priority { fields.priority }
+    package var dependsOn: [String] { fields.dependsOn }
+    /// A milestone if it was set to be one; an item not said to be either
+    /// is a task.
+    package var isMilestone: Bool { fields.kind == .milestone }
+    /// Done or Won't do.
+    package var closed: Bool { fields.status == .done || fields.status == .wontDo }
 }
 
 /// What to change in an item; nil leaves a field as it is.
@@ -567,8 +652,19 @@ package struct ItemUpdate: Hashable, Sendable {
     package var spec: String?
     package var status: ItemStatus?
     package var priority: Priority?
+    package var kind: ItemKind?
+    /// Items it comes to wait on.
+    package var link: [String]
+    /// Items it no longer waits on.
+    package var unlink: [String]
 
-    package init(title: String? = nil, spec: String? = nil, status: ItemStatus? = nil, priority: Priority? = nil) {
+    package init(
+        title: String? = nil, spec: String? = nil, status: ItemStatus? = nil, priority: Priority? = nil,
+        kind: ItemKind? = nil, link: [String] = [], unlink: [String] = []
+    ) {
+        self.kind = kind
+        self.link = link
+        self.unlink = unlink
         self.title = title
         self.spec = spec
         self.status = status
@@ -594,7 +690,7 @@ package enum BoardAuthor: Hashable, Sendable {
 
 /// A field of an item, as a board change names it.
 package enum ItemField: Hashable, Sendable, CaseIterable {
-    case title, spec, status, priority
+    case title, spec, status, priority, kind, dependsOn
 }
 
 /// One change to a project's board.
@@ -644,6 +740,8 @@ extension ItemFields {
         case .spec: spec != other.spec
         case .status: status != other.status
         case .priority: priority != other.priority
+        case .kind: kind != other.kind
+        case .dependsOn: dependsOn != other.dependsOn
         }
     }
 }
@@ -1423,11 +1521,15 @@ package struct ChatCommands: Equatable, Sendable {
     /// Whether its host holds a side chat of it to reading only, so one
     /// can be made.
     package var side = false
+    /// Whether it switches between full access and plan mode from its next
+    /// turn: not for a side chat, nor a planning session with the code.
+    package var plan = false
 
-    package init(compact: Bool = false, compactTakesFocus: Bool = false, side: Bool = false) {
+    package init(compact: Bool = false, compactTakesFocus: Bool = false, side: Bool = false, plan: Bool = false) {
         self.compact = compact
         self.compactTakesFocus = compactTakesFocus
         self.side = side
+        self.plan = plan
     }
 }
 
@@ -1504,12 +1606,15 @@ package struct StartRequest: Hashable, Sendable {
     /// Plans in the project, proposing tasks and spec edits, with no copy
     /// of the code, so it opens at once.
     package var planning: Bool
+    /// With `planning`: plans with a copy of the project's repositories,
+    /// kept at origin's default branch, which it reads and never writes.
+    package var withCode: Bool
 
     package init(
         backend: Backend, workingDirectory: String? = nil, name: String = "", host: String? = nil,
         model: String? = nil, effort: String? = nil, experimental: Bool = false, instructions: String? = nil,
         backendConfig: String? = nil, approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil,
-        itemID: String? = nil, specs: SpecScope = .item, planning: Bool = false
+        itemID: String? = nil, specs: SpecScope = .item, planning: Bool = false, withCode: Bool = false
     ) {
         self.backend = backend
         self.workingDirectory = workingDirectory
@@ -1525,6 +1630,7 @@ package struct StartRequest: Hashable, Sendable {
         self.itemID = itemID
         self.specs = specs
         self.planning = planning
+        self.withCode = withCode
     }
 }
 
@@ -1546,23 +1652,127 @@ package struct RemoteHost: Identifiable, Hashable, Sendable {
     package var envNames: [String]
     /// Run on the host when it changes, or until it succeeds.
     package var setupScript: String
+    /// The model providers its sessions can use.
+    package var providers: [HostProvider]
 
     /// The coordinator, the Mac the daemon runs on: it has no name.
-    package static func coordinator(envNames: [String] = []) -> Self {
-        Self(name: "", sshDestination: nil, envNames: envNames)
+    package static func coordinator(envNames: [String] = [], providers: [HostProvider] = []) -> Self {
+        Self(name: "", sshDestination: nil, envNames: envNames, providers: providers)
+    }
+
+    /// The providers a new session of `backend` can be offered here: those
+    /// that serve it and whose key's variable is set.
+    package func providers(for backend: Backend) -> [HostProvider] {
+        providers.filter { $0.serves(backend) && envNames.contains($0.keyVariable) }
     }
 
     /// Whether it's the coordinator rather than a remote host.
     package var isCoordinator: Bool { name.isEmpty }
 
-    package init(name: String, sshDestination: String?, envNames: [String] = [], setupScript: String = "") {
+    package init(
+        name: String, sshDestination: String?, envNames: [String] = [], setupScript: String = "",
+        providers: [HostProvider] = []
+    ) {
         self.name = name
         self.sshDestination = sshDestination
         self.envNames = envNames
         self.setupScript = setupScript
+        self.providers = providers
     }
 
     package var id: String { name }
+}
+
+/// A model provider a host's sessions can use, paid for with a key of the
+/// person's own. It names the host's variable that holds the key, never the
+/// key: that stays in the host's variables.
+package struct HostProvider: Identifiable, Hashable, Sendable {
+    package enum Kind: String, CaseIterable, Hashable, Sendable {
+        case anthropic
+        case openAI = "openai"
+        case openCodeGo = "opencode_go"
+
+        package var title: String {
+            switch self {
+            case .anthropic: "Anthropic API"
+            case .openAI: "OpenAI-Compatible"
+            case .openCodeGo: "OpenCode Go"
+            }
+        }
+
+        /// Where it's served unless the person says otherwise.
+        package var baseURL: String {
+            switch self {
+            case .anthropic: "https://api.anthropic.com"
+            case .openAI: "https://api.openai.com/v1"
+            case .openCodeGo: "https://opencode.ai/inference/go"
+            }
+        }
+
+        /// The variable its key usually goes by.
+        package var keyVariable: String {
+            switch self {
+            case .anthropic: "ANTHROPIC_API_KEY"
+            case .openAI: "OPENAI_API_KEY"
+            case .openCodeGo: "OPENCODE_API_KEY"
+            }
+        }
+    }
+
+    /// Which of OpenAI's two APIs Copilot asks it with.
+    package enum WireAPI: String, CaseIterable, Hashable, Sendable {
+        case completions
+        case responses
+    }
+
+    package var id: String
+    /// What the person calls it.
+    package var name: String
+    package var kind: Kind
+    package var baseURL: String
+    /// The host's variable that holds its key.
+    package var keyVariable: String
+    package var wireAPI: WireAPI
+
+    package init(
+        id: String, name: String, kind: Kind, baseURL: String, keyVariable: String, wireAPI: WireAPI = .completions
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.baseURL = baseURL
+        self.keyVariable = keyVariable
+        self.wireAPI = wireAPI
+    }
+
+    /// A new one of `kind`, as the kind is usually set up.
+    package init(id: String, kind: Kind) {
+        self.init(id: id, name: kind.title, kind: kind, baseURL: kind.baseURL, keyVariable: kind.keyVariable)
+    }
+
+    /// Whether `backend`'s sessions can run on it: Claude Code on
+    /// Anthropic's API, a local model's agent on OpenAI's, Copilot on both.
+    package func serves(_ backend: Backend) -> Bool {
+        switch backend {
+        case .claude: kind == .anthropic
+        case .copilot: true
+        case .local: kind != .anthropic
+        case .scripted: false
+        }
+    }
+
+    /// Whether Copilot can be told which of OpenAI's APIs to ask it with.
+    package var takesWireAPI: Bool { kind != .anthropic }
+
+    /// A session's backend config that names it, as JSON. It holds the
+    /// variable's name, not the key.
+    package var backendConfig: String? {
+        var provider = ["kind": kind.rawValue, "base_url": baseURL, "api_key_variable": keyVariable]
+        if takesWireAPI { provider["wire_api"] = wireAPI.rawValue }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["provider": provider], options: [.sortedKeys])
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 }
 
 /// What to change about a host; nil and empty leave it as it is.
@@ -1571,11 +1781,17 @@ package struct HostUpdate: Hashable, Sendable {
     package var setEnv: [String: String]
     package var unsetEnv: [String]
     package var setupScript: String?
+    /// Its providers, replacing those it has.
+    package var providers: [HostProvider]?
 
-    package init(setEnv: [String: String] = [:], unsetEnv: [String] = [], setupScript: String? = nil) {
+    package init(
+        setEnv: [String: String] = [:], unsetEnv: [String] = [], setupScript: String? = nil,
+        providers: [HostProvider]? = nil
+    ) {
         self.setEnv = setEnv
         self.unsetEnv = unsetEnv
         self.setupScript = setupScript
+        self.providers = providers
     }
 }
 
@@ -1739,6 +1955,10 @@ package enum ErrorCode: Hashable, Sendable {
     case skillClash
     /// Settings › Agent Access has the action off for the client asking.
     case accessOff
+    /// The link would have items wait on each other in a loop.
+    case dependencyCycle
+    /// An item can't depend on itself or on another project's item.
+    case invalidDependency
     case unknown
 }
 

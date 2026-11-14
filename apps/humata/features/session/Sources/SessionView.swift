@@ -104,6 +104,12 @@ package struct SessionView: View {
         }
         // The window is named for the session a side chat is beside.
         .modifier(WindowTitle(title: store.beside ? nil : store.session.name.isEmpty ? "Session" : store.session.name))
+        // The project's plan, on the right of the chat; in a view of its
+        // own, so its reads draw only it.
+        .inspector(isPresented: planShown) {
+            PlanPanelView(store: store.scope(state: \.planPanel, action: \.planPanel))
+                .inspectorColumnWidth(min: 200, ideal: 260, max: 380)
+        }
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
         .confirmationDialog($store.scope(state: \.rewindDialog, action: \.rewindDialog))
@@ -127,6 +133,18 @@ package struct SessionView: View {
             ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
         }
         .sheet(isPresented: readingSubagent) { SubagentsSheet(store: store) }
+    }
+
+    /// Whether the plan shows: only beside the chat of a session in a
+    /// project, and not beside another session.
+    private var planShown: Binding<Bool> {
+        Binding(
+            get: {
+                store.planPanel.shown && store.tab == .chat && !store.beside && store.session.projectID != nil
+            },
+            set: { shown in
+                if shown != store.planPanel.shown { store.send(.planPanel(.toggleTapped)) }
+            })
     }
 
     private var readingSubagent: Binding<Bool> {
@@ -217,6 +235,9 @@ package struct SessionView: View {
             }
             // Shows only once the agent has started a subagent.
             AgentsButton(store: store, names: names)
+            if store.session.projectID != nil {
+                PlanPanelToggle(store: store.scope(state: \.planPanel, action: \.planPanel))
+            }
             actions(names: names)
         }
     }
@@ -333,7 +354,21 @@ package struct SessionView: View {
                     .help(
                         "A side chat: its agent reads and searches, and every write or command it asks for is "
                             + "refused")
+            } else if store.session.plansWithCode {
+                // Nothing to allow: it plans, and writes nothing.
+                Label("Planning: Reads Only", systemImage: "eye")
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .help(
+                        "It reads a copy of the code, brought up to origin’s default branch as each turn starts, "
+                            + "and proposes; every write or command it asks for is refused" + codeAt)
             } else {
+                if store.session.access == .plan {
+                    Label("Planning: Reads Only", systemImage: "eye")
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                        .help("Plan mode: the agent reads and proposes, and every write or command is refused")
+                }
                 Picker("Approvals", selection: approvalMode) {
                     ForEach(ApprovalMode.offered(for: store.session.backend), id: \.self) { mode in
                         Text(Self.name(mode)).tag(mode)
@@ -360,6 +395,12 @@ package struct SessionView: View {
     }
 
     private var folder: URL { URL(filePath: store.session.workingDirectory, directoryHint: .isDirectory) }
+
+    /// The commits a planning session with the code read in its last turn.
+    private var codeAt: String {
+        let commits = store.session.codeCommits.map { "\($0.repository) at \($0.commit.prefix(8))" }
+        return commits.isEmpty ? "" : ". Last turn read " + commits.formatted(.list(type: .and))
+    }
 
     private func copy(_ text: String) {
         NSPasteboard.general.clearContents()
@@ -2311,6 +2352,7 @@ private struct SessionComposer: View {
             }
         }
         .showingPlus(store.takesImages)
+        .plan(PlanSwitch.toggle(store))
         .focusing(store.boxFocus)
         .modifier(ModelSwitchSheet(store: store))
     }

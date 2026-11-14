@@ -1951,6 +1951,218 @@ profile of opening a long chat found.
   model doesn't take goes back to its default. No pill for a scripted or
   archived session, or one whose host is away
 
+### Milestone PM: plan mode with the code
+
+The owner, 2026-11-14: a planning session can have the code to read, and
+a working session can be held to planning for a while.
+
+- [x] A session's record has an access level in place of the read-only
+  flag: Full, Plan or SideChat (`SessionInfo.access`). A record from
+  before, with `read_only`, reads as SideChat. Plan and SideChat share
+  the host's refusal of every write and command and the backends' tool
+  lists, so plan mode has no shell: read, search and glob only. Only
+  Plan keeps the propose tools, and it reads its own copy of the code
+- [x] `StartSession.with_code`, with `planning`: the session gets an
+  ordinary worktree of the project's repositories and runs in Plan. As
+  each turn starts its copy is fetched and moved to origin's default
+  branch, unless it has changes, which it normally can't; a fetch that
+  fails or takes over 20 seconds leaves it as last fetched and the chat
+  says so. The commit is `SessionInfo.code_commits`. Archiving removes
+  the worktree as for any session. A fork onto a task
+  (`ForkSession.access`) is a working session in a copy of its own
+- [x] `UpdateSession.access` switches a working session between Full and
+  Plan, with a notice in the chat. The host refuses changes at once; the
+  tool list follows from the next turn: Claude Code is started with
+  other flags, Copilot's session is opened again without its changing
+  tools, a local model's next request offers only the tools that read.
+  `ChatCommands.plan` says where it works: not for a side chat, nor for
+  a planning session with the code, which stay as they are
+- [x] `Project.plan_with_code` is the project's default for the switch,
+  off until set (`UpdateProject.plan_with_code`); `humata start
+  --planning --with-code` for the command line
+- [x] The app: With the Code on the planning sheet, under Plan Only and
+  only for a project with repositories, starting as the project's
+  default; Planning › Plan with the code in the project's settings; a
+  Plan toggle beside the model's pill in the message box, only where
+  `ChatCommands.plan` says it works, sent at once as the model is; and
+  Planning: Reads Only in the session's toolbar, whose help names the
+  commits its last turn read
+- [ ] Not built: a planning session with the code on a host whose
+  humatad is from before this gets a copy it could write to; install
+  Humata on the host again first. A session in plan mode can still
+  start or write to other sessions where the project's Agent Sessions
+  setting lets its agent
+
+How it's built: `AccessLevel` and `CodeCommit` in the daemon client's
+models; `PlanSwitch` and `PlanToggle` (ChatUI) in the session feature,
+which takes the daemon's answer and says so when an older host left the
+session as it was. The in-memory daemon refuses a Plan session's writes
+and commands unasked, and notes each switch.
+
+Tests: a session in plan mode writes nothing even allowed everything, and
+writes again once switched back; a side chat and a planning session with
+the code can't be switched; planning with the code reads a copy, without
+it gets none; the project's default starts the sheet with the code and
+can be turned off for one session; the toggle switches and switches back,
+is offered nowhere the host can't, and an older host's answer says so.
+
+### Milestone IN: the app installs itself
+
+The owner, 2026-11-14: opening the desktop app should open an installer.
+
+- [x] A Developer ID build opened from outside Applications shows an
+  installer in its window, in place of the sidebar and chat, before its
+  daemon starts: what will happen, Install, and Run from Here. Debug
+  and test builds, and a copy already in Applications, never see it
+- [x] It replaces the copy in Applications only when this one is newer,
+  by `CFBundleShortVersionString` then `CFBundleVersion`; one as new or
+  newer is offered to open instead. Something else named Humata.app,
+  with another bundle ID, is left alone and no installer shows
+- [x] Install copies to a temporary folder on the same volume first,
+  then stops the daemon, swaps the copy in with one
+  `replaceItemAt`, opens it from Applications and quits. A copy that
+  fails leaves the daemon running and Applications as it was
+- [x] The downloaded mark (quarantine) is cleared only on a copy whose
+  signature holds and names this app's team
+- [x] A failure says what failed and what to do: no permission to write
+  to Applications, a full disk, a copy that can't be swapped in or opened
+- [ ] Not built: Run from Here is asked again at each launch; an
+  administrator's password isn't asked for when Applications can't be
+  written to
+
+How it's built: `InstallFiles` holds the version and path choices,
+`InstallerClient` the files and signatures (Developer ID by the code
+requirement on the running code, teams by `SecStaticCode`), and
+`InstallerFeature` the order of the steps, in features/app. The app
+reads the survey before its window shows. `DaemonService.stop` takes the
+login item off, so launchd doesn't start humatad again, and the copy
+opened from Applications adds it back from there.
+
+Tests: versions compare by number and build; a newer copy installs and
+opens from Applications; an older or the same one opens the installed
+copy and copies nothing; Run from Here closes the installer; a failed
+copy says why and leaves the installed app and daemon alone; quarantine
+is cleared only when the team matches.
+
+### Milestone BY: bring your own key
+
+The owner, 2026-11-14: let a session pay with a key of the person's own,
+an Anthropic or OpenAI-compatible key or an OpenCode Go subscription, in
+place of a Claude subscription, GitHub or a local model server.
+
+- [x] Settings › Environments: each host, and This Mac, lists its Model
+  Providers: a name, a kind (Anthropic API, OpenAI-Compatible, OpenCode
+  Go) with its usual web address and variable filled in, and for Copilot
+  which of OpenAI's APIs it asks with. A provider names the variable its
+  key is in; the key itself is only ever one of the host's variables
+- [x] A key is never kept in hosts.json's provider records, a session's
+  backend config or anything sent to the app: only the variable's name,
+  read on the host as each turn starts. A config that holds a key is
+  refused
+- [x] A provider whose variable isn't set says so, with a button that
+  adds the variable for its value to be typed
+- [x] New Session offers a Provider beside the agent, only those the
+  agent can use and whose key is set where it runs: Claude Code its
+  subscription or an Anthropic provider; Copilot GitHub or any; a local
+  model its model server, an OpenAI-compatible one or OpenCode Go. A
+  pick the agent or host can't use is dropped
+- [x] Claude Code where an Anthropic provider is offered and none is
+  picked runs on its subscription, with the host's Anthropic variables
+  kept from it, so a key set for a provider isn't billed by accident
+- [x] Copilot on a provider must be given a model; it has no default
+  there
+- [x] A key refused, no credit, a rate limit or an unreachable provider
+  says which, and what to do: check the variable's key, top up, or wait
+- [ ] Not built: a project's default provider; Claude Code on OpenCode
+  Go's Anthropic endpoint; the provider in the session's header
+- [ ] Unverified live: OpenCode Go's auth (Bearer assumed), its model
+  list's shape and its limit codes; Copilot on Go can't send
+  `x-opencode-session`; Copilot's Anthropic `baseUrl`; Anthropic's model
+  list by `x-api-key`
+
+How it's built: `Provider` and `ProviderList` in humata.proto, on
+`HostInfo` and `UpdateHost`; `HostConfig.providers` and the
+coordinator's in hosts.json; agent/src/provider.rs reads the key from
+the host's variables and maps a provider's faults to `ProviderError`. A
+session picks one by its backend config, `{"provider": {kind, base_url,
+api_key_variable, wire_api}}`, or `{"subscription": true}` for Claude.
+Claude Code gets `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`; Copilot
+gets its session provider; a local model on Go asks
+`<base>/openai/v1/chat/completions`. `HostProvider` in the daemon
+client's models; the editor in `HostEditorFeature`, the picker in
+`NewSessionFeature`.
+
+Tests: a provider is saved with its variable's name and the key only
+among the variables; one needs a name, a web address and a variable's
+name; only providers the agent can use with their key set are offered,
+and a picked one is named by its variable, never its key; a pick the
+agent can't use is dropped; Claude runs on its subscription where an
+Anthropic provider is offered but not picked; a config holding a key is
+refused; each agent gets the key from the variable and a new value is
+the next turn's key; a refused key, no credit and a limit are told apart.
+
+### Milestone DG: dependencies and the plan
+
+The owner, 2026-11-14: items get depends-on edges, milestone to
+milestone and task to task, a plan panel beside the chat, and a Graph
+view of the board.
+
+- [x] An item stays under its milestone by `parent`, and any item can
+  depend on any other of its project's board: milestone on milestone,
+  task on task, or across. A milestone is one set to be, or one with
+  tasks under it; a task under one can't be made a milestone
+- [x] A link to itself, to another project's item or to nothing is
+  refused; one that closes a loop is refused with the items round it.
+  A milestone waits on its tasks, and they on what it depends on
+- [x] Links are journaled with who made them, and revert like any
+  change; deleting an item takes its links with it, and reverting that
+  puts back those that make no loop, saying which it left out
+- [x] The daemon works out each item's kind, whether it is blocked and
+  by which items, and its place in the plan: each after what it
+  depends on, the earliest added first where links leave a choice, a
+  milestone's tasks right under it. An item is finished once Done or
+  Won't Do, a milestone also once all its tasks are
+- [x] An item's page has Depends On: what it waits on, with each one's
+  status, to open or remove, Add Dependency to pick another, and what
+  blocks it; a refused link says why. Its kind is picked there
+- [x] The board's toolbar picks Columns or Graph: the plan as a column
+  per step with an arrow from each item to what waits on it, blocked
+  ones marked
+- [x] A session in a project shows its plan on the right of the chat,
+  put away or shown from the header and remembered for every session:
+  the items in plan order with their statuses, the session's own
+  marked. It's read only while shown, every two seconds as the board
+  is, and drawn again only when a read has something new
+- [x] Agents propose dependencies (`propose_dependency`), and a task
+  proposal may say it is a milestone and what it depends on; nothing
+  reaches the board until applied
+- [x] `humata board link`, `board unlink` and `board plan`, `item add
+  --milestone --depends-on`, and MCP's `plan` (reads) and
+  `propose_dependency` (changes)
+- [ ] Not built: the graph lays steps out left to right only, without
+  dragging; the plan panel doesn't follow a session moved to another
+  item until it opens again
+
+How it's built: `ItemKind`, `Item.depends_on`, `blocked`, `waiting_on`
+and `plan_order`, `UpdateItem.add_depends_on`/`remove_depends_on`, and
+`PROPOSAL_KIND_DEPENDENCY` in humata.proto; no new requests, as links
+ride on CreateItem and UpdateItem. The store keeps `items.kind` and an
+`item_dependencies` table, store/links.rs links, unlinks and checks for
+loops, and board/graph.rs works out the plan at each listing.
+`ERROR_CODE_DEPENDENCY_CYCLE` and `ERROR_CODE_INVALID_DEPENDENCY` tell
+refusals apart. In the app, `ItemFeature` links and unlinks,
+`BoardGraphView` draws the graph, and `PlanPanelFeature` in
+features/session reads and sorts the plan; the in-memory daemon works
+the plan out as the daemon does.
+
+Tests: blocked and ready as links and statuses change; a milestone
+finished by its tasks and blocking them; the plan's order, a
+milestone's tasks under it, and links between two milestones' tasks;
+loops, links to itself or across projects refused; revert and delete
+with links; proposals linking only once applied; the item page links,
+unlinks and shows a refusal; the plan panel sorts on reading and sends
+nothing for a read with nothing new; showing it is remembered.
+
 ### Milestone AC: agent access
 
 The owner, 2026-11-13: gate what the `humata` command line and its MCP

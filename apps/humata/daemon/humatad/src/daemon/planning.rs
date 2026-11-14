@@ -58,6 +58,12 @@ impl Daemon {
                 }
                 in_project(&propose.item_id)?;
             }
+            pb::ProposalKind::Dependency => {
+                if blank(&propose.item_id) || propose.depends_on.is_empty() {
+                    return Err(DaemonError::IncompleteProposal);
+                }
+                in_project(&propose.item_id)?;
+            }
             _ => {
                 if blank(&propose.title) {
                     return Err(DaemonError::IncompleteProposal);
@@ -67,8 +73,12 @@ impl Daemon {
                 }
             }
         }
+        for on in &propose.depends_on {
+            in_project(on)?;
+        }
         let kind = match propose.kind() {
             pb::ProposalKind::SpecEdit => pb::ProposalKind::SpecEdit,
+            pb::ProposalKind::Dependency => pb::ProposalKind::Dependency,
             _ => pb::ProposalKind::Task,
         };
         let proposal = pb::Proposal {
@@ -79,6 +89,8 @@ impl Daemon {
             parent_id: propose.parent_id,
             item_id: propose.item_id,
             note: propose.note,
+            item_kind: propose.item_kind,
+            depends_on: propose.depends_on,
             project_id: propose.project_id,
             time_unix_ms: crate::store::now_unix_ms(),
             ..pb::Proposal::default()
@@ -107,6 +119,22 @@ impl Daemon {
                     proposal.state = pb::ProposalState::Declined.into();
                 }
                 None => proposal.state = pb::ProposalState::Pending.into(),
+            }
+            // What it would wait on, by title, for the card.
+            proposal.depends_on_titles = proposal
+                .depends_on
+                .iter()
+                .map(|on| {
+                    self.store
+                        .item(on)
+                        .map_or_else(|_| on.clone(), |item| item.fields.title)
+                })
+                .collect();
+            if proposal.kind() == pb::ProposalKind::Dependency
+                && proposal.title.is_empty()
+                && let Ok(item) = self.store.item(&proposal.item_id)
+            {
+                proposal.title = item.fields.title;
             }
             // A spec edit shows the item's title when it proposes none, and
             // while pending the spec it would replace.
@@ -186,6 +214,9 @@ impl Daemon {
                 let patch = ItemPatch {
                     status: None,
                     priority: None,
+                    kind: None,
+                    link: Vec::new(),
+                    unlink: Vec::new(),
                     title: apply
                         .title
                         .or_else(|| Some(proposal.title.clone()))
@@ -207,11 +238,30 @@ impl Daemon {
                 }
                 (item, false)
             }
+            pb::ProposalKind::Dependency => {
+                // Only within the board the proposal is for; a loop, or an
+                // item gone since, is refused and the proposal stays open.
+                let waits = self.store.item(&proposal.item_id)?;
+                if waits.project_id != project {
+                    return Err(crate::error::StoreError::UnknownItem {
+                        id: proposal.item_id.clone(),
+                    }
+                    .into());
+                }
+                let patch = ItemPatch {
+                    link: proposal.depends_on.clone(),
+                    ..ItemPatch::default()
+                };
+                let item = self.store.update_item(&proposal.item_id, patch, &author)?;
+                (item, false)
+            }
             _ => {
                 let fields = ItemFields {
                     parent_id: crate::convert::optional(proposal.parent_id.clone()),
                     status: Status::Todo,
                     priority: Priority::None,
+                    kind: crate::board::Kind::from_wire(proposal.item_kind()),
+                    depends_on: proposal.depends_on.clone(),
                     title: apply.title.unwrap_or_else(|| proposal.title.clone()),
                     spec: apply.spec.unwrap_or_else(|| proposal.spec.clone()),
                 };
@@ -284,6 +334,10 @@ impl Daemon {
             self.store
                 .set_agent_sessions(&update.project_id, agent_sessions)?;
         }
+        if let Some(with_code) = update.plan_with_code {
+            self.store
+                .set_plan_with_code(&update.project_id, with_code)?;
+        }
         Ok(crate::convert::project(
             self.store.project(&update.project_id)?,
         ))
@@ -308,6 +362,9 @@ impl Daemon {
         }
         let project = self.store.project(&item.project_id)?;
         if self.store.planning(&fork.session_id)? {
+            // It works on the task: in a copy of its own, which it may
+            // change, even when the planning session had the code to read.
+            fork.access = pb::AccessLevel::Full.into();
             fork.chat_only = false;
             fork.repositories = if host.is_empty() {
                 project
@@ -620,6 +677,8 @@ fn proposal(
         pb::ProposalKind::Task
     } else if call.tool.ends_with("propose_spec_edit") {
         pb::ProposalKind::SpecEdit
+    } else if call.tool.ends_with("propose_dependency") {
+        pb::ProposalKind::Dependency
     } else {
         return None;
     };
@@ -639,6 +698,8 @@ fn proposal(
         parent_id: text("parent_id"),
         item_id: text("item_id"),
         note: text("note"),
+        item_kind: crate::mcp::item_kind(&arguments).unwrap_or_default().into(),
+        depends_on: crate::mcp::depends_on(&arguments).unwrap_or_default(),
         ..Default::default()
     };
     let replacements = crate::mcp::replacements(&arguments).unwrap_or_default();
@@ -657,6 +718,9 @@ fn proposal(
     }
     let complete = match kind {
         pb::ProposalKind::SpecEdit => !proposal.item_id.is_empty(),
+        pb::ProposalKind::Dependency => {
+            !proposal.item_id.is_empty() && !proposal.depends_on.is_empty()
+        }
         _ => !proposal.title.is_empty(),
     };
     complete.then_some(proposal)
@@ -677,6 +741,7 @@ mod tests {
                 spec: spec.to_owned(),
                 status: Status::Todo,
                 priority: Priority::None,
+                ..ItemFields::default()
             },
             created_unix_ms: 0,
             updated_unix_ms: 0,
@@ -700,6 +765,7 @@ mod tests {
             plugins: Vec::new(),
             defaults: None,
             agent_sessions: Default::default(),
+            plan_with_code: false,
         };
         let task = item("login", None, "Let people sign in.");
         let subtask = item("form", Some("login"), "The form.");
@@ -745,6 +811,7 @@ mod tests {
             plugins: Vec::new(),
             defaults: None,
             agent_sessions: Default::default(),
+            plan_with_code: false,
         };
         let mut task = item("login", None, "Let people sign in.");
         task.id = "id-of-task".into();

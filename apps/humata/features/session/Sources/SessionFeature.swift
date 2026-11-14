@@ -47,6 +47,8 @@ package struct SessionFeature {
         package var terminals: TerminalsFeature.State
         /// What the agent proposed for the board, shown as cards.
         package var proposals: ProposalsFeature.State
+        /// Its project's plan, beside the chat.
+        package var planPanel: PlanPanelFeature.State
         /// Every event but the reply's parts as it streams, oldest first.
         /// Setting it works out what the chat shows once, not on every
         /// render or streamed word.
@@ -305,6 +307,8 @@ package struct SessionFeature {
         @Presents package var alert: AlertState<Never>?
         /// Changing the chat's model from the composer's pill.
         package var modelSwitch = ModelSwitch()
+        /// The daemon is being asked to switch plan mode.
+        package var planSwitching = false
         /// Asks how far to rewind: the chat, or the chat and its files.
         @Presents package var rewindDialog: ConfirmationDialogState<Action.RewindChoice>?
         /// A rewind or its undo is under way.
@@ -378,6 +382,7 @@ package struct SessionFeature {
             specs = SpecsFeature.State(projectID: session.projectID, itemID: session.itemID)
             terminals = TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)
             proposals = ProposalsFeature.State(sessionID: session.id)
+            planPanel = PlanPanelFeature.State(projectID: session.projectID, itemID: session.itemID)
             let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
             _savedDraft = saved
             draft = saved.wrappedValue
@@ -1032,6 +1037,9 @@ package struct SessionFeature {
         /// The composer's model pill and its list: the model changes from
         /// the next turn.
         case model(ModelSwitchAction)
+        /// The composer's Plan toggle: plan mode on or off from the next
+        /// turn.
+        case plan(PlanSwitchAction)
         case thinkingToggled(id: String)
         case toolToggled(id: String)
         /// Opens the chat of the subagent the tool call `callID` started,
@@ -1074,6 +1082,7 @@ package struct SessionFeature {
         case review(ReviewFeature.Action)
         case docs(DocsFeature.Action)
         case specs(SpecsFeature.Action)
+        case planPanel(PlanPanelFeature.Action)
         /// Opens another terminal in the session's folder, and shows it.
         case newTerminalTapped
         /// Opens the board at the task it works on.
@@ -1491,6 +1500,9 @@ package struct SessionFeature {
         Scope(state: \.specs, action: \.specs) {
             SpecsFeature()
         }
+        Scope(state: \.planPanel, action: \.planPanel) {
+            PlanPanelFeature()
+        }
         Scope(state: \.terminals, action: \.terminals) {
             TerminalsFeature()
         }
@@ -1695,7 +1707,7 @@ package struct SessionFeature {
                 guard let project = state.session.projectID, let item = state.session.itemID else { return .none }
                 return .send(.delegate(.openItem(projectID: project, itemID: item)))
 
-            case .specs(.delegate(.openItem(let item))):
+            case .specs(.delegate(.openItem(let item))), .planPanel(.delegate(.openItem(let item))):
                 guard let project = state.session.projectID else { return .none }
                 return .send(.delegate(.openItem(projectID: project, itemID: item)))
 
@@ -1705,7 +1717,7 @@ package struct SessionFeature {
                 state.unsentFork = nil
                 return .send(.forked(fork))
 
-            case .binding, .delegate, .alert, .review, .docs, .specs, .terminals, .proposals, .land:
+            case .binding, .delegate, .alert, .review, .docs, .specs, .planPanel, .terminals, .proposals, .land:
                 return .none
 
             case .landTapped:
@@ -2427,6 +2439,9 @@ package struct SessionFeature {
 
             case .model(let action):
                 return modelSwitch(&state, action)
+
+            case .plan(let action):
+                return planSwitch(&state, action)
 
             case .thinkingToggled(let id):
                 state.expandedThinking.formSymmetricDifference([id])

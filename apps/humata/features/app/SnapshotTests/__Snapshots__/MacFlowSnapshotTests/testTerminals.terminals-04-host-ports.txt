@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
@@ -25,7 +25,7 @@
       [Heading] "Remote"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "build-box"
-      [Image] "Reachable, needs attention" id: exclamationmark.circle.fill
+      [Image, selected] "Reachable" id: checkmark.circle.fill
       [StaticText] "" value: "build-box"
   [RadioGroup] "Show" help: "The host's settings, the shells running on it, its files, or the ports forwarded from it"
     [RadioButton/Segment] "Settings" value: "0"

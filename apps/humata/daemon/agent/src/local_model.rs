@@ -20,6 +20,7 @@ use crate::error::AgentError;
 use crate::event::{Event, EventKind, PermissionKind, SessionRecord};
 use crate::mcp_client::McpClient;
 use crate::paths::{OutsideError, resolved_inside};
+use crate::provider::{Provider, ProviderError};
 use crate::runtime::{Runner, Turn, describe};
 use crate::{Compaction, Model};
 
@@ -100,7 +101,7 @@ const LARGEST_READ: u64 = 8 * 1024 * 1024;
 const LINES_NOTE_ROOM: usize = 256;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The server and model a session uses, from its backend config, as JSON:
+/// The server a session uses, as JSON:
 /// `{"base_url": "...", "api_key": "..."}`. Both are optional.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +109,31 @@ pub struct LocalModelConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
 }
+
+/// A session's backend config, as JSON: a server as in
+/// [`LocalModelConfig`], or `{"provider": {...}}` for a provider whose key
+/// is in one of the host's variables.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionConfig {
+    base_url: Option<String>,
+    api_key: Option<String>,
+    provider: Option<Provider>,
+}
+
+impl SessionConfig {
+    fn read(json: Option<&str>) -> Result<Self, LocalModelError> {
+        match json {
+            Some(json) => {
+                serde_json::from_str(json).map_err(|source| LocalModelError::BadConfig { source })
+            }
+            None => Ok(Self::default()),
+        }
+    }
+}
+
+/// What this backend is called where a provider can't serve it.
+const BACKEND: &str = "A local model's agent";
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocalModelError {
@@ -228,6 +254,9 @@ pub enum LocalModelError {
     },
 
     #[error(transparent)]
+    Provider(#[from] ProviderError),
+
+    #[error(transparent)]
     Agent(#[from] AgentError),
 }
 
@@ -323,11 +352,14 @@ impl Runner for LocalModelRunner {
     type Error = LocalModelError;
 
     async fn models(&self, config: Option<String>) -> Result<Vec<Model>, AgentError> {
-        let own = match config {
-            Some(json) => serde_json::from_str::<LocalModelConfig>(&json)
-                .map_err(|source| LocalModelError::BadConfig { source })?,
-            None => LocalModelConfig::default(),
-        };
+        let own = SessionConfig::read(config.as_deref())?;
+        if let Some(provider) = &own.provider {
+            // Asked for its OpenAI API first, so one without says so.
+            provider
+                .openai_base(BACKEND)
+                .map_err(LocalModelError::from)?;
+            return Ok(provider.models(self.http.clone(), &self.env).await?);
+        }
         let (base_url, apps) = self.base_url(own.base_url);
         let api_key = own.api_key.or_else(|| self.defaults.api_key.clone());
         match server_models(self.http.clone(), &base_url, api_key).await {
@@ -339,10 +371,10 @@ impl Runner for LocalModelRunner {
     }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), LocalModelError> {
-        let (request, base_url, apps) = self.request(&turn)?;
+        let (request, apps) = self.request(&turn)?;
 
         // Without Humata's tools the turn still has the files to work on.
-        let mut offered = tools(turn.record().read_only);
+        let mut offered = tools(turn.record().reads_only());
         let mut humata = match &self.mcp {
             None => None,
             Some(server) => {
@@ -367,13 +399,7 @@ impl Runner for LocalModelRunner {
         self.run_skill(&turn, humata.as_mut()).await?;
 
         // Sized once a turn, so what's left out moves only a step at a time.
-        let context = server_context(
-            self.http.clone(),
-            &base_url,
-            request.api_key.clone(),
-            request.model.clone(),
-        )
-        .await;
+        let context = server_context(self.http.clone(), &request).await;
         let budget = budget(context, &offered);
 
         let mut calls = 0_usize;
@@ -431,16 +457,10 @@ impl Runner for LocalModelRunner {
     /// reply. From then on only the summary and what came after it are
     /// sent; the history keeps everything.
     async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), LocalModelError> {
-        let (request, base_url, apps) = self.request(&turn)?;
+        let (request, apps) = self.request(&turn)?;
         // It's asked to write, not to work, so it's offered no tools.
         let offered = json!([]);
-        let context = server_context(
-            self.http.clone(),
-            &base_url,
-            request.api_key.clone(),
-            request.model.clone(),
-        )
-        .await;
+        let context = server_context(self.http.clone(), &request).await;
         let budget = budget(context, &offered);
         let mut asked = SUMMARIZE.to_owned();
         if !turn.text().is_empty() {
@@ -475,6 +495,54 @@ struct Request {
     models: String,
     api_key: Option<String>,
     model: String,
+    /// Sent with each request besides the key: what a provider asks its
+    /// clients to say of themselves and of the conversation.
+    headers: Vec<(String, String)>,
+    /// For a provider, the host's variable its key came from.
+    key_variable: Option<String>,
+}
+
+impl Request {
+    /// `error` as the provider's fault it is, when the server is one: a
+    /// refused key, no credit, a limit, or an address that isn't reached.
+    fn fault(&self, error: LocalModelError) -> LocalModelError {
+        match &self.key_variable {
+            Some(variable) => provider_fault(error, variable),
+            None => error,
+        }
+    }
+}
+
+/// `error`, from a provider asked with the key in `variable`, as what it
+/// says of the key, its account or the provider's address; any other
+/// error as it is.
+pub(crate) fn provider_fault(error: LocalModelError, variable: &str) -> LocalModelError {
+    match error {
+        LocalModelError::Connect { url, source } => {
+            ProviderError::Unreachable { url, source }.into()
+        }
+        LocalModelError::Status {
+            url,
+            model,
+            status,
+            body,
+        } => match ProviderError::refusal(&url, variable, status, &body) {
+            Some(refusal) => refusal.into(),
+            None => LocalModelError::Status {
+                url,
+                model,
+                status,
+                body,
+            },
+        },
+        LocalModelError::ListStatus { url, status, body } => {
+            match ProviderError::refusal(&url, variable, status, &body) {
+                Some(refusal) => refusal.into(),
+                None => LocalModelError::ListStatus { url, status, body },
+            }
+        }
+        other => other,
+    }
 }
 
 /// A tool call, assembled from the parts it streamed in.
@@ -559,22 +627,34 @@ impl LocalModelRunner {
     }
 
     /// Where `turn`'s session asks its model: the request's addresses, key
-    /// and model, the server's base URL, and whether that is the app's.
-    fn request(&self, turn: &Turn) -> Result<(Request, String, bool), LocalModelError> {
+    /// and model, and whether the server is the app's. A provider's key
+    /// is read from the host's variables here, for this turn alone.
+    fn request(&self, turn: &Turn) -> Result<(Request, bool), LocalModelError> {
         let record = turn.record();
-        let own = match &record.backend_config {
-            Some(json) => serde_json::from_str::<LocalModelConfig>(json)
-                .map_err(|source| LocalModelError::BadConfig { source })?,
-            None => LocalModelConfig::default(),
-        };
+        let own = SessionConfig::read(record.backend_config.as_deref())?;
+        if let Some(provider) = &own.provider {
+            let base_url = provider.openai_base(BACKEND)?;
+            let access = provider.access(provider.key(&self.env)?, Some(record.id.as_str()));
+            let request = Request {
+                url: format!("{base_url}/chat/completions"),
+                models: provider.models_url(),
+                api_key: access.bearer,
+                model: record.model.ok_or(LocalModelError::NoModel)?,
+                headers: access.headers,
+                key_variable: Some(provider.api_key_variable.clone()),
+            };
+            return Ok((request, false));
+        }
         let (base_url, apps) = self.base_url(own.base_url);
         let request = Request {
             url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
             models: format!("{}/models", base_url.trim_end_matches('/')),
             api_key: own.api_key.or_else(|| self.defaults.api_key.clone()),
             model: record.model.ok_or(LocalModelError::NoModel)?,
+            headers: Vec::new(),
+            key_variable: None,
         };
-        Ok((request, base_url, apps))
+        Ok((request, apps))
     }
 
     /// The model's next reply: to the conversation so far, or, with
@@ -596,7 +676,7 @@ impl LocalModelRunner {
             // Built afresh each time, so steering sent while it waited is
             // in, and taken with the history it is read from: the reply to
             // this request is its answer, and it isn't answered again.
-            let instructions = turn.record().instructions;
+            let instructions = turn.record().instructions_in_effect();
             let folder = turn.images_folder();
             // A summary is of what was said: the images aren't sent again.
             let with_images = asked.is_none();
@@ -637,6 +717,7 @@ impl LocalModelRunner {
                     }
                     self.server_back(request).await;
                 }
+                Err(error) => return Err(request.fault(error)),
                 reply => return reply,
             }
         }
@@ -651,8 +732,11 @@ impl LocalModelRunner {
             let http = self.http.clone();
             let url = request.models.clone();
             let api_key = request.api_key.clone();
-            let asked =
-                tokio::task::spawn_blocking(move || listing(&http, &url, api_key.as_deref())).await;
+            let headers = request.headers.clone();
+            let asked = tokio::task::spawn_blocking(move || {
+                listing_with(&http, &url, api_key.as_deref(), &headers)
+            })
+            .await;
             // Any answer will do, and so will an ask that stopped, which
             // can't say the server is down: the chat request finds out.
             if !matches!(asked, Ok(Err(LocalModelError::Connect { .. }))) {
@@ -686,6 +770,7 @@ impl LocalModelRunner {
         let url = request.url.clone();
         let model = request.model.clone();
         let api_key = request.api_key.clone();
+        let headers = request.headers.clone();
         // ureq blocks, so the reply is read on its own thread. If the turn is
         // stopped, `received` is dropped and the thread stops at its next part.
         // A server that never starts its answer is given up on there too,
@@ -698,6 +783,7 @@ impl LocalModelRunner {
                 &url,
                 &model,
                 api_key.as_deref(),
+                &headers,
                 &body,
                 patience,
                 &parts,
@@ -832,18 +918,16 @@ pub(crate) async fn server_models(
     .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
-/// How many tokens `model` takes in, if the server at `base_url` lists it:
+/// How many tokens `request`'s model takes in, if its server lists it:
 /// llama.cpp, vLLM, LM Studio and others each name it differently. None
 /// when the server is down or doesn't say.
-async fn server_context(
-    http: ureq::Agent,
-    base_url: &str,
-    api_key: Option<String>,
-    model: String,
-) -> Option<u64> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+async fn server_context(http: ureq::Agent, request: &Request) -> Option<u64> {
+    let url = request.models.clone();
+    let api_key = request.api_key.clone();
+    let headers = request.headers.clone();
+    let model = request.model.clone();
     tokio::task::spawn_blocking(move || {
-        listing(&http, &url, api_key.as_deref())
+        listing_with(&http, &url, api_key.as_deref(), &headers)
             .ok()
             .and_then(|listed| listed_context(&listed, &model))
     })
@@ -872,6 +956,17 @@ fn listed_context(listed: &Value, model: &str) -> Option<u64> {
 
 /// The server's `/models` answer.
 fn listing(http: &ureq::Agent, url: &str, api_key: Option<&str>) -> Result<Value, LocalModelError> {
+    listing_with(http, url, api_key, &[])
+}
+
+/// The answer of the server's `/models` at `url`, asked with `headers`
+/// besides the key.
+pub(crate) fn listing_with(
+    http: &ureq::Agent,
+    url: &str,
+    api_key: Option<&str>,
+    headers: &[(String, String)],
+) -> Result<Value, LocalModelError> {
     let mut request = http
         .get(url)
         .config()
@@ -880,6 +975,9 @@ fn listing(http: &ureq::Agent, url: &str, api_key: Option<&str>) -> Result<Value
         .header("Accept", "application/json");
     if let Some(key) = api_key {
         request = request.header("Authorization", format!("Bearer {key}"));
+    }
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
     }
     let response = request.call().map_err(|source| LocalModelError::Connect {
         url: url.to_owned(),
@@ -911,7 +1009,7 @@ fn listing(http: &ureq::Agent, url: &str, api_key: Option<&str>) -> Result<Value
 }
 
 /// The models in a `/models` answer, by id.
-fn list_models(listed: &Value) -> Vec<Model> {
+pub(crate) fn list_models(listed: &Value) -> Vec<Model> {
     let mut models: Vec<Model> = listed["data"]
         .as_array()
         .into_iter()
@@ -925,7 +1023,8 @@ fn list_models(listed: &Value) -> Vec<Model> {
                 .filter(|detail| !detail.is_empty());
             Some(Model {
                 id: id.to_owned(),
-                name: id.to_owned(),
+                // Anthropic's API gives each a name to show.
+                name: model["display_name"].as_str().unwrap_or(id).to_owned(),
                 detail: detail.map(str::to_owned),
                 // Humata's own server lists what each model takes besides text.
                 reads_images: model["inputs"]
@@ -965,6 +1064,7 @@ fn stream(
     url: &str,
     model: &str,
     api_key: Option<&str>,
+    headers: &[(String, String)],
     body: &str,
     patience: Duration,
     parts: &mpsc::Sender<Part>,
@@ -978,6 +1078,9 @@ fn stream(
         .header("Accept", "text/event-stream");
     if let Some(key) = api_key {
         request = request.header("Authorization", format!("Bearer {key}"));
+    }
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
     }
     let response = request
         .send(body)
@@ -2183,17 +2286,19 @@ fn answer(found: Vec<String>, all: bool, none: &str) -> (bool, String) {
 }
 
 /// What the model reads when a write or a command didn't go ahead: the
-/// person said no, or the session is a side chat, which is refused without
-/// the person being asked.
+/// person said no, or the session is a side chat or in plan mode, which is
+/// refused without the person being asked.
 fn refused(turn: &Turn) -> (bool, String) {
-    if turn.record().read_only {
-        (
-            false,
-            "This is a side chat, which only reads: it can't change files or run commands, and the person wasn't asked. Say what you would change, and the person can do it from the session this chat is beside.".into(),
-        )
-    } else {
-        (false, "The person denied this.".into())
-    }
+    let said = match turn.record().access {
+        crate::Access::SideChat => {
+            "This is a side chat, which only reads: it can't change files or run commands, and the person wasn't asked. Say what you would change, and the person can do it from the session this chat is beside."
+        }
+        crate::Access::Plan => {
+            "This session is in plan mode, which only reads: it can't change files or run commands, and the person wasn't asked. Say or propose what you would change; the person turns plan mode off to have it done."
+        }
+        crate::Access::Full => "The person denied this.",
+    };
+    (false, said.into())
 }
 
 fn outside(error: &OutsideError) -> (bool, String) {
@@ -2237,6 +2342,9 @@ mod tests {
     struct FakeServer {
         base_url: String,
         requests: Arc<Mutex<Vec<Value>>>,
+        /// The request line and headers of each request it got, in lower
+        /// case.
+        heads: Arc<Mutex<Vec<String>>>,
     }
 
     /// A streamed reply, one chunk per element.
@@ -2296,6 +2404,8 @@ mod tests {
         let port = listener.local_addr().expect("an address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let kept = requests.clone();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let kept_heads = heads.clone();
         tokio::spawn(async move {
             let mut replies = replies.into_iter();
             loop {
@@ -2305,6 +2415,7 @@ mod tests {
                 let mut socket = tokio::io::BufReader::new(socket);
                 let mut length = 0;
                 let mut get = false;
+                let mut head = String::new();
                 loop {
                     let mut line = String::new();
                     if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
@@ -2315,6 +2426,8 @@ mod tests {
                     if line.is_empty() {
                         break;
                     }
+                    head.push_str(&line);
+                    head.push('\n');
                     if let Some(value) = line.strip_prefix("content-length:") {
                         length = value.trim().parse().unwrap_or(0);
                     }
@@ -2323,6 +2436,7 @@ mod tests {
                 if socket.read_exact(&mut request).await.is_err() {
                     return;
                 }
+                kept_heads.lock().expect("not poisoned").push(head);
                 if get {
                     let body = listing.to_string();
                     let response = format!(
@@ -2353,6 +2467,7 @@ mod tests {
         FakeServer {
             base_url: format!("http://127.0.0.1:{port}/v1"),
             requests,
+            heads,
         }
     }
 
@@ -2360,6 +2475,257 @@ mod tests {
         fn requests(&self) -> Vec<Value> {
             self.requests.lock().expect("not poisoned").clone()
         }
+
+        fn heads(&self) -> Vec<String> {
+            self.heads.lock().expect("not poisoned").clone()
+        }
+
+        /// Its address without the `/v1`, as a provider's base URL.
+        fn root(&self) -> &str {
+            self.base_url.trim_end_matches("/v1")
+        }
+    }
+
+    /// Every file under `folder`, read whole.
+    fn files_under(folder: &Path) -> Vec<Vec<u8>> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(folder).expect("a folder").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(files_under(&path));
+            } else {
+                files.push(std::fs::read(&path).expect("a file"));
+            }
+        }
+        files
+    }
+
+    /// A session of an agent kept under `state` whose provider is OpenCode
+    /// Go at `server`, with its key in the variable `GO_KEY` of `env`.
+    async fn go_session(
+        server: &FakeServer,
+        state: &Path,
+        env: Env,
+    ) -> (LocalAgent<LocalModelRunner>, SessionId) {
+        let runner = LocalModelRunner::new(LocalModelConfig::default()).with_env(env);
+        let agent = LocalAgent::open(state, runner).expect("the agent opens");
+        let config = json!({"provider": {
+            "kind": "opencode_go",
+            "base_url": server.root(),
+            "api_key_variable": "GO_KEY",
+        }});
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: state.to_owned(),
+            model: Some("kimi".into()),
+            backend_config: Some(config.to_string()),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        (agent, id)
+    }
+
+    #[tokio::test]
+    async fn opencode_go_is_asked_at_its_openai_api_with_the_key_from_the_variable() {
+        let server = serve(vec![(200, sse(&[text("hi")]))]).await;
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let env = Env::new([("GO_KEY".to_owned(), "sk-secret-value".to_owned())]);
+        let (agent, id) = go_session(&server, state.path(), env).await;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+
+        let heads = server.heads();
+        let chat = heads
+            .iter()
+            .find(|head| head.starts_with("post "))
+            .expect("a chat request");
+        assert!(
+            chat.starts_with("post /openai/v1/chat/completions "),
+            "{chat}"
+        );
+        assert!(
+            chat.contains("authorization: bearer sk-secret-value"),
+            "{chat}"
+        );
+        assert!(
+            chat.contains(&format!(
+                "x-opencode-session: {}",
+                id.as_str().to_ascii_lowercase()
+            )),
+            "{chat}"
+        );
+        assert!(!chat.contains("user-agent: ureq"), "{chat}");
+        assert!(
+            heads.iter().any(|head| head.starts_with("get /v1/models ")),
+            "{heads:?}"
+        );
+        assert_eq!(server.requests()[0]["model"], "kimi");
+    }
+
+    #[tokio::test]
+    async fn a_providers_key_is_in_no_file_the_session_keeps() {
+        let server = serve(vec![(200, sse(&[text("hi")]))]).await;
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let env = Env::new([("GO_KEY".to_owned(), "sk-secret-value".to_owned())]);
+        let (agent, id) = go_session(&server, state.path(), env).await;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+
+        let record = agent
+            .sessions()
+            .await
+            .expect("the sessions")
+            .into_iter()
+            .find(|record| record.id == id)
+            .expect("the session");
+        assert!(!format!("{record:?}").contains("sk-secret-value"));
+        let files = files_under(state.path());
+        assert!(!files.is_empty());
+        for file in files {
+            assert!(!String::from_utf8_lossy(&file).contains("sk-secret-value"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_value_of_the_variable_is_the_key_of_the_next_turn() {
+        let server = serve(vec![(200, sse(&[text("one")])), (200, sse(&[text("two")]))]).await;
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let env = Env::new([("GO_KEY".to_owned(), "first-key".to_owned())]);
+        let (agent, id) = go_session(&server, state.path(), env.clone()).await;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+        env.replace(std::collections::BTreeMap::from([(
+            "GO_KEY".to_owned(),
+            "second-key".to_owned(),
+        )]));
+        agent
+            .send(&id, "again".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(2)).await;
+
+        let heads = server.heads();
+        let chats: Vec<_> = heads
+            .iter()
+            .filter(|head| head.starts_with("post "))
+            .collect();
+        assert!(chats[0].contains("authorization: bearer first-key"));
+        assert!(chats[1].contains("authorization: bearer second-key"));
+    }
+
+    #[tokio::test]
+    async fn a_providers_models_are_listed_with_its_key() {
+        let list = json!({"object": "list", "data": [{"id": "kimi"}, {"id": "glm"}]});
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let server = serve_listing(listener, list, Vec::new());
+        let env = Env::new([("GO_KEY".to_owned(), "sk-secret-value".to_owned())]);
+        let runner = LocalModelRunner::new(LocalModelConfig::default()).with_env(env);
+        let config = json!({"provider": {
+            "kind": "opencode_go",
+            "base_url": server.root(),
+            "api_key_variable": "GO_KEY",
+        }});
+
+        let models = runner
+            .models(Some(config.to_string()))
+            .await
+            .expect("the models are listed");
+
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["glm", "kimi"]);
+        let heads = server.heads();
+        assert!(heads[0].starts_with("get /v1/models "), "{heads:?}");
+        assert!(heads[0].contains("authorization: bearer sk-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn a_provider_whose_variable_isnt_set_lists_no_models_and_says_which() {
+        let runner = LocalModelRunner::new(LocalModelConfig::default());
+        let config = json!({"provider": {"kind": "openai", "api_key_variable": "GO_KEY"}});
+        let listed = runner.models(Some(config.to_string())).await;
+        let Err(AgentError::ModelServer(error)) = listed else {
+            panic!("listed without a key: {listed:?}");
+        };
+        assert!(matches!(
+            *error,
+            LocalModelError::Provider(ProviderError::NoVariable { ref variable }) if variable == "GO_KEY"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_isnt_reached_says_so() {
+        // Bound and dropped, so nothing listens there.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let port = listener.local_addr().expect("an address").port();
+        drop(listener);
+        let env = Env::new([("GO_KEY".to_owned(), "sk".to_owned())]);
+        let runner = LocalModelRunner::new(LocalModelConfig::default()).with_env(env);
+        let config = json!({"provider": {
+            "kind": "openai",
+            "base_url": format!("http://127.0.0.1:{port}/v1"),
+            "api_key_variable": "GO_KEY",
+        }});
+        let listed = runner.models(Some(config.to_string())).await;
+        let Err(AgentError::ModelServer(error)) = listed else {
+            panic!("listed from nothing: {listed:?}");
+        };
+        assert!(matches!(
+            *error,
+            LocalModelError::Provider(ProviderError::Unreachable { .. })
+        ));
+    }
+
+    /// What a provider's answer of `status` to a chat request is taken as.
+    async fn provider_answering(status: u16) -> LocalModelError {
+        let server = serve(vec![(status, "{\"error\": \"no\"}".to_owned())]).await;
+        let runner = LocalModelRunner::new(LocalModelConfig::default());
+        let request = Request {
+            url: format!("{}/chat/completions", server.base_url),
+            models: format!("{}/models", server.base_url),
+            api_key: Some("sk".into()),
+            model: "kimi".into(),
+            headers: Vec::new(),
+            key_variable: Some("GO_KEY".into()),
+        };
+        let (parts, _received) = mpsc::channel(8);
+        let http = runner.http.clone();
+        let (url, model) = (request.url.clone(), request.model.clone());
+        let result = tokio::task::spawn_blocking(move || {
+            stream(&http, &url, &model, Some("sk"), &[], "{}", STALL, &parts)
+        })
+        .await
+        .expect("the thread finishes");
+        request.fault(result.expect_err("the provider refused"))
+    }
+
+    #[tokio::test]
+    async fn a_provider_says_when_the_key_is_refused_out_of_credit_or_limited() {
+        assert!(matches!(
+            provider_answering(401).await,
+            LocalModelError::Provider(ProviderError::KeyRefused { status: 401, .. })
+        ));
+        assert!(matches!(
+            provider_answering(402).await,
+            LocalModelError::Provider(ProviderError::NoCredit { .. })
+        ));
+        assert!(matches!(
+            provider_answering(429).await,
+            LocalModelError::Provider(ProviderError::Limited { .. })
+        ));
+        // Not about the key: left as the server's own answer.
+        assert!(matches!(
+            provider_answering(500).await,
+            LocalModelError::Status { status: 500, .. }
+        ));
     }
 
     struct Fixture {
@@ -2923,6 +3289,40 @@ mod tests {
         assert!(read_only.contains(&"read_file".to_owned()), "{read_only:?}");
     }
 
+    #[tokio::test]
+    async fn plan_mode_takes_the_tools_that_write_or_run_from_the_next_request_and_off_gives_them_back()
+     {
+        let server = serve(vec![
+            (200, sse(&[text("One.")])),
+            (200, sse(&[text("Two.")])),
+            (200, sse(&[text("Three.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        for (turn, access) in [
+            (1, None),
+            (2, Some(crate::Access::Plan)),
+            (3, Some(crate::Access::Full)),
+        ] {
+            let update = crate::SessionUpdate {
+                access,
+                ..Default::default()
+            };
+            fixture.agent.update(&id, update).await.expect("changed");
+            fixture.send(&id, "go").await;
+            wait_for(&fixture.agent, &id, idle_turns(turn)).await;
+        }
+
+        let requests = server.requests();
+        let writes = |name: &String| ["shell", "write_file", "edit_file"].contains(&name.as_str());
+        let plan = offered(&requests[1]);
+        assert!(offered(&requests[0]).iter().any(writes));
+        assert!(!plan.iter().any(writes), "{plan:?}");
+        assert!(plan.contains(&"read_file".to_owned()), "{plan:?}");
+        assert!(offered(&requests[2]).iter().any(writes));
+    }
+
     fn event_of(events: &[Event], found: impl Fn(&EventKind) -> bool) -> Event {
         events
             .iter()
@@ -3364,6 +3764,8 @@ mod tests {
             models: format!("{}/models", server.base_url),
             api_key: None,
             model: "nope".into(),
+            headers: Vec::new(),
+            key_variable: None,
         };
         let (parts, _received) = mpsc::channel(8);
         let http = runner.http.clone();
@@ -3373,6 +3775,7 @@ mod tests {
                 &request.url,
                 &request.model,
                 None,
+                &[],
                 "{}",
                 STALL,
                 &parts,
@@ -3428,6 +3831,8 @@ mod tests {
             models: format!("http://127.0.0.1:{port}/v1/models"),
             api_key: None,
             model: "m".into(),
+            headers: Vec::new(),
+            key_variable: None,
         };
         let (parts, mut received) = mpsc::channel(8);
         let http = runner.http.clone();
@@ -3435,7 +3840,7 @@ mod tests {
         // Its thread gives up a little later, so the test's runtime can end.
         let patience = runner.stall.saturating_mul(2);
         let reading = tokio::task::spawn_blocking(move || {
-            stream(&http, &url, "m", None, "{}", patience, &parts)
+            stream(&http, &url, "m", None, &[], "{}", patience, &parts)
         });
 
         let next = next_part(&mut received, &request, runner.stall).await;
@@ -3457,7 +3862,7 @@ mod tests {
         let (parts, _received) = mpsc::channel(8);
         let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
         let result = tokio::task::spawn_blocking(move || {
-            stream(&runner.http, &url, "m", None, "{}", STALL, &parts)
+            stream(&runner.http, &url, "m", None, &[], "{}", STALL, &parts)
         })
         .await
         .expect("the thread finishes");

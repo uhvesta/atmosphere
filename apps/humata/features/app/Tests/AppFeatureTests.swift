@@ -1509,7 +1509,7 @@ final class AppFeatureTests: XCTestCase {
                 if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
                 return true
             },
-            restart: {}, openLoginItems: {})
+            restart: {}, openLoginItems: {}, stop: {})
     }
 
     func testASidebarReadThatFailsWithTheDaemonGoneStartsItAgain() async throws {
@@ -1721,7 +1721,7 @@ final class AppFeatureTests: XCTestCase {
             $0.daemon = InMemoryDaemon().client
             $0.daemonService = DaemonService(
                 start: {}, isCurrent: { true },
-                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {})
+                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {}, stop: {})
         }
         store.exhaustivity = .off
 
@@ -1747,7 +1747,7 @@ final class AppFeatureTests: XCTestCase {
             $0.daemon = InMemoryDaemon().client
             $0.daemonService = DaemonService(
                 start: {}, isCurrent: { false },
-                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {})
+                restart: { throw DaemonServiceError.notManaged(socket: "/tmp/h.sock") }, openLoginItems: {}, stop: {})
         }
         store.exhaustivity = .off
 
@@ -1812,7 +1812,8 @@ final class AppFeatureTests: XCTestCase {
                     environmentProblem: restarts.value == 0 ? "the shell didn't answer" : nil)
             }
             $0.daemonService = DaemonService(
-                start: {}, isCurrent: { true }, restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {})
+                start: {}, isCurrent: { true }, restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {},
+                stop: {})
         }
         store.exhaustivity = .off
 

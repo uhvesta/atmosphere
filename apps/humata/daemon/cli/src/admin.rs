@@ -56,6 +56,9 @@ pub fn tools() -> Vec<Tool> {
                 "title": string("The task's title"),
                 "spec": string("Its spec, in Markdown"),
                 "parent_id": string("The task to put it under, if any"),
+                "kind": string("milestone, for one that holds tasks, or task; a task if left out"),
+                "depends_on": {"type": "array", "items": {"type": "string"},
+                    "description": "Ids of the items it waits on"},
             }),
             required: &["project_id", "title"],
             effect: Effect::Changes,
@@ -68,6 +71,10 @@ pub fn tools() -> Vec<Tool> {
                 "title": string("Its new title"),
                 "spec": string("Its new spec, in Markdown, whole"),
                 "status": {"type": "string", "enum": ["todo", "in_progress", "in_review", "done", "wont_do"]},
+                "add_depends_on": {"type": "array", "items": {"type": "string"},
+                    "description": "Ids of items it comes to wait on; refused if that closes a loop"},
+                "remove_depends_on": {"type": "array", "items": {"type": "string"},
+                    "description": "Ids of items it no longer waits on"},
             }),
             required: &["item_id"],
             effect: Effect::Changes,
@@ -235,6 +242,8 @@ async fn create_item(client: &Client, arguments: &Arguments<'_>) -> Result<Strin
         spec: optional(arguments, "spec").unwrap_or_default(),
         parent_id: arguments.text("parent_id"),
         surface: pb::ChangeSurface::Mcp.into(),
+        kind: crate::control::item_kind(&arguments.text("kind"))?.into(),
+        depends_on: arguments.texts("depends_on"),
         ..Default::default()
     });
     match ask(client, request).await? {
@@ -255,6 +264,8 @@ async fn update_item(client: &Client, arguments: &Arguments<'_>) -> Result<Strin
         spec: optional(arguments, "spec"),
         status: status.map(Into::into),
         surface: pb::ChangeSurface::Mcp.into(),
+        add_depends_on: arguments.texts("add_depends_on"),
+        remove_depends_on: arguments.texts("remove_depends_on"),
         ..Default::default()
     });
     match ask(client, request).await? {

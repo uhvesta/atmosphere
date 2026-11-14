@@ -265,3 +265,88 @@ async fn a_land_tried_again_under_a_new_name_takes_the_repository_committed_in_b
     }
     assert_eq!(head(&checkouts[0].path), committed);
 }
+
+/// A clone of a repository `remote` with one commit, and a session's copy
+/// of the clone.
+async fn copy_of_a_clone(dir: &Path) -> (Repository, Checkout) {
+    let remote = repository(dir, "remote");
+    git_in(
+        dir,
+        &["clone", "--quiet", &remote.path.to_string_lossy(), "app"],
+    );
+    let clone = Repository {
+        name: "app".to_owned(),
+        path: dir.join("app"),
+    };
+    let workspaces = Workspaces::new(dir.join("worktrees"));
+    let mut checkouts = workspaces
+        .create("session-one", std::slice::from_ref(&clone), &[])
+        .await
+        .expect("created");
+    (remote, checkouts.remove(0))
+}
+
+fn commit_in(repository: &Path, file: &str, text: &str) -> String {
+    std::fs::write(repository.join(file), text).expect("wrote");
+    git_in(repository, &["add", file]);
+    git_in(repository, &["commit", "--quiet", "-m", "more"]);
+    git_in(repository, &["rev-parse", "HEAD"])
+}
+
+#[tokio::test]
+async fn a_copy_without_changes_follows_its_origin_to_the_latest_commit() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (remote, checkout) = copy_of_a_clone(dir.path()).await;
+    let latest = commit_in(&remote.path, "new.txt", "new\n");
+
+    let followed = follow(&checkout, std::time::Duration::from_secs(60))
+        .await
+        .expect("followed");
+
+    assert_eq!(followed.commit, latest);
+    assert!(followed.fetched);
+    assert!(!followed.changed);
+    assert_eq!(
+        read(&checkout.path.join("new.txt")).as_deref(),
+        Some("new\n")
+    );
+}
+
+#[tokio::test]
+async fn a_copy_with_changes_stays_where_it_is_and_keeps_them() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (remote, checkout) = copy_of_a_clone(dir.path()).await;
+    let before = head(&checkout.path);
+    std::fs::write(checkout.path.join("README.md"), "mine\n").expect("wrote");
+    commit_in(&remote.path, "new.txt", "new\n");
+
+    let followed = follow(&checkout, std::time::Duration::from_secs(60))
+        .await
+        .expect("followed");
+
+    assert!(followed.changed);
+    assert_eq!(followed.commit, before);
+    assert_eq!(
+        read(&checkout.path.join("README.md")).as_deref(),
+        Some("mine\n")
+    );
+}
+
+#[tokio::test]
+async fn a_copy_of_a_repository_with_no_origin_follows_the_branch_it_has_checked_out() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let app = repository(dir.path(), "app");
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let checkouts = workspaces
+        .create("session-one", std::slice::from_ref(&app), &[])
+        .await
+        .expect("created");
+    let latest = commit_in(&app.path, "new.txt", "new\n");
+
+    let followed = follow(&checkouts[0], std::time::Duration::from_secs(60))
+        .await
+        .expect("followed");
+
+    assert_eq!(followed.commit, latest);
+    assert!(followed.fetched);
+}

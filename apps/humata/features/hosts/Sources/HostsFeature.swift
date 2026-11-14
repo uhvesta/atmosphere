@@ -716,6 +716,9 @@ package struct HostEditorFeature {
         package var variables: IdentifiedArrayOf<Variable>
         var nextRow: Int
         package var setupScript: String
+        /// The model providers its sessions can pay for with a key of the
+        /// person's own. Each names one of the variables, never the key.
+        package var providers: IdentifiedArrayOf<HostProvider>
         package var saving = false
         @Presents package var alert: AlertState<Never>?
 
@@ -725,11 +728,13 @@ package struct HostEditorFeature {
                 uniqueElements: host.envNames.enumerated().map { Variable(id: $0, name: $1, saved: true) })
             self.nextRow = host.envNames.count
             self.setupScript = host.setupScript
+            self.providers = IdentifiedArray(host.providers, uniquingIDsWith: { _, last in last })
         }
 
         /// What saving would change; nil if nothing.
         package var update: HostUpdate? {
             let kept = Set(variables.map(\.name.trimmed))
+            let edited = providers.map(\.trimmed)
             let update = HostUpdate(
                 setEnv: Dictionary(
                     variables.filter { !$0.name.trimmed.isEmpty && !$0.value.isEmpty }.map {
@@ -737,20 +742,42 @@ package struct HostEditorFeature {
                     },
                     uniquingKeysWith: { _, last in last }),
                 unsetEnv: host.envNames.filter { !kept.contains($0) },
-                setupScript: setupScript == host.setupScript ? nil : setupScript)
+                setupScript: setupScript == host.setupScript ? nil : setupScript,
+                providers: edited == host.providers ? nil : edited)
             return update == HostUpdate() ? nil : update
         }
 
         /// Names typed that can't be a variable's.
         package var badNames: [String] {
-            variables.map(\.name.trimmed).filter { name in
-                !name.isEmpty
-                    && !(name.first.map { $0.isLetter || $0 == "_" } == true
-                        && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") })
-            }
+            variables.map(\.name.trimmed).filter { !$0.isEmpty && !$0.isVariableName }
         }
 
-        package var canSave: Bool { !saving && update != nil && badNames.isEmpty }
+        /// What keeps `provider` from being saved, said so it can be put
+        /// right; nil when nothing does.
+        package func problem(with typed: HostProvider) -> String? {
+            let provider = typed.trimmed
+            if provider.name.isEmpty { return "Give it a name to pick it by." }
+            if !(provider.baseURL.hasPrefix("https://") || provider.baseURL.hasPrefix("http://")) {
+                return "Its base URL starts with https://, or http:// for a server on your own network."
+            }
+            if !provider.keyVariable.isVariableName {
+                return "Name the variable that holds its key, such as \(provider.kind.keyVariable): letters, "
+                    + "digits and _, not starting with a digit. The key itself goes in that variable above."
+            }
+            return nil
+        }
+
+        /// Whether the variable `provider` takes its key from is set, or
+        /// is about to be with what's typed; sessions are offered only a
+        /// provider whose key is there.
+        package func keyIsSet(for provider: HostProvider) -> Bool {
+            let name = provider.keyVariable.trimmed
+            return variables.contains { $0.name.trimmed == name && ($0.saved || !$0.value.isEmpty) }
+        }
+
+        package var canSave: Bool {
+            !saving && update != nil && badNames.isEmpty && providers.allSatisfy { problem(with: $0) == nil }
+        }
 
         /// What to keep of it while another host shows: its changes, without
         /// what it was waiting on. Nil when it changed nothing.
@@ -784,6 +811,12 @@ package struct HostEditorFeature {
         case binding(BindingAction<State>)
         case addVariableTapped
         case removeVariableTapped(Variable.ID)
+        /// Adds a provider of `kind`, set up as that kind usually is.
+        case addProviderTapped(HostProvider.Kind)
+        case removeProviderTapped(HostProvider.ID)
+        /// Adds a row for the variable the provider takes its key from, to
+        /// type the key in.
+        case addKeyVariableTapped(HostProvider.ID)
         case saveTapped
         case saved(RemoteHost)
         /// The host whose save failed, and why.
@@ -800,6 +833,7 @@ package struct HostEditorFeature {
     }
 
     @Dependency(\.daemon) var daemon
+    @Dependency(\.uuid) var uuid
 
     package init() {}
 
@@ -817,6 +851,24 @@ package struct HostEditorFeature {
 
             case .removeVariableTapped(let id):
                 state.variables.remove(id: id)
+                return .none
+
+            case .addProviderTapped(let kind):
+                state.providers.append(HostProvider(id: uuid().uuidString, kind: kind))
+                return .none
+
+            case .removeProviderTapped(let id):
+                state.providers.remove(id: id)
+                return .none
+
+            case .addKeyVariableTapped(let id):
+                guard let provider = state.providers[id: id] else { return .none }
+                let name = provider.keyVariable.trimmed
+                guard name.isVariableName, !state.variables.contains(where: { $0.name.trimmed == name }) else {
+                    return .none
+                }
+                state.variables.append(Variable(id: state.nextRow, name: name))
+                state.nextRow += 1
                 return .none
 
             case .saveTapped:
@@ -862,4 +914,22 @@ extension AlertState {
 
 extension String {
     fileprivate var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Whether it can be a variable's name: letters, digits and _, not
+    /// starting with a digit.
+    fileprivate var isVariableName: Bool {
+        first.map { $0.isLetter || $0 == "_" } == true
+            && allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+    }
+}
+
+extension HostProvider {
+    /// As it's saved: what was typed, without spaces around it.
+    fileprivate var trimmed: Self {
+        var provider = self
+        provider.name = name.trimmed
+        provider.baseURL = baseURL.trimmed
+        provider.keyVariable = keyVariable.trimmed
+        return provider
+    }
 }

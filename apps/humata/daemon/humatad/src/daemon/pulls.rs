@@ -610,6 +610,7 @@ impl Daemon {
                         spec: format!("{}\n\nFrom {key}.", issue.body.unwrap_or_default().trim())
                             .trim_start()
                             .to_owned(),
+                        ..ItemFields::default()
                     },
                     &Author::on(pb::ChangeSurface::Humata),
                 )?;

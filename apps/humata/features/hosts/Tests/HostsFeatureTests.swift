@@ -331,6 +331,65 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.hosts.isEmpty)
     }
 
+    func testAProviderIsSavedWithItsVariablesNameAndTheKeyOnlyAmongTheVariables() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.coordinatorLoaded)
+        XCTAssertEqual(store.state.selected?.isCoordinator, true)
+        await store.send(\.editor.addProviderTapped, .openCodeGo)
+        let provider = try XCTUnwrap(store.state.editor?.providers.first)
+        XCTAssertEqual(provider.keyVariable, HostProvider.Kind.openCodeGo.keyVariable)
+        XCTAssertEqual(store.state.editor?.keyIsSet(for: provider), false)
+
+        await store.send(\.editor.addKeyVariableTapped, provider.id)
+        var variables = store.state.editor?.variables ?? []
+        let row = try XCTUnwrap(variables.last)
+        XCTAssertEqual(row.name, provider.keyVariable)
+        variables[id: row.id]?.value = "sk-secret"
+        await store.send(\.editor.binding.variables, variables)
+        XCTAssertEqual(store.state.editor?.keyIsSet(for: provider), true)
+
+        await store.send(\.editor.saveTapped)
+        await store.receive(\.editor.delegate.saved)
+        XCTAssertEqual(store.state.coordinator.providers.map(\.keyVariable), [provider.keyVariable])
+        XCTAssertEqual(store.state.coordinator.providers(for: .local).map(\.id), [provider.id])
+        XCTAssertFalse(store.state.coordinator.providers.contains { "\($0)".contains("sk-secret") })
+        XCTAssertEqual(daemon.env(of: "")[provider.keyVariable], "sk-secret")
+        XCTAssertNil(store.state.editor?.update)
+
+        // Removed, the next save takes it away.
+        await store.send(\.editor.removeProviderTapped, provider.id)
+        await store.send(\.editor.saveTapped)
+        await store.receive(\.editor.delegate.saved)
+        XCTAssertTrue(store.state.coordinator.providers.isEmpty)
+    }
+
+    func testAProviderNeedsANameAWebAddressAndAVariablesName() {
+        var state = HostEditorFeature.State(host: RemoteHost(name: "far", sshDestination: "me@far"))
+        state.providers = [HostProvider(id: "p", kind: .openAI)]
+        XCTAssertTrue(state.canSave)
+        state.providers[id: "p"]?.keyVariable = "sk-typed-a-key-here"
+        XCTAssertFalse(state.canSave)
+        state.providers[id: "p"]?.keyVariable = "OPENAI_API_KEY"
+        state.providers[id: "p"]?.baseURL = "api.openai.com/v1"
+        XCTAssertFalse(state.canSave)
+        state.providers[id: "p"]?.baseURL = " https://api.openai.com/v1 "
+        state.providers[id: "p"]?.name = " "
+        XCTAssertFalse(state.canSave)
+        state.providers[id: "p"]?.name = "Mine"
+        XCTAssertTrue(state.canSave)
+        XCTAssertEqual(state.update?.providers?.first?.baseURL, "https://api.openai.com/v1")
+    }
+
     func testAVariableNeedsAName() {
         var state = HostEditorFeature.State(host: RemoteHost(name: "far", sshDestination: "me@far"))
         state.variables = [HostEditorFeature.Variable(id: 0, name: "1BAD", value: "x")]

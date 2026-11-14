@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
@@ -20,16 +20,17 @@
     [Button] "Search"
   [StaticText] "" value: "Sum"
   [PopUpButton] "View" value: "Review" help: "The chat, the session's changes to review, the files in its folder, the specs it reads, or a terminal there (⌘1 to ⌘5)"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
+  [Button] "Show Plan" help: "Show the project's items beside the chat, in the order to take them"
+  [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is"
   [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [StaticText] "" value: "Changes"
   [PopUpButton] "" value: "Everything" help: "Which of the session's changes to review"
-  [Button, disabled] "Exit Full Screen" help: "Show fewer unchanged lines around each change" id: arrow.down.right.and.arrow.up.left
+  [Button, disabled] "Fewer Lines of Context" help: "Show fewer unchanged lines around each change" id: arrow.down.right.and.arrow.up.left
   [StaticText, disabled] "" value: "3 lines"
-  [Button, disabled] "Enter Full Screen" help: "Show more unchanged lines around each change" id: arrow.up.left.and.arrow.down.right
+  [Button, disabled] "More Lines of Context" help: "Show more unchanged lines around each change" id: arrow.up.left.and.arrow.down.right
   [CheckBox/Toggle] "Whole File" value: "0" help: "Show every line of the file, its changes marked"
   [CheckBox/Toggle] "Rendered" value: "1" help: "Show the Markdown as it reads, and comment on its paragraphs"
   [CheckBox/Toggle] "Resolved" value: "0" help: "Show resolved threads too"

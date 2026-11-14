@@ -1018,6 +1018,64 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.sessions.first?.host, "far")
     }
 
+    func testOnlyProvidersTheAgentCanUseWithTheirKeySetAreOfferedAndAPickedOneIsNamedByItsVariable() async throws {
+        let daemon = InMemoryDaemon()
+        let go = HostProvider(id: "go", kind: .openCodeGo)
+        let anthropic = HostProvider(id: "anthropic", kind: .anthropic)
+        let unset = HostProvider(id: "unset", kind: .openAI)
+        _ = try await daemon.client.updateHost(
+            "",
+            HostUpdate(
+                setEnv: [go.keyVariable: "go-secret", anthropic.keyVariable: "anthropic-secret"],
+                providers: [go, anthropic, unset]))
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.coordinatorLoaded)
+
+        await store.send(\.binding.backend, .local)
+        XCTAssertEqual(store.state.providers.map(\.id), ["go"])
+        await store.send(\.binding.backend, .copilot)
+        XCTAssertEqual(store.state.providers.map(\.id), ["go", "anthropic"])
+
+        await store.send(\.binding.provider, "go")
+        XCTAssertTrue(store.state.needsModel)
+        await store.send(\.binding.model, "kimi-k2")
+        XCTAssertTrue(store.state.canStart)
+        let config = try XCTUnwrap(store.state.request.backendConfig)
+        XCTAssertTrue(config.contains(go.keyVariable))
+        XCTAssertFalse(config.contains("go-secret"))
+
+        // Claude Code can't run on OpenCode Go, so the pick is dropped.
+        await store.send(\.binding.backend, .claude)
+        XCTAssertNil(store.state.provider)
+        XCTAssertEqual(store.state.providers.map(\.id), ["anthropic"])
+    }
+
+    func testClaudeRunsOnItsSubscriptionWhereAnAnthropicProviderIsOfferedButNotPicked() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        var initial = NewSessionFeature.State(project: project)
+        initial.backend = .claude
+        initial.coordinator = RemoteHost.coordinator(envNames: [], providers: [])
+        XCTAssertNil(initial.request.backendConfig)
+
+        let anthropic = HostProvider(id: "anthropic", kind: .anthropic)
+        initial.coordinator = RemoteHost.coordinator(envNames: [anthropic.keyVariable], providers: [anthropic])
+        let subscription = try XCTUnwrap(initial.request.backendConfig)
+        initial.provider = anthropic.id
+        let keyed = try XCTUnwrap(initial.request.backendConfig)
+        XCTAssertNotEqual(subscription, keyed)
+        XCTAssertTrue(keyed.contains(anthropic.keyVariable))
+    }
+
     func testTheModelIsPickedFromWhatTheAgentOffersOrTypedWhenItCantList() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")

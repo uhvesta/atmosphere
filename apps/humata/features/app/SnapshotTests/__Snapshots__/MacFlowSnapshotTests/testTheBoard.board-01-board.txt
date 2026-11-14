@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
@@ -34,6 +34,9 @@
   [Toolbar] ""
     [Button] "Add Project"
     [Button] "Hide Sidebar"
+    [RadioGroup] "Show" help: "Show the board as a column per status, or as the plan: each item after what it waits on"
+      [RadioButton/Segment] "Column View" value: "1" id: rectangle.split.3x1
+      [RadioButton/Segment] "point.3.connected.trianglepath.dotted" value: "0" id: point.3.connected.trianglepath.dotted
     [Button] "Undo"
     [Button] "History"
     [Button] "Import Issues"

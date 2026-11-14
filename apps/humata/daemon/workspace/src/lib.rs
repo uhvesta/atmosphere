@@ -25,8 +25,8 @@ use tokio::process::Command;
 
 pub use error::WorkspaceError;
 pub use land::{
-    Landed, Merged, base, branch_of, delete_branch, held_elsewhere, holds_only, land, merge,
-    upstream,
+    Followed, Landed, Merged, base, branch_of, delete_branch, follow, held_elsewhere, holds_only,
+    land, merge, upstream,
 };
 pub use review::{
     Action, Changes, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind, Query,

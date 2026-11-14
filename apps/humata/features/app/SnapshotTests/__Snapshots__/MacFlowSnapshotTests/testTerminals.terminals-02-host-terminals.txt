@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
@@ -25,7 +25,7 @@
       [Heading] "Remote"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "build-box"
-      [Image] "Reachable, needs attention" id: exclamationmark.circle.fill
+      [Image, selected] "Reachable" id: checkmark.circle.fill
       [StaticText] "" value: "build-box"
   [RadioGroup] "Show" help: "The host's settings, the shells running on it, its files, or the ports forwarded from it"
     [RadioButton/Segment] "Settings" value: "0"
@@ -33,9 +33,9 @@
     [RadioButton/Segment] "Files" value: "0"
     [RadioButton/Segment] "Ports" value: "0"
   [Button] "log"
-  [Button] "Close log" help: "End this terminal's shell"
+  [Button] "Close log" help: "End this terminal's shell…"
   [Button] "humata"
-  [Button] "Close humata" help: "End this terminal's shell"
+  [Button] "Close humata" help: "End this terminal's shell…"
   [Button] "New Terminal" help: "Open another terminal here"
   [TextArea] "Terminal" value: "build-box:~/humata$ echo tailing the build logs
 tailing the build logs

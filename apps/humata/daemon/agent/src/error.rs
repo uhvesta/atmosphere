@@ -79,6 +79,16 @@ pub enum AgentError {
     SharedFiles { session: SessionId },
 
     #[error(
+        "session {session} is a side chat, which only ever reads, so its access wasn't changed; to change code, write in the session it sits beside, or fork that one"
+    )]
+    SideChatAccess { session: SessionId },
+
+    #[error(
+        "session {session} plans with a copy of the code that follows its origin, so it can't be given full access: what it wrote there would be left behind or stop the copy from following. Start a session on a task to change code, or fork this one onto a task"
+    )]
+    PlansOnly { session: SessionId },
+
+    #[error(
         "session {session} is being rewound, so the message wasn't sent; send it again once the chat shows the rewind"
     )]
     Rewinding { session: SessionId },

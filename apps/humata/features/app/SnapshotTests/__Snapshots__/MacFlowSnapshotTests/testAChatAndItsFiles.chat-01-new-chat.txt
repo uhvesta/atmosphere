@@ -1,6 +1,6 @@
 [Window/StandardWindow] ""
   [StaticText] "" value: "No Projects"
-  [StaticText] "" value: "Add a repository on this Mac to start working with an agent in it."
+  [StaticText] "" value: "Add a repository, from a folder on this Mac or a URL to clone, to start working with an agent in it."
   [Button] "Add Project…"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""

@@ -52,6 +52,7 @@ extension InMemoryDaemon {
                     if proposal.title.isEmpty { proposal.title = item.title }
                     if proposal.state == .pending { proposal.currentSpec = item.spec }
                 }
+                Self.name(&proposal, from: state.items)
                 return proposal
             }
         }
@@ -63,6 +64,8 @@ extension InMemoryDaemon {
             kind = .task
         } else if tool.hasSuffix("propose_spec_edit") {
             kind = .specEdit
+        } else if tool.hasSuffix("propose_dependency") {
+            kind = .dependency
         } else {
             return nil
         }
@@ -74,12 +77,32 @@ extension InMemoryDaemon {
         }
         let parent = text("parent_id")
         let item = text("item_id")
+        let dependsOn = (arguments["depends_on"] as? [String] ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let itemKind: ItemKind? =
+            switch text("kind") {
+            case "milestone": .milestone
+            case "task": .task
+            default: nil
+            }
         let proposal = Proposal(
             id: call, kind: kind, title: text("title"), spec: arguments["spec"] as? String ?? "",
-            parentID: parent.isEmpty ? nil : parent, itemID: item.isEmpty ? nil : item, note: text("note"))
+            parentID: parent.isEmpty ? nil : parent, itemID: item.isEmpty ? nil : item, note: text("note"),
+            itemKind: itemKind, dependsOn: dependsOn)
         switch kind {
         case .task: return proposal.title.isEmpty ? nil : proposal
         case .specEdit: return item.isEmpty ? nil : proposal
+        case .dependency: return item.isEmpty || dependsOn.isEmpty ? nil : proposal
+        }
+    }
+
+    /// Fills in the titles of the items a proposal names, and for a
+    /// dependency its item's title when it gave none.
+    private static func name(_ proposal: inout Proposal, from items: [Item]) {
+        func title(_ id: String) -> String { items.first { $0.id == id }?.title ?? id }
+        proposal.dependsOnTitles = proposal.dependsOn.map(title)
+        if proposal.kind == .dependency, proposal.title.isEmpty, let item = proposal.itemID {
+            proposal.title = title(item)
         }
     }
 
@@ -99,6 +122,7 @@ extension InMemoryDaemon {
                     if proposal.title.isEmpty { proposal.title = item.title }
                     if proposal.state == .pending { proposal.currentSpec = item.spec }
                 }
+                Self.name(&proposal, from: state.items)
                 return proposal
             }
         }
@@ -141,13 +165,18 @@ extension InMemoryDaemon {
             }
             item = try createItem(
                 project,
-                ItemFields(parentID: proposal.parentID, title: title ?? proposal.title, spec: spec ?? proposal.spec),
+                ItemFields(
+                    parentID: proposal.parentID, title: title ?? proposal.title, spec: spec ?? proposal.spec,
+                    kind: proposal.itemKind, dependsOn: proposal.dependsOn),
                 by: author)
         case .specEdit:
             guard let itemID = proposal.itemID else { throw Self.unknownItem(proposalID) }
             let proposedSpec = proposal.spec.isEmpty ? nil : proposal.spec
             item = try updateItem(
                 itemID, ItemUpdate(title: title ?? proposal.title, spec: spec ?? proposedSpec), by: author)
+        case .dependency:
+            guard let itemID = proposal.itemID else { throw Self.unknownItem(proposalID) }
+            item = try updateItem(itemID, ItemUpdate(link: proposal.dependsOn), by: author)
         }
         state.withValue { $0.decisions[session, default: [:]][proposalID] = .applied(itemID: item.id) }
         return item
@@ -167,6 +196,8 @@ extension InMemoryDaemon {
             fork.itemID = itemID
             if fork.planning, let project = state.projects.first(where: { $0.id == item.projectID }) {
                 fork.planning = false
+                // It works on the task in a copy of its own.
+                fork.access = .full
                 fork.workingDirectory = Self.copy(of: project, for: fork.id)
             }
             if let index = state.sessions.firstIndex(where: { $0.id == fork.id }) { state.sessions[index] = fork }
@@ -189,6 +220,7 @@ extension InMemoryDaemon {
             if let instructions = update.instructions { state.projects[index].instructions = instructions }
             if let repositories { state.projects[index].repositories = repositories }
             if let agentSessions = update.agentSessions { state.projects[index].agentSessions = agentSessions }
+            if let planWithCode = update.planWithCode { state.projects[index].planWithCode = planWithCode }
             if let skills = update.skills {
                 state.projects[index].skills = skills.compactMap { skill in
                     let name = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)

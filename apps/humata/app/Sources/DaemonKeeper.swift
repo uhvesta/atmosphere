@@ -16,7 +16,8 @@ extension DaemonService {
             start: { try await keeper.start() },
             isCurrent: { try await keeper.isCurrent() },
             restart: { try await keeper.restart() },
-            openLoginItems: { SMAppService.openSystemSettingsLoginItems() })
+            openLoginItems: { SMAppService.openSystemSettingsLoginItems() },
+            stop: { try await keeper.stop() })
     }
 }
 
@@ -93,6 +94,29 @@ private final class DaemonKeeper: @unchecked Sendable {
             try spawn()
         }
         try await waitForAnswer()
+    }
+
+    /// Stops the daemon so the app can be replaced: the login item is
+    /// taken off, so launchd doesn't start it again, and the next launch
+    /// adds it back from where the app then is. One this app started
+    /// itself is stopped; one nothing here started is left, as the app it
+    /// came from is the one to stop it.
+    func stop() async throws {
+        if asLoginItem {
+            guard agent.status == .enabled else { return }
+            do {
+                try await agent.unregister()
+            } catch {
+                throw DaemonServiceError.unregisterFailed(underlying: error)
+            }
+        } else if runningChild() != nil {
+            stopChild()
+        } else if let earlier = startedBefore() {
+            kill(earlier, SIGTERM)
+        } else {
+            return
+        }
+        try await waitUntilGone()
     }
 
     // MARK: Login item

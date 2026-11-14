@@ -53,6 +53,8 @@ package struct BoardFeature {
         /// An alert about something that finished while a page or sheet was
         /// open, shown once it goes.
         var heldAlert: AlertState<BoardAlert>?
+        /// Columns by status, or the plan's graph.
+        package var layout = BoardLayout.columns
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
@@ -86,12 +88,20 @@ package struct BoardFeature {
             item.sessionIDs.compactMap { sessions[id: $0] }
         }
 
+        /// The items in the plan's order: each after what it waits on, a
+        /// milestone's tasks right under it.
+        package var planned: [Item] {
+            items.enumerated()
+                .sorted { ($0.element.planOrder, $0.offset) < ($1.element.planOrder, $1.offset) }
+                .map(\.element)
+        }
+
         /// `item`'s page, with the spec comments and the unsaved edit it was
         /// closed with.
         func page(of item: Item) -> ItemFeature.State {
             var page = ItemFeature.State(
                 project: project, item: item, parent: parent(of: item), subtasks: subtasks(of: item),
-                sessions: sessions(on: item))
+                sessions: sessions(on: item), board: Array(items))
             if var kept = keptComments[item.id] {
                 kept.title = item.title
                 page.comments = kept
@@ -198,6 +208,8 @@ package struct BoardFeature {
         /// repositories not imported before.
         case importIssuesTapped
         case imported(ImportedIssues)
+        /// Shows the board as columns or as the plan's graph.
+        case layoutPicked(BoardLayout)
         case destination(PresentationAction<Destination.Action>)
         case proposals(ProposalsFeature.Action)
         case delegate(Delegate)
@@ -423,6 +435,7 @@ package struct BoardFeature {
                     page.parent = state.parent(of: item)
                     page.subtasks = state.subtasks(of: item)
                     page.sessions = state.sessions(on: item)
+                    if itemsChanged { page.board = Array(state.items) }
                     if page != before { state.destination = .item(page) }
                 }
                 if let opening = state.opening {
@@ -446,6 +459,10 @@ package struct BoardFeature {
 
             case .startFinished(let id):
                 state.starting.remove(id)
+                return .none
+
+            case .layoutPicked(let layout):
+                state.layout = layout
                 return .none
 
             case .importIssuesTapped:
@@ -648,6 +665,14 @@ package struct BoardFeature {
 
 extension BoardFeature.Destination.State: Equatable {}
 
+/// How the board shows its items.
+package enum BoardLayout: Hashable, Sendable {
+    /// A column per status.
+    case columns
+    /// The plan: each item after what it waits on, with its links.
+    case graph
+}
+
 /// What Start Work starts a session on `item` with: every project's
 /// defaults with the project's over them, as New Session starts from, or
 /// only the project's when every project's can't be read.
@@ -675,6 +700,9 @@ package struct ItemFeature {
         package var parent: Item?
         package var subtasks: [Item]
         package var sessions: [Session]
+        /// The project's items as the board last read them, for what this
+        /// one waits on and what it could.
+        package var board: [Item]
         /// How many files each session changed, by session id, once read.
         package var changedFiles: [Session.ID: Int] = [:]
         /// Its sessions' pull requests, as last read.
@@ -695,13 +723,27 @@ package struct ItemFeature {
         /// shown once the sheet goes.
         var heldAlert: AlertState<BoardAlert>?
 
-        package init(project: Project, item: Item, parent: Item?, subtasks: [Item], sessions: [Session]) {
+        package init(
+            project: Project, item: Item, parent: Item?, subtasks: [Item], sessions: [Session], board: [Item] = []
+        ) {
+            self.board = board
             self.project = project
             self.item = item
             comments = SpecCommentsFeature.State(title: item.title)
             self.parent = parent
             self.subtasks = subtasks
             self.sessions = sessions
+        }
+
+        /// The items it waits on, as the board shows them.
+        package var dependencies: [Item] {
+            item.dependsOn.compactMap { id in board.first { $0.id == id } }
+        }
+
+        /// The items it could come to wait on: the board's others it doesn't
+        /// wait on yet.
+        package var linkable: [Item] {
+            board.filter { $0.id != item.id && !item.dependsOn.contains($0.id) }
         }
 
         /// The sessions spec comments can go to: archived ones don't work.
@@ -787,6 +829,12 @@ package struct ItemFeature {
         case saveTapped
         case statusPicked(ItemStatus)
         case priorityPicked(Priority)
+        /// Makes it a milestone, which holds tasks, or a task.
+        case kindPicked(ItemKind)
+        /// It comes to wait on this item; one that closes a loop is refused.
+        case linkPicked(Item.ID)
+        /// It no longer waits on this item.
+        case unlinkTapped(Item.ID)
         case updated(Item)
         /// The draft's save answered: it closes.
         case saved(Item)
@@ -961,6 +1009,18 @@ package struct ItemFeature {
             case .priorityPicked(let priority):
                 guard priority != state.item.priority else { return .none }
                 return update(state.item.id, ItemUpdate(priority: priority))
+
+            case .kindPicked(let kind):
+                guard kind != state.item.fields.kind else { return .none }
+                return update(state.item.id, ItemUpdate(kind: kind))
+
+            case .linkPicked(let id):
+                guard id != state.item.id, !state.item.dependsOn.contains(id) else { return .none }
+                return update(state.item.id, ItemUpdate(link: [id]))
+
+            case .unlinkTapped(let id):
+                guard state.item.dependsOn.contains(id) else { return .none }
+                return update(state.item.id, ItemUpdate(unlink: [id]))
 
             case .updated(let item):
                 // A priority or status picked while editing keeps the draft.
@@ -1325,6 +1385,8 @@ extension ItemField {
         case .spec: String(localized: "spec")
         case .status: String(localized: "status")
         case .priority: String(localized: "priority")
+        case .kind: String(localized: "kind")
+        case .dependsOn: String(localized: "dependencies")
         }
     }
 }

@@ -10,7 +10,12 @@
 //! around it, as for any runner.
 //!
 //! It runs as whoever the CLI is signed in as (`claude`, then `/login`, with
-//! a Claude subscription), or on `ANTHROPIC_API_KEY` in its environment.
+//! a Claude subscription), or on `ANTHROPIC_API_KEY` in its environment:
+//! in print mode the CLI always uses the key when it has one, over the
+//! login. A session's backend config says which it is to be: `{"subscription":
+//! true}` takes the key away from its CLI, and `{"provider": {...}}` gives
+//! its CLI the key in the host's variable the provider names. With no
+//! config, the CLI gets the host's variables as they are.
 //!
 //! [`LocalAgent`]: crate::LocalAgent
 
@@ -19,6 +24,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
@@ -31,6 +37,7 @@ use crate::error::AgentError;
 use crate::event::{ApprovalMode, EventKind, PermissionKind, SessionId, SessionRecord};
 use crate::import::{self, Importable, Imported};
 use crate::links::Links;
+use crate::provider::{Provider, ProviderError};
 use crate::runtime::{Runner, Turn};
 
 mod subagents;
@@ -138,9 +145,35 @@ pub enum ClaudeError {
     )]
     NotCompacted { said: String },
 
+    #[error(
+        "the session's Claude Code config isn't valid; give JSON like {{\"subscription\": true}} or {{\"provider\": {{\"kind\": \"anthropic\", \"api_key_variable\": \"ANTHROPIC_API_KEY\"}}}}, or none, and start a new session with it"
+    )]
+    BadConfig {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
+
     #[error(transparent)]
     Agent(#[from] AgentError),
 }
+
+/// A session's backend config, as JSON: how its CLI is signed in.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaudeConfig {
+    /// Runs on the login, even when the host's variables hold a key.
+    #[serde(default)]
+    subscription: bool,
+    /// Runs on the key in the host's variable this names.
+    provider: Option<Provider>,
+}
+
+/// The variables Claude Code takes a key from, over its login. A bearer
+/// token outranks a key, so both go when either is set for a session.
+const KEY_VARIABLES: [&str; 2] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
 /// Where a backup keeps Claude Code's transcripts.
 const TRANSCRIPTS: &str = "transcripts";
@@ -160,6 +193,36 @@ impl ClaudeRunner {
     fn transcripts(&self) -> Option<PathBuf> {
         import::backend_home(&self.options.env, "CLAUDE_CONFIG_DIR", ".claude")
             .map(|home| home.join("projects"))
+    }
+
+    /// Signs `command`, the CLI for one turn, in as the session's `config`
+    /// says: with a provider, on the key in the host's variable it names,
+    /// read now and set for this process alone; with a subscription, on
+    /// the login, with no key from the host's variables or humatad's own;
+    /// with neither, as the variables have it.
+    fn sign_in(&self, config: Option<&str>, command: &mut Command) -> Result<(), ClaudeError> {
+        let config: ClaudeConfig = match config {
+            Some(json) => {
+                serde_json::from_str(json).map_err(|source| ClaudeError::BadConfig { source })?
+            }
+            None => return Ok(()),
+        };
+        if let Some(provider) = &config.provider {
+            let base_url = provider.anthropic_base("Claude Code")?;
+            let key = provider.key(&self.options.env)?;
+            for variable in KEY_VARIABLES {
+                command.env_remove(variable);
+            }
+            command.env("ANTHROPIC_API_KEY", key);
+            if let Some(base_url) = base_url {
+                command.env("ANTHROPIC_BASE_URL", base_url);
+            }
+        } else if config.subscription {
+            for variable in KEY_VARIABLES {
+                command.env_remove(variable);
+            }
+        }
+        Ok(())
     }
 
     /// The CLI for a turn of `record`, in the session `links` say: resumed,
@@ -215,8 +278,8 @@ impl ClaudeRunner {
         if let Some(effort) = &record.effort {
             command.args(["--effort", effort]);
         }
-        if let Some(instructions) = &record.instructions {
-            command.args(["--append-system-prompt", instructions]);
+        if let Some(instructions) = record.instructions_in_effect() {
+            command.args(["--append-system-prompt", &instructions]);
         }
         if let Some(mcp) = &self.options.mcp {
             let mut env: serde_json::Map<String, Value> = mcp
@@ -239,10 +302,11 @@ impl ClaudeRunner {
             // that on each call, and refuses a read-only session there.
             command.args(["--allowedTools", "mcp__humata"]);
         }
-        // A side chat loads no MCP server but the one given above: one of
-        // the person's own may have a tool that changes things and that
-        // their settings always allow, which would run here unasked.
-        if record.read_only {
+        // A side chat or a session in plan mode loads no MCP server but
+        // the one given above: one of the person's own may have a tool
+        // that changes things and that their settings always allow, which
+        // would run here unasked.
+        if record.reads_only() {
             command.arg("--strict-mcp-config");
         }
         // Over the person's own settings, for this session alone.
@@ -288,6 +352,7 @@ impl ClaudeRunner {
             }
         }
         let (mut command, session) = self.command(&record, &mut links);
+        self.sign_in(record.backend_config.as_deref(), &mut command)?;
         let mut child = command.spawn().map_err(|source| ClaudeError::Start {
             program: self.options.program.clone(),
             source,
@@ -577,7 +642,7 @@ fn compact_command(focus: &str) -> String {
 
 /// The CLI's tools `record`'s session goes without.
 fn left_out(record: &SessionRecord) -> String {
-    if record.read_only {
+    if record.reads_only() {
         format!("{LEFT_OUT},{LEFT_OUT_READ_ONLY}")
     } else {
         LEFT_OUT.to_owned()
@@ -1051,6 +1116,111 @@ mod tests {
             .collect()
     }
 
+    /// What a session with `config` sets (Some) or takes away (None) of
+    /// the CLI's variables, on a host whose variables hold a key of its
+    /// own in `ANTHROPIC_API_KEY` and another in `WORK_KEY`.
+    fn signed_in(config: Option<Value>) -> Result<Vec<(String, Option<String>)>, ClaudeError> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let runner = ClaudeRunner::new(ClaudeOptions {
+            program: "claude".into(),
+            state: dir.path().join("state"),
+            env: Env::new([
+                ("ANTHROPIC_API_KEY".to_owned(), "hosts-key".to_owned()),
+                ("WORK_KEY".to_owned(), "work-key".to_owned()),
+            ]),
+            mcp: None,
+        });
+        let record: SessionRecord = serde_json::from_value(json!({
+            "id": "s",
+            "name": "test",
+            "working_directory": dir.path(),
+            "model": null,
+            "instructions": null,
+            "parent": null,
+            "backend_config": config.map(|config| config.to_string()),
+        }))
+        .expect("a session's record");
+        let (mut command, _) = runner.command(&record, &mut Links::default());
+        runner.sign_in(record.backend_config.as_deref(), &mut command)?;
+        Ok(command
+            .as_std()
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect())
+    }
+
+    fn variable<'a>(
+        variables: &'a [(String, Option<String>)],
+        name: &str,
+    ) -> Option<&'a Option<String>> {
+        variables
+            .iter()
+            .find(|(variable, _)| variable == name)
+            .map(|(_, value)| value)
+    }
+
+    #[test]
+    fn a_session_on_a_provider_gets_the_key_in_the_variable_it_names() {
+        let config = json!({"provider": {"kind": "anthropic", "api_key_variable": "WORK_KEY"}});
+        let variables = signed_in(Some(config)).expect("signed in");
+        assert_eq!(
+            variable(&variables, "ANTHROPIC_API_KEY"),
+            Some(&Some("work-key".to_owned()))
+        );
+        // A bearer token of humatad's own would outrank the key.
+        assert_eq!(variable(&variables, "ANTHROPIC_AUTH_TOKEN"), Some(&None));
+        assert_eq!(variable(&variables, "ANTHROPIC_BASE_URL"), None);
+    }
+
+    #[test]
+    fn a_session_on_the_subscription_gets_no_key_though_the_host_has_one() {
+        let variables = signed_in(Some(json!({"subscription": true}))).expect("signed in");
+        assert_eq!(variable(&variables, "ANTHROPIC_API_KEY"), Some(&None));
+        assert_eq!(variable(&variables, "ANTHROPIC_AUTH_TOKEN"), Some(&None));
+    }
+
+    #[test]
+    fn a_session_with_no_config_gets_the_hosts_variables_as_they_are() {
+        let variables = signed_in(None).expect("signed in");
+        assert_eq!(
+            variable(&variables, "ANTHROPIC_API_KEY"),
+            Some(&Some("hosts-key".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_provider_served_elsewhere_is_where_the_cli_is_pointed() {
+        let config = json!({"provider": {
+            "kind": "anthropic",
+            "base_url": "https://gateway.example/",
+            "api_key_variable": "WORK_KEY",
+        }});
+        let variables = signed_in(Some(config)).expect("signed in");
+        assert_eq!(
+            variable(&variables, "ANTHROPIC_BASE_URL"),
+            Some(&Some("https://gateway.example".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_provider_without_its_variable_or_not_anthropics_starts_no_cli() {
+        let unset = json!({"provider": {"kind": "anthropic", "api_key_variable": "NOT_SET"}});
+        assert!(matches!(
+            signed_in(Some(unset)),
+            Err(ClaudeError::Provider(ProviderError::NoVariable { .. }))
+        ));
+        let go = json!({"provider": {"kind": "opencode_go", "api_key_variable": "WORK_KEY"}});
+        assert!(matches!(
+            signed_in(Some(go)),
+            Err(ClaudeError::Provider(ProviderError::Unsupported { .. }))
+        ));
+    }
+
     /// The arguments the CLI is started with for a turn of a session it
     /// has played in before, whose record now has `model`.
     fn resumed_on(model: Option<&str>) -> Vec<String> {
@@ -1112,6 +1282,58 @@ mod tests {
             writable.contains(&"--mcp-config".to_owned()),
             "{writable:?}"
         );
+    }
+
+    /// The CLI's tools a turn goes without, for a session it has played
+    /// in before whose record now has `access`.
+    fn left_out_with(access: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let runner = ClaudeRunner::new(ClaudeOptions {
+            program: "claude".into(),
+            state: dir.path().join("state"),
+            env: Env::new(Vec::new()),
+            mcp: None,
+        });
+        let record: SessionRecord = serde_json::from_value(json!({
+            "id": "s",
+            "name": "test",
+            "working_directory": dir.path(),
+            "model": null,
+            "instructions": null,
+            "parent": null,
+            "access": access,
+        }))
+        .expect("a session's record");
+        let mut links = Links {
+            session: Some("theirs".into()),
+            ..Links::default()
+        };
+        let (command, _) = runner.command(&record, &mut links);
+        let arguments: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        arguments
+            .windows(2)
+            .find(|pair| pair[0] == "--disallowedTools")
+            .map(|pair| pair[1].split(',').map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_turn_goes_without_every_tool_that_writes_or_runs_a_command_while_its_session_plans() {
+        let changing = ["Bash", "Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+        let plan = left_out_with("Plan");
+        let side = left_out_with("SideChat");
+        let full = left_out_with("Full");
+
+        for tool in changing {
+            assert!(plan.contains(&tool.to_owned()), "{tool}: {plan:?}");
+            assert!(side.contains(&tool.to_owned()), "{tool}: {side:?}");
+            assert!(!full.contains(&tool.to_owned()), "{tool}: {full:?}");
+        }
     }
 
     #[tokio::test]

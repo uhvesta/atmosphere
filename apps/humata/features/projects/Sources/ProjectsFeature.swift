@@ -1330,6 +1330,10 @@ package struct NewSessionFeature {
         /// Plans in the project with no copy of the code; only for a
         /// session on the project itself.
         package var planning = false
+        /// With `planning`: plans with a read-only copy of the project's
+        /// code, kept at origin's default branch. Starts as the project's
+        /// default.
+        package var withCode = false
         package var name = ""
         package var backend = Backend.copilot
         /// Empty for the backend's default.
@@ -1356,6 +1360,12 @@ package struct NewSessionFeature {
         package var hostsRead = false
         /// Why the hosts couldn't be read.
         package var hostsFailure: String?
+        /// This Mac, for its providers; nil until it's read.
+        package var coordinator: RemoteHost?
+        /// The provider it pays for with a key of the person's own; nil for
+        /// the agent's own: Claude's subscription, GitHub's models, or a
+        /// model server.
+        package var provider: HostProvider.ID?
         package var starting = false
         /// What the backend offers on the host, to pick the model from.
         package var models: [ModelChoice] = []
@@ -1377,7 +1387,42 @@ package struct NewSessionFeature {
         @Shared(.appStorage("newSessionModelServer")) var lastModelServer = ""
 
         /// A local model server has no default model, so one must be named.
-        package var needsModel: Bool { backend == .local && model.trimmed.isEmpty }
+        /// So does Copilot on a provider, which has no default it knows.
+        package var needsModel: Bool {
+            (backend == .local || (backend == .copilot && pickedProvider != nil)) && model.trimmed.isEmpty
+        }
+
+        /// Where it would run, once that's read.
+        var runsOn: RemoteHost? {
+            guard let host else { return coordinator }
+            return hosts.first { $0.id == host }
+        }
+
+        /// The providers the agent can use where it runs, whose key is set
+        /// there.
+        package var providers: [HostProvider] { runsOn?.providers(for: backend) ?? [] }
+
+        /// The provider picked, while it's one of those.
+        package var pickedProvider: HostProvider? {
+            provider.flatMap { id in providers.first { $0.id == id } }
+        }
+
+        /// What the agent runs on with no provider picked.
+        package var ownProvider: String {
+            switch backend {
+            case .claude: "Claude Subscription"
+            case .copilot: "GitHub"
+            case .local, .scripted: "Model Server"
+            }
+        }
+
+        /// Drops the provider picked once the agent or where it runs can't
+        /// use it; true if it did.
+        @discardableResult mutating func dropUnofferedProvider() -> Bool {
+            guard provider != nil, pickedProvider == nil else { return false }
+            provider = nil
+            return true
+        }
         /// A session for a host waits until the hosts are read: started
         /// before, it could run somewhere the person didn't pick.
         package var canStart: Bool { !starting && !needsModel && (host == nil || hostsRead) }
@@ -1385,7 +1430,7 @@ package struct NewSessionFeature {
         /// What starting waits on: fetching the project's repositories,
         /// which a planning session or a chat doesn't.
         package var startingStatus: String {
-            guard let project, !planning else { return "Starting…" }
+            guard let project, !planning || (offersWithCode && withCode) else { return "Starting…" }
             return project.startingStatus
         }
 
@@ -1409,14 +1454,24 @@ package struct NewSessionFeature {
                 experimental: backend == .copilot && experimental, backendConfig: backendConfig,
                 approvalMode: approvalMode, projectID: project?.id, itemID: item?.id,
                 specs: item?.parentID == nil ? .item : specs,
-                planning: planning && project != nil && item == nil)
+                planning: planning && project != nil && item == nil, withCode: offersWithCode && withCode)
         }
 
-        /// Whether the backend can use a model server of the person's.
-        package var takesModelServer: Bool { backend == .copilot || backend == .local }
+        /// Whether a planning session here can read the code: its project
+        /// has repositories to copy.
+        package var offersWithCode: Bool { planning && project?.repositories.isEmpty == false }
 
-        /// The backend's settings for the model server, as JSON.
+        /// Whether the backend can use a model server of the person's.
+        package var takesModelServer: Bool { (backend == .copilot || backend == .local) && pickedProvider == nil }
+
+        /// The backend's settings for the provider or model server, as
+        /// JSON. A provider is named by the variable its key is in, never
+        /// the key. Claude where an Anthropic provider is offered and none
+        /// is picked runs on the subscription, not on a key in the host's
+        /// variables.
         package var backendConfig: String? {
+            if let pickedProvider { return pickedProvider.backendConfig }
+            if backend == .claude, !providers.isEmpty { return #"{"subscription":true}"# }
             let server = modelServer.trimmed
             guard takesModelServer, !server.isEmpty else { return nil }
             let config: [String: Any] =
@@ -1432,6 +1487,7 @@ package struct NewSessionFeature {
             self.item = item
             self.planning = planning && project != nil && item == nil
             self.name = item?.title ?? (self.planning ? "Plan" : "")
+            self.withCode = project?.planWithCode ?? false
             if let defaults = project?.defaults { apply(defaults) }
             approvalMode = lastApprovalMode
             host = lastHost
@@ -1460,6 +1516,8 @@ package struct NewSessionFeature {
         /// Every project's defaults, to start from with the project's over.
         case defaultsLoaded(SessionDefaults)
         case hostsLoaded([RemoteHost])
+        /// This Mac, with its providers.
+        case coordinatorLoaded(RemoteHost)
         /// The hosts couldn't be read, so the one remembered stays.
         case hostsFailed(String)
         /// The person asked for the hosts to be read again.
@@ -1498,9 +1556,15 @@ package struct NewSessionFeature {
                 if !ApprovalMode.offered(for: state.backend).contains(state.approvalMode) {
                     state.approvalMode = .askEveryTime
                 }
+                state.dropUnofferedProvider()
                 return loadModels(&state)
 
             case .binding(\.host):
+                state.dropUnofferedProvider()
+                return loadModels(&state)
+
+            case .binding(\.provider):
+                // A provider lists models of its own.
                 return loadModels(&state)
 
             case .binding(\.modelServer):
@@ -1531,12 +1595,19 @@ package struct NewSessionFeature {
                         }
                     },
                     readHosts(),
+                    .run { send in
+                        // Without it, only the hosts' providers are offered.
+                        if let coordinator = try? await daemon.coordinator() {
+                            await send(.coordinatorLoaded(coordinator))
+                        }
+                    },
                     loadModels(&state))
 
             case .defaultsLoaded(let defaults):
                 guard !state.picked else { return .none }
                 let backend = state.backend
                 state.applyDefaults(defaults)
+                state.dropUnofferedProvider()
                 return state.backend == backend ? .none : loadModels(&state)
 
             case .hostsLoaded(let hosts):
@@ -1545,9 +1616,17 @@ package struct NewSessionFeature {
                 state.hostsFailure = nil
                 if let host = state.host, !hosts.contains(where: { $0.id == host }) {
                     state.host = nil
+                    state.dropUnofferedProvider()
                     return loadModels(&state)
                 }
-                return .none
+                return state.dropUnofferedProvider() ? loadModels(&state) : .none
+
+            case .coordinatorLoaded(let coordinator):
+                // Claude's sign-in follows whether a provider is offered.
+                let config = state.backendConfig
+                state.coordinator = coordinator
+                state.dropUnofferedProvider()
+                return state.backendConfig == config ? .none : loadModels(&state)
 
             case .hostsFailed(let message):
                 state.hostsFailure = message
@@ -1561,6 +1640,7 @@ package struct NewSessionFeature {
                 state.hostsFailure = nil
                 guard state.host != nil else { return .none }
                 state.host = nil
+                state.dropUnofferedProvider()
                 return loadModels(&state)
 
             case .modelsDue(let request):

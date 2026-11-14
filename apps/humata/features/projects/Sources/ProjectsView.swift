@@ -642,6 +642,14 @@ package struct NewSessionView: View {
                         Text("Plan Only")
                         Text("Proposes tasks and specs for you to apply, with no copy of the code, so it opens at once")
                     }
+                    if store.offersWithCode {
+                        Toggle(isOn: $store.withCode) {
+                            Text("With the Code")
+                            Text(
+                                "Reads a copy of the code, brought up to origin’s default branch as each turn "
+                                    + "starts; it changes no files and runs no commands")
+                        }
+                    }
                 }
                 Picker("Agent", selection: $store.backend) {
                     Text("Claude Code").tag(Backend.claude)
@@ -650,6 +658,19 @@ package struct NewSessionView: View {
                     // For flows and tests only; set by them, never picked.
                     if store.backend == .scripted {
                         Text("Scripted").tag(Backend.scripted)
+                    }
+                }
+                if !store.providers.isEmpty {
+                    Picker(selection: $store.provider) {
+                        Text(store.ownProvider).tag(HostProvider.ID?.none)
+                        ForEach(store.providers) { provider in
+                            Text(provider.name).tag(HostProvider.ID?.some(provider.id))
+                        }
+                    } label: {
+                        Text("Provider")
+                        if let picked = store.pickedProvider {
+                            Text("Paid for with the key in \(picked.keyVariable)")
+                        }
                     }
                 }
                 LabeledContent("Model") {
@@ -681,9 +702,13 @@ package struct NewSessionView: View {
                                     .foregroundStyle(.secondary)
                             }
                         } else if store.needsModel {
-                            Text("Name one the model server runs; it has no default.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(
+                                store.pickedProvider == nil
+                                    ? "Name one the model server runs; it has no default."
+                                    : "Name one the provider serves; it has no default here."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                     }
                 }

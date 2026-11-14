@@ -35,7 +35,7 @@ package struct ProposalCard: View {
     package var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Label(kind, systemImage: proposal.kind == .task ? "checklist" : "doc.text")
+                Label(kind, systemImage: symbol)
                     .scaledFont(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -44,6 +44,12 @@ package struct ProposalCard: View {
             Text(proposal.title)
                 .scaledFont(.headline)
                 .textSelection(.enabled)
+            if !proposal.dependsOnTitles.isEmpty {
+                Text("Waits on \(proposal.dependsOnTitles.formatted(.list(type: .and)))")
+                    .scaledFont(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
             if proposal.currentSpec != nil, !proposal.spec.isEmpty {
                 // The change comes with the proposals' list, worked out off
                 // the main thread; until it does, that it's on its way.
@@ -87,8 +93,19 @@ package struct ProposalCard: View {
 
     private var kind: String {
         switch proposal.kind {
-        case .task: proposal.parentID == nil ? "Proposed task" : "Proposed subtask"
+        case .task:
+            proposal.itemKind == .milestone
+                ? "Proposed milestone" : proposal.parentID == nil ? "Proposed task" : "Proposed subtask"
         case .specEdit: proposal.spec.isEmpty ? "Proposed new title" : "Proposed spec edit"
+        case .dependency: "Proposed dependency"
+        }
+    }
+
+    private var symbol: String {
+        switch proposal.kind {
+        case .task: "checklist"
+        case .specEdit: "doc.text"
+        case .dependency: "arrow.triangle.branch"
         }
     }
 
@@ -117,7 +134,10 @@ package struct ProposalCard: View {
             HStack(spacing: 8) {
                 Spacer()
                 Button("Decline") { send(.declineTapped(proposal.id)) }
-                Button("Edit…") { send(.editTapped(proposal.id)) }
+                // A dependency has no title or spec of its own to change.
+                if proposal.kind != .dependency {
+                    Button("Edit…") { send(.editTapped(proposal.id)) }
+                }
                 Button("Apply") { send(.applyTapped(proposal.id)) }
                     .buttonStyle(.borderedProminent)
             }

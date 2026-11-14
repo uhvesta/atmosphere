@@ -17,7 +17,7 @@
     [RadioButton/Segment] "Chat" value: "1"
     [RadioButton/Segment] "Files" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
+  [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is"
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
@@ -26,6 +26,7 @@
   [Button] "Pasted image" help: "Take it out of the message"
   [TextField] "" value: "What is in this picture?"
   [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Plan Mode" help: "Plan mode: from the next message, the agent reads and proposes, and changes no files"
   [Button] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

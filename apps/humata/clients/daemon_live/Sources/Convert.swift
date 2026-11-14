@@ -36,6 +36,8 @@ extension ErrorCode {
             case .unknownApproval: .unknownApproval
             case .skillClash: .skillClash
             case .accessOff: .accessOff
+            case .dependencyCycle: .dependencyCycle
+            case .invalidDependency: .invalidDependency
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -107,6 +109,7 @@ extension Project {
             // An older daemon says nothing of it, and asks for nothing.
             agentSessions: project.hasAgentSessions ? AgentSessions(project.agentSessions) : AgentSessions(),
             created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
+        planWithCode = project.planWithCode
     }
 }
 
@@ -132,10 +135,14 @@ extension Proposal {
             case .pending, .unspecified, .UNRECOGNIZED: .pending
             }
         self.init(
-            id: proposal.id, kind: proposal.kind == .specEdit ? .specEdit : .task, title: proposal.title,
+            id: proposal.id,
+            kind: proposal.kind == .specEdit ? .specEdit : proposal.kind == .dependency ? .dependency : .task,
+            title: proposal.title,
             spec: proposal.spec, parentID: optional(proposal.parentID), itemID: optional(proposal.itemID),
             note: proposal.note, state: state,
-            currentSpec: proposal.kind == .specEdit && state == .pending ? proposal.currentSpec : nil)
+            currentSpec: proposal.kind == .specEdit && state == .pending ? proposal.currentSpec : nil,
+            itemKind: ItemKind(proposal.itemKind), dependsOn: proposal.dependsOn,
+            dependsOnTitles: proposal.dependsOnTitles)
     }
 }
 
@@ -175,6 +182,29 @@ extension Session {
         readOnly = info.readOnly
         sharesCode = info.sharesCode
         startedBy = optional(info.startedBySessionID)
+        // A host from before access levels says only whether it's a side chat.
+        access = AccessLevel(info.access) ?? (info.readOnly ? .sideChat : .full)
+        codeCommits = info.codeCommits.map { CodeCommit(repository: $0.repository, commit: $0.commit) }
+    }
+}
+
+extension AccessLevel {
+    /// Nil for none, or one this app doesn't know.
+    init?(_ level: Humata_V1_AccessLevel) {
+        switch level {
+        case .full: self = .full
+        case .plan: self = .plan
+        case .sideChat: self = .sideChat
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+    }
+
+    var proto: Humata_V1_AccessLevel {
+        switch self {
+        case .full: .full
+        case .plan: .plan
+        case .sideChat: .sideChat
+        }
     }
 }
 
@@ -275,11 +305,30 @@ extension Priority {
     }
 }
 
+extension ItemKind {
+    /// Nil when it isn't said, or is a kind this app doesn't know.
+    init?(_ kind: Humata_V1_ItemKind) {
+        switch kind {
+        case .milestone: self = .milestone
+        case .task: self = .task
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+    }
+
+    var proto: Humata_V1_ItemKind {
+        switch self {
+        case .milestone: .milestone
+        case .task: .task
+        }
+    }
+}
+
 extension ItemFields {
     init(_ fields: Humata_V1_ItemFields) {
         self.init(
             parentID: optional(fields.parentID), title: fields.title, spec: fields.spec,
-            status: ItemStatus(fields.status), priority: Priority(fields.priority))
+            status: ItemStatus(fields.status), priority: Priority(fields.priority), kind: ItemKind(fields.kind),
+            dependsOn: fields.dependsOn)
     }
 }
 
@@ -289,9 +338,11 @@ extension Item {
             id: item.id, projectID: item.projectID,
             fields: ItemFields(
                 parentID: optional(item.parentID), title: item.title, spec: item.spec,
-                status: ItemStatus(item.givenStatus), priority: Priority(item.priority)),
+                status: ItemStatus(item.givenStatus), priority: Priority(item.priority),
+                kind: ItemKind(item.kind), dependsOn: item.dependsOn),
             status: ItemStatus(item.status), created: date(item.createdUnixMs), updated: date(item.updatedUnixMs),
-            sessionIDs: item.sessionIds)
+            sessionIDs: item.sessionIds, blocked: item.blocked, waitingOn: item.waitingOn,
+            planOrder: Int(item.planOrder))
     }
 }
 
@@ -416,6 +467,8 @@ extension ItemField {
         case .spec: self = .spec
         case .status: self = .status
         case .priority: self = .priority
+        case .kind: self = .kind
+        case .dependsOn: self = .dependsOn
         case .unspecified, .UNRECOGNIZED: return nil
         }
     }
@@ -460,7 +513,9 @@ extension AgentRequest {
 
 extension ChatCommands {
     init(_ commands: Humata_V1_ChatCommands) {
-        self.init(compact: commands.compact, compactTakesFocus: commands.compactTakesFocus, side: commands.side)
+        self.init(
+            compact: commands.compact, compactTakesFocus: commands.compactTakesFocus, side: commands.side,
+            plan: commands.plan)
     }
 }
 
@@ -532,7 +587,38 @@ extension RemoteHost {
     init(_ host: Humata_V1_HostInfo) {
         self.init(
             name: host.name, sshDestination: optional(host.sshDestination), envNames: host.envNames,
-            setupScript: host.setupScript)
+            setupScript: host.setupScript, providers: host.providers.compactMap(HostProvider.init))
+    }
+}
+
+extension HostProvider {
+    /// Nil for a kind this app doesn't know.
+    init?(_ provider: Humata_V1_Provider) {
+        let kind: Kind
+        switch provider.kind {
+        case .anthropic: kind = .anthropic
+        case .openai: kind = .openAI
+        case .opencodeGo: kind = .openCodeGo
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+        self.init(
+            id: provider.id, name: provider.name, kind: kind, baseURL: provider.baseURL,
+            keyVariable: provider.keyVariable, wireAPI: WireAPI(rawValue: provider.wireApi) ?? .completions)
+    }
+
+    var message: Humata_V1_Provider {
+        var provider = Humata_V1_Provider()
+        provider.id = id
+        provider.name = name
+        switch kind {
+        case .anthropic: provider.kind = .anthropic
+        case .openAI: provider.kind = .openai
+        case .openCodeGo: provider.kind = .opencodeGo
+        }
+        provider.baseURL = baseURL
+        provider.keyVariable = keyVariable
+        provider.wireApi = takesWireAPI ? wireAPI.rawValue : ""
+        return provider
     }
 }
 

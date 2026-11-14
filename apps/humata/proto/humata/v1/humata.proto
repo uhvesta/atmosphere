@@ -442,6 +442,11 @@ enum ErrorCode {
   // Agent Access has the action off for this client; the person turns it
   // on in Settings › Agent Access.
   ERROR_CODE_ACCESS_OFF = 30;
+  // The link would have items wait on each other in a loop; the message
+  // names the items round it. Remove one of those links first.
+  ERROR_CODE_DEPENDENCY_CYCLE = 31;
+  // An item can't depend on itself or on an item of another project.
+  ERROR_CODE_INVALID_DEPENDENCY = 32;
 }
 
 enum Backend {
@@ -504,6 +509,12 @@ message StartSession {
   // Filled in by the daemon, for the host, when another session's agent
   // starts this one: with no `backend_config`, it takes that session's.
   string config_from_session_id = 30;
+  // With `planning`: it plans with the code. It gets a worktree of the
+  // project's repositories as any session does, which its host fetches
+  // and moves to origin's default branch as each turn starts, and it runs
+  // in ACCESS_LEVEL_PLAN for good: it reads and proposes, and writes
+  // nothing there.
+  bool with_code = 18;
 }
 
 // What New Session starts from, for every project or for one; a project's
@@ -550,6 +561,26 @@ message Repository {
   string url = 3;
 }
 
+// What a session's agent may do to files and with commands.
+enum AccessLevel {
+  ACCESS_LEVEL_UNSPECIFIED = 0;
+  // It writes files and runs commands, as its approval mode lets it.
+  ACCESS_LEVEL_FULL = 1;
+  // Plan mode: it reads, searches and proposes through Humata's tools.
+  // Every write and command it asks for is refused without asking, and
+  // its backend offers it no tool that does either.
+  ACCESS_LEVEL_PLAN = 2;
+  // A side chat: held to reading as PLAN is, and it proposes nothing.
+  ACCESS_LEVEL_SIDE_CHAT = 3;
+}
+
+// The commit a session's copy of a repository is on.
+message CodeCommit {
+  // The repository's name in the session.
+  string repository = 1;
+  string commit = 2;
+}
+
 // What a session may do without asking. A fork keeps its parent's.
 enum ApprovalMode {
   // The same as ASK_EVERY_TIME.
@@ -593,6 +624,9 @@ message Project {
   // What its sessions' agents may do to other sessions; always set, to
   // the defaults when the person chose nothing.
   AgentSessions agent_sessions = 12;
+  // Whether Plan With an Agent starts with the code in it, until the
+  // person says otherwise for a session; off until set.
+  bool plan_with_code = 13;
 }
 
 enum AgentSessionsMode {
@@ -653,6 +687,8 @@ message UpdateProject {
   // What its agents may do to other sessions, when set. The app's only:
   // ERROR_CODE_APP_ONLY from any other client.
   AgentSessions agent_sessions = 8;
+  // Whether Plan With an Agent starts with the code in it.
+  optional bool plan_with_code = 9;
 }
 
 message Repositories {
@@ -1004,12 +1040,22 @@ message Proposal {
   string current_spec = 13;
   // For an outside agent's, the project whose board it's for.
   string project_id = 14;
+  // For a task: whether it is a milestone; unspecified is a task.
+  ItemKind item_kind = 15;
+  // For a task, the items it would wait on; for a dependency, the items
+  // item_id would come to wait on.
+  repeated string depends_on = 16;
+  // Their titles, in the same order; an id where the item is gone.
+  repeated string depends_on_titles = 17;
 }
 
 enum ProposalKind {
   PROPOSAL_KIND_UNSPECIFIED = 0;
   PROPOSAL_KIND_TASK = 1;
   PROPOSAL_KIND_SPEC_EDIT = 2;
+  // That item_id waits on depends_on. Applying it is refused, and it stays
+  // pending, if the links would close a loop.
+  PROPOSAL_KIND_DEPENDENCY = 3;
 }
 
 enum ProposalState {
@@ -1067,6 +1113,8 @@ message Propose {
   string parent_id = 5;
   string item_id = 6;
   string note = 7;
+  ItemKind item_kind = 8;
+  repeated string depends_on = 9;
 }
 
 message Proposed {
@@ -1127,6 +1175,11 @@ message ForkSession {
   // (as with `chat_only`). ERROR_CODE_INVALID_REQUEST for a session whose
   // host can't hold it to that (see GetChatCommands).
   bool read_only = 9;
+  // The fork's access, over its parent's; UNSPECIFIED keeps the parent's.
+  // A side chat, and a fork of one, is a side chat whatever this says.
+  // Set to FULL by the daemon for a fork of a planning session onto a
+  // task, which works in a copy of its own.
+  AccessLevel access = 10;
 }
 
 // Changes a session's record. Unset fields are left as they are.
@@ -1150,6 +1203,13 @@ message UpdateSession {
   // recorded in the history as a Notice. A host that doesn't know the
   // field answers with the session's model as it was.
   optional string model = 8;
+  // Switches the session between ACCESS_LEVEL_FULL and ACCESS_LEVEL_PLAN.
+  // What it asks to change is refused at once, and its agent's tools
+  // follow from the next turn. A change is recorded in the history as a
+  // Notice. Refused with ERROR_CODE_INVALID_REQUEST for a side chat and
+  // for a planning session with the code. A host that doesn't know the
+  // field answers with the session's access as it was.
+  optional AccessLevel access = 9;
 }
 
 message SessionUpdated {
@@ -1728,6 +1788,10 @@ message ChatCommands {
   // Whether ForkSession with `read_only` works for it: its host holds its
   // backend to reading only.
   bool side = 3;
+  // Whether UpdateSession with `access` works for it: its backend takes
+  // its tools anew each turn, and it's neither a side chat nor a planning
+  // session with the code, which stay as they are.
+  bool plan = 4;
 }
 
 // Undoes the session's last rewind, unless a message was sent since.
@@ -1860,6 +1924,12 @@ message SessionInfo {
   // It works in another session's copy of the code, as a side chat and a
   // chat-only fork do, so its files can't be rewound.
   bool shares_code = 32;
+  // What its agent may do to files. UNSPECIFIED from a host from before
+  // access levels: then `read_only` says whether it's a side chat.
+  AccessLevel access = 33;
+  // For a planning session with the code: the commit each repository's
+  // copy was on as its last turn started. Empty before its first turn.
+  repeated CodeCommit code_commits = 34;
 }
 
 // A session's git worktree of one repository.
@@ -2121,7 +2191,16 @@ enum Priority {
   PRIORITY_URGENT = 4;
 }
 
-// A task, or a subtask of one, on a project's board.
+// Whether an item is a milestone, which holds tasks under it, or a task.
+enum ItemKind {
+  // Not set: a milestone once it has tasks under it, a task until then.
+  ITEM_KIND_UNSPECIFIED = 0;
+  ITEM_KIND_MILESTONE = 1;
+  ITEM_KIND_TASK = 2;
+}
+
+// A milestone or a task on a project's board. A milestone's tasks are
+// under it by parent_id; a task with no parent stands on its own.
 message Item {
   string id = 1;
   string project_id = 2;
@@ -2143,6 +2222,22 @@ message Item {
   int64 updated_unix_ms = 10;
   // The sessions that work on it, archived ones too.
   repeated string session_ids = 11;
+  // What it reads as, never unspecified: an item under another is a task,
+  // and one with tasks under it, or set to be one, is a milestone.
+  ItemKind kind = 12;
+  // The items it waits on, of its own project.
+  repeated string depends_on = 13;
+  // Worked out, not kept: it isn't finished and waits on unfinished items.
+  // An item is finished once Done or Won't do, and a milestone also once
+  // all its tasks are. A milestone's tasks are blocked while it is.
+  bool blocked = 14;
+  // The unfinished items it waits on, its milestone's among them; empty
+  // unless blocked.
+  repeated string waiting_on = 15;
+  // Its place in the project's plan, from 1: each item after what it
+  // depends on, the earliest added first where that leaves a choice, and
+  // a milestone's tasks right after it in the same order.
+  uint32 plan_order = 16;
 }
 
 message CreateItem {
@@ -2155,6 +2250,10 @@ message CreateItem {
   Priority priority = 6;
   // Where the person added it from.
   ChangeSurface surface = 7;
+  // A milestone can't have a parent_id.
+  ItemKind kind = 8;
+  // The items it waits on, of the same project.
+  repeated string depends_on = 9;
 }
 
 message ItemCreated {
@@ -2173,6 +2272,13 @@ message UpdateItem {
   string by_session_id = 6;
   // Where the change was made from.
   ChangeSurface surface = 7;
+  optional ItemKind kind = 8;
+  // Items of its project it comes to wait on. Refused whole with
+  // ERROR_CODE_DEPENDENCY_CYCLE if one would close a loop, and with
+  // ERROR_CODE_INVALID_DEPENDENCY for itself or another project's item.
+  repeated string add_depends_on = 9;
+  // Items it no longer waits on.
+  repeated string remove_depends_on = 10;
 }
 
 message ItemUpdated {
@@ -2196,6 +2302,10 @@ message ItemFields {
   string spec = 3;
   ItemStatus status = 4;
   Priority priority = 5;
+  // As it was set; unspecified goes by whether it has tasks under it.
+  ItemKind kind = 6;
+  // The items it waits on, so linking and unlinking are changes too.
+  repeated string depends_on = 7;
 }
 
 // Where a board change was made from, for the board's journal.
@@ -2219,6 +2329,10 @@ enum ItemField {
   ITEM_FIELD_SPEC = 2;
   ITEM_FIELD_STATUS = 3;
   ITEM_FIELD_PRIORITY = 4;
+  ITEM_FIELD_KIND = 5;
+  // A link the change took off couldn't go back on: the other item is
+  // gone, or the link would now close a loop.
+  ITEM_FIELD_DEPENDS_ON = 6;
 }
 
 // One change to a project's board.
@@ -2529,6 +2643,38 @@ message HostInfo {
   repeated string env_names = 3;
   // Run on the host when it changes, or until it succeeds.
   string setup_script = 4;
+  // The model providers its sessions can use.
+  repeated Provider providers = 5;
+}
+
+// What a model provider serves.
+enum ProviderKind {
+  PROVIDER_KIND_UNSPECIFIED = 0;
+  // Anthropic's API.
+  PROVIDER_KIND_ANTHROPIC = 1;
+  // Any server with OpenAI's API.
+  PROVIDER_KIND_OPENAI = 2;
+  // OpenCode Go, which serves both under one address.
+  PROVIDER_KIND_OPENCODE_GO = 3;
+}
+
+// A model provider a host's sessions can use, paid for with a key of the
+// person's own. It never holds the key: that is one of the host's variables.
+message Provider {
+  string id = 1;
+  // What the person calls it.
+  string name = 2;
+  ProviderKind kind = 3;
+  string base_url = 4;
+  // The name of the host's variable that holds its key.
+  string key_variable = 5;
+  // Which of OpenAI's APIs Copilot asks it with: "completions" or
+  // "responses"; empty for the first.
+  string wire_api = 6;
+}
+
+message ProviderList {
+  repeated Provider providers = 1;
 }
 
 message ListHosts {}
@@ -2562,6 +2708,8 @@ message UpdateHost {
   repeated EnvVar set_env = 2;
   repeated string unset_env = 3;
   optional string setup_script = 4;
+  // The host's providers, replacing those it has; absent leaves them.
+  ProviderList providers = 5;
 }
 
 message HostSaved {

@@ -31,6 +31,9 @@ pub struct Hosts {
     /// of the login environment.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub coordinator_env: BTreeMap<String, String>,
+    /// The model providers the coordinator's sessions can use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coordinator_providers: Vec<ProviderConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -50,6 +53,108 @@ pub struct HostConfig {
     /// Run on the host when it changes, or until it succeeds.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub setup_script: String,
+    /// The model providers its sessions can use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<ProviderConfig>,
+}
+
+/// A model provider a host's sessions can use, paid for with a key of the
+/// person's own. It names the variable of the host that holds the key and
+/// never the key, which is only ever among the host's variables.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfig {
+    pub id: String,
+    /// What the person calls it.
+    pub name: String,
+    pub kind: ProviderKind,
+    pub base_url: String,
+    /// The host's variable that holds its key.
+    pub key_variable: String,
+    /// Which of OpenAI's APIs Copilot asks it with: `completions` or
+    /// `responses`; empty for the first.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wire_api: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    Anthropic,
+    Openai,
+    OpencodeGo,
+}
+
+impl ProviderConfig {
+    fn info(&self) -> pb::Provider {
+        let kind = match self.kind {
+            ProviderKind::Anthropic => pb::ProviderKind::Anthropic,
+            ProviderKind::Openai => pb::ProviderKind::Openai,
+            ProviderKind::OpencodeGo => pb::ProviderKind::OpencodeGo,
+        };
+        pb::Provider {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            kind: kind.into(),
+            base_url: self.base_url.clone(),
+            key_variable: self.key_variable.clone(),
+            wire_api: self.wire_api.clone(),
+        }
+    }
+
+    /// The provider the app sent, if it can be one.
+    fn read(provider: pb::Provider) -> Result<Self, DaemonError> {
+        let name = provider.name.trim().to_owned();
+        let kind = match provider.kind() {
+            pb::ProviderKind::Anthropic => ProviderKind::Anthropic,
+            pb::ProviderKind::Openai => ProviderKind::Openai,
+            pb::ProviderKind::OpencodeGo => ProviderKind::OpencodeGo,
+            pb::ProviderKind::Unspecified => return Err(DaemonError::ProviderKind { name }),
+        };
+        let base_url = provider.base_url.trim().to_owned();
+        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+            return Err(DaemonError::ProviderUrl { name, base_url });
+        }
+        let variable = provider.key_variable.trim().to_owned();
+        let named = variable
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && variable
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !named {
+            return Err(DaemonError::ProviderVariable { name, variable });
+        }
+        let wire_api = provider.wire_api.trim().to_owned();
+        if !matches!(wire_api.as_str(), "" | "completions" | "responses") {
+            return Err(DaemonError::ProviderWireApi { name, wire_api });
+        }
+        let id = Some(provider.id.trim())
+            .filter(|id| !id.is_empty())
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
+        Ok(Self {
+            id,
+            name,
+            kind,
+            base_url,
+            key_variable: variable,
+            wire_api,
+        })
+    }
+}
+
+/// A host's providers as the app sent them, to replace the ones it has.
+pub fn read_providers(list: pb::ProviderList) -> Result<Vec<ProviderConfig>, DaemonError> {
+    list.providers
+        .into_iter()
+        .map(ProviderConfig::read)
+        .collect()
+}
+
+/// `providers` as clients are told of them.
+pub fn provider_infos(providers: &[ProviderConfig]) -> Vec<pb::Provider> {
+    providers.iter().map(ProviderConfig::info).collect()
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -122,6 +227,7 @@ impl HostConfig {
                 .unwrap_or_default(),
             env_names: self.env.keys().cloned().collect(),
             setup_script: self.setup_script.clone(),
+            providers: provider_infos(&self.providers),
         }
     }
 
@@ -948,6 +1054,90 @@ Host !bad *.internal build
 
         assert_eq!(loaded.hosts, hosts.hosts);
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn a_hosts_providers_are_kept_with_their_variables_name_and_told_to_clients() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = dir.path().join("hosts.json");
+        let sent = pb::ProviderList {
+            providers: vec![pb::Provider {
+                id: String::new(),
+                name: " Go ".to_owned(),
+                kind: pb::ProviderKind::OpencodeGo.into(),
+                base_url: "https://opencode.ai/inference/go".to_owned(),
+                key_variable: "OPENCODE_API_KEY".to_owned(),
+                wire_api: String::new(),
+            }],
+        };
+        let providers = read_providers(sent).unwrap_or_else(|error| panic!("{error}"));
+        assert!(!providers[0].id.is_empty());
+        let config = HostConfig {
+            env: BTreeMap::from([("OPENCODE_API_KEY".to_owned(), "sk-secret".to_owned())]),
+            providers,
+            ..HostConfig::default()
+        };
+        let hosts = Hosts {
+            hosts: BTreeMap::from([("far".to_owned(), config.clone())]),
+            ..Hosts::default()
+        };
+        hosts.save(&path).unwrap_or_else(|error| panic!("{error}"));
+        let loaded = Hosts::load(&path).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(loaded.hosts["far"], config);
+
+        let info = loaded.hosts["far"].info("far");
+        assert_eq!(info.providers.len(), 1);
+        assert_eq!(info.providers[0].name, "Go");
+        assert_eq!(info.providers[0].kind(), pb::ProviderKind::OpencodeGo);
+        assert_eq!(info.providers[0].key_variable, "OPENCODE_API_KEY");
+        assert!(!format!("{info:?}").contains("sk-secret"));
+    }
+
+    #[test]
+    fn a_provider_that_names_no_kind_address_or_variable_is_refused() {
+        let good = pb::Provider {
+            id: "p".to_owned(),
+            name: "Mine".to_owned(),
+            kind: pb::ProviderKind::Openai.into(),
+            base_url: "https://models.example/v1".to_owned(),
+            key_variable: "MY_KEY".to_owned(),
+            wire_api: "responses".to_owned(),
+        };
+        let read = |provider: pb::Provider| {
+            read_providers(pb::ProviderList {
+                providers: vec![provider],
+            })
+        };
+        assert!(read(good.clone()).is_ok());
+        assert!(matches!(
+            read(pb::Provider {
+                kind: 0,
+                ..good.clone()
+            }),
+            Err(DaemonError::ProviderKind { .. })
+        ));
+        assert!(matches!(
+            read(pb::Provider {
+                base_url: "models.example".to_owned(),
+                ..good.clone()
+            }),
+            Err(DaemonError::ProviderUrl { .. })
+        ));
+        // A key typed where the variable's name goes isn't kept.
+        assert!(matches!(
+            read(pb::Provider {
+                key_variable: "sk-ant-123".to_owned(),
+                ..good.clone()
+            }),
+            Err(DaemonError::ProviderVariable { .. })
+        ));
+        assert!(matches!(
+            read(pb::Provider {
+                wire_api: "chat".to_owned(),
+                ..good
+            }),
+            Err(DaemonError::ProviderWireApi { .. })
+        ));
     }
 
     #[test]

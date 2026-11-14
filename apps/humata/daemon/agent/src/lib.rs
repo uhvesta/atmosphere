@@ -24,6 +24,7 @@ mod log;
 mod mcp_client;
 mod paths;
 mod plugins;
+mod provider;
 mod runtime;
 mod scripted;
 mod slash;
@@ -39,8 +40,9 @@ pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider
 pub use env::Env;
 pub use error::AgentError;
 pub use event::{
-    ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent, PermissionKind,
-    SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions, SubagentStatus,
+    Access, ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent,
+    PermissionKind, SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
+    SubagentStatus,
 };
 pub use humata_workspace::bundle;
 pub use humata_workspace::{

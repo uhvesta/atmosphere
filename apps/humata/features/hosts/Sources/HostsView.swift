@@ -549,11 +549,84 @@ struct HostEditorSections: View {
     var body: some View {
         Group {
             variables
+            providers
             if !store.host.isCoordinator {
                 setupScript
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    /// The providers its sessions can pay for with a key of the person's
+    /// own, each naming the variable above that holds the key.
+    @ViewBuilder private var providers: some View {
+        Section {
+            ForEach($store.providers) { $provider in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        TextField("Name", text: $provider.name, prompt: Text(provider.kind.title))
+                        Text(provider.kind.title)
+                            .foregroundStyle(.secondary)
+                        Button {
+                            store.send(.removeProviderTapped(provider.id))
+                        } label: {
+                            Label("Remove \(provider.name)", systemImage: "minus.circle")
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    TextField("Base URL", text: $provider.baseURL, prompt: Text(provider.kind.baseURL))
+                    TextField("Key Variable", text: $provider.keyVariable, prompt: Text(provider.kind.keyVariable))
+                        .font(.body.monospaced())
+                    if provider.takesWireAPI {
+                        Picker("Copilot Asks With", selection: $provider.wireAPI) {
+                            Text("Chat Completions").tag(HostProvider.WireAPI.completions)
+                            Text("Responses").tag(HostProvider.WireAPI.responses)
+                        }
+                    }
+                    if let problem = store.state.problem(with: provider) {
+                        Text(problem)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    } else if !store.state.keyIsSet(for: provider) {
+                        HStack {
+                            Text(
+                                "\(provider.keyVariable) isn't set, so new sessions aren't offered it. Add it under "
+                                    + "Variables with the key as its value."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Add \(provider.keyVariable)") { store.send(.addKeyVariableTapped(provider.id)) }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            HStack {
+                Menu("Add Provider") {
+                    ForEach(HostProvider.Kind.allCases, id: \.self) { kind in
+                        Button(kind.title) { store.send(.addProviderTapped(kind)) }
+                    }
+                }
+                .fixedSize()
+                if store.host.isCoordinator {
+                    // This Mac has no setup script to save them with.
+                    Spacer()
+                    saveButton
+                }
+            }
+        } header: {
+            Text("Model Providers")
+        } footer: {
+            Text(
+                "Pay for a session's model with a key of your own: Claude Code on the Anthropic API, a local "
+                    + "model on an OpenAI-compatible server or OpenCode Go, Copilot on any. Each names the variable "
+                    + "that holds its key; the key itself stays among the variables, never here."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private var variables: some View {
@@ -581,14 +654,7 @@ struct HostEditorSections: View {
                 }
                 .labelsHidden()
             }
-            HStack {
-                Button("Add Variable") { store.send(.addVariableTapped) }
-                if store.host.isCoordinator {
-                    // This Mac has no setup script to save them with.
-                    Spacer()
-                    saveButton
-                }
-            }
+            Button("Add Variable") { store.send(.addVariableTapped) }
             if !store.badNames.isEmpty {
                 Text(
                     "\(store.badNames.formatted(.list(type: .and))) can't be a variable's name: use letters, "

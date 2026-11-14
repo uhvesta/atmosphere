@@ -11,7 +11,7 @@ final class DaemonLifecycleTests: XCTestCase {
     private func service(current: Bool, restarts: LockIsolated<Int>) -> DaemonService {
         DaemonService(
             start: {}, isCurrent: { current && restarts.value == 0 }, restart: { restarts.withValue { $0 += 1 } },
-            openLoginItems: {})
+            openLoginItems: {}, stop: {})
     }
 
     func testTheAppsOwnDaemonIsUsedAsItIs() async {
@@ -146,7 +146,7 @@ final class DaemonLifecycleTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = DaemonService(
                 start: { if !approved.value { throw DaemonServiceError.needsApproval } }, isCurrent: { true },
-                restart: {}, openLoginItems: { opened.setValue(true) })
+                restart: {}, openLoginItems: { opened.setValue(true) }, stop: {})
             $0.daemon = InMemoryDaemon().client
         }
         store.exhaustivity = .off

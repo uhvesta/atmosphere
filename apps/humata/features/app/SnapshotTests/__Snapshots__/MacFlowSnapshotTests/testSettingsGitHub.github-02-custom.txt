@@ -1,4 +1,6 @@
 [Window/StandardWindow] ""
+  [Heading] "Sign-In"
+  [StaticText] "" value: "Humata uses the GitHub command line's sign-in (gh auth login), or GH_TOKEN in Hosts › This Mac's variables, to open and follow pull requests and to list saved owners' repositories."
   [Heading] "Pull Requests"
   [StaticText] "" value: "Read pull requests"
   [PopUpButton] "" value: "Automatically"

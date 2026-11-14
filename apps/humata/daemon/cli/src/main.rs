@@ -239,6 +239,12 @@ enum ItemCommand {
         status: Status,
         #[arg(long, value_enum, default_value_t = Priority::None)]
         priority: Priority,
+        /// Add a milestone, which holds tasks; not with --parent.
+        #[arg(long)]
+        milestone: bool,
+        /// An item it waits on, by id; give it again for each.
+        #[arg(long = "depends-on")]
+        depends_on: Vec<String>,
     },
     /// Change a task or subtask.
     Edit {
@@ -357,6 +363,28 @@ enum BoardCommand {
     },
     /// Put an item back as it was before a change.
     Revert { change: u64 },
+    /// Make an item wait on others: it is blocked until they are done.
+    /// Refused if it would close a loop.
+    Link {
+        /// The item that waits.
+        item: String,
+        /// The items it waits on, by id.
+        #[arg(required = true)]
+        on: Vec<String>,
+    },
+    /// Stop an item waiting on others.
+    Unlink {
+        item: String,
+        /// The items it no longer waits on, by id.
+        #[arg(required = true)]
+        on: Vec<String>,
+    },
+    /// Print a project's items in the order to take them: each after what
+    /// it depends on, a milestone's tasks under it.
+    Plan {
+        #[arg(long)]
+        project: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -770,6 +798,10 @@ enum Command {
         /// repositories, so it starts at once.
         #[arg(long, requires = "project", conflicts_with_all = ["directory", "item"])]
         planning: bool,
+        /// With --planning: plan with a copy of the code to read, kept at
+        /// the latest its origin has. Nothing is written there.
+        #[arg(long, requires = "planning")]
+        with_code: bool,
     },
     /// Send a message to a session.
     Send {
@@ -1153,6 +1185,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 skills,
                 repositories,
                 agent_sessions: None,
+                plan_with_code: None,
             });
             match client.call(request).await? {
                 Response::ProjectUpdated(_) => {}
@@ -1244,12 +1277,54 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                             pb::ItemField::Spec => "spec",
                             pb::ItemField::Status => "status",
                             pb::ItemField::Priority => "priority",
+                            pb::ItemField::Kind => "kind",
+                            pb::ItemField::DependsOn => {
+                                eprintln!(
+                                    "Left a link off: the item it led to is gone, or the link would now close a loop."
+                                );
+                                continue;
+                            }
                             pb::ItemField::Unspecified => continue,
                         };
                         eprintln!("Kept the {name}: it changed again since.");
                     }
                 }
                 other => return Err(unexpected("the reverted change", &other)),
+            }
+        }
+        Command::Board(BoardCommand::Link { item, on }) => {
+            let request = Request::UpdateItem(pb::UpdateItem {
+                item_id: item,
+                add_depends_on: on,
+                surface: pb::ChangeSurface::CommandLine.into(),
+                ..Default::default()
+            });
+            match client.call(request).await? {
+                Response::ItemUpdated(pb::ItemUpdated { item: Some(item) }) => {
+                    println!("{}", print::planned(&item));
+                }
+                other => return Err(unexpected("the linked item", &other)),
+            }
+        }
+        Command::Board(BoardCommand::Unlink { item, on }) => {
+            let request = Request::UpdateItem(pb::UpdateItem {
+                item_id: item,
+                remove_depends_on: on,
+                surface: pb::ChangeSurface::CommandLine.into(),
+                ..Default::default()
+            });
+            match client.call(request).await? {
+                Response::ItemUpdated(pb::ItemUpdated { item: Some(item) }) => {
+                    println!("{}", print::planned(&item));
+                }
+                other => return Err(unexpected("the unlinked item", &other)),
+            }
+        }
+        Command::Board(BoardCommand::Plan { project }) => {
+            let mut items = items(&client, project).await?;
+            items.sort_by_key(|item| item.plan_order);
+            for item in &items {
+                println!("{}", print::planned(item));
             }
         }
         Command::Host(command) => host(&client, command).await?,
@@ -1426,6 +1501,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             instructions,
             backend_config,
             planning,
+            with_code,
         } => {
             let backend_config = match backend_config {
                 Some(path) => std::fs::read_to_string(&path)
@@ -1453,6 +1529,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 }
                 .into(),
                 planning,
+                with_code,
                 plugins: Vec::new(),
                 // The daemon's to fill in.
                 notices: Vec::new(),
@@ -1877,7 +1954,14 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
             spec,
             status,
             priority,
+            milestone,
+            depends_on,
         } => {
+            let kind = if milestone {
+                pb::ItemKind::Milestone
+            } else {
+                pb::ItemKind::Unspecified
+            };
             let request = Request::CreateItem(pb::CreateItem {
                 project_id: project,
                 parent_id: parent,
@@ -1889,6 +1973,8 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
                 status: pb::ItemStatus::from(status).into(),
                 priority: pb::Priority::from(priority).into(),
                 surface: pb::ChangeSurface::CommandLine.into(),
+                kind: kind.into(),
+                depends_on,
             });
             match client.call(request).await? {
                 Response::ItemCreated(pb::ItemCreated { item: Some(item) }) => {
@@ -1912,6 +1998,7 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
                 priority: priority.map(|priority| pb::Priority::from(priority).into()),
                 by_session_id: String::new(),
                 surface: pb::ChangeSurface::CommandLine.into(),
+                ..Default::default()
             });
             expect_ok(client.call(request).await?, updated, "ItemUpdated")?;
         }
@@ -2381,6 +2468,7 @@ async fn host(client: &Client, command: HostCommand) -> Result<(), CliError> {
                 set_env,
                 unset_env: unset,
                 setup_script: None,
+                providers: None,
             });
             saved(client.call(request).await?)?;
         }

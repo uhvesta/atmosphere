@@ -421,6 +421,10 @@ pub struct StartOptions {
     /// What the session shows before its first turn, as notices: such as
     /// that its code couldn't be fetched.
     pub notices: Vec<String>,
+    /// What its agent may do to files.
+    pub access: Access,
+    /// A planning session with the code: see [`SessionRecord::follows_base`].
+    pub follows_base: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -444,6 +448,10 @@ pub struct ForkOptions {
     /// A side chat: it may read but never write files or run commands,
     /// whatever its approval mode, and so are the forks made from it.
     pub read_only: bool,
+    /// The fork's access, over its parent's, unless it or its parent is a
+    /// side chat. With [`Access::Full`], a fork of a planning session with
+    /// the code is a working session: its copy is its own to change.
+    pub access: Option<Access>,
 }
 
 /// Changes to a session's record; None leaves a field as it is.
@@ -463,7 +471,59 @@ pub struct SessionUpdate {
     /// the one it started with. `Some(None)` goes back to the backend's
     /// default. A change is recorded in the history as a notice.
     pub model: Option<Option<String>>,
+    /// Between [`Access::Full`] and [`Access::Plan`]: the tools its agent
+    /// is offered change from the next turn, and what it asks to change is
+    /// refused at once. A change is recorded in the history as a notice.
+    /// Refused for a side chat and for a planning session with the code.
+    pub access: Option<Access>,
 }
+
+/// What a session's agent may do to files and with commands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Access {
+    /// It writes files and runs commands, as its approval mode lets it.
+    #[default]
+    Full,
+    /// It reads, searches and proposes through Humata's tools: every
+    /// request to write a file or run a command is refused without asking,
+    /// and its backend offers it no tool that does either.
+    Plan,
+    /// A side chat: held to reading as [`Access::Plan`] is, and it
+    /// proposes nothing.
+    SideChat,
+}
+
+impl Access {
+    /// Whether it is held to reading: anything but [`Access::Full`].
+    pub fn reads_only(self) -> bool {
+        self != Self::Full
+    }
+
+    fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+}
+
+/// A record's access as it is stored: by name, or, in records written
+/// before there were levels, as whether the session was a read-only side
+/// chat.
+fn stored_access<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Access, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        ReadOnly(bool),
+        Access(Access),
+    }
+    Ok(match Stored::deserialize(deserializer)? {
+        Stored::ReadOnly(true) => Access::SideChat,
+        Stored::ReadOnly(false) => Access::Full,
+        Stored::Access(access) => access,
+    })
+}
+
+/// Told to the agent of a session in [`Access::Plan`], after its other
+/// instructions, for as long as it is.
+const PLAN_INSTRUCTIONS: &str = "This session is in plan mode. You can read and search the code, but every request to edit or write a file or to run a command is refused. Work out what to do from what you can read, and propose it rather than doing it: with Humata's propose tools when you have them, and otherwise in your reply.";
 
 /// Where a fork came from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -505,21 +565,54 @@ pub struct SessionRecord {
     /// Copilot's experimental features.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub experimental: bool,
-    /// A side chat: its agent may read, but every request to write a file
-    /// or run a command is refused without asking.
+    /// What its agent may do to files. Records written before there were
+    /// levels say `read_only` instead, true for a side chat.
+    #[serde(
+        default,
+        alias = "read_only",
+        deserialize_with = "stored_access",
+        skip_serializing_if = "Access::is_full"
+    )]
+    pub access: Access,
+    /// A planning session with the code: as each of its turns starts, the
+    /// copy of the code it owns is fetched and moved to its origin's
+    /// default branch, while it holds no changes. Its access stays
+    /// [`Access::Plan`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub read_only: bool,
+    pub follows_base: bool,
+    /// For a session that follows its base: the commit each repository's
+    /// copy was on as its last turn started, by the repository's name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub code_at: BTreeMap<String, String>,
 }
 
 impl SessionRecord {
-    /// What the session may do without asking, as its turns take it: a
-    /// read-only session always asks, so no judge or mode lets a change
+    /// Whether its agent is held to reading: a side chat, or a session in
+    /// plan mode.
+    pub fn reads_only(&self) -> bool {
+        self.access.reads_only()
+    }
+
+    /// What the session may do without asking, as its turns take it: one
+    /// held to reading always asks, so no judge or mode lets a change
     /// through before it's refused.
     pub fn approval_in_effect(&self) -> ApprovalMode {
-        if self.read_only {
+        if self.reads_only() {
             ApprovalMode::AskEveryTime
         } else {
             self.approval
+        }
+    }
+
+    /// The instructions its agent is given as a turn starts: its own, and
+    /// in plan mode what that means for it.
+    pub fn instructions_in_effect(&self) -> Option<String> {
+        match (&self.instructions, self.access) {
+            (Some(instructions), Access::Plan) => {
+                Some(format!("{instructions}\n\n{PLAN_INSTRUCTIONS}"))
+            }
+            (None, Access::Plan) => Some(PLAN_INSTRUCTIONS.to_owned()),
+            (instructions, _) => instructions.clone(),
         }
     }
 }

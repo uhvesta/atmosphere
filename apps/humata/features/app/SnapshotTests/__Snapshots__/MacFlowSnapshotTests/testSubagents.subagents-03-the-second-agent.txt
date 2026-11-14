@@ -20,7 +20,7 @@
     [RadioButton/Segment] "Files" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
   [Button] "Agents" help: "The subagents this session's agent started: what each did, how long it took and what it used" id: session.agents
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
+  [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is" id: arrow.triangle.branch
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself" id: folder
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
@@ -32,6 +32,7 @@
     [StaticText] "" value: "The parser is in src/parser.rs, and its 42 tests pass."
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Plan Mode" help: "Plan mode: from the next message, the agent reads and proposes, and changes no files"
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

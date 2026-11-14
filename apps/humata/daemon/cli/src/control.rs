@@ -468,10 +468,33 @@ fn tool_list() -> Vec<Tool> {
                 "title": string("Its title"),
                 "spec": string("What it is and when it's done, in Markdown"),
                 "parent_id": string("The task to put it under, for a subtask"),
+                "kind": string("milestone, for one that holds tasks, or task; a task if left out. Not milestone with parent_id"),
+                "depends_on": {"type": "array", "items": {"type": "string"},
+                    "description": "Ids, from board, of the items it waits on"},
                 "note": string("Why, for the person deciding"),
             }),
             required: &["project_id", "title"],
             effect: Effect::Changes,
+        },
+        Tool {
+            name: "propose_dependency",
+            description: "Proposes that an item on a project's board waits on others: it is blocked until they are done, and comes after them in plan. Milestones and tasks can wait on either. The links are made only when the person applies it on the board in Humata, and refused then if they would close a loop.",
+            properties: json!({
+                "project_id": project(),
+                "item_id": string("The item that waits, from board"),
+                "depends_on": {"type": "array", "items": {"type": "string"},
+                    "description": "Ids, from board, of the items it waits on"},
+                "note": string("Why, for the person deciding"),
+            }),
+            required: &["project_id", "item_id", "depends_on"],
+            effect: Effect::Changes,
+        },
+        Tool {
+            name: "plan",
+            description: "A project's items in the order to take them, each after what it depends on and a milestone's tasks under it, one per line: id, milestone or task, status, ready or blocked or finished, the ids it waits on, title.",
+            properties: json!({"project_id": project()}),
+            required: &["project_id"],
+            effect: Effect::Reads,
         },
         Tool {
             name: "read_spec",
@@ -542,8 +565,8 @@ fn switches(name: &'static str) -> Vec<&'static str> {
         // They wait on the session by following its chat.
         "send_message" | "approve" => vec![name, "read_history"],
         "read_event" => vec!["read_history"],
-        "read_spec" | "list_proposals" => vec!["board"],
-        "propose_task" | "propose_spec_edit" => vec!["propose"],
+        "read_spec" | "list_proposals" | "plan" => vec!["board"],
+        "propose_task" | "propose_spec_edit" | "propose_dependency" => vec!["propose"],
         "decline_proposal" => vec!["apply_proposal"],
         "update_item" => vec!["create_item"],
         // Following an approval is never off.
@@ -594,6 +617,19 @@ impl Arguments<'_> {
             .map(str::trim)
             .unwrap_or_default()
             .to_owned()
+    }
+
+    /// A list of strings, each trimmed, without the empty ones; none when
+    /// not given.
+    pub(crate) fn texts(&self, field: &str) -> Vec<String> {
+        self.0[field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|text| text.as_str().map(str::trim))
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     pub(crate) fn required(&self, field: &str) -> Result<String, String> {
@@ -732,6 +768,16 @@ fn before<'a>(
         .and_then(|last| usize::try_from(last).ok())
         .map_or(0, |last| shown.len().saturating_sub(last));
     Ok(shown[skip..].to_vec())
+}
+
+/// The kind `given` names for a new item; unspecified, a task, for none.
+pub(crate) fn item_kind(given: &str) -> Result<pb::ItemKind, String> {
+    match given {
+        "" => Ok(pb::ItemKind::Unspecified),
+        "task" => Ok(pb::ItemKind::Task),
+        "milestone" => Ok(pb::ItemKind::Milestone),
+        other => Err(format!("kind is milestone or task, not {other:?}")),
+    }
 }
 
 /// Proposes `propose`, which waits for the person on the board.
@@ -1021,9 +1067,37 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 spec: arguments.0["spec"].as_str().unwrap_or_default().to_owned(),
                 parent_id: arguments.text("parent_id"),
                 note: arguments.text("note"),
+                item_kind: item_kind(&arguments.text("kind"))?.into(),
+                depends_on: arguments.texts("depends_on"),
                 ..Default::default()
             };
             proposed(client, propose).await
+        }
+        "propose_dependency" => {
+            let depends_on = arguments.texts("depends_on");
+            if depends_on.is_empty() {
+                return Err(
+                    "give depends_on, the ids from board of the items it waits on".to_owned(),
+                );
+            }
+            let propose = pb::Propose {
+                project_id: arguments.required("project_id")?,
+                kind: pb::ProposalKind::Dependency.into(),
+                item_id: arguments.required("item_id")?,
+                depends_on,
+                note: arguments.text("note"),
+                ..Default::default()
+            };
+            proposed(client, propose).await
+        }
+        "plan" => {
+            let mut items = items(client, arguments.required("project_id")?).await?;
+            items.sort_by_key(|item| item.plan_order);
+            Ok(lines(
+                &items,
+                print::planned,
+                "The board is empty; suggest a task with propose_task.",
+            ))
         }
         "read_spec" => {
             let item = arguments.required("item_id")?;

@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
@@ -33,6 +33,9 @@
   [Toolbar] ""
     [Button] "Add Project"
     [Button] "Hide Sidebar"
+    [RadioGroup] "Show" help: "Show the board as a column per status, or as the plan: each item after what it waits on"
+      [RadioButton/Segment] "Column View" value: "1" id: rectangle.split.3x1
+      [RadioButton/Segment] "point.3.connected.trianglepath.dotted" value: "0" id: point.3.connected.trianglepath.dotted
     [Button] "Undo"
     [Button] "History"
     [Button] "Import Issues"
@@ -49,6 +52,8 @@
     [StaticText] "" value: "In Review"
     [StaticText] "" value: "Priority"
     [PopUpButton] "" value: "None"
+    [StaticText] "" value: "Kind"
+    [PopUpButton] "" value: "Task" help: "A milestone holds tasks, and depending on it waits for all of them"
     [Heading] "Spec"
     [Button] "Email and password, with an error under the wrong field." help: "Comment on this part of the spec"
     [StaticText] "" value: "Commented"
@@ -63,7 +68,8 @@
     [Button] "Send Comment"
     [Heading] "Subtasks"
     [Button] "Add Subtask…"
-    [Heading] "Sessions"
+    [Heading] "Depends On"
+    [StaticText] "" value: "Sessions"
     [Button] "Login form, 0 files changed"
     [Button] "Start Work" help: "Start a session with your last New Session settings, told to do what the spec says"
     [Button] "Start Session…"

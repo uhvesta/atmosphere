@@ -12,11 +12,12 @@ use humata_wire::pb;
 use prost::Message as _;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::board::{Author, Change, Item, ItemFields, ItemPatch, Priority, Status};
+use crate::board::{Author, Change, Item, ItemFields, ItemPatch, Kind, Priority, Status};
 use crate::error::StoreError;
 
 mod agent_sessions;
 mod approvals;
+mod links;
 mod planning;
 mod pulls;
 mod recoveries;
@@ -495,6 +496,20 @@ const MIGRATIONS: &[&str] = &["
     -- turns it had, is told from one left alone. A session indexed before
     -- has 0, which is filled in when it's next looked at.
     ALTER TABLE search_sessions ADD COLUMN last_active_unix_ms INTEGER NOT NULL DEFAULT 0;
+", "
+    -- Whether an item was set to be a milestone or a task. 'auto', as every
+    -- item from before has, goes by whether it has tasks under it.
+    ALTER TABLE items ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto';
+    -- The items each item waits on, within its project.
+    CREATE TABLE item_dependencies (
+        item_id TEXT NOT NULL REFERENCES items (id) ON DELETE CASCADE,
+        depends_on_id TEXT NOT NULL REFERENCES items (id) ON DELETE CASCADE,
+        PRIMARY KEY (item_id, depends_on_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX item_dependencies_by_target ON item_dependencies (depends_on_id);
+    -- The items that waited on a deleted item, one id a line, linked to it
+    -- again when the deletion is reverted.
+    ALTER TABLE board_changes ADD COLUMN dependents TEXT NOT NULL DEFAULT '';
 "];
 
 /// What reverting a board change did.
@@ -526,6 +541,9 @@ pub struct Project {
     /// What its agents may do to other sessions; the defaults when the
     /// person chose nothing.
     pub agent_sessions: pb::AgentSessions,
+    /// Whether Plan With an Agent starts with a copy of the code in it,
+    /// until the person says otherwise for a session.
+    pub plan_with_code: bool,
 }
 
 /// What the daemon knows of a session, beyond what its host says.
@@ -638,6 +656,7 @@ impl Store {
             plugins: Vec::new(),
             defaults: None,
             agent_sessions: agent_sessions::defaults(),
+            plan_with_code: false,
         };
         let mut connection = self.lock();
         let added = (|| {
@@ -756,7 +775,7 @@ impl Store {
         let listed = (|| -> rusqlite::Result<Vec<Item>> {
             let mut statement = connection.prepare_cached(
                 "SELECT id, project_id, parent_id, title, '', status, priority,
-                     created_unix_ms, updated_unix_ms FROM items",
+                     created_unix_ms, updated_unix_ms, kind FROM items",
             )?;
             statement.query_map([], item_row)?.collect()
         })();
@@ -1242,13 +1261,44 @@ impl Store {
                     title: parent.fields.title,
                 });
             }
+            if fields.kind == Kind::Milestone {
+                return Err(StoreError::MilestoneUnderItem {
+                    title: fields.title,
+                    parent: parent.fields.title,
+                });
+            }
+        }
+        let mut fields = fields;
+        fields.depends_on.sort();
+        fields.depends_on.dedup();
+        let mut waits_on = Vec::with_capacity(fields.depends_on.len());
+        for on in &fields.depends_on {
+            let on = self.item(on)?;
+            if on.project_id != project {
+                return Err(StoreError::DependencyInAnotherProject {
+                    title: fields.title,
+                    on: on.fields.title,
+                });
+            }
+            waits_on.push(on);
         }
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_unix_ms();
         let mut connection = self.lock();
+        // The item it can't wait on, and the loop that would make. A new
+        // item has nothing waiting on it, but its milestone waits on it.
+        let mut looped = None;
         let added = (|| {
             let transaction = connection.transaction()?;
             insert_item(&transaction, &id, project, &fields, now)?;
+            for on in &waits_on {
+                links::add(&transaction, &id, &on.id)?;
+                if let Some(path) = links::looped(&transaction, project, &id)? {
+                    looped = Some((on.fields.title.clone(), path));
+                    // Dropped unsaved, which takes the item back out.
+                    return Ok(false);
+                }
+            }
             log(
                 &transaction,
                 project,
@@ -1272,7 +1322,15 @@ impl Store {
             }
             transaction.commit().map(|()| true)
         })();
-        if !added.map_err(self.failed())? {
+        let added = added.map_err(self.failed())?;
+        if let Some((on, path)) = looped {
+            return Err(StoreError::DependencyCycle {
+                title: fields.title,
+                on,
+                path,
+            });
+        }
+        if !added {
             return Err(StoreError::AlreadyDecided {
                 proposal: proposed
                     .map(|(_, proposal)| proposal)
@@ -1296,11 +1354,7 @@ impl Store {
     ) -> Result<Item, StoreError> {
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
-        let read = |transaction: &Transaction<'_>| {
-            transaction
-                .query_row(&format!("{ITEM_COLUMNS} WHERE id = ?1"), [id], item_row)
-                .optional()
-        };
+        let read = |transaction: &Transaction<'_>| read_item(transaction, id);
         let item = read(&transaction)
             .map_err(self.failed())?
             .ok_or_else(|| StoreError::UnknownItem { id: id.to_owned() })?;
@@ -1320,6 +1374,60 @@ impl Store {
         if let Some(priority) = patch.priority {
             fields.priority = priority;
         }
+        if let Some(kind) = patch.kind {
+            if kind == Kind::Milestone
+                && let Some(parent) = &fields.parent_id
+            {
+                let parent = read_item(&transaction, parent)
+                    .map_err(self.failed())?
+                    .map(|parent| parent.fields.title)
+                    .unwrap_or_default();
+                return Err(StoreError::MilestoneUnderItem {
+                    title: fields.title,
+                    parent,
+                });
+            }
+            fields.kind = kind;
+        }
+        for on in &patch.unlink {
+            if fields.depends_on.contains(on) {
+                links::remove(&transaction, id, on).map_err(self.failed())?;
+                fields.depends_on.retain(|kept| kept != on);
+            }
+        }
+        for on in &patch.link {
+            if fields.depends_on.contains(on) {
+                continue;
+            }
+            if on == id {
+                return Err(StoreError::DependsOnItself {
+                    title: fields.title,
+                });
+            }
+            let on = read_item(&transaction, on)
+                .map_err(self.failed())?
+                .ok_or_else(|| StoreError::UnknownItem { id: on.clone() })?;
+            if on.project_id != item.project_id {
+                return Err(StoreError::DependencyInAnotherProject {
+                    title: fields.title,
+                    on: on.fields.title,
+                });
+            }
+            // Leaving here with an error drops the transaction, and the
+            // link with it.
+            links::add(&transaction, id, &on.id).map_err(self.failed())?;
+            if let Some(path) =
+                links::looped(&transaction, &item.project_id, id).map_err(self.failed())?
+            {
+                return Err(StoreError::DependencyCycle {
+                    title: fields.title,
+                    on: on.fields.title,
+                    path,
+                });
+            }
+            fields.depends_on.push(on.id);
+        }
+        fields.depends_on.sort();
         let updated = (|| {
             if fields == item.fields {
                 return with_sessions(&transaction, item);
@@ -1379,15 +1487,7 @@ impl Store {
             });
         }
         let deleted = (|| {
-            transaction.execute("DELETE FROM items WHERE id = ?1", [id])?;
-            log(
-                &transaction,
-                &item.project_id,
-                id,
-                (Some(&item.fields), None),
-                None,
-                author,
-            )?;
+            links::remove_item(&transaction, &item, None, author)?;
             transaction.execute(
                 "UPDATE board_changes SET sessions = ?1 WHERE id = last_insert_rowid()",
                 [detach.join("\n")],
@@ -1399,9 +1499,7 @@ impl Store {
 
     pub fn item(&self, id: &str) -> Result<Item, StoreError> {
         let connection = self.lock();
-        let found = connection
-            .query_row(&format!("{ITEM_COLUMNS} WHERE id = ?1"), [id], item_row)
-            .optional()
+        let found = read_item(&connection, id)
             .and_then(|found| {
                 found
                     .map(|item| with_sessions(&connection, item))
@@ -1438,9 +1536,13 @@ impl Store {
                 let (item, session) = row?;
                 sessions.entry(item).or_default().push(session);
             }
+            let mut depends_on = links::of_project(&connection, project)?;
             for item in &mut items {
                 if let Some(ids) = sessions.remove(&item.id) {
                     item.session_ids = ids;
+                }
+                if let Some(ids) = depends_on.remove(&item.id) {
+                    item.fields.depends_on = ids;
                 }
             }
             Ok(items)
@@ -1533,14 +1635,7 @@ impl Store {
                 |row| row.get(0),
             )
             .map_err(self.failed())?;
-        let current = connection
-            .query_row(
-                &format!("{ITEM_COLUMNS} WHERE id = ?1"),
-                [&change.item_id],
-                item_row,
-            )
-            .optional()
-            .map_err(self.failed())?;
+        let current = read_item(&connection, &change.item_id).map_err(self.failed())?;
         let now = now_unix_ms();
         let mut kept = Vec::new();
         let transaction = connection.transaction().map_err(self.failed())?;
@@ -1563,25 +1658,34 @@ impl Store {
                         sessions,
                     });
                 }
-                transaction
-                    .execute("DELETE FROM items WHERE id = ?1", [&item.id])
-                    .map_err(self.failed())?;
-                log(
-                    &transaction,
-                    &project,
-                    &item.id,
-                    (Some(&item.fields), None),
-                    Some(id),
-                    author,
-                )
-                .map_err(self.failed())?;
+                links::remove_item(&transaction, &item, Some(id), author).map_err(self.failed())?;
             }
             // Already gone; nothing to undo.
             (None, None) => {}
             (Some(before), Some(item)) => {
                 let after = change.after.as_ref().unwrap_or(&item.fields);
-                let (back, skipped) = put_back(&before, after, &item.fields);
+                let (mut back, skipped) = put_back(&before, after, &item.fields);
                 kept = skipped;
+                // The links the change took off go back on where they
+                // still can: the other item may be gone, or a link made
+                // since may now close a loop with it.
+                let (wanted, stay): (Vec<String>, Vec<String>) = back
+                    .depends_on
+                    .into_iter()
+                    .partition(|on| !item.fields.depends_on.contains(on));
+                for on in &item.fields.depends_on {
+                    if !stay.contains(on) {
+                        links::remove(&transaction, &item.id, on).map_err(self.failed())?;
+                    }
+                }
+                let linked = links::relink(&transaction, &project, &item.id, &wanted)
+                    .map_err(self.failed())?;
+                if linked.len() < wanted.len() {
+                    kept.push(pb::ItemField::DependsOn);
+                }
+                back.depends_on = stay;
+                back.depends_on.extend(linked);
+                back.depends_on.sort();
                 if back != item.fields {
                     update_fields(&transaction, &item.id, &back).map_err(self.failed())?;
                     log(
@@ -1612,8 +1716,17 @@ impl Store {
                         });
                     }
                 }
+                // With the links it had that can still be made.
+                let mut before = before;
+                let wanted = std::mem::take(&mut before.depends_on);
                 insert_item(&transaction, &change.item_id, &project, &before, now)
                     .map_err(self.failed())?;
+                before.depends_on = links::relink(&transaction, &project, &change.item_id, &wanted)
+                    .map_err(self.failed())?;
+                before.depends_on.sort();
+                if before.depends_on.len() < wanted.len() {
+                    kept.push(pb::ItemField::DependsOn);
+                }
                 // Its sessions come back too, unless they went elsewhere.
                 let sessions: String = transaction
                     .query_row(
@@ -1640,6 +1753,9 @@ impl Store {
                     author,
                 )
                 .map_err(self.failed())?;
+                // What waited on it waits on it again.
+                links::restore_dependents(&transaction, &project, &change.item_id, id, author)
+                    .map_err(self.failed())?;
             }
         }
         transaction.commit().map_err(self.failed())?;
@@ -1654,9 +1770,23 @@ impl Store {
 }
 
 const ITEM_COLUMNS: &str = "SELECT id, project_id, parent_id, title, spec, status, priority,
-    created_unix_ms, updated_unix_ms FROM items";
+    created_unix_ms, updated_unix_ms, kind FROM items";
 
-/// An item's row, without its sessions.
+/// Item `id` with what it depends on, without its sessions; None if there
+/// is no such item.
+fn read_item(connection: &Connection, id: &str) -> rusqlite::Result<Option<Item>> {
+    let found = connection
+        .query_row(&format!("{ITEM_COLUMNS} WHERE id = ?1"), [id], item_row)
+        .optional()?;
+    found
+        .map(|mut item| {
+            item.fields.depends_on = links::of_item(connection, id)?;
+            Ok(item)
+        })
+        .transpose()
+}
+
+/// An item's row, without its sessions or what it depends on.
 fn item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
     Ok(Item {
         id: row.get(0)?,
@@ -1667,6 +1797,8 @@ fn item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
             spec: row.get(4)?,
             status: from_text(row, 5)?,
             priority: from_text(row, 6)?,
+            kind: from_text(row, 9)?,
+            depends_on: Vec::new(),
         },
         created_unix_ms: row.get(7)?,
         updated_unix_ms: row.get(8)?,
@@ -1711,6 +1843,17 @@ fn put_back(
     field!(spec, pb::ItemField::Spec);
     field!(status, pb::ItemField::Status);
     field!(priority, pb::ItemField::Priority);
+    field!(kind, pb::ItemField::Kind);
+    // Link by link: one the edit added comes off, and one it took off goes
+    // back on; other links made or removed since are left.
+    let added = |on: &String| after.depends_on.contains(on) && !before.depends_on.contains(on);
+    back.depends_on.retain(|on| !added(on));
+    for on in &before.depends_on {
+        if !after.depends_on.contains(on) && !back.depends_on.contains(on) {
+            back.depends_on.push(on.clone());
+        }
+    }
+    back.depends_on.sort();
     (back, kept)
 }
 
@@ -1794,8 +1937,8 @@ fn insert_item(
 ) -> rusqlite::Result<()> {
     transaction.execute(
         "INSERT INTO items (id, project_id, parent_id, title, spec, status, priority,
-             created_unix_ms, updated_unix_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+             created_unix_ms, updated_unix_ms, kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
         params![
             id,
             project,
@@ -1805,6 +1948,7 @@ fn insert_item(
             text::<Status>(fields.status),
             text::<Priority>(fields.priority),
             now,
+            text::<Kind>(fields.kind),
         ],
     )?;
     Ok(())
@@ -1817,7 +1961,7 @@ fn update_fields(
 ) -> rusqlite::Result<()> {
     transaction.execute(
         "UPDATE items SET title = ?2, spec = ?3, status = ?4, priority = ?5,
-             updated_unix_ms = ?6
+             updated_unix_ms = ?6, kind = ?7
          WHERE id = ?1",
         params![
             id,
@@ -1826,6 +1970,7 @@ fn update_fields(
             text::<Status>(fields.status),
             text::<Priority>(fields.priority),
             now_unix_ms(),
+            text::<Kind>(fields.kind),
         ],
     )?;
     Ok(())
@@ -1905,6 +2050,7 @@ fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         plugins: Vec::new(),
         defaults: None,
         agent_sessions: agent_sessions::defaults(),
+        plan_with_code: false,
     })
 }
 
@@ -1931,6 +2077,7 @@ fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Res
     let plugins = settings::project_plugins(connection, &project.id)?;
     let defaults = settings::session_defaults(connection, &project.id)?;
     let agent_sessions = agent_sessions::of_project(connection, &project.id)?;
+    let plan_with_code = planning::plan_with_code(connection, &project.id)?;
     Ok(Project {
         repositories,
         urls,
@@ -1938,6 +2085,7 @@ fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Res
         plugins,
         defaults,
         agent_sessions,
+        plan_with_code,
         ..project
     })
 }
@@ -2044,6 +2192,7 @@ mod tests {
             priority: Priority::None,
             title: "Tidy the schema".into(),
             spec: String::new(),
+            ..ItemFields::default()
         };
         let author = Author::on(pb::ChangeSurface::Mcp);
         store
@@ -2298,6 +2447,7 @@ mod tests {
                 priority: Priority::None,
                 title: format!("Tidy {name}"),
                 spec: "a long spec".into(),
+                ..ItemFields::default()
             };
             added.push(store.add_item(&project.id, fields, &author).expect("added"));
         }
@@ -2338,6 +2488,7 @@ mod tests {
             priority: Priority::None,
             title: title.into(),
             spec: String::new(),
+            ..ItemFields::default()
         }
     }
 

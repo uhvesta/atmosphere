@@ -381,6 +381,46 @@ public struct ModelPill: View {
     }
 }
 
+/// Plan mode in the composer: on, the agent reads, searches and proposes
+/// from its next turn, and every change it asks for is refused.
+public struct PlanToggle: View {
+    let isOn: Bool
+    let busy: Bool
+    let toggle: () -> Void
+    @ScaledMetric(relativeTo: .callout) private var height = 34.0
+
+    /// `busy` while the switch is being made, so it isn't asked twice.
+    public init(isOn: Bool, busy: Bool = false, toggle: @escaping () -> Void) {
+        self.isOn = isOn
+        self.busy = busy
+        self.toggle = toggle
+    }
+
+    public var body: some View {
+        Button(action: toggle) {
+            Label("Plan", systemImage: isOn ? "checklist.checked" : "checklist")
+                .foregroundStyle(isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                .scaledFont(.callout.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(minHeight: max(height, 34))
+                .background(
+                    isOn ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.fill.secondary), in: .capsule
+                )
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel(Text("Plan Mode"))
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .help(
+            isOn
+                ? "Plan mode is on: the agent reads and proposes, and changes no files. Click to let it change "
+                    + "files and run commands again, from the next message."
+                : "Plan mode: from the next message, the agent reads and proposes, and changes no files")
+    }
+}
+
 /// The microphone button of the composer: it records for the next
 /// message, or for a model that doesn't listen, writes what the person
 /// says into the field. Tapped again, it stops.
@@ -437,6 +477,7 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     @Binding var text: String
     let prompt: Text?
     let model: ModelPill?
+    private var planToggle: PlanToggle?
     let mic: MicButton?
     let send: SendButton
     let submit: () -> Void
@@ -462,6 +503,14 @@ public struct ChatComposer<Top: View, Attach: View>: View {
         var composer = self
         composer.token = name
         composer.removeToken = remove
+        return composer
+    }
+
+    /// Shows `toggle` beside the model's pill; nil shows none, as where
+    /// plan mode can't be switched.
+    public func plan(_ toggle: PlanToggle?) -> Self {
+        var composer = self
+        composer.planToggle = toggle
         return composer
     }
 
@@ -531,6 +580,7 @@ public struct ChatComposer<Top: View, Attach: View>: View {
                     EmptyView()
                 }
                 model
+                planToggle
                 Spacer(minLength: 0)
                 mic
                 send

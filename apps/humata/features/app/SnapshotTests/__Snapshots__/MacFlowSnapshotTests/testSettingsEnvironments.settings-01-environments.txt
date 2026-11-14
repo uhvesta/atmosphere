@@ -19,14 +19,16 @@
   [StaticText] "" value: "No Environment Selected"
   [StaticText] "" value: "Add a host to run sessions on it. Humata installs its program there over SSH."
   [Toolbar] ""
-    [RadioGroup] ""
+    [RadioGroup] "Navigation Tab Bar"
       [RadioButton/Segment] "Environments" value: "1" id: server.rack
       [RadioButton/Segment] "Approvals" value: "0" id: lock.shield
       [RadioButton/Segment] "Storage" value: "0" id: internaldrive
       [RadioButton/Segment] "GitHub" value: "0" id: arrow.triangle.pull
+      [RadioButton/Segment] "Repositories" value: "0" id: folder.badge.gearshape
       [RadioButton/Segment] "Skills" value: "0" id: books.vertical
       [RadioButton/Segment] "Plugins" value: "0" id: puzzlepiece.extension
       [RadioButton/Segment] "Models" value: "0" id: cpu
+      [RadioButton/Segment] "Agent Access" value: "0" id: hand.raised
       [RadioButton/Segment] "Terminal" value: "0" id: terminal
   [Button/CloseButton] ""
   [Button/ZoomButton] ""

@@ -43,6 +43,11 @@ package struct AppFeature {
         @Presents package var hosts: HostsFeature.State?
         /// Searching every session; nil unless it's open.
         @Presents package var search: SearchFeature.State?
+        /// The installer, in place of the window's content, for a copy
+        /// opened from outside Applications; nil once the person chose
+        /// to run this copy, and for every other build. The daemon starts
+        /// only once it's gone.
+        @Presents package var installer: InstallerFeature.State?
         /// A link opened from outside, shown once the sidebar has read
         /// what it names, which may be new.
         package var opening: HumataLink?
@@ -338,6 +343,7 @@ package struct AppFeature {
         case board(PresentationAction<BoardFeature.Action>)
         case hosts(PresentationAction<HostsFeature.Action>)
         case search(PresentationAction<SearchFeature.Action>)
+        case installer(PresentationAction<InstallerFeature.Action>)
         /// A `humata://` URL was opened, as by `humata mcp`'s show tool.
         case opened(URL)
         case settings(EnvironmentsFeature.Action)
@@ -415,7 +421,7 @@ package struct AppFeature {
                 return .none
             }
         }
-        Reduce { state, action in
+        Reduce<State, Action> { state, action in
             switch action {
             case .task:
                 // Reopening the window checks again without hiding the
@@ -834,6 +840,10 @@ package struct AppFeature {
                 guard state.sidebar.sessions[id: id] != nil else { return .none }
                 return .send(.sidebar(.selected(.session(id))))
 
+            case .installer:
+                // The installer quits this copy itself, or is put away.
+                return .none
+
             case .sidebar, .session, .side, .sendFailure, .board, .hosts, .search, .settings, .approvals, .storage,
                 .github, .agentAccess, .repositories, .skills, .plugins, .models, .textSize:
                 return .none
@@ -845,6 +855,7 @@ package struct AppFeature {
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
         .ifLet(\.$search, action: \.search) { SearchFeature() }
+        .ifLet(\.$installer, action: \.installer) { InstallerFeature() }
     }
 
     /// Shows the link opened from outside, once the sidebar has read it.

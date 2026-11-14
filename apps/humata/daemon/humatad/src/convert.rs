@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use humata_agent::{
-    Action, ApprovalMode, Changes, Edit, Event, EventKind, FileDiff, FileRef, FileStatus, Hunk,
-    HunkAt, Image, Line, LineKind, PermissionKind, Query, Range, Repository, SendMode,
+    Access, Action, ApprovalMode, Changes, Edit, Event, EventKind, FileDiff, FileRef, FileStatus,
+    Hunk, HunkAt, Image, Line, LineKind, PermissionKind, Query, Range, Repository, SendMode,
     SessionRecord, SessionState, SubagentStatus, Summary,
 };
 use humata_wire::pb;
@@ -214,7 +214,22 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
         item_title: String::new(),
         effort: record.effort.clone().unwrap_or_default(),
         experimental: record.experimental,
-        read_only: record.read_only,
+        // What a client from before access levels reads.
+        read_only: record.access == Access::SideChat,
+        access: match record.access {
+            Access::Full => pb::AccessLevel::Full,
+            Access::Plan => pb::AccessLevel::Plan,
+            Access::SideChat => pb::AccessLevel::SideChat,
+        }
+        .into(),
+        code_commits: record
+            .code_at
+            .iter()
+            .map(|(repository, commit)| pb::CodeCommit {
+                repository: repository.clone(),
+                commit: commit.clone(),
+            })
+            .collect(),
         shares_code: record
             .checkouts
             .iter()
@@ -246,6 +261,16 @@ pub fn approval_mode(mode: pb::ApprovalMode) -> ApprovalMode {
         pb::ApprovalMode::AllowEdits => ApprovalMode::AllowEdits,
         pb::ApprovalMode::AllowEverything => ApprovalMode::AllowEverything,
         pb::ApprovalMode::Auto => ApprovalMode::Auto,
+    }
+}
+
+/// The access a request names; None when it names none.
+pub fn access(level: pb::AccessLevel) -> Option<Access> {
+    match level {
+        pb::AccessLevel::Unspecified => None,
+        pb::AccessLevel::Full => Some(Access::Full),
+        pb::AccessLevel::Plan => Some(Access::Plan),
+        pb::AccessLevel::SideChat => Some(Access::SideChat),
     }
 }
 
@@ -314,6 +339,7 @@ pub fn project(project: Project) -> pb::Project {
         plugins: project.plugins,
         defaults: project.defaults,
         agent_sessions: Some(project.agent_sessions),
+        plan_with_code: project.plan_with_code,
     }
 }
 

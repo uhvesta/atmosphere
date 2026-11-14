@@ -2786,6 +2786,79 @@ async fn a_sessions_model_changes_and_its_backends_models_are_listed_for_it() {
 }
 
 #[tokio::test]
+async fn the_coordinators_providers_are_kept_and_an_update_without_them_leaves_them() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let coordinator = |hosts: pb::response::Kind| match hosts {
+        pb::response::Kind::Hosts(hosts) => hosts.coordinator.unwrap_or_default(),
+        other => panic!("not the hosts: {other:?}"),
+    };
+    let list = || pb::request::Kind::ListHosts(pb::ListHosts::default());
+    let client = daemon(state.path(), Hosts::default()).await;
+
+    let saved = client
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            set_env: vec![pb::EnvVar {
+                name: "ANTHROPIC_API_KEY".to_owned(),
+                value: "sk-secret".to_owned(),
+            }],
+            providers: Some(pb::ProviderList {
+                providers: vec![pb::Provider {
+                    id: "mine".to_owned(),
+                    name: "Anthropic".to_owned(),
+                    kind: pb::ProviderKind::Anthropic.into(),
+                    base_url: "https://api.anthropic.com".to_owned(),
+                    key_variable: "ANTHROPIC_API_KEY".to_owned(),
+                    wire_api: String::new(),
+                }],
+            }),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "not saved: {saved:?}");
+
+    // Another variable set: the providers stay as they are.
+    client
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            set_env: vec![pb::EnvVar {
+                name: "OTHER".to_owned(),
+                value: "1".to_owned(),
+            }],
+            ..Default::default()
+        }))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let file = state.path().join("hosts.json");
+    let reopened = daemon(
+        state.path(),
+        Hosts::load(&file).unwrap_or_else(|error| panic!("{error}")),
+    )
+    .await;
+    let listed = reopened
+        .call(list())
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(!format!("{listed:?}").contains("sk-secret"));
+    let host = coordinator(listed);
+    assert_eq!(host.providers.len(), 1);
+    assert_eq!(host.providers[0].id, "mine");
+    assert_eq!(host.providers[0].key_variable, "ANTHROPIC_API_KEY");
+
+    // An empty list takes them all away.
+    reopened
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            providers: Some(pb::ProviderList::default()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let listed = reopened
+        .call(list())
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(coordinator(listed).providers.is_empty());
+}
+
+#[tokio::test]
 async fn the_coordinators_variables_are_kept_and_only_their_names_come_back() {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -3572,6 +3645,8 @@ async fn a_search_after_a_rewind_and_a_new_turn_finds_the_new_turn_and_not_the_o
 mod access;
 mod agent_sessions;
 mod approvals;
+mod dependencies;
+mod plan_mode;
 mod pulls;
 mod repositories;
 

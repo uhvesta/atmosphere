@@ -329,12 +329,46 @@ pub fn item(item: &pb::Item) -> String {
     )
 }
 
+/// An item as the plan lists it:
+/// `<id>\t<milestone|task>\t<status>\t<ready|blocked|finished>\t<waiting on>\t<title>`,
+/// a milestone's task with two spaces before its title; the items it waits
+/// on joined by commas, `-` for none.
+pub fn planned(item: &pb::Item) -> String {
+    let kind = match item.kind() {
+        pb::ItemKind::Milestone => "milestone",
+        pb::ItemKind::Task | pb::ItemKind::Unspecified => "task",
+    };
+    let standing = if item.blocked {
+        "blocked"
+    } else if matches!(
+        item.given_status(),
+        pb::ItemStatus::Done | pb::ItemStatus::WontDo
+    ) {
+        "finished"
+    } else {
+        "ready"
+    };
+    let indent = if item.parent_id.is_empty() { "" } else { "  " };
+    format!(
+        "{}\t{kind}\t{}\t{standing}\t{}\t{indent}{}",
+        item.id,
+        status(item.status()),
+        or_dash(&item.waiting_on.join(",")),
+        item.title
+    )
+}
+
 fn fields(fields: Option<&pb::ItemFields>) -> String {
     fields.map_or_else(
         || "-".to_owned(),
         |fields| {
+            let waits = if fields.depends_on.is_empty() {
+                String::new()
+            } else {
+                format!(" waits on {}", fields.depends_on.join(","))
+            };
             format!(
-                "{} {} {:?}",
+                "{} {} {:?}{waits}",
                 status(fields.status()),
                 priority(fields.priority()),
                 fields.title
@@ -437,6 +471,7 @@ pub fn terminal(terminal: &pb::Terminal) -> String {
 pub fn proposal(proposal: &pb::Proposal) -> String {
     let kind = match proposal.kind() {
         pb::ProposalKind::SpecEdit => "spec edit",
+        pb::ProposalKind::Dependency => "dependency",
         _ => "task",
     };
     let state = match proposal.state() {

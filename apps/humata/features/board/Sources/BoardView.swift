@@ -29,13 +29,20 @@ package struct BoardView: View {
     }
 
     package var body: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(ItemStatus.allCases, id: \.self) { status in
-                    column(status)
+        Group {
+            switch store.layout {
+            case .columns:
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 12) {
+                        ForEach(ItemStatus.allCases, id: \.self) { status in
+                            column(status)
+                        }
+                    }
+                    .padding()
                 }
+            case .graph:
+                BoardGraphView(items: store.state.planned) { store.send(.cardTapped($0)) }
             }
-            .padding()
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
@@ -86,6 +93,14 @@ package struct BoardView: View {
         .animation(.default, value: store.undo)
         .navigationTitle(store.project.name)
         .toolbar {
+            ToolbarItem {
+                Picker("Show", selection: Binding(get: { store.layout }, set: { store.send(.layoutPicked($0)) })) {
+                    Label("Columns", systemImage: "rectangle.split.3x1").tag(BoardLayout.columns)
+                    Label("Graph", systemImage: "point.3.connected.trianglepath.dotted").tag(BoardLayout.graph)
+                }
+                .pickerStyle(.segmented)
+                .help("Show the board as a column per status, or as the plan: each item after what it waits on")
+            }
             ToolbarItem {
                 Button("Undo", systemImage: "arrow.uturn.backward") { store.send(.undoTapped) }
                     .keyboardShortcut("z", modifiers: .command)
@@ -362,6 +377,22 @@ struct ItemView: View {
                 ) {
                     ForEach(Priority.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
+                // A subtask is a task; an item at the top can hold tasks.
+                if store.item.parentID == nil {
+                    Picker(
+                        "Kind",
+                        selection: Binding(
+                            get: { store.item.fields.kind ?? .task }, set: { store.send(.kindPicked($0)) })
+                    ) {
+                        Text("Task").tag(ItemKind.task)
+                        Text("Milestone").tag(ItemKind.milestone)
+                    }
+                    .disabled(!store.subtasks.isEmpty)
+                    .help(
+                        store.subtasks.isEmpty
+                            ? "A milestone holds tasks, and depending on it waits for all of them"
+                            : "It has subtasks, so it is a milestone")
+                }
             } header: {
                 // A sheet on the Mac has no title bar to show the title in.
                 Text(store.item.title)
@@ -406,6 +437,42 @@ struct ItemView: View {
                 }
                 .disabled(editing)
             }
+            Section {
+                ForEach(store.dependencies) { on in
+                    HStack {
+                        Button {
+                            store.send(.itemTapped(on.id))
+                        } label: {
+                            LabeledContent(on.title, value: on.status.title)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open \(on.title)")
+                        Button("Remove", systemImage: "minus.circle") { store.send(.unlinkTapped(on.id)) }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .help("It no longer waits on \(on.title)")
+                    }
+                }
+                if !store.linkable.isEmpty {
+                    Menu("Add Dependency…", systemImage: "plus") {
+                        ForEach(store.linkable) { item in
+                            Button(item.title) { store.send(.linkPicked(item.id)) }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            } header: {
+                Text("Depends On")
+            } footer: {
+                if store.item.blocked {
+                    let waiting = store.item.waitingOn.compactMap { id in store.board.first { $0.id == id }?.title }
+                    Text("Blocked until \(waiting.formatted(.list(type: .and))) are done or won't be done.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(editing)
             if !store.pullRequests.isEmpty {
                 Section {
                     ForEach(store.pullRequests) { pull in
@@ -698,6 +765,14 @@ extension BoardLogFeature {
             }
             if before.spec != after.spec {
                 parts.append(String(localized: "Edited \(title)'s spec"))
+            }
+            if before.kind != after.kind {
+                parts.append(
+                    after.kind == .milestone
+                        ? String(localized: "Made \(title) a milestone") : String(localized: "Made \(title) a task"))
+            }
+            if before.dependsOn != after.dependsOn {
+                parts.append(String(localized: "Changed what \(title) depends on"))
             }
             what = parts.isEmpty ? String(localized: "Changed \(title)") : parts.joined(separator: "; ")
         }

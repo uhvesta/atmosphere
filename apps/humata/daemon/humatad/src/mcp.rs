@@ -260,6 +260,7 @@ impl Server {
             name,
             "propose_task"
                 | "propose_spec_edit"
+                | "propose_dependency"
                 | "request_move"
                 | "start_session"
                 | "send_message"
@@ -384,8 +385,34 @@ impl Server {
                 if let Some(parent) = text("parent_id").filter(|id| !id.is_empty()) {
                     self.check_item(&parent).await?;
                 }
+                item_kind(arguments)?;
+                for on in depends_on(arguments)? {
+                    self.check_item(&on).await?;
+                }
                 Ok(format!(
                     "Proposed {title:?}. It reaches the board only if the person applies it, perhaps edited; don't work on it until then."
+                ))
+            }
+            "propose_dependency" => {
+                let item_id = required(text("item_id"), "item_id")?;
+                let depends_on = depends_on(arguments)?;
+                if depends_on.is_empty() {
+                    return Err(
+                        "give depends_on, the ids from board of the items it waits on".to_owned(),
+                    );
+                }
+                if depends_on.contains(&item_id) {
+                    return Err(format!(
+                        "{item_id} can't depend on itself; leave it out of depends_on"
+                    ));
+                }
+                self.check_item(&item_id).await?;
+                for on in &depends_on {
+                    self.check_item(on).await?;
+                }
+                Ok(format!(
+                    "Proposed that {item_id} waits on {}. The link is made only if the person applies it, and is refused then if it would close a loop; until then board shows it as it was.",
+                    depends_on.join(", ")
                 ))
             }
             "propose_spec_edit" => {
@@ -789,8 +816,13 @@ fn board_text(items: &[pb::Item], own: &str, all: bool) -> String {
         } else {
             ""
         };
+        let waits = if item.blocked {
+            format!("  <- blocked: waits on {}", item.waiting_on.join(", "))
+        } else {
+            String::new()
+        };
         text.push_str(&format!(
-            "{indent}- [{}] {} (id {}){yours}\n",
+            "{indent}- [{}] {} (id {}){yours}{waits}\n",
             status_name(item.status()),
             item.title,
             item.id
@@ -1246,6 +1278,46 @@ fn short_enough(field: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The ids a proposal's `depends_on` gives, each once; none if it gives
+/// none.
+pub(crate) fn depends_on(arguments: &Value) -> Result<Vec<String>, String> {
+    let Some(listed) = arguments
+        .get("depends_on")
+        .filter(|listed| !listed.is_null())
+    else {
+        return Ok(Vec::new());
+    };
+    let bad = || "depends_on must be a list of item ids from board".to_owned();
+    let mut ids: Vec<String> = Vec::new();
+    for id in listed.as_array().ok_or_else(bad)? {
+        let id = id.as_str().map(str::trim).ok_or_else(bad)?;
+        if !id.is_empty() && !ids.iter().any(|known| known == id) {
+            ids.push(id.to_owned());
+        }
+    }
+    Ok(ids)
+}
+
+/// The kind a proposed item's `kind` asks for; unspecified if it gives
+/// none, which is a task.
+pub(crate) fn item_kind(arguments: &Value) -> Result<pb::ItemKind, String> {
+    match arguments["kind"].as_str().map(str::trim) {
+        None | Some("") => Ok(pb::ItemKind::Unspecified),
+        Some("task") => Ok(pb::ItemKind::Task),
+        Some("milestone") => {
+            let under = arguments["parent_id"]
+                .as_str()
+                .is_some_and(|parent| !parent.trim().is_empty());
+            if under {
+                Err("an item under parent_id is a task; leave out parent_id to propose a milestone, or kind to propose a task under it".to_owned())
+            } else {
+                Ok(pb::ItemKind::Milestone)
+            }
+        }
+        Some(other) => Err(format!("kind is milestone or task, not {other:?}")),
+    }
+}
+
 fn required(value: Option<String>, field: &str) -> Result<String, String> {
     value
         .filter(|value| !value.is_empty())
@@ -1335,7 +1407,9 @@ fn tools(offered: Offered) -> Value {
         "ask_person" | "search_sessions" | "read_turn" => true,
         "start_session" | "send_message" => offered.sessions && !offered.read_only,
         "read_session" => offered.sessions,
-        "propose_task" | "propose_spec_edit" => place.has_board() && !offered.read_only,
+        "propose_task" | "propose_spec_edit" | "propose_dependency" => {
+            place.has_board() && !offered.read_only
+        }
         "request_move" => place.has_task() && !offered.read_only,
         _ => place.has_board(),
     };
@@ -1388,8 +1462,27 @@ fn every_tool() -> Value {
                 "title": string("Short, like a commit subject."),
                 "spec": string("What it is, why, and when it's done, in Markdown."),
                 "parent_id": string("A task from board, to propose a subtask under it."),
+                "kind": string("milestone, for one that holds tasks, or task; leave out for a task. Only an item with no parent_id can be a milestone."),
+                "depends_on": {
+                    "type": "array",
+                    "description": "Ids from board of the items it waits on: it is blocked until they are done.",
+                    "items": {"type": "string"},
+                },
                 "note": string("Why you propose it, if it isn't plain from the spec."),
             }), &["title", "spec"]),
+        },
+        {
+            "name": "propose_dependency",
+            "description": "Propose that an item on the board waits on others: it shows as blocked until they are done, and comes after them in the plan. Milestones and tasks can wait on either. You can't change the board yourself: the links are made only when the person applies your proposal.",
+            "inputSchema": object(json!({
+                "item_id": string("From board: the item that waits."),
+                "depends_on": {
+                    "type": "array",
+                    "description": "Ids from board of the items it waits on.",
+                    "items": {"type": "string"},
+                },
+                "note": string("Why it has to wait for them."),
+            }), &["item_id", "depends_on"]),
         },
         {
             "name": "propose_spec_edit",

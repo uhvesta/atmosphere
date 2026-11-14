@@ -24,8 +24,8 @@ use humata_workspace::{
 };
 
 use crate::event::{
-    ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent, PermissionKind,
-    SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
+    Access, ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent,
+    PermissionKind, SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
 use crate::import::{Importable, Imported};
 use crate::log::{EventLog, Rested};
@@ -340,9 +340,9 @@ impl Turn {
                     kind,
                     summary: summary.into(),
                 }))?;
-            // A side chat changes nothing: refused here, for every
-            // backend, without asking.
-            let refused = control.record.read_only && changes(kind);
+            // A side chat or a session in plan mode changes nothing:
+            // refused here, for every backend, without asking.
+            let refused = control.record.reads_only() && changes(kind);
             if refused || control.record.approval_in_effect().allows(kind) {
                 self.session
                     .log
@@ -902,6 +902,9 @@ async fn drive<R: Runner>(
     }
     loop {
         let prepared = prepare(&session, workspaces.as_deref()).await;
+        if prepared.is_ok() {
+            follow(&session).await;
+        }
         let job = {
             let mut control = session.lock();
             if !control.is_current(generation) {
@@ -1029,7 +1032,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
             plugins: options.plugins,
             effort: options.effort.filter(|effort| !effort.is_empty()),
             experimental: options.experimental,
-            read_only: false,
+            // One that follows its base is never written.
+            access: if options.follows_base {
+                Access::Plan
+            } else {
+                options.access
+            },
+            follows_base: options.follows_base,
+            code_at: Default::default(),
         };
         let notices = options
             .notices
@@ -1252,7 +1262,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
         // A side chat reads its parent's copy of the code, and so does
         // every fork of one, whatever was asked: a copy of its own would
         // be one it can never write.
-        let chat_only = options.chat_only || options.read_only || from.read_only;
+        let side = options.read_only || from.access == Access::SideChat;
+        let chat_only = options.chat_only || side;
         let before = options.before.filter(|_| !empty);
         // Read off the executor when the parent's history is at rest.
         let mut events = if empty {
@@ -1278,9 +1289,16 @@ impl<R: Runner> Agent for LocalAgent<R> {
             events.truncate(index);
         }
         events.extend(closing(&events).into_iter().map(Event::now));
-        let read_only = options.read_only || from.read_only;
+        let access = if side {
+            Access::SideChat
+        } else {
+            options.access.unwrap_or(from.access)
+        };
+        // A fork given full access is a working session with its own copy,
+        // which stays where its work is.
+        let follows_base = from.follows_base && access == Access::Plan;
         let instructions = options.instructions.or_else(|| from.instructions.clone());
-        let instructions = if read_only && !from.read_only {
+        let instructions = if side && from.access != Access::SideChat {
             Some(match instructions {
                 Some(instructions) => format!("{instructions}\n\n{READ_ONLY_INSTRUCTIONS}"),
                 None => READ_ONLY_INSTRUCTIONS.to_owned(),
@@ -1337,7 +1355,9 @@ impl<R: Runner> Agent for LocalAgent<R> {
             checkouts,
             archived: false,
             keeper: false,
-            read_only,
+            access,
+            follows_base,
+            code_at: Default::default(),
             ..from
         };
         self.runner.forked(id, &record, &events)?;
@@ -1369,7 +1389,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 });
             }
             // A side chat never restores files, whoever's copy it reads.
-            let shared = record.read_only
+            let shared = record.access == Access::SideChat
                 || record
                     .checkouts
                     .iter()
@@ -1709,7 +1729,9 @@ impl<R: Runner> Agent for LocalAgent<R> {
             plugins: Default::default(),
             effort: None,
             experimental: false,
-            read_only: false,
+            access: Access::Full,
+            follows_base: false,
+            code_at: Default::default(),
         };
         self.create(record.clone(), imported.events)?;
         Ok(record)
@@ -1929,6 +1951,28 @@ impl<R: Runner> Agent for LocalAgent<R> {
             // backend reads the record's as its turn starts.
             let switched =
                 (model != from.model).then(|| model_changed(model.as_deref(), control.turn_open));
+            let access = match update.access {
+                None => from.access,
+                Some(access) if access == from.access => access,
+                Some(_) if from.access == Access::SideChat => {
+                    return Err(AgentError::SideChatAccess {
+                        session: id.clone(),
+                    });
+                }
+                Some(Access::SideChat) => {
+                    return Err(AgentError::SideChatAccess {
+                        session: id.clone(),
+                    });
+                }
+                Some(_) if from.follows_base => {
+                    return Err(AgentError::PlansOnly {
+                        session: id.clone(),
+                    });
+                }
+                Some(access) => access,
+            };
+            let planning =
+                (access != from.access).then(|| access_changed(access, control.turn_open));
             let record = SessionRecord {
                 name: update.name.unwrap_or(from.name.clone()),
                 archived: update.archived.unwrap_or(from.archived),
@@ -1939,13 +1983,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
                     None => from.effort.clone(),
                 },
                 experimental: update.experimental.unwrap_or(from.experimental),
+                access,
                 ..from
             };
             save(&session.dir, &record)?;
             control.record = record;
             // Under the lock, so it's in the history before the turn that
-            // first runs on the model starts.
-            if let Some(text) = switched {
+            // first runs on the model, or with the access, starts.
+            for text in switched.into_iter().chain(planning) {
                 session.note(EventKind::Notice { text });
             }
             archiving
@@ -2574,6 +2619,83 @@ fn model_changed(model: Option<&str>, working: bool) -> String {
         format!("Model changed to {model}, from the next turn")
     } else {
         format!("Model changed to {model}")
+    }
+}
+
+/// What the history says when a session's access changes to `access`;
+/// `working` while a turn runs with the tools it started with.
+fn access_changed(access: Access, working: bool) -> String {
+    let text = match access {
+        Access::Full => "Plan mode off: the agent can change files and run commands again",
+        Access::Plan | Access::SideChat => {
+            "Plan mode on: the agent reads and proposes, and changes no files"
+        }
+    };
+    if working {
+        format!("{text}, from the next turn")
+    } else {
+        text.to_owned()
+    }
+}
+
+/// How long fetching a repository may hold up a turn of a session that
+/// follows its base, before the turn reads the code as last fetched.
+const FOLLOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// For a session that follows its base: fetches each copy it owns and
+/// moves it to its origin's default branch, unless it holds changes, and
+/// records the commit each is on. A copy that can't be fetched or moved
+/// stays where it is and the chat says so; the turn goes on either way.
+async fn follow(session: &Session) {
+    let record = session.lock().record.clone();
+    if !record.follows_base {
+        return;
+    }
+    let mut code_at = record.code_at.clone();
+    for checkout in &record.checkouts {
+        if checkout.owner != session.id.as_str() {
+            continue;
+        }
+        match humata_workspace::follow(checkout, FOLLOW_TIMEOUT).await {
+            Ok(followed) => {
+                if !followed.fetched {
+                    session.note(EventKind::Notice {
+                        text: format!(
+                            "Couldn't fetch {} from its origin, so this turn reads it as last fetched. If you're offline, reconnect and send again for the latest code",
+                            checkout.name
+                        ),
+                    });
+                }
+                if followed.changed {
+                    session.note(EventKind::Notice {
+                        text: format!(
+                            "The session's copy of {} has changes, so it wasn't moved to the latest code. Discard them in Review to follow the latest again",
+                            checkout.name
+                        ),
+                    });
+                }
+                code_at.insert(checkout.name.clone(), followed.commit);
+            }
+            Err(error) => session.note(EventKind::Notice {
+                text: format!(
+                    "Couldn't bring the session's copy of {} up to date, so this turn reads it as it was: {}",
+                    checkout.name,
+                    describe(&error)
+                ),
+            }),
+        }
+    }
+    if code_at == record.code_at {
+        return;
+    }
+    let mut control = session.lock();
+    let record = SessionRecord {
+        code_at,
+        ..control.record.clone()
+    };
+    match save(&session.dir, &record) {
+        Ok(()) => control.record = record,
+        Err(error) => eprintln!("humata: {}", describe(&error)),
     }
 }
 

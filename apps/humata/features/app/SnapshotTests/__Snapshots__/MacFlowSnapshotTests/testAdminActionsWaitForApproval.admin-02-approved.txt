@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
@@ -24,7 +24,7 @@
       [StaticText] "" value: "Board Changes"
       [Button] "Deny"
       [Button] "Approve"
-      [MenuButton] "Go Down" help: "Approve, and stop asking for a while; revoke it in Settings › Approvals"
+      [MenuButton] "More Answers" help: "Approve, and stop asking for a while; revoke it in Settings › Approvals"
   [Toolbar] ""
     [Button] "Add Project"
     [Button] "Hide Sidebar"

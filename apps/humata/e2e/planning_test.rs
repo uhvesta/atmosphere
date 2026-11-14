@@ -1,7 +1,8 @@
 //! Planning with an agent: a planning session proposes three tasks with
 //! specs, the person applies two and declines one, and the board has
 //! exactly those two. A fork of the planning session onto one of them gets
-//! a copy of the code to work in.
+//! a copy of the code to work in. A planning session with the code reads a
+//! copy of it, changes nothing there whatever it tries, and still proposes.
 
 mod common;
 
@@ -121,4 +122,67 @@ fn applied_proposals_become_tasks_and_a_fork_works_on_one() {
         Some("hello\n")
     );
     assert_ne!(copy, repository);
+}
+
+const WRITING_SCRIPT: &str = r#"{"rules": [
+    {"when": "", "steps": [
+        {"step": "write_file", "path": "README.md", "contents": "changed"},
+        {"step": "write_file", "path": "new.txt", "contents": "new"},
+        {"step": "tool", "tool": "mcp__humata__propose_task",
+         "arguments": {"title": "Login form", "spec": "Email and password."}},
+        {"step": "say", "text": "One task."}
+    ]}
+]}"#;
+
+#[test]
+fn a_planning_session_with_the_code_reads_a_copy_it_cant_change_and_its_proposal_becomes_a_task() {
+    let scratch = common::scratch();
+    let root = scratch.path();
+    let repository = root.join("repository");
+    common::git_repository(&repository, &[("README.md", "hello\n")]);
+    let script = root.join("script.json");
+    std::fs::write(&script, WRITING_SCRIPT).unwrap_or_else(|error| panic!("{error}"));
+    let (_daemon, humata) = common::start(root, &[]);
+
+    let project = humata.run(&[
+        "project",
+        "add",
+        "--name",
+        "demo",
+        "--repository",
+        &repository.display().to_string(),
+    ]);
+    let project = project.trim();
+    let session = humata.run(&[
+        "start",
+        "--backend",
+        "scripted",
+        "--project",
+        project,
+        "--planning",
+        "--with-code",
+        "--approval",
+        "everything",
+        "--backend-config",
+        &script.display().to_string(),
+    ]);
+    let session = session.trim();
+    humata.run(&["send", session, "plan the app", "--wait"]);
+
+    let copy = humata.working_directory(session);
+    assert_ne!(copy, repository);
+    assert_eq!(
+        std::fs::read_to_string(copy.join("README.md"))
+            .ok()
+            .as_deref(),
+        Some("hello\n")
+    );
+    assert!(!copy.join("new.txt").exists());
+
+    let proposed = proposals(&humata, session);
+    let [(login, _, _)] = proposed.as_slice() else {
+        panic!("one proposal: {proposed:?}")
+    };
+    humata.run(&["proposal", "apply", session, login]);
+    assert_eq!(titles(&humata, project), ["Login form"]);
 }

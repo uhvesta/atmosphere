@@ -446,8 +446,8 @@ final class LongChatScrollTests: XCTestCase {
     private func click(_ scroll: NSScrollView, below offset: CGFloat, in window: NSWindow) throws {
         let document = try XCTUnwrap(scroll.documentView, "the chat has no rows")
         let visible = document.visibleRect
-        let y = document.isFlipped ? visible.minY + offset : visible.maxY - offset
-        let point = document.convert(CGPoint(x: visible.midX, y: y), to: nil)
+        let height = document.isFlipped ? visible.minY + offset : visible.maxY - offset
+        let point = document.convert(CGPoint(x: visible.midX, y: height), to: nil)
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = try XCTUnwrap(
                 NSEvent.mouseEvent(

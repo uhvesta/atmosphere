@@ -47,6 +47,11 @@ struct HumataApp: App {
         state.settings.bundledVersion = version
         // The text size kept from the last run, before the window shows.
         state.textSize.scale = TextScaleKeeper.liveValue.load()
+        // A Developer ID copy opened from outside Applications offers to
+        // install itself before its daemon starts.
+        if let survey = InstallerClient.liveValue.survey() {
+            state.installer = InstallerFeature.State(survey: survey)
+        }
         return state
     }
 

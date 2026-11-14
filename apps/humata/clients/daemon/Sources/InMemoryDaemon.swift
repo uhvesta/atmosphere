@@ -66,7 +66,7 @@ package final class InMemoryDaemon: Sendable {
         var plugins = PluginList()
         /// The chat commands every session's agent takes; nil when asking
         /// fails.
-        var commands: ChatCommands? = ChatCommands(compact: true, compactTakesFocus: true, side: true)
+        var commands: ChatCommands? = ChatCommands(compact: true, compactTakesFocus: true, side: true, plan: true)
         /// Those of the sessions that differ, by session id.
         var sessionCommands: [String: ChatCommands?] = [:]
         var sessionDefaults = SessionDefaults()
@@ -85,9 +85,14 @@ package final class InMemoryDaemon: Sendable {
         var changes: [BoardChange] = []
         /// Removed items, so reverting the removal puts them back.
         var removed: [String: Item] = [:]
+        /// The items that waited on a removed item, by its id, so reverting
+        /// the removal links them again.
+        var removedDependents: [String: [String]] = [:]
         var hosts: [RemoteHost] = []
         /// Each host's variables, by host.
         var env: [String: [String: String]] = [:]
+        /// The providers of this Mac, the coordinator.
+        var coordinatorProviders: [HostProvider] = []
         /// The hosts Humata's program was installed on.
         var installed: Set<String> = []
         /// The hosts that can't be reached.
@@ -666,7 +671,11 @@ package final class InMemoryDaemon: Sendable {
                 return self.history(session)
             },
             hosts: { self.state.value.hosts },
-            coordinator: { RemoteHost.coordinator(envNames: (self.state.value.env[""] ?? [:]).keys.sorted()) },
+            coordinator: {
+                let state = self.state.value
+                return RemoteHost.coordinator(
+                    envNames: (state.env[""] ?? [:]).keys.sorted(), providers: state.coordinatorProviders)
+            },
             addHost: { name, destination in try self.addHost(name, destination) },
             updateHost: { host, update in try self.updateHost(host, update) },
             removeHost: { host in try self.removeHost(host) },
@@ -820,6 +829,7 @@ package final class InMemoryDaemon: Sendable {
             let id = "s\(state.nextSession)"
             var directory = request.workingDirectory
             var projectID = request.projectID
+            var plansWithCode = false
             if let itemID = request.itemID {
                 guard let item = state.items.first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
                 guard projectID == nil || projectID == item.projectID else {
@@ -832,15 +842,20 @@ package final class InMemoryDaemon: Sendable {
                 guard let project = state.projects.first(where: { $0.id == projectID }) else {
                     throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
                 }
-                directory = directory ?? (request.planning ? "/plans/\(id)" : Self.copy(of: project, for: id))
+                // A planning session reads a copy of the code only when asked.
+                plansWithCode = request.planning && request.withCode && !project.repositories.isEmpty
+                let checkout = !request.planning || plansWithCode
+                directory = directory ?? (checkout ? Self.copy(of: project, for: id) : "/plans/\(id)")
             }
             // A chat in no folder gets one of its own.
             let folder = directory ?? "/chats/\(id)"
-            let session = Session(
+            var session = Session(
                 id: id, name: request.name, backend: request.backend,
                 workingDirectory: folder, model: request.model, host: request.host,
                 approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID,
                 planning: request.planning, effort: request.effort, experimental: request.experimental)
+            // It reads the code and never writes there.
+            if plansWithCode { session.access = .plan }
             state.nextSession += 1
             state.sessions.append(session)
             state.histories[session.id] = []
@@ -1007,7 +1022,8 @@ package final class InMemoryDaemon: Sendable {
                     defer { state.nextRequest += 1 }
                     let asking = state.sessions.first { $0.id == session }
                     let mode = asking?.approvalMode ?? .askEveryTime
-                    return ("c\(state.nextRequest)", "r\(state.nextRequest)", mode, asking?.readOnly ?? false)
+                    let readOnly = asking.map { $0.readOnly || $0.access != .full } ?? false
+                    return ("c\(state.nextRequest)", "r\(state.nextRequest)", mode, readOnly)
                 }
                 let key = step.isRun ? "command" : "path"
                 let arguments =
@@ -1016,7 +1032,8 @@ package final class InMemoryDaemon: Sendable {
                 append(.toolStarted(callID: callID, tool: tool, argumentsJSON: arguments), to: session)
                 append(.permissionRequested(requestID: request, kind: kind, summary: summary), to: session)
                 if readOnly {
-                    // A side chat's writes and commands are refused unasked.
+                    // A side chat's or plan mode's writes and commands are
+                    // refused unasked.
                     append(.permissionCompleted(requestID: request, approved: false, automatic: true), to: session)
                     complete(session, step, callID: callID, approved: false)
                 } else if mode.allows(kind) {
@@ -1186,7 +1203,12 @@ package final class InMemoryDaemon: Sendable {
     private func commands(of session: String) -> ChatCommands? {
         let state = state.value
         if let own = state.sessionCommands[session] { return own }
-        return state.commands
+        guard var commands = state.commands else { return nil }
+        // A side chat and a planning session with the code stay as they are.
+        if let asked = state.sessions.first(where: { $0.id == session }), asked.readOnly || asked.plansWithCode {
+            commands.plan = false
+        }
+        return commands
     }
 
     /// Sums the session up in a turn of its own, after stopping the turn
@@ -1358,6 +1380,7 @@ package final class InMemoryDaemon: Sendable {
             fork.keeper = false
             fork.turns = 0
             fork.readOnly = parent.readOnly || readOnly
+            if fork.readOnly { fork.access = .sideChat }
             state.nextSession += 1
             // What's made from a read-only session works in its copy
             // whatever was asked: it could never write to its own.
@@ -1418,11 +1441,21 @@ package final class InMemoryDaemon: Sendable {
 
     private func update(_ session: String, _ update: SessionUpdate) throws -> Session {
         try known(session)
-        let (updated, model) = try state.withValue { state -> (Session, String??) in
+        let (updated, model, access) = try state.withValue { state -> (Session, String??, AccessLevel?) in
             guard let index = state.sessions.firstIndex(where: { $0.id == session }) else {
                 throw Self.unknown(session)
             }
             let modelBefore = state.sessions[index].model
+            let accessBefore = state.sessions[index].access
+            if let access = update.access, access != accessBefore {
+                let fixed = state.sessions[index].readOnly || state.sessions[index].plansWithCode
+                guard access != .sideChat, !fixed else {
+                    throw DaemonError.refused(
+                        .invalidRequest,
+                        message: "Session \(session) can't switch plan mode: a side chat and a planning session "
+                            + "with the code only ever read.")
+                }
+            }
             if update.archived == true, state.paused[session] != nil {
                 throw DaemonError.refused(
                     .busy, message: "Session \(session) is working; stop its turn, then archive it.")
@@ -1433,6 +1466,7 @@ package final class InMemoryDaemon: Sendable {
             if let experimental = update.experimental { state.sessions[index].experimental = experimental }
             if let effort = update.effort { state.sessions[index].effort = effort.isEmpty ? nil : effort }
             if let model = update.model { state.sessions[index].model = model.isEmpty ? nil : model }
+            if let access = update.access { state.sessions[index].access = access }
             switch update.placement {
             case .item(let itemID):
                 guard let item = state.items.first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
@@ -1445,12 +1479,28 @@ package final class InMemoryDaemon: Sendable {
             case nil: break
             }
             let model = state.sessions[index].model
-            return (state.sessions[index], model == modelBefore ? nil : .some(model))
+            let access = state.sessions[index].access
+            return (
+                state.sessions[index], model == modelBefore ? nil : .some(model),
+                access == accessBefore ? nil : access
+            )
         }
         // As the daemon does: the history says so, and the session is no
         // busier for it.
         if let model {
             append(.notice("Model changed to \(model ?? "the agent’s default")"), to: session)
+            state.withValue { state in
+                guard let index = state.sessions.firstIndex(where: { $0.id == session }) else { return }
+                state.sessions[index].state = updated.state
+            }
+        }
+        if let access {
+            append(
+                .notice(
+                    access == .plan
+                        ? "Plan mode on: the agent reads and proposes, and changes no files"
+                        : "Plan mode off: the agent can change files and run commands again"),
+                to: session)
             state.withValue { state in
                 guard let index = state.sessions.firstIndex(where: { $0.id == session }) else { return }
                 state.sessions[index].state = updated.state
@@ -1508,7 +1558,8 @@ extension InMemoryDaemon {
                 session.asking = state.requests.contains { $0.sessionID == session.id }
                 return session
             }
-            let shown = Self.show(items, sessions: sessions)
+            var shown = Self.show(items, sessions: sessions)
+            Self.plan(&shown)
             return ordered(shown.filter { $0.parentID == nil }).flatMap { task in
                 [task] + ordered(shown.filter { $0.parentID == task.id })
             }
@@ -1561,12 +1612,21 @@ extension InMemoryDaemon {
                     throw DaemonError.refused(
                         .invalidRequest, message: "A subtask goes under a task in the same project.")
                 }
+                guard fields.kind != .milestone else {
+                    throw DaemonError.refused(
+                        .invalidRequest,
+                        message: "\(fields.title) is under \(parent.title), so it is a task and can't be a milestone; "
+                            + "add the milestone on its own, at the top of the board.")
+                }
             }
+            var given = fields
+            given.dependsOn = Self.unique(fields.dependsOn)
             let time = start + Double(1000 + state.nextChange)
-            let item = Item(id: "i\(state.nextItem)", projectID: project, fields: fields, created: time)
+            let item = Item(id: "i\(state.nextItem)", projectID: project, fields: given, created: time)
+            try Self.checkLinks(of: item, adding: given.dependsOn, among: state.items + [item])
             state.nextItem += 1
             state.items.append(item)
-            Self.log(&state, item: item.id, before: nil, after: fields, time: time, author: author)
+            Self.log(&state, item: item.id, before: nil, after: given, time: time, author: author)
             return item
         }
     }
@@ -1582,6 +1642,23 @@ extension InMemoryDaemon {
             if let spec = update.spec { after.spec = spec }
             if let status = update.status { after.status = status }
             if let priority = update.priority { after.priority = priority }
+            if let kind = update.kind {
+                if kind == .milestone, let parent = before.parentID {
+                    let title = state.items.first { $0.id == parent }?.title ?? parent
+                    throw DaemonError.refused(
+                        .invalidRequest,
+                        message: "\(before.title) is under \(title), so it is a task and can't be a milestone.")
+                }
+                after.kind = kind
+            }
+            let unlinked = Set(update.unlink)
+            let adding = Self.unique(update.link).filter { !after.dependsOn.contains($0) && !unlinked.contains($0) }
+            after.dependsOn = after.dependsOn.filter { !unlinked.contains($0) } + adding
+            if !adding.isEmpty {
+                var changed = state.items
+                changed[index].fields = after
+                try Self.checkLinks(of: changed[index], adding: adding, among: changed)
+            }
             if after != before {
                 let time = start + Double(1000 + state.nextChange)
                 state.items[index].fields = after
@@ -1611,6 +1688,7 @@ extension InMemoryDaemon {
             let time = start + Double(1000 + state.nextChange)
             state.items.remove(at: index)
             state.removed[itemID] = item
+            state.removedDependents[itemID] = Self.unlink(itemID, in: &state.items)
             Self.log(&state, item: itemID, before: item.fields, after: nil, time: time, author: .app)
         }
     }
@@ -1618,6 +1696,144 @@ extension InMemoryDaemon {
     private func shown(_ itemID: String, in project: String) throws -> Item {
         guard let item = try items(project).first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
         return item
+    }
+
+    /// `ids` without blanks or repeats, in their order.
+    private static func unique(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// Refuses `item` coming to wait on `adding` when one is itself, isn't
+    /// on its project's board, or closes a loop; `items` holds it as it
+    /// would be.
+    private static func checkLinks(of item: Item, adding: [String], among items: [Item]) throws {
+        for id in adding {
+            guard id != item.id else {
+                throw DaemonError.refused(
+                    .invalidDependency,
+                    message: "\(item.title) can't depend on itself; pick another item for it to wait on.")
+            }
+            guard let on = items.first(where: { $0.id == id }) else { throw unknownItem(id) }
+            guard on.projectID == item.projectID else {
+                throw DaemonError.refused(
+                    .invalidDependency,
+                    message: "\(item.title) can't depend on \(on.title), which is in another project; "
+                        + "an item waits only on items of its own project's board.")
+            }
+        }
+        guard let loop = cycle(in: items, from: item.id) else { return }
+        let titles = loop.map { id in items.first { $0.id == id }?.title ?? id }
+        let on = adding.first.flatMap { id in items.first { $0.id == id }?.title } ?? ""
+        throw DaemonError.refused(
+            .dependencyCycle,
+            message: "\(item.title) can't depend on \(on): that makes a loop in which each waits on the next and "
+                + "none can start: \(titles.joined(separator: " → ")). Remove one of the links in the loop first, "
+                + "then add this one.")
+    }
+
+    /// The loop `from` is in, if the links make one: the ids round it,
+    /// starting and ending with the same one. A milestone waits on its
+    /// tasks, and they on what it depends on.
+    private static func cycle(in items: [Item], from: String) -> [String]? {
+        let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var waits: [String: [String]] = [:]
+        for item in items {
+            waits[item.id, default: []] += item.fields.dependsOn
+            guard let milestone = item.parentID.flatMap({ byID[$0] }) else { continue }
+            waits[item.id, default: []] += milestone.fields.dependsOn
+            waits[milestone.id, default: []].append(item.id)
+        }
+        var path: [String] = []
+        var seen = Set<String>()
+        func round(_ at: String) -> [String]? {
+            if let start = path.firstIndex(of: at) { return Array(path[start...]) + [at] }
+            guard seen.insert(at).inserted else { return nil }
+            path.append(at)
+            for on in waits[at] ?? [] {
+                if let loop = round(on) { return loop }
+            }
+            path.removeLast()
+            return nil
+        }
+        guard byID[from] != nil else { return nil }
+        return round(from)
+    }
+
+    /// Takes `id` out of what every item waits on, saying which did.
+    private static func unlink(_ id: String, in items: inout [Item]) -> [String] {
+        var dependents: [String] = []
+        for index in items.indices where items[index].fields.dependsOn.contains(id) {
+            items[index].fields.dependsOn.removeAll { $0 == id }
+            dependents.append(items[index].id)
+        }
+        return dependents
+    }
+
+    /// Sets on a project's items what each reads as, whether it is blocked
+    /// and on what, and its place in the plan, as the daemon does: each
+    /// after what it depends on, the earliest added first where the links
+    /// leave a choice, and a milestone's tasks right under it.
+    private static func plan(_ items: inout [Item]) {
+        let index = Dictionary(items.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let parent = items.map { $0.parentID.flatMap { index[$0] } }
+        var tasks = Array(repeating: [Int](), count: items.count)
+        for (at, parent) in parent.enumerated() {
+            if let parent { tasks[parent].append(at) }
+        }
+        let closed = items.map(\.fields.status.closed)
+        let finished = items.indices.map { at in
+            closed[at] || (!tasks[at].isEmpty && tasks[at].allSatisfy { closed[$0] })
+        }
+        let depends = items.map { $0.fields.dependsOn.compactMap { index[$0] } }
+        let top = { (at: Int) in parent[at] ?? at }
+        var after = Array(repeating: Set<Int>(), count: items.count)
+        for (at, depends) in depends.enumerated() {
+            for on in depends {
+                if top(at) != top(on) {
+                    after[top(at)].insert(top(on))
+                } else if parent[at] != nil, parent[on] != nil {
+                    after[at].insert(on)
+                }
+            }
+        }
+        let snapshot = items
+        func inOrder(_ among: [Int]) -> [Int] {
+            var among = among.sorted { (snapshot[$0].created, $0) < (snapshot[$1].created, $1) }
+            var left = Set(among)
+            var ordered: [Int] = []
+            while !among.isEmpty {
+                let next = among.firstIndex { after[$0].allSatisfy { !left.contains($0) } } ?? 0
+                let at = among.remove(at: next)
+                left.remove(at)
+                ordered.append(at)
+            }
+            return ordered
+        }
+        var order = Array(repeating: 0, count: items.count)
+        var next = 0
+        for at in inOrder(items.indices.filter { parent[$0] == nil }) {
+            next += 1
+            order[at] = next
+            for task in inOrder(tasks[at]) {
+                next += 1
+                order[task] = next
+            }
+        }
+        for at in items.indices {
+            var waiting: [Int] = []
+            if !finished[at] {
+                let inherited = parent[at].map { depends[$0] } ?? []
+                for on in depends[at] + inherited where !finished[on] && !waiting.contains(on) {
+                    waiting.append(on)
+                }
+            }
+            let isMilestone = parent[at] == nil && (!tasks[at].isEmpty || items[at].fields.kind == .milestone)
+            items[at].fields.kind = isMilestone ? .milestone : .task
+            items[at].blocked = !waiting.isEmpty
+            items[at].waitingOn = waiting.map { snapshot[$0].id }
+            items[at].planOrder = order[at]
+        }
     }
 
     private static func log(
@@ -1653,6 +1869,7 @@ extension InMemoryDaemon {
                 }
                 state.items.remove(at: index)
                 state.removed[item.id] = item
+                state.removedDependents[item.id] = Self.unlink(item.id, in: &state.items)
                 Self.log(
                     &state, item: item.id, before: item.fields, after: nil, time: time, reverts: changeID, author: .app)
                 return nil
@@ -1672,6 +1889,17 @@ extension InMemoryDaemon {
                     case .spec: back.spec = before.spec
                     case .status: back.status = before.status
                     case .priority: back.priority = before.priority
+                    case .kind: back.kind = before.kind
+                    case .dependsOn:
+                        // Only to items still on the board, in no loop.
+                        let present = before.dependsOn.filter { id in state.items.contains { $0.id == id } }
+                        var changed = state.items
+                        changed[index].fields.dependsOn = present
+                        if Self.cycle(in: changed, from: change.itemID) == nil {
+                            back.dependsOn = present
+                        } else {
+                            keptFields.append(field)
+                        }
                     }
                 }
                 projectID = state.items[index].projectID
@@ -1692,7 +1920,17 @@ extension InMemoryDaemon {
                 item.updated = time
                 projectID = item.projectID
                 state.removed[item.id] = nil
+                item.fields.dependsOn = item.fields.dependsOn.filter { id in state.items.contains { $0.id == id } }
                 state.items.append(item)
+                for dependent in state.removedDependents.removeValue(forKey: item.id) ?? [] {
+                    guard let at = state.items.firstIndex(where: { $0.id == dependent }),
+                        !state.items[at].fields.dependsOn.contains(item.id)
+                    else { continue }
+                    state.items[at].fields.dependsOn.append(item.id)
+                    if Self.cycle(in: state.items, from: dependent) != nil {
+                        state.items[at].fields.dependsOn.removeLast()
+                    }
+                }
                 Self.log(
                     &state, item: change.itemID, before: nil, after: before, time: time, reverts: changeID,
                     author: .app)
@@ -1741,7 +1979,8 @@ extension InMemoryDaemon {
                 for unset in update.unsetEnv { env[unset] = nil }
                 env.merge(update.setEnv) { _, new in new }
                 state.env[""] = env
-                return RemoteHost.coordinator(envNames: env.keys.sorted())
+                if let providers = update.providers { state.coordinatorProviders = providers }
+                return RemoteHost.coordinator(envNames: env.keys.sorted(), providers: state.coordinatorProviders)
             }
             guard let index = state.hosts.firstIndex(where: { $0.name == name }) else { throw Self.unknownHost(name) }
             var env = state.env[name] ?? [:]
@@ -1750,6 +1989,7 @@ extension InMemoryDaemon {
             state.env[name] = env
             state.hosts[index].envNames = env.keys.sorted()
             if let script = update.setupScript { state.hosts[index].setupScript = script }
+            if let providers = update.providers { state.hosts[index].providers = providers }
             return state.hosts[index]
         }
     }

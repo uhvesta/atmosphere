@@ -174,6 +174,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until {
             guard let session = store.session else { return false }
             return session.items.count >= 2 && !session.thumbnails.isEmpty
+                && !session.isWorking
         }
         await flow.step("sent")
         flow.finish()
@@ -1626,11 +1627,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
         }
-        let flow = FlowRecorder("skills", SkillsView(store: store.scope(state: \.skills, action: \.skills)))
-        store.send(.skills(.task))
-        try await until { store.skills.list != nil }
-        await flow.step("clash")
-
+        // One window at a time: the new session's sheet first, then Settings.
         let starting = Store(initialState: NewSessionFeature.State(project: project)) {
             NewSessionFeature()
         } withDependencies: {
@@ -1642,6 +1639,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { starting.skillClash != nil }
         await sheet.step("waits")
         sheet.finish()
+
+        let flow = FlowRecorder("skills", SkillsView(store: store.scope(state: \.skills, action: \.skills)))
+        store.send(.skills(.task))
+        try await until { store.skills.list != nil }
+        await flow.step("clash")
 
         store.send(.skills(.picked(SkillClash(name: "release", candidates: [mine, theirs]).id, winner: "b2")))
         try await until { store.skills.saving.isEmpty && store.skills.unpicked == 0 }

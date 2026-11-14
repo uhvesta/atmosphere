@@ -152,6 +152,59 @@ pub async fn upstream(checkout: &Checkout) -> Result<String, WorkspaceError> {
     Ok(base)
 }
 
+/// Where [`follow`] left a checkout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Followed {
+    /// The commit it is on now.
+    pub commit: String,
+    /// False when its origin couldn't be fetched in time, so its base is
+    /// as last fetched. True for a repository with no origin.
+    pub fetched: bool,
+    /// It holds changes, so it was left where it was.
+    pub changed: bool,
+}
+
+/// Brings `checkout`, a copy nothing is written in, to its base as its
+/// origin has it now: fetches the origin, giving it `patience`, and moves
+/// the copy's branch there. A copy with changes that aren't committed is
+/// fetched but left where it is, so nothing in it is lost.
+pub async fn follow(
+    checkout: &Checkout,
+    patience: std::time::Duration,
+) -> Result<Followed, WorkspaceError> {
+    if !checkout.path.exists() {
+        return Err(WorkspaceError::NoCopy {
+            repository: checkout.name.clone(),
+        });
+    }
+    let has_origin = git(&checkout.path, &["remote", "get-url", "origin"])
+        .await
+        .is_ok();
+    let fetched = !has_origin
+        || matches!(
+            tokio::time::timeout(
+                patience,
+                git(&checkout.path, &["fetch", "--quiet", "origin"]),
+            )
+            .await,
+            Ok(Ok(_))
+        );
+    let upstream = upstream(checkout).await?;
+    // Where its branch is doesn't count: it was made where the
+    // repository's own folder happened to be.
+    let status = git(&checkout.path, &["status", "--porcelain"]).await?;
+    let changed = !status.trim().is_empty();
+    if !changed {
+        git(&checkout.path, &["reset", "--quiet", "--hard", &upstream]).await?;
+    }
+    let commit = git(&checkout.path, &["rev-parse", "HEAD"]).await?;
+    Ok(Followed {
+        commit: commit.trim().to_owned(),
+        fetched,
+        changed,
+    })
+}
+
 /// Merges `upstream`, a branch or a remote's, as `origin/main`, into
 /// `checkout`, keeping changes it hasn't committed: they're put aside and
 /// back, and if putting them back conflicts, those files are the conflicts.

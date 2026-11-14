@@ -79,6 +79,8 @@ pub struct Daemon {
     /// The variables for the coordinator's own agents, those on the Mac the
     /// daemon runs on, as saved in the hosts file.
     coordinator_env: std::sync::Mutex<BTreeMap<String, String>>,
+    /// The model providers the coordinator's sessions can use.
+    coordinator_providers: std::sync::Mutex<Vec<hosts::ProviderConfig>>,
     store: Arc<Store>,
     /// This humatad's build, which managed hosts are kept at.
     build: String,
@@ -166,6 +168,7 @@ impl Daemon {
         let (pull_refresh_changed, pull_refresh_told) = tokio::sync::watch::channel(());
         local.set_env(hosts.coordinator_env.clone());
         let coordinator_env = std::sync::Mutex::new(hosts.coordinator_env);
+        let coordinator_providers = std::sync::Mutex::new(hosts.coordinator_providers);
         let model_server = local.model_server();
         let remotes = hosts
             .hosts
@@ -187,6 +190,7 @@ impl Daemon {
             editing: tokio::sync::Mutex::new(()),
             hosts_file,
             coordinator_env,
+            coordinator_providers,
             store: Arc::new(store),
             build,
             tool_calls,
@@ -283,11 +287,16 @@ impl Daemon {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone(),
+            coordinator_providers: self
+                .coordinator_providers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
         }
     }
 
-    /// The coordinator as a host: the names of its agents' variables, and no
-    /// name.
+    /// The coordinator as a host: the names of its agents' variables, its
+    /// providers, and no name.
     fn coordinator(&self) -> pb::HostInfo {
         pb::HostInfo {
             env_names: self
@@ -297,6 +306,12 @@ impl Daemon {
                 .keys()
                 .cloned()
                 .collect(),
+            providers: hosts::provider_infos(
+                &self
+                    .coordinator_providers
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            ),
             ..Default::default()
         }
     }
@@ -318,14 +333,24 @@ impl Daemon {
         for name in update.unset_env {
             env.remove(&name);
         }
+        let providers = update.providers.map(hosts::read_providers).transpose()?;
         let mut hosts = self.hosts();
         hosts.coordinator_env = env.clone();
+        if let Some(providers) = &providers {
+            hosts.coordinator_providers = providers.clone();
+        }
         hosts.save(&self.hosts_file)?;
         self.local.set_env(env.clone());
         *self
             .coordinator_env
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = env;
+        if let Some(providers) = providers {
+            *self
+                .coordinator_providers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = providers;
+        }
         Ok(self.coordinator())
     }
 
@@ -387,6 +412,9 @@ impl Daemon {
         }
         if let Some(script) = update.setup_script {
             config.setup_script = script;
+        }
+        if let Some(providers) = update.providers {
+            config.providers = hosts::read_providers(providers)?;
         }
         let mut hosts = self.hosts();
         hosts.hosts.insert(update.name.clone(), config.clone());
@@ -674,6 +702,7 @@ impl Daemon {
         let mut items: Vec<pb::Item> = items.iter().map(Item::wire).collect();
         let sessions = self.list(project).await?;
         board::show(&mut items, &sessions.sessions);
+        board::plan(&mut items);
         Ok(items)
     }
 
@@ -965,21 +994,26 @@ impl Daemon {
         Ok(reply)
     }
 
-    fn create_item(&self, create: pb::CreateItem) -> Result<Item, DaemonError> {
+    fn create_item(&self, mut create: pb::CreateItem) -> Result<Item, DaemonError> {
         let author = Author::on(create.surface());
         let fields = ItemFields {
             parent_id: convert::optional(create.parent_id.clone()),
             status: Status::from_wire(create.status()),
             priority: Priority::from_wire(create.priority()),
+            kind: board::Kind::from_wire(create.kind()),
+            depends_on: std::mem::take(&mut create.depends_on),
             title: create.title,
             spec: create.spec,
         };
         Ok(self.store.add_item(&create.project_id, fields, &author)?)
     }
 
-    fn update_item(&self, update: pb::UpdateItem) -> Result<Item, DaemonError> {
+    fn update_item(&self, mut update: pb::UpdateItem) -> Result<Item, DaemonError> {
         let author = Author::session(&update.by_session_id, update.surface());
         let patch = ItemPatch {
+            kind: update.kind.map(|_| board::Kind::from_wire(update.kind())),
+            link: std::mem::take(&mut update.add_depends_on),
+            unlink: std::mem::take(&mut update.remove_depends_on),
             status: update.status.map(|_| Status::from_wire(update.status())),
             priority: update
                 .priority
@@ -1342,8 +1376,10 @@ impl Daemon {
             return Ok((None, None));
         }
         let project = self.store.project(&project_id)?;
-        // A planning session gets an empty folder of its own from its host.
-        let checkout = !start.planning;
+        // A planning session gets an empty folder of its own from its host,
+        // unless it plans with the code: then a copy to read, as any
+        // session's, which its host keeps at the latest code.
+        let checkout = !start.planning || start.with_code;
         if checkout && start.working_directory.is_empty() && start.repositories.is_empty() {
             if start.host.is_empty() {
                 start.notices = self.refresh(&project).await;

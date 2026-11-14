@@ -145,6 +145,16 @@ impl Store {
         Ok(())
     }
 
+    /// Sets whether Plan With an Agent starts with a copy of the code in
+    /// `project`, kept with the daemon's settings.
+    pub fn set_plan_with_code(&self, project: &str, with_code: bool) -> Result<(), StoreError> {
+        self.project_exists(project)?;
+        self.set_setting(
+            &plan_with_code_key(project),
+            if with_code { "1" } else { "0" },
+        )
+    }
+
     pub fn planning(&self, session: &str) -> Result<bool, StoreError> {
         let found = self
             .lock()
@@ -261,6 +271,24 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// The setting that keeps whether `project` plans with the code.
+fn plan_with_code_key(project: &str) -> String {
+    format!("plan_with_code:{project}")
+}
+
+/// Whether Plan With an Agent starts with a copy of the code in `project`;
+/// it doesn't until the person says so.
+pub(super) fn plan_with_code(connection: &Connection, project: &str) -> rusqlite::Result<bool> {
+    let set: Option<String> = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [plan_with_code_key(project)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(set.as_deref() == Some("1"))
 }
 
 pub(super) fn skills(connection: &Connection, project: &str) -> rusqlite::Result<Vec<Skill>> {

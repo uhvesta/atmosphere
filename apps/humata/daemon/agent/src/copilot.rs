@@ -8,7 +8,8 @@
 //!
 //! The CLI uses GitHub's models once signed in (`copilot login`). Given a
 //! provider instead, it runs on any OpenAI-compatible server, such as a local
-//! Ollama, with no sign-in and no token cost.
+//! Ollama, with no sign-in and no token cost, or on a provider the person
+//! pays with a key of their own, kept in one of the host's variables.
 //!
 //! [`LocalAgent`]: crate::LocalAgent
 
@@ -35,6 +36,7 @@ use crate::event::{ApprovalMode, EventKind, PermissionKind};
 use crate::event::{SessionId, SessionRecord};
 use crate::import::{self, Importable, Imported};
 use crate::links::{Cut, Links};
+use crate::provider::{Provider, ProviderError};
 use crate::runtime::{Runner, Turn};
 use rpc::{Cli, METHOD_NOT_FOUND, PROTOCOL_VERSION};
 
@@ -93,7 +95,62 @@ fn openai() -> String {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CopilotConfig {
-    provider: Option<CopilotProvider>,
+    provider: Option<ProviderChoice>,
+}
+
+impl CopilotConfig {
+    fn read(json: Option<&str>) -> Result<Self, CopilotError> {
+        match json {
+            Some(json) => {
+                serde_json::from_str(json).map_err(|source| CopilotError::BadConfig { source })
+            }
+            None => Ok(Self::default()),
+        }
+    }
+}
+
+/// What a session's config names instead of GitHub's models.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ProviderChoice {
+    /// A provider whose key is in one of the host's variables.
+    Keyed(Provider),
+    /// A model server, given whole.
+    Server(CopilotProvider),
+}
+
+/// What Copilot takes as a session's provider for `choice`, or for
+/// `fallback` when the session names none. A keyed provider's key is read
+/// from `env` here, each time a session is opened, and kept nowhere.
+fn provider_params(
+    choice: Option<ProviderChoice>,
+    fallback: Option<&CopilotProvider>,
+    env: &Env,
+) -> Result<Option<Value>, ProviderError> {
+    let server = match &choice {
+        Some(ProviderChoice::Keyed(provider)) => {
+            return Ok(Some(provider.copilot(&provider.key(env)?)));
+        }
+        Some(ProviderChoice::Server(server)) => Some(server),
+        None => fallback,
+    };
+    Ok(server.map(|server| {
+        let mut params = json!({"type": server.kind, "baseUrl": server.base_url});
+        if let Some(key) = &server.api_key {
+            params["apiKey"] = json!(key);
+        }
+        params
+    }))
+}
+
+/// Tells one provider's params from another's, to open a live session
+/// again when they change, as when the variable gets a new key. Not the
+/// params themselves, which hold the key.
+fn provider_mark(provider: Option<&Value>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    provider.map(Value::to_string).hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -167,6 +224,9 @@ pub enum CopilotError {
         "Copilot couldn't sum up the conversation: {message}. The conversation is as it was; ask again, and if it keeps failing, rewind to an earlier message or start a new session"
     )]
     CompactFailed { message: String },
+
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
 
     #[error(transparent)]
     Plugins(#[from] crate::plugins::OverlayError),
@@ -260,12 +320,12 @@ impl CopilotRunner {
         &self,
         cli: &Cli,
         turn: &Turn,
-        provider: Option<&CopilotProvider>,
+        provider: Option<&Value>,
         links: &mut Links,
         path: &std::path::Path,
     ) -> Result<String, CopilotError> {
         let record = turn.record();
-        let opened_with = opened_with(&record);
+        let opened_with = format!("{}|{}", opened_with(&record), provider_mark(provider));
         // Copilot reads them as it opens the session.
         if !links
             .session
@@ -327,12 +387,12 @@ impl CopilotRunner {
     /// on it as its links say.
     async fn begin(&self, turn: &Turn) -> Result<Begun, CopilotError> {
         let record = turn.record();
-        let config = match &record.backend_config {
-            Some(json) => serde_json::from_str::<CopilotConfig>(json)
-                .map_err(|source| CopilotError::BadConfig { source })?,
-            None => CopilotConfig::default(),
-        };
-        let provider = config.provider.or_else(|| self.options.provider.clone());
+        let config = CopilotConfig::read(record.backend_config.as_deref())?;
+        let provider = provider_params(
+            config.provider,
+            self.options.provider.as_ref(),
+            &self.options.env,
+        )?;
         let path = Links::path(&self.options.state, record.id.as_str());
         let mut links = Links::load(&path)?;
         let cli = self.cli(record.experimental).await?;
@@ -462,10 +522,11 @@ async fn fork_at(cli: &Cli, source: &str, links: &Links) -> Result<Option<String
 }
 
 /// What a session is opened with that Copilot takes only as it opens one:
-/// its model and effort. A session live on the CLI is opened again when
-/// this changes, so the next turn runs on them.
+/// its model and effort, and its access, which sets the tools it goes
+/// without and what it's told. A session live on the CLI is opened again
+/// when this changes, so the next turn runs on them.
 fn opened_with(record: &SessionRecord) -> String {
-    format!("{:?}|{:?}", record.model, record.effort)
+    format!("{:?}|{:?}|{:?}", record.model, record.effort, record.access)
 }
 
 /// The tier a Fusion session runs at, if it's one.
@@ -542,7 +603,7 @@ fn copilot_models(listed: &Value) -> Vec<crate::Model> {
 
 fn session_params(
     turn: &Turn,
-    provider: Option<&CopilotProvider>,
+    provider: Option<&Value>,
     mcp: Option<&McpServer>,
     id: Option<&str>,
 ) -> Value {
@@ -557,7 +618,7 @@ fn session_params(
     });
     // A read-only session goes without the CLI's tools that change files
     // or run commands; one it still asks to use is refused when it asks.
-    if record.read_only {
+    if record.reads_only() {
         params["excludedTools"] = json!(EXCLUDED_READ_ONLY);
     }
     if let Some(id) = id {
@@ -575,13 +636,9 @@ fn session_params(
         params["reasoningEffort"] = json!(effort);
     }
     if let Some(provider) = provider {
-        let mut server = json!({"type": provider.kind, "baseUrl": provider.base_url});
-        if let Some(key) = &provider.api_key {
-            server["apiKey"] = json!(key);
-        }
-        params["provider"] = server;
+        params["provider"] = provider.clone();
     }
-    if let Some(instructions) = &record.instructions {
+    if let Some(instructions) = record.instructions_in_effect() {
         params["systemMessage"] = json!({"mode": "append", "content": instructions});
     }
     if let Some(mcp) = mcp {
@@ -646,12 +703,20 @@ impl Runner for CopilotRunner {
     type Error = CopilotError;
 
     async fn models(&self, config: Option<String>) -> Result<Vec<crate::Model>, AgentError> {
-        let config = match config {
-            Some(json) => serde_json::from_str::<CopilotConfig>(&json)
-                .map_err(|source| CopilotError::BadConfig { source })?,
-            None => CopilotConfig::default(),
+        let config = CopilotConfig::read(config.as_deref())?;
+        let server = match config.provider {
+            Some(ProviderChoice::Keyed(provider)) => {
+                let http = ureq::Agent::config_builder()
+                    .http_status_as_error(false)
+                    .timeout_connect(Some(Duration::from_secs(10)))
+                    .build()
+                    .into();
+                return Ok(provider.models(http, &self.options.env).await?);
+            }
+            Some(ProviderChoice::Server(server)) => Some(server),
+            None => self.options.provider.clone(),
         };
-        if let Some(provider) = config.provider.or_else(|| self.options.provider.clone()) {
+        if let Some(provider) = server {
             let http = ureq::Agent::config_builder()
                 .http_status_as_error(false)
                 .timeout_connect(Some(Duration::from_secs(10)))
@@ -1240,6 +1305,106 @@ mod tests {
         assert!(copilot_models(&json!({"error": "nope"})).is_empty());
     }
 
+    fn choice(config: Value) -> Option<ProviderChoice> {
+        let config = CopilotConfig::read(Some(&config.to_string())).expect("a config");
+        config.provider
+    }
+
+    fn keys() -> Env {
+        Env::new([("MY_KEY".to_owned(), "sk-secret-value".to_owned())])
+    }
+
+    #[test]
+    fn a_keyed_provider_of_each_kind_is_what_copilot_takes_with_the_variables_key() {
+        let anthropic = choice(json!({"provider": {
+            "kind": "anthropic", "api_key_variable": "MY_KEY",
+        }}));
+        let params = provider_params(anthropic, None, &keys())
+            .expect("a key")
+            .expect("a provider");
+        assert_eq!(params["type"], "anthropic");
+        assert_eq!(params["apiKey"], "sk-secret-value");
+
+        let openai = choice(json!({"provider": {
+            "kind": "openai",
+            "base_url": "https://models.example/v1",
+            "api_key_variable": "MY_KEY",
+            "wire_api": "responses",
+        }}));
+        let params = provider_params(openai, None, &keys())
+            .expect("a key")
+            .expect("a provider");
+        assert_eq!(params["type"], "openai");
+        assert_eq!(params["baseUrl"], "https://models.example/v1");
+        assert_eq!(params["wireApi"], "responses");
+        assert_eq!(params["apiKey"], "sk-secret-value");
+
+        let go = choice(json!({"provider": {
+            "kind": "opencode_go", "api_key_variable": "MY_KEY",
+        }}));
+        let params = provider_params(go, None, &keys())
+            .expect("a key")
+            .expect("a provider");
+        assert_eq!(params["type"], "openai");
+        assert_eq!(params["wireApi"], "completions");
+        assert_eq!(params["apiKey"], "sk-secret-value");
+    }
+
+    #[test]
+    fn a_keyed_provider_whose_variable_isnt_set_opens_no_session() {
+        let go = choice(json!({"provider": {
+            "kind": "opencode_go", "api_key_variable": "MY_KEY",
+        }}));
+        assert!(matches!(
+            provider_params(go, None, &Env::default()),
+            Err(ProviderError::NoVariable { .. })
+        ));
+    }
+
+    #[test]
+    fn a_model_server_is_still_taken_whole_and_the_hosts_own_when_none_is_named() {
+        let server = choice(json!({"provider": {"base_url": "http://127.0.0.1:11434/v1"}}));
+        let params = provider_params(server, None, &Env::default())
+            .expect("no key needed")
+            .expect("a provider");
+        assert_eq!(params["type"], "openai");
+        assert_eq!(params["baseUrl"], "http://127.0.0.1:11434/v1");
+
+        let hosts = CopilotProvider {
+            kind: "openai".to_owned(),
+            base_url: "http://host.example/v1".to_owned(),
+            api_key: Some("local".to_owned()),
+        };
+        let params = provider_params(None, Some(&hosts), &Env::default())
+            .expect("no key needed")
+            .expect("a provider");
+        assert_eq!(params["baseUrl"], "http://host.example/v1");
+        assert_eq!(params["apiKey"], "local");
+        assert!(
+            provider_params(None, None, &Env::default())
+                .expect("no key needed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_new_key_in_the_variable_opens_a_live_session_again() {
+        let go = || {
+            choice(json!({"provider": {
+                "kind": "opencode_go", "api_key_variable": "MY_KEY",
+            }}))
+        };
+        let first = provider_params(go(), None, &keys()).expect("a key");
+        let same = provider_params(go(), None, &keys()).expect("a key");
+        let other = Env::new([("MY_KEY".to_owned(), "another".to_owned())]);
+        let second = provider_params(go(), None, &other).expect("a key");
+        assert_eq!(provider_mark(first.as_ref()), provider_mark(same.as_ref()));
+        assert_ne!(
+            provider_mark(first.as_ref()),
+            provider_mark(second.as_ref())
+        );
+    }
+
     /// Says, as each of its turns starts, what Copilot would be given to
     /// open its session again with, and what tells that it must be.
     struct Opens {
@@ -1299,5 +1464,54 @@ mod tests {
         assert_eq!(second["sessionId"], "theirs");
         // A session live on the CLI is opened again only when this differs.
         assert_ne!(before, after);
+    }
+
+    #[tokio::test]
+    async fn plan_mode_opens_the_session_again_without_its_changing_tools_for_the_next_turn() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let runner = Opens {
+            opened: Arc::clone(&opened),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        for (turn, access) in [
+            (1, None),
+            (2, Some(crate::Access::Plan)),
+            (3, Some(crate::Access::Full)),
+        ] {
+            let update = SessionUpdate {
+                access,
+                ..SessionUpdate::default()
+            };
+            agent.update(&id, update).await.expect("changed");
+            agent
+                .send(&id, "go".into(), SendMode::Enqueue)
+                .await
+                .expect("sent");
+            wait_for(&agent, &id, idle_turns(turn)).await;
+        }
+
+        let opened = opened.lock().unwrap_or_else(PoisonError::into_inner);
+        let excluded = |params: &Value| strings(&params["excludedTools"]);
+        let (full, first) = &opened[0];
+        let (plan, second) = &opened[1];
+        let (back, third) = &opened[2];
+        assert!(excluded(first).is_empty(), "{first}");
+        for tool in ["bash", "edit", "create", "apply_patch"] {
+            assert!(
+                excluded(second).contains(&tool.to_owned()),
+                "{tool}: {second}"
+            );
+        }
+        assert!(excluded(third).is_empty(), "{third}");
+        // A session live on the CLI is opened again only when this differs.
+        assert_ne!(full, plan);
+        assert_eq!(full, back);
     }
 }

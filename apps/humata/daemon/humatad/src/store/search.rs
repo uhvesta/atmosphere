@@ -653,6 +653,7 @@ mod tests {
                     priority: Priority::None,
                     title: "Tidy".into(),
                     spec: "rename the schema".into(),
+                    ..ItemFields::default()
                 },
                 &author,
             )
@@ -767,6 +768,7 @@ mod tests {
             priority: Priority::None,
             title: title.into(),
             spec: spec.into(),
+            ..ItemFields::default()
         };
         let first = store
             .add_item(&project.id, fields("Tidy", "rename the schema"), &author)

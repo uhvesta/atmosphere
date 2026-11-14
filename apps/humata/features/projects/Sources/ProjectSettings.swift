@@ -35,6 +35,8 @@ package struct ProjectSettingsFeature {
         package var search = RepositorySearchFeature.State()
         /// What its sessions' agents may do to other sessions.
         package var agentSessions: AgentSessions
+        /// Whether Plan With an Agent starts with a read-only copy of the code.
+        package var planWithCode: Bool
         package var saving = false
         @Presents package var alert: AlertState<Never>?
 
@@ -50,6 +52,7 @@ package struct ProjectSettingsFeature {
             repositories = Self.rows(project)
             nextRepository = project.repositories.count
             agentSessions = project.agentSessions
+            planWithCode = project.planWithCode
         }
 
         static func rows(_ project: Project) -> IdentifiedArrayOf<RepositoryRow> {
@@ -144,7 +147,8 @@ package struct ProjectSettingsFeature {
                     instructions: state.instructions == project.instructions ? nil : state.instructions,
                     skills: skills == project.skills ? nil : skills,
                     repositories: repositories == unchanged ? nil : repositories,
-                    agentSessions: state.agentSessions == project.agentSessions ? nil : state.agentSessions)
+                    agentSessions: state.agentSessions == project.agentSessions ? nil : state.agentSessions,
+                    planWithCode: state.planWithCode == project.planWithCode ? nil : state.planWithCode)
                 return .run { send in
                     await send(.delegate(.saved(try await daemon.updateProject(project.id, update))))
                 } catch: { error, send in
@@ -249,6 +253,19 @@ struct ProjectSettingsView: View {
                 Text("Know-how for the agents, such as how to run the tests or deploy. A skill left empty is dropped.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Plan with the code", isOn: $store.planWithCode)
+            } header: {
+                Text("Planning")
+            } footer: {
+                Text(
+                    "Plan With an Agent starts with a copy of the code to read, brought up to origin’s default "
+                        + "branch as each turn starts; it changes no files and runs no commands. You can still "
+                        + "choose for each session."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Section {
                 Picker("Starting and writing to sessions", selection: $store.agentSessions.mode) {

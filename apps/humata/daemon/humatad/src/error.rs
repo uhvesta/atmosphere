@@ -232,6 +232,8 @@ impl HostError {
                 AgentError::NotARewindPoint { .. }
                 | AgentError::NothingToUndo { .. }
                 | AgentError::SharedFiles { .. }
+                | AgentError::SideChatAccess { .. }
+                | AgentError::PlansOnly { .. }
                 | AgentError::CannotCompact { .. }
                 | AgentError::NothingToCompact { .. }
                 | AgentError::CompactTakesNoFocus { .. },
@@ -449,6 +451,31 @@ pub enum StoreError {
         "can't bring back {title:?}: its task was removed since. Revert the change that removed the task first"
     )]
     ParentRemoved { title: String },
+
+    #[error(
+        "{title:?} is under {parent:?}, so it is a task and can't be a milestone; add the milestone on its own, at the top of the board"
+    )]
+    MilestoneUnderItem { title: String, parent: String },
+
+    #[error("{title:?} can't depend on itself; pick another item for it to wait on")]
+    DependsOnItself { title: String },
+
+    #[error(
+        "{title:?} can't depend on {on:?}, which is in another project; an item waits only on items of its own project's board"
+    )]
+    DependencyInAnotherProject { title: String, on: String },
+
+    #[error(
+        "{title:?} can't depend on {on:?}: that makes a loop in which each waits on the next and none can start: {}. A milestone waits on its tasks, and they on what it depends on. Remove one of the links in the loop first, then add this one",
+        .path.join(" → ")
+    )]
+    DependencyCycle {
+        title: String,
+        on: String,
+        /// The titles of the items round the loop, the first again at the
+        /// end.
+        path: Vec<String>,
+    },
 
     #[error(
         "proposal {proposal} was applied or declined already; ask the agent for a new one to change it again"
@@ -711,6 +738,26 @@ pub enum DaemonError {
 
     #[error("{name:?} can't name a host; use letters, digits, '-', '_' or '.'")]
     BadHostName { name: String },
+
+    #[error(
+        "the provider {name:?} has no kind; pick Anthropic API, OpenAI-Compatible or OpenCode Go for it, then save again"
+    )]
+    ProviderKind { name: String },
+
+    #[error(
+        "the provider {name:?} has the base URL {base_url:?}, which isn't a web address; give one that starts with https:// (or http:// for a server on your own network), then save again"
+    )]
+    ProviderUrl { name: String, base_url: String },
+
+    #[error(
+        "the provider {name:?} names {variable:?} as the variable that holds its key, which can't be a variable's name: use letters, digits and _, not starting with a digit. Give the name of the variable, such as OPENCODE_API_KEY, and put the key itself in that variable among the host's variables; a key typed here isn't kept"
+    )]
+    ProviderVariable { name: String, variable: String },
+
+    #[error(
+        "the provider {name:?} asks for the API {wire_api:?}; Copilot takes completions or responses. Pick one, then save again"
+    )]
+    ProviderWireApi { name: String, wire_api: String },
 
     #[error("a host needs what `ssh` connects to, such as a Host in ~/.ssh/config or user@machine")]
     NoDestination,
@@ -1081,8 +1128,13 @@ impl DaemonError {
                 | StoreError::ParentInAnotherProject { .. }
                 | StoreError::ItemInAnotherProject { .. }
                 | StoreError::ItemInUse { .. }
-                | StoreError::ParentRemoved { .. },
+                | StoreError::ParentRemoved { .. }
+                | StoreError::MilestoneUnderItem { .. },
             ) => pb::ErrorCode::InvalidRequest,
+            Self::Store(StoreError::DependencyCycle { .. }) => pb::ErrorCode::DependencyCycle,
+            Self::Store(
+                StoreError::DependsOnItself { .. } | StoreError::DependencyInAnotherProject { .. },
+            ) => pb::ErrorCode::InvalidDependency,
             Self::Store(StoreError::AlreadyDecided { .. }) | Self::UnknownProposal { .. } => {
                 pb::ErrorCode::UnknownProposal
             }
@@ -1135,6 +1187,10 @@ impl DaemonError {
             }
             Self::HostExists { .. }
             | Self::BadHostName { .. }
+            | Self::ProviderKind { .. }
+            | Self::ProviderUrl { .. }
+            | Self::ProviderVariable { .. }
+            | Self::ProviderWireApi { .. }
             | Self::NoDestination
             | Self::NotManaged { .. }
             | Self::NoBuildFor { .. }

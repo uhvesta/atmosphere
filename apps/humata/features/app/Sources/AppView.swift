@@ -45,7 +45,15 @@ package struct AppView: View {
         // The window's own view asks its content for its smallest size on
         // every change; this answers without measuring the chat, and is here
         // so that whatever hosts this view lays out what the app does.
-        AtLeast(width: least.window, height: 520, fits: focusesDocument) { split }
+        AtLeast(width: least.window, height: 520, fits: focusesDocument) {
+            // The installer takes the window until the person chooses; the
+            // split's task, which starts the daemon, runs only after.
+            if let installer = store.scope(state: \.installer, action: \.installer.presented) {
+                InstallerView(store: installer)
+            } else {
+                split
+            }
+        }
     }
 
     private var split: some View {

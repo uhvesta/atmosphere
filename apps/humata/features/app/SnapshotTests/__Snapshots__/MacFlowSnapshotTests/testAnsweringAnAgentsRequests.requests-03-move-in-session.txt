@@ -7,7 +7,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Search Sessions"
     [Row/OutlineRow] ""
-      [Heading] "humata" help: "Start a session in humata"
+      [MenuButton] "humata" help: "Start a session in humata, New session, plan, settings or delete for humata" id: ellipsis
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
@@ -21,7 +21,8 @@
     [Button] "Search"
   [StaticText] "" value: "Sign in"
   [PopUpButton] "View" value: "Chat" help: "The chat, the session's changes to review, the files in its folder, the specs it reads, or a terminal there (⌘1 to ⌘5)"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
+  [Button] "Show Plan" help: "Show the project's items beside the chat, in the order to take them"
+  [MenuButton] "Fork" help: "Try something else from here, or start a chat under this one, while this session stays as it is"
   [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"
@@ -38,9 +39,12 @@
     [StaticText] "" value: "Done."
   [StaticText] "" value: "Added sign in by email. Check the redirect after the session times out."
   [Button] "Open Changes"
+  [Button] "Not Yet" help: "Leave the task where it is and take this request off your list"
   [Button] "Move to In Review"
+  [StaticText] "" value: "Not Yet takes this off your list; write to the agent to say what’s left. Feedback and other columns are in the Inbox."
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Plan Mode" help: "Plan mode: from the next message, the agent reads and proposes, and changes no files"
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Add Project"

@@ -64,6 +64,7 @@ extension DaemonClient {
                     request.repositories.repositories = repositories.map(\.proto)
                 }
                 if let agentSessions = update.agentSessions { request.agentSessions = agentSessions.proto }
+                if let planWithCode = update.planWithCode { request.planWithCode = planWithCode }
                 guard case .projectUpdated(let updated) = try await daemon.call(.updateProject(request)) else {
                     throw DaemonError.unexpected("something other than the updated project")
                 }
@@ -92,6 +93,7 @@ extension DaemonClient {
                 start.backendConfig = request.backendConfig ?? ""
                 start.itemID = request.itemID ?? ""
                 start.planning = request.planning
+                start.withCode = request.planning && request.withCode
                 start.specs = request.specs == .withParents ? .withParents : .item
                 guard case .sessionStarted(let started) = try await daemon.call(.startSession(start)) else {
                     throw DaemonError.unexpected("something other than the started session")
@@ -353,6 +355,7 @@ extension DaemonClient {
                 if let experimental = update.experimental { request.experimental = experimental }
                 if let effort = update.effort { request.effort = effort }
                 if let model = update.model { request.model = model }
+                if let access = update.access { request.access = access.proto }
                 switch update.placement {
                 case .item(let item): request.itemID = item
                 case .project: request.itemID = ""
@@ -532,6 +535,8 @@ extension DaemonClient {
                 create.spec = fields.spec
                 create.status = fields.status.proto
                 create.priority = fields.priority.proto
+                if let kind = fields.kind { create.kind = kind.proto }
+                create.dependsOn = fields.dependsOn
                 create.surface = .app
                 guard case .itemCreated(let created) = try await daemon.call(.createItem(create)) else {
                     throw DaemonError.unexpected("something other than the created item")
@@ -545,6 +550,9 @@ extension DaemonClient {
                 if let spec = update.spec { request.spec = spec }
                 if let status = update.status { request.status = status.proto }
                 if let priority = update.priority { request.priority = priority.proto }
+                if let kind = update.kind { request.kind = kind.proto }
+                request.addDependsOn = update.link
+                request.removeDependsOn = update.unlink
                 request.surface = .app
                 guard case .itemUpdated(let updated) = try await daemon.call(.updateItem(request)) else {
                     throw DaemonError.unexpected("something other than the updated item")
@@ -753,6 +761,9 @@ extension DaemonClient {
                 }
                 request.unsetEnv = update.unsetEnv
                 if let script = update.setupScript { request.setupScript = script }
+                if let providers = update.providers {
+                    request.providers.providers = providers.map(\.message)
+                }
                 guard case .hostSaved(let saved) = try await daemon.call(.updateHost(request)) else {
                     throw DaemonError.unexpected("something other than the updated host")
                 }

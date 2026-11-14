@@ -2308,10 +2308,215 @@ mod tests {
                 };
                 let fork = fixture.agent.fork(&side.id, options).await.expect("forked");
 
-                assert!(fork.read_only, "empty: {empty}");
+                assert_eq!(fork.access, crate::Access::SideChat, "empty: {empty}");
                 assert_eq!(fork.working_directory, parents, "empty: {empty}");
                 fixture.turn(&fork.id, "two", turns).await;
                 assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+            }
+        }
+
+        /// Commits `file` in the fixture's repository, and returns the commit.
+        fn commit(repository: &Path, file: &str) -> String {
+            std::fs::write(repository.join(file), "more\n").expect("wrote");
+            let git = |arguments: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(repository)
+                    .args(arguments)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@localhost")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@localhost")
+                    .output()
+                    .expect("git runs");
+                assert!(output.status.success(), "git {arguments:?}");
+                String::from_utf8_lossy(&output.stdout).trim().to_owned()
+            };
+            git(&["add", file]);
+            git(&["commit", "--quiet", "-m", "more"]);
+            git(&["rev-parse", "HEAD"])
+        }
+
+        fn notices(events: &[Event]) -> usize {
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Notice { .. }))
+                .count()
+        }
+
+        #[tokio::test]
+        async fn a_planning_session_with_the_code_reads_the_latest_and_changes_no_file_whatever_it_tries()
+         {
+            let fixture = fixture_with(vec![
+                rule(
+                    "one",
+                    vec![write_file("a.txt", "one"), shell("rm README.md")],
+                ),
+                rule("two", vec![write_file("README.md", "two")]),
+            ]);
+            // It would be allowed everything.
+            let options = StartOptions {
+                name: "plan".into(),
+                approval: ApprovalMode::AllowEverything,
+                repositories: vec![fixture.repository.clone()],
+                follows_base: true,
+                ..StartOptions::default()
+            };
+            let id = fixture.agent.start(options).await.expect("starts").id;
+
+            let events = fixture.turn(&id, "one", 1).await;
+            assert_eq!(failed(&events), Vec::<String>::new());
+            assert!(
+                !events.iter().any(|event| matches!(
+                    event.kind,
+                    EventKind::PermissionCompleted { approved: true, .. }
+                )),
+                "{events:#?}"
+            );
+            let copy = record(&fixture.agent, &id).await.working_directory;
+            assert_eq!(read(&copy.join("a.txt")), None);
+            assert_eq!(read(&copy.join("README.md")).as_deref(), Some("hello\n"));
+
+            // What lands in the repository since is there for its next turn.
+            let latest = commit(&fixture.repository.path, "new.txt");
+            fixture.turn(&id, "two", 2).await;
+            let record = record(&fixture.agent, &id).await;
+            assert_eq!(record.access, crate::Access::Plan);
+            assert_eq!(record.code_at.get("app"), Some(&latest));
+            assert_eq!(read(&copy.join("new.txt")).as_deref(), Some("more\n"));
+            assert_eq!(read(&copy.join("README.md")).as_deref(), Some("hello\n"));
+        }
+
+        #[tokio::test]
+        async fn plan_mode_holds_a_working_session_to_reading_from_its_next_turn_until_its_turned_off()
+         {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let before = notices(&fixture.agent.history(&id).await.expect("history"));
+
+            let plan = SessionUpdate {
+                access: Some(crate::Access::Plan),
+                ..SessionUpdate::default()
+            };
+            let record = fixture.agent.update(&id, plan).await.expect("set");
+            assert_eq!(record.access, crate::Access::Plan);
+            fixture.turn(&id, "two", 2).await;
+            // Its own copy, with the work it did before, is what it reads.
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+
+            let full = SessionUpdate {
+                access: Some(crate::Access::Full),
+                ..SessionUpdate::default()
+            };
+            fixture.agent.update(&id, full).await.expect("set");
+            let events = fixture.turn(&id, "three", 3).await;
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("three"));
+            // Each switch is said in the chat.
+            assert_eq!(notices(&events), before + 2);
+        }
+
+        #[tokio::test]
+        async fn a_side_chat_and_a_planning_session_with_the_code_keep_their_access() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let options = ForkOptions {
+                read_only: true,
+                ..ForkOptions::default()
+            };
+            let side = fixture.agent.fork(&id, options).await.expect("forked");
+            let options = StartOptions {
+                name: "plan".into(),
+                repositories: vec![fixture.repository.clone()],
+                follows_base: true,
+                ..StartOptions::default()
+            };
+            let planning = fixture.agent.start(options).await.expect("starts").id;
+            let full = || SessionUpdate {
+                access: Some(crate::Access::Full),
+                ..SessionUpdate::default()
+            };
+
+            assert!(matches!(
+                fixture.agent.update(&side.id, full()).await,
+                Err(AgentError::SideChatAccess { .. })
+            ));
+            assert!(matches!(
+                fixture.agent.update(&planning, full()).await,
+                Err(AgentError::PlansOnly { .. })
+            ));
+            assert_eq!(
+                record(&fixture.agent, &side.id).await.access,
+                crate::Access::SideChat
+            );
+            assert_eq!(
+                record(&fixture.agent, &planning).await.access,
+                crate::Access::Plan
+            );
+        }
+
+        #[tokio::test]
+        async fn a_fork_of_a_planning_session_given_full_access_works_in_a_copy_of_its_own() {
+            let fixture = fixture();
+            let options = StartOptions {
+                name: "plan".into(),
+                approval: ApprovalMode::AllowEverything,
+                repositories: vec![fixture.repository.clone()],
+                follows_base: true,
+                ..StartOptions::default()
+            };
+            let id = fixture.agent.start(options).await.expect("starts").id;
+            fixture.turn(&id, "one", 1).await;
+
+            let options = ForkOptions {
+                access: Some(crate::Access::Full),
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            fixture.turn(&fork.id, "two", 2).await;
+
+            assert_eq!(fixture.file(&fork.id).await.as_deref(), Some("two"));
+            assert_eq!(fixture.file(&id).await, None);
+        }
+
+        #[test]
+        fn a_record_from_before_access_levels_reads_as_a_side_chat_when_it_was_read_only() {
+            let stored = |extra: serde_json::Value| {
+                let mut record = serde_json::json!({
+                    "id": "s",
+                    "name": "test",
+                    "working_directory": "/tmp",
+                    "model": null,
+                    "instructions": null,
+                    "parent": null,
+                });
+                if let (Some(record), Some(extra)) = (record.as_object_mut(), extra.as_object()) {
+                    record.extend(extra.clone());
+                }
+                serde_json::from_value::<crate::SessionRecord>(record).expect("a session's record")
+            };
+
+            let side = stored(serde_json::json!({"read_only": true}));
+            let old = stored(serde_json::json!({"read_only": false}));
+            let plain = stored(serde_json::json!({}));
+            assert_eq!(side.access, crate::Access::SideChat);
+            assert_eq!(old.access, crate::Access::Full);
+            assert_eq!(plain.access, crate::Access::Full);
+
+            // And each level is read back as it was written.
+            for access in [
+                crate::Access::Full,
+                crate::Access::Plan,
+                crate::Access::SideChat,
+            ] {
+                let record = crate::SessionRecord {
+                    access,
+                    ..plain.clone()
+                };
+                let written = serde_json::to_value(&record).expect("written");
+                let read: crate::SessionRecord = serde_json::from_value(written).expect("read");
+                assert_eq!(read.access, access);
             }
         }
 

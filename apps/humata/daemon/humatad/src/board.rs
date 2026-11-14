@@ -6,10 +6,15 @@ use std::collections::HashMap;
 use humata_wire::pb;
 use serde::{Deserialize, Serialize};
 
+mod graph;
+
+pub use graph::{cycle, plan};
+
 /// Where an item is on the board.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    #[default]
     Todo,
     InProgress,
     WaitingOnYou,
@@ -21,7 +26,7 @@ pub enum Status {
 impl Status {
     /// Done and Won't do are only ever set by hand, and sessions don't move
     /// an item out of them.
-    fn closed(self) -> bool {
+    pub(crate) fn closed(self) -> bool {
         matches!(self, Self::Done | Self::WontDo)
     }
 
@@ -81,15 +86,54 @@ impl Priority {
     }
 }
 
+/// Whether an item is a milestone, which holds tasks, or a task, as it was
+/// set. What it reads as is worked out by [`plan`]: an item under another
+/// is a task, and one with tasks under it is a milestone, whatever was set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// Not set: a milestone once it has tasks, a task until then. Every
+    /// item from before kinds reads this way.
+    #[default]
+    Auto,
+    Milestone,
+    Task,
+}
+
+impl Kind {
+    pub fn wire(self) -> pb::ItemKind {
+        match self {
+            Self::Auto => pb::ItemKind::Unspecified,
+            Self::Milestone => pb::ItemKind::Milestone,
+            Self::Task => pb::ItemKind::Task,
+        }
+    }
+
+    pub fn from_wire(kind: pb::ItemKind) -> Self {
+        match kind {
+            pb::ItemKind::Unspecified => Self::Auto,
+            pb::ItemKind::Milestone => Self::Milestone,
+            pb::ItemKind::Task => Self::Task,
+        }
+    }
+}
+
 /// What the board's changes record of an item.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemFields {
-    /// The task a subtask is under; None for a task.
+    /// The milestone a task is under; None for a milestone or a task on
+    /// its own.
     pub parent_id: Option<String>,
     pub title: String,
     pub spec: String,
     pub status: Status,
     pub priority: Priority,
+    /// As it was set; changes from before kinds have none.
+    #[serde(default)]
+    pub kind: Kind,
+    /// The items it waits on, by id, in order of id.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 impl ItemFields {
@@ -100,6 +144,8 @@ impl ItemFields {
             spec: self.spec.clone(),
             status: self.status.wire().into(),
             priority: self.priority.wire().into(),
+            kind: self.kind.wire().into(),
+            depends_on: self.depends_on.clone(),
         }
     }
 }
@@ -116,7 +162,9 @@ pub struct Item {
 }
 
 impl Item {
-    /// The item as the protocol has it, its status still as set.
+    /// The item as the protocol has it, its status and kind still as set,
+    /// and not yet said to be blocked or where it comes in the plan:
+    /// [`show`] and [`plan`] work those out from the project's other items.
     pub fn wire(&self) -> pb::Item {
         pb::Item {
             id: self.id.clone(),
@@ -130,6 +178,11 @@ impl Item {
             created_unix_ms: self.created_unix_ms,
             updated_unix_ms: self.updated_unix_ms,
             session_ids: self.session_ids.clone(),
+            kind: self.fields.kind.wire().into(),
+            depends_on: self.fields.depends_on.clone(),
+            blocked: false,
+            waiting_on: Vec::new(),
+            plan_order: 0,
         }
     }
 }
@@ -141,6 +194,11 @@ pub struct ItemPatch {
     pub spec: Option<String>,
     pub status: Option<Status>,
     pub priority: Option<Priority>,
+    pub kind: Option<Kind>,
+    /// Items it comes to depend on, by id.
+    pub link: Vec<String>,
+    /// Items it no longer depends on, by id.
+    pub unlink: Vec<String>,
 }
 
 /// Who made a board change: where from, and the session whose proposal
@@ -335,6 +393,17 @@ mod tests {
             .iter()
             .map(|item| Status::from_wire(item.status()))
             .collect()
+    }
+
+    #[test]
+    fn a_change_journaled_before_kinds_and_links_still_reads() {
+        let old =
+            r#"{"parent_id":null,"title":"login","spec":"","status":"done","priority":"none"}"#;
+        let fields: ItemFields = serde_json::from_str(old).expect("reads");
+        assert_eq!(fields.title, "login");
+        assert_eq!(fields.status, Status::Done);
+        assert_eq!(fields.kind, Kind::Auto);
+        assert!(fields.depends_on.is_empty());
     }
 
     #[test]
