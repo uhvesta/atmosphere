@@ -22,15 +22,15 @@ swift_library(
     ],
 )
 
-# Built but not yet in the iPhone app: its bundle ID needs the App Group
-# assigned in the developer portal and an App Store profile from
-# tools/testflight first.
+# In the iPhone app once LIFR_IOS_EXTRAS in user.bazelrc lists share: its
+# App ID needs the App Group in the developer portal first, and
+# tools/testflight then makes its App Store profile.
 ios_extension(
     name = "ios",
     bundle_id = SHARE_BUNDLE_ID,
     bundle_name = "LifrShare",
     entitlements = select({
-        "//apps/lifr:is_signed": ":ios_entitlements",
+        "//apps/lifr:is_signed": ":ios_app_group",
         "//conditions:default": None,
     }) if IOS_APP_GROUP else None,
     families = [
@@ -40,12 +40,14 @@ ios_extension(
     infoplists = ["Extension/Info.plist"],
     minimum_os_version = "18.0",
     provisioning_profile = select({
+        "//apps/lifr:is_app_store": "//apps/lifr/app:ios_share_app_store",
         "@apple_support//constraints:device": "//apps/lifr/app:ios_development",
         "//conditions:default": None,
     }),
     resources = ["//apps/lifr/app:Resources/Localizable.xcstrings"],
     target_compatible_with = ["//bazel/xcode"],
     version = "//apps/lifr/app:ios_version",
+    visibility = ["//apps/lifr/app:__pkg__"],
     deps = [":share_lib"],
 )
 
@@ -67,7 +69,7 @@ macos_extension(
 )
 
 lifr_entitlements(
-    name = "ios_entitlements",
+    name = "ios_app_group",
     icloud = False,
     ios_app_group = True,
 )

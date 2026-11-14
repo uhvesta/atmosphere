@@ -9,6 +9,10 @@ The team and bundle ID prefix aren't checked in. Set them in a gitignored
     common --repo_env=LIFR_ICLOUD_CONTAINER=iCloud.com.yourname.lifr
     # Optional: the iPhone App Group that the widgets read Today from.
     common --repo_env=LIFR_IOS_APP_GROUP=group.com.yourname.lifr
+    # Optional, with the App Group: what else the iPhone app carries, once
+    # each one's App ID has the App Group in the developer portal. share is
+    # the share extension.
+    common --repo_env=LIFR_IOS_EXTRAS=share
     # Optional: LangReadr's bundle ID, if not <prefix>.langreadr.
     common --repo_env=LANGREADR_BUNDLE_ID=com.yourname.langreadr
 
@@ -26,6 +30,8 @@ _DEFAULT_PREFIX = "com.example"
 _ICLOUD = "LIFR_ICLOUD_CONTAINER"
 _IOS_GROUP = "LIFR_IOS_APP_GROUP"
 _LANGREADR = "LANGREADR_BUNDLE_ID"
+_EXTRAS = "LIFR_IOS_EXTRAS"
+_KNOWN_EXTRAS = ["share"]
 
 def _valid_team(team):
     return len(team) == 10 and team.isalnum() and team.upper() == team
@@ -64,6 +70,12 @@ def _lifr_identity_impl(repository_ctx):
     langreadr = repository_ctx.getenv(_LANGREADR, "") or prefix + ".langreadr"
     if not _valid_prefix(langreadr):
         fail("{} is \"{}\", which isn't a bundle ID. Use a reverse-DNS ID like com.yourname.langreadr in user.bazelrc: common --repo_env={}=com.yourname.langreadr, or remove it to use {}.langreadr. Changing it later makes LangReadr a new app in App Store Connect.".format(_LANGREADR, langreadr, _LANGREADR, _PREFIX))
+    extras = [extra for extra in (repository_ctx.getenv(_EXTRAS, "") or "").split(",") if extra]
+    for extra in extras:
+        if extra not in _KNOWN_EXTRAS:
+            fail("{} has \"{}\", which isn't one of {}. List them with commas, like {}=share".format(_EXTRAS, extra, ", ".join(_KNOWN_EXTRAS), _EXTRAS))
+    if extras and not ios_group:
+        fail("{} needs {}: the share extension writes to the App Group. Set it in user.bazelrc, or remove {}.".format(_EXTRAS, _IOS_GROUP, _EXTRAS))
     repository_ctx.file("BUILD.bazel", "exports_files([\"defs.bzl\"])\n")
     repository_ctx.file("defs.bzl", "\n".join([
         '"""Generated from {} and {}. See //apps/lifr:identity.bzl."""'.format(_TEAM, _PREFIX),
@@ -81,6 +93,8 @@ def _lifr_identity_impl(repository_ctx):
         "IOS_APP_GROUP = {}".format(repr(ios_group)),
         "WIDGETS_BUNDLE_ID = {}".format(repr(bundle_id + ".widgets")),
         "SHARE_BUNDLE_ID = {}".format(repr(bundle_id + ".share")),
+        "# Whether the iPhone app carries the share extension.",
+        "SHARE_IN_APP = {}".format(repr("share" in extras)),
         "# {}, or the prefix and .langreadr.".format(_LANGREADR),
         "LANGREADR_BUNDLE_ID = {}".format(repr(langreadr)),
         "HUMATA_BUNDLE_ID = {}".format(repr(prefix + ".humata")),
@@ -90,7 +104,7 @@ def _lifr_identity_impl(repository_ctx):
 
 lifr_identity = repository_rule(
     implementation = _lifr_identity_impl,
-    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP, _LANGREADR],
+    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP, _LANGREADR, _EXTRAS],
     doc = "Writes @lifr_identity//:defs.bzl from LIFR_TEAM_ID, LIFR_BUNDLE_PREFIX, LIFR_ICLOUD_CONTAINER, " +
-          "LIFR_IOS_APP_GROUP and LANGREADR_BUNDLE_ID.",
+          "LIFR_IOS_APP_GROUP, LIFR_IOS_EXTRAS and LANGREADR_BUNDLE_ID.",
 )

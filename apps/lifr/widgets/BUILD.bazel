@@ -106,7 +106,7 @@ ios_extension(
     bundle_name = "LifrWidgets",
     # The iPhone App Group, when user.bazelrc sets one.
     entitlements = select({
-        "//apps/lifr:is_signed": ":ios_entitlements",
+        "//apps/lifr:is_signed": ":ios_app_group",
         "//conditions:default": None,
     }) if IOS_APP_GROUP else None,
     families = [
@@ -150,7 +150,7 @@ macos_extension(
 )
 
 lifr_entitlements(
-    name = "ios_entitlements",
+    name = "ios_app_group",
     icloud = False,
     ios_app_group = True,
 )

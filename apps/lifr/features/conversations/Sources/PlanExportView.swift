@@ -120,15 +120,15 @@ private struct ChipFlow: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var y = bounds.minY
+        var top = bounds.minY
         for row in rows(width: bounds.width, subviews) {
-            var x = bounds.minX
+            var leading = bounds.minX
             for index in row.indices {
                 let size = subviews[index].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
-                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-                x += size.width + spacing
+                subviews[index].place(at: CGPoint(x: leading, y: top), proposal: ProposedViewSize(size))
+                leading += size.width + spacing
             }
-            y += row.height + spacing
+            top += row.height + spacing
         }
     }
 

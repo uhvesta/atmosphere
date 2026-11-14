@@ -1,5 +1,12 @@
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
-load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "ICLOUD_CONTAINER", "IOS_APP_GROUP", "TEAM_ID")
+load(
+    "@lifr_identity//:defs.bzl",
+    "BUNDLE_ID",
+    "ICLOUD_CONTAINER",
+    "IOS_APP_GROUP",
+    "SHARE_IN_APP",
+    "TEAM_ID",
+)
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
@@ -81,8 +88,9 @@ ios_application(
         "//apps/lifr:is_signed": ":ios_app_group",
         "//conditions:default": None,
     }) if IOS_APP_GROUP or ICLOUD_CONTAINER else None,
-    # Today on the Home Screen.
-    extensions = ["//apps/lifr/widgets:ios"],
+    # Today on the Home Screen, and the share sheet once LIFR_IOS_EXTRAS
+    # in user.bazelrc lists share.
+    extensions = ["//apps/lifr/widgets:ios"] + (["//apps/lifr/share:ios"] if SHARE_IN_APP else []),
     families = [
         "iphone",
         "ipad",
@@ -204,7 +212,7 @@ local_provisioning_profile(
     name = "ios_development",
     profile_name = "iOS Team Provisioning Profile: *",
     team_id = TEAM_ID,
-    # The widgets' extension signs with it too.
+    # The extensions sign with it too.
     visibility = [
         "//apps/lifr/share:__pkg__",
         "//apps/lifr/widgets:__pkg__",
@@ -212,7 +220,7 @@ local_provisioning_profile(
 )
 
 # The App Store profiles tools/testflight makes and installs, for the
-# iPhone app and its widgets.
+# iPhone app, its widgets and, with LIFR_IOS_EXTRAS, the share extension.
 local_provisioning_profile(
     name = "ios_app_store",
     profile_name = "Lifr App Store",
@@ -224,6 +232,15 @@ local_provisioning_profile(
     profile_name = "Lifr Widgets App Store",
     team_id = TEAM_ID,
     visibility = ["//apps/lifr/widgets:__pkg__"],
+)
+
+# Only looked for with LIFR_IOS_EXTRAS=share: until then it isn't made.
+local_provisioning_profile(
+    name = "ios_share_app_store",
+    profile_name = "Lifr Share App Store",
+    tags = ["manual"],
+    team_id = TEAM_ID,
+    visibility = ["//apps/lifr/share:__pkg__"],
 )
 
 # Archives for Xcode's Organizer, with dSYMs. Build them signed:
