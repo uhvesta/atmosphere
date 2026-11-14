@@ -15,11 +15,11 @@ final class CalendarFeatureTests: XCTestCase {
 
     private func day(_ string: String) throws -> CalendarDate { try CalendarDate(string) }
 
-    private func load() async -> TestStoreOf<CalendarFeature> {
+    private func load(_ client: StoreClient? = nil) async -> TestStoreOf<CalendarFeature> {
         let store = TestStore(initialState: CalendarFeature.State()) {
             CalendarFeature()
         } withDependencies: { [now, records] in
-            $0.store = .inMemory(records.workspace)
+            $0.store = client ?? .inMemory(records.workspace)
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
@@ -50,9 +50,43 @@ final class CalendarFeatureTests: XCTestCase {
         let store = await load()
         XCTAssertEqual(store.state.weeks.first?.first?.date, try day("2026-11-01"))
 
-        await store.send(.firstWeekdayChanged(2))
+        await store.send(.calendarChanged(firstWeekday: 2, weekend: [1, 7]))
 
         XCTAssertEqual(store.state.weeks.first?.first?.date, try day("2026-10-26"))
+    }
+
+    func testTheWeekendFollowsThePersonsCalendar() async throws {
+        let store = await load()
+        func weekend() -> [Int] {
+            (store.state.weeks.first ?? []).filter(\.isWeekend).map(\.date.weekday).sorted()
+        }
+        XCTAssertEqual(weekend(), [1, 7])
+
+        await store.send(.calendarChanged(firstWeekday: 1, weekend: [6, 7]))
+
+        XCTAssertEqual(weekend(), [6, 7])
+    }
+
+    func testACalendarsWeekendComesFromItsRegion() {
+        func weekend(_ locale: String) -> Set<Int> {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.locale = Locale(identifier: locale)
+            calendar.timeZone = .gmt
+            return calendar.weekendDays
+        }
+        XCTAssertEqual(weekend("en_US"), [1, 7])
+        XCTAssertEqual(weekend("he_IL"), [6, 7])
+    }
+
+    func testADragCarriesSeveralTasksOneToALineOrABarsStart() {
+        let first = UUID()
+        let second = UUID()
+
+        XCTAssertEqual(CalendarPayload([CalendarPayload.dragging([first, second])]), .tasks([first, second]))
+        XCTAssertEqual(CalendarPayload([first.uuidString, first.uuidString]), .tasks([first]))
+        XCTAssertEqual(CalendarPayload([CalendarPayload.dragging(startOf: second)]), .start(second))
+        XCTAssertNil(CalendarPayload(["not a task"]))
+        XCTAssertNil(CalendarPayload([]))
     }
 
     func testWeeksStartOnTheFirstWeekdayAsked() throws {
@@ -208,6 +242,58 @@ final class CalendarFeatureTests: XCTestCase {
         let task = store.state.list.workspace?.tasks[trip.id]
         XCTAssertEqual(task?.startDate, try day("2026-11-10"))
         XCTAssertEqual(task?.dueDate, try day("2026-11-12"))
+    }
+
+    func testDroppingABarsStartMovesOnlyTheStart() async throws {
+        let trip = records.task("Pack for the trip", in: health, due: 4, starts: 2)
+        let store = await load()
+
+        await store.send(.startDropped(trip.id, on: try day("2026-11-03")))
+        await store.receive(\.list.saved)
+
+        let task = store.state.list.workspace?.tasks[trip.id]
+        XCTAssertEqual(task?.startDate, try day("2026-11-03"))
+        XCTAssertEqual(task?.dueDate, try day("2026-11-07"))
+    }
+
+    func testAStartPastTheDueDateIsRefusedWithAnAlertAndChangesNothing() async throws {
+        let trip = records.task("Pack for the trip", in: health, due: 2, starts: 0)
+        let store = await load()
+        let rows = store.state.list.rows
+        let before = store.state.list.workspace
+
+        await store.send(.startDropped(trip.id, on: try day("2026-11-10")))
+        await store.receive(\.list.saved)
+
+        XCTAssertNotNil(store.state.list.alert)
+        XCTAssertEqual(store.state.list.rows, rows)
+        XCTAssertEqual(store.state.list.workspace, before)
+    }
+
+    func testUndoAfterADropPutsBothDatesBack() async throws {
+        let trip = records.task("Pack for the trip", in: health, due: 2, starts: 0)
+        let client = StoreClient.inMemory(records.workspace)
+        let last = LockIsolated<Saved?>(nil)
+        var recording = client
+        recording.save = { operation in
+            let saved = try await client.save(operation)
+            last.setValue(saved)
+            return saved
+        }
+        let store = await load(recording)
+
+        await store.send(.dropped([trip.id], on: try day("2026-11-12")))
+        await store.receive(\.list.saved)
+        let change = try XCTUnwrap(last.value?.change)
+        let undone = try await withDependencies { [now] in
+            $0.date.now = now
+            $0.uuid = .incrementing
+        } operation: {
+            try await client.undo(change)
+        }
+
+        XCTAssertEqual(undone.workspace.tasks[trip.id]?.startDate, try day("2026-11-03"))
+        XCTAssertEqual(undone.workspace.tasks[trip.id]?.dueDate, try day("2026-11-05"))
     }
 
     func testTheWeekShowsTheSelectedDaysSevenDaysAndStepsByAWeek() async throws {

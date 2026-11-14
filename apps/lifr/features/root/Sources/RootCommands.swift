@@ -18,6 +18,14 @@ package struct RootCommands: Commands {
     private let main: StoreOf<RootFeature>
     @FocusedValue(\.lifrWindow) private var focused
     @Environment(\.openWindow) private var openWindow
+    #if os(macOS)
+        @Environment(\.openSettings) private var openSettings
+    #endif
+    /// View › Show Detail, shared with every window.
+    @AppStorage(Self.showsDetailKey) private var showsDetail = true
+
+    /// Where Show Detail is kept.
+    static let showsDetailKey = "lifrShowsDetail"
 
     package init(store: StoreOf<RootFeature>) {
         main = store
@@ -96,6 +104,14 @@ package struct RootCommands: Commands {
         .disabled(detail?.labelChoices.isEmpty ?? true)
     }
 
+    #if os(macOS)
+        /// Settings' Data page, in its window.
+        private func openData() {
+            store.send(.settings(.dataTapped))
+            openSettings()
+        }
+    #endif
+
     package var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Task") { store.send(.newTaskTapped) }
@@ -113,6 +129,14 @@ package struct RootCommands: Commands {
             Button("Paste Plan Reply") { store.send(.chatCommandChosen(.paste)) }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
                 .disabled(store.isLocked)
+            #if os(macOS)
+                Divider()
+                // Settings' Data page has both, and the backups.
+                Button("Import…") { openData() }
+                    .disabled(store.isLocked)
+                Button("Export…") { openData() }
+                    .disabled(store.isLocked)
+            #endif
             // The iPhone has one window.
             if store.platform.hasSidebar {
                 Divider()
@@ -190,6 +214,11 @@ package struct RootCommands: Commands {
                 ForEach(RootFeature.Content.allCases, id: \.self) { Text($0.title) }
             }
             .disabled(!store.state.showsScope)
+            if store.platform.hasSidebar {
+                // The board takes the detail column's place already.
+                Toggle("Show Detail", isOn: $showsDetail)
+                    .disabled(store.state.showsScope && store.content == .board)
+            }
             sortAndGroup
             Divider()
             Button("Back") { store.send(.backTapped) }
@@ -376,7 +405,9 @@ package struct MenuBarContent: View {
             }
         }
         Divider()
-        Text("Sync: \(SyncStatusText.status(store.sync))")
+        TimelineView(.everyMinute) { context in
+            Text("Sync: \(SyncStatusText.status(store.sync, now: context.date))")
+        }
         Button("Sync Now") { store.send(.syncNowTapped) }
             .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
         Divider()

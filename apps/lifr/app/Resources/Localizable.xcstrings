@@ -686,6 +686,12 @@
     "A part of your life, like Home" : {
 
     },
+    "A plan prompt made with this skill starts from this goal and the tasks you kept." : {
+
+    },
+    "A plan prompt made with this skill starts from this goal." : {
+
+    },
     "A soft sound when you finish a task. This device only." : {
 
     },
@@ -795,6 +801,9 @@
 
     },
     "Add files" : {
+
+    },
+    "Add from any app" : {
 
     },
     "Add photos or files" : {
@@ -1243,6 +1252,9 @@
     "Choose" : {
 
     },
+    "Choose Keys…" : {
+
+    },
     "Choose what tapping a task's circle does." : {
 
     },
@@ -1372,6 +1384,9 @@
     "Copied %lld tasks" : {
 
     },
+    "Copied ^[%lld task](inflect: true)" : {
+
+    },
     "Copied a prompt to plan %@. Paste it into a chat assistant, then paste its reply into a Lifr chat with /paste." : {
 
     },
@@ -1484,6 +1499,9 @@
 
     },
     "Couldn't keep the attachment on this device (%@). Check that this device has free storage, then attach it again." : {
+
+    },
+    "Couldn't keep the goal and scope" : {
 
     },
     "Couldn't keep the instructions on this device (%@). The assistant uses the ones from before. Check that this device has free storage, then try again." : {
@@ -1809,6 +1827,9 @@
     "Drag a task onto a day" : {
 
     },
+    "Drag to another day to change when it starts" : {
+
+    },
     "Due" : {
 
     },
@@ -1816,6 +1837,9 @@
 
     },
     "Due Date" : {
+
+    },
+    "Due From" : {
 
     },
     "Due Next Week" : {
@@ -2020,10 +2044,16 @@
     "Export Plan Prompt" : {
 
     },
+    "Export What Can Be Read" : {
+
+    },
     "Export as Markdown…" : {
 
     },
     "Export your tasks, import a file, or bring back a daily backup." : {
+
+    },
+    "Export…" : {
 
     },
     "Face ID" : {
@@ -2074,6 +2104,9 @@
     "Finding related conversations…" : {
 
     },
+    "Finds tasks in Lifr by status, Avenue, Project, label or a range of due dates. With no status set, it finds open tasks." : {
+
+    },
     "Finds tasks in Lifr by status, Avenue, Project, label or due date. With no status set, it finds open tasks." : {
 
     },
@@ -2120,6 +2153,9 @@
 
     },
     "Forget Summary" : {
+
+    },
+    "Forget the Tasks Listed" : {
 
     },
     "Fork" : {
@@ -2284,6 +2320,9 @@
     "I ask to look back over my week" : {
 
     },
+    "If this keeps happening, report a bug with these details." : {
+
+    },
     "If this keeps happening, share these details in a bug report." : {
 
     },
@@ -2414,6 +2453,9 @@
     "Keep Changes" : {
 
     },
+    "Keep Goal and Scope in %@" : {
+
+    },
     "Keep Lifr in the menu bar at login" : {
 
     },
@@ -2427,6 +2469,9 @@
 
     },
     "Keeps “%@” in the title instead" : {
+
+    },
+    "Kept in %@" : {
 
     },
     "Key" : {
@@ -2528,6 +2573,9 @@
           }
         }
       }
+    },
+    "Lifr couldn't open its data: %@" : {
+
     },
     "Lifr couldn't reach the tasks added from the share sheet in the keychain (%@). Unlock the device and try again; if it keeps happening, add the task with Quick Add." : {
 
@@ -2915,6 +2963,9 @@
     "Move to…" : {
 
     },
+    "Move “%@”" : {
+
+    },
     "Moved %@ to %@" : {
       "localizations" : {
         "en" : {
@@ -2951,6 +3002,9 @@
 
     },
     "Moves a task in Lifr to another day, or leaves it with none." : {
+
+    },
+    "Move…" : {
 
     },
     "Moving a task moves its Sub tasks with it." : {
@@ -3255,6 +3309,9 @@
     "Nothing was deleted: %@. Try again; if it keeps failing, restart Lifr." : {
 
     },
+    "Notifications" : {
+
+    },
     "Notifications are off" : {
 
     },
@@ -3358,6 +3415,9 @@
 
     },
     "Open Lifr to see your due dates here." : {
+
+    },
+    "Open Sub tasks in ^[%lld task](inflect: true)" : {
 
     },
     "Open Task in New Window" : {
@@ -3478,6 +3538,9 @@
     "Pick an Avenue, Project or Filter" : {
 
     },
+    "Pick keys that open Quick Add over whatever you're working in." : {
+
+    },
     "Pick several tasks" : {
 
     },
@@ -3502,10 +3565,19 @@
     "Plan new tasks, Projects and Avenues." : {
 
     },
+    "Plan next week's errands" : {
+
+    },
     "Plan with Another Assistant" : {
 
     },
     "Plan with Another Assistant…" : {
+
+    },
+    "Planning with Another Assistant" : {
+
+    },
+    "Planning with this skill next time starts from this goal and these tasks." : {
 
     },
     "Plus" : {
@@ -4079,7 +4151,13 @@
     "Show Day" : {
 
     },
+    "Show Detail" : {
+
+    },
     "Show Less" : {
+
+    },
+    "Show Month" : {
 
     },
     "Show More" : {
@@ -4098,6 +4176,9 @@
 
     },
     "Show Unscheduled" : {
+
+    },
+    "Show Week" : {
 
     },
     "Show as" : {
@@ -4122,6 +4203,9 @@
 
     },
     "Shows the thinking" : {
+
+    },
+    "Shows the tips Lifr gives as you start using it again." : {
 
     },
     "Shows the tips about swiping a task and dragging one onto a day again." : {
@@ -4185,6 +4269,9 @@
 
     },
     "Start a new conversation." : {
+
+    },
+    "Starts" : {
 
     },
     "Starts %@" : {
@@ -4467,6 +4554,9 @@
         }
       }
     },
+    "The calendar" : {
+
+    },
     "The clipboard has no lines to add. Copy a list, one task a line." : {
 
     },
@@ -4511,6 +4601,9 @@
 
     },
     "The model of this chat can't read photos, so %@ wasn't attached. Pick a model that reads them, or attach a text file." : {
+
+    },
+    "The newest daily backup, as a file to keep or import later" : {
 
     },
     "The newest messages that fit the model's window, with the files sent with the last." : {

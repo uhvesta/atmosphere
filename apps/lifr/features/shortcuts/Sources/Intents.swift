@@ -372,8 +372,8 @@ package struct FindTasksIntent: AppIntent {
     package static let title: LocalizedStringResource = "Find Tasks"
     package static let description = IntentDescription(
         """
-        Finds tasks in Lifr by status, Avenue, Project, label or due date. With no status set, it finds \
-        open tasks.
+        Finds tasks in Lifr by status, Avenue, Project, label or a range of due dates. With no status set, \
+        it finds open tasks.
         """)
 
     @Parameter(title: "Status")
@@ -384,6 +384,8 @@ package struct FindTasksIntent: AppIntent {
     package var project: ProjectEntity?
     @Parameter(title: "Label")
     package var label: LabelEntity?
+    @Parameter(title: "Due From")
+    package var dueFrom: Date?
     @Parameter(title: "Due By")
     package var dueBy: Date?
 
@@ -397,6 +399,7 @@ package struct FindTasksIntent: AppIntent {
             \.$avenue
             \.$project
             \.$label
+            \.$dueFrom
             \.$dueBy
         }
     }
@@ -404,7 +407,8 @@ package struct FindTasksIntent: AppIntent {
     package func perform() async throws -> some IntentResult & ReturnsValue<[TaskEntity]> & ProvidesDialog {
         let found = try await shortcuts.find(
             Shortcuts.Filter(
-                status: status?.status, avenue: avenue?.id, project: project?.id, label: label?.id, dueBy: dueBy))
+                status: status?.status, avenue: avenue?.id, project: project?.id, label: label?.id,
+                dueFrom: dueFrom, dueBy: dueBy))
         let dialog: IntentDialog =
             switch found.count {
             case 0: "No tasks match."

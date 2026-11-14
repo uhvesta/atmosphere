@@ -6,7 +6,7 @@ import LifrStoreClient
 import LifrTaskDetail
 
 /// Adds a task or a Project in a few taps. A task needs an Avenue (the
-/// last one used) and optionally a Project, a due day and a priority; a
+/// Inbox unless one is picked) and optionally a Project, a due day and a priority; a
 /// Project needs its Avenue. A task's title can say the rest, as in
 /// "Call dentist tomorrow 3pm !high #health": each recognised part shows
 /// under the field and wins over the form. Sub tasks are added from their task: opened
@@ -107,8 +107,12 @@ package struct QuickAddFeature {
                     .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) },
                 by: \.avenueID
             ).mapValues { $0.map { Choice(id: $0.id, name: $0.name) } }
+            // With nothing picked a thought lands in the Inbox; a workspace
+            // without one falls back to the Avenue last added to.
             let last = UUID(uuidString: lastAvenue)
-            avenueID = avenues.first { $0.id == last }?.id ?? avenues.first?.id
+            avenueID =
+                avenues.first { $0.id == Avenue.inboxID }?.id ?? avenues.first { $0.id == last }?.id
+                ?? avenues.first?.id
         }
 
         /// Projects in the picked Avenue.

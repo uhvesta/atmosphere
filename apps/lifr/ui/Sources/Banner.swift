@@ -78,8 +78,31 @@ package struct BannerView: View {
         }
         .font(.callout)
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .bannerBackground(in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal)
         .accessibilityElement(children: .contain)
+    }
+}
+
+extension View {
+    /// The backing of a banner or toast that floats over content: a thin
+    /// material, or with Reduce Transparency an opaque fill with an edge.
+    package func bannerBackground(in shape: some Shape) -> some View {
+        modifier(BannerBackground(shape: shape))
+    }
+}
+
+private struct BannerBackground<Backing: Shape>: ViewModifier {
+    let shape: Backing
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background(.background.secondary, in: shape)
+                .overlay(shape.stroke(.separator))
+        } else {
+            content.background(.thinMaterial, in: shape)
+        }
     }
 }

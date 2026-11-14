@@ -7,6 +7,8 @@ package enum GestureTip: String, CaseIterable, Sendable {
     case swipeRow
     /// Dragging a task onto a day in the calendar.
     case calendarDrag
+    /// The Mac's keys that open Quick Add from any app.
+    case globalCapture
 
     /// Where this device remembers the tip was seen.
     package var storageKey: String { "lifrTipSeen-\(rawValue)" }

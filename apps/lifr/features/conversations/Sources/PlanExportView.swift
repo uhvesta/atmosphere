@@ -44,6 +44,20 @@ struct PlanExportView: View {
                         Text("The prompt names your Avenues, Projects and labels only.")
                     }
                 }
+                if let preset = store.preset, preset.isUser {
+                    Section {
+                        Button {
+                            store.send(.rememberTapped)
+                        } label: {
+                            Label(
+                                store.remembered ? "Kept in \(preset.title)" : "Keep Goal and Scope in \(preset.title)",
+                                systemImage: store.remembered ? "checkmark" : "bookmark")
+                        }
+                        .disabled(store.remembered)
+                    } footer: {
+                        Text("Planning with this skill next time starts from this goal and these tasks.")
+                    }
+                }
                 Section {
                     Text(store.prompt)
                         .font(.footnote.monospaced())
@@ -86,6 +100,7 @@ struct PlanExportView: View {
                     Button("Done") { store.send(.doneTapped) }
                 }
             }
+            .alert($store.scope(state: \.alert, action: \.alert))
         }
     }
 

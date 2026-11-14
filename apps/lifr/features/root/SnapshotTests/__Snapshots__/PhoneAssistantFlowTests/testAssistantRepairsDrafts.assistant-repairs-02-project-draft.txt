@@ -12,6 +12,7 @@
 [header, text] "Draft"
 [text] "1 task"
 [text] "Stretch after every run, Health › Half marathon"
+[text] "Adds to your Health › Half marathon"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

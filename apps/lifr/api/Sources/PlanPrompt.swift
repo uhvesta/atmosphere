@@ -15,6 +15,33 @@ package enum PlanPrompt {
         case avenue(UUID)
         /// The open tasks in one of their Projects.
         case project(UUID)
+
+        /// The scope as a skill keeps it: "names", "everything",
+        /// "avenue:<id>" or "project:<id>".
+        package var stored: String {
+            switch self {
+            case .names: "names"
+            case .everything: "everything"
+            case .avenue(let id): "avenue:" + id.uuidString
+            case .project(let id): "project:" + id.uuidString
+            }
+        }
+
+        /// The scope `stored` names; nil when it names none.
+        package init?(stored: String) {
+            switch stored {
+            case "names": self = .names
+            case "everything": self = .everything
+            default:
+                let parts = stored.split(separator: ":", maxSplits: 1).map(String.init)
+                guard parts.count == 2, let id = UUID(uuidString: parts[1]) else { return nil }
+                switch parts[0] {
+                case "avenue": self = .avenue(id)
+                case "project": self = .project(id)
+                default: return nil
+                }
+            }
+        }
     }
 
     /// What a prompt says of each task `Scope` lists.
@@ -35,19 +62,31 @@ package enum PlanPrompt {
     static let taskLimit = 200
 
     /// A prompt asking for a plan for `goal`, in the TOML `PlanFile` reads.
-    /// It names the Avenues an assistant may add to, their active Projects
-    /// and every label, so the reply reuses them, and the open tasks in
-    /// `scope`, as `listing` says.
+    /// It names the Avenues in `scope` an assistant may add to (every one
+    /// for `.names` and `.everything`), their active Projects and every
+    /// label, so the reply reuses them, and the open tasks in `scope`, as
+    /// `listing` says.
     package static func make(
         goal: String, scope: Scope = .names, listing: Listing = Listing(), instructions: String = "",
         workspace: Workspace, today: CalendarDate, timeZone: TimeZone
     ) -> String {
-        let avenues = workspace.avenues.values
+        let open = workspace.avenues.values
             .filter { $0.archivedAt == nil && $0.agentAccess == .full }
             .sorted { $0.key < $1.key }
+        // One Avenue or Project in scope names only it, so nothing outside
+        // the scope leaves Lifr.
+        let avenues: [Avenue]
+        var scoped: UUID?
+        switch scope {
+        case .names, .everything: avenues = open
+        case .avenue(let id): avenues = open.filter { $0.id == id }
+        case .project(let id):
+            avenues = open.filter { $0.id == workspace.projects[id]?.avenueID }
+            scoped = id
+        }
         let ids = Set(avenues.map(\.id))
         let projects = workspace.projects.values
-            .filter { ids.contains($0.avenueID) && $0.status == .active }
+            .filter { ids.contains($0.avenueID) && $0.status == .active && (scoped == nil || $0.id == scoped) }
         let labels = workspace.labels.values.map(\.name).sorted()
         var context = ["Avenues (key: name), with their Projects:"]
         for avenue in avenues {

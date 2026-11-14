@@ -29,6 +29,7 @@ package struct MacSettingsView: View {
         let settings = store.scope(state: \.settings, action: \.settings)
         return TabView(selection: Binding(get: { settings.page }, set: { settings.send(.pagePicked($0)) })) {
             tab(.general, settings, "General", systemImage: "gearshape")
+            tab(.notifications, settings, "Notifications", systemImage: "bell.badge")
             tab(.sync, settings, "Sync & Privacy", systemImage: "arrow.triangle.2.circlepath.icloud")
             tab(.assistant, settings, "Assistant", systemImage: "sparkles")
             tab(.agents, settings, "Agents", systemImage: "terminal")

@@ -1,6 +1,6 @@
 [button] "New Avenue"
 [header] "Avenues"
-[button] "Inbox, INBOX, 1" value: "1 open"
+[button] "Inbox, 1" value: "1 open"
 [button] "Health, HEALTH, 4" value: "4 open"
 [button] "Half marathon, 1" value: "1 open"
 [button] "Work, WORK, 1" value: "1 open"

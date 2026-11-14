@@ -426,6 +426,15 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(found.map(\.name), ["Stretch", "Long run", "Write report"])
     }
 
+    func testFindsTasksDueFromOneDayToAnother() async throws {
+        let day: TimeInterval = 24 * 60 * 60
+        let found = try await findable().find(.init(dueFrom: now, dueBy: now + 5 * day))
+        let later = try await findable().find(.init(dueFrom: now + day))
+
+        XCTAssertEqual(found.map(\.name), ["Long run", "Write report", "Book physio"])
+        XCTAssertEqual(later.map(\.name), ["Write report", "Book physio"])
+    }
+
     func testGivesATasksDetails() async throws {
         let shortcuts = findable()
         let open = try await shortcuts.find(.init())

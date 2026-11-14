@@ -69,7 +69,7 @@ private struct ShareRoot: View {
     @State private var error: SharedTasksError?
 
     var body: some View {
-        ShareView(title: shared.title, details: shared.details, avenues: Self.avenues) { task in
+        ShareView(title: shared.title, details: shared.details, plan: shared.plan, avenues: Self.avenues) { task in
             guard let task else { return finish(false) }
             do throws(SharedTasksError) {
                 guard let queue = SharedTasks.shared else { throw SharedTasksError.noAppGroup }

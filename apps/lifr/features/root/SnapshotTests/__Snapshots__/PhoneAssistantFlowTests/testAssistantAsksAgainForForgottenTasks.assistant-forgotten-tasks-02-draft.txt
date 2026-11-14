@@ -12,6 +12,7 @@
 [header, text] "Draft"
 [text] "1 task"
 [text] "file my taxes, Work · Urgent"
+[text] "Adds to your Work"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

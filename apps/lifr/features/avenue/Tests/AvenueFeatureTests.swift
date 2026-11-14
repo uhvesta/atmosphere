@@ -109,6 +109,20 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.avenues.map(\.name), ["Health", "Home"])
     }
 
+    func testTheInboxStaysFirstAndNothingTakesItsPlace() async {
+        let inbox = records.inbox()
+        _ = (health, home)
+        let store = await avenues()
+        XCTAssertEqual(store.state.inbox?.id, inbox.id)
+        XCTAssertEqual(store.state.movable.map(\.name), ["Health", "Home"])
+
+        await store.send(.moveAvenue(health.id, up: true))
+        await store.send(.avenueDropped(home.id, onto: inbox.id))
+        await store.send(.moveAvenue(inbox.id, up: false))
+        await store.send(.avenueDropped(inbox.id, onto: home.id))
+        XCTAssertEqual(store.state.avenues.map(\.name), ["Inbox", "Health", "Home"])
+    }
+
     func testMovingAProjectUpPutsItFirstInItsAvenue() async {
         records.project("Half marathon", in: health)
         let stretch = records.project("Stretching", in: health)

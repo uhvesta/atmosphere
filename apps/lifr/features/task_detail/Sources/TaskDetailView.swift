@@ -14,6 +14,12 @@ package struct TaskDetailView: View {
     @Environment(\.locale) private var locale
     @Environment(\.openURL) private var openURL
     @FocusState private var titleFocused: Bool
+    /// The chip whose editor is open beside it.
+    @State private var chipEditor: ChipEditor?
+
+    private enum ChipEditor: Hashable {
+        case start, due, labels
+    }
 
     package init(store: StoreOf<TaskDetailFeature>) {
         self.store = store
@@ -22,16 +28,11 @@ package struct TaskDetailView: View {
     package var body: some View {
         Form {
             fields
+            chips
             details
-            dates
-            if !store.isSubtask {
-                place
-            }
-            labels
             if !store.isSubtask {
                 subtasks
             }
-            reminders
             activity
             manage
         }
@@ -65,6 +66,30 @@ package struct TaskDetailView: View {
                     }
             }
             .frame(minWidth: 360, minHeight: 240)
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { store.repeatDraft != nil },
+                set: { if !$0 { store.send(.repeatCustomCancelled) } })
+        ) {
+            RepeatEditor(
+                draft: Binding(
+                    get: { store.repeatDraft ?? RepeatDraft(anchor: store.repeatAnchor, from: nil) },
+                    set: { store.send(.binding(.set(\.repeatDraft, $0))) }),
+                save: { store.send(.repeatCustomSaved) },
+                cancel: { store.send(.repeatCustomCancelled) })
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { store.reminderDraft != nil },
+                set: { if !$0 { store.send(.reminderCustomCancelled) } })
+        ) {
+            ReminderEditor(
+                draft: Binding(
+                    get: { store.reminderDraft ?? ReminderDraft(now: Date(), hasDueDate: false) },
+                    set: { store.send(.binding(.set(\.reminderDraft, $0))) }),
+                save: { store.send(.reminderCustomSaved) },
+                cancel: { store.send(.reminderCustomCancelled) })
         }
         .task { store.send(.appeared) }
     }
@@ -150,38 +175,357 @@ package struct TaskDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private var dates: some View {
+    /// The dates, repeat, reminders, place and labels, as chips that wrap.
+    /// A chip opens its editor; one with nothing set offers to add it.
+    private var chips: some View {
         Section {
-            dateRow("Due", store.dueDate, from: store.startDate) { store.send(.dueDatePicked($0)) }
-            if let due = store.dueDate {
-                if let time = store.dueTime {
-                    HStack {
-                        DatePicker(
-                            "Time",
-                            selection: Binding(
-                                get: { self.date(due, at: time) },
-                                set: { store.send(.dueTimePicked(TimeOfDay($0, in: timeZone))) }),
-                            displayedComponents: .hourAndMinute)
-                        clear("Remove time") { store.send(.dueTimePicked(nil)) }
+            ChipFlow {
+                dueChip
+                startChip
+                if !store.isSubtask {
+                    repeatChip
+                }
+                ForEach(store.reminders) { reminderChip($0) }
+                addReminderChip
+                if !store.isSubtask {
+                    avenueChip
+                    projectChip
+                }
+                ForEach(store.labelChoices.filter { store.labelIDs.contains($0.id) }) { label in
+                    Button {
+                        chipEditor = .labels
+                    } label: {
+                        Chip(systemImage: "number", title: Text(label.name))
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Label \(label.name)")
+                    .accessibilityHint("Opens the labels")
+                }
+                labelsChip
+            }
+            .padding(.vertical, 4)
+            if store.notificationsDenied {
+                Button {
+                    if let url = Self.notificationSettings { openURL(url) }
+                } label: {
+                    Label(
+                        "Notifications are off for Lifr, so reminders won't ring here. Turn them on in Settings.",
+                        systemImage: "bell.slash")
+                }
+                .foregroundStyle(.orange)
+            }
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                if store.row.due?.isOverdue == true {
+                    Label("Overdue", systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                }
+                if !store.isSubtask {
+                    Text("Moving a task moves its Sub tasks with it. In another Avenue it gets a new code.")
+                }
+            }
+        }
+    }
+
+    private var dueChip: some View {
+        let due = store.dueDate
+        let overdue = store.row.due?.isOverdue == true
+        return Button {
+            if due == nil { store.send(.dueDatePicked(today(from: store.startDate, through: nil))) }
+            chipEditor = .due
+        } label: {
+            if let due {
+                if let time = store.dueTime {
+                    Chip(
+                        systemImage: "calendar",
+                        title: Text("Due \(date(due, at: time), format: Self.dayAndTime)"),
+                        tint: overdue ? .red : nil)
                 } else {
-                    Button("Add a time") {
-                        store.send(.dueTimePicked(try? TimeOfDay("09:00")))
+                    Chip(
+                        systemImage: "calendar",
+                        title: Text("Due \(date(due, at: nil), format: .dateTime.weekday().month().day())"),
+                        tint: overdue ? .red : nil)
+                }
+            } else {
+                Chip(systemImage: "calendar", title: Text("Due"), isSet: false)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(due == nil ? Text("Add a due date") : Text("Due"))
+        .accessibilityValue(dueValue(due, overdue: overdue))
+        .popover(isPresented: editing(.due)) {
+            dateEditor {
+                if let due {
+                    datePicker("Due", due, from: store.startDate) { store.send(.dueDatePicked($0)) }
+                    if let time = store.dueTime {
+                        HStack {
+                            DatePicker(
+                                "Time",
+                                selection: Binding(
+                                    get: { self.date(due, at: time) },
+                                    set: { store.send(.dueTimePicked(TimeOfDay($0, in: timeZone))) }),
+                                displayedComponents: .hourAndMinute)
+                            clear("Remove time") { store.send(.dueTimePicked(nil)) }
+                        }
+                    } else {
+                        Button("Add a time") { store.send(.dueTimePicked(try? TimeOfDay("09:00"))) }
+                    }
+                    Button("Remove due date", systemImage: "trash", role: .destructive) {
+                        chipEditor = nil
+                        store.send(.dueDatePicked(nil))
                     }
                 }
             }
-            dateRow("Start", store.startDate, through: store.dueDate) { store.send(.startDatePicked($0)) }
-            if !store.isSubtask {
-                repeatRow
-            }
-        } header: {
-            Text("Dates")
-        } footer: {
-            if store.row.due?.isOverdue == true {
-                Label("Overdue", systemImage: "exclamationmark.circle").foregroundStyle(.red)
+        }
+    }
+
+    /// The due date VoiceOver reads, saying so when it's overdue.
+    private func dueValue(_ due: CalendarDate?, overdue: Bool) -> Text {
+        guard let due else { return Text("") }
+        // Read in the screen's language and time zone, as the chip shows it.
+        var format = dueFormat.locale(locale)
+        format.timeZone = timeZone
+        let when = date(due, at: store.dueTime).formatted(format)
+        return overdue ? Text("\(when), overdue") : Text(when)
+    }
+
+    private var dueFormat: Date.FormatStyle {
+        store.dueTime == nil ? .dateTime.weekday().month().day() : Self.dayAndTime
+    }
+
+    private static let dayAndTime: Date.FormatStyle = .dateTime.weekday().month().day().hour().minute()
+
+    private var startChip: some View {
+        let start = store.startDate
+        return Button {
+            if start == nil { store.send(.startDatePicked(today(from: nil, through: store.dueDate))) }
+            chipEditor = .start
+        } label: {
+            if let start {
+                Chip(
+                    systemImage: "arrow.right.to.line",
+                    title: Text("Starts \(date(start, at: nil), format: .dateTime.weekday().month().day())"))
+            } else {
+                Chip(systemImage: "arrow.right.to.line", title: Text("Start"), isSet: false)
             }
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(start == nil ? Text("Add a start date") : Text("Start"))
+        .accessibilityValue(
+            start.map { Text(date($0, at: nil), format: .dateTime.weekday().month().day()) } ?? Text("")
+        )
+        .popover(isPresented: editing(.start)) {
+            dateEditor {
+                if let start {
+                    datePicker("Start", start, through: store.dueDate) { store.send(.startDatePicked($0)) }
+                    Button("Remove start date", systemImage: "trash", role: .destructive) {
+                        chipEditor = nil
+                        store.send(.startDatePicked(nil))
+                    }
+                }
+            }
+        }
+    }
+
+    private var repeatChip: some View {
+        Menu {
+            repeatChoices
+        } label: {
+            if let recurrence = store.recurrence {
+                Chip(systemImage: "repeat", title: Text(recurrence.title(locale)))
+            } else {
+                Chip(systemImage: "repeat", title: Text("Repeat"), isSet: false)
+            }
+        }
+        .chipMenu()
+        .accessibilityLabel("Repeat")
+        .accessibilityValue(store.recurrence?.title(locale) ?? String(localized: "Never"))
+    }
+
+    private func reminderChip(_ reminder: ReminderRow) -> some View {
+        Menu {
+            if let beforeDue = reminder.beforeDue {
+                Text(beforeDue)
+            }
+            Button("Remove Reminder", systemImage: "xmark.circle", role: .destructive) {
+                store.send(.reminderRemoved(reminder.id))
+            }
+        } label: {
+            if let fireAt = reminder.fireAt {
+                Chip(systemImage: "bell", title: Text(fireAt, format: Self.dayAndTime))
+            } else {
+                Chip(systemImage: "bell.slash", title: Text("Needs a due date"), tint: .secondary)
+            }
+        }
+        .chipMenu()
+        .accessibilityLabel("Reminder")
+        .accessibilityValue(reminderValue(reminder))
+    }
+
+    private func reminderValue(_ reminder: ReminderRow) -> Text {
+        let when =
+            reminder.fireAt.map { Text($0, format: Self.dayAndTime) }
+            ?? Text("Needs a due date")
+        guard let beforeDue = reminder.beforeDue else { return when }
+        return Text("\(when), \(beforeDue)")
+    }
+
+    private var addReminderChip: some View {
+        Menu {
+            ForEach(store.reminderChoices, id: \.self) { choice in
+                Button(choice.title) { store.send(.reminderPicked(choice)) }
+            }
+            Button("Custom…") { store.send(.reminderCustomTapped) }
+        } label: {
+            Chip(systemImage: "bell", title: Text("Remind"), isSet: false)
+        }
+        .chipMenu()
+        .accessibilityLabel("Add reminder")
+    }
+
+    private var avenueChip: some View {
+        Menu {
+            Picker("Avenue", selection: Binding(get: { store.avenueID }, set: { store.send(.avenuePicked($0)) })) {
+                ForEach(store.avenueChoices) { Text($0.name).tag($0.id) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Chip(systemImage: "square.stack", title: Text(avenueName))
+        }
+        .chipMenu()
+        .accessibilityLabel("Avenue")
+        .accessibilityValue(avenueName)
+    }
+
+    private var projectChip: some View {
+        Menu {
+            Picker(
+                "Project", selection: Binding(get: { store.projectID }, set: { store.send(.projectPicked($0)) })
+            ) {
+                Text("None").tag(UUID?.none)
+                ForEach(store.projectChoices) { Text($0.name).tag(UUID?.some($0.id)) }
+                ForEach(store.otherProjectChoices) { group in
+                    Section(group.avenue.name) {
+                        ForEach(group.projects) { Text($0.name).tag(UUID?.some($0.id)) }
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            if store.projectID == nil {
+                Chip(systemImage: "folder", title: Text("Project"), isSet: false)
+            } else {
+                Chip(systemImage: "folder", title: Text(projectName))
+            }
+        }
+        .chipMenu()
+        .accessibilityLabel(store.projectID == nil ? Text("Add to a Project") : Text("Project"))
+        .accessibilityValue(store.projectID == nil ? "" : projectName)
+    }
+
+    private var labelsChip: some View {
+        Button {
+            chipEditor = .labels
+        } label: {
+            Chip(systemImage: "number", title: Text("Label"), isSet: false)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Edit labels")
+        .popover(isPresented: editing(.labels)) {
+            #if os(iOS)
+                NavigationStack {
+                    labelList
+                        .navigationTitle("Labels")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { chipEditor = nil }
+                            }
+                        }
+                }
+                .frame(minWidth: 320, minHeight: 360)
+                .presentationDetents([.medium, .large])
+            #else
+                labelList.frame(minWidth: 280, minHeight: 320)
+            #endif
+        }
+    }
+
+    /// Every label, checked when the task has it, and a field for a new one.
+    private var labelList: some View {
+        List {
+            Section("Labels") {
+                ForEach(store.labelChoices) { label in
+                    Button {
+                        store.send(.labelToggled(label.id))
+                    } label: {
+                        HStack {
+                            Text("#\(label.name)")
+                            Spacer()
+                            if store.labelIDs.contains(label.id) {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(store.labelIDs.contains(label.id) ? .isSelected : [])
+                }
+                TextField("New label", text: $store.newLabelName)
+                    .onSubmit { store.send(.newLabelSubmitted) }
+                    .submitLabel(.done)
+            }
+        }
+    }
+
+    /// Whether `editor` is open, for a chip's popover.
+    private func editing(_ editor: ChipEditor) -> Binding<Bool> {
+        Binding(
+            get: { chipEditor == editor },
+            set: { open in
+                if open {
+                    chipEditor = editor
+                } else if chipEditor == editor {
+                    chipEditor = nil
+                }
+            })
+    }
+
+    /// A date chip's popover: a calendar and what can be changed with it,
+    /// scrolling when large text makes it taller than the screen.
+    private func dateEditor<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let stack = VStack(alignment: .leading, spacing: 12) { content() }
+            .buttonStyle(.borderless)
+            .padding()
+        return ViewThatFits(in: .vertical) {
+            stack
+            ScrollView { stack }
+        }
+        .frame(minWidth: 320)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    /// A calendar for a date that can't be before `lower` or after `upper`,
+    /// so a task never starts after it's due.
+    private func datePicker(
+        _ title: LocalizedStringKey, _ day: CalendarDate, from lower: CalendarDate? = nil,
+        through upper: CalendarDate? = nil, _ pick: @escaping (CalendarDate?) -> Void
+    ) -> some View {
+        DatePicker(
+            title,
+            selection: Binding(get: { date(day, at: nil) }, set: { pick(CalendarDate($0, in: timeZone)) }),
+            in: (lower.map { date($0, at: nil) } ?? .distantPast)...(upper.map { date($0, at: nil) }
+                ?? .distantFuture),
+            displayedComponents: .date
+        )
+        .datePickerStyle(.graphical)
+    }
+
+    /// Today, kept within `lower` and `upper`, for a date being added.
+    private func today(from lower: CalendarDate?, through upper: CalendarDate?) -> CalendarDate {
+        var today = CalendarDate(Date(), in: timeZone)
+        if let lower, today < lower { today = lower }
+        if let upper, today > upper { today = upper }
+        return today
     }
 
     @ViewBuilder
@@ -193,73 +537,6 @@ package struct TaskDetailView: View {
         if store.recurrence != nil {
             Divider()
             Button("Never", role: .destructive) { store.send(.repeatPicked(nil)) }
-        }
-    }
-
-    /// What the task repeats on, with the usual choices and a custom one.
-    private var repeatRow: some View {
-        let value = store.recurrence?.title(locale) ?? String(localized: "Never")
-        return Group {
-            #if os(macOS)
-                // A Mac menu button shows only its label, so the value is the
-                // menu, beside the row's name like the pickers above it.
-                LabeledContent("Repeat") {
-                    Menu(value) { repeatChoices }
-                        .fixedSize()
-                        .accessibilityLabel("Repeat")
-                        .accessibilityValue(value)
-                }
-            #else
-                Menu {
-                    repeatChoices
-                } label: {
-                    LabeledContent("Repeat") { Text(value) }
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Repeat")
-                .accessibilityValue(value)
-            #endif
-        }
-        .sheet(
-            isPresented: Binding(
-                get: { store.repeatDraft != nil },
-                set: { if !$0 { store.send(.repeatCustomCancelled) } })
-        ) {
-            RepeatEditor(
-                draft: Binding(
-                    get: { store.repeatDraft ?? RepeatDraft(anchor: store.repeatAnchor, from: nil) },
-                    set: { store.send(.binding(.set(\.repeatDraft, $0))) }),
-                save: { store.send(.repeatCustomSaved) },
-                cancel: { store.send(.repeatCustomCancelled) })
-        }
-    }
-
-    /// A date with a picker and a remove button, or a button that sets it
-    /// to today.
-    @ViewBuilder
-    /// A date that can't be before `lower` or after `upper`, so a task
-    /// never starts after it's due.
-    private func dateRow(
-        _ title: String, _ day: CalendarDate?, from lower: CalendarDate? = nil, through upper: CalendarDate? = nil,
-        _ pick: @escaping (CalendarDate?) -> Void
-    ) -> some View {
-        if let day {
-            HStack {
-                DatePicker(
-                    title,
-                    selection: Binding(get: { date(day, at: nil) }, set: { pick(CalendarDate($0, in: timeZone)) }),
-                    in: (lower.map { date($0, at: nil) } ?? .distantPast)...(upper.map { date($0, at: nil) }
-                        ?? .distantFuture),
-                    displayedComponents: .date)
-                clear("Remove \(title.lowercased()) date") { pick(nil) }
-            }
-        } else {
-            Button("Add a \(title.lowercased()) date") {
-                var today = CalendarDate(Date(), in: timeZone)
-                if let lower, today < lower { today = lower }
-                if let upper, today > upper { today = upper }
-                pick(today)
-            }
         }
     }
 
@@ -331,29 +608,6 @@ package struct TaskDetailView: View {
         }
     }
 
-    private var labels: some View {
-        Section("Labels") {
-            ForEach(store.labelChoices) { label in
-                Button {
-                    store.send(.labelToggled(label.id))
-                } label: {
-                    HStack {
-                        Text("#\(label.name)")
-                        Spacer()
-                        if store.labelIDs.contains(label.id) {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-                .accessibilityAddTraits(store.labelIDs.contains(label.id) ? .isSelected : [])
-            }
-            TextField("New label", text: $store.newLabelName)
-                .onSubmit { store.send(.newLabelSubmitted) }
-                .submitLabel(.done)
-        }
-        .tint(.primary)
-    }
-
     private var subtasks: some View {
         Section {
             ForEach(store.subtasks) { row in
@@ -378,63 +632,6 @@ package struct TaskDetailView: View {
                     Text("\(progress.closed)/\(progress.total)")
                         .accessibilityLabel("\(progress.closed) of \(progress.total) closed")
                 }
-            }
-        }
-    }
-
-    private var reminders: some View {
-        Section("Reminders") {
-            ForEach(store.reminders) { reminder in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if let fireAt = reminder.fireAt {
-                            Text(fireAt, format: .dateTime.weekday().month().day().hour().minute())
-                        } else {
-                            Text("Needs a due date")
-                        }
-                        if let beforeDue = reminder.beforeDue {
-                            Text(beforeDue).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button("Remove", systemImage: "xmark.circle.fill") {
-                        store.send(.reminderRemoved(reminder.id))
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .combine)
-            }
-            Menu {
-                ForEach(store.reminderChoices, id: \.self) { choice in
-                    Button(choice.title) { store.send(.reminderPicked(choice)) }
-                }
-                Button("Custom…") { store.send(.reminderCustomTapped) }
-            } label: {
-                Label("Add reminder", systemImage: "bell.badge")
-            }
-            .sheet(
-                isPresented: Binding(
-                    get: { store.reminderDraft != nil },
-                    set: { if !$0 { store.send(.reminderCustomCancelled) } })
-            ) {
-                ReminderEditor(
-                    draft: Binding(
-                        get: { store.reminderDraft ?? ReminderDraft(now: Date(), hasDueDate: false) },
-                        set: { store.send(.binding(.set(\.reminderDraft, $0))) }),
-                    save: { store.send(.reminderCustomSaved) },
-                    cancel: { store.send(.reminderCustomCancelled) })
-            }
-            if store.notificationsDenied {
-                Button {
-                    if let url = Self.notificationSettings { openURL(url) }
-                } label: {
-                    Label(
-                        "Notifications are off for Lifr, so reminders won't ring here. Turn them on in Settings.",
-                        systemImage: "bell.slash")
-                }
-                .foregroundStyle(.orange)
             }
         }
     }

@@ -86,6 +86,16 @@ func accessTests() -> [TestCase] {
             try expectEqual(asked, [.trash(["HEALTH-7001", "HEALTH-7002", "HEALTH-7003"])])
             try expect(try fixture.task("7002").deletedAt != nil, "Sub tasks go to the trash with their parent")
         },
+        TestCase("given a task in the trash, then an agent can't empty the trash and the task stays") {
+            let fixture = try Fixture()
+            _ = try fixture.call("trash_task", ["task": "7004"], grant: fixture.agent).response
+                .value(TrashTask.Result.self)
+            for method in ["empty_trash", "purge_trash", "delete_task"] {
+                try expectEqual(
+                    fixture.call(method, ["task": "7004"], grant: fixture.agent).response.code, .methodNotFound)
+            }
+            try expect(try fixture.task("7004").deletedAt != nil, "the task is still in the trash")
+        },
         TestCase("given an agent grant, then changes are recorded as the agent") {
             let fixture = try Fixture()
             _ = try fixture.call("add_comment", ["task": "7004", "body": "Booked."], grant: fixture.agent).response

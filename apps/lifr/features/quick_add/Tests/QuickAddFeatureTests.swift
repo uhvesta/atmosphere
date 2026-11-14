@@ -162,7 +162,7 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.finalTitle, "Swim")
     }
 
-    func testDefaultsToTheLastAvenueUsed() async throws {
+    func testWithoutAnInboxDefaultsToTheLastAvenueUsed() async throws {
         _ = (health, home)
         let first = try quickAdd()
         XCTAssertEqual(first.state.avenueID, health.id)
@@ -179,6 +179,24 @@ final class QuickAddFeatureTests: XCTestCase {
                 workspace: records.workspace, now: now, timeZone: .gmt, locale: Locale(identifier: "en_US"))
         }
         XCTAssertEqual(next.avenueID, home.id)
+    }
+
+    func testWithNothingPickedATaskGoesInTheInbox() async throws {
+        _ = (health, home)
+        let inbox = records.inbox()
+        let first = try quickAdd()
+        await first.send(.binding(.set(\.avenueID, home.id)))
+        await first.send(.binding(.set(\.title, "Water the plants")))
+        await first.send(.addTapped)
+        _ = try await saved(first)
+
+        let next = withDependencies {
+            $0.defaultAppStorage = first.dependencies.defaultAppStorage
+        } operation: {
+            QuickAddFeature.State(
+                workspace: records.workspace, now: now, timeZone: .gmt, locale: Locale(identifier: "en_US"))
+        }
+        XCTAssertEqual(next.avenueID, inbox.id)
     }
 
     func testChangingTheAvenueClearsAProjectFromAnother() async throws {

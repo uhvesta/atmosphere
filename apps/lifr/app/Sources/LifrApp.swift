@@ -76,7 +76,11 @@ struct LifrApp: App {
             window
                 // Room for the sidebar, a list and a task side by side.
                 .defaultSize(width: 1180, height: 760)
-                .commands { RootCommands(store: Storage.root) }
+                .commands {
+                    // View › Show Sidebar, which the split view doesn't add.
+                    SidebarCommands()
+                    RootCommands(store: Storage.root)
+                }
             WindowGroup(id: WindowPlace.sceneID, for: WindowPlace.self) { $place in
                 if case .success = Storage.opened {
                     OtherWindow(main: Storage.root, place: $place, store: Storage.window(at:))
@@ -137,12 +141,7 @@ private struct OpenedRoot: View {
                     }
                 }
         case .failure(let error):
-            ContentUnavailableView {
-                Label("Lifr can't open its data", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(error.description)
-                Text("If this keeps happening, share these details in a bug report.")
-            } actions: {
+            OpenFailureView(store: Storage.root, reason: error.description) {
                 #if os(macOS)
                     // The menu bar and menus were made without the records,
                     // so only a fresh start picks them up.
@@ -150,7 +149,6 @@ private struct OpenedRoot: View {
                 #else
                     Button("Try Again") { Storage.opening.retry() }
                 #endif
-                ShareLink("Share the Details", item: error.description)
             }
         }
     }
@@ -567,7 +565,9 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
         @objc func addToLifr(
             _ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>
         ) {
-            guard let text = pasteboard.string(forType: .string), !text.isEmpty else {
+            // Text, or a link dropped on the Dock icon.
+            let text = pasteboard.string(forType: .string) ?? pasteboard.string(forType: .URL)
+            guard let text, !text.isEmpty else {
                 let message = String(localized: "Select some text to add to Lifr, then choose Add to Lifr again.")
                 error.pointee = message as NSString
                 return

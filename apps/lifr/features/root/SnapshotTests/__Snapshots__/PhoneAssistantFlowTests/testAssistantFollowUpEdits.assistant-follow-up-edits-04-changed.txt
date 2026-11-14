@@ -19,6 +19,7 @@
 [text] "2 tasks"
 [text] "buy milk, Home"
 [text] "buy eggs, Fri, Nov 6 · Home"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

@@ -41,11 +41,13 @@ final class TaskListFeatureTests: XCTestCase {
     }
 
     private func load(
-        reordering: Bool = false, searching: Bool = false, client: StoreClient? = nil, swipeTip: Bool = false
+        reordering: Bool = false, searching: Bool = false, grouping: Bool = false, client: StoreClient? = nil,
+        swipeTip: Bool = false
     ) async -> TestStoreOf<TaskListFeature> {
         var query = open
         query.reorders = reordering
         query.searches = searching
+        query.groups = grouping
         var state = TaskListFeature.State(query: query)
         state.offersSwipeTip = swipeTip
         let store = TestStore(initialState: state) {
@@ -958,6 +960,23 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.selection, [run.id, swim.id])
     }
 
+    func testPickingASecondTaskClosesTheOpenOne() async {
+        let run = records.task("Run", in: health)
+        let swim = records.task("Swim", in: health)
+        let ride = records.task("Ride", in: health)
+        let store = await load()
+
+        await store.send(.rowTapped(run.id))
+        XCTAssertEqual(store.state.detail?.id, run.id)
+        await store.send(.selectionToggled(swim.id))
+
+        XCTAssertNil(store.state.detail)
+        XCTAssertEqual(store.state.selection, [run.id, swim.id])
+
+        await store.send(.selectionExtended(to: ride.id))
+        XCTAssertEqual(store.state.selection, [run.id, swim.id, ride.id])
+    }
+
     func testAPickedTaskThatLeavesTheListIsNoLongerPicked() async throws {
         let run = records.task("Run", in: health)
         let swim = records.task("Swim", in: health)
@@ -970,5 +989,65 @@ final class TaskListFeatureTests: XCTestCase {
         await store.send(.show(saved.snapshot))
 
         XCTAssertEqual(store.state.selection, [swim.id])
+    }
+
+    func testAManualReorderTapsAsItSettlesAndADragThatIsntSavedDoesnt() async {
+        for title in ["One", "Two", "Three"] { records.task(title, in: health) }
+        let store = await load(reordering: true)
+        let (feedback, played) = FeedbackClient.recording()
+        store.dependencies.feedback = feedback
+        await store.send(.sortPicked(.manual))
+
+        await store.send(.moved(section: "todo", from: [2], to: 0))
+        await store.receive(\.saved)
+        XCTAssertEqual(played.value, [.tap])
+
+        // Dropped where it already was: nothing moves, so nothing taps.
+        await store.send(.moved(section: "todo", from: [1], to: 1))
+        XCTAssertEqual(played.value, [.tap])
+    }
+
+    func testMoveOffersEveryOtherPlaceAndMovesTheTaskToThePickedOne() async throws {
+        let run = records.task("Run", in: health)
+        let home = records.avenue("HOME", "Home")
+        let garden = records.project("Garden", in: home)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.moveRowTapped(run.id))
+        XCTAssertNotNil(store.state.movePicker)
+
+        await store.send(.movePicker(.presented(MovePick(task: run.id, avenue: home.id, project: garden.id))))
+        await store.receive(\.bulkSaved)
+        let saved = try await client.load().tasks[run.id]
+        XCTAssertEqual(saved?.avenueID, home.id)
+        XCTAssertEqual(saved?.projectID, garden.id)
+        XCTAssertNil(store.state.movePicker)
+    }
+
+    func testGroupingByPriorityPutsEachPriorityInItsOwnSectionMostUrgentFirst() async {
+        records.task("Stretch", in: health)
+        records.task("Run", in: health, priority: .high)
+        records.task("Swim", in: health, status: .inProgress, priority: .high)
+        let store = await load(grouping: true)
+
+        await store.send(.groupPicked(.priority))
+
+        XCTAssertEqual(store.state.sections.map { $0.rows.map(\.title).sorted() }, [["Run", "Swim"], ["Stretch"]])
+
+        // None goes back to the list's own sections.
+        await store.send(.groupPicked(.list))
+        XCTAssertEqual(store.state.sections.map(\.id), [TaskStatus.todo.rawValue, TaskStatus.inProgress.rawValue])
+    }
+
+    func testAListWithFixedSectionsOffersNoGroupingAndKeepsItsSections() async {
+        records.task("Stretch", in: health)
+        records.task("Run", in: health, priority: .high)
+        let store = await load()
+        XCTAssertEqual(store.state.groupings, [])
+
+        await store.send(.groupPicked(.priority))
+
+        XCTAssertEqual(store.state.sections.map(\.id), ["todo"])
     }
 }

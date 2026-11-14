@@ -92,6 +92,8 @@ final class SettingsFeatureTests: XCTestCase {
 
         await store.send(.pagePicked(.agents))
         XCTAssertEqual(store.state.page, .agents)
+        await store.send(.pagePicked(.notifications))
+        XCTAssertEqual(store.state.page, .notifications)
 
         await store.send(.modelsTapped)
         XCTAssertEqual(store.state.page, .assistant)

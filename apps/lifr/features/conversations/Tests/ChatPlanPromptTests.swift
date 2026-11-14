@@ -120,6 +120,56 @@ final class ChatPlanPromptTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(store.state.export?.prompt).contains(builtIn.instructions))
     }
 
+    func testASkillKeepsAGoalAndScopeThatTheNextPromptStartsFrom() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        _ = records.task("Fix the gate", in: home, due: 0)
+        let (store, _) = chat(LockIsolated<String?>(nil), records.workspace)
+        let errands = try XCTUnwrap(
+            Skill(userNamed: "errands", summary: "", instructions: "Use dates.", tools: [], draftsPlans: true))
+        await store.send(.skillsLoaded(Skill.builtIn + [errands]))
+        await store.send(.pickSkillTapped(errands.id))
+
+        await store.send(.exportPlanTapped(goal: "Saturday errands"))
+        await store.send(.export(.presented(.binding(.set(\.listed, .avenue(home.id))))))
+        XCTAssertEqual(store.state.export?.remembered, false)
+        await store.send(.export(.presented(.rememberTapped)))
+        await store.receive(\.export.presented.remembered)
+        await store.receive(\.export.presented.delegate)
+        XCTAssertEqual(store.state.export?.remembered, true)
+
+        await store.send(.export(.dismiss))
+        await store.send(.exportPlanTapped(goal: ""))
+        XCTAssertEqual(store.state.export?.goal, "Saturday errands")
+        XCTAssertEqual(store.state.export?.listed, .avenue(home.id))
+        XCTAssertTrue(try XCTUnwrap(store.state.export?.prompt).contains("Fix the gate"))
+
+        // A goal typed for this prompt wins over the kept one.
+        await store.send(.export(.dismiss))
+        await store.send(.exportPlanTapped(goal: "Sunday"))
+        XCTAssertEqual(store.state.export?.goal, "Sunday")
+    }
+
+    func testAKeptScopeWhoseAvenueIsGoneListsNamesOnly() async throws {
+        let (store, _) = chat(LockIsolated<String?>(nil))
+        var errands = try XCTUnwrap(
+            Skill(userNamed: "errands", summary: "", instructions: "Use dates.", tools: [], draftsPlans: true))
+        errands.planScope = PlanPrompt.Scope.avenue(UUID(99)).stored
+        await store.send(.skillsLoaded(Skill.builtIn + [errands]))
+        await store.send(.pickSkillTapped(errands.id))
+
+        await store.send(.exportPlanTapped(goal: "Saturday"))
+        XCTAssertEqual(store.state.export?.listed, .names)
+    }
+
+    func testAScopeReadsBackFromHowASkillKeepsIt() {
+        for scope: PlanPrompt.Scope in [.names, .everything, .avenue(UUID(1)), .project(UUID(2))] {
+            XCTAssertEqual(PlanPrompt.Scope(stored: scope.stored), scope)
+        }
+        XCTAssertNil(PlanPrompt.Scope(stored: "avenue:not-an-id"))
+        XCTAssertNil(PlanPrompt.Scope(stored: "label:\(UUID(1).uuidString)"))
+    }
+
     func testExportListsTheTasksInThePickedScopeAndClosedOnesOnlyWhenAsked() async throws {
         var records = RecordsBuilder(now: now, timeZone: .gmt)
         let home = records.avenue("HOME", "Home")
@@ -172,6 +222,31 @@ final class ChatPlanPromptTests: XCTestCase {
 
         XCTAssertEqual(store.state.conversation.draft?.tasks.map(\.place), ["HOME"])
         XCTAssertNil(store.state.problem)
+    }
+
+    func testThePastedDraftNamesTheAvenuesProjectsAndLabelsItMatched() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        _ = records.project("Move flat", in: home)
+        _ = records.label("Errands")
+        let pasted = """
+            [[task]]
+            title = "Book the van"
+            in = "Hom/move flat"
+            labels = ["errands", "boxes"]
+
+            [[task]]
+            title = "Find a mover"
+            in = "WORK"
+            """
+        let (store, _) = chat(LockIsolated<String?>(pasted), records.workspace)
+
+        await store.send(.pastePlanTapped)
+        await store.receive(\.planPasted)
+
+        let draft = try XCTUnwrap(store.state.conversation.draft)
+        let meanings = DraftMeanings(workspace: records.workspace, today: nil, locale: Locale(identifier: "en_US"))
+        XCTAssertEqual(meanings.matches(in: draft), ["Home › Move flat", "#Errands"])
     }
 
     func testApplyingAPastedPlanThenUndoingLeavesTheTasksAsTheyWere() async throws {

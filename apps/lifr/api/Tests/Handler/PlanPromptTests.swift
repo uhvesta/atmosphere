@@ -65,6 +65,25 @@ func planPromptTests() -> [TestCase] {
             try expect(text.contains("HEALTH: Training plan"))
             try expect(!text.contains("Book a checkup"))
         },
+        TestCase("given one Avenue or Project in scope, then the prompt names it and no Avenue outside it") {
+            let fixture = try Fixture()
+            let person = fixture.sequences.context(.user(device: fixture.device, surface: .cli), at: fixture.now)
+            let home = try fixture.workspace.createAvenue(key: "HOME", name: "Home", in: person)
+            let marathon = try fixture.workspace.projects.values.first { $0.name == "Half marathon" }.unwrap()
+            func prompt(_ scope: PlanPrompt.Scope) throws -> String {
+                PlanPrompt.make(
+                    goal: "", scope: scope, workspace: fixture.workspace, today: try CalendarDate("2026-11-03"),
+                    timeZone: .gmt)
+            }
+            let all = try prompt(.names)
+            try expect(all.contains("HOME: Home") && all.contains("HEALTH: Health"))
+            let one = try prompt(.avenue(home.id))
+            try expect(one.contains("HOME: Home"))
+            try expect(!one.contains("Health") && !one.contains("Work") && !one.contains("Finance"))
+            let project = try prompt(.project(marathon.id))
+            try expect(project.contains("HEALTH: Health") && project.contains("Half marathon"))
+            try expect(!project.contains("Home") && !project.contains("Work") && !project.contains("Finance"))
+        },
         TestCase("given descriptions asked for, then the prompt lists each task's description") {
             let fixture = try Fixture()
             let text = PlanPrompt.make(

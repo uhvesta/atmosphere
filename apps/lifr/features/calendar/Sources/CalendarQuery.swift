@@ -47,7 +47,7 @@ package struct CalendarDay: Identifiable, Hashable, Sendable {
     /// first or last week.
     package var isInMonth: Bool
     package var isToday: Bool
-    /// Saturday or Sunday, shaded slightly.
+    /// A day of the weekend where the person is, shaded slightly.
     package var isWeekend: Bool
     /// The tasks due that day: those due any time first, in list order,
     /// then those due at a time, by the time.
@@ -72,14 +72,16 @@ package struct CalendarDay: Identifiable, Hashable, Sendable {
     /// How many lanes of bars a week shows before counting the rest.
     package static let spanLanes = 3
 
+    /// `weekend` holds the weekend's weekdays, 1 for Sunday through 7 for
+    /// Saturday.
     package init(
-        date: CalendarDate, isInMonth: Bool, isToday: Bool, chips: [CalendarChip] = [], flags: [CalendarFlag] = [],
-        starts: [CalendarChip] = []
+        date: CalendarDate, isInMonth: Bool, isToday: Bool, weekend: Set<Int> = Calendar.saturdayAndSunday,
+        chips: [CalendarChip] = [], flags: [CalendarFlag] = [], starts: [CalendarChip] = []
     ) {
         self.date = date
         self.isInMonth = isInMonth
         self.isToday = isToday
-        isWeekend = date.weekday == 1 || date.weekday == 7
+        isWeekend = weekend.contains(date.weekday)
         self.chips = chips
         self.flags = flags
         self.starts = starts
@@ -130,20 +132,25 @@ extension Workspace {
     /// The weeks that show `month`'s days, each starting on `firstWeekday`
     /// (1 for Sunday through 7 for Saturday), with the days of the months
     /// either side that fill the first and last week.
+    /// `weekend` holds the weekdays shaded as the weekend.
     package func calendarWeeks(
-        month: CalendarDate, firstWeekday: Int, filter: CalendarFilter = CalendarFilter(), now: Date,
-        timeZone: TimeZone
+        month: CalendarDate, firstWeekday: Int, weekend: Set<Int> = Calendar.saturdayAndSunday,
+        filter: CalendarFilter = CalendarFilter(), now: Date, timeZone: TimeZone
     ) -> [[CalendarDay]] {
-        calendarWeeks(month: month, firstWeekday: firstWeekday, now: now, timeZone: timeZone, due: calendarDue(filter))
+        calendarWeeks(
+            month: month, firstWeekday: firstWeekday, weekend: weekend, now: now, timeZone: timeZone,
+            due: calendarDue(filter))
     }
 
     /// The week, starting on `firstWeekday`, that has `day` in it.
     package func calendarWeek(
-        of day: CalendarDate, firstWeekday: Int, filter: CalendarFilter = CalendarFilter(), now: Date,
-        timeZone: TimeZone
+        of day: CalendarDate, firstWeekday: Int, weekend: Set<Int> = Calendar.saturdayAndSunday,
+        filter: CalendarFilter = CalendarFilter(), now: Date, timeZone: TimeZone
     ) -> [CalendarDay] {
         let start = day.adding(days: -((day.weekday - firstWeekday + 7) % 7))
-        return week(from: start, month: day.firstOfMonth, now: now, timeZone: timeZone, due: calendarDue(filter))
+        return week(
+            from: start, month: day.firstOfMonth, weekend: weekend, now: now, timeZone: timeZone,
+            due: calendarDue(filter))
     }
 
     /// The tasks `filter` shows due on each day, in list order, and the
@@ -179,23 +186,28 @@ extension Workspace {
     }
 
     package func calendarWeeks(
-        month: CalendarDate, firstWeekday: Int, now: Date, timeZone: TimeZone, due: CalendarDue
+        month: CalendarDate, firstWeekday: Int, weekend: Set<Int> = Calendar.saturdayAndSunday, now: Date,
+        timeZone: TimeZone, due: CalendarDue
     ) -> [[CalendarDay]] {
         let first = month.firstOfMonth
         let next = first.firstOfMonth(adding: 1)
         let start = first.adding(days: -((first.weekday - firstWeekday + 7) % 7))
         let weeks = (start.days(until: next) + 6) / 7
         return (0..<weeks).map { week in
-            self.week(from: start.adding(days: week * 7), month: first, now: now, timeZone: timeZone, due: due)
+            self.week(
+                from: start.adding(days: week * 7), month: first, weekend: weekend, now: now, timeZone: timeZone,
+                due: due)
         }
     }
 
     /// Seven days from `start`, with the bars that cross them in lanes.
     private func week(
-        from start: CalendarDate, month: CalendarDate, now: Date, timeZone: TimeZone, due: CalendarDue
+        from start: CalendarDate, month: CalendarDate, weekend: Set<Int>, now: Date, timeZone: TimeZone,
+        due: CalendarDue
     ) -> [CalendarDay] {
         var days = (0..<7).map { offset in
-            calendarDay(start.adding(days: offset), month: month, now: now, timeZone: timeZone, due: due)
+            calendarDay(
+                start.adding(days: offset), month: month, weekend: weekend, now: now, timeZone: timeZone, due: due)
         }
         guard !due.spans.isEmpty, let end = days.last?.date else { return days }
         // Each lane holds the last column its bar reaches.
@@ -234,7 +246,8 @@ extension Workspace {
     }
 
     private func calendarDay(
-        _ date: CalendarDate, month: CalendarDate, now: Date, timeZone: TimeZone, due: CalendarDue
+        _ date: CalendarDate, month: CalendarDate, weekend: Set<Int>, now: Date, timeZone: TimeZone,
+        due: CalendarDue
     ) -> CalendarDay {
         let today = CalendarDate(now, in: timeZone)
         let time = TimeOfDay(now, in: timeZone)
@@ -249,7 +262,7 @@ extension Workspace {
             }
         }
         return CalendarDay(
-            date: date, isInMonth: date.firstOfMonth == month, isToday: date == today,
+            date: date, isInMonth: date.firstOfMonth == month, isToday: date == today, weekend: weekend,
             chips: ordered.map { _, task in
                 CalendarChip(
                     id: task.id, title: task.title, color: avenues[task.avenueID]?.color ?? "", dueTime: task.dueTime,
@@ -301,5 +314,58 @@ extension TaskQuery {
                     rows: workspace.rows(tasks, now: now, timeZone: timeZone))
             ]
         }
+    }
+}
+
+extension Calendar {
+    /// Saturday and Sunday, the weekend where no other is known.
+    package static let saturdayAndSunday: Set<Int> = [1, 7]
+
+    /// The weekdays of this calendar's weekend, 1 for Sunday through 7 for
+    /// Saturday, as its locale has them: Friday and Saturday in some places.
+    package var weekendDays: Set<Int> {
+        var days: Set<Int> = []
+        // Seven days in a row, at noon so no time zone moves one.
+        guard let start = date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 12)) else {
+            return Self.saturdayAndSunday
+        }
+        for offset in 0..<7 {
+            guard let day = date(byAdding: .day, value: offset, to: start) else { continue }
+            if isDateInWeekend(day) { days.insert(component(.weekday, from: day)) }
+        }
+        return days
+    }
+}
+
+/// What a drag onto a day carries, as text: task IDs, one to a line, so
+/// several selected rows can drag together, or a bar's leading edge, to
+/// move its start alone.
+package enum CalendarPayload: Equatable, Sendable {
+    case tasks([UUID])
+    case start(UUID)
+
+    private static let startPrefix = "start:"
+
+    /// The text a bar's leading edge drags as.
+    package static func dragging(startOf id: UUID) -> String { startPrefix + id.uuidString }
+
+    /// The text dragging `ids` together carries.
+    package static func dragging(_ ids: [UUID]) -> String { ids.map(\.uuidString).joined(separator: "\n") }
+
+    /// What `items` dropped together carry, or nil when they hold no task.
+    package init?(_ items: [String]) {
+        if let edge = items.first(where: { $0.hasPrefix(Self.startPrefix) }) {
+            guard let id = UUID(uuidString: String(edge.dropFirst(Self.startPrefix.count))) else { return nil }
+            self = .start(id)
+            return
+        }
+        var seen: Set<UUID> = []
+        let ids =
+            items
+            .flatMap { $0.split(whereSeparator: \.isNewline) }
+            .compactMap { UUID(uuidString: $0.trimmingCharacters(in: .whitespaces)) }
+            .filter { seen.insert($0).inserted }
+        guard !ids.isEmpty else { return nil }
+        self = .tasks(ids)
     }
 }

@@ -30,7 +30,7 @@ extension ConnectedApp {
 /// A part of Settings, for the Mac's tabs. The iPhone shows them all on one
 /// screen, `.all`.
 package enum SettingsPage: Hashable, Sendable {
-    case all, general, sync, assistant, agents
+    case all, general, notifications, sync, assistant, agents
 }
 
 /// Settings. On the Mac it also covers agents: per-Avenue access, the apps

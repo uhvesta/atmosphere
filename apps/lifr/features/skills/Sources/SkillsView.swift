@@ -138,6 +138,25 @@ package struct SkillEditorView: View {
                         "When Pick a skill automatically is on in Settings, Lifr picks this skill for a message that "
                             + "fits Use When, or its summary if that's empty.")
                 }
+                Section {
+                    TextField(
+                        "Goal", text: $store.planGoal, prompt: Text("Plan next week's errands"), axis: .vertical
+                    )
+                    .lineLimit(1...4)
+                    if store.keepsScope {
+                        Button("Forget the Tasks Listed", systemImage: "xmark.circle") {
+                            store.send(.binding(.set(\.keepsScope, false)))
+                        }
+                    }
+                } header: {
+                    Text("Planning with Another Assistant")
+                } footer: {
+                    if store.keepsScope {
+                        Text("A plan prompt made with this skill starts from this goal and the tasks you kept.")
+                    } else {
+                        Text("A plan prompt made with this skill starts from this goal.")
+                    }
+                }
             }
             .disabled(store.isDrafting)
             .navigationTitle(store.editing == nil ? Text("New Skill") : Text("Edit Skill"))

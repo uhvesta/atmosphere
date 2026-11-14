@@ -24,6 +24,10 @@ struct KeyboardShortcutsView: View {
             ]
         ),
         (
+            "The calendar",
+            [("⌃⌘1", "Month"), ("⌃⌘2", "Week")]
+        ),
+        (
             "A list",
             [
                 ("↑ ↓", "Move between tasks"), ("⇧↑ ⇧↓", "Pick several tasks"),

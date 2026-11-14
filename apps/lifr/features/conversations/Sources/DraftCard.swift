@@ -48,6 +48,15 @@ struct DraftCard: View {
                 }
                 TaskLines(tasks: plan.tasks, showsPlace: true, meanings: meanings)
             }
+            let matches = meanings.matches(in: plan)
+            if !matches.isEmpty {
+                Label(
+                    "Adds to your \(matches.formatted(.list(type: .and)))", systemImage: "link"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier(ModelText.identifier)
+            }
             if closed > 0 {
                 Label(
                     "^[\(closed) task](inflect: true) will be added already closed, as Done or Won't Do.",
@@ -156,10 +165,16 @@ private struct Line: View {
 
 /// What a draft's fields mean in the person's records: the day a due date
 /// is, and the Avenue and Project a place names.
-struct DraftMeanings {
+package struct DraftMeanings {
     let workspace: Workspace
     let today: CalendarDate?
     let locale: Locale
+
+    package init(workspace: Workspace, today: CalendarDate?, locale: Locale) {
+        self.workspace = workspace
+        self.today = today
+        self.locale = locale
+    }
 
     /// The Avenue, and Project, `text` names, when it names one.
     func place(_ text: String?) -> String? {
@@ -172,6 +187,48 @@ struct DraftMeanings {
         else { return nil }
         guard parts.count == 2 else { return avenue.name }
         return "\(avenue.name) › \(parts[1])"
+    }
+
+    /// The Avenues, Projects, tasks and labels already in Lifr the plan
+    /// uses, by their names here, so it's clear what it adds to rather
+    /// than makes. A name the plan spells differently, such as "Hom" for
+    /// Home once repaired, shows as Lifr has it.
+    package func matches(in plan: Plan) -> [String] {
+        var names: [String] = []
+        func add(_ name: String?) {
+            if let name, !names.contains(name) { names.append(name) }
+        }
+        for project in plan.projects { add(existing(project.avenue)) }
+        for task in plan.tasks {
+            if let parent = task.parent {
+                add((try? workspace.task(code: parent)).map { "“\($0.title)”" })
+            } else {
+                add(existing(task.place))
+            }
+        }
+        let tasks = plan.projects.flatMap(\.tasks) + plan.tasks
+        for task in tasks + tasks.flatMap(\.subtasks) {
+            for label in task.labels { add(workspace.label(named: label).map { "#\($0.name)" }) }
+        }
+        return names
+    }
+
+    /// The Avenue, or Avenue and Project, `text` names, when they're in
+    /// Lifr already; just the Avenue when the Project is new.
+    private func existing(_ text: String?) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        let parts = text.split(separator: "/", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard
+            let avenue = workspace.avenues.values.first(where: {
+                $0.key.rawValue.caseInsensitiveCompare(parts.first ?? "") == .orderedSame
+            })
+        else { return nil }
+        guard parts.count == 2,
+            let project = workspace.projects.values.first(where: {
+                $0.avenueID == avenue.id && $0.name.caseInsensitiveCompare(parts[1]) == .orderedSame
+            })
+        else { return avenue.name }
+        return "\(avenue.name) › \(project.name)"
     }
 
     /// The day `text` is, such as "Sat, Nov 7" for "saturday".

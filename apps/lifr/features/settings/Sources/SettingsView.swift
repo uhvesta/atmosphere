@@ -38,6 +38,10 @@ package struct SettingsView: View {
                 quickAddKeys
             #endif
         }
+        if page == .notifications {
+            reminders
+            completionSoundSection
+        }
         if shows(.sync) {
             SyncSection(store: store)
             LockSection(store: store)
@@ -53,7 +57,7 @@ package struct SettingsView: View {
                 Button(store.tipsReset ? "Tips Will Show Again" : "Reset Tips") { store.send(.resetTipsTapped) }
                     .disabled(store.tipsReset)
             } footer: {
-                Text("Shows the tips about swiping a task and dragging one onto a day again.")
+                Text("Shows the tips Lifr gives as you start using it again.")
             }
             Section {
                 PushButton("Data") { store.send(.dataTapped) }
@@ -164,6 +168,24 @@ package struct SettingsView: View {
         } footer: {
             Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
         }
+        // The Mac's Notifications tab has these.
+        if page == .all { reminders }
+        AppearanceSection()
+        if page == .all { completionSoundSection }
+        Section {
+            PushButton("Labels") { store.send(.labelsTapped) }
+        } footer: {
+            Text("Rename, merge or delete the labels on your tasks.")
+        }
+        Section {
+            PushButton("Activity") { store.send(.activityTapped) }
+        } footer: {
+            Text("Every change, who made it, and from where. Any of them can be reverted.")
+        }
+    }
+
+    /// The default reminder, the badge and the daily summary.
+    @ViewBuilder private var reminders: some View {
         Section {
             Picker(
                 "Remind me",
@@ -200,21 +222,13 @@ package struct SettingsView: View {
                 which says what's due each day that has something due, are per device.
                 """)
         }
-        AppearanceSection()
+    }
+
+    private var completionSoundSection: some View {
         Section {
             Toggle("Sound when a task is done", isOn: Binding($completionSound))
         } footer: {
             Text("A soft sound when you finish a task. This device only.")
-        }
-        Section {
-            PushButton("Labels") { store.send(.labelsTapped) }
-        } footer: {
-            Text("Rename, merge or delete the labels on your tasks.")
-        }
-        Section {
-            PushButton("Activity") { store.send(.activityTapped) }
-        } footer: {
-            Text("Every change, who made it, and from where. Any of them can be reverted.")
         }
     }
 
@@ -539,6 +553,8 @@ package enum SyncStatusText {
             guard sync.pending > 0 else { return String(localized: "Didn't finish") }
             return String(localized: "Didn't finish, \(waiting(sync.pending))")
         case .idle:
+            // Changes made since the last run haven't gone yet.
+            if sync.pending > 0 { return waiting(sync.pending) }
             guard let last = sync.lastSynced else { return String(localized: "Not synced yet") }
             guard now.timeIntervalSince(last) >= 60 else { return String(localized: "Synced just now") }
             let formatter = RelativeDateTimeFormatter()

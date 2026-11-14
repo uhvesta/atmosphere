@@ -80,7 +80,25 @@ package struct AvenuesView<Footer: View>: View {
 
     package var body: some View {
         List {
-            ForEach(store.avenues) { avenue in
+            // The Inbox shows apart, first. It doesn't move, and nothing
+            // goes above it.
+            if let inbox = store.inbox {
+                Section {
+                    Button {
+                        store.send(.opened(.avenue(inbox.id)))
+                    } label: {
+                        LabeledContent {
+                            Text("\(inbox.openCount)")
+                        } label: {
+                            Label(inbox.name, systemImage: "tray")
+                        }
+                    }
+                    .accessibilityValue("\(inbox.openCount) open")
+                    projects(of: inbox)
+                }
+            }
+            let movable = store.movable
+            ForEach(movable) { avenue in
                 Section {
                     Button {
                         store.send(.opened(.avenue(avenue.id)))
@@ -100,24 +118,10 @@ package struct AvenuesView<Footer: View>: View {
                     .modifier(OrderDrop(.avenue(avenue.id)) { store.send(.avenueDropped($0, onto: avenue.id)) })
                     .contextMenu {
                         MoveButtons(
-                            ids: store.avenues.map(\.id), id: avenue.id,
+                            ids: movable.map(\.id), id: avenue.id,
                             move: { store.send(.moveAvenue(avenue.id, up: $0)) })
                     }
-                    ForEach(avenue.projects) { project in
-                        Button {
-                            store.send(.opened(.project(project.id)))
-                        } label: {
-                            LabeledContent(project.name) { Text("\(project.openCount)") }
-                                .padding(.leading)
-                        }
-                        .accessibilityValue("\(project.openCount) open")
-                        .modifier(OrderDrop(.project(project.id)) { store.send(.projectDropped($0, onto: project.id)) })
-                        .contextMenu {
-                            MoveButtons(
-                                ids: avenue.projects.map(\.id), id: project.id,
-                                move: { store.send(.moveProject(project.id, up: $0)) })
-                        }
-                    }
+                    projects(of: avenue)
                 }
             }
             if !store.archived.isEmpty {
@@ -166,6 +170,25 @@ package struct AvenuesView<Footer: View>: View {
                 .sheetLayout(height: 260)
         }
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    /// `avenue`'s active Projects, each moving only within it.
+    private func projects(of avenue: AvenueRow) -> some View {
+        ForEach(avenue.projects) { project in
+            Button {
+                store.send(.opened(.project(project.id)))
+            } label: {
+                LabeledContent(project.name) { Text("\(project.openCount)") }
+                    .padding(.leading)
+            }
+            .accessibilityValue("\(project.openCount) open")
+            .modifier(OrderDrop(.project(project.id)) { store.send(.projectDropped($0, onto: project.id)) })
+            .contextMenu {
+                MoveButtons(
+                    ids: avenue.projects.map(\.id), id: project.id,
+                    move: { store.send(.moveProject(project.id, up: $0)) })
+            }
+        }
     }
 }
 

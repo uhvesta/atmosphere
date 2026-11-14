@@ -1169,6 +1169,12 @@ package struct ChatFeature {
             case .core(let action):
                 return core(action, &state)
 
+            case .export(.presented(.delegate(.presetSaved(let skill)))):
+                if let index = state.skills.firstIndex(where: { $0.id == skill.id }) {
+                    state.skills[index] = skill
+                }
+                return .none
+
             case .binding, .alert, .manageSkills, .model, .export, .delegate:
                 return .none
             }

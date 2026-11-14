@@ -144,12 +144,18 @@ func quickEntryTests() -> [TestCase] {
             try expectEqual(plain.title, "Read every page")
             try expectEqual(plain.parts, [])
         },
-        TestCase("given the clock, then tomorrow is the day after it in the time zone") {
+        TestCase("given tomorrow typed at 23:59 and at 00:01, then it's the day after the clock's day") {
+            let fixture = try Fixture()
             let zone = try TimeZone(identifier: "America/New_York").unwrap()
+            // 23:59 on Nov 11 in New York, then 00:01 on Nov 12.
             let late = try ISO8601DateFormatter().date(from: "2026-11-12T04:59:00Z").unwrap()
             let early = late.addingTimeInterval(120)
-            try expectEqual(CalendarDate(late, in: zone).adding(days: 1), try CalendarDate("2026-11-12"))
-            try expectEqual(CalendarDate(early, in: zone).adding(days: 1), try CalendarDate("2026-11-13"))
+            for (now, day) in [(late, "2026-11-12"), (early, "2026-11-13")] {
+                let today = CalendarDate(now, in: zone)
+                let entry = QuickEntry("Call mum tomorrow", today: today, in: fixture.workspace)
+                try expectEqual(entry.title, "Call mum")
+                try expectEqual(entry.dueDate, try CalendarDate(day))
+            }
         },
     ]
 }

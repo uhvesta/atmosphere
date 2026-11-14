@@ -19,7 +19,7 @@ extension TaskQuery {
             "Nothing to do anytime", systemImage: "square.stack",
             description: String(
                 localized: "Tasks with no due date show up here, once they can be started.")),
-        trailingActions: [.reschedule, .status(.wontDo), .pickStatus]
+        trailingActions: [.reschedule, .status(.wontDo), .pickStatus], groups: true
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
         let tasks = workspace.listedTasks.filter {
@@ -42,7 +42,7 @@ extension TaskQuery {
             "Nothing for later", systemImage: "clock",
             description: String(
                 localized: "Give a task a start date after today to put it away until then.")),
-        adds: nil
+        adds: nil, groups: true
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
         let tasks = workspace.listedTasks.filter { $0.isOpen && !$0.isSubtask && $0.startsAfter(today) }
@@ -62,7 +62,7 @@ extension TaskQuery {
             "Nothing closed yet", systemImage: "book.closed",
             description: String(localized: "Tasks you mark Done or Won’t Do show up here.")),
         trailingActions: [.pickStatus],
-        adds: nil, searches: true
+        adds: nil, searches: true, groups: true
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
         let closed = workspace.listedTasks

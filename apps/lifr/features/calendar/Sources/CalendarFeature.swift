@@ -27,6 +27,9 @@ package struct CalendarFeature {
         /// The day weeks start on, 1 for Sunday through 7 for Saturday, as
         /// the view's calendar has it.
         package var firstWeekday = 1
+        /// The weekdays of the weekend, shaded, as the view's calendar has
+        /// them.
+        package var weekend = Calendar.saturdayAndSunday
         /// The selected day's tasks, with their detail, prompts and alerts.
         package var list = TaskListFeature.State(query: .calendarDay(nil))
         /// The months on one long page, to scroll through and pick a day
@@ -72,7 +75,9 @@ package struct CalendarFeature {
         case stepped(Int)
         case todayTapped
         case modePicked(CalendarMode)
-        case firstWeekdayChanged(Int)
+        /// The view's calendar: the day its weeks start on, 1 for Sunday
+        /// through 7 for Saturday, and the weekdays of its weekend.
+        case calendarChanged(firstWeekday: Int, weekend: Set<Int>)
         /// Tasks dropped on a day are due that day, with their start dates
         /// moved as far. `time` sets the time, `.some(nil)` clears it, and
         /// nil keeps it.
@@ -80,6 +85,9 @@ package struct CalendarFeature {
         /// Moves a task's due date by `days`, as a drop would, from the
         /// keyboard or VoiceOver.
         case moved(UUID, days: Int)
+        /// A bar's leading edge dropped on a day: the task starts that day,
+        /// and stays due when it was.
+        case startDropped(UUID, on: CalendarDate)
         /// Shows or hides an Avenue's tasks.
         case avenueToggled(UUID)
         case allAvenuesShown
@@ -172,9 +180,12 @@ package struct CalendarFeature {
                 layOut(&state)
                 return .none
 
-            case .firstWeekdayChanged(let weekday):
-                guard (1...7).contains(weekday), weekday != state.firstWeekday else { return .none }
+            case .calendarChanged(let weekday, let weekend):
+                let weekend = weekend.filter { (1...7).contains($0) }
+                guard (1...7).contains(weekday), weekday != state.firstWeekday || weekend != state.weekend
+                else { return .none }
                 state.firstWeekday = weekday
+                state.weekend = weekend
                 layOut(&state)
                 return .none
 
@@ -225,12 +236,15 @@ package struct CalendarFeature {
                 guard let workspace = state.list.workspace else { return .none }
                 let edits = ids.compactMap { id in Self.edit(workspace.tasks[id], to: day, time: time) }
                 guard !edits.isEmpty else { return .none }
-                // One save, so one Undo puts every task back.
-                return .run { [store, feedback] send in
-                    let saved = await Result { try await store.edit(edits) }
-                    if case .success = saved { await feedback(.tap) }
-                    await send(.list(.saved(saved)))
-                }
+                return save(edits)
+
+            case .startDropped(let id, let day):
+                state.$dragTipSeen.withLock { $0 = true }
+                guard let task = state.list.workspace?.tasks[id], task.deletedAt == nil, task.startDate != day
+                else { return .none }
+                // Core refuses a start after the due date, and the list
+                // explains it.
+                return save([(id, Workspace.TaskEdit(startDate: .some(day)))])
 
             case .moved(let id, let days):
                 guard let due = state.list.workspace?.tasks[id]?.dueDate, days != 0 else { return .none }
@@ -239,6 +253,15 @@ package struct CalendarFeature {
             case .list, .delegate:
                 return .none
             }
+        }
+    }
+
+    /// Saves `edits` together, so one Undo puts every task back.
+    private func save(_ edits: [(UUID, Workspace.TaskEdit)]) -> Effect<Action> {
+        .run { [store, feedback] send in
+            let saved = await Result { try await store.edit(edits) }
+            if case .success = saved { await feedback(.tap) }
+            await send(.list(.saved(saved)))
         }
     }
 
@@ -276,11 +299,13 @@ package struct CalendarFeature {
         switch state.mode {
         case .month:
             state.weeks = workspace.calendarWeeks(
-                month: month, firstWeekday: state.firstWeekday, filter: state.filter, now: now, timeZone: timeZone)
+                month: month, firstWeekday: state.firstWeekday, weekend: state.weekend, filter: state.filter, now: now,
+                timeZone: timeZone)
             state.week = []
         case .week:
             state.week = workspace.calendarWeek(
-                of: selected, firstWeekday: state.firstWeekday, filter: state.filter, now: now, timeZone: timeZone)
+                of: selected, firstWeekday: state.firstWeekday, weekend: state.weekend, filter: state.filter, now: now,
+                timeZone: timeZone)
             state.weeks = []
         }
         state.tray = state.showsTray ? workspace.unscheduled(state.filter) : []
@@ -300,7 +325,8 @@ package struct CalendarFeature {
             return CalendarMonth(
                 id: first,
                 weeks: workspace.calendarWeeks(
-                    month: first, firstWeekday: state.firstWeekday, now: now, timeZone: timeZone, due: due))
+                    month: first, firstWeekday: state.firstWeekday, weekend: state.weekend, now: now,
+                    timeZone: timeZone, due: due))
         }
     }
 }

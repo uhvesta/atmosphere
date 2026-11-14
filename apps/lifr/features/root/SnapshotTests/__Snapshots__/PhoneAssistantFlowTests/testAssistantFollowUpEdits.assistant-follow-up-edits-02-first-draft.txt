@@ -12,6 +12,7 @@
 [header, text] "Draft"
 [text] "1 task"
 [text] "buy milk, Home"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

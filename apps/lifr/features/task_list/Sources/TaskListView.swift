@@ -121,35 +121,45 @@ package struct TaskListView<Header: View>: View {
             // The spinner goes either way, so say it worked.
             .sensoryFeedback(.success, trigger: store.syncs)
             .onChange(of: store.syncs) { AccessibilityNotification.Announcement(String(localized: "Synced")).post() }
-        #else
-            .onKeyPress(keys: [.upArrow, .downArrow]) { press in
-                let up = press.key == .upArrow
-                // ⌘↑ and ⌘↓ move the row itself, in manual order.
-                if press.modifiers.contains(.command) {
-                    if let cursor = store.cursor { store.send(.movedOnePlace(cursor, up: up)) }
-                } else {
-                    store.send(.cursorMoved(up: up, extending: press.modifiers.contains(.shift)))
-                }
-                return .handled
-            }
-            .onKeyPress(.return) {
-                store.send(.openCursorTapped)
-                return .handled
-            }
-            .onKeyPress(.space) {
-                store.send(.cursorStatusTapped)
-                return .handled
-            }
-            .onKeyPress(keys: [.delete, .deleteForward]) { _ in
-                store.send(.trashKeyPressed)
-                return .handled
-            }
+            // A hardware keyboard, as on an iPad, moves through the rows as
+            // on the Mac once the list has focus.
+            .focusable()
+            .focusEffectDisabled()
         #endif
+        .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+            let up = press.key == .upArrow
+            // ⌘↑ and ⌘↓ move the row itself, in manual order.
+            if press.modifiers.contains(.command) {
+                if let cursor = store.cursor { store.send(.movedOnePlace(cursor, up: up)) }
+            } else {
+                store.send(.cursorMoved(up: up, extending: press.modifiers.contains(.shift)))
+            }
+            return .handled
+        }
+        .onKeyPress(.return) {
+            store.send(.openCursorTapped)
+            return .handled
+        }
+        .onKeyPress(.space) {
+            store.send(.cursorStatusTapped)
+            return .handled
+        }
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+            store.send(.trashKeyPressed)
+            return .handled
+        }
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 Menu {
                     Picker("Sort", selection: Binding(get: { store.sort }, set: { store.send(.sortPicked($0)) })) {
                         ForEach(store.sorts, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    if !store.groupings.isEmpty {
+                        Picker(
+                            "Group By", selection: Binding(get: { store.group }, set: { store.send(.groupPicked($0)) })
+                        ) {
+                            ForEach(store.groupings, id: \.self) { Text($0.title).tag($0) }
+                        }
                     }
                 } label: {
                     Label("Sort", systemImage: "arrow.up.arrow.down")
@@ -236,6 +246,7 @@ package struct TaskListPresentations: ViewModifier {
             }
             .alert($store.scope(state: \.prompt, action: \.prompt))
             .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
+            .confirmationDialog($store.scope(state: \.movePicker, action: \.movePicker))
             .alert($store.scope(state: \.alert, action: \.alert))
             .alert($store.scope(state: \.bulkPrompt, action: \.bulkPrompt))
     }
@@ -250,6 +261,11 @@ package struct TaskListRow: View {
     @Environment(\.opensInNewWindow) private var opensInNewWindow
     /// Whether something dragged is over the row, to drop onto it.
     @State private var isTargeted = false
+    /// Whether a task dragged over the row has rested there long enough to
+    /// drop onto it as a Sub task, so one passing over on its way between
+    /// rows doesn't land in it.
+    @State private var isArmed = false
+    @State private var arming: Task<Void, Never>?
 
     package init(row: TaskRowData, note: String? = nil, store: StoreOf<TaskListFeature>) {
         self.row = row
@@ -275,7 +291,7 @@ package struct TaskListRow: View {
                     .accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 4) {
-                TaskRow(row) {
+                TaskRow(row, menu: !store.isSelecting) {
                     store.send(.toggled(row.id))
                 } pick: {
                     store.send(.rowAction(row.id, .status($0)))
@@ -289,38 +305,46 @@ package struct TaskListRow: View {
             }
         }
         .contentShape(Rectangle())
-        #if os(macOS)
-            // Where ↑ ↓, Return, Space and ⌫ act.
-            .listRowBackground(
-                isCursor && !store.isSelecting
-                    ? RoundedRectangle(cornerRadius: 6).fill(.tint.opacity(0.15)) : nil)
-        #endif
+        // A focus ring where ↑ ↓, Return, Space and ⌫ act, picking or not.
+        .listRowBackground(isCursor ? FocusRing() : nil)
         .onTapGesture { tapped() }
         .accessibilityAddTraits(store.isSelecting && isPicked ? .isSelected : [])
         // Onto a day in the calendar, to move it there. A list in manual
         // order drags rows to reorder them instead.
-        .modifier(DraggableTask(row: row, isOn: !store.canReorder))
+        .modifier(DraggableTask(row: row, ids: dragged, isOn: !store.canReorder))
         // Another task dropped onto this one becomes its Sub task. Text
         // from another app goes where the list sends it, as if dropped
         // beside the row.
         .dropDestination(for: String.self) { items, _ in
             guard !OrderDrag.isAmong(items) else { return false }
-            let ids = items.compactMap(UUID.init(uuidString:))
-            if !ids.isEmpty, ids.count == items.count {
+            if let ids = TaskDrag.ids(in: items) {
+                guard isArmed else { return false }
                 store.send(.droppedOnto(row.id, tasks: ids))
                 return true
             }
             guard let droppedText, !items.isEmpty else { return false }
             droppedText(items.joined(separator: "\n"))
             return true
-        } isTargeted: {
-            isTargeted = $0
+        } isTargeted: { targeted in
+            isTargeted = targeted
+            arming?.cancel()
+            arming = nil
+            isArmed = false
+            guard targeted else { return }
+            arming = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                isArmed = true
+            }
         }
-        // Outlines the row a drop would land on, so onto a row reads
-        // apart from between two.
+        // Outlines the row a drop would land on, so onto a row reads apart
+        // from between two: dashed while a drag passes, solid once it has
+        // rested long enough to drop onto the row.
         .overlay {
             if isTargeted {
-                RoundedRectangle(cornerRadius: 6).strokeBorder(.tint, lineWidth: 2).padding(-4)
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(.tint, style: StrokeStyle(lineWidth: isArmed ? 2 : 1, dash: isArmed ? [] : [4, 3]))
+                    .padding(-4)
                     .accessibilityHidden(true)
             }
         }
@@ -335,6 +359,7 @@ package struct TaskListRow: View {
                     Button("Move Up") { store.send(.movedOnePlace(row.id, up: true)) }
                     Button("Move Down") { store.send(.movedOnePlace(row.id, up: false)) }
                 }
+                Button("Move…") { store.send(.moveRowTapped(row.id)) }
                 Button("Move to Trash") { store.send(.trashRowTapped(row.id)) }
             }
         }
@@ -356,16 +381,24 @@ package struct TaskListRow: View {
             }
         }
         .contextMenu {
-            ForEach(TaskStatus.allCases.filter { $0 != row.status }, id: \.self) { status in
-                Button(status.title) { store.send(.rowAction(row.id, .status(status))) }
+            ForEach(TaskStatus.pickOrder.filter { $0 != row.status }, id: \.self) { status in
+                Button(status.title, systemImage: status.symbol) { store.send(.rowAction(row.id, .status(status))) }
             }
             Divider()
             Button("Reschedule…") { store.send(.rowAction(row.id, .reschedule)) }
+            Button("Move…") { store.send(.moveRowTapped(row.id)) }
             Button("Copy as Markdown") { store.send(.copyTapped(row.id)) }
             if let opensInNewWindow {
                 Button("Open in New Window") { opensInNewWindow(row.id) }
             }
         }
+    }
+
+    /// What dragging the row carries: every picked task, in list order,
+    /// when it's one of several picked; otherwise its own task.
+    private var dragged: [UUID] {
+        guard store.isSelecting, isPicked, store.selection.count > 1 else { return [row.id] }
+        return store.selectedIDs
     }
 
     private var trailingActions: [RowAction] {
@@ -489,7 +522,7 @@ private struct BulkBar: View {
         .disabled(labels.isEmpty)
         gap
         Menu("Move", systemImage: "folder") {
-            ForEach(places, id: \.avenue.id) { place in
+            ForEach(store.places, id: \.avenue.id) { place in
                 Button(place.avenue.name) {
                     store.send(.bulk(.move(avenue: place.avenue.id, project: nil)))
                 }
@@ -508,31 +541,18 @@ private struct BulkBar: View {
         (store.workspace.map { Array($0.labels.values) } ?? [])
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
-
-    /// Each open Avenue with its active Projects, in order.
-    private var places: [(avenue: Avenue, projects: [Project])] {
-        guard let workspace = store.workspace else { return [] }
-        return workspace.avenues.values
-            .filter { $0.archivedAt == nil }
-            .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
-            .map { avenue in
-                let projects = workspace.projects.values
-                    .filter { $0.avenueID == avenue.id && $0.status == .active }
-                    .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
-                return (avenue, projects)
-            }
-    }
 }
 
-/// Lets a row be dragged out as its task's ID, when `isOn`.
+/// Lets a row be dragged out as the IDs of `ids`, when `isOn`.
 private struct DraggableTask: ViewModifier {
     var row: TaskRowData
+    var ids: [UUID]
     var isOn: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         if isOn {
-            content.draggable(row.id.uuidString) {
+            content.draggable(TaskDrag.text(ids)) {
                 // Lifted off the list while it moves: tilted, with a shadow.
                 TaskRow(row) {}
                     .padding(12)
@@ -540,6 +560,18 @@ private struct DraggableTask: ViewModifier {
                     .background(.background, in: .rect(cornerRadius: 10))
                     .rotationEffect(.degrees(reduceMotion ? 0 : 2))
                     .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                    // How many go, when it's more than the one shown.
+                    .overlay(alignment: .topTrailing) {
+                        if ids.count > 1 {
+                            Text("^[\(ids.count) task](inflect: true)")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.tint, in: Capsule())
+                                .foregroundStyle(.white)
+                                .offset(x: 6, y: -6)
+                        }
+                    }
                     .padding(12)
             }
         } else {
@@ -648,4 +680,15 @@ extension EnvironmentValues {
     /// Opens a task in a window of its own; with none, as on iPhone, rows
     /// don't offer it.
     @Entry package var opensInNewWindow: (@MainActor (UUID) -> Void)?
+}
+
+/// The ring round the row the keyboard is on.
+private struct FocusRing: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(.tint.opacity(0.1))
+            .strokeBorder(.tint, lineWidth: 2)
+            .padding(.horizontal, 2)
+            .accessibilityHidden(true)
+    }
 }

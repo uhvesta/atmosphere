@@ -142,6 +142,23 @@ final class SkillsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.editor?.summary, SkillDraft.example.summary)
     }
 
+    func testEditingAPlanningSkillKeepsItsScopeUntilForgottenAndClearsAnEmptyGoal() async throws {
+        var mine = try XCTUnwrap(
+            Skill(userNamed: "Errands", summary: "", instructions: "Use dates.", tools: [], draftsPlans: true))
+        mine.planGoal = "Saturday errands"
+        mine.planScope = "everything"
+        let store = await skills(.inMemory([mine]))
+
+        await store.send(.editTapped(mine.id))
+        XCTAssertEqual(store.state.editor?.planGoal, "Saturday errands")
+        XCTAssertEqual(store.state.editor?.skill?.planScope, "everything")
+
+        await store.send(.editor(.presented(.binding(.set(\.planGoal, "  ")))))
+        await store.send(.editor(.presented(.binding(.set(\.keepsScope, false)))))
+        XCTAssertNil(store.state.editor?.skill?.planGoal)
+        XCTAssertNil(store.state.editor?.skill?.planScope)
+    }
+
     func testSkillsThatFailToLoadCanBeLoadedAgain() async {
         struct Unreadable: Error {}
         let failing = LockIsolated(true)

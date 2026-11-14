@@ -7,8 +7,8 @@
 [button] "Conversations" id: BackButton
 [button] "ugh I have to move flat, get the deposi…, Actions Menu"
 [button] "Context Window" value: "5% used, 1,587 of 32,768 tokens" hint: "5% used, 1,587 of 32,768 tokens"
-[text] "On this device"
 [text] "Here's the move as a Project, in order, and calling your mum on its own."
+[text] "On this device"
 [button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
@@ -23,6 +23,7 @@
 [text] "Buy boxes"
 [text] "Pack the kitchen last"
 [text] "Call mum, Home"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

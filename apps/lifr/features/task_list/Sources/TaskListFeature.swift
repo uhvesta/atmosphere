@@ -26,8 +26,10 @@ package struct TaskListFeature {
         @Presents package var detail: TaskDetailFeature.State?
         @Presents package var reschedule: RescheduleFeature.State?
         @Presents package var prompt: AlertState<StatusPrompt>?
-        /// Every status, from a row's Status swipe.
+        /// Every status, from a row's Status swipe or Space.
         @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
+        /// Every other Avenue and Project, from a row's Move action.
+        @Presents package var movePicker: ConfirmationDialogState<MovePick>?
         @Presents package var alert: AlertState<Never>?
         /// Why sync failed, as a pull last said, so the same failure isn't
         /// told on every pull.
@@ -46,6 +48,9 @@ package struct TaskListFeature {
         package var closedToday = false
         /// The order within sections, remembered per list on this device.
         @Shared package var sort: TaskSort
+        /// The sections, in a list that offers Group By; remembered as
+        /// `sort` is.
+        @Shared package var group: TaskGroup
         /// What the search field filters rows by, in a list that searches.
         package var searchText = ""
         /// Picking tasks to change at once: tapping a row picks it.
@@ -67,6 +72,7 @@ package struct TaskListFeature {
             // App storage keys can't have periods.
             let list = query.listID.replacingOccurrences(of: ".", with: "-")
             _sort = Shared(wrappedValue: .smart, .appStorage("lifrTaskSort-\(list)"))
+            _group = Shared(wrappedValue: .list, .appStorage("lifrTaskGroup-\(list)"))
         }
 
         package init(query: TaskQuery, workspace: Workspace, now: Date, timeZone: TimeZone) {
@@ -76,6 +82,24 @@ package struct TaskListFeature {
 
         /// The sorts this list offers: Manual only where rows can be dragged.
         package var sorts: [TaskSort] { TaskSort.allCases.filter { $0 != .manual || query.reorders } }
+
+        /// The groupings this list offers: none where its sections are fixed.
+        package var groupings: [TaskGroup] { query.groups ? TaskGroup.allCases : [] }
+
+        /// Each open Avenue with its active Projects, in order: where tasks
+        /// can move to.
+        package var places: [(avenue: Avenue, projects: [Project])] {
+            guard let workspace else { return [] }
+            return workspace.avenues.values
+                .filter { $0.archivedAt == nil }
+                .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                .map { avenue in
+                    let projects = workspace.projects.values
+                        .filter { $0.avenueID == avenue.id && $0.status == .active }
+                        .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                    return (avenue, projects)
+                }
+        }
 
         /// Whether rows can be dragged into a new order now.
         package var canReorder: Bool { query.reorders && sort == .manual }
@@ -134,6 +158,9 @@ package struct TaskListFeature {
             let wasOn = cursor
             workspace = snapshot.workspace
             sections = query.sections(snapshot.workspace, now, timeZone)
+            if query.groups {
+                sections = group.regroup(sections, in: snapshot.workspace, today: CalendarDate(now, in: timeZone))
+            }
             keepLingering(from: previous, in: snapshot.workspace)
             if query.finished != nil {
                 let today = CalendarDate(now, in: timeZone)
@@ -224,13 +251,13 @@ package struct TaskListFeature {
         /// A row ⇧-clicked on the Mac: picks the rows from the last one picked.
         case selectionExtended(to: UUID)
         case selectAllTapped
-        /// ↑ or ↓ on the Mac, with ⇧ to pick the rows passed too.
+        /// ↑ or ↓ on a hardware keyboard, with ⇧ to pick the rows passed too.
         case cursorMoved(up: Bool, extending: Bool)
-        /// Return on the Mac: opens the row the keyboard is on.
+        /// Return on a hardware keyboard: opens the row the keyboard is on.
         case openCursorTapped
-        /// Space on the Mac: the statuses for the row the keyboard is on.
+        /// Space on a hardware keyboard: the statuses for the row the keyboard is on.
         case cursorStatusTapped
-        /// ⌫ on the Mac: the picked tasks, or the row the keyboard is on,
+        /// ⌫ on a hardware keyboard: the picked tasks, or the row the keyboard is on,
         /// to the Trash.
         case trashKeyPressed
         /// ⌘D on the Mac: a copy of the picked tasks, or of the row the
@@ -250,6 +277,7 @@ package struct TaskListFeature {
         case saved(Result<Saved, any Error>)
         case bannerUndoTapped
         case sortPicked(TaskSort)
+        case groupPicked(TaskGroup)
         case searchChanged(String)
         /// Rows dragged within a section, as `onMove` reports them.
         case moved(section: String, from: IndexSet, to: Int)
@@ -258,6 +286,9 @@ package struct TaskListFeature {
         case movedOnePlace(UUID, up: Bool)
         /// A row moved to the Trash by a named action.
         case trashRowTapped(UUID)
+        /// Move…, by a named action or the context menu: the places the task
+        /// can move to.
+        case moveRowTapped(UUID)
         /// Tasks dropped onto a row, to become its Sub tasks.
         case droppedOnto(UUID, tasks: [UUID])
         case bannerDismissed
@@ -269,6 +300,7 @@ package struct TaskListFeature {
         case reschedule(PresentationAction<RescheduleFeature.Action>)
         case prompt(PresentationAction<StatusPrompt>)
         case statusPicker(PresentationAction<StatusPick>)
+        case movePicker(PresentationAction<MovePick>)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -362,7 +394,8 @@ package struct TaskListFeature {
             case .selectTapped, .selectionToggled, .selectionExtended, .selectAllTapped, .bulk, .bulkDue, .bulkSaved,
                 .bulkPrompt(.presented), .cursorMoved, .openCursorTapped, .cursorStatusTapped, .trashKeyPressed,
                 .duplicateTapped:
-                return picking(&state, action)
+                let picked = picking(&state, action)
+                return .merge(picked, closeDetailIfPickingMany(&state))
 
             case .toggled(let id):
                 if state.isSelecting { return .send(.selectionToggled(id)) }
@@ -387,6 +420,17 @@ package struct TaskListFeature {
 
             case .trashRowTapped(let id):
                 return bulk(.trash, [id])
+
+            case .moveRowTapped(let id):
+                guard let row = state.rows.first(where: { $0.id == id }),
+                    let task = state.workspace?.tasks[id]
+                else { return .none }
+                state.movePicker = .places(
+                    for: id, title: row.title, from: (task.avenueID, task.projectID), among: state.places)
+                return .none
+
+            case .movePicker(.presented(let pick)):
+                return bulk(.move(avenue: pick.avenue, project: pick.project), [pick.task])
 
             case .rowAction(let id, .reschedule):
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
@@ -454,6 +498,12 @@ package struct TaskListFeature {
                 if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
                 return .none
 
+            case .groupPicked(let group):
+                guard state.groupings.contains(group) else { return .none }
+                state.$group.withLock { $0 = group }
+                if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
+                return .none
+
             case .searchChanged(let text):
                 state.searchText = text
                 if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
@@ -473,7 +523,12 @@ package struct TaskListFeature {
                 state.sections[index].rows = rows
                 let lower = to > 0 ? rows[to - 1].id : nil
                 let upper = to + 1 < rows.count ? rows[to + 1].id : nil
-                return save { try await $0.reorder(task: row.id, after: lower, before: upper) }
+                // A light tap as the row settles into its new place.
+                return save { [feedback] in
+                    let saved = try await $0.reorder(task: row.id, after: lower, before: upper)
+                    await feedback(.tap)
+                    return saved
+                }
 
             case .droppedOnto(let parent, let ids):
                 let ids = ids.filter { $0 != parent && state.workspace?.tasks[$0]?.parentID != parent }
@@ -491,10 +546,8 @@ package struct TaskListFeature {
             case .copyListTapped:
                 guard !state.isEmpty else { return .none }
                 let rows = state.rows
-                let notice =
-                    rows.count == 1
-                    ? String(localized: "Copied \u{201C}\(rows[0].title)\u{201D}")
-                    : String(localized: "Copied \(rows.count) tasks")
+                let notice = String(
+                    AttributedString(localized: "Copied ^[\(rows.count) task](inflect: true)").characters)
                 return .run { [pasteboard, uuid, text = state.markdown] _ in
                     await pasteboard.copy(text)
                     Self.copied(notice, id: uuid())
@@ -532,7 +585,7 @@ package struct TaskListFeature {
                 state.show(snapshot, now: now, timeZone: timeZone)
                 return .send(.delegate(.saved(snapshot)))
 
-            case .detail, .reschedule, .prompt, .statusPicker, .alert, .bulkPrompt, .delegate:
+            case .detail, .reschedule, .prompt, .statusPicker, .movePicker, .alert, .bulkPrompt, .delegate:
                 return .none
             }
         }
@@ -544,8 +597,22 @@ package struct TaskListFeature {
             .ifLet(\.$reschedule, action: \.reschedule) { RescheduleFeature() }
             .ifLet(\.$prompt, action: \.prompt)
             .ifLet(\.$statusPicker, action: \.statusPicker)
+            .ifLet(\.$movePicker, action: \.movePicker)
             .ifLet(\.$alert, action: \.alert)
             .ifLet(\.$bulkPrompt, action: \.bulkPrompt)
+    }
+
+    /// Closes the open task once two or more are picked, so the picked
+    /// tasks show in its place, saving its typed title and description
+    /// first, as leaving the field does. The keyboard stays on its row.
+    private func closeDetailIfPickingMany(_ state: inout State) -> Effect<Action> {
+        guard state.isSelecting, state.selection.count > 1, let leaving = state.detail else { return .none }
+        state.selectionAnchor = state.selectionAnchor ?? leaving.id
+        state.detail = nil
+        guard let edit = leaving.unsavedEdit else { return .none }
+        return .run { [store] send in
+            await send(.saved(Result { try await store.edit(leaving.id, edit) }))
+        }
     }
 
     /// Picking tasks and changing the picked ones at once.
@@ -696,6 +763,45 @@ package struct TaskListFeature {
     }
 }
 
+/// An Avenue, or a Project in it, picked for a task to move to.
+package struct MovePick: Equatable, Sendable {
+    package var task: UUID
+    package var avenue: UUID
+    package var project: UUID?
+
+    package init(task: UUID, avenue: UUID, project: UUID?) {
+        self.task = task
+        self.avenue = avenue
+        self.project = project
+    }
+}
+
+extension ConfirmationDialogState where Action == MovePick {
+    /// Every place in `places` but the one the task is in, `from`.
+    fileprivate static func places(
+        for task: UUID, title: String, from: (avenue: UUID, project: UUID?),
+        among places: [(avenue: Avenue, projects: [Project])]
+    ) -> Self {
+        ConfirmationDialogState(titleVisibility: .visible) {
+            TextState("Move \u{201C}\(title)\u{201D}")
+        } actions: {
+            for place in places {
+                if place.avenue.id != from.avenue || from.project != nil {
+                    ButtonState(action: MovePick(task: task, avenue: place.avenue.id, project: nil)) {
+                        TextState(verbatim: place.avenue.name)
+                    }
+                }
+                for project in place.projects where project.id != from.project {
+                    ButtonState(action: MovePick(task: task, avenue: place.avenue.id, project: project.id)) {
+                        TextState("\(place.avenue.name) › \(project.name)")
+                    }
+                }
+            }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        }
+    }
+}
+
 /// The answer to closing picked tasks that have open Sub tasks.
 package enum BulkAnswer: Equatable, Sendable {
     /// Close the open Sub tasks as Won't Do, then set the picked tasks to this.
@@ -716,10 +822,9 @@ extension LifrError {
 extension AlertState where Action == BulkAnswer {
     /// Asks before closing the open Sub tasks of `titles` as Won't Do.
     fileprivate static func closingSubtasks(of titles: [String], status: TaskStatus) -> Self {
-        let title: TextState =
-            titles.count == 1
-            ? TextState("“\(titles.joined())” has open Sub tasks")
-            : TextState("\(titles.count) tasks have open Sub tasks")
+        let title = TextState(
+            verbatim: String(
+                AttributedString(localized: "Open Sub tasks in ^[\(titles.count) task](inflect: true)").characters))
         let names: String = titles.map { name in "“\(name)”" }.joined(separator: ", ")
         let message = TextState(
             "\(names). A closed task can't keep open Sub tasks, so they'll be marked Won't Do first. "

@@ -18,6 +18,7 @@ swift_library(
     # The app's catalog lists its words.
     visibility = ["//apps/lifr/app:__pkg__"],
     deps = [
+        "//apps/lifr/api",
         "//apps/lifr/core",
         "//apps/lifr/widgets:glance",
     ],
@@ -99,7 +100,10 @@ swift_library(
     testonly = True,
     srcs = glob(["Tests/*.swift"]),
     target_compatible_with = ["//bazel/xcode"],
-    deps = [":share_lib"],
+    deps = [
+        ":share_lib",
+        "//apps/lifr/core",
+    ],
 )
 
 macos_unit_test(

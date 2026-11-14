@@ -65,7 +65,13 @@ package struct JournalWords {
         guard let first = steps.first else { return String(localized: "No change") }
         var text = "\(proposed ? proposedVerb(first) : verb(first)) \(first.record.kind.noun)"
         if first.record.kind != .settings { text += " “\(title(first))”" }
-        return steps.count == 1 ? text : text + " and \(steps.count - 1) more"
+        return andMore(text, steps.count - 1)
+    }
+
+    /// `text`, then how many more steps there are, if any, as one phrase
+    /// the String Catalog gives a plural form for each count.
+    private func andMore(_ text: String, _ more: Int) -> String {
+        more == 0 ? text : String(localized: "\(text) and \(more) more", comment: "A change, then how many more")
     }
 
     /// That `count` changes were reverted, naming the record when they're
@@ -124,8 +130,8 @@ package struct JournalWords {
         case .project(let project): project.name
         case .task(let task): task.title
         case .label(let label): label.name
-        case .comment(let comment): workspace.tasks[comment.taskID]?.title ?? "a task"
-        case .reminder(let reminder): workspace.tasks[reminder.taskID]?.title ?? "a task"
+        case .comment(let comment): workspace.tasks[comment.taskID]?.title ?? String(localized: "a task")
+        case .reminder(let reminder): workspace.tasks[reminder.taskID]?.title ?? String(localized: "a task")
         case .savedFilter(let saved): saved.name
         case .settings, nil: String(localized: "Settings")
         }
@@ -160,7 +166,7 @@ package struct JournalWords {
         guard let first = steps.first else { return String(localized: "No change") }
         var text = "\(verb(first)) \(first.record.kind.noun)"
         if first.record.kind != .settings { text += " “\(name(first))”" }
-        return steps.count == 1 ? text : text + " and \(steps.count - 1) more"
+        return andMore(text, steps.count - 1)
     }
 
     private func verb(_ step: ArchivedStep) -> String {
@@ -188,7 +194,7 @@ package struct JournalWords {
         case .comment, .reminder:
             let task = step.fields.first { $0.field == .task }.flatMap { $0.after ?? $0.before }
             guard case .record(_, let taskID)? = task, let title = workspace.tasks[taskID]?.title else {
-                return "a task"
+                return String(localized: "a task")
             }
             return title
         case .avenue, .project, .task, .label, .savedFilter:

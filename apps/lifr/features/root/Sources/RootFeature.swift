@@ -260,6 +260,8 @@ package struct RootFeature {
         /// The first launch on this device, until it's finished or skipped.
         @Presents package var onboarding: OnboardingFeature.State?
         @Shared(.hasOnboarded) package var hasOnboarded
+        /// Whether the Mac's tip about Quick Add from any app was closed.
+        @Shared(.appStorage(GestureTip.globalCapture.storageKey)) package var captureTipSeen = false
         @Shared(.seenRelease) package var seenRelease
         /// Whether this release's notes are up.
         package var isWhatsNewShown = false
@@ -397,6 +399,12 @@ package struct RootFeature {
             currentList.flatMap { self[list: $0] }
         }
 
+        /// Whether the Mac's sidebar offers the tip about Quick Add from any
+        /// app: until it's closed, or keys for it are picked.
+        package var showsCaptureTip: Bool {
+            platform == .mac && hasOnboarded && !captureTipSeen && settings.quickAddHotKey == .off
+        }
+
         /// The open task, for the Task menu.
         package var openDetail: TaskDetailFeature.State? {
             currentList.flatMap { self[list: $0]?.detail }
@@ -510,6 +518,13 @@ package struct RootFeature {
         case goTo(SidebarItem)
         /// Edit and Task menu items for the list on screen.
         case listShortcut(ListShortcut)
+        /// The tip about Quick Add from any app was closed.
+        case captureTipClosed
+        /// Return in the Mac's toolbar search field: Search, for this text.
+        case toolbarSearched(String)
+        /// An action for the tasks picked in the list on screen, from the
+        /// Mac's summary of them in the detail column.
+        case pickedTasksCommanded(TaskListFeature.Action)
         /// A priority shortcut, for the open task.
         case priorityShortcut(Priority)
         /// A due date shortcut, for the open task: today, tomorrow or none.
@@ -578,6 +593,9 @@ package struct RootFeature {
         case recordStepsTapped
         /// The Recording bar's Stop, Help's Stop Recording, or a shake.
         case stopRecordingTapped
+        /// Report a Bug on the screen that says Lifr can't open its data,
+        /// with why it couldn't.
+        case openFailureReported(String)
         case bugReport(PresentationAction<BugReportFeature.Action>)
         case onboarding(PresentationAction<OnboardingFeature.Action>)
         case whatsNewDismissed
@@ -1052,6 +1070,21 @@ package struct RootFeature {
                     return .send(list(slot, .rowAction(id, .reschedule)))
                 }
 
+            case .captureTipClosed:
+                state.$captureTipSeen.withLock { $0 = true }
+                return .none
+
+            case .toolbarSearched(let text):
+                let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return .none }
+                return .concatenate(
+                    .send(.search(.binding(.set(\.filter.text, text)))), .send(.goTo(.search)))
+
+            case .pickedTasksCommanded(let action):
+                guard let slot = state.currentList, state[list: slot]?.selection.isEmpty == false
+                else { return .none }
+                return .send(list(slot, action))
+
             case .priorityShortcut(let priority):
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
                 return .send(list(slot, .detail(.presented(.priorityPicked(priority)))))
@@ -1375,8 +1408,10 @@ package struct RootFeature {
 
             case .backgrounded:
                 // What changed here reaches the other devices before Lifr
-                // is suspended.
-                guard state.syncsContinuously, state.sync.status != .syncing else { return .none }
+                // is suspended. A sync already running read the records
+                // before the latest changes, so the flush runs once more
+                // after it rather than being skipped.
+                guard state.syncsContinuously else { return .none }
                 return .run { [sync] _ in _ = await sync.flush() }
 
             case .unlockTapped, .unlocked, .lockMirrored, .appActivated:
@@ -1439,7 +1474,8 @@ package struct RootFeature {
                 guard let scope = state.board?.scope else { return .none }
                 return .send(.newTaskInTapped(scope))
 
-            case .shaken, .reportBugTapped, .recordStepsTapped, .stopRecordingTapped, .bugReport:
+            case .shaken, .reportBugTapped, .recordStepsTapped, .stopRecordingTapped, .openFailureReported,
+                .bugReport:
                 return .none
 
             case .calendar(.delegate(.openProject(let id))):
@@ -1549,6 +1585,14 @@ package struct RootFeature {
             if state.isRecordingSteps { return .send(.stopRecordingTapped) }
             guard !state.isLocked, state.bugReport == nil else { return .none }
             state.bugReport = .new(recording: nil)
+            return .none
+
+        case .openFailureReported(let reason):
+            // Nothing could be read, so there's nothing the lock keeps.
+            guard state.bugReport == nil else { return .none }
+            var report = BugReportFeature.State.new(recording: nil)
+            report.report.happened = String(localized: "Lifr couldn't open its data: \(reason)")
+            state.bugReport = report
             return .none
 
         case .recordStepsTapped:
@@ -2300,7 +2344,8 @@ extension RootFeature.Action {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
             .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped,
             .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped,
-            .backTapped, .forwardTapped, .listShortcut, .detailShortcut, .captureOpened:
+            .backTapped, .forwardTapped, .listShortcut, .detailShortcut, .captureOpened, .toolbarSearched,
+            .pickedTasksCommanded:
             true
         default:
             false

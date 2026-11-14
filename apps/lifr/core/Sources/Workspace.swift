@@ -737,11 +737,22 @@ package struct Workspace: Hashable, Codable, Sendable {
         return new
     }
 
-    /// Puts an Avenue between two others in the sidebar's order.
+    /// Puts an Avenue between two others in the sidebar's order. The Inbox
+    /// stays first: it doesn't move, and nothing goes above it.
     package mutating func reorder(avenue id: UUID, after lower: UUID?, before upper: UUID?) throws(LifrError) {
         var avenue = try avenue(id)
-        avenue.sortOrder = Self.key(
-            after: try lower.map(self.avenue)?.sortOrder, before: try upper.map(self.avenue)?.sortOrder)
+        var lowerKey = try lower.map(self.avenue)?.sortOrder
+        var upperKey = try upper.map(self.avenue)?.sortOrder
+        guard !avenue.isInbox else { return }
+        if let inbox = avenues[Avenue.inboxID], lowerKey.map({ $0 < inbox.sortOrder }) ?? true {
+            lowerKey = inbox.sortOrder
+            if let key = upperKey, key <= inbox.sortOrder {
+                upperKey = avenues.values
+                    .filter { $0.id != id && $0.sortOrder > inbox.sortOrder }
+                    .map(\.sortOrder).min()
+            }
+        }
+        avenue.sortOrder = Self.key(after: lowerKey, before: upperKey)
         avenues[id] = avenue
     }
 

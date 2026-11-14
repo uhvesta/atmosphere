@@ -27,6 +27,7 @@ struct CalendarHeader: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
+            .background { ModeShortcuts(store: store) }
             CalendarFilterMenu(store: store)
             PageArrow(steps: -1, store: store)
             PageArrow(steps: 1, store: store)
@@ -77,6 +78,24 @@ struct CalendarHeader: View {
                 .padding()
             }
         #endif
+    }
+}
+
+/// ⌃⌘1 and ⌃⌘2 pick Month and Week while the calendar shows; ⌘1 to ⌘3
+/// already go to lists.
+private struct ModeShortcuts: View {
+    var store: StoreOf<CalendarFeature>
+
+    var body: some View {
+        ZStack {
+            Button("Show Month") { store.send(.modePicked(.month), animation: .default) }
+                .keyboardShortcut("1", modifiers: [.command, .control])
+            Button("Show Week") { store.send(.modePicked(.week), animation: .default) }
+                .keyboardShortcut("2", modifiers: [.command, .control])
+        }
+        // The segmented picker is the control; these only take the keys.
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 }
 
@@ -171,6 +190,7 @@ struct CalendarChipView: View {
     var store: StoreOf<CalendarFeature>
     @Environment(\.locale) private var locale
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button {
@@ -202,7 +222,9 @@ struct CalendarChipView: View {
         }
         .buttonStyle(.plain)
         .draggable(chip.id.uuidString) {
-            Text(chip.title).font(.caption).padding(4)
+            LiftedChip(title: chip.title, color: chip.color, reduceMotion: reduceMotion) {
+                StatusGlyph(chip.status, font: .caption)
+            }
         }
         .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
             guard press.modifiers.contains(.option) else { return .ignored }
@@ -234,6 +256,30 @@ struct CalendarChipView: View {
     }
 }
 
+/// A chip lifted off the calendar while it's dragged: tilted, with a
+/// shadow, as list rows are.
+private struct LiftedChip<Icon: View>: View {
+    var title: String
+    var color: String
+    var reduceMotion: Bool
+    @ViewBuilder var icon: Icon
+
+    var body: some View {
+        HStack(spacing: 4) {
+            icon
+            Text(title).font(.callout).lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 240, alignment: .leading)
+        .background(Color(avenue: color).opacity(0.18), in: .rect(cornerRadius: 8))
+        .background(.background, in: .rect(cornerRadius: 8))
+        .rotationEffect(.degrees(reduceMotion ? 0 : 2))
+        .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+        .padding(12)
+    }
+}
+
 /// A Project due on a day: a flag that opens it.
 struct CalendarFlagView: View {
     var flag: CalendarFlag
@@ -258,28 +304,30 @@ struct CalendarFlagView: View {
 }
 
 /// Takes tasks dropped on a day, when `isOn`, at `time` as
-/// ``CalendarFeature/Action/dropped(_:on:time:)`` has it. With an
-/// `hourHeight`, `time` is an hour, and where in it the drop lands picks
-/// the quarter.
+/// ``CalendarFeature/Action/dropped(_:on:time:)`` has it, and a bar's
+/// leading edge, to move its start. With `hours`, the view is those hours
+/// from top to bottom, each an equal share of `height`, and where the drop
+/// lands picks the hour and its quarter.
 struct DayDrop: ViewModifier {
     var day: CalendarDate
     var time: TimeOfDay??
-    var hourHeight: CGFloat?
+    var hours: Range<Int>?
+    var height: CGFloat = 0
     var isOn = true
     @Binding var isTargeted: Bool
     var store: StoreOf<CalendarFeature>
 
     func body(content: Content) -> some View {
         if isOn {
-            content.dropDestination(for: String.self) { ids, location in
-                let dropped = ids.compactMap(UUID.init(uuidString:))
-                guard !dropped.isEmpty else { return false }
-                var time = time
-                if let hourHeight, hourHeight > 0, case .some(.some(let hour)) = time {
-                    let quarter = min(3, max(0, Int((location.y / hourHeight * 4).rounded(.down))))
-                    time = .some(TimeOfDay(clampingHour: hour.hour, minute: quarter * 15))
+            content.dropDestination(for: String.self) { items, location in
+                switch CalendarPayload(items) {
+                case .tasks(let ids):
+                    store.send(.dropped(ids, on: day, time: time(at: location.y)), animation: .default)
+                case .start(let id):
+                    store.send(.startDropped(id, on: day), animation: .default)
+                case nil:
+                    return false
                 }
-                store.send(.dropped(dropped, on: day, time: time), animation: .default)
                 return true
             } isTargeted: {
                 isTargeted = $0
@@ -287,6 +335,13 @@ struct DayDrop: ViewModifier {
         } else {
             content
         }
+    }
+
+    private func time(at offset: CGFloat) -> TimeOfDay?? {
+        guard let hours, !hours.isEmpty, height > 0 else { return time }
+        let quarters = hours.count * 4
+        let index = min(quarters - 1, max(0, Int((offset / height * CGFloat(quarters)).rounded(.down))))
+        return .some(TimeOfDay(clampingHour: hours.lowerBound + index / 4, minute: index % 4 * 15))
     }
 }
 
@@ -329,7 +384,13 @@ struct SpanLanes: View {
                         Text(span.title)
                             .font(.caption2)
                             .lineLimit(1)
-                            .padding(.horizontal, 3)
+                            .padding(.leading, span.startsHere ? 7 : 3)
+                            .padding(.trailing, 3)
+                    }
+                }
+                .overlay(alignment: .leading) {
+                    if isWide, span.startsHere {
+                        StartEdge(span: span, height: height)
                     }
                 }
         } else {
@@ -345,7 +406,34 @@ struct SpanLanes: View {
     }
 }
 
-/// A task with only a start date, on the day it starts: a hollow chip.
+/// A bar's leading edge, on the day its task starts: dragging it onto
+/// another day moves the start alone, leaving the due date.
+private struct StartEdge: View {
+    var span: CalendarSpan
+    var height: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Capsule()
+            .fill(Color(avenue: span.color))
+            .frame(width: 3, height: height - 4)
+            .padding(.horizontal, 2)
+            .frame(height: height)
+            .contentShape(Rectangle())
+            .draggable(CalendarPayload.dragging(startOf: span.id)) {
+                LiftedChip(title: span.title, color: span.color, reduceMotion: reduceMotion) {
+                    Text("Starts").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+            }
+            #if os(macOS)
+                .pointerStyle(.frameResize(position: .leading))
+            #endif
+            .help(Text("Drag to another day to change when it starts"))
+    }
+}
+
+/// A task with only a start date, on the day it starts: a hollow chip
+/// labelled Starts.
 struct CalendarStartView: View {
     var chip: CalendarChip
     var store: StoreOf<CalendarFeature>
@@ -355,7 +443,11 @@ struct CalendarStartView: View {
             store.send(.list(.rowTapped(chip.id)))
         } label: {
             HStack(spacing: 3) {
-                Image(systemName: "play.circle").font(.caption2)
+                Text("Starts")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color(avenue: chip.color))
+                    .lineLimit(1)
+                    .fixedSize()
                 Text(chip.title).font(.caption).lineLimit(1)
                 Spacer(minLength: 0)
             }

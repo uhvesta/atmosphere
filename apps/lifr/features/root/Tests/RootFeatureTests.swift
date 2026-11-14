@@ -2686,6 +2686,78 @@ final class RootFeatureTests: XCTestCase {
 
         XCTAssertFalse(store.state.isRecordingSteps)
     }
+
+    func testGoingToTheBackgroundMidSyncStillSyncs() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.phone, sync: counting(syncs))
+        await store.send(.syncChanged(SyncState(status: .syncing)))
+        await store.send(.backgrounded)
+        await store.finish()
+        XCTAssertEqual(syncs.value, 1)
+    }
+
+    func testSearchingFromTheToolbarShowsTheMatchesInSearch() async {
+        let store = makeStore(.mac)
+        await store.send(.toolbarSearched("  run  "))
+        await store.receive(\.goTo)
+        await store.receive(\.selected)
+        XCTAssertEqual(store.state.selection, .search)
+        XCTAssertEqual(store.state.search.filter.text, "run")
+
+        await store.send(.goTo(.today))
+        await store.receive(\.selected)
+        await store.send(.toolbarSearched("   "))
+        XCTAssertEqual(store.state.selection, .today)
+    }
+
+    func testTheDetailColumnsActionsChangeEveryPickedTask() async {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        // Nothing picked: nothing changes.
+        await store.send(.pickedTasksCommanded(.bulk(.priority(.high))))
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.priority, Priority.none)
+
+        await store.send(.today(.list(.selectTapped)))
+        await store.send(.today(.list(.selectionToggled(run.id))))
+        await store.send(.today(.list(.selectionToggled(stretch.id))))
+        await store.send(.pickedTasksCommanded(.bulk(.priority(.high))))
+        await store.receive(\.today.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.priority, .high)
+        XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.priority, .high)
+        await task.cancel()
+    }
+
+    func testReportingAFailureToOpenStartsAReportSayingWhy() async {
+        let store = makeStore(.mac)
+        store.dependencies.models.selection = { _ in "gemma-4-e2b" }
+        await store.send(.openFailureReported("The store is damaged"))
+        XCTAssertEqual(store.state.bugReport?.report.happened.isEmpty, false)
+    }
+
+    func testTheCaptureTipShowsOnTheMacUntilClosedOrKeysArePicked() async {
+        let store = makeStore(.mac)
+        store.state.$hasOnboarded.withLock { $0 = true }
+        store.state.$captureTipSeen.withLock { $0 = false }
+        store.state.settings.$quickAddHotKey.withLock { $0 = .off }
+        XCTAssertTrue(store.state.showsCaptureTip)
+
+        await store.send(.settings(.quickAddHotKeyPicked(.controlOptionSpace)))
+        XCTAssertFalse(store.state.showsCaptureTip)
+
+        await store.send(.settings(.quickAddHotKeyPicked(.off)))
+        XCTAssertTrue(store.state.showsCaptureTip)
+        await store.send(.captureTipClosed)
+        XCTAssertFalse(store.state.showsCaptureTip)
+
+        let phone = makeStore(.phone)
+        phone.state.$hasOnboarded.withLock { $0 = true }
+        phone.state.$captureTipSeen.withLock { $0 = false }
+        XCTAssertFalse(phone.state.showsCaptureTip)
+    }
 }
 
 /// A store client whose saves are made as soon as they're asked for, in

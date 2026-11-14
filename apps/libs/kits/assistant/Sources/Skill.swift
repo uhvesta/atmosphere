@@ -27,10 +27,17 @@ public struct Skill<Tool: SkillTool>: Identifiable, Hashable, Codable, Sendable 
     /// When the skill fits a message, for picking it automatically: "the
     /// person lists things they have to do".
     public var useWhen: String
+    /// What a plan made with the skill sets out to do, filled in as the
+    /// goal when the person plans with it; nil for none.
+    public var planGoal: String?
+    /// Which records a plan made with the skill starts from, in the app's
+    /// own words; nil for the app's default.
+    public var planScope: String?
 
     public init(
         id: String, summary: String, instructions: String, tools: Set<Tool>, draftsPlans: Bool,
-        isOn: Bool = true, autoPicks: Bool = false, useWhen: String = ""
+        isOn: Bool = true, autoPicks: Bool = false, useWhen: String = "", planGoal: String? = nil,
+        planScope: String? = nil
     ) {
         self.id = id
         self.summary = summary
@@ -40,10 +47,12 @@ public struct Skill<Tool: SkillTool>: Identifiable, Hashable, Codable, Sendable 
         self.isOn = isOn
         self.autoPicks = autoPicks
         self.useWhen = useWhen
+        self.planGoal = planGoal
+        self.planScope = planScope
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, summary, instructions, tools, draftsPlans, isOn, autoPicks, useWhen
+        case id, summary, instructions, tools, draftsPlans, isOn, autoPicks, useWhen, planGoal, planScope
     }
 
     /// Skills saved before automatic picking read as the built-in's default,
@@ -59,7 +68,9 @@ public struct Skill<Tool: SkillTool>: Identifiable, Hashable, Codable, Sendable 
             draftsPlans: try container.decode(Bool.self, forKey: .draftsPlans),
             isOn: try container.decode(Bool.self, forKey: .isOn),
             autoPicks: try container.decodeIfPresent(Bool.self, forKey: .autoPicks) ?? builtIn?.autoPicks ?? false,
-            useWhen: try container.decodeIfPresent(String.self, forKey: .useWhen) ?? builtIn?.useWhen ?? "")
+            useWhen: try container.decodeIfPresent(String.self, forKey: .useWhen) ?? builtIn?.useWhen ?? "",
+            planGoal: try container.decodeIfPresent(String.self, forKey: .planGoal),
+            planScope: try container.decodeIfPresent(String.self, forKey: .planScope))
     }
 
     public static var userPrefix: String { "user:" }
@@ -68,13 +79,13 @@ public struct Skill<Tool: SkillTool>: Identifiable, Hashable, Codable, Sendable 
     /// "user:weekly-review". Nil when the name has no letters or digits.
     public init?(
         userNamed name: String, summary: String, instructions: String, tools: Set<Tool>,
-        draftsPlans: Bool, autoPicks: Bool = false, useWhen: String = ""
+        draftsPlans: Bool, autoPicks: Bool = false, useWhen: String = "", planGoal: String? = nil
     ) {
         let words = name.lowercased().split { !$0.isLetter && !$0.isNumber }
         guard !words.isEmpty else { return nil }
         self.init(
             id: Self.userPrefix + words.joined(separator: "-"), summary: summary, instructions: instructions,
-            tools: tools, draftsPlans: draftsPlans, autoPicks: autoPicks, useWhen: useWhen)
+            tools: tools, draftsPlans: draftsPlans, autoPicks: autoPicks, useWhen: useWhen, planGoal: planGoal)
     }
 
     public var isUser: Bool { id.hasPrefix(Self.userPrefix) }

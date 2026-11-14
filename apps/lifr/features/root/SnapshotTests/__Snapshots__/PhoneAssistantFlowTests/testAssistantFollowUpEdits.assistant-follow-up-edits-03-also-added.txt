@@ -16,6 +16,7 @@
 [text] "2 tasks"
 [text] "buy milk, Home"
 [text] "buy eggs, Home"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

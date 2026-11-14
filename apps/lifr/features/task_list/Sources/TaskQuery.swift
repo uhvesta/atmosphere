@@ -37,13 +37,17 @@ package struct TaskQuery: Equatable, Sendable {
     package var reorders: Bool
     /// Whether the list has a search field, filtering rows by title or code.
     package var searches: Bool
+    /// Whether the list offers Group By, putting its rows in sections of
+    /// its person's choosing in place of its own. Lists whose sections are
+    /// the point, such as Today's, leave it off.
+    package var groups: Bool
     package var sections: @Sendable (_ workspace: Workspace, _ now: Date, _ timeZone: TimeZone) -> [TaskSection]
 
     package init(
         key: String, listID: String? = nil, empty: Empty, finished: Empty? = nil,
         trailingActions: [RowAction] = [.status(.done), .status(.wontDo), .pickStatus],
         adds: NewTaskDefaults? = NewTaskDefaults(), reorders: Bool = false,
-        searches: Bool = false,
+        searches: Bool = false, groups: Bool = false,
         sections: @escaping @Sendable (Workspace, Date, TimeZone) -> [TaskSection]
     ) {
         self.key = key
@@ -54,13 +58,14 @@ package struct TaskQuery: Equatable, Sendable {
         self.adds = adds
         self.reorders = reorders
         self.searches = searches
+        self.groups = groups
         self.sections = sections
     }
 
     package static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.key == rhs.key && lhs.listID == rhs.listID && lhs.empty == rhs.empty && lhs.finished == rhs.finished
             && lhs.trailingActions == rhs.trailingActions && lhs.adds == rhs.adds && lhs.reorders == rhs.reorders
-            && lhs.searches == rhs.searches
+            && lhs.searches == rhs.searches && lhs.groups == rhs.groups
     }
 }
 

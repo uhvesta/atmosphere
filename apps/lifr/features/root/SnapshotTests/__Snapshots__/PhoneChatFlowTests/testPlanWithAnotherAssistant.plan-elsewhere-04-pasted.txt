@@ -7,6 +7,7 @@
 [text] "New Project Spring clean, Home"
 [text] "Clear the garage, Sat, Nov 7"
 [text] "Wash the windows"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

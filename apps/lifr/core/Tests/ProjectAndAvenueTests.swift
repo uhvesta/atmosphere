@@ -253,6 +253,15 @@ func projectAndAvenueTests() -> [TestCase] {
             let order = fixture.workspace.avenues.values.sorted { $0.sortOrder < $1.sortOrder }.map(\.name)
             try expectEqual(order, ["Home", "Health"])
         },
+        TestCase("given the Inbox, when an Avenue moves above it or it moves down, then the Inbox stays first") {
+            let fixture = try Fixture()
+            fixture.workspace.ensureInbox(in: fixture.context)
+            let home = try fixture.workspace.createAvenue(key: "HOME", name: "Home", in: fixture.context)
+            try fixture.workspace.reorder(avenue: home.id, after: nil, before: Avenue.inboxID)
+            try fixture.workspace.reorder(avenue: Avenue.inboxID, after: home.id, before: nil)
+            let order = fixture.workspace.avenues.values.sorted { $0.sortOrder < $1.sortOrder }.map(\.name)
+            try expectEqual(order, ["Inbox", "Home", "Health"])
+        },
         TestCase("given a missing neighbour, then reordering is refused and changes nothing") {
             let fixture = try Fixture()
             let task = try fixture.task("One")

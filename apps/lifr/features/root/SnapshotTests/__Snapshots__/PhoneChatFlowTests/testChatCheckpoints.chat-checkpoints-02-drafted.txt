@@ -1,9 +1,9 @@
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [button] "Conversations" id: BackButton
+[text] "What should I do first?"
 [button] "What should I do first?, Actions Menu"
 [button] "Context Window" value: "Shows after the next reply" hint: "Shows after the next reply"
 [text] "On this device"
-[text] "What should I do first?"
 [text] "Start with the urgent tasks, then the ones due this week."
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
@@ -18,6 +18,7 @@
 [text] "Buy new clothes, Home"
 [text] "Shoes"
 [text] "Jacket"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

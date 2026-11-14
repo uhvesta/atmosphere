@@ -10,6 +10,14 @@ final class SyncStatusTextTests: XCTestCase {
         XCTAssertTrue(three.contains("3"))
     }
 
+    func testChangesNotYetSentSayHowManyAreWaiting() {
+        let last = Date(timeIntervalSince1970: 1_793_700_000)
+        let none = SyncStatusText.status(SyncState(lastSynced: last), now: last + 600)
+        let three = SyncStatusText.status(SyncState(lastSynced: last, pending: 3), now: last + 600)
+        XCTAssertFalse(none.contains("3"))
+        XCTAssertTrue(three.contains("3"))
+    }
+
     func testALastSyncReadsAsHowLongAgoItWas() {
         let last = Date(timeIntervalSince1970: 1_793_700_000)
         let state = SyncState(lastSynced: last)

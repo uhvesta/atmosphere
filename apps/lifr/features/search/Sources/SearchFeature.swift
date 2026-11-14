@@ -34,7 +34,7 @@ extension TaskQuery {
                 : .init(
                     "No matches", systemImage: "magnifyingglass",
                     description: String(localized: "Try other words, or clear the filters.")),
-            adds: nil
+            adds: nil, groups: true
         ) { workspace, now, timeZone in
             guard !filter.isEmpty else { return [] }
             let tasks = filter.matching(in: workspace, now: now, timeZone: timeZone)

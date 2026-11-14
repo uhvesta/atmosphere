@@ -11,25 +11,86 @@ import LifrCore
 package enum PlanFile {
     package static let firstLine = "# Lifr plan v1"
 
-    /// The tables and fields, for agents writing a plan.
-    package static let guide = """
-        \(firstLine)
-        [[avenue]]               key, name, color, symbol
-        [[label]]                name, color
-        [[project]]              name, avenue (key), details, due
-          [[project.task]]       task fields
-            [[project.task.subtask]]
-        [[task]]                 task fields, plus in = "KEY" or "KEY/Project name", or parent = "TASK-CODE"
-          [[task.subtask]]       task fields
+    /// A key a table has, as the guide describes it and the reader accepts it.
+    package struct Field: Hashable, Sendable {
+        package var name: String
+        package var isRequired = false
+        /// What the value is, such as a list or its choices; empty for text.
+        package var form = ""
 
-        Task fields: title (required), details, status (todo, in_progress, procrastinated, done, wont_do),
-        priority (none, low, medium, high, urgent), start, due, due_time ("HH:MM"), repeats, labels, remind,
-        comments.
-        Dates: YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w, +1m.
-        repeats (not on Sub tasks): "every day", "every weekday", "every 2 weeks on Mon, Thu",
-        "every month on day 15", "every month on the last Fri", "every year on Mar 5", "3 days after closing".
-        remind: "1 day before due", "2 hours before due", or a date with a time, such as "tomorrow 09:00".
-        """
+        package init(name: String, isRequired: Bool = false, form: String = "") {
+            self.name = name
+            self.isRequired = isRequired
+            self.form = form
+        }
+    }
+
+    package static let avenueFields = [
+        Field(name: "key", isRequired: true), Field(name: "name", isRequired: true), Field(name: "color"),
+        Field(name: "symbol"),
+    ]
+    package static let labelFields = [Field(name: "name", isRequired: true), Field(name: "color")]
+    package static let projectFields = [
+        Field(name: "name", isRequired: true), Field(name: "avenue", isRequired: true, form: "an Avenue's key"),
+        Field(name: "details"), Field(name: "due", form: "a date"),
+    ]
+    /// The keys every task, Project task and Sub task has.
+    package static let taskFields = [
+        Field(name: "title", isRequired: true), Field(name: "details"),
+        Field(name: "status", form: TaskStatus.allCases.map(statusName).joined(separator: ", ")),
+        Field(name: "priority", form: Priority.allCases.map(\.rawValue).joined(separator: ", ")),
+        Field(name: "start", form: "a date"), Field(name: "due", form: "a date"),
+        Field(name: "due_time", form: "\"HH:MM\""), Field(name: "repeats", form: "not on Sub tasks"),
+        Field(name: "labels", form: "a list"), Field(name: "remind", form: "a list"),
+        Field(name: "comments", form: "a list"),
+    ]
+    /// Where a `[[task]]` goes: an Avenue or Project, or a task's code.
+    package static let placeFields = [
+        Field(name: "in", form: "\"KEY\" or \"KEY/Project name\""), Field(name: "parent", form: "\"TASK-CODE\""),
+    ]
+
+    /// Dates as the guide gives them; `CalendarDate.resolving` reads each.
+    package static let dateForms = ["2026-11-20", "today", "tomorrow", "friday", "next friday", "+3d", "+2w", "+1m"]
+    /// How a task can repeat, as the guide gives it; `Recurrence.resolving`
+    /// reads each.
+    package static let repeatForms = [
+        "every day", "every weekday", "every 2 weeks on Mon, Thu", "every month on day 15",
+        "every month on the last Fri", "every year on Mar 5", "3 days after closing",
+    ]
+    /// Reminders as the guide gives them, each one a plan's check accepts.
+    package static let reminderForms = ["1 day before due", "2 hours before due", "tomorrow 09:00"]
+
+    /// The tables and fields, for agents writing a plan. Made from the
+    /// lists the reader checks against, so it says what the reader accepts.
+    package static let guide: String = {
+        func fields(_ fields: [Field]) -> String {
+            fields.map { field in
+                let notes = (field.isRequired ? ["required"] : []) + (field.form.isEmpty ? [] : [field.form])
+                return notes.isEmpty ? field.name : "\(field.name) (\(notes.joined(separator: "; ")))"
+            }.joined(separator: ", ")
+        }
+        func row(_ header: String, _ text: String) -> String {
+            header.padding(toLength: max(25, header.count + 1), withPad: " ", startingAt: 0) + text
+        }
+        let places = placeFields.map { "\($0.name) = \($0.form)" }.joined(separator: ", or ")
+        return [
+            firstLine,
+            row("[[avenue]]", fields(avenueFields)),
+            row("[[label]]", fields(labelFields)),
+            row("[[project]]", fields(projectFields)),
+            row("  [[project.task]]", "task fields"),
+            row("    [[project.task.subtask]]", "task fields"),
+            row("[[task]]", "task fields, plus \(places)"),
+            row("  [[task.subtask]]", "task fields"),
+            "",
+            "Task fields: \(fields(taskFields)).",
+            "Lists are quoted text in brackets, such as labels = [\"errands\", \"home\"].",
+            "Dates: \(dateForms.joined(separator: ", ")); that is YYYY-MM-DD, a word, a weekday, or days, weeks "
+                + "or months ahead.",
+            "repeats: " + repeatForms.map { "\"\($0)\"" }.joined(separator: ", ") + ".",
+            "remind: " + reminderForms.map { "\"\($0)\"" }.joined(separator: ", ") + ".",
+        ].joined(separator: "\n")
+    }()
 
     // MARK: - Writing
 
@@ -132,13 +193,10 @@ package enum PlanFile {
         return try plan(from: root)
     }
 
-    private static let avenueKeys: Set<String> = ["key", "name", "color", "symbol"]
-    private static let labelKeys: Set<String> = ["name", "color"]
-    private static let projectKeys: Set<String> = ["name", "avenue", "details", "due"]
-    private static let taskKeys: Set<String> = [
-        "title", "in", "parent", "details", "status", "priority", "start", "due", "due_time", "repeats",
-        "labels", "remind", "comments",
-    ]
+    private static let avenueKeys = Set(avenueFields.map(\.name))
+    private static let labelKeys = Set(labelFields.map(\.name))
+    private static let projectKeys = Set(projectFields.map(\.name))
+    private static let taskKeys = Set((taskFields + placeFields).map(\.name))
 
     private static func plan(from root: Node) throws(PlanFileError) -> Plan {
         var plan = Plan()

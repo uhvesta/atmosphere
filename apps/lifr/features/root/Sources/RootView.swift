@@ -496,6 +496,8 @@ private final class ToolbarSlot: Sendable {
 private struct MacRootView: View {
     @Bindable var store: StoreOf<RootFeature>
     @State private var toolbar = ToolbarSlot()
+    /// View › Show Detail; off, a task opens over the list.
+    @AppStorage(RootCommands.showsDetailKey) private var showsDetail = true
     @Environment(\.openWindow) private var openWindow
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
 
@@ -523,30 +525,23 @@ private struct MacRootView: View {
             } detail: {
                 NavigationStack { content.toolbar(id: toolbar.id) { addMenu } }
             }
+        } else if !showsDetail {
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                NavigationStack { list }
+            }
         } else {
             NavigationSplitView {
                 sidebar
             } content: {
-                content
-                    .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                    .toolbar(id: toolbar.id) { addMenu }
-                    #if os(macOS)
-                        .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
-                    #endif
-                    // Text from another app lands like ⌘V; a task dragged
-                    // within the list is left to the list.
-                    .dropDestination(for: String.self) { items, _ in
-                        guard !items.allSatisfy({ UUID(uuidString: $0) != nil }), !OrderDrag.isAmong(items)
-                        else { return false }
-                        store.send(.textPasted(items.joined(separator: "\n")))
-                        return true
-                    }
-                    // Rows take tasks dropped onto them, and hand text on.
-                    .environment(\.droppedText) { store.send(.textPasted($0)) }
+                list.navigationSplitViewColumnWidth(min: 320, ideal: 380)
             } detail: {
                 NavigationStack {
                     if store.selection == .conversations {
                         NothingSelected("No conversation selected", systemImage: "bubble.left.and.text.bubble.right")
+                    } else if let rows = store.state.currentRows, rows.isSelecting, rows.selection.count > 1 {
+                        PickedTasks(rows: rows, store: store)
                     } else {
                         NothingSelected("No task selected", systemImage: "checklist")
                     }
@@ -554,6 +549,24 @@ private struct MacRootView: View {
                 .navigationSplitViewColumnWidth(min: 360, ideal: 480)
             }
         }
+    }
+
+    /// The page with its toolbar, taking text pasted or dropped in.
+    private var list: some View {
+        content
+            .toolbar(id: toolbar.id) { addMenu }
+            #if os(macOS)
+                .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
+            #endif
+            // Text from another app lands like ⌘V; a task dragged
+            // within the list is left to the list.
+            .dropDestination(for: String.self) { items, _ in
+                guard TaskDrag.ids(in: items) == nil, !OrderDrag.isAmong(items) else { return false }
+                store.send(.textPasted(items.joined(separator: "\n")))
+                return true
+            }
+            // Rows take tasks dropped onto them, and hand text on.
+            .environment(\.droppedText) { store.send(.textPasted($0)) }
     }
 
     /// Whether the page shows its own search field, which a second way to
@@ -591,9 +604,13 @@ private struct MacRootView: View {
         }
         if !hasSearchField {
             ToolbarItem(id: "search", placement: .primaryAction) {
-                Button("Search", systemImage: "magnifyingglass") { store.send(.goTo(.search)) }
-                    .help("Search titles, details and comments (⌘F)")
-                    .accessibilityIdentifier("search")
+                #if os(macOS)
+                    ToolbarSearch(store: store)
+                #else
+                    Button("Search", systemImage: "magnifyingglass") { store.send(.goTo(.search)) }
+                        .help("Search titles, details and comments (⌘F)")
+                        .accessibilityIdentifier("search")
+                #endif
             }
         }
     }
@@ -719,8 +736,10 @@ private struct Sidebar: View {
                 }
             }
             Section("Avenues") {
-                ForEach(store.avenues.avenues) { avenue in
-                    AvenueItems(avenue: avenue, store: store)
+                // The Inbox shows apart, above the lists.
+                let avenues = store.avenues.avenues.filter { $0.id != Avenue.inboxID }
+                ForEach(avenues) { avenue in
+                    AvenueItems(avenue: avenue, order: avenues.map(\.id), store: store)
                 }
             }
             if !store.avenues.archived.isEmpty {
@@ -741,13 +760,18 @@ private struct Sidebar: View {
         .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 6) {
+                #if os(macOS)
+                    if store.showsCaptureTip {
+                        CaptureTip(store: store)
+                    }
+                #endif
                 Button {
                     store.send(.newAvenueTapped)
                 } label: {
                     Label("New Avenue", systemImage: "plus")
                 }
                 .buttonStyle(.borderless)
-                TimelineView(.periodic(from: .now, by: 30)) { context in
+                TimelineView(.everyMinute) { context in
                     SyncFooter(store: store, now: context.date)
                 }
             }
@@ -773,12 +797,15 @@ private struct Sidebar: View {
     }
 
     @ViewBuilder private var lists: some View {
+        if let inbox = store.avenues.avenues.first(where: { $0.id == Avenue.inboxID }) {
+            AvenueItems(avenue: inbox, order: [], store: store)
+        }
         Label("Today", systemImage: "sun.max")
-            .badge(store.today.list.rows.count)
+            .modifier(SidebarCount(count: store.today.list.rows.count))
             .tag(RootFeature.SidebarItem.today)
             .modifier(TaskDrop(item: .today, store: store))
         Label("Upcoming", systemImage: "calendar")
-            .badge(store.upcoming.list.rows.count)
+            .modifier(SidebarCount(count: store.upcoming.list.rows.count))
             .tag(RootFeature.SidebarItem.upcoming)
             .modifier(TaskDrop(item: .upcoming, store: store))
         Label("Calendar", systemImage: "square.grid.3x3")
@@ -786,7 +813,7 @@ private struct Sidebar: View {
         shelf(.anytime)
         shelf(.later)
         Label("Procrastinated", systemImage: "tortoise")
-            .badge(store.procrastinated.list.rows.count)
+            .modifier(SidebarCount(count: store.procrastinated.list.rows.count))
             .tag(RootFeature.SidebarItem.procrastinated)
         shelf(.logbook)
         Label("Search", systemImage: "magnifyingglass")
@@ -799,10 +826,62 @@ private struct Sidebar: View {
 
     private func shelf(_ shelf: RootFeature.Shelf) -> some View {
         Label(shelf.title, systemImage: shelf.systemImage)
-            .badge(shelf == .logbook ? 0 : store.state[list: shelf.slot]?.rows.count ?? 0)
+            .modifier(SidebarCount(count: shelf == .logbook ? 0 : store.state[list: shelf.slot]?.rows.count ?? 0))
             .tag(shelf.sidebarItem)
     }
 }
+
+/// A sidebar row's count at its trailing edge, rolling to each new value as
+/// tasks come and go; none at zero. A `.badge` can't animate its number.
+private struct SidebarCount: ViewModifier {
+    var count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        HStack(spacing: 4) {
+            content
+            Spacer(minLength: 0)
+            if count > 0 {
+                Text(count, format: .number)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .contentTransition(reduceMotion ? .opacity : .numericText(value: Double(count)))
+                    .layoutPriority(1)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(count > 0 ? Text(count, format: .number) : Text(verbatim: ""))
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy, value: count)
+    }
+}
+
+#if os(macOS)
+    /// The sidebar's tip about the keys that open Quick Add from any app,
+    /// until it's closed or keys are picked.
+    private struct CaptureTip: View {
+        let store: StoreOf<RootFeature>
+        @Environment(\.openSettings) private var openSettings
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 6) {
+                GestureTipCard(
+                    symbol: "keyboard", title: "Add from any app",
+                    message: "Pick keys that open Quick Add over whatever you're working in."
+                ) {
+                    store.send(.captureTipClosed, animation: .default)
+                }
+                Button("Choose Keys…") {
+                    store.send(.settings(.pagePicked(.general)))
+                    openSettings()
+                }
+                .buttonStyle(.borderless)
+                .padding(.leading, 40)
+            }
+            .padding(.bottom, 6)
+        }
+    }
+#endif
 
 /// Anytime, Later or the Logbook, as a list titled with its name.
 private struct ShelfView: View {
@@ -826,30 +905,40 @@ private struct ShelfView: View {
 /// to it.
 private struct AvenueItems: View {
     var avenue: AvenueRow
+    /// The Avenues it moves among, the Inbox left out: the Inbox stays
+    /// first, and nothing goes above it.
+    var order: [UUID]
     var store: StoreOf<RootFeature>
+
+    private var isInbox: Bool { avenue.id == Avenue.inboxID }
 
     var body: some View {
         Label {
             Text(avenue.name)
         } icon: {
-            Image(systemName: avenue.symbol).foregroundStyle(Color(avenue: avenue.color))
+            if isInbox {
+                Image(systemName: "tray")
+            } else {
+                Image(systemName: avenue.symbol).foregroundStyle(Color(avenue: avenue.color))
+            }
         }
-        .badge(avenue.openCount)
+        .modifier(SidebarCount(count: avenue.openCount))
         .tag(RootFeature.SidebarItem.scope(.avenue(avenue.id)))
-        .draggable(OrderDrag.avenue(avenue.id).text)
+        .modifier(DraggedAvenue(id: avenue.id, isOn: !isInbox))
         .modifier(TaskDrop(item: .scope(.avenue(avenue.id)), store: store))
         .contextMenu {
             Button("New Task in \(avenue.name)") { store.send(.newTaskInTapped(.avenue(avenue.id))) }
             Button("New Project…") { store.send(.newProjectTapped(avenue.id)) }
-            Divider()
-            MoveButtons(
-                ids: store.avenues.avenues.map(\.id), id: avenue.id,
-                move: { store.send(.avenues(.moveAvenue(avenue.id, up: $0))) })
+            if !isInbox {
+                Divider()
+                MoveButtons(
+                    ids: order, id: avenue.id, move: { store.send(.avenues(.moveAvenue(avenue.id, up: $0))) })
+            }
         }
         ForEach(avenue.projects) { project in
             Label(project.name, systemImage: "folder")
                 .padding(.leading)
-                .badge(project.openCount)
+                .modifier(SidebarCount(count: project.openCount))
                 .tag(RootFeature.SidebarItem.scope(.project(project.id)))
                 .draggable(OrderDrag.project(project.id).text)
                 .modifier(TaskDrop(item: .scope(.project(project.id)), store: store))
@@ -860,6 +949,20 @@ private struct AvenueItems: View {
                         ids: avenue.projects.map(\.id), id: project.id,
                         move: { store.send(.avenues(.moveProject(project.id, up: $0))) })
                 }
+        }
+    }
+}
+
+/// Lets an Avenue be dragged to a new place in the order, when `isOn`.
+private struct DraggedAvenue: ViewModifier {
+    var id: UUID
+    var isOn: Bool
+
+    func body(content: Content) -> some View {
+        if isOn {
+            content.draggable(OrderDrag.avenue(id).text)
+        } else {
+            content
         }
     }
 }
@@ -875,8 +978,7 @@ private struct TaskDrop: ViewModifier {
         content
             .dropDestination(for: String.self) { items, _ in
                 if OrderDrag.isAmong(items) { return reorder(items) }
-                let ids = items.compactMap(UUID.init(uuidString:))
-                if ids.count == items.count {
+                if let ids = TaskDrag.ids(in: items) {
                     store.send(.tasksDropped(ids, on: item))
                 } else {
                     store.send(.textDropped(items.joined(separator: "\n"), on: item))
@@ -895,6 +997,8 @@ private struct TaskDrop: ViewModifier {
         for drag in items.compactMap(OrderDrag.init) {
             switch (drag, item) {
             case (.avenue(let id), .scope(.avenue(let target))):
+                // Nothing takes the Inbox's place at the top.
+                guard target != Avenue.inboxID, id != Avenue.inboxID else { return false }
                 store.send(.avenues(.avenueDropped(id, onto: target)))
                 return true
             case (.project(let id), .scope(.project(let target))):
@@ -935,7 +1039,7 @@ private struct SyncReviewBanner: View {
                 }
                 .font(.callout)
                 .padding(12)
-                .background(.thinMaterial, in: .rect(cornerRadius: 12))
+                .bannerBackground(in: .rect(cornerRadius: 12))
             }
             .buttonStyle(.plain)
             .padding(.horizontal)
@@ -977,7 +1081,7 @@ private struct SyncBannerView: View {
         }
         .font(.callout)
         .padding()
-        .background(.thinMaterial, in: .rect(cornerRadius: 12))
+        .bannerBackground(in: .rect(cornerRadius: 12))
         .padding(.horizontal)
         .accessibilityElement(children: banner.isFailure || banner.summary != nil ? .contain : .combine)
     }
@@ -1016,7 +1120,7 @@ private struct UndoToast: View {
             .padding(.bottom, 5)
             .accessibilityHidden(true)
         }
-        .background(.thinMaterial, in: .rect(cornerRadius: 12))
+        .bannerBackground(in: .rect(cornerRadius: 12))
         .padding(.horizontal)
         .gesture(
             DragGesture(minimumDistance: 12).onEnded { drag in
@@ -1047,7 +1151,7 @@ private struct RecordingBar: View {
             .font(.callout)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.thinMaterial, in: .capsule)
+            .bannerBackground(in: .capsule)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
@@ -1165,6 +1269,92 @@ private struct AddMenu: View {
         }
         // What else a person may call the + when they say what to tap.
         .accessibilityInputLabels([Text("Add"), Text("Plus"), Text("New")])
+    }
+}
+
+/// A search field in the toolbar: Return shows what matches in Search.
+#if os(macOS)
+    private struct ToolbarSearch: View {
+        let store: StoreOf<RootFeature>
+        @State private var text = ""
+
+        var body: some View {
+            TextField("Search", text: $text, prompt: Text("Search"))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 180)
+                .onSubmit {
+                    store.send(.toolbarSearched(text))
+                    text = ""
+                }
+                .help("Search titles, details and comments (⌘F)")
+                .accessibilityIdentifier("search")
+        }
+    }
+#endif
+
+/// The detail column while tasks are picked: how many, and what can be
+/// done to them all at once.
+private struct PickedTasks: View {
+    let rows: TaskListFeature.State
+    let store: StoreOf<RootFeature>
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checklist").font(.title).foregroundStyle(.secondary).accessibilityHidden(true)
+            Text("^[\(rows.selection.count) task](inflect: true)").font(.title3)
+            VStack(alignment: .leading, spacing: 8) {
+                actions
+            }
+            .fixedSize()
+            .labelStyle(.titleAndIcon)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func send(_ action: TaskListFeature.Action) {
+        store.send(.pickedTasksCommanded(action))
+    }
+
+    @ViewBuilder private var actions: some View {
+        Menu("Status", systemImage: "circle.dashed") {
+            ForEach(TaskStatus.allCases, id: \.self) { status in
+                Button(status.title) { send(.bulk(.status(status))) }
+            }
+        }
+        Menu("Due", systemImage: "calendar") {
+            Button("Today") { send(.bulkDue(days: 0)) }
+            Button("Tomorrow") { send(.bulkDue(days: 1)) }
+            Button("In a Week") { send(.bulkDue(days: 7)) }
+            Divider()
+            Button("No Due Date") { send(.bulkDue(days: nil)) }
+        }
+        Menu("Priority", systemImage: "flag") {
+            ForEach(Priority.allCases, id: \.self) { priority in
+                Button(priority.title ?? String(localized: "None")) { send(.bulk(.priority(priority))) }
+            }
+        }
+        Menu("Label", systemImage: "tag") {
+            ForEach(labels) { label in
+                Button("#\(label.name)") { send(.bulk(.addLabel(label.id))) }
+            }
+        }
+        .disabled(labels.isEmpty)
+        Menu("Move", systemImage: "folder") {
+            ForEach(rows.places, id: \.avenue.id) { place in
+                Button(place.avenue.name) { send(.bulk(.move(avenue: place.avenue.id, project: nil))) }
+                ForEach(place.projects) { project in
+                    Button("\(place.avenue.name) › \(project.name)") {
+                        send(.bulk(.move(avenue: place.avenue.id, project: project.id)))
+                    }
+                }
+            }
+        }
+        Button("Move to Trash", systemImage: "trash", role: .destructive) { send(.bulk(.trash)) }
+    }
+
+    private var labels: [LifrCore.Label] {
+        (rows.workspace.map { Array($0.labels.values) } ?? [])
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
 

@@ -160,17 +160,20 @@ package struct Shortcuts: Sendable {
         package var avenue: UUID?
         package var project: UUID?
         package var label: UUID?
+        /// Due on or after the day this falls on here.
+        package var dueFrom: Date?
         /// Due on or before the day this falls on here.
         package var dueBy: Date?
 
         package init(
             status: TaskStatus? = nil, avenue: UUID? = nil, project: UUID? = nil, label: UUID? = nil,
-            dueBy: Date? = nil
+            dueFrom: Date? = nil, dueBy: Date? = nil
         ) {
             self.status = status
             self.avenue = avenue
             self.project = project
             self.label = label
+            self.dueFrom = dueFrom
             self.dueBy = dueBy
         }
     }
@@ -180,6 +183,7 @@ package struct Shortcuts: Sendable {
     package func find(_ filter: Filter) async throws -> [Item] {
         guard !locksApp() else { throw ShortcutError.locked }
         let workspace = try await store.load()
+        let dueFrom = filter.dueFrom.map { CalendarDate($0, in: timeZone) }
         let dueBy = filter.dueBy.map { CalendarDate($0, in: timeZone) }
         return workspace.tasks.values
             .filter { task in
@@ -188,6 +192,7 @@ package struct Shortcuts: Sendable {
                     && (filter.avenue.map { task.avenueID == $0 } ?? true)
                     && (filter.project.map { task.projectID == $0 } ?? true)
                     && (filter.label.map { task.labelIDs.contains($0) } ?? true)
+                    && (dueFrom.map { day in task.dueDate.map { $0 >= day } ?? false } ?? true)
                     && (dueBy.map { day in task.dueDate.map { $0 <= day } ?? false } ?? true)
             }
             .sorted {

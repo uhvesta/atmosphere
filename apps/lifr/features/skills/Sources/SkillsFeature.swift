@@ -133,6 +133,11 @@ package struct SkillEditor {
         package var draftsPlans = false
         package var autoPicks = false
         package var useWhen = ""
+        /// The goal a plan made with the skill starts from.
+        package var planGoal = ""
+        /// Whether the skill keeps which tasks a plan prompt lists, as the
+        /// plan sheet set it; turning it off forgets them.
+        package var keepsScope = false
         /// Whether the person asked for the assistant's help, which is off
         /// until they do.
         package var assists = false
@@ -162,6 +167,8 @@ package struct SkillEditor {
             draftsPlans = skill.draftsPlans
             autoPicks = skill.autoPicks
             useWhen = skill.useWhen
+            planGoal = skill.planGoal ?? ""
+            keepsScope = skill.planScope != nil
         }
 
         /// The skill as written, or nil when it can't be saved yet.
@@ -170,7 +177,10 @@ package struct SkillEditor {
             guard !instructions.isEmpty else { return nil }
             let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
             let useWhen = useWhen.trimmingCharacters(in: .whitespacesAndNewlines)
+            let goal = planGoal.trimmingCharacters(in: .whitespacesAndNewlines)
             if var skill = editing {
+                skill.planGoal = goal.isEmpty ? nil : goal
+                if !keepsScope { skill.planScope = nil }
                 skill.summary = summary
                 skill.instructions = instructions
                 skill.tools = tools
@@ -181,7 +191,7 @@ package struct SkillEditor {
             }
             return Skill(
                 userNamed: name, summary: summary, instructions: instructions, tools: tools,
-                draftsPlans: draftsPlans, autoPicks: autoPicks, useWhen: useWhen)
+                draftsPlans: draftsPlans, autoPicks: autoPicks, useWhen: useWhen, planGoal: goal.isEmpty ? nil : goal)
         }
 
         /// Why the skill can't be saved, once there's something to say.

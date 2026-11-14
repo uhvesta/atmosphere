@@ -282,6 +282,12 @@ package struct AvenuesFeature {
         /// Why the Avenues couldn't be loaded, until they load.
         package var loadError: String?
 
+        /// The Inbox, which shows apart, above the Avenues.
+        package var inbox: AvenueRow? { avenues.first { $0.id == Avenue.inboxID } }
+        /// Every Avenue but the Inbox, in order: the ones that move, since
+        /// the Inbox stays first.
+        package var movable: [AvenueRow] { avenues.filter { $0.id != Avenue.inboxID } }
+
         package init() {}
 
         /// The latest records shown, so earlier ones arriving late are ignored.
@@ -366,7 +372,7 @@ package struct AvenuesFeature {
                 return .none
 
             case .moveAvenue(let id, let up):
-                guard let (lower, upper) = Self.neighbours(of: id, in: state.avenues.map(\.id), up: up)
+                guard let (lower, upper) = Self.neighbours(of: id, in: state.movable.map(\.id), up: up)
                 else { return .none }
                 return .run { [store] send in
                     await send(.moved(Result { try await store.reorder(avenue: id, after: lower, before: upper) }))
@@ -381,7 +387,7 @@ package struct AvenuesFeature {
                 }
 
             case .avenueDropped(let id, let target):
-                guard let (lower, upper) = Self.neighbours(of: id, onto: target, in: state.avenues.map(\.id))
+                guard let (lower, upper) = Self.neighbours(of: id, onto: target, in: state.movable.map(\.id))
                 else { return .none }
                 return .run { [store] send in
                     await send(.moved(Result { try await store.reorder(avenue: id, after: lower, before: upper) }))

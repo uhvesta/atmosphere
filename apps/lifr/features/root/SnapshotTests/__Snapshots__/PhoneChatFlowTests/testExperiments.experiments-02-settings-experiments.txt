@@ -21,7 +21,7 @@
 [header, text] "Today"
 [button] "Reset Tips"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
-[text] "Shows the tips about swiping a task and dragging one onto a day again."
+[text] "Shows the tips Lifr gives as you start using it again."
 [button] "Data"
 [button] "Search"
 [button, selected] "Today"
@@ -29,3 +29,4 @@
 [button] "Avenues"
 [button] "Assistant"
 [text] "Export your tasks, import a file, or bring back a daily backup."
+[header, text] "About"

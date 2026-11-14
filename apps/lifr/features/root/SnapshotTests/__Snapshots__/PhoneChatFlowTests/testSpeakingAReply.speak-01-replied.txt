@@ -16,6 +16,7 @@
 [text] "Buy new clothes, Home"
 [text] "Shoes"
 [text] "Jacket"
+[text] "Adds to your Home"
 [button] "Edit"
 [button] "Add Draft"
 [button] "Discard"

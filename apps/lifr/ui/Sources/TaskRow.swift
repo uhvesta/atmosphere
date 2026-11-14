@@ -2,23 +2,39 @@ import LifrCore
 import SwiftUI
 
 /// One task in a list: status, title, code, due date, Sub task progress and
-/// priority. VoiceOver reads it as one element, with an action named for
-/// each status the task can move to, or Change Status when it can't pick
-/// one directly.
+/// priority. The status glyph opens a menu of the statuses the task can
+/// move to, so a tap alone never changes it. VoiceOver reads the row as one
+/// element, with an action named for each of those statuses, or Change
+/// Status when it can't pick one directly. A task that starts later is
+/// drawn dimmed, and in a list that mixes Avenues a thin bar in the
+/// Avenue's color runs down its leading edge.
 package struct TaskRow: View {
     package var row: TaskRowData
+    /// What the glyph does when it isn't a menu: no `pick`, or `menu` off.
     package var toggle: () -> Void
     package var pick: ((TaskStatus) -> Void)?
+    /// Whether the glyph opens the status menu, given `pick`; off while
+    /// rows are being picked, where a tap on the glyph picks the row.
+    package var menu: Bool
 
     @Environment(\.locale) private var locale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    package init(_ row: TaskRowData, toggle: @escaping () -> Void, pick: ((TaskStatus) -> Void)? = nil) {
+    package init(
+        _ row: TaskRowData, menu: Bool = true, toggle: @escaping () -> Void, pick: ((TaskStatus) -> Void)? = nil
+    ) {
         self.row = row
+        self.menu = menu
         self.toggle = toggle
         self.pick = pick
     }
+
+    /// The statuses the task can move to, in the order every picker uses.
+    private var nextStatuses: [TaskStatus] { TaskStatus.pickOrder.filter { $0 != row.status } }
+
+    /// Starts later, so not yet something to do.
+    private var isLater: Bool { row.starts != nil && !row.status.isClosed }
 
     package var body: some View {
         let layout =
@@ -26,11 +42,8 @@ package struct TaskRow: View {
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
         layout {
-            Button(action: toggle) {
-                StatusGlyph(row.status)
-            }
-            .buttonStyle(.plain)
-            .modifier(StatusHover())
+            glyph
+                .modifier(StatusHover())
             VStack(alignment: .leading, spacing: 4) {
                 Text(row.title)
                     .lineLimit(2)
@@ -63,6 +76,16 @@ package struct TaskRow: View {
                 }
             }
         }
+        .opacity(isLater ? 0.55 : 1)
+        .padding(.leading, row.avenueColor == nil ? 0 : 10)
+        .background(alignment: .leading) {
+            if let color = row.avenueColor {
+                Capsule()
+                    .fill(Color(avenue: color))
+                    .frame(width: 3)
+                    .padding(.vertical, 2)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.title)
         .accessibilityValue(row.accessibilityValue(locale))
@@ -71,13 +94,51 @@ package struct TaskRow: View {
         .accessibilityActions {
             if let pick {
                 // Each names its status, so it acts at once, as a swipe does.
-                ForEach(TaskStatus.pickOrder.filter { $0 != row.status }, id: \.self) { status in
+                ForEach(nextStatuses, id: \.self) { status in
                     Button(statusActionName(status)) { pick(status) }
                 }
             } else {
                 Button("Change Status", action: toggle)
             }
         }
+    }
+
+    /// The glyph: a menu of the statuses to move to, or a plain button
+    /// where the row can't pick one, or is being picked itself.
+    @ViewBuilder private var glyph: some View {
+        if let pick, menu {
+            Menu {
+                ForEach(nextStatuses, id: \.self) { status in
+                    Button {
+                        pick(status)
+                    } label: {
+                        Label {
+                            Text(statusMenuName(status))
+                        } icon: {
+                            StatusGlyph(status, font: .body)
+                        }
+                    }
+                }
+            } label: {
+                StatusGlyph(row.status)
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        } else {
+            Button(action: toggle) {
+                StatusGlyph(row.status)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// A menu item's name: Restart, for an idle task going back to In
+    /// Progress, as its swipe says.
+    private func statusMenuName(_ status: TaskStatus) -> String {
+        if status == .inProgress, row.status == .procrastinated { return String(localized: "Restart") }
+        return status.title
     }
 
     private func statusActionName(_ status: TaskStatus) -> LocalizedStringKey {
@@ -89,15 +150,8 @@ package struct TaskRow: View {
     /// line, unless they're stacked, where one too wide for the row wraps.
     @ViewBuilder
     private func details(oneLine: Bool) -> some View {
-        HStack(spacing: 4) {
-            if let color = row.avenueColor {
-                Circle()
-                    .fill(Color(avenue: color))
-                    .frame(width: 6, height: 6)
-            }
-            TaskCodeLabel(row.code)
-        }
-        .fixedSize(horizontal: oneLine, vertical: true)
+        TaskCodeLabel(row.code)
+            .fixedSize(horizontal: oneLine, vertical: true)
         if let starts = row.starts {
             Text("Starts \(starts.formatted(locale))")
                 .font(.caption)
