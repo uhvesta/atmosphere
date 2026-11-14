@@ -190,7 +190,7 @@ extension CodeSyntax {
         let key = "\(language ?? "")\u{0}\(code)" as NSString
         if let kept = coloredCode.object(forKey: key) { return kept.value }
         let string = colored(code, language: language)
-        coloredCode.setObject(Kept(string), forKey: key)
+        coloredCode.setObject(Kept(string), forKey: key, cost: code.utf8.count * 8)
         return string
     }
 
@@ -198,6 +198,8 @@ extension CodeSyntax {
     @MainActor private static let coloredCode: NSCache<NSString, Kept<AttributedString>> = {
         let colored = NSCache<NSString, Kept<AttributedString>>()
         colored.countLimit = 300
+        // Coloured code keeps about 8 bytes for each byte of it.
+        colored.totalCostLimit = 20 << 20
         return colored
     }()
 }

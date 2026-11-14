@@ -11,7 +11,7 @@
     [Row/OutlineRow, selected] ""
       [Unknown] "Unread" help: "It finished a turn you haven't read yet"
       [StaticText] "" value: "Release notes"
-      [StaticText] "" value: "Active 9 mins ago"
+      [StaticText] "" value: "Active 10 mins ago"
   [TextField/SearchField] ""
     [Button] "Search"
   [StaticText] "" value: "Release notes"

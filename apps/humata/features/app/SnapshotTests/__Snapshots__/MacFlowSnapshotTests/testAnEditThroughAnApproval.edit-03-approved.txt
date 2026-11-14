@@ -12,7 +12,7 @@
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Release notes"
-      [StaticText] "" value: "Active 9 mins ago"
+      [StaticText] "" value: "Active 10 mins ago"
       [Image] "Waiting for you" help: "Waiting for you to answer a request" id: hand.raised.fill
     [Row/OutlineRow] ""
       [Heading] "Chats" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history, Start a chat in no project, in a folder you pick or one of its own (⌘N)"

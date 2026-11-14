@@ -13,7 +13,7 @@
     [Row/OutlineRow, selected] ""
       [Unknown] "Unread" help: "It finished a turn you haven't read yet"
       [StaticText] "" value: "Sign in" help: "Works on Sign in"
-      [StaticText] "" value: "Active 9 mins ago"
+      [StaticText] "" value: "Active 10 mins ago"
       [Image] "Waiting for you" help: "Asks you something, or to move its task" id: hand.raised.fill
     [Row/OutlineRow] ""
       [Heading] "Chats" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history, Start a chat in no project, in a folder you pick or one of its own (⌘N)"
@@ -21,7 +21,7 @@
     [Button] "Search"
   [StaticText] "" value: "Sign in"
   [PopUpButton] "View" value: "Chat" help: "The chat, the session's changes to review, the files in its folder, the specs it reads, or a terminal there (⌘1 to ⌘5)"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
   [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"

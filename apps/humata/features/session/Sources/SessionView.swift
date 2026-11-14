@@ -381,6 +381,7 @@ private struct ChatList: View {
     let store: StoreOf<SessionFeature>
     @State private var selecting: TextToSelect?
     @State private var replyParts = ReplyParts()
+    @State private var heights = RowHeights()
 
     var body: some View {
         let highlighted = store.highlightedItem
@@ -389,13 +390,16 @@ private struct ChatList: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(replyParts.lines(of: store.items, highlighted: highlighted)) { line in
-                        ChatRow(
+                        let row = ChatRow(
                             item: line.item, part: line.part, shows: shows(line.item, highlighted: highlighted),
                             store: store, select: select
                         )
-                        .equatable()
-                        // A reply's parts sit as close as its blocks do.
-                        .padding(.top, line.continues ? -4 : 0)
+                        KeptHeight(id: line.id, row: row, heights: heights) {
+                            row
+                                .equatable()
+                                // A reply's parts sit as close as its blocks do.
+                                .padding(.top, line.continues ? -4 : 0)
+                        }
                         .id(line.id)
                     }
                     TurnInProgress(store: store)
@@ -486,6 +490,51 @@ private struct ChatList: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+}
+
+/// The heights chat rows had, each with what the row showed and the width
+/// it had: a row scrolled back to, unchanged, isn't measured again. Without
+/// them the stack measured each row it passed, and its guesses at heights
+/// it hadn't measured were what made scrolling stall.
+private final class RowHeights {
+    private var kept: [String: (row: ChatRow, width: CGFloat, height: CGFloat)] = [:]
+
+    func height(of id: String, row: ChatRow, width: CGFloat) -> CGFloat? {
+        guard let kept = kept[id], kept.width == width, kept.row == row else { return nil }
+        return kept.height
+    }
+
+    func keep(_ height: CGFloat, of id: String, row: ChatRow, width: CGFloat) {
+        // Enough for a very long chat; past it, rows are measured again.
+        if kept.count >= Self.limit { kept.removeAll(keepingCapacity: true) }
+        kept[id] = (row, width, height)
+    }
+
+    private static let limit = 20_000
+}
+
+/// Lays out its one view as it is, but gives its height from `heights`
+/// while the row and width are those it was measured with.
+private struct KeptHeight: Layout {
+    let id: String
+    let row: ChatRow
+    let heights: RowHeights
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let view = subviews.first else { return .zero }
+        guard let width = proposal.width else { return view.sizeThatFits(proposal) }
+        if let height = heights.height(of: id, row: row, width: width) {
+            return CGSize(width: width, height: height)
+        }
+        let size = view.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        heights.keep(size.height, of: id, row: row, width: width)
+        return CGSize(width: width, height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 

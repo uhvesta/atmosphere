@@ -145,7 +145,7 @@ original spec; lettered ones were added since.
 | J Agents ask, and a board journal | Done |
 | V Second review pass | Done |
 | P Performance pass | Done |
-| K Signed releases | Done: humata-v0.4.0 is the latest |
+| K Signed releases | Done: humata-v0.5.0 is the latest |
 | S1 Storage: safe places, cleanup, opt-in auto-delete | Done |
 | Q1 Queue and composer: edit, merge, cancel, pastes, images | Done |
 | Q2 Rewind and checkpoints | Done |

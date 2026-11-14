@@ -90,7 +90,9 @@ public struct MarkdownText: View {
             if !writing, let kept = Self.finished.object(forKey: text as NSString) { return kept.value }
             stream.update(text)
             guard writing, let last = stream.blocks.last else {
-                if !writing { Self.finished.setObject(Kept(stream.blocks), forKey: text as NSString) }
+                if !writing {
+                    Self.finished.setObject(Kept(stream.blocks), forKey: text as NSString, cost: text.utf8.count * 4)
+                }
                 return stream.blocks
             }
             return stream.blocks.dropLast() + [Markdown.inProgress(last)]
@@ -101,6 +103,8 @@ public struct MarkdownText: View {
         @MainActor private static let finished: NSCache<NSString, Kept<[MarkdownBlock]>> = {
             let finished = NSCache<NSString, Kept<[MarkdownBlock]>>()
             finished.countLimit = 200
+            // About 4 bytes kept for each byte of Markdown read.
+            finished.totalCostLimit = 20 << 20
             return finished
         }()
     }
@@ -226,7 +230,7 @@ struct InlineText: View {
         let key = text as NSString
         if let kept = styledTexts.object(forKey: key) { return kept.value }
         let string = styled(text)
-        styledTexts.setObject(Kept(string), forKey: key)
+        styledTexts.setObject(Kept(string), forKey: key, cost: text.utf8.count * 8)
         return string
     }
 
@@ -234,6 +238,8 @@ struct InlineText: View {
     @MainActor private static let styledTexts: NSCache<NSString, Kept<AttributedString>> = {
         let styled = NSCache<NSString, Kept<AttributedString>>()
         styled.countLimit = 2_000
+        // An attributed string keeps about 8 bytes for each byte of text.
+        styled.totalCostLimit = 30 << 20
         return styled
     }()
 }
