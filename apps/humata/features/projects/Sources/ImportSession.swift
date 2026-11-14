@@ -164,6 +164,15 @@ package struct ImportSessionView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
+            if store.importing {
+                ToolbarItem(placement: .status) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Importing…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Import") { store.send(.importTapped) }
                     .disabled(store.selection == nil || store.importing)

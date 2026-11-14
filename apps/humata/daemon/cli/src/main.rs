@@ -1137,6 +1137,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Board(BoardCommand::Log { project }) => {
             let request = Request::ReadBoardLog(pb::ReadBoardLog {
                 project_id: project,
+                ..Default::default()
             });
             match client.call(request).await? {
                 Response::BoardLog(log) => {

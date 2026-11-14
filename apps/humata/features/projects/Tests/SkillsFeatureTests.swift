@@ -52,7 +52,9 @@ final class SkillsFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.saving.isEmpty)
 
         await store.send(.refreshTapped)
+        XCTAssertTrue(store.state.loading)
         await store.receive(\.loaded)
+        XCTAssertFalse(store.state.loading)
         XCTAssertEqual(store.state.list?.clashes.first?.winner, "b2")
 
         let session = try await daemon.client.start(

@@ -134,11 +134,11 @@ package struct DaemonClient: Sendable {
     /// Removes a task or subtask; Board History brings it back. Refused while
     /// it has subtasks or unarchived sessions.
     package var deleteItem: @Sendable (_ item: String) async throws -> Void
-    /// The project's board changes, newest first.
-    package var boardLog: @Sendable (_ project: String) async throws -> [BoardChange]
-    /// One item's board changes, newest first. The daemon has no request
-    /// for one item's, so the board's are read and the others dropped
-    /// before they're converted.
+    /// The project's board changes, newest first: only those from the change
+    /// `from` on, and at most the newest `limit`; nil for every one.
+    package var boardLog:
+        @Sendable (_ project: String, _ from: BoardChange.ID?, _ limit: Int?) async throws -> [BoardChange]
+    /// One item's board changes, newest first.
     package var itemLog: @Sendable (_ project: String, _ item: String) async throws -> [BoardChange]
     /// Puts an item back as it was before the change, keeping each field
     /// changed again since.
@@ -276,5 +276,47 @@ extension DependencyValues {
     package var daemon: DaemonClient {
         get { self[DaemonClient.self] }
         set { self[DaemonClient.self] = newValue }
+    }
+}
+
+/// The ids of sends that got no answer, which their host may have taken.
+/// The socket client sends the same text to the session again with the
+/// same id, so a host that took it the first time runs it once. An id is
+/// kept by its session and a hash of its text, and only for a while: the
+/// same words sent later are a new message.
+package final class UnansweredSends: Sendable {
+    /// How long after a send its id goes with the same text again.
+    package static let window: TimeInterval = 120
+
+    private struct Sent: Sendable {
+        var id: String
+        var time: Date
+    }
+
+    /// By session, then by the text's hash.
+    private let sent = LockIsolated<[String: [Int: Sent]]>([:])
+
+    package init() {}
+
+    /// The id to send `text` to `session` with at `now`: that of a send of
+    /// the same text within the window before, or a new one.
+    package func id(session: String, text: String, at now: Date) -> String {
+        sent.withValue { kept in
+            // Ids too old to go again are of no use to any session.
+            kept = kept.compactMapValues { sends in
+                let recent = sends.filter { now.timeIntervalSince($0.value.time) <= UnansweredSends.window }
+                return recent.isEmpty ? nil : recent
+            }
+            let key = text.hashValue
+            let id = kept[session]?[key]?.id ?? UUID().uuidString
+            kept[session, default: [:]][key] = Sent(id: id, time: now)
+            return id
+        }
+    }
+
+    /// The host answered a send to `session`, so it holds none of the
+    /// session's earlier sends unanswered: their ids are forgotten.
+    package func answered(session: String) {
+        sent.withValue { $0[session] = nil }
     }
 }

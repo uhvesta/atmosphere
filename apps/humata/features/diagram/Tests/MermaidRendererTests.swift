@@ -33,6 +33,26 @@ final class MermaidRendererTests: XCTestCase {
         }
     }
 
+    func testADiagramsMistakeIsKeptSoItIsntDrawnAgain() async {
+        let renderer = MermaidRenderer(resources: resources)
+        let source = "graph LR\n  A -->"
+        XCTAssertNil(renderer.cachedFailure(source, dark: false))
+        do {
+            _ = try await renderer.image(source, dark: false)
+            XCTFail("A broken diagram was drawn")
+        } catch {
+            XCTAssertEqual(renderer.cachedFailure(source, dark: false), error)
+        }
+        // Asked again, it fails the same way.
+        do {
+            _ = try await renderer.image(source, dark: false)
+            XCTFail("A broken diagram was drawn")
+        } catch {
+            XCTAssertEqual(renderer.cachedFailure(source, dark: false), error)
+        }
+        XCTAssertNil(renderer.cached(source, dark: false))
+    }
+
     func testTwoDiagramsAskedForAtOnceAreBothDrawn() async throws {
         let renderer = MermaidRenderer(resources: resources)
         async let first = renderer.image("graph TD\n  A --> B", dark: false)
@@ -58,6 +78,8 @@ final class MermaidRendererTests: XCTestCase {
             } catch {
                 guard case .failed = error else { return XCTFail("Expected failed, got \(error)") }
             }
+            // The page's failure isn't the diagram's: it's tried again.
+            XCTAssertNil(renderer.cachedFailure(source, dark: false))
         }
     }
 

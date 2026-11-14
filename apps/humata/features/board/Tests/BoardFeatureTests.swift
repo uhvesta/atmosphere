@@ -277,7 +277,7 @@ final class BoardFeatureTests: XCTestCase {
         store.exhaustivity = .off
         await store.send(.refresh)
         await store.receive(\.loaded)
-        let newest = try await board.daemon.client.boardLog(board.project.id).first?.id
+        let newest = try await board.daemon.client.boardLog(board.project.id, nil, 1).first?.id
         await store.send(.logStarted(newest: newest))
         await store.send(.dropped(board.task.id, on: .inProgress))
         await store.receive(\.moved)
@@ -525,7 +525,7 @@ final class BoardFeatureTests: XCTestCase {
         await store.receive(\.loaded)
 
         XCTAssertEqual(store.state.items[id: board.task.id]?.title, "login")
-        let log = try await board.daemon.client.boardLog(board.project.id)
+        let log = try await board.daemon.client.boardLog(board.project.id, nil, nil)
         XCTAssertEqual(log.first?.reverts, edit.id)
     }
 
@@ -589,7 +589,7 @@ final class BoardFeatureTests: XCTestCase {
         await store.send(.refresh)
         await store.receive(\.loaded)
         // Changes from before the board opened aren't offered.
-        let newest = try await board.daemon.client.boardLog(board.project.id).first?.id
+        let newest = try await board.daemon.client.boardLog(board.project.id, nil, 1).first?.id
         await store.send(.logStarted(newest: newest))
         await store.send(.undoTapped)
         let before = try await board.daemon.client.items(board.project.id)
@@ -895,5 +895,149 @@ final class BoardFeatureTests: XCTestCase {
         await store.receive(\.changesRead)
         XCTAssertEqual(Set(store.state.changedFiles.keys), [first.id, second.id])
         await store.finish()
+    }
+
+    func testAPageOpenedFromAnotherTakesNoneOfItsAnswers() async throws {
+        let board = try await board()
+        let session = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        _ = try await board.daemon.client.land(
+            session.id, LandRequest(branch: "login", message: "Log in", openPullRequests: true))
+        // The task's pull requests are answered only once its subtask's page
+        // is open in its place.
+        let (answer, release) = AsyncStream<Void>.makeStream()
+        var client = board.daemon.client
+        let kept = client.pullRequests
+        client.pullRequests = { of, refresh in
+            for await _ in answer { break }
+            return try await kept(of, refresh)
+        }
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(\.destination.item.task)
+        await store.send(\.destination.item.itemTapped, board.subtask.id)
+        await store.receive(\.cardTapped)
+        XCTAssertEqual(store.state.destination?.item?.item.id, board.subtask.id)
+
+        release.yield()
+        await Task.megaYield()
+        XCTAssertEqual(store.state.destination?.item?.pullRequests.isEmpty, true)
+    }
+
+    func testAReadThatDiffersOnlyInWhenASessionLastDidSomethingChangesNothing() async throws {
+        let board = try await board()
+        _ = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let shown = store.state
+        let items = Array(shown.items)
+        var session = try XCTUnwrap(shown.sessions.first)
+
+        session.lastActive = Date(timeIntervalSince1970: 99)
+        session.lastMessage = "Still going."
+        await store.send(.loaded(items: items, sessions: [session]))
+        XCTAssertEqual(store.state, shown)
+
+        // What the board does show is still taken.
+        session.state = .working
+        await store.send(.loaded(items: items, sessions: [session]))
+        XCTAssertEqual(store.state.sessions.first?.state, .working)
+    }
+
+    func testAnUnsavedEditIsThereWhenTheTasksPageOpensAgainAfterAnother() async throws {
+        let board = try await board()
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(\.destination.item.editTapped)
+        await store.send(\.destination.item.binding.draft, ItemFeature.Draft(title: "login", spec: "# Steps"))
+        // As a link to another item opens its page over this one.
+        await store.send(.cardTapped(board.subtask.id))
+        XCTAssertNil(store.state.destination?.item?.draft)
+
+        await store.send(.cardTapped(board.task.id))
+        XCTAssertEqual(store.state.destination?.item?.draft?.spec, "# Steps")
+
+        // Discarded, it isn't there the next time.
+        await store.send(\.destination.item.cancelEditTapped)
+        await store.send(.destination(.presented(.item(.destination(.presented(.alert(.discard)))))))
+        await store.send(.cardTapped(board.subtask.id))
+        await store.send(.cardTapped(board.task.id))
+        XCTAssertEqual(store.state.destination?.item?.item.id, board.task.id)
+        XCTAssertNil(store.state.destination?.item?.draft)
+    }
+
+    func testUndoTakesNothingBackOnceEverythingMadeHereIsUndone() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let newest = try await board.daemon.client.boardLog(board.project.id, nil, 1).first?.id
+        await store.send(.logStarted(newest: newest))
+
+        await store.send(.dropped(board.task.id, on: .inProgress))
+        await store.receive(\.moved)
+        await store.receive(\.offerUndo)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.undoTapped)
+        await store.receive(\.undone)
+        await store.skipReceivedActions(strict: false)
+        let undone = try await board.daemon.client.boardLog(board.project.id, nil, nil)
+
+        // The move was undone, so there is nothing left to take back.
+        await store.send(.undoTapped)
+        await store.receive(\.undoEnded)
+        let after = try await board.daemon.client.boardLog(board.project.id, nil, nil)
+        XCTAssertEqual(after, undone)
+        XCTAssertFalse(store.state.undoing)
+    }
+
+    func testTheJournalSaysItIsReadOnlyOnceItIs() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardLogFeature.State(project: board.project, items: [])) {
+            BoardLogFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+        XCTAssertFalse(store.state.loaded)
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertTrue(store.state.loaded)
+        XCTAssertFalse(store.state.unread)
+    }
+
+    func testAJournalThatCannotBeReadStopsWaitingForIt() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardLogFeature.State(project: board.project, items: [])) {
+            BoardLogFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.daemon.boardLog = { _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.failed)
+        XCTAssertFalse(store.state.loaded)
+        XCTAssertTrue(store.state.unread)
+        XCTAssertNotNil(store.state.alert)
     }
 }

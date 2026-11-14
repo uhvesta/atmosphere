@@ -65,12 +65,18 @@ const DEFAULT_DAYS: u32 = 45;
 
 impl Daemon {
     pub(super) async fn storage(&self) -> Result<pb::Storage, DaemonError> {
-        let fresh = self
-            .lock_cleaning()
-            .measured
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < MEASURE_FOR)
-            .map(|(_, measured)| measured.clone());
+        let fresh = {
+            let cleaning = self.lock_cleaning();
+            // Not walked again during a cleanup, however old: the walk
+            // would hold up the progress this answers with, and the
+            // cleanup's own work on the disk.
+            let cleaning_up = cleaning.job.is_some();
+            cleaning
+                .measured
+                .as_ref()
+                .filter(|(at, _)| cleaning_up || at.elapsed() < MEASURE_FOR)
+                .map(|(_, measured)| measured.clone())
+        };
         let measured = match fresh {
             Some(measured) => measured,
             None => {
@@ -173,8 +179,9 @@ impl Daemon {
         Ok(())
     }
 
-    /// Once an hour, if the person turned auto-delete on and a day has
-    /// passed since it last ran, cleans up while no session works.
+    /// Once an hour, drops this Mac's idle histories from memory and, if a
+    /// day has passed since the last, cleans up while no session here
+    /// works.
     pub fn delete_on_schedule(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -183,14 +190,40 @@ impl Daemon {
                 let Some(daemon) = me.upgrade() else {
                     return;
                 };
-                if let Err(error) = daemon.clean_up_if_due().await {
-                    eprintln!(
-                        "humatad: the daily cleanup didn't run: {}",
-                        humata_wire::describe(&error)
-                    );
-                }
+                daemon.look().await;
             }
         });
+    }
+
+    /// The hourly look. The histories are rested whether or not a cleanup
+    /// is due or can run: with agents at work round the clock none might
+    /// run for days, and every history opened meanwhile would stay in
+    /// memory.
+    pub(crate) async fn look(&self) {
+        if let Err(error) = self.rest_histories().await {
+            eprintln!("humatad: {}", humata_wire::describe(&error));
+        }
+        if let Err(error) = self.clean_up_if_due().await {
+            eprintln!(
+                "humatad: the daily cleanup didn't run: {}",
+                humata_wire::describe(&error)
+            );
+        }
+    }
+
+    /// Drops the histories of this Mac's idle sessions no one watches from
+    /// memory, sealing none; each is read again when it's opened.
+    async fn rest_histories(&self) -> Result<(), DaemonError> {
+        self.local
+            .rest(
+                &std::collections::HashSet::new(),
+                Arc::new(|_: usize, _: usize| {}),
+            )
+            .await
+            .map(drop)
+            .map_err(|source| DaemonError::Rest {
+                source: Box::new(source),
+            })
     }
 
     async fn clean_up_if_due(&self) -> Result<(), DaemonError> {
@@ -209,11 +242,14 @@ impl Daemon {
         if now_unix_ms() - last < DAY_MS {
             return Ok(());
         }
+        // Only this Mac's sessions count: one at work on another machine
+        // doesn't touch what the cleanup seals and packs here.
         let working = self.list("").await?.sessions.iter().any(|session| {
-            matches!(
-                session.state(),
-                pb::SessionState::Working | pb::SessionState::WaitingForApproval
-            )
+            session.host.is_empty()
+                && matches!(
+                    session.state(),
+                    pb::SessionState::Working | pb::SessionState::WaitingForApproval
+                )
         });
         if working {
             return Ok(());

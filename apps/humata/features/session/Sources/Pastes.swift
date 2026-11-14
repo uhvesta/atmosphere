@@ -36,6 +36,10 @@ package struct Paste: Identifiable, Hashable, Codable, Sendable {
     /// Text at least this long, in characters or lines, becomes a chip.
     static let characters = 1_000
     static let lines = 20
+    /// A sent message put back in the box to change goes in the field up
+    /// to this many bytes, however many lines it has, so it can be edited;
+    /// past it, typing would lag, and it goes back as a chip.
+    static let putBackBytes = 20_000
 
     /// "Pasted 12 KB, 340 lines".
     package var label: String {

@@ -5,7 +5,73 @@ import TestingKit
 
 func markdownTests() -> [TestCase] {
     blockTests() + listTests() + tableTests() + inlineTests() + writingTests() + streamTests()
-        + plainTextTests() + htmlTests() + bareLinkTests() + lineBreakTests() + longMessageTests()
+        + plainTextTests() + htmlTests() + bareLinkTests() + lineBreakTests() + longMessageTests() + wideTests()
+        + partsTests()
+}
+
+private func partsTests() -> [TestCase] {
+    let reply = (1...12).map { step in
+        """
+        ## Step \(step)
+
+        The parser reads each row once, and a bad row says which column failed.
+
+        - Fixtures load once.
+
+          A second paragraph of the item, indented.
+        - Dates are ISO 8601.
+
+        1. Run the tests.
+
+        2. Read the failures.
+
+        ```swift
+        let a = 1
+
+        let b = 2
+        ```
+
+        | File | Lines |
+        | --- | --- |
+        | Parser.swift | 120 |
+        """
+    }.joined(separator: "\n\n")
+    return [
+        TestCase("given a short reply, then it's one part") {
+            try expectEqual(MarkdownText.parts(of: "Done.\n\nAll rows pass.").count, 1)
+        },
+        TestCase("given a long reply, then its parts read as the same blocks as the whole") {
+            let parts = MarkdownText.parts(of: reply, size: 300)
+            try expect(parts.count > 4, "a long reply wasn't cut")
+            try expectEqual(parts.joined(), reply)
+            try expectEqual(parts.flatMap { Markdown.blocks(in: String($0)) }, Markdown.blocks(in: reply))
+        },
+    ]
+}
+
+private func wideTests() -> [TestCase] {
+    [
+        TestCase("given code whose lines fit a message, then it isn't wide") {
+            try expect(!CodeBlock.isWide("let a = 1\nprint(a)"), "short lines read as wide")
+        },
+        TestCase("given code with one line longer than a message, then it's wide") {
+            try expect(CodeBlock.isWide("let a = 1\n" + String(repeating: "x", count: 200)), "a long line fit")
+        },
+        TestCase("given a small table, then it isn't wide") {
+            let table = MarkdownTable(
+                alignments: [.leading, .leading], header: ["File", "Lines"], rows: [["a.swift", "12"]])
+            try expect(!TableBlock.isWide(table), "a small table read as wide")
+        },
+        TestCase("given a table of many columns or long cells, then it's wide") {
+            let many = MarkdownTable(
+                alignments: Array(repeating: .leading, count: 7), header: (1...7).map { "C\($0)" }, rows: [])
+            try expect(TableBlock.isWide(many), "seven columns fit")
+            let long = MarkdownTable(
+                alignments: [.leading, .leading], header: ["A", "B"],
+                rows: [[String(repeating: "word ", count: 20), "b"]])
+            try expect(TableBlock.isWide(long), "a long cell fit")
+        },
+    ]
 }
 
 private func longMessageTests() -> [TestCase] {

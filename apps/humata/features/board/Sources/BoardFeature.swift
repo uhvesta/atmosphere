@@ -47,6 +47,9 @@ package struct BoardFeature {
         /// Spec comments not sent yet, by item, kept when its page closes
         /// so opening it again shows them.
         var keptComments: [Item.ID: SpecCommentsFeature.State] = [:]
+        /// Titles and specs being edited and not saved, by item, kept when
+        /// another page opens in its place so opening it again shows them.
+        var keptDrafts: [Item.ID: ItemFeature.Draft] = [:]
         /// An alert about something that finished while a page or sheet was
         /// open, shown once it goes.
         var heldAlert: AlertState<BoardAlert>?
@@ -83,7 +86,8 @@ package struct BoardFeature {
             item.sessionIDs.compactMap { sessions[id: $0] }
         }
 
-        /// `item`'s page, with the spec comments it was closed with.
+        /// `item`'s page, with the spec comments and the unsaved edit it was
+        /// closed with.
         func page(of item: Item) -> ItemFeature.State {
             var page = ItemFeature.State(
                 project: project, item: item, parent: parent(of: item), subtasks: subtasks(of: item),
@@ -92,6 +96,7 @@ package struct BoardFeature {
                 kept.title = item.title
                 page.comments = kept
             }
+            page.draft = keptDrafts[item.id]
             return page
         }
 
@@ -102,6 +107,13 @@ package struct BoardFeature {
             comments.alert = nil
             let unsent = !comments.drafts.isEmpty || !comments.comment.isEmpty
             keptComments[page.item.id] = unsent && !comments.sending ? comments : nil
+        }
+
+        /// Keeps the title and spec being edited on `page` once it closes,
+        /// if they differ from the item's. Discarding them clears the draft
+        /// first, so nothing discarded is kept.
+        mutating func keepDraft(of page: ItemFeature.State) {
+            keptDrafts[page.item.id] = page.draftChanged ? page.draft : nil
         }
 
         /// The board to keep while something else shows in its place. What it
@@ -207,11 +219,17 @@ package struct BoardFeature {
     package var body: some ReducerOf<Self> {
         Reduce { state, action in
             // However a task's page closes, or another opens in its place,
-            // its unsent spec comments stay for when it opens again.
+            // its unsent spec comments and its unsaved edit stay for when it
+            // opens again.
             let open = state.destination?.item
             let effect = core.reduce(into: &state, action: action)
             if let open, state.destination?.item?.item.id != open.item.id {
                 state.keepComments(of: open)
+                state.keepDraft(of: open)
+            }
+            // An open page holds its own edit; one kept is for a closed page.
+            if let id = state.destination?.item?.item.id, state.keptDrafts[id] != nil {
+                state.keptDrafts[id] = nil
             }
             // A held alert shows once what it waited behind is gone.
             if state.destination == nil, let alert = state.heldAlert {
@@ -241,7 +259,8 @@ package struct BoardFeature {
                 return .merge(
                     refresh,
                     .run { send in
-                        await send(.logStarted(newest: try await daemon.boardLog(project).first?.id))
+                        // Only the newest change's id is used, so only it is read.
+                        await send(.logStarted(newest: try await daemon.boardLog(project, nil, 1).first?.id))
                     } catch: { _, _ in
                     })
 
@@ -253,7 +272,7 @@ package struct BoardFeature {
                 guard let from = state.undoFrom else { return .none }
                 let project = state.project.id
                 return .run { send in
-                    if let change = Self.undoable(try await daemon.boardLog(project), from: from) {
+                    if let change = Self.undoable(try await daemon.boardLog(project, from, nil), from: from) {
                         await send(.offerUndo(change))
                     }
                 } catch: { _, _ in
@@ -280,7 +299,8 @@ package struct BoardFeature {
                 return .merge(
                     .cancel(id: CancelID.undo),
                     .run { send in
-                        guard let change = Self.undoable(try await daemon.boardLog(project), from: from) else {
+                        guard let change = Self.undoable(try await daemon.boardLog(project, from, nil), from: from)
+                        else {
                             await send(.undoEnded)
                             return
                         }
@@ -314,18 +334,23 @@ package struct BoardFeature {
                     items[id: id]?.fields.status = status
                 }
                 let sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
-                guard items != state.items || sessions != state.sessions else {
+                let itemsChanged = items != state.items
+                let sessionsChanged = !Self.showsTheSame(sessions, as: state.sessions)
+                guard itemsChanged || sessionsChanged else {
                     if let opening = state.opening {
                         state.opening = nil
                         return .send(.cardTapped(opening))
                     }
                     return .none
                 }
-                state.items = items
-                state.sessions = sessions
-                // A deleted item's comments have nothing to go on.
+                if itemsChanged { state.items = items }
+                if sessionsChanged { state.sessions = sessions }
+                // A deleted item's comments and edit have nothing to go on.
                 if !state.keptComments.isEmpty {
                     state.keptComments = state.keptComments.filter { items[id: $0.key] != nil }
+                }
+                if !state.keptDrafts.isEmpty {
+                    state.keptDrafts = state.keptDrafts.filter { items[id: $0.key] != nil }
                 }
                 if case .item(var page) = state.destination, let item = state.items[id: page.item.id] {
                     let before = page
@@ -504,11 +529,29 @@ package struct BoardFeature {
 
     /// The newest change made in this app from `from` on that isn't
     /// itself a revert and hasn't been reverted, in `changes`, newest first.
+    /// A revert is always newer than the change it reverts, so the changes
+    /// from `from` on are all it needs.
     static func undoable(_ changes: [BoardChange], from: BoardChange.ID) -> BoardChange? {
         let reverted = Set(changes.compactMap(\.reverts))
         return changes.first { change in
             change.author == .app && change.reverts == nil && change.id >= from && !reverted.contains(change.id)
         }
+    }
+
+    /// Whether the board shows `sessions` as it does `shown`. When a session
+    /// last did something and what it last said change with every event of
+    /// a working one, and show nowhere on the board, so they don't count.
+    /// The sessions are kept whole all the same, for whoever opens one.
+    private static func showsTheSame(
+        _ sessions: IdentifiedArrayOf<Session>, as shown: IdentifiedArrayOf<Session>
+    ) -> Bool {
+        sessions.count == shown.count
+            && zip(sessions, shown).allSatisfy { new, old in
+                var new = new
+                new.lastActive = old.lastActive
+                new.lastMessage = old.lastMessage
+                return new == old
+            }
     }
 
     private func load(_ project: Project.ID) async -> Action {
@@ -556,8 +599,11 @@ private func startWorkSettings(
 /// many files each changed. Starts a session on it, with the specs it reads.
 @Reducer
 package struct ItemFeature {
+    /// Identified by its item, so another item's page opened in its place
+    /// stops what this one was reading, and none of it lands there.
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
+        package var id: Item.ID { item.id }
         package var project: Project
         package var item: Item
         /// The task above a subtask.
@@ -1062,6 +1108,11 @@ package struct BoardLogFeature {
         package var changes: [BoardChange] = []
         /// Only this author's changes; nil for everyone's.
         package var author: BoardAuthor?
+        /// The changes were read, so none means the board has none.
+        package var loaded = false
+        /// The changes couldn't be read and none are shown; the alert says
+        /// why, and the list offers to read them again.
+        package var unread = false
         /// The change being reverted.
         package var reverting: BoardChange.ID?
         @Presents package var alert: AlertState<Never>?
@@ -1131,9 +1182,12 @@ package struct BoardLogFeature {
         Reduce { state, action in
             switch action {
             case .task:
+                state.unread = false
                 return read(state.project.id)
 
             case .loaded(let changes):
+                state.loaded = true
+                state.unread = false
                 state.changes = changes
                 if let author = state.author, !changes.contains(where: { $0.author == author }) {
                     state.author = nil
@@ -1161,6 +1215,7 @@ package struct BoardLogFeature {
                     state.reverting == nil
                     ? String(localized: "Couldn't read the board's history")
                     : String(localized: "Couldn't revert the change")
+                if state.reverting == nil, !state.loaded { state.unread = true }
                 state.reverting = nil
                 state.alert = AlertState {
                     TextState(title)
@@ -1190,7 +1245,7 @@ package struct BoardLogFeature {
 
     private func read(_ project: Project.ID) -> Effect<Action> {
         .run { send in
-            await send(.loaded(try await daemon.boardLog(project)))
+            await send(.loaded(try await daemon.boardLog(project, nil, nil)))
         } catch: { error, send in
             await send(.failed(error.localizedDescription))
         }

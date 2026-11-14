@@ -6,8 +6,11 @@ import HumataDaemonClient
 /// 127.0.0.1 here and opened in the browser.
 @Reducer
 package struct PortsFeature {
+    /// Identified by its host, so another host's ports shown in its place
+    /// stop what this one was doing instead of finishing it into them.
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
+        package var id: String? { host }
         /// Nil for this Mac.
         package var host: String?
         /// This host's forwards, oldest first.

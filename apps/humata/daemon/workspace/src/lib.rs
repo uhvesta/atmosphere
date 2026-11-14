@@ -16,7 +16,9 @@ mod versions;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -75,9 +77,73 @@ pub struct Workspaces {
 /// one.
 static INDEXES: AtomicU64 = AtomicU64::new(0);
 
+/// What every snapshot's temporary index is named by, under the root.
+const INDEX_PREFIX: &str = ".index-";
+
+/// A temporary index left behind is removed once it's this old: longer
+/// than any snapshot takes, so one another humatad is still writing stays.
+const INDEX_LEFT_AFTER: Duration = Duration::from_secs(60 * 60);
+
+/// A snapshot's temporary index, removed when dropped: at the snapshot's
+/// end, and when it's stopped part way, as when its turn is.
+struct TemporaryIndex {
+    path: PathBuf,
+}
+
+impl TemporaryIndex {
+    fn under(root: &Path) -> Self {
+        let path = root.join(format!(
+            "{INDEX_PREFIX}{}-{}",
+            std::process::id(),
+            INDEXES.fetch_add(1, Ordering::Relaxed)
+        ));
+        Self { path }
+    }
+}
+
+impl Drop for TemporaryIndex {
+    fn drop(&mut self) {
+        // The lock first: a git stopped while it wrote the index leaves it.
+        let mut lock = self.path.clone().into_os_string();
+        lock.push(".lock");
+        let _ = std::fs::remove_file(lock);
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Removes the temporary indexes under `root` that a humatad which was
+/// killed, or updated, part way through a snapshot left behind. This
+/// process's own, and any changed within [`INDEX_LEFT_AFTER`], stay.
+fn remove_left_indexes(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    let ours = format!("{INDEX_PREFIX}{}-", std::process::id());
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(INDEX_PREFIX) || name.starts_with(&ours) {
+            continue;
+        }
+        let left = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|changed| SystemTime::now().duration_since(changed).ok())
+            .is_some_and(|age| age > INDEX_LEFT_AFTER);
+        if left {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 impl Workspaces {
+    /// The copies under `root`. Temporary files a snapshot that was cut
+    /// short left there long ago are removed.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        remove_left_indexes(&root);
+        Self { root }
     }
 
     /// The folder a session works in: its one repository's worktree, or the
@@ -268,26 +334,24 @@ impl Workspaces {
     async fn tree(&self, path: &Path) -> Result<(String, String), WorkspaceError> {
         let head = git(path, &["rev-parse", "--verify", "HEAD"]).await?;
         let head = head.trim().to_owned();
-        let index = self.root.join(format!(
-            ".index-{}-{}",
-            std::process::id(),
-            INDEXES.fetch_add(1, Ordering::Relaxed)
-        ));
-        let captured = async {
-            // Starting from the worktree's own index lets git skip the files
-            // it already knows haven't changed.
-            let own = git(path, &["rev-parse", "--git-path", "index"]).await?;
-            let own = path.join(own.trim());
-            if tokio::fs::copy(&own, &index).await.is_err() {
-                git_with_index(path, &index, &["read-tree", "HEAD"]).await?;
-            }
-            git_with_index(path, &index, &["add", "--all"]).await?;
-            let tree = git_with_index(path, &index, &["write-tree"]).await?;
-            Ok((head, tree.trim().to_owned()))
+        let index = Arc::new(TemporaryIndex::under(&self.root));
+        // Starting from the worktree's own index lets git skip the files
+        // it already knows haven't changed.
+        let own = git(path, &["rev-parse", "--git-path", "index"]).await?;
+        let own = path.join(own.trim());
+        // The copy holds the index too: stopped part way, it still ends on
+        // its thread, and the index is removed after it, not before.
+        let copying = index.clone();
+        let copied =
+            tokio::task::spawn_blocking(move || std::fs::copy(&own, &copying.path).is_ok())
+                .await
+                .unwrap_or(false);
+        if !copied {
+            git_with_index(path, &index.path, &["read-tree", "HEAD"]).await?;
         }
-        .await;
-        let _ = tokio::fs::remove_file(&index).await;
-        captured
+        git_with_index(path, &index.path, &["add", "--all"]).await?;
+        let tree = git_with_index(path, &index.path, &["write-tree"]).await?;
+        Ok((head, tree.trim().to_owned()))
     }
 }
 
@@ -509,7 +573,9 @@ async fn spawn(
             .env("GIT_COMMITTER_EMAIL", "humata@localhost");
     }
     if let Some(index) = index {
-        command.env("GIT_INDEX_FILE", index);
+        // It writes only its own index and objects, so it can be stopped
+        // with what waits for it, before that index is removed.
+        command.env("GIT_INDEX_FILE", index).kill_on_drop(true);
     }
     let mut child = command
         .spawn()

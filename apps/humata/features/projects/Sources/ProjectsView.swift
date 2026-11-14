@@ -531,7 +531,14 @@ package struct NewSessionView: View {
                                 .lineLimit(2)
                                 .help(reason)
                         }
-                        if store.needsModel {
+                        if store.modelsLoading {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Listing models…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if store.needsModel {
                             Text("Name one the model server runs; it has no default.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -732,8 +739,19 @@ struct MoveSessionView: View {
                             .tag(String?.some(item.id))
                     }
                 }
+            } else if let failure = store.itemsFailure {
+                Section {
+                    Label(failure, systemImage: "exclamationmark.triangle")
+                    Button("Try Again") { store.send(.task) }
+                } header: {
+                    Text("Can't Read the Project's Tasks")
+                }
             } else {
-                ProgressView()
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading the project's tasks…")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -827,7 +845,7 @@ struct CompareView: View {
         }
     }
 
-    private func side(_ session: Session, _ changes: [RepositoryChanges]?) -> some View {
+    private func side(_ session: Session, _ changes: CompareFeature.Changes?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(session.title)
@@ -846,10 +864,14 @@ struct CompareView: View {
             .padding(10)
             Divider()
             if let changes {
-                PatchView(changes: changes)
+                PatchView(changes: changes) { store.send(.showRestTapped(session.id)) }
             } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Reading its changes…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity)
@@ -857,41 +879,63 @@ struct CompareView: View {
 }
 
 /// A session's changes, by repository, as diffs with added lines green and
-/// removed ones red.
+/// removed ones red. Only the lines in view are drawn, and a long diff shows
+/// its first lines until the rest are asked for.
 struct PatchView: View {
-    let changes: [RepositoryChanges]
+    let changes: CompareFeature.Changes
+    let showRest: () -> Void
 
     var body: some View {
-        if changes.allSatisfy({ $0.patch.isEmpty }) {
+        if changes.isEmpty {
             ContentUnavailableView("No Changes", systemImage: "doc.text", description: Text("Nothing changed yet."))
         } else {
-            ScrollView([.vertical, .horizontal]) {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(changes, id: \.name) { repository in
-                        if changes.count > 1 {
-                            Text(repository.name)
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(
-                                Array(
-                                    repository.patch.split(separator: "\n", omittingEmptySubsequences: false)
-                                        .enumerated()), id: \.offset
-                            ) { _, line in
-                                Text(line.isEmpty ? " " : String(line))
-                                    .foregroundStyle(Self.color(line))
+            VStack(spacing: 0) {
+                ScrollView([.vertical, .horizontal]) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(changes.patches) { patch in
+                            Section {
+                                ForEach(0..<patch.shown, id: \.self) { index in
+                                    let line = patch.lines[index]
+                                    Text(line.isEmpty ? " " : line)
+                                        .foregroundStyle(Self.color(line))
+                                        .fixedSize()
+                                }
+                                .font(.caption.monospaced())
+                            } header: {
+                                // One past the cut has no lines to head yet.
+                                if changes.patches.count > 1, patch.shown > 0 {
+                                    Text(patch.name)
+                                        .font(.subheadline.weight(.semibold))
+                                        .padding(.vertical, 6)
+                                }
                             }
                         }
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
                     }
+                    .textSelection(.enabled)
+                    .padding(10)
                 }
-                .padding(10)
+                // A short diff starts at the top left, not in the middle.
+                .defaultScrollAnchor(.topLeading)
+                if changes.hidden > 0 {
+                    Divider()
+                    HStack {
+                        Text(
+                            "The first \(changes.shownCount.formatted()) of \(changes.lineCount.formatted()) lines "
+                                + "are shown."
+                        )
+                        .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Show the Rest", action: showRest)
+                            .help("Show every line of this session's changes")
+                    }
+                    .font(.callout)
+                    .padding(8)
+                }
             }
         }
     }
 
-    private static func color(_ line: Substring) -> Color {
+    private static func color(_ line: String) -> Color {
         if line.hasPrefix("+++") || line.hasPrefix("---") { return .secondary }
         if line.hasPrefix("+") { return .green }
         if line.hasPrefix("-") { return .red }

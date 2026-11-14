@@ -708,6 +708,9 @@ fn header(response: &ureq::http::Response<ureq::Body>, name: &str) -> Option<Str
         .map(str::to_owned)
 }
 
+/// The most kept of what GitHub said was wrong, in bytes.
+const MOST_SAID: usize = 1024;
+
 /// What GitHub said was wrong, from its error reply.
 fn message(text: &str) -> String {
     let said: Option<Value> = serde_json::from_str(text).ok();
@@ -725,7 +728,12 @@ fn message(text: &str) -> String {
             }
         }
     }
-    message.truncate(1024);
+    // Cut at the start of a character: the middle of one can't be cut at.
+    let mut end = message.len().min(MOST_SAID);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
     message
 }
 
@@ -820,6 +828,18 @@ mod tests {
             None
         );
         assert_eq!(next_link(""), None);
+    }
+
+    #[test]
+    fn a_long_error_of_wide_characters_is_cut_between_two_of_them() {
+        // Three bytes each, so the 1,024th byte is inside one.
+        let said = message(&"\u{4e0d}".repeat(1_000));
+        assert!(!said.is_empty());
+        assert!(said.len() <= MOST_SAID);
+        assert!(said.chars().all(|character| character == '\u{4e0d}'));
+
+        let short = message(r#"{"message": "Not Found"}"#);
+        assert_eq!(short, "Not Found");
     }
 
     #[test]

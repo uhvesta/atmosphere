@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -16,6 +17,10 @@ use super::CopilotError;
 
 /// The protocol this client speaks, as `connect` reports it.
 pub(super) const PROTOCOL_VERSION: i64 = 3;
+
+/// How long the CLI may take to answer the hello. Every Copilot turn waits
+/// for it, so a program that never answers mustn't hold them for good.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A message bigger than this is taken as a broken stream.
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
@@ -52,6 +57,18 @@ impl Cli {
         env: &[(String, String)],
         running: &Path,
     ) -> Result<Arc<Self>, CopilotError> {
+        Self::start_within(program, experimental, env, running, HELLO_TIMEOUT).await
+    }
+
+    /// As [`Self::start`], giving the program `patience` to answer the
+    /// hello.
+    async fn start_within(
+        program: &Path,
+        experimental: &str,
+        env: &[(String, String)],
+        running: &Path,
+        patience: Duration,
+    ) -> Result<Arc<Self>, CopilotError> {
         let mut child = Command::new(program)
             .args(["--server", "--stdio", "--no-auto-update", experimental])
             .env("COPILOT_AUTO_UPDATE", "false")
@@ -80,7 +97,13 @@ impl Cli {
             _child: child,
             _noted: noted,
         });
-        let hello = cli.call("connect", json!({})).await?;
+        // Given up on, the program is killed as `cli` is dropped.
+        let hello = tokio::time::timeout(patience, cli.call("connect", json!({})))
+            .await
+            .map_err(|_| CopilotError::NoHello {
+                program: program.to_owned(),
+                seconds: patience.as_secs(),
+            })??;
         let found = hello.get("protocolVersion").and_then(Value::as_i64);
         if found != Some(PROTOCOL_VERSION) {
             return Err(CopilotError::Protocol {
@@ -279,5 +302,38 @@ async fn dispatch(message: Value, stdin: &tokio::sync::Mutex<ChildStdin>, shared
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_program_that_never_answers_the_hello_is_given_up_on() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        // Keeps its output open and says nothing, as a program that isn't
+        // a Copilot server would.
+        let program = dir.path().join("silent");
+        std::fs::write(&program, "#!/bin/sh\nexec sleep 60\n")
+            .unwrap_or_else(|error| panic!("{error}"));
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let started = Cli::start_within(
+            &program,
+            "--no-experimental",
+            &[],
+            &dir.path().join("running"),
+            Duration::from_millis(300),
+        )
+        .await;
+
+        assert!(
+            matches!(started, Err(CopilotError::NoHello { .. })),
+            "{:?}",
+            started.err()
+        );
     }
 }

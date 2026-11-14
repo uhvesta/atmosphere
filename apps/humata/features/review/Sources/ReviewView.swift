@@ -136,6 +136,11 @@ package struct ReviewView: View {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel("Reading the changes")
+            } else if store.readingWhole, store.wholeFile, !store.showsRendered {
+                // Whole File shows the changes until every line is read.
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Reading the file")
             }
             if store.sending {
                 ProgressView()
@@ -237,7 +242,8 @@ package struct ReviewView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let ref = store.selected, let file = store.file {
+        // Rendered waits for the whole file; its changes still name it.
+        if let ref = store.selected, let file = store.file ?? store.state.diff(ref) {
             VStack(spacing: 0) {
                 fileHeader(file, ref)
                 Divider()
@@ -245,8 +251,25 @@ package struct ReviewView: View {
                     ContentUnavailableView(
                         "A binary file", systemImage: "doc",
                         description: Text("Its changes can't be shown as lines."))
-                } else if store.rendered, store.isMarkdown {
-                    RenderedMarkdown(store: store, file: file, ref: ref)
+                } else if store.showsRendered {
+                    if let whole = store.whole {
+                        RenderedMarkdown(store: store, file: whole, ref: ref)
+                    } else if let failure = store.wholeFailure, failure.file == ref {
+                        ContentUnavailableView {
+                            Label("Couldn’t Read the File", systemImage: "exclamationmark.triangle")
+                        } description: {
+                            Text(failure.message)
+                        } actions: {
+                            Button("Try Again") { store.send(.wholeRetryTapped) }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        // Read and parsed off the main thread; never drawn
+                        // from the changes alone, whose blocks would sit on
+                        // the wrong lines.
+                        ProgressView("Reading the file…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 } else {
                     DiffLines(store: store, file: file, ref: ref)
                 }
@@ -494,13 +517,12 @@ private struct RenderedMarkdown: View {
     let ref: FileRef
 
     var body: some View {
-        let lines = file.hunks.flatMap(\.lines).filter { $0.new != nil }
-        let added = Set(lines.filter { $0.kind == .added }.compactMap(\.new))
-        let blocks = MarkdownBlock.cached(lines.map(\.text))
+        let rendered = ReviewFeature.rendered(file)
+        let added = Set(rendered.lines.filter { $0.kind == .added }.compactMap(\.new))
         let threads = store.state.shownThreads(on: ref)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                ForEach(blocks) { block in
+                ForEach(rendered.blocks) { block in
                     MarkdownBlockView(block: block)
                         .padding(.leading, 10)
                         .overlay(alignment: .leading) {

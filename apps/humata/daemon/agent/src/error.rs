@@ -269,6 +269,14 @@ pub enum AgentError {
     )]
     NotImportable,
 
+    #[error(
+        "listing the sessions that can be imported stopped part way, as humatad is stopping or the read failed unexpectedly; list them again (in the app, open the import sheet again), and if it keeps failing, restart humatad"
+    )]
+    ListingStopped {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     #[error(transparent)]
     Copilot(Box<crate::CopilotError>),
 

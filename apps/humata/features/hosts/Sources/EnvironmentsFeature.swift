@@ -19,6 +19,9 @@ package struct EnvironmentsFeature {
         package var adding: Set<String> = []
         package var selection: RemoteHost.ID?
         package var editor: HostEditorFeature.State?
+        /// The variables and setup script changed and not saved on hosts
+        /// looked away from, to show again when they're selected.
+        var unsaved: [RemoteHost.ID: HostEditorFeature.State] = [:]
         /// Why the hosts couldn't be read, and what to do about it.
         package var failure: String?
         @Presents package var destination: Destination.State?
@@ -77,6 +80,8 @@ package struct EnvironmentsFeature {
         case updateTapped(RemoteHost.ID)
         case checkTapped(RemoteHost.ID)
         case checked(RemoteHost.ID, HostHealth)
+        /// How the host is once its install ended.
+        case installed(RemoteHost.ID, HostHealth)
         case selected(RemoteHost.ID?)
         case addOtherTapped
         case editor(HostEditorFeature.Action)
@@ -123,8 +128,8 @@ package struct EnvironmentsFeature {
             case .added(let host):
                 if let destination = host.sshDestination { state.adding.remove(destination) }
                 state.hosts[id: host.id] = host
-                state.selection = host.id
-                state.editor = HostEditorFeature.State(host: host)
+                // A host being changed stays in view until that's saved.
+                if state.editor?.update == nil { select(host.id, in: &state) }
                 return install(host.id, in: &state)
 
             case .addFailed(let destination, let message):
@@ -144,12 +149,17 @@ package struct EnvironmentsFeature {
                 return check(id, in: &state)
 
             case .checked(let id, let health):
+                // An install under way says how the host is when it ends.
+                guard state.health[id] != .installing else { return .none }
+                state.health[id] = .known(health)
+                return .none
+
+            case .installed(let id, let health):
                 state.health[id] = .known(health)
                 return .none
 
             case .selected(let id):
-                state.selection = id
-                state.editor = id.flatMap { state.hosts[id: $0] }.map(HostEditorFeature.State.init)
+                select(id, in: &state)
                 return .none
 
             case .addOtherTapped:
@@ -162,8 +172,13 @@ package struct EnvironmentsFeature {
 
             case .editor(.delegate(.saved(let host))):
                 state.hosts[id: host.id] = host
+                state.unsaved[host.id] = nil
                 // Saving sets it up again, which the check reports on.
                 return check(host.id, in: &state)
+
+            case .editor(.delegate(.saveFailed(let id, let message))):
+                state.destination = .alert(AlertState.saveFailed(id, message, kept: state.unsaved[id] != nil))
+                return .none
 
             case .editor, .destination:
                 return .none
@@ -173,17 +188,35 @@ package struct EnvironmentsFeature {
         .ifLet(\.$destination, action: \.destination)
     }
 
-    private func install(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
-        state.health[id] = .installing
-        return .run { send in
-            _ = try await daemon.installHost(id)
-            await send(.checked(id, try await daemon.checkHost(id)))
-        } catch: { error, send in
-            await send(.checked(id, .unreachable(error.localizedDescription)))
+    /// Shows `id`'s variables and setup script, with what was changed on it
+    /// before and not saved. What was changed on the host shown until now
+    /// is kept the same way.
+    private func select(_ id: RemoteHost.ID?, in state: inout State) {
+        if let unsaved = state.editor?.unsaved { state.unsaved[unsaved.host.id] = unsaved }
+        state.selection = id
+        if let id, let host = state.hosts[id: id] {
+            state.editor = state.unsaved.removeValue(forKey: id) ?? HostEditorFeature.State(host: host)
+        } else {
+            state.editor = nil
         }
     }
 
+    /// Installs this app's build on the host, unless that's under way.
+    private func install(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
+        guard state.health[id] != .installing else { return .none }
+        state.health[id] = .installing
+        return .run { send in
+            _ = try await daemon.installHost(id)
+            await send(.installed(id, try await daemon.checkHost(id)))
+        } catch: { error, send in
+            await send(.installed(id, .unreachable(error.localizedDescription)))
+        }
+    }
+
+    /// Checks the host's health. One being installed on is left to its
+    /// install.
     private func check(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
+        guard state.health[id] != .installing else { return .none }
         state.health[id] = .checking
         return .run { send in
             await send(.checked(id, try await daemon.checkHost(id)))

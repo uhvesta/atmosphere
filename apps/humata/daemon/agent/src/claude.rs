@@ -275,7 +275,7 @@ impl Runner for ClaudeRunner {
         let Some(projects) = self.transcripts() else {
             return Ok(Vec::new());
         };
-        import::not_imported(&self.options.state, import::claude_importable(&projects)?)
+        import::claude_importable(&projects, &self.options.state)
     }
 
     fn backup(&self, record: &SessionRecord) -> Result<Vec<BackendFile>, AgentError> {
@@ -364,7 +364,7 @@ impl Runner for ClaudeRunner {
         }
         if links.session.is_none()
             && links.fork.is_none()
-            && crate::links::had_turns(&turn.history())
+            && turn.with_history(crate::links::had_turns)?
         {
             turn.emit(EventKind::Notice {
                 text: crate::links::STARTED_OVER.to_owned(),

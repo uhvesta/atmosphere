@@ -1,13 +1,17 @@
 import ComposableArchitecture
 import Foundation
 import HumataDaemonClient
+import HumataReview
 
 /// A folder on a host, read a level at a time as folders are opened, and
 /// the file picked in it.
 @Reducer
 package struct FileBrowserFeature {
+    /// Identified by its place, so another place's files shown in its stead
+    /// stop what this one was reading instead of finishing it into them.
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
+        package var id: [String?] { [place.host, place.sessionID, place.folder] }
         package var place: HostPlace
         /// The absolute folder browsed from, once read.
         package var root: String?
@@ -19,8 +23,11 @@ package struct FileBrowserFeature {
         package var selected: String?
         /// The selected file, once read.
         package var contents: FileContents?
-        /// Why a folder or file couldn't be read, and what to do about it.
+        /// Why a folder couldn't be read, or the file shown read again, and
+        /// what to do about it. While `root` is nil it's why nothing lists.
         package var failure: String?
+        /// Why the selected file couldn't be read, while nothing of it shows.
+        package var unread: String?
 
         package init(place: HostPlace) {
             self.place = place
@@ -64,7 +71,10 @@ package struct FileBrowserFeature {
         case folderToggled(String)
         case fileSelected(String)
         case fileRead(FileContents)
-        case failed(String)
+        /// The folder at this path from the root couldn't be read.
+        case failed(String, String)
+        /// The file at this path couldn't be read.
+        case fileFailed(String, String)
     }
 
     @Dependency(\.daemon) var daemon
@@ -76,15 +86,24 @@ package struct FileBrowserFeature {
         return directory.hasSuffix("/") ? directory + name : directory + "/" + name
     }
 
+    /// Whether the file at `path` is Markdown, to show as it reads.
+    static func isMarkdown(_ path: String) -> Bool {
+        ["md", "markdown"].contains((path as NSString).pathExtension.lowercased())
+    }
+
     package var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .task:
                 guard state.root == nil else { return .none }
+                // Asked again after a read that failed, it shows it's reading.
+                state.failure = nil
                 return read("", at: state.place)
 
             case .refreshTapped:
                 // Reads again every folder that is open, and the file shown.
+                state.failure = nil
+                state.unread = nil
                 let open = [""] + state.expanded.sorted()
                 let place = state.place
                 var effects = open.map { read($0, at: place) }
@@ -112,16 +131,30 @@ package struct FileBrowserFeature {
                 guard state.selected != path else { return .none }
                 state.selected = path
                 state.contents = nil
+                state.unread = nil
                 return readFile(path, at: state.place)
 
             case .fileRead(let contents):
                 guard contents.path == state.selected else { return .none }
                 state.failure = nil
+                state.unread = nil
                 state.contents = contents
                 return .none
 
-            case .failed(let message):
+            case .failed(let directory, let message):
                 state.failure = message
+                // Opened and never read, it closes, so opening it reads it again.
+                if state.folders[directory] == nil { state.expanded.remove(directory) }
+                return .none
+
+            case .fileFailed(let path, let message):
+                guard path == state.selected else { return .none }
+                // With an earlier read still showing, the failure goes beside it.
+                if state.contents?.path == path {
+                    state.failure = message
+                } else {
+                    state.unread = message
+                }
                 return .none
             }
         }
@@ -131,15 +164,18 @@ package struct FileBrowserFeature {
         .run { send in
             await send(.folderRead(try await daemon.listFolder(place, directory)))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.failed(directory, error.localizedDescription))
         }
     }
 
     private func readFile(_ path: String, at place: HostPlace) -> Effect<Action> {
         .run { send in
-            await send(.fileRead(try await daemon.readFileAt(place, path)))
+            let contents = try await daemon.readFileAt(place, path)
+            // Parsed here, off the main thread, so the view finds its blocks made.
+            if Self.isMarkdown(path), let text = contents.text { _ = MarkdownBlock.cached(text) }
+            await send(.fileRead(contents))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.fileFailed(path, error.localizedDescription))
         }
     }
 }

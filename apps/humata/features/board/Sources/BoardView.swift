@@ -96,9 +96,17 @@ package struct BoardView: View {
                     .help("See and revert the board's changes")
             }
             ToolbarItem {
-                Button("Import Issues", systemImage: "square.and.arrow.down") { store.send(.importIssuesTapped) }
-                    .disabled(store.importing)
-                    .help("Make a task of each open GitHub issue of the project's repositories not imported yet")
+                if store.importing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Importing…").foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .help("Reading the open issues of the project's repositories from GitHub")
+                } else {
+                    Button("Import Issues", systemImage: "square.and.arrow.down") { store.send(.importIssuesTapped) }
+                        .help("Make a task of each open GitHub issue of the project's repositories not imported yet")
+                }
             }
             ToolbarItem {
                 Button("Add Task", systemImage: "plus") { store.send(.addTapped(parent: nil)) }
@@ -161,17 +169,25 @@ package struct BoardView: View {
             countLabel: cards.count == 1
                 ? Text("\(status.title), 1 item") : Text("\(status.title), \(cards.count) items")
         ) {
-            ForEach(cards) { item in
-                card(item)
+            // The column is as tall as the window, so its cards scroll under
+            // its title once they outgrow it, and are made as they show. The
+            // column's own space below stays, to drop a card on.
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(cards) { item in
+                        card(item)
+                    }
+                    if status == .todo {
+                        Button("Add Task", systemImage: "plus") { store.send(.addTapped(parent: nil)) }
+                            .buttonStyle(.borderless)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                    }
+                }
             }
-        } footer: {
-            if status == .todo {
-                Button("Add Task", systemImage: "plus") { store.send(.addTapped(parent: nil)) }
-                    .buttonStyle(.borderless)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-            }
+            .scrollBounceBehavior(.basedOnSize)
+            .layoutPriority(1)
         } onDrop: { ids in
             let known = ids.filter { store.items[id: $0] != nil }
             for id in known {
@@ -364,9 +380,13 @@ struct ItemView: View {
                     Text("No spec yet. Edit to write what the work is and when it's done.")
                         .foregroundStyle(.secondary)
                 } else {
+                    // Another item's page shown in this one's place starts
+                    // from its own first session, not the one picked here.
                     SpecCommentsView(
                         store: store.scope(state: \.comments, action: \.comments), spec: store.item.spec,
-                        sessions: store.commentTargets)
+                        sessions: store.commentTargets
+                    )
+                    .id(store.item.id)
                 }
             }
             if store.item.parentID == nil {
@@ -404,6 +424,16 @@ struct ItemView: View {
                             .labelStyle(.iconOnly)
                             .buttonStyle(.borderless)
                             .disabled(store.readingPullRequests)
+                            // While GitHub is read, a spinner takes the arrow's
+                            // place, so the header keeps its width.
+                            .opacity(store.readingPullRequests ? 0 : 1)
+                            .overlay {
+                                if store.readingPullRequests {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityLabel("Reading the pull requests from GitHub")
+                                }
+                            }
                             .help(
                                 store.pullsReadOnRefreshOnly
                                     ? "Read them again from GitHub; Settings › GitHub has Humata read them only then"
@@ -476,7 +506,9 @@ struct ItemView: View {
                 }
             }
         }
-        .task { await store.send(.task).finish() }
+        // Another item's page opens in this sheet without closing it, so
+        // its sessions' changes and pull requests are read for each item.
+        .task(id: store.item.id) { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.destination?.newSession, action: \.destination.newSession)) {
             NewSessionView(store: $0)
         }
@@ -575,9 +607,25 @@ struct BoardLogView: View {
             .padding()
             Divider()
             List {
-                if store.changes.isEmpty {
-                    Text("Nothing has changed on this board yet.")
-                        .foregroundStyle(.secondary)
+                if store.loaded {
+                    if store.changes.isEmpty {
+                        Text("Nothing has changed on this board yet.")
+                            .foregroundStyle(.secondary)
+                    }
+                } else if store.unread {
+                    HStack {
+                        Text("The board's history couldn't be read.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Try Again") { store.send(.task) }
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading the board's history…")
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
                 }
                 ForEach(store.shown) { change in
                     row(change)

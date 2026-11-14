@@ -3,6 +3,8 @@
 //! imported session resumes the backend's own, so its next turn carries on
 //! where it left off.
 
+use std::collections::HashSet;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -60,6 +62,27 @@ pub(crate) fn json_lines(path: &Path) -> Result<Vec<Value>, AgentError> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect())
+}
+
+/// The lines of the JSON lines file at `path` that parse, as
+/// [`json_lines`] gives them but read one at a time, so stopping early
+/// reads no further. A read that fails part way ends them.
+fn each_json_line(path: &Path) -> std::io::Result<impl Iterator<Item = Value> + use<>> {
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut line = Vec::new();
+    Ok(std::iter::from_fn(move || {
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => {
+                    if let Ok(value) = serde_json::from_slice(&line) {
+                        return Some(value);
+                    }
+                }
+            }
+        }
+    }))
 }
 
 /// When `path` was last changed, in milliseconds since 1970; 0 if unknown.
@@ -199,15 +222,12 @@ pub(crate) fn content_text(content: &Value) -> String {
     }
 }
 
-/// `found`, but those already imported into a session under `state`.
-pub(crate) fn not_imported(
-    state: &Path,
-    found: Vec<Importable>,
-) -> Result<Vec<Importable>, AgentError> {
-    let linked = Links::linked(state)?;
-    Ok(found
+/// The backend's sessions a session under `state` carries on already, so
+/// they aren't offered again.
+fn imported(state: &Path) -> Result<HashSet<String>, AgentError> {
+    Ok(Links::linked(state)?
         .into_iter()
-        .filter(|importable| !linked.iter().any(|(theirs, _)| *theirs == importable.id))
+        .map(|(theirs, _)| theirs)
         .collect())
 }
 
@@ -290,27 +310,77 @@ fn is_cli_note(text: &str) -> bool {
     text.starts_with("<command-") || text.starts_with("<local-command-")
 }
 
+/// What the person typed in a transcript line; None for any other line: a
+/// reply, a tool's result, or a message the CLI wrote for itself.
+fn claude_typed(line: &Value) -> Option<String> {
+    if line["type"] != "user" || line["isMeta"] == true {
+        return None;
+    }
+    let content = &line["message"]["content"];
+    let result = content
+        .as_array()
+        .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "tool_result"));
+    if result {
+        return None;
+    }
+    let text = content_text(content);
+    (!text.trim().is_empty() && !is_cli_note(&text)).then_some(text)
+}
+
 /// Claude Code's transcripts under `projects` (its config folder's
-/// `projects`), one JSON lines file per session, in a folder per project.
-pub(crate) fn claude_importable(projects: &Path) -> Result<Vec<Importable>, AgentError> {
+/// `projects`), one JSON lines file per session, in a folder per project,
+/// but those already imported into a session under `state`.
+pub(crate) fn claude_importable(
+    projects: &Path,
+    state: &Path,
+) -> Result<Vec<Importable>, AgentError> {
+    let imported = imported(state)?;
     let mut found = Vec::new();
     for project in entries(projects)?.into_iter().filter(|path| path.is_dir()) {
         for path in entries(&project)? {
-            let Some(id) = claude_session_id(&path) else {
+            let Some(id) = claude_session_id(&path).filter(|id| !imported.contains(id)) else {
                 continue;
             };
-            let Ok(imported) = claude_read(&path) else {
+            let Some((working_directory, summary)) = claude_listed(&path) else {
                 continue;
             };
             found.push(Importable {
                 id,
-                working_directory: imported.working_directory,
-                summary: imported.summary,
+                working_directory,
+                summary,
                 updated_unix_ms: modified_unix_ms(&path),
             });
         }
     }
     Ok(found)
+}
+
+/// Where a Claude Code transcript worked and what it's about, by the rules
+/// of [`claude_read`] but reading only as far as the first message the
+/// person typed; None for a transcript `claude_read` refuses. A summary
+/// line after that message isn't looked for: the message stands in for it.
+fn claude_listed(path: &Path) -> Option<(PathBuf, String)> {
+    let mut working_directory = None;
+    let mut summary_line = None;
+    let mut first = None;
+    for line in each_json_line(path).ok()? {
+        if line["isSidechain"] == true {
+            continue;
+        }
+        if working_directory.is_none() {
+            working_directory = line["cwd"].as_str().map(PathBuf::from);
+        }
+        if line["type"] == "summary" {
+            summary_line = line["summary"].as_str().map(summary);
+        } else if first.is_none() {
+            first = claude_typed(&line).map(|text| summary(&text));
+        }
+        if working_directory.is_some() && first.is_some() {
+            break;
+        }
+    }
+    let first = first?;
+    Some((working_directory?, summary_line.unwrap_or(first)))
 }
 
 /// The session a transcript file is of; None for a file that isn't one,
@@ -372,8 +442,7 @@ pub(crate) fn claude_read(path: &Path) -> Result<Imported, AgentError> {
                 }
             }
             "user" => {
-                let text = content_text(content);
-                if !text.trim().is_empty() && !is_cli_note(&text) {
+                if let Some(text) = claude_typed(line) {
                     first.get_or_insert_with(|| summary(&text));
                     history.message(text, time, None);
                 }
@@ -437,24 +506,30 @@ fn tool_output(content: &Value) -> String {
 }
 
 /// Copilot's session folders under `sessions` (its home's `session-state`),
-/// each with its events as JSON lines.
-pub(crate) fn copilot_importable(sessions: &Path) -> Result<Vec<Importable>, AgentError> {
+/// each with its events as JSON lines, but those already imported into a
+/// session under `state`.
+pub(crate) fn copilot_importable(
+    sessions: &Path,
+    state: &Path,
+) -> Result<Vec<Importable>, AgentError> {
+    let imported = imported(state)?;
     let mut found = Vec::new();
     for dir in entries(sessions)?.into_iter().filter(|path| path.is_dir()) {
         let Some(id) = dir
             .file_name()
             .and_then(|name| name.to_str())
+            .filter(|id| !imported.contains(*id))
             .map(str::to_owned)
         else {
             continue;
         };
-        let Ok(imported) = copilot_read(&dir) else {
+        let Some((working_directory, summary)) = copilot_listed(&dir) else {
             continue;
         };
         found.push(Importable {
             id,
-            working_directory: imported.working_directory,
-            summary: imported.summary,
+            working_directory,
+            summary,
             updated_unix_ms: modified_unix_ms(&dir.join(COPILOT_EVENTS)),
         });
     }
@@ -462,6 +537,68 @@ pub(crate) fn copilot_importable(sessions: &Path) -> Result<Vec<Importable>, Age
 }
 
 const COPILOT_EVENTS: &str = "events.jsonl";
+
+/// What Copilot keeps beside a session's events: where it worked and its
+/// summary of it, a `name: value` on a line each.
+struct CopilotWorkspace(String);
+
+impl CopilotWorkspace {
+    /// The one in the session folder `dir`; empty if it has none.
+    fn read(dir: &Path) -> Self {
+        Self(std::fs::read_to_string(dir.join("workspace.yaml")).unwrap_or_default())
+    }
+
+    fn field(&self, name: &str) -> Option<String> {
+        self.0.lines().find_map(|line| {
+            line.strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
+                .filter(|value| !value.is_empty())
+        })
+    }
+}
+
+/// Where the session a `session.start` event starts works, if it says.
+fn copilot_started_in(data: &Value) -> Option<PathBuf> {
+    data["context"]["cwd"]
+        .as_str()
+        .or_else(|| data["cwd"].as_str())
+        .map(PathBuf::from)
+}
+
+/// What the person typed in one of Copilot's events; None for any other
+/// event.
+fn copilot_typed(line: &Value) -> Option<&str> {
+    line["data"]["content"]
+        .as_str()
+        .filter(|content| line["type"] == "user.message" && !content.trim().is_empty())
+}
+
+/// Where a Copilot session worked and what it's about, by the rules of
+/// [`copilot_read`] but reading its events only as far as the first message
+/// the person typed; None for a session `copilot_read` refuses.
+fn copilot_listed(dir: &Path) -> Option<(PathBuf, String)> {
+    let workspace = CopilotWorkspace::read(dir);
+    let mut working_directory = workspace.field("cwd").map(PathBuf::from);
+    let mut first = None;
+    for line in each_json_line(&dir.join(COPILOT_EVENTS)).ok()? {
+        if working_directory.is_none() && line["type"] == "session.start" {
+            working_directory = copilot_started_in(&line["data"]);
+        } else if first.is_none() {
+            first = copilot_typed(&line).map(summary);
+        }
+        if working_directory.is_some() && first.is_some() {
+            break;
+        }
+    }
+    let first = first?;
+    Some((
+        working_directory?,
+        workspace
+            .field("summary")
+            .map_or(first, |text| summary(&text)),
+    ))
+}
 
 /// The folder of Copilot's session `id` under `sessions`.
 pub(crate) fn copilot_folder(sessions: &Path, id: &str) -> Result<PathBuf, AgentError> {
@@ -479,16 +616,8 @@ pub(crate) fn copilot_read(dir: &Path) -> Result<Imported, AgentError> {
         .unwrap_or_default();
     let events = dir.join(COPILOT_EVENTS);
     let lines = json_lines(&events)?;
-    let workspace = std::fs::read_to_string(dir.join("workspace.yaml")).unwrap_or_default();
-    let field = |name: &str| {
-        workspace.lines().find_map(|line| {
-            line.strip_prefix(name)
-                .and_then(|rest| rest.strip_prefix(':'))
-                .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
-                .filter(|value| !value.is_empty())
-        })
-    };
-    let mut working_directory = field("cwd").map(PathBuf::from);
+    let workspace = CopilotWorkspace::read(dir);
+    let mut working_directory = workspace.field("cwd").map(PathBuf::from);
     let mut first = None;
     let mut history = History::new(modified_unix_ms(&events));
     for line in &lines {
@@ -499,16 +628,15 @@ pub(crate) fn copilot_read(dir: &Path) -> Result<Imported, AgentError> {
         let kind = match line["type"].as_str().unwrap_or_default() {
             "session.start" => {
                 if working_directory.is_none() {
-                    working_directory = data["context"]["cwd"]
-                        .as_str()
-                        .or_else(|| data["cwd"].as_str())
-                        .map(PathBuf::from);
+                    working_directory = copilot_started_in(data);
                 }
                 continue;
             }
-            "user.message" if !text("content").trim().is_empty() => {
-                first.get_or_insert_with(|| summary(&text("content")));
-                history.message(text("content"), time, theirs);
+            "user.message" => {
+                if let Some(content) = copilot_typed(line) {
+                    first.get_or_insert_with(|| summary(content));
+                    history.message(content.to_owned(), time, theirs);
+                }
                 continue;
             }
             "assistant.message" if !text("content").is_empty() => EventKind::AssistantMessage {
@@ -541,7 +669,9 @@ pub(crate) fn copilot_read(dir: &Path) -> Result<Imported, AgentError> {
     };
     Ok(history.finish(
         working_directory,
-        field("summary").map_or(first, |text| summary(&text)),
+        workspace
+            .field("summary")
+            .map_or(first, |text| summary(&text)),
     ))
 }
 
@@ -670,6 +800,90 @@ mod tests {
         );
         let outside = agent.import("../0a1b-2c3d", None).await;
         assert!(matches!(outside, Err(AgentError::UnknownImport { .. })));
+    }
+
+    #[test]
+    fn a_session_with_no_message_from_the_person_is_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let state = dir.path().join("state");
+        let projects = dir.path().join("claude/projects");
+        write_lines(
+            &projects.join("-work/no-message.jsonl"),
+            &[
+                serde_json::json!({"type": "user", "cwd": cwd, "isMeta": true,
+                    "message": {"content": "Caveat"}}),
+                serde_json::json!({"type": "user", "cwd": cwd,
+                    "message": {"content": "<command-name>/clear</command-name>"}}),
+                serde_json::json!({"type": "user", "cwd": cwd, "isSidechain": true,
+                    "message": {"content": "a subagent's prompt"}}),
+                serde_json::json!({"type": "user", "cwd": cwd,
+                    "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}),
+                serde_json::json!({"type": "assistant", "cwd": cwd,
+                    "message": {"content": [{"type": "text", "text": "Done."}]}}),
+            ],
+        );
+        assert_eq!(claude_importable(&projects, &state).unwrap(), []);
+
+        let sessions = dir.path().join("copilot/session-state");
+        write_lines(
+            &sessions.join("no-message/events.jsonl"),
+            &[
+                serde_json::json!({"type": "session.start", "data": {"context": {"cwd": cwd}}}),
+                serde_json::json!({"type": "user.message", "data": {"content": "  "}}),
+                serde_json::json!({"type": "assistant.message", "data": {"content": "Hello."}}),
+            ],
+        );
+        assert_eq!(copilot_importable(&sessions, &state).unwrap(), []);
+    }
+
+    #[test]
+    fn a_listed_session_has_the_folder_and_summary_its_import_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let state = dir.path().join("state");
+        let projects = dir.path().join("claude/projects");
+        let transcript = projects.join("-work/0a1b.jsonl");
+        write_lines(
+            &transcript,
+            &[
+                serde_json::json!({"type": "summary", "summary": "Login fix", "leafUuid": "a1"}),
+                serde_json::json!({"type": "user", "uuid": "u1", "cwd": cwd,
+                    "message": {"content": "fix the login"}}),
+                serde_json::json!({"type": "assistant", "uuid": "a1", "cwd": cwd,
+                    "message": {"content": [{"type": "text", "text": "Fixed."}]}}),
+                serde_json::json!({"type": "user", "uuid": "u2", "cwd": "/elsewhere",
+                    "message": {"content": "and the logout"}}),
+            ],
+        );
+        let listed = claude_importable(&projects, &state).unwrap();
+        let read = claude_read(&transcript).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].working_directory, read.working_directory);
+        assert_eq!(listed[0].summary, read.summary);
+        assert_eq!(listed[0].summary, "Login fix");
+
+        let sessions = dir.path().join("copilot/session-state");
+        let session = sessions.join("s-1");
+        write_lines(
+            &session.join("events.jsonl"),
+            &[
+                serde_json::json!({"type": "session.start", "data": {"context": {"cwd": "/elsewhere"}}}),
+                serde_json::json!({"type": "user.message", "data": {"content": "add a test"}}),
+                serde_json::json!({"type": "assistant.message", "data": {"content": "Added."}}),
+            ],
+        );
+        std::fs::write(
+            session.join("workspace.yaml"),
+            format!("id: s-1\ncwd: {cwd}\nsummary: \"Tests for login\"\n"),
+        )
+        .unwrap();
+        let listed = copilot_importable(&sessions, &state).unwrap();
+        let read = copilot_read(&session).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].working_directory, read.working_directory);
+        assert_eq!(listed[0].summary, read.summary);
+        assert_eq!(listed[0].summary, "Tests for login");
     }
 
     #[tokio::test]

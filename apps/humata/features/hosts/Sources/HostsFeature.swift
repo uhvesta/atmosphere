@@ -59,6 +59,9 @@ package struct HostsFeature {
             var kept = self
             kept.restoring = []
             kept.linking = false
+            // Checked again when the list shows, as an install's answer is
+            // the only one that ends "Installing…".
+            kept.health = kept.health.filter { $0.value != .installing }
             kept.editor?.saving = false
             kept.ports?.forwarding = false
             if case .add(var add) = kept.destination {
@@ -105,6 +108,8 @@ package struct HostsFeature {
         case checkTapped(RemoteHost.ID)
         case checked(RemoteHost.ID, HostHealth)
         case installTapped(RemoteHost.ID)
+        /// How the host is once its install ended.
+        case installed(RemoteHost.ID, HostHealth)
         case removeTapped(RemoteHost.ID)
         case removed(RemoteHost.ID)
         case skippedLoaded(RemoteHost.ID, [SkippedSession])
@@ -175,10 +180,12 @@ package struct HostsFeature {
                 return check(id, in: &state, again: true)
 
             case .checked(let id, let health):
-                state.health[id] = .known(health)
-                // Reachable now, it can say what it skipped.
-                guard id == state.selection, case .reachable = health else { return .none }
-                return loadSkipped(id)
+                // An install under way says how the host is when it ends.
+                guard state.health[id] != .installing else { return .none }
+                return known(health, of: id, in: &state)
+
+            case .installed(let id, let health):
+                return known(health, of: id, in: &state)
 
             case .recoveriesLoaded(let id, let recoveries):
                 guard id == state.selection else { return .none }
@@ -282,12 +289,13 @@ package struct HostsFeature {
                 return .none
 
             case .installTapped(let id):
+                guard state.health[id] != .installing else { return .none }
                 state.health[id] = .installing
                 return .run { send in
                     _ = try await daemon.installHost(id)
-                    await send(.checked(id, try await daemon.checkHost(id)))
+                    await send(.installed(id, try await daemon.checkHost(id)))
                 } catch: { error, send in
-                    await send(.checked(id, .unreachable(error.localizedDescription)))
+                    await send(.installed(id, .unreachable(error.localizedDescription)))
                 }
 
             case .removeTapped(let id):
@@ -349,6 +357,10 @@ package struct HostsFeature {
                 // Saving sets it up again, which the check reports on.
                 return check(host.id, in: &state, again: true)
 
+            case .editor(.delegate(.saveFailed(let id, let message))):
+                state.destination = .alert(AlertState.saveFailed(id, message, kept: state.unsaved[id] != nil))
+                return .none
+
             case .paneSelected(let pane):
                 state.pane = pane
                 return .none
@@ -390,11 +402,7 @@ package struct HostsFeature {
 
     private func select(_ id: RemoteHost.ID?, in state: inout State) -> Effect<Action> {
         // What was changed on the host shown is kept until it's saved.
-        if var editor = state.editor, editor.update != nil {
-            editor.saving = false
-            editor.alert = nil
-            state.unsaved[editor.host.id] = editor
-        }
+        if let unsaved = state.editor?.unsaved { state.unsaved[unsaved.host.id] = unsaved }
         state.selection = id
         if let host = state.selected {
             state.editor = state.unsaved.removeValue(forKey: host.id) ?? HostEditorFeature.State(host: host)
@@ -440,10 +448,19 @@ package struct HostsFeature {
         .cancellable(id: SkippedLoad.host(id), cancelInFlight: true)
     }
 
+    /// Notes how the host is, and reads what it skipped once it can say.
+    private func known(_ health: HostHealth, of id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
+        state.health[id] = .known(health)
+        guard id == state.selection, case .reachable = health else { return .none }
+        return loadSkipped(id)
+    }
+
     /// Checks the host's health. Shown again, a host keeps what was known
     /// until the check answers; `again`, as the person asked or its setup
-    /// changed, it shows it's checking.
+    /// changed, it shows it's checking. One being installed on is left to
+    /// its install.
     private func check(_ id: RemoteHost.ID, in state: inout State, again: Bool = false) -> Effect<Action> {
+        guard state.health[id] != .installing else { return .none }
         if again || state.health[id] == nil { state.health[id] = .checking }
         return .run { send in
             await send(.checked(id, try await daemon.checkHost(id)))
@@ -594,6 +611,16 @@ package struct HostEditorFeature {
         }
 
         package var canSave: Bool { !saving && update != nil && badNames.isEmpty }
+
+        /// What to keep of it while another host shows: its changes, without
+        /// what it was waiting on. Nil when it changed nothing.
+        var unsaved: State? {
+            guard update != nil else { return nil }
+            var kept = self
+            kept.saving = false
+            kept.alert = nil
+            return kept
+        }
     }
 
     /// A variable for the host's agents.
@@ -619,13 +646,16 @@ package struct HostEditorFeature {
         case removeVariableTapped(Variable.ID)
         case saveTapped
         case saved(RemoteHost)
-        case failed(String)
+        /// The host whose save failed, and why.
+        case failed(RemoteHost.ID, String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
         @CasePathable
         package enum Delegate: Equatable {
             case saved(RemoteHost)
+            /// A save failed for a host that's no longer the one shown.
+            case saveFailed(RemoteHost.ID, String)
         }
     }
 
@@ -656,24 +686,37 @@ package struct HostEditorFeature {
                 return .run { send in
                     await send(.saved(try await daemon.updateHost(name, update)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(name, error.localizedDescription))
                 }
 
             case .saved(let host):
-                state = State(host: host)
+                // Another host shows by now: its editor stays as it is.
+                if host.id == state.host.id { state = State(host: host) }
                 return .send(.delegate(.saved(host)))
 
-            case .failed(let message):
+            case .failed(let id, let message):
+                guard id == state.host.id else { return .send(.delegate(.saveFailed(id, message))) }
                 state.saving = false
-                state.alert = AlertState {
-                    TextState("Couldn't save \(state.host.isCoordinator ? "This Mac" : state.host.name)")
-                } message: {
-                    TextState(message)
-                }
+                state.alert = AlertState.saveFailed(id, message, kept: false)
                 return .none
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+}
+
+extension AlertState {
+    /// Says that saving a host's variables and setup script failed. `kept`
+    /// when the host isn't the one shown and what was changed on it waits
+    /// there, so the alert says where to find it.
+    static func saveFailed(_ host: RemoteHost.ID, _ message: String, kept: Bool) -> Self {
+        let name = host.isEmpty ? "This Mac" : host
+        let text = kept ? "\(message)\n\nWhat you changed is kept: select \(name) to save it again." : message
+        return AlertState {
+            TextState("Couldn't save \(name)")
+        } message: {
+            TextState(text)
+        }
     }
 }
 

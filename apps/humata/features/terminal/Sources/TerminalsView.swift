@@ -19,6 +19,14 @@ package struct TerminalsView: View {
             if let id = store.selected, let terminal = store.scope(state: \.tabs[id: id], action: \.terminals[id: id]) {
                 TerminalPane(store: terminal)
                     .id(id)
+            } else if let failure = store.listFailure {
+                ContentUnavailableView {
+                    Label("Can't Read the Terminals", systemImage: "terminal")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("Try Again") { store.send(.task) }
+                }
             } else if store.listed, !store.opening {
                 ContentUnavailableView {
                     Label("No Terminals", systemImage: "terminal")
@@ -35,7 +43,7 @@ package struct TerminalsView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let failure = store.failure {
+            if let failure = store.failure, store.listFailure == nil {
                 Label(failure, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .padding(8)
@@ -63,6 +71,12 @@ package struct TerminalsView: View {
                 .disabled(store.opening)
                 .help("Open another terminal here")
                 .accessibilityLabel("New Terminal")
+                // With a terminal showing, nothing else says another is on its way.
+                if store.opening, store.selected != nil {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Opening a terminal")
+                }
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)

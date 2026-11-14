@@ -50,6 +50,8 @@ package struct ModelDefaultsFeature {
         package var model = ""
         /// What the agent offers on this Mac, to pick the model from.
         package var models: [ModelChoice] = []
+        /// Whether that list is being read.
+        package var modelsLoading = false
         /// Why they couldn't be read or saved, and what to do.
         package var failure: String?
         /// Counts the changes made here, so a load or a pause in typing
@@ -106,6 +108,8 @@ package struct ModelDefaultsFeature {
             switch action {
             case .task:
                 state.loading = true
+                // A list asked for when the tab last showed stopped with it.
+                state.modelsLoading = false
                 let edits = state.edits
                 return .run { send in
                     async let projects = daemon.projects()
@@ -174,6 +178,7 @@ package struct ModelDefaultsFeature {
             case .modelsLoaded(let backend, let models):
                 // A list for an agent picked before this one.
                 guard backend == state.defaults.backend else { return .none }
+                state.modelsLoading = false
                 state.models = models
                 return .none
 
@@ -249,8 +254,10 @@ package struct ModelDefaultsFeature {
     private func loadModels(_ state: inout State) -> Effect<Action> {
         guard let backend = state.defaults.backend, backend != .scripted else {
             state.models = []
+            state.modelsLoading = false
             return .none
         }
+        state.modelsLoading = true
         return .run { send in
             let models = (try? await daemon.models(nil, backend, nil)) ?? []
             await send(.modelsLoaded(backend, models))
@@ -342,6 +349,14 @@ package struct ModelDefaultsView: View {
                     .labelsHidden()
                     if !store.models.isEmpty {
                         ModelMenu(models: store.models, picked: store.model) { store.send(.modelTyped($0)) }
+                    }
+                }
+            }
+            if store.modelsLoading {
+                LabeledContent("") {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Listing models…").font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

@@ -558,12 +558,13 @@ package final class InMemoryDaemon: Sendable {
                 return updated
             },
             deleteItem: { item in try self.deleteItem(item) },
-            boardLog: { project in
+            boardLog: { project, from, limit in
                 self.state.withValue { state in
                     let all = state.items + state.removed.values
-                    return state.changes.reversed().filter { change in
-                        all.first { $0.id == change.itemID }?.projectID == project
+                    let changes = state.changes.reversed().filter { change in
+                        change.id >= (from ?? 0) && all.first { $0.id == change.itemID }?.projectID == project
                     }
+                    return limit.map { Array(changes.prefix(max($0, 0))) } ?? changes
                 }
             },
             itemLog: { project, item in

@@ -7,8 +7,11 @@ import HumataDaemonClient
 /// running on its host while nothing shows it.
 @Reducer
 package struct TerminalsFeature {
+    /// Identified by its place, so another place's terminals shown in its
+    /// stead stop what this one was doing instead of finishing it into them.
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
+        package var id: [String?] { [place.host, place.sessionID, place.folder] }
         package var place: HostPlace
         package var tabs: IdentifiedArrayOf<TerminalFeature.State> = []
         package var selected: Terminal.ID?
@@ -29,6 +32,10 @@ package struct TerminalsFeature {
         }
 
         package var current: TerminalFeature.State? { selected.flatMap { tabs[id: $0] } }
+
+        /// Why the terminals couldn't be read, while there's none to show
+        /// in their place.
+        package var listFailure: String? { listed || opening || !tabs.isEmpty ? nil : failure }
 
         /// Whether `terminal` belongs here: a session's own, or any on the
         /// host when this isn't a session's.
@@ -59,6 +66,8 @@ package struct TerminalsFeature {
         Reduce { state, action in
             switch action {
             case .task:
+                // Asked again after a list that failed, it shows it's reading.
+                if !state.listed { state.failure = nil }
                 let host = state.place.host
                 return .run { send in
                     await send(.listed(try await daemon.terminals(host)))

@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::PoisonError;
+use std::time::{Duration, Instant};
 
 use humata_wire::{Reply, pb};
 
@@ -17,7 +18,38 @@ const OUTPUT_INDEXED: usize = 4_000;
 const DEFAULT_LIMIT: usize = 50;
 /// How long a search waits for the index to catch up before searching what
 /// was indexed.
-const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(1_500);
+const CATCH_UP_WAIT: Duration = Duration::from_millis(1_500);
+/// How long a session at work, or waiting for an approval, is left unread
+/// once its history was read for the index, whatever it says meanwhile.
+const READ_BUSY_EVERY: Duration = Duration::from_secs(30);
+
+/// A session at work or waiting, as it was listed when its history was
+/// last read for the index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LastRead {
+    turns: u32,
+    last_active_unix_ms: i64,
+    at: Instant,
+}
+
+impl LastRead {
+    fn of(session: &pb::SessionInfo, at: Instant) -> Self {
+        Self {
+            turns: session.turns,
+            last_active_unix_ms: session.last_active_unix_ms,
+            at,
+        }
+    }
+
+    /// Whether `session`, still at work or waiting at `now`, needn't be
+    /// read again yet: it's listed as it was when read, and every event
+    /// moves when it was last active, so it has said nothing since; or it
+    /// was read too lately to read again.
+    fn still_holds(&self, session: &pb::SessionInfo, now: Instant) -> bool {
+        (self.turns == session.turns && self.last_active_unix_ms == session.last_active_unix_ms)
+            || now.saturating_duration_since(self.at) < READ_BUSY_EVERY
+    }
+}
 
 impl Daemon {
     /// The hits for `search`. `scope`, for an agent on a host, is the
@@ -107,11 +139,17 @@ impl Daemon {
                 }
             }
         };
-        take(self.store.search(&query)?, false, &mut hits);
+        // Off the executor: the query scores every match before its limit.
+        let found = {
+            let query = query.clone();
+            self.store.apart(move |store| store.search(&query)).await?
+        };
+        take(found, false, &mut hits);
         let related = any_of(&search.related);
         if hits.len() < limit && !related.is_empty() {
             query.matching = related;
-            take(self.store.search(&query)?, true, &mut hits);
+            let found = self.store.apart(move |store| store.search(&query)).await?;
+            take(found, true, &mut hits);
         }
         Ok(pb::SearchResults {
             hits,
@@ -157,33 +195,49 @@ impl Daemon {
     }
 
     /// Indexes what every session did since it was last indexed. A session
-    /// whose turns and whereabouts are as indexed isn't read or written.
+    /// whose turns and whereabouts are as indexed isn't read or written,
+    /// and neither is one at work or waiting that has said nothing since
+    /// it was read, or was read a moment ago.
     async fn catch_up(&self) -> Result<(), DaemonError> {
-        let _indexing = self.indexing.lock().await;
+        let mut reads = self.indexing.lock().await;
         let sessions = self.list("").await?.sessions;
-        for session in &sessions {
+        {
+            let listed: HashSet<&str> =
+                sessions.iter().map(|session| session.id.as_str()).collect();
+            reads.retain(|id, _| listed.contains(id.as_str()));
+        }
+        // What the index has of each, read in one go.
+        let indexed = {
+            let ids: Vec<String> = sessions.iter().map(|session| session.id.clone()).collect();
+            self.store
+                .apart(move |store| {
+                    ids.iter()
+                        .map(|id| store.indexed(id))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .await?
+        };
+        for (session, indexed) in sessions.iter().zip(indexed) {
             let whereabouts = Whereabouts {
                 host: session.host.clone(),
                 project: session.project_id.clone(),
                 item: session.item_id.clone(),
             };
-            let indexed = {
-                let id = session.id.clone();
-                self.store.apart(move |store| store.indexed(&id)).await?
-            };
             let from = indexed.as_ref().map_or(0, |indexed| indexed.indexed.events);
             let settled = session.state() == pb::SessionState::Idle
                 || session.state() == pb::SessionState::Failed;
+            if settled {
+                // Read as soon as it changes, to find what it just said.
+                reads.remove(&session.id);
+            }
+            let read_lately = reads
+                .get(&session.id)
+                .is_some_and(|read| read.still_holds(session, Instant::now()));
             if let Some(indexed) = &indexed
-                && indexed.indexed.turns == session.turns
-                && settled
+                && ((settled && indexed.indexed.turns == session.turns) || read_lately)
             {
                 if indexed.whereabouts != whereabouts {
-                    let unchanged = Indexed {
-                        events: from,
-                        turns: session.turns,
-                        last_event: indexed.indexed.last_event.clone(),
-                    };
+                    let unchanged = indexed.indexed.clone();
                     let id = session.id.clone();
                     self.store
                         .apart(move |store| store.index(&id, &whereabouts, from, &unchanged, &[]))
@@ -232,6 +286,9 @@ impl Daemon {
                 self.store
                     .apart(move |store| store.index_afresh(&id, &whereabouts, &now, &entries))
                     .await?;
+            }
+            if !settled {
+                reads.insert(session.id.clone(), LastRead::of(session, Instant::now()));
             }
         }
         let store = self.store.clone();
@@ -489,6 +546,26 @@ mod tests {
         // Cut back, and cut back then grown past where it was.
         assert!(!follows_on(&events(&["a"]), Some(&had)));
         assert!(!follows_on(&events(&["a", "x", "y"]), Some(&had)));
+    }
+
+    #[test]
+    fn a_busy_session_is_read_again_only_once_it_says_more_and_not_at_once() {
+        let listed = |turns: u32, active: i64| pb::SessionInfo {
+            turns,
+            last_active_unix_ms: active,
+            ..Default::default()
+        };
+        let read_at = Instant::now();
+        let read = LastRead::of(&listed(2, 1_000), read_at);
+        let much_later = read_at + READ_BUSY_EVERY * 10;
+        // Waiting as it was, however long ago it was read.
+        assert!(read.still_holds(&listed(2, 1_000), much_later));
+        // It said more, or ended a turn: left a moment, then read.
+        let just_after = read_at + READ_BUSY_EVERY / 2;
+        for now in [listed(2, 2_000), listed(3, 1_000)] {
+            assert!(read.still_holds(&now, just_after));
+            assert!(!read.still_holds(&now, much_later));
+        }
     }
 
     #[test]

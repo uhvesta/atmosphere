@@ -1,7 +1,6 @@
 import Foundation
 import HumataDaemonClient
 import HumataProto
-import os
 
 extension DaemonClient {
     /// Where humatad listens unless told otherwise: `$HUMATA_SOCKET`, else
@@ -154,12 +153,12 @@ extension DaemonClient {
                 message.sessionID = session
                 message.text = text
                 message.mode = mode == .steer ? .immediate : .enqueue
-                // Sending the same text again after a send that got no
+                // Sending the same text again soon after a send that got no
                 // answer reuses its id, so a host that took it runs it once.
-                message.clientID = unanswered.id(session: session, text: text)
+                message.clientID = unanswered.id(session: session, text: text, at: Date())
                 // A host that refused it forgot the id, so keeping it is safe.
                 _ = try await daemon.call(.sendMessage(message))
-                unanswered.answered(session: session, text: text)
+                unanswered.answered(session: session)
             },
             sendImages: { session, text, images, mode in
                 var message = Humata_V1_SendMessage()
@@ -503,9 +502,11 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the deleted item")
                 }
             },
-            boardLog: { project in
+            boardLog: { project, from, limit in
                 var read = Humata_V1_ReadBoardLog()
                 read.projectID = project
+                read.sinceChangeID = from ?? 0
+                read.limit = UInt32(clamping: limit ?? 0)
                 guard case .boardLog(let log) = try await daemon.call(.readBoardLog(read)) else {
                     throw DaemonError.unexpected("something other than the board's changes")
                 }
@@ -514,10 +515,11 @@ extension DaemonClient {
             itemLog: { project, item in
                 var read = Humata_V1_ReadBoardLog()
                 read.projectID = project
+                read.itemID = item
                 guard case .boardLog(let log) = try await daemon.call(.readBoardLog(read)) else {
                     throw DaemonError.unexpected("something other than the board's changes")
                 }
-                return log.changes.filter { $0.itemID == item }.map(BoardChange.init)
+                return log.changes.map(BoardChange.init)
             },
             revert: { change in
                 var revert = Humata_V1_RevertBoardChange()
@@ -983,25 +985,5 @@ private actor LiveDaemon {
 
     func stream(_ request: Humata_V1_Request.OneOf_Kind) async throws -> Items {
         try await connected().stream(request)
-    }
-}
-
-/// The ids of sends that got no answer, which the host may have taken, by
-/// session and text.
-private final class UnansweredSends: Sendable {
-    private let ids = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
-
-    func id(session: String, text: String) -> String {
-        ids.withLock { ids in
-            let key = session + "\u{0}" + text
-            if let id = ids[key] { return id }
-            let id = UUID().uuidString
-            ids[key] = id
-            return id
-        }
-    }
-
-    func answered(session: String, text: String) {
-        _ = ids.withLock { $0.removeValue(forKey: session + "\u{0}" + text) }
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 /// A `mermaid` block drawn as its diagram, no wider than the text around
 /// it. A spinner shows while it's drawn; a broken one shows its text and
 /// what's wrong with it. Clicking it opens it large in its own window.
+/// Scrolled away and back, it shows as it did, with no spinner between.
 package struct MermaidDiagram: View {
     let source: String
     @Environment(\.colorScheme) private var colorScheme
@@ -21,8 +22,11 @@ package struct MermaidDiagram: View {
     private var dark: Bool { colorScheme == .dark }
 
     package var body: some View {
-        // Drawn before, it shows at once, with no spinner.
-        let drawn = drawn ?? MermaidRenderer.shared.cached(source, dark: dark).map(Drawn.image)
+        // Drawn before, or found to have a mistake, it shows at once, with
+        // no spinner: a row scrolled back into view has lost what it showed.
+        let drawn =
+            drawn ?? MermaidRenderer.shared.cached(source, dark: dark).map(Drawn.image)
+            ?? MermaidRenderer.shared.cachedFailure(source, dark: dark).map(Drawn.failed)
         Group {
             switch drawn {
             case .image(let image):

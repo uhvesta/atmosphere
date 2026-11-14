@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import Foundation
 import HumataDaemonClient
 import HumataHosts
 import XCTest
@@ -31,7 +32,7 @@ final class HostsFeatureTests: XCTestCase {
 
         await store.send(.installTapped("gpu"))
         XCTAssertEqual(store.state.health["gpu"], .installing)
-        await store.receive(\.checked)
+        await store.receive(\.installed)
         guard case .known(.reachable(let status)) = store.state.health["gpu"] else {
             return XCTFail("installed, gpu still isn't reachable")
         }
@@ -224,6 +225,174 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertNil(store.state.editor?.update)
         XCTAssertEqual(store.state.editor?.setupScript, "apt-get install -y ripgrep\n")
         await store.skipReceivedActions(strict: false)
+    }
+
+    func testASaveThatAnswersAfterAnotherHostIsPickedLeavesThatHostsEditorAlone() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.addHost("near", "me@near")
+        let (saveAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (saveAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let update = client.updateHost
+        client.updateHost = { host, changes in
+            asked.yield()
+            for await _ in saveAnswers { break }
+            return try await update(host, changes)
+        }
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected("far"))
+        await store.send(\.editor.binding.setupScript, "apt-get install -y ripgrep\n")
+        await store.send(\.editor.saveTapped)
+        for await _ in saveAsked { break }
+
+        await store.send(.selected("near"))
+        answer.yield()
+        await store.receive(\.editor.delegate.saved)
+        XCTAssertEqual(store.state.editor?.host.id, "near")
+        XCTAssertNil(store.state.editor?.update)
+        XCTAssertEqual(store.state.hosts[id: "far"]?.setupScript, "apt-get install -y ripgrep\n")
+
+        // Saved, far has nothing left to bring back.
+        await store.send(.selected("far"))
+        XCTAssertNil(store.state.editor?.update)
+        XCTAssertEqual(store.state.editor?.setupScript, "apt-get install -y ripgrep\n")
+        await store.skipReceivedActions(strict: false)
+    }
+
+    func testASaveThatFailsAfterAnotherHostIsPickedSaysSoAndKeepsWhatWasChanged() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.addHost("near", "me@near")
+        let (saveAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (saveAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        client.updateHost = { _, _ in
+            asked.yield()
+            for await _ in saveAnswers { break }
+            throw DaemonError.unexpected("no answer")
+        }
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected("far"))
+        await store.send(\.editor.binding.setupScript, "apt-get install -y ripgrep\n")
+        await store.send(\.editor.saveTapped)
+        for await _ in saveAsked { break }
+
+        await store.send(.selected("near"))
+        answer.yield()
+        await store.receive(\.editor.delegate.saveFailed)
+        XCTAssertNotNil(store.state.destination?.alert)
+        XCTAssertEqual(store.state.editor?.host.id, "near")
+        XCTAssertNil(store.state.editor?.alert)
+        XCTAssertNil(store.state.editor?.update)
+
+        await store.send(.selected("far"))
+        XCTAssertEqual(store.state.editor?.setupScript, "apt-get install -y ripgrep\n")
+        XCTAssertEqual(store.state.editor?.canSave, true)
+        await store.skipReceivedActions(strict: false)
+    }
+
+    func testAHostsLateListingDoesntShowUnderTheHostPickedAfterIt() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        daemon.addFile("/home/me/far.txt", Data("far\n".utf8), on: "far")
+        daemon.addFile("/Users/me/mac.txt", Data("mac\n".utf8))
+        let (farAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (farAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let list = client.listFolder
+        client.listFolder = { place, directory in
+            if place.host == "far" {
+                asked.yield()
+                for await _ in farAnswers { break }
+            }
+            return try await list(place, directory)
+        }
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected("far"))
+        await store.send(\.files.task)
+        for await _ in farAsked { break }
+
+        await store.send(.selected(""))
+        await store.send(\.files.task)
+        await store.receive(\.files.folderRead)
+        XCTAssertEqual(store.state.files?.rows.map(\.path), ["mac.txt"])
+
+        answer.yield()
+        await store.finish()
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.files?.root, "/Users/me")
+        XCTAssertEqual(store.state.files?.rows.map(\.path), ["mac.txt"])
+    }
+
+    func testACheckThatAnswersDuringAnInstallLeavesItInstalling() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("gpu", "me@gpu")
+        let (installAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (installAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        let installs = LockIsolated(0)
+        var client = daemon.client
+        let install = client.installHost
+        client.installHost = { host in
+            installs.withValue { $0 += 1 }
+            asked.yield()
+            for await _ in installAnswers { break }
+            return try await install(host)
+        }
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.checked)
+        await store.send(.installTapped("gpu"))
+        for await _ in installAsked { break }
+
+        // A check asked before the install answers while it runs.
+        await store.send(.checked("gpu", .unreachable("Humata's program isn't on gpu yet.")))
+        XCTAssertEqual(store.state.health["gpu"], .installing)
+        await store.send(.checkTapped("gpu"))
+        XCTAssertEqual(store.state.health["gpu"], .installing)
+        await store.send(.installTapped("gpu"))
+        XCTAssertEqual(installs.value, 1)
+
+        answer.yield()
+        await store.receive(\.installed)
+        guard case .known(.reachable) = store.state.health["gpu"] else {
+            return XCTFail("installed, gpu still isn't reachable: \(String(describing: store.state.health["gpu"]))")
+        }
+        // Left while it installs, the list checks the host again when it shows.
+        var leaving = store.state
+        leaving.health["gpu"] = .installing
+        XCTAssertNil(leaving.settled().health["gpu"])
     }
 
     func testRemovingAHostAsksFirst() async throws {

@@ -258,27 +258,62 @@ impl Daemon {
         Ok(pb::PullRequests { pull_requests })
     }
 
+    /// One round of the follower, at `now`: reads the open pull requests
+    /// again if `reads` and GitHub's rate limit isn't on, and otherwise
+    /// only tries the clean-ups again. `limited_until` is when a rate
+    /// limit a read ran into ends, kept between rounds: GitHub asks not to
+    /// be asked meanwhile, and may lengthen the limit for those who do.
+    pub(crate) async fn follow_round(
+        &self,
+        reads: bool,
+        limited_until: &mut Option<tokio::time::Instant>,
+        now: tokio::time::Instant,
+    ) {
+        if limited_until.is_some_and(|until| now >= until) {
+            *limited_until = None;
+        }
+        // Missing a read is fine: the next one catches up, and the person
+        // sees why when they open the task.
+        if reads && limited_until.is_none() {
+            let (limited_for, _) = self.follow_pulls().await;
+            *limited_until = limited_for.map(|wait| now + wait);
+        } else {
+            let _ = self.retry_cleanups().await;
+        }
+    }
+
     /// Reads every open pull request again, and finishes the sessions whose
     /// pull requests have all merged, trying again those whose host
     /// couldn't be reached before. A pull request that can't be read keeps
-    /// why; a clean-up that fails doesn't stop the others, and the first
-    /// such failure is returned at the end.
-    async fn follow_pulls(&self) -> Result<(), DaemonError> {
-        let open = self.store.open_pulls()?;
-        let mut sessions = self.store.cleanups_pending()?;
+    /// why; a clean-up that fails doesn't stop the others. Returns how
+    /// long GitHub asked to be left alone, if a read ran into its rate
+    /// limit, and the first failure.
+    async fn follow_pulls(&self) -> (Option<Duration>, Result<(), DaemonError>) {
+        let listed = self
+            .store
+            .open_pulls()
+            .and_then(|open| Ok((open, self.store.cleanups_pending()?)));
+        let (open, mut sessions) = match listed {
+            Ok(listed) => listed,
+            Err(error) => return (None, Err(error.into())),
+        };
         for pull in &open {
             if !sessions.contains(&pull.session) {
                 sessions.push(pull.session.clone());
             }
         }
         let mut failed = None;
-        if let Err(error) = self.read_pulls(open).await {
-            failed.get_or_insert(error);
+        let mut limited_for = None;
+        match self.read_pulls(open).await {
+            Ok(limited) => limited_for = limited,
+            Err(error) => {
+                failed.get_or_insert(error);
+            }
         }
         if let Err(error) = self.finish_all(&sessions).await {
             failed.get_or_insert(error);
         }
-        failed.map_or(Ok(()), Err)
+        (limited_for, failed.map_or(Ok(()), Err))
     }
 
     /// Tries again the clean-ups whose host couldn't be reached before,
@@ -304,10 +339,12 @@ impl Daemon {
     /// Reads each of `open` again. One that can't be read keeps why, shown
     /// on it until it is; a failure that would fail the rest the same way,
     /// such as no token or the rate limit, is kept on each of them unread.
-    /// Fails only when what went wrong couldn't be kept.
-    async fn read_pulls(&self, open: Vec<PullRequest>) -> Result<(), DaemonError> {
+    /// Fails only when what went wrong couldn't be kept. Returns how long
+    /// GitHub asked to be left alone, if a read ran into its rate limit.
+    async fn read_pulls(&self, open: Vec<PullRequest>) -> Result<Option<Duration>, DaemonError> {
+        let mut limited_for = None;
         if open.is_empty() {
-            return Ok(());
+            return Ok(limited_for);
         }
         // GitHub, or why none of them can be read.
         let mut reading = self
@@ -328,12 +365,15 @@ impl Daemon {
             if let Err(error) = self.read_pull(&github, pull).await {
                 let problem = error.to_string();
                 self.store.pull_problem(&session, &repository, &problem)?;
+                if let DaemonError::GitHub(GitHubError::RateLimited { wait_minutes }) = &error {
+                    limited_for = Some(Duration::from_secs(wait_minutes.saturating_mul(60)));
+                }
                 if stops_reading(&error) {
                     reading = Err(problem);
                 }
             }
         }
-        Ok(())
+        Ok(limited_for)
     }
 
     /// Reads `pull`'s state, reviews, checks and review comments, and keeps
@@ -559,6 +599,7 @@ pub(super) async fn follow(
 ) {
     // The first read waits a while, as the daemon has only just started.
     let mut last = tokio::time::Instant::now();
+    let mut limited_until = None;
     loop {
         let refresh = match daemon.upgrade() {
             // A setting that can't be read is followed as the default.
@@ -587,13 +628,7 @@ pub(super) async fn follow(
             return;
         };
         last = tokio::time::Instant::now();
-        // Missing a read is fine: the next one catches up, and the person
-        // sees why when they open the task.
-        let _ = if reads {
-            daemon.follow_pulls().await
-        } else {
-            daemon.retry_cleanups().await
-        };
+        daemon.follow_round(reads, &mut limited_until, last).await;
     }
 }
 

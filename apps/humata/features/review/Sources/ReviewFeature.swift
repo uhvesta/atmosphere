@@ -47,8 +47,16 @@ package struct ReviewFeature {
         package var selected: FileRef?
         /// Shows every line of the selected file, changed or not.
         package var wholeFile = false
-        /// The selected file read whole, once it is.
-        package var whole: FileDiff?
+        /// The file last read whole, with which file it is: two repositories
+        /// can each have one at the same path.
+        var wholeRead: Whole?
+        /// Numbers each read of a whole file, so only the latest one's
+        /// answer shows.
+        var wholeRequest = 0
+        /// The selected file is being read whole.
+        package var readingWhole = false
+        /// Why the selected file couldn't be read whole, until it is.
+        package var wholeFailure: WholeFailure?
         /// Shows a Markdown file rendered, its blocks commented on.
         package var rendered = false
         package var threads: IdentifiedArrayOf<ReviewThread> = []
@@ -74,6 +82,18 @@ package struct ReviewFeature {
         package init(sessionID: String, turns: Int = 0) {
             self.sessionID = sessionID
             self.turns = turns
+        }
+
+        /// A file read whole.
+        struct Whole: Equatable, Sendable {
+            var file: FileRef
+            var diff: FileDiff
+        }
+
+        /// A file that couldn't be read whole, and why.
+        package struct WholeFailure: Equatable, Sendable {
+            package var file: FileRef
+            package var message: String
         }
 
         /// What's kept of a review looked away from while Humata runs: the
@@ -125,10 +145,27 @@ package struct ReviewFeature {
             }
         }
 
-        /// The selected file as shown: whole, or its changes.
+        /// The selected file read whole, once it is.
+        package var whole: FileDiff? {
+            guard let wholeRead, wholeRead.file == selected else { return nil }
+            return wholeRead.diff
+        }
+
+        /// Whether the selected file shows rendered: Rendered is on, it's
+        /// Markdown, and it's still there to read whole.
+        package var showsRendered: Bool {
+            guard rendered, isMarkdown, let selected else { return false }
+            return diff(selected)?.status != .deleted
+        }
+
+        /// The selected file as shown: whole, or its changes. Rendered, it's
+        /// whole or not there yet, never its changes alone: blocks are
+        /// numbered by their place in the lines, which is the file's only
+        /// when every line is there.
         package var file: FileDiff? {
             guard let selected else { return nil }
-            if wholeFile || rendered, let whole, whole.path == selected.path { return whole }
+            if showsRendered { return whole }
+            if wholeFile, let whole { return whole }
             return diff(selected)
         }
 
@@ -184,7 +221,11 @@ package struct ReviewFeature {
         }
 
         package var isMarkdown: Bool {
-            guard let path = selected?.path.lowercased() else { return false }
+            selected.map { Self.isMarkdown($0.path) } ?? false
+        }
+
+        static func isMarkdown(_ path: String) -> Bool {
+            let path = path.lowercased()
             return path.hasSuffix(".md") || path.hasSuffix(".markdown")
         }
     }
@@ -201,7 +242,12 @@ package struct ReviewFeature {
         case appeared
         case loaded(request: Int, [RepositoryChanges], [ReviewThread])
         case loadFailed(request: Int, String)
-        case wholeLoaded(FileDiff?)
+        /// A file read whole, for the numbered read that asked; nil when
+        /// the answer had no such file.
+        case wholeLoaded(FileRef, request: Int, FileDiff?)
+        case wholeFailed(FileRef, request: Int, String)
+        /// Reads the selected file whole again, after it couldn't be.
+        case wholeRetryTapped
         case failed(Doing, String)
         case rangePicked(RangeKind)
         case turnPicked(Int)
@@ -321,13 +367,40 @@ package struct ReviewFeature {
                 state.threads = IdentifiedArray(uniqueElements: threads)
                 if state.selected.map({ selected in !state.files.contains(selected) }) ?? true {
                     state.selected = state.files.first
-                    state.whole = nil
+                    state.wholeRead = nil
+                    state.readingWhole = false
                 }
-                return loadWhole(state)
+                return loadWhole(&state)
 
-            case .wholeLoaded(let file):
-                state.whole = file
+            case .wholeLoaded(let file, let request, _) where file != state.selected || request != state.wholeRequest,
+                .wholeFailed(let file, let request, _) where file != state.selected || request != state.wholeRequest:
+                // For a file picked before this one, or an older read of it.
                 return .none
+
+            case .wholeLoaded(let file, let request, let whole):
+                state.readingWhole = false
+                guard let whole else {
+                    let message = String(
+                        localized: """
+                            \(file.path) wasn’t in the daemon’s answer, so it can’t be shown whole. It may have \
+                            been moved or removed since the changes were last read; they’re read again when \
+                            the session’s next turn ends, or when another range is picked.
+                            """)
+                    return .send(.wholeFailed(file, request: request, message))
+                }
+                state.wholeRead = State.Whole(file: file, diff: whole)
+                state.wholeFailure = nil
+                return .none
+
+            case .wholeFailed(let file, _, let message):
+                state.readingWhole = false
+                state.wholeFailure = State.WholeFailure(file: file, message: message)
+                // Rendered says it where the file would show, with Try Again;
+                // otherwise the changes stay as they were, under an alert.
+                return state.showsRendered && state.whole == nil ? .none : .send(.failed(.reading, message))
+
+            case .wholeRetryTapped:
+                return loadWhole(&state)
 
             case .failed(let doing, let message):
                 state.loading = false
@@ -370,19 +443,21 @@ package struct ReviewFeature {
             case .fileSelected(let file):
                 guard state.selected != file else { return .none }
                 state.selected = file
-                state.whole = nil
+                state.wholeRead = nil
+                state.readingWhole = false
+                state.wholeFailure = nil
                 state.commenting = nil
                 if !state.isMarkdown { state.rendered = false }
-                return loadWhole(state)
+                return loadWhole(&state)
 
             case .wholeFileToggled:
                 state.wholeFile.toggle()
-                return loadWhole(state)
+                return loadWhole(&state)
 
             case .renderedToggled:
                 state.rendered.toggle()
                 state.commenting = nil
-                return loadWhole(state)
+                return loadWhole(&state)
 
             case .lineTapped(let line, let extending):
                 guard state.canComment, let file = state.selected else { return .none }
@@ -485,6 +560,7 @@ package struct ReviewFeature {
                 else { return .none }
                 state.range = .turn(turn)
                 state.selected = thread.file
+                state.readingWhole = false
                 state.wholeFile = false
                 state.rendered = false
                 state.commenting = nil
@@ -533,25 +609,47 @@ package struct ReviewFeature {
         let (request, session) = (state.request, state.sessionID)
         let query = ChangesQuery(range: state.range, context: state.context)
         return .run { send in
-            async let changes = daemon.changes(session, query)
-            async let threads = daemon.threads(session)
-            await send(.loaded(request: request, try await changes, try await threads))
+            let changes = try await daemon.changes(session, query)
+            // After the changes, which take longer: a comment or reply saved
+            // while they were read is among the threads, not wiped by them.
+            let threads = try await daemon.threads(session)
+            await send(.loaded(request: request, changes, threads))
         } catch: { error, send in
             await send(.loadFailed(request: request, error.localizedDescription))
         }
     }
 
-    private func loadWhole(_ state: State) -> Effect<Action> {
-        guard state.wholeFile || state.rendered, let file = state.selected, state.diff(file)?.status != .deleted
+    /// Reads the selected file whole, when Whole File or Rendered shows it.
+    private func loadWhole(_ state: inout State) -> Effect<Action> {
+        guard state.wholeFile || state.showsRendered, let file = state.selected,
+            state.diff(file)?.status != .deleted
         else { return .none }
-        let session = state.sessionID
+        state.wholeRequest += 1
+        state.readingWhole = true
+        state.wholeFailure = nil
+        let (request, session) = (state.wholeRequest, state.sessionID)
         let query = ChangesQuery(range: state.range, context: state.context, file: file, wholeFile: true)
+        let markdown = State.isMarkdown(file.path)
         return .run { send in
-            let changes = try await daemon.changes(session, query)
-            await send(.wholeLoaded(changes.flatMap(\.files).first))
+            let whole = try await daemon.changes(session, query).flatMap(\.files).first
+            // Off the main thread: a long Markdown file takes a moment to
+            // parse, and Rendered then finds it parsed.
+            if markdown, let whole { _ = Self.rendered(whole) }
+            await send(.wholeLoaded(file, request: request, whole))
         } catch: { error, send in
-            await send(.failed(.reading, error.localizedDescription))
+            await send(.wholeFailed(file, request: request, error.localizedDescription))
         }
+        // Not cancelled by the next read: effects start out of the order
+        // they're asked in, so an older read could cancel a newer one.
+        // `.wholeLoaded` drops what's for another file or an older read.
+    }
+
+    /// A whole Markdown file as Rendered draws it: its lines as they are
+    /// after the changes, and their blocks. The read that parses it and the
+    /// view that shows it both ask here, so the view finds it parsed.
+    static func rendered(_ file: FileDiff) -> (lines: [DiffLine], blocks: [MarkdownBlock]) {
+        let lines = file.hunks.flatMap(\.lines).filter { $0.new != nil }
+        return (lines, MarkdownBlock.cached(lines.map(\.text)))
     }
 
     private func edit(_ edit: ChangeEdit, in state: inout State) -> Effect<Action> {

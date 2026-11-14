@@ -79,11 +79,34 @@ impl Daemon {
         }
         if let Some(turns) = turns {
             let kept = self.store.recovery_turns(session).ok().flatten();
-            if kept.is_some_and(|kept| kept >= turns) && !self.lock_backup_failures().owed(session)
-            {
+            if self.backed_up(session, turns, kept) {
                 return;
             }
         }
+        self.start_backup(host, session, turns);
+    }
+
+    /// As [`Self::back_up_soon`] for a session a listing found with `turns`
+    /// turns. `kept` is how many its copy has, None without one: the
+    /// listing reads that for all its sessions at once, not here for each.
+    pub(super) fn back_up_listed(&self, host: &str, session: &str, turns: u32, kept: Option<u32>) {
+        if host.is_empty() || self.backed_up(session, turns, kept) {
+            return;
+        }
+        self.start_backup(host, session, Some(turns));
+    }
+
+    /// Whether a copy of `session` with `kept` turns is all a session with
+    /// `turns` turns needs: it has them, and no backup asked for whatever
+    /// its turns is still owed.
+    fn backed_up(&self, session: &str, turns: u32, kept: Option<u32>) -> bool {
+        kept.is_some_and(|kept| kept >= turns) && !self.lock_backup_failures().owed(session)
+    }
+
+    /// Backs up `session` on `host` in the background, unless a backup of
+    /// it failed too lately to try again. One asked for while another runs
+    /// runs again after it.
+    fn start_backup(&self, host: &str, session: &str, turns: Option<u32>) {
         if self
             .lock_backup_failures()
             .waits(session, turns, Instant::now())

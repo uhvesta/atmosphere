@@ -11,7 +11,7 @@ import SwiftUI
 /// The sidebar and the open session's chat, with the daemon's state above
 /// them when it needs the person.
 package struct AppView: View {
-    let store: StoreOf<AppFeature>
+    @Bindable var store: StoreOf<AppFeature>
 
     package init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -52,6 +52,7 @@ package struct AppView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             DaemonBanner(store: store)
         }
+        .alert($store.scope(state: \.sendFailure, action: \.sendFailure))
         // Mermaid blocks in chats drawn as diagrams.
         .environment(\.codeBlockRenderer, MermaidRenderer.codeBlocks)
         .task {

@@ -1,7 +1,7 @@
 //! The Mac's recovery copies of sessions on other machines, and the hosts
 //! sessions were moved away from.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use humata_wire::pb;
 use prost::Message;
@@ -255,6 +255,27 @@ impl Store {
             )
             .optional()
             .map_err(self.failed())
+    }
+
+    /// How many turns the recovery copy of each of `sessions` has, by its
+    /// id, in one read for a whole listing; nothing for one without a copy.
+    pub fn recovery_turns_many(
+        &self,
+        sessions: &[&str],
+    ) -> Result<HashMap<String, u32>, StoreError> {
+        let ids = serde_json::Value::from(sessions.to_vec()).to_string();
+        let connection = self.lock();
+        let read = (|| {
+            let mut statement = connection.prepare_cached(
+                "SELECT session_id, turns FROM recoveries
+                 WHERE session_id IN (SELECT value FROM json_each(?1))",
+            )?;
+            let rows = statement.query_map([ids], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()
+        })();
+        read.map_err(self.failed())
     }
 
     /// The history in `session`'s recovery copy, as the JSON list of its
@@ -654,5 +675,24 @@ mod tests {
         store.move_host("s", "new", "old").expect("moved back");
         assert!(!store.moved_away("s", "old").expect("read"));
         assert!(store.moved_away("s", "new").expect("read"));
+    }
+
+    #[test]
+    fn the_turns_of_many_copies_are_read_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Store::open(&dir.path().join("humata.sqlite3")).expect("the store opens");
+        store
+            .keep_recovery("a", "far", "chat", &backup(2), &NewEvents::default())
+            .expect("kept");
+        store
+            .keep_recovery("b", "far", "chat", &backup(5), &NewEvents::default())
+            .expect("kept");
+        let turns = store
+            .recovery_turns_many(&["a", "b", "no copy"])
+            .expect("read");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns.get("a"), Some(&2));
+        assert_eq!(turns.get("b"), Some(&5));
+        assert!(store.recovery_turns_many(&[]).expect("read").is_empty());
     }
 }

@@ -104,6 +104,11 @@ pub enum CopilotError {
     },
 
     #[error(
+        "{program} started but didn't answer as a Copilot server within {seconds} seconds, so it was stopped. It may be another program, or a Copilot CLI without server mode: compare `copilot --version` with {COPILOT_VERSION}, the version Humata is tested with, and point HUMATA_COPILOT at that one. If it is the right one, it may only have been slow to start: send again"
+    )]
+    NoHello { program: PathBuf, seconds: u64 },
+
+    #[error(
         "the Copilot CLI speaks protocol version {found}, and Humata speaks {PROTOCOL_VERSION}; use the version Humata is tested with, {COPILOT_VERSION}"
     )]
     Protocol { found: String },
@@ -258,7 +263,7 @@ impl CopilotRunner {
             }
             None => {
                 links.events.clear();
-                if crate::links::had_turns(&turn.history()) {
+                if turn.with_history(crate::links::had_turns)? {
                     turn.emit(EventKind::Notice {
                         text: crate::links::STARTED_OVER.to_owned(),
                     })?;
@@ -522,7 +527,7 @@ impl Runner for CopilotRunner {
         let Some(sessions) = self.session_state() else {
             return Ok(Vec::new());
         };
-        import::not_imported(&self.options.state, import::copilot_importable(&sessions)?)
+        import::copilot_importable(&sessions, &self.options.state)
     }
 
     fn backup(&self, record: &SessionRecord) -> Result<Vec<BackendFile>, AgentError> {
@@ -819,24 +824,26 @@ impl Playing<'_> {
     /// Links Copilot's record of a message to ours: the turn's own, or one
     /// sent to steer it, whichever has its text and isn't linked yet.
     fn link_user_message(&mut self, event: &Value, content: &str) -> Result<(), AgentError> {
-        let history = self.turn.history();
-        let start = history
-            .iter()
-            .rposition(|event| matches!(event.kind, EventKind::TurnStarted))
-            .map_or(0, |started| started.saturating_sub(1));
-        let unlinked: Vec<_> = history[start..]
-            .iter()
-            .filter(|event| !self.links.is_linked(&event.id))
-            .filter_map(|event| match &event.kind {
-                EventKind::UserMessage { text, .. } => Some((event.id.clone(), text.as_str())),
-                _ => None,
-            })
-            .collect();
-        let ours = unlinked
-            .iter()
-            .find(|(_, text)| *text == content)
-            .or_else(|| unlinked.first())
-            .map(|(id, _)| id.clone());
+        let links = &self.links;
+        let ours = self.turn.with_history(|history| {
+            let start = history
+                .iter()
+                .rposition(|event| matches!(event.kind, EventKind::TurnStarted))
+                .map_or(0, |started| started.saturating_sub(1));
+            let unlinked: Vec<_> = history[start..]
+                .iter()
+                .filter(|event| !links.is_linked(&event.id))
+                .filter_map(|event| match &event.kind {
+                    EventKind::UserMessage { text, .. } => Some((&event.id, text.as_str())),
+                    _ => None,
+                })
+                .collect();
+            unlinked
+                .iter()
+                .find(|(_, text)| *text == content)
+                .or_else(|| unlinked.first())
+                .map(|(id, _)| (*id).clone())
+        })?;
         match ours {
             Some(ours) => self.link(event, ours),
             None => Ok(()),

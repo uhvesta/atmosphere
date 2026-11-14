@@ -1013,7 +1013,8 @@ turned on, and then deletes archived sessions after 45 days by default.
   project uses, delete downloaded models. Each says what it removes and
   how much space first, and that it can't be undone
 - [x] Auto-delete, off by default: once on, archived sessions older than
-  45 days (30, 45, 90 or 180) are deleted about daily, while nothing runs
+  45 days (30, 45, 90 or 180) are deleted about daily, while nothing on
+  this Mac runs
 - [x] Never deleted: sessions not archived, keepers, sessions with forks,
   work not pushed or merged, a recovery copy that is the only copy; a
   session on an offline host is deleted once the host is back. What was

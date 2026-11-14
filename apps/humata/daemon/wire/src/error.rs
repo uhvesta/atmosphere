@@ -43,6 +43,14 @@ pub enum WireError {
     },
 
     #[error(
+        "compressing or reading a long message stopped part way, as this program is stopping or the work failed unexpectedly; reconnect and ask again, and if it keeps failing, restart humatad on both sides"
+    )]
+    Stopped {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error(
         "the other side didn't start with a hello, so it may not be humatad; check the command that starts it. On SSH, a login script that prints text breaks the connection: keep it quiet when not interactive"
     )]
     NoHello,

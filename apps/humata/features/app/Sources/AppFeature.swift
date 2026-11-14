@@ -43,6 +43,9 @@ package struct AppFeature {
         var keptSearch: SearchFeature.State?
         var keptBoards: [Project.ID: BoardFeature.State] = [:]
         var keptHosts: HostsFeature.State?
+        /// Says a message wasn't sent to a session no longer open, and
+        /// that it's back in that session's box.
+        @Presents package var sendFailure: AlertState<Action.SendFailure>?
 
         package init() {}
 
@@ -114,6 +117,12 @@ package struct AppFeature {
         case openLoginItemsTapped
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
+        /// A message from a session's box reached the daemon.
+        case sendFinished(Session.ID)
+        /// It didn't, and this is why: the message goes back in its
+        /// session's box, whether or not that session is still open.
+        case sendFailed(SessionFeature.Outgoing, String)
+        case sendFailure(PresentationAction<SendFailure>)
         case board(PresentationAction<BoardFeature.Action>)
         case hosts(PresentationAction<HostsFeature.Action>)
         case search(PresentationAction<SearchFeature.Action>)
@@ -126,6 +135,11 @@ package struct AppFeature {
         case skills(SkillsFeature.Action)
         case plugins(PluginsFeature.Action)
         case models(ModelDefaultsFeature.Action)
+
+        package enum SendFailure: Equatable, Sendable {
+            /// Open the session whose message wasn't sent.
+            case openSession(Session.ID)
+        }
     }
 
     @Dependency(\.daemon) var daemon
@@ -228,9 +242,11 @@ package struct AppFeature {
                 return .none
 
             case .sidebar(.sessionDeleted(let id)):
-                // Closed without keeping what it showed: it won't open again.
+                // Closed without keeping what it showed or what was being
+                // written to it: it won't open again.
                 state.left[id] = nil
                 if state.session?.session.id == id { state.session = nil }
+                SessionFeature.State.forgetDraft(of: id)
                 return .none
 
             case .sidebar(.projectDeleted(let id)):
@@ -329,12 +345,62 @@ package struct AppFeature {
             case .session(.presented(.delegate(.answerRequest(let id, let answer)))):
                 return .send(.sidebar(.requestAnswered(id, answer)))
 
-            case .sidebar, .session, .board, .hosts, .search, .settings, .approvals, .storage, .github, .skills,
-                .plugins, .models:
+            case .session(.presented(.delegate(.send(let outgoing)))):
+                // Sent from here and not from the session, so that looking
+                // at another session doesn't stop it: the daemon may already
+                // have the request, and a failure must still be answered for.
+                return .run { send in
+                    let images = outgoing.images.compactMap(\.image)
+                    if images.isEmpty {
+                        try await daemon.send(outgoing.session, outgoing.text, outgoing.mode)
+                    } else {
+                        try await daemon.sendImages(outgoing.session, outgoing.text, images, outgoing.mode)
+                    }
+                    await send(.sendFinished(outgoing.session))
+                } catch: { error, send in
+                    await send(.sendFailed(outgoing, error.localizedDescription))
+                }
+
+            case .sendFinished(let session):
+                guard state.session?.session.id == session else { return .none }
+                return .send(.session(.presented(.sent)))
+
+            case .sendFailed(let outgoing, let message):
+                if state.session?.session.id == outgoing.session {
+                    return .send(
+                        .session(
+                            .presented(
+                                .sendFailed(
+                                    text: outgoing.typed, pastes: outgoing.pastes, images: outgoing.images,
+                                    message: message))))
+                }
+                // Deleted since, if nothing was kept of it: there's no box
+                // to put the message back in.
+                guard var left = state.left[outgoing.session] else { return .none }
+                SessionFeature.State.keepUnsent(outgoing, in: &left)
+                state.left[outgoing.session] = left
+                let whose = outgoing.name.isEmpty ? "another session" : "“\(outgoing.name)”"
+                state.sendFailure = AlertState {
+                    TextState("Couldn’t send the message to \(whose)")
+                } actions: {
+                    ButtonState(action: .openSession(outgoing.session)) { TextState("Open the Session") }
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState("\(message)\n\nThe message is back in that session’s box. Open it to send it again.")
+                }
+                return .none
+
+            case .sendFailure(.presented(.openSession(let id))):
+                guard state.sidebar.sessions[id: id] != nil else { return .none }
+                return .send(.sidebar(.selected(.session(id))))
+
+            case .sidebar, .session, .sendFailure, .board, .hosts, .search, .settings, .approvals, .storage,
+                .github, .skills, .plugins, .models:
                 return .none
             }
         }
         .ifLet(\.$session, action: \.session) { SessionFeature() }
+        .ifLet(\.$sendFailure, action: \.sendFailure)
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
         .ifLet(\.$search, action: \.search) { SearchFeature() }

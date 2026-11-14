@@ -17,6 +17,11 @@ const COMPRESSED: u32 = 1 << 31;
 /// Shorter ones rarely shrink enough to pay for it.
 const COMPRESS_FROM: usize = 1024;
 
+/// Bodies at least this long are compressed, and decompressed and decoded,
+/// on a thread that may block, so a long history or backup doesn't hold up
+/// the executor. Shorter ones take less time than handing them over.
+const APART_FROM: usize = 64 * 1024;
+
 /// The next envelope, or None if the stream ended between envelopes.
 pub async fn read<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<pb::Envelope>, WireError> {
     let mut length = [0_u8; 4];
@@ -39,12 +44,24 @@ pub async fn read<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<pb::Env
         .read_exact(&mut body)
         .await
         .map_err(|source| WireError::Truncated { length, source })?;
-    if compressed {
-        body = decompress(&body)?;
-    }
-    pb::Envelope::decode(body.as_slice())
-        .map(Some)
-        .map_err(|source| WireError::Decode { source })
+    let envelope = if length >= APART_FROM {
+        tokio::task::spawn_blocking(move || decode(&body, compressed))
+            .await
+            .map_err(|source| WireError::Stopped { source })??
+    } else {
+        decode(&body, compressed)?
+    };
+    Ok(Some(envelope))
+}
+
+/// The envelope in a frame's `body`.
+fn decode(body: &[u8], compressed: bool) -> Result<pb::Envelope, WireError> {
+    let decoded = if compressed {
+        pb::Envelope::decode(decompress(body)?.as_slice())
+    } else {
+        pb::Envelope::decode(body)
+    };
+    decoded.map_err(|source| WireError::Decode { source })
 }
 
 /// The body of a compressed envelope, refusing one that would grow past
@@ -76,18 +93,17 @@ pub async fn write<W: AsyncWrite + Unpin>(
     envelope: &pb::Envelope,
     compress: bool,
 ) -> Result<(), WireError> {
-    let mut body = envelope.encode_to_vec();
-    let mut flag = 0;
-    if compress && body.len() >= COMPRESS_FROM {
-        let smaller = ruzstd::encoding::compress_to_vec(
-            body.as_slice(),
-            ruzstd::encoding::CompressionLevel::Fastest,
-        );
-        if smaller.len() < body.len() {
-            body = smaller;
-            flag = COMPRESSED;
-        }
-    }
+    let body = envelope.encode_to_vec();
+    let apart = body.len() >= APART_FROM;
+    let (body, flag) = if !compress || body.len() < COMPRESS_FROM {
+        (body, 0)
+    } else if apart {
+        tokio::task::spawn_blocking(move || shrunk(body))
+            .await
+            .map_err(|source| WireError::Stopped { source })?
+    } else {
+        shrunk(body)
+    };
     let length = body.len();
     let prefix = u32::try_from(length)
         .ok()
@@ -97,15 +113,35 @@ pub async fn write<W: AsyncWrite + Unpin>(
             max: MAX_FRAME,
         })?
         | flag;
-    let mut frame = Vec::with_capacity(4 + length);
-    frame.extend_from_slice(&prefix.to_be_bytes());
-    frame.extend_from_slice(&body);
-    writer
-        .write_all(&frame)
-        .await
-        .map_err(|source| WireError::Write { source })?;
+    let written = if apart {
+        // Not copied once more to put the prefix before it.
+        match writer.write_all(&prefix.to_be_bytes()).await {
+            Ok(()) => writer.write_all(&body).await,
+            Err(error) => Err(error),
+        }
+    } else {
+        let mut frame = Vec::with_capacity(4 + length);
+        frame.extend_from_slice(&prefix.to_be_bytes());
+        frame.extend_from_slice(&body);
+        writer.write_all(&frame).await
+    };
+    written.map_err(|source| WireError::Write { source })?;
     writer
         .flush()
         .await
         .map_err(|source| WireError::Write { source })
+}
+
+/// `body` compressed with zstd, and the prefix's flag that says so; or as
+/// it is, with no flag, if that isn't smaller.
+fn shrunk(body: Vec<u8>) -> (Vec<u8>, u32) {
+    let smaller = ruzstd::encoding::compress_to_vec(
+        body.as_slice(),
+        ruzstd::encoding::CompressionLevel::Fastest,
+    );
+    if smaller.len() < body.len() {
+        (smaller, COMPRESSED)
+    } else {
+        (body, 0)
+    }
 }

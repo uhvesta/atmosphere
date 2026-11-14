@@ -45,6 +45,8 @@ package struct PluginsFeature {
         package var saving: Set<String> = []
         /// Why they couldn't be listed or the choice saved, and what to do.
         package var failure: String?
+        /// Whether the Mac and hosts are being looked through.
+        package var loading = false
 
         package init(list: PluginList? = nil, projectID: String? = nil) {
             self.list = list
@@ -95,15 +97,18 @@ package struct PluginsFeature {
             switch action {
             case .task, .refreshTapped:
                 state.failure = nil
+                state.loading = true
                 return load()
 
             case .loaded(let list, let projects):
+                state.loading = false
                 state.list = list
                 state.projects = projects.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 if state.project == nil { state.projectID = state.projects.first?.id }
                 return .none
 
             case .failed(let message):
+                state.loading = false
                 state.failure = message
                 state.list = state.list ?? PluginList()
                 return .none
@@ -142,6 +147,7 @@ package struct PluginsFeature {
             case .choiceFailed(let key, let message):
                 state.saving.remove(key)
                 state.failure = message
+                state.loading = true
                 return load()
             }
         }
@@ -169,8 +175,16 @@ package struct PluginsView: View {
             }
         }
         .toolbar {
+            // The first look shows its own spinner in place of the list.
+            if store.loading, store.list != nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking again…")
+                        .foregroundStyle(.secondary)
+                }
+            }
             Button("Look Again", systemImage: "arrow.clockwise") { store.send(.refreshTapped) }
-                .disabled(store.list == nil)
+                .disabled(store.loading || store.list == nil)
         }
         .task { await store.send(.task).finish() }
     }

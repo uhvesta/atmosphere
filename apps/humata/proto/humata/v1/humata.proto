@@ -2039,6 +2039,12 @@ message BoardChange {
 
 message ReadBoardLog {
   string project_id = 1;
+  // Only changes with this id or a later one; 0 for all.
+  uint64 since_change_id = 2;
+  // At most this many, the newest; 0 for all.
+  uint32 limit = 3;
+  // Only this item's changes; empty for every item's.
+  string item_id = 4;
 }
 
 // Newest first.

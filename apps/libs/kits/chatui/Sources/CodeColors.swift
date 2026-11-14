@@ -194,5 +194,10 @@ extension CodeSyntax {
         return string
     }
 
-    @MainActor private static let coloredCode = NSCache<NSString, Kept<AttributedString>>()
+    /// About as many code blocks as a few screens show.
+    @MainActor private static let coloredCode: NSCache<NSString, Kept<AttributedString>> = {
+        let colored = NSCache<NSString, Kept<AttributedString>>()
+        colored.countLimit = 300
+        return colored
+    }()
 }

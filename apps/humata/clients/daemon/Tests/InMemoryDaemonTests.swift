@@ -296,7 +296,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
         let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
         _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "sign in", priority: .high))
-        let log = try await daemon.client.boardLog(project.id)
+        let log = try await daemon.client.boardLog(project.id, nil, nil)
         let (update, add) = (try XCTUnwrap(log.first), try XCTUnwrap(log.last))
 
         let reverted = try await daemon.client.revert(update.id).item
@@ -307,7 +307,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let empty = try await board(daemon, project.id)
         XCTAssertEqual(empty, [])
 
-        let removals = try await daemon.client.boardLog(project.id)
+        let removals = try await daemon.client.boardLog(project.id, nil, nil)
         let removal = try XCTUnwrap(removals.first)
         let back = try await daemon.client.revert(removal.id).item
         XCTAssertEqual(back?.title, "login")
@@ -318,7 +318,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
         let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
         _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "sign in", priority: .high))
-        let log = try await daemon.client.boardLog(project.id)
+        let log = try await daemon.client.boardLog(project.id, nil, nil)
         let edit = try XCTUnwrap(log.first)
         _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "log in", status: .done))
 
@@ -330,12 +330,43 @@ final class InMemoryDaemonTests: XCTestCase {
         XCTAssertEqual(reverted.item?.fields.status, .done)
     }
 
+    func testTheBoardLogReadsFromAChangeOnAndAtMostSoMany() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        for title in ["sign in", "log in", "enter", "open"] {
+            _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: title))
+        }
+        let all = try await daemon.client.boardLog(project.id, nil, nil).map(\.id)
+        XCTAssertEqual(all.count, 5)
+
+        let since = try await daemon.client.boardLog(project.id, all[2], nil).map(\.id)
+        XCTAssertEqual(since, Array(all.prefix(3)))
+        let newest = try await daemon.client.boardLog(project.id, nil, 1).map(\.id)
+        XCTAssertEqual(newest, Array(all.prefix(1)))
+        let both = try await daemon.client.boardLog(project.id, all[3], 2).map(\.id)
+        XCTAssertEqual(both, Array(all.prefix(2)))
+    }
+
+    func testAnItemsLogHasOnlyItsChanges() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let other = try await daemon.client.createItem(project.id, ItemFields(title: "signup"))
+        _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "sign in"))
+        _ = try await daemon.client.updateItem(other.id, ItemUpdate(priority: .high))
+
+        let log = try await daemon.client.itemLog(project.id, task.id)
+        XCTAssertEqual(log.count, 2)
+        XCTAssertEqual(Set(log.map(\.itemID)), [task.id])
+    }
+
     func testAnItemInUseIsNotRemoved() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
         let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
         _ = try await daemon.client.start(StartRequest(backend: .scripted, itemID: task.id))
-        let log = try await daemon.client.boardLog(project.id)
+        let log = try await daemon.client.boardLog(project.id, nil, nil)
         let add = try XCTUnwrap(log.last)
         do {
             _ = try await daemon.client.revert(add.id)

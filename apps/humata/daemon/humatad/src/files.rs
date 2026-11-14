@@ -42,6 +42,15 @@ pub async fn read_apart(root: PathBuf, path: String) -> Result<pb::FileContents,
         })?
 }
 
+/// `folder`, on a thread for blocking work, as it looks at each entry and
+/// a network disk is slow to answer.
+pub async fn folder_apart(root: PathBuf, directory: String) -> Result<pb::Folder, HostError> {
+    let path = root.clone();
+    tokio::task::spawn_blocking(move || folder(&root, &directory))
+        .await
+        .map_err(|source| HostError::ReadFiles { path, source })?
+}
+
 /// Every file under `root` but hidden ones and those in hidden folders,
 /// such as `.git`, by path. It stops at the most it lists, rather than
 /// walking the rest of a tree such as `node_modules`.

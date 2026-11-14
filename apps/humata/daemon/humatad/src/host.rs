@@ -1406,7 +1406,7 @@ impl Host {
             }
             Request::ListFolder(list) => {
                 let root = self.root(&list.session_id, &list.root).await?;
-                Response::Folder(crate::files::folder(&root, &list.directory)?)
+                Response::Folder(crate::files::folder_apart(root, list.directory).await?)
             }
             Request::ReadHistory(read) => {
                 let session = SessionId::new(read.session_id);

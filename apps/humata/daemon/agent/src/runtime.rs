@@ -196,16 +196,15 @@ impl Turn {
         Ok(())
     }
 
-    /// Every event so far, this turn's included.
-    pub fn history(&self) -> Vec<Event> {
-        // A turn's session is never at rest, so this reads nothing.
-        match self.session.log.events() {
-            Ok(events) => events,
-            Err(error) => {
-                eprintln!("humata: couldn't read a running turn's history: {error}");
-                Vec::new()
-            }
-        }
+    /// `read` given every event so far, this turn's included, without
+    /// copying them. The history stays locked meanwhile, so nothing is
+    /// recorded until `read` returns, and `read` mustn't wait.
+    pub(crate) fn with_history<T>(
+        &self,
+        read: impl FnOnce(&[Event]) -> T,
+    ) -> Result<T, AgentError> {
+        // A turn's session is never at rest, so this reads no file.
+        self.session.log.with_events(read)
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
@@ -1257,7 +1256,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn importable(&self) -> Result<Vec<Importable>, AgentError> {
-        let mut found = self.runner.importable()?;
+        let runner = self.runner.clone();
+        // It reads the backend's own files, however many: off the executor.
+        let mut found = tokio::task::spawn_blocking(move || runner.importable())
+            .await
+            .map_err(|source| AgentError::ListingStopped { source })??;
         found.sort_by(|a, b| b.updated_unix_ms.cmp(&a.updated_unix_ms));
         Ok(found)
     }
@@ -1430,9 +1433,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 let control = session.lock();
                 control.running.is_none() && !control.turn_open && control.queue.is_empty()
             };
-            if idle {
+            let sealing = seal.contains(&session.id);
+            // One at rest already has nothing to drop, and its note is as
+            // it was left.
+            if idle && (sealing || session.log.is_loaded()) {
                 let id = session.id.clone();
-                let sealing = seal.contains(&id);
                 // Compressing is slow work: off the executor.
                 let rested = tokio::task::spawn_blocking(move || {
                     session

@@ -1644,10 +1644,18 @@ pub(crate) async fn board(client: &Client, project: &str) -> Vec<(String, pb::It
 }
 
 async fn board_log(client: &Client, project: &str) -> Vec<pb::BoardChange> {
-    let request = pb::request::Kind::ReadBoardLog(pb::ReadBoardLog {
-        project_id: project.to_owned(),
-    });
-    match client.call(request).await {
+    board_log_of(
+        client,
+        pb::ReadBoardLog {
+            project_id: project.to_owned(),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+async fn board_log_of(client: &Client, read: pb::ReadBoardLog) -> Vec<pb::BoardChange> {
+    match client.call(pb::request::Kind::ReadBoardLog(read)).await {
         Ok(pb::response::Kind::BoardLog(log)) => log.changes,
         other => panic!("{other:?}"),
     }
@@ -2039,6 +2047,46 @@ async fn every_board_change_can_be_reverted() {
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(board(&client, &project.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_journal_is_read_from_a_change_on_up_to_a_limit_and_for_one_task() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let first = item(&client, &project.id, "", "first").await;
+    let second = item(&client, &project.id, "", "second").await;
+    let third = item(&client, &project.id, "", "third").await;
+    let all: Vec<u64> = board_log(&client, &project.id)
+        .await
+        .iter()
+        .map(|change| change.id)
+        .collect();
+    assert_eq!(all.len(), 3);
+    let read = |since: u64, limit: u32, item: &str| {
+        board_log_of(
+            &client,
+            pb::ReadBoardLog {
+                project_id: project.id.clone(),
+                since_change_id: since,
+                limit,
+                item_id: item.to_owned(),
+            },
+        )
+    };
+    let items = |changes: Vec<pb::BoardChange>| -> Vec<String> {
+        changes.into_iter().map(|change| change.item_id).collect()
+    };
+
+    // Newest first, from the second change on.
+    assert_eq!(
+        items(read(all[1], 0, "").await),
+        [third.id.clone(), second.id.clone()]
+    );
+    assert_eq!(items(read(0, 1, "").await), [third.id.clone()]);
+    assert_eq!(items(read(0, 0, &first.id).await), [first.id.clone()]);
+    assert!(read(all[0] + 1, 0, "").await.is_empty());
 }
 
 #[tokio::test]
@@ -4154,4 +4202,197 @@ async fn a_host_that_didnt_answer_the_last_list_isnt_waited_for_by_the_next() {
         "the list took {:?}",
         asked.elapsed()
     );
+}
+
+/// Allows what `session` waits for approval of.
+async fn approve_pending(client: &Client, session: &str) {
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    let request = sessions
+        .sessions
+        .iter()
+        .find(|info| info.id == session)
+        .and_then(|info| info.pending.first())
+        .map(|pending| pending.request_id.clone())
+        .unwrap_or_else(|| panic!("{session} waits for no approval: {sessions:?}"));
+    let approved = client
+        .call(pb::request::Kind::Approve(pb::Approve {
+            session_id: session.to_owned(),
+            permission_request_id: request,
+            approved: true,
+        }))
+        .await;
+    assert!(
+        matches!(approved, Ok(pb::response::Kind::Approved(_))),
+        "{approved:?}"
+    );
+}
+
+/// A session of `project` that writes a file, which waits for approval,
+/// then says `reply`.
+async fn writer_that_says(client: &Client, project: &str, reply: &str) -> pb::SessionInfo {
+    let mut request = start_in(project);
+    if let pb::request::Kind::StartSession(start) = &mut request {
+        start.backend_config = serde_json::json!({"rules": [{"when": "", "steps": [
+            {"step": "write_file", "path": "notes.txt", "contents": "kept"},
+            {"step": "say", "text": reply}
+        ]}]})
+        .to_string();
+    }
+    started(client, request).await
+}
+
+#[tokio::test]
+async fn a_session_waiting_for_approval_is_found_by_each_search_and_what_it_says_after_too() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let session = writer_that_says(&client, &project.id, "the ledger is balanced").await;
+    send(&client, &session.id, "tally the invoices").await;
+    waiting(&client, &session.id).await;
+
+    let search = |query: &str| pb::Search {
+        query: query.to_owned(),
+        ..Default::default()
+    };
+    // Nothing is said between these two; both find what was.
+    for _ in 0..2 {
+        let found = searched(&client, search("invoices")).await;
+        assert!(
+            found.hits.iter().any(|hit| hit.session_id == session.id),
+            "{found:?}"
+        );
+    }
+    assert!(searched(&client, search("ledger")).await.hits.is_empty());
+
+    approve_pending(&client, &session.id).await;
+    after_turns(&client, &session.id, 1).await;
+    let found = searched(&client, search("ledger")).await;
+    assert!(
+        found.hits.iter().any(|hit| hit.session_id == session.id),
+        "{found:?}"
+    );
+}
+
+async fn storage(client: &Client) -> pb::Storage {
+    match client
+        .call(pb::request::Kind::GetStorage(pb::GetStorage {}))
+        .await
+    {
+        Ok(pb::response::Kind::Storage(storage)) => storage,
+        other => panic!("no storage: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_hourly_look_cleans_up_while_only_another_machines_session_works() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    // A session at work on a host, as it listed it when it last answered.
+    {
+        let store = Store::open(&state.path().join("humata.sqlite3"))
+            .unwrap_or_else(|error| panic!("couldn't open the store: {error}"));
+        let busy = pb::SessionInfo {
+            id: "busy".to_owned(),
+            name: "busy".to_owned(),
+            state: pb::SessionState::Working.into(),
+            ..Default::default()
+        };
+        store
+            .cache_sessions("off", &[busy])
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    let mut hosts = Hosts::default();
+    hosts.hosts.insert(
+        "off".to_owned(),
+        HostConfig {
+            command: vec!["sh".to_owned(), "-c".to_owned(), "exit 1".to_owned()],
+            ..HostConfig::default()
+        },
+    );
+    let repository = git_repository();
+    let daemon = daemon_itself(state.path(), hosts).await;
+    let client = client_of(daemon.clone()).await;
+    let project = project(&client, repository.path()).await;
+    let session = writer_that_says(&client, &project.id, "done").await;
+    send(&client, &session.id, "write").await;
+    waiting(&client, &session.id).await;
+
+    // A session on this Mac waits mid-turn: no cleanup yet.
+    daemon.look().await;
+    let waited = storage(&client).await;
+    assert!(
+        waited.job.is_none() && waited.cleaned_unix_ms == 0,
+        "{waited:?}"
+    );
+
+    // Once it's idle the cleanup runs, though the host's session still works.
+    approve_pending(&client, &session.id).await;
+    after_turns(&client, &session.id, 1).await;
+    daemon.look().await;
+    let mut cleaned = storage(&client).await;
+    for _ in 0..400 {
+        if cleaned.cleaned_unix_ms > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        cleaned = storage(&client).await;
+    }
+    assert!(cleaned.cleaned_unix_ms > 0, "{cleaned:?}");
+    assert_eq!(cleaned.failure, "");
+    // The history rested by the look is still read.
+    assert_eq!(
+        said(&after_turns(&client, &session.id, 1).await),
+        ["user: write", "agent: done"]
+    );
+}
+
+#[tokio::test]
+async fn saving_a_hosts_setup_script_answers_before_the_script_ends() {
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts
+        .hosts
+        .insert("far".to_owned(), host_reached_by_command(dir.path()).await);
+    let (mac, work) = (dir.path().join("mac"), dir.path().join("work"));
+    for folder in [&mac, &work] {
+        std::fs::create_dir_all(folder).unwrap_or_else(|error| panic!("{error}"));
+    }
+    let client = daemon(&mac, hosts).await;
+    // Its first request connects it.
+    started(&client, start(&work, "far")).await;
+
+    let began = dir.path().join("began");
+    let asked = std::time::Instant::now();
+    let saved = client
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            name: "far".to_owned(),
+            setup_script: Some(format!("touch '{}'; exec sleep 120", began.display())),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(saved, Ok(pb::response::Kind::HostSaved(_))),
+        "{saved:?}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(60),
+        "saving took {:?}",
+        asked.elapsed()
+    );
+    // The script runs all the same, after the answer.
+    for _ in 0..400 {
+        if began.exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the setup script never ran");
 }

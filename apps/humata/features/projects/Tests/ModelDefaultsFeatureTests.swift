@@ -114,9 +114,11 @@ final class ModelDefaultsFeatureTests: XCTestCase {
         await store.receive(\.loaded)
 
         await store.send(.backendPicked(.claude))
+        XCTAssertTrue(store.state.modelsLoading)
         for await _ in claudeAsked { break }
         await store.send(.backendPicked(.copilot))
         await store.receive(\.modelsLoaded)
+        XCTAssertFalse(store.state.modelsLoading)
         answer.yield()
         await store.finish()
 

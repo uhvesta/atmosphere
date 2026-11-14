@@ -70,65 +70,92 @@ package struct ToolCall: Hashable, Sendable {
     }
 
     /// The lines a write takes out and puts in, so it can be judged before
-    /// it is allowed. A whole-file write puts every line in.
+    /// it is allowed. A whole-file write puts every line in. Only the first
+    /// lines are kept, each cut short, with how many there were: a written
+    /// file can be megabytes, and the chat shows no more of it.
     package struct Change: Hashable, Sendable {
-        package var removed: [String]
-        package var added: [String]
+        /// Lines kept across removed and added, the removed ones first.
+        static let lines = 300
+        /// Characters of a line kept: a minified file's one line can be
+        /// megabytes.
+        static let lineLength = 500
+
+        /// The lines kept.
+        package private(set) var removed: [String]
+        package private(set) var added: [String]
+        /// How many lines it takes out and puts in, kept or not.
+        package private(set) var removedCount: Int
+        package private(set) var addedCount: Int
 
         package init(removed: [String], added: [String]) {
-            self.removed = removed
-            self.added = added
+            self.init(cutting: removed, added)
+        }
+
+        /// Keeps the first lines of `removed`, then of `added`, copying
+        /// only those out of the text they are part of.
+        fileprivate init<Removed: Collection, Added: Collection>(cutting removed: Removed, _ added: Added)
+        where Removed.Element: StringProtocol, Added.Element: StringProtocol {
+            removedCount = removed.count
+            addedCount = added.count
+            let keptRemoved = removed.prefix(Self.lines).map { Self.shortened($0) }
+            self.removed = keptRemoved
+            self.added = added.prefix(Self.lines - keptRemoved.count).map { Self.shortened($0) }
+        }
+
+        private static func shortened<Line: StringProtocol>(_ line: Line) -> String {
+            guard line.utf8.count > lineLength else { return String(line) }
+            let start = line.prefix(lineLength)
+            return start.endIndex < line.endIndex ? String(start) + "…" : String(line)
         }
 
         /// The lines going from `old` to `new` takes out and puts in.
         package static func between(_ old: String, _ new: String) -> Change {
             let old = old.isEmpty ? [] : old.components(separatedBy: "\n")
             let new = new.isEmpty ? [] : new.components(separatedBy: "\n")
-            var change = Change(removed: [], added: [])
+            var removed: [String] = []
+            var added: [String] = []
             for step in new.difference(from: old) {
                 switch step {
-                case .remove(_, let line, _): change.removed.append(line)
-                case .insert(_, let line, _): change.added.append(line)
+                case .remove(_, let line, _): removed.append(line)
+                case .insert(_, let line, _): added.append(line)
                 }
             }
-            return change
+            return Change(removed: removed, added: added)
         }
     }
 
-    /// Reads a write's change from its arguments: a replacement (Claude's
-    /// Edit and MultiEdit, Copilot's edit) or a whole file (Write, create,
+    /// Reads from a call's arguments, parsed once, the command or path it
+    /// names and what it writes: a replacement (Claude's Edit and
+    /// MultiEdit, Copilot's edit) or a whole file (Write, create,
     /// write_file).
-    static func change(of argumentsJSON: String) -> Change? {
+    static func parts(of argumentsJSON: String) -> (subject: String?, change: Change?) {
         guard let data = argumentsJSON.data(using: .utf8),
             let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        func lines(_ text: String?) -> [String] {
+        else { return (nil, nil) }
+        let keys = ["command", "file_path", "path", "notebook_path", "pattern", "url", "query", "description"]
+        let subject = keys.lazy.compactMap { arguments[$0] as? String }.first { !$0.isEmpty }
+        return (subject, change(in: arguments))
+    }
+
+    private static func change(in arguments: [String: Any]) -> Change? {
+        func lines(_ text: String?) -> [Substring] {
             guard let text, !text.isEmpty else { return [] }
-            return text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            return text.split(separator: "\n", omittingEmptySubsequences: false)
         }
-        func replacement(_ edit: [String: Any]) -> Change? {
+        func replacement(_ edit: [String: Any]) -> (removed: [Substring], added: [Substring])? {
             let old = (edit["old_string"] ?? edit["old_str"]) as? String
             let new = (edit["new_string"] ?? edit["new_str"]) as? String
             guard old != nil || new != nil else { return nil }
-            return Change(removed: lines(old), added: lines(new))
+            return (lines(old), lines(new))
         }
         if let edits = arguments["edits"] as? [[String: Any]] {
             let changes = edits.compactMap(replacement)
             guard !changes.isEmpty else { return nil }
-            return Change(removed: changes.flatMap(\.removed), added: changes.flatMap(\.added))
+            return Change(cutting: changes.flatMap { $0.removed }, changes.flatMap { $0.added })
         }
-        if let change = replacement(arguments) { return change }
+        if let change = replacement(arguments) { return Change(cutting: change.removed, change.added) }
         let whole = ["content", "contents", "file_text"].lazy.compactMap { arguments[$0] as? String }.first
-        return whole.map { Change(removed: [], added: lines($0)) }
-    }
-
-    /// Reads the command or path from a call's arguments.
-    static func subject(of argumentsJSON: String) -> String? {
-        guard let data = argumentsJSON.data(using: .utf8),
-            let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        let keys = ["command", "file_path", "path", "notebook_path", "pattern", "url", "query", "description"]
-        return keys.lazy.compactMap { arguments[$0] as? String }.first { !$0.isEmpty }
+        return whole.map { Change(cutting: [Substring](), lines($0)) }
     }
 }
 
@@ -311,11 +338,8 @@ struct Chat: Equatable {
         case .toolStarted(let callID, let tool, let arguments):
             calls[callID] = items.count
             running = callID
-            items.append(
-                .tool(
-                    ToolCall(
-                        id: callID, tool: tool, subject: ToolCall.subject(of: arguments),
-                        change: ToolCall.change(of: arguments))))
+            let parts = ToolCall.parts(of: arguments)
+            items.append(.tool(ToolCall(id: callID, tool: tool, subject: parts.subject, change: parts.change)))
         case .toolCompleted(let callID, let success, let output):
             if running == callID { running = nil }
             guard let index = calls[callID], case .tool(var call) = items[index] else { return }

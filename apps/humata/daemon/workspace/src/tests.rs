@@ -565,3 +565,83 @@ async fn a_rewind_puts_the_files_back_and_undoing_it_brings_the_newer_ones_back(
         Some("made later\n")
     );
 }
+
+/// The names of the temporary indexes under `root`.
+fn indexes(root: &Path) -> Vec<String> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".index-"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_snapshot_stopped_part_way_leaves_no_temporary_index() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repository = repository(dir.path(), "app");
+    let root = dir.path().join("worktrees");
+    let workspaces = Workspaces::new(&root);
+    let checkouts = workspaces
+        .create("s", std::slice::from_ref(&repository), &[])
+        .await
+        .expect("created");
+
+    // Each is run until its index is there, then dropped, as a turn stopped
+    // during its snapshot drops it. One that finishes first is tried again.
+    let mut stopped = false;
+    for turn in 0..50 {
+        let mut snapshot = Box::pin(workspaces.snapshot("s", turn, &checkouts));
+        let finished = loop {
+            if tokio::time::timeout(Duration::from_millis(1), &mut snapshot)
+                .await
+                .is_ok()
+            {
+                break true;
+            }
+            if !indexes(&root).is_empty() {
+                break false;
+            }
+        };
+        drop(snapshot);
+        if !finished {
+            stopped = true;
+            break;
+        }
+    }
+    assert!(stopped, "no snapshot was caught part way");
+
+    // A copy of the index under way ends on its own thread first.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !indexes(&root).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "left behind: {:?}",
+            indexes(&root)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[test]
+fn opening_removes_temporary_indexes_left_long_ago_and_keeps_fresh_ones() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let root = dir.path().join("worktrees");
+    std::fs::create_dir_all(&root).expect("made the folder");
+    // Process 0 is never this one.
+    let (old, fresh) = (root.join(".index-0-1"), root.join(".index-0-2"));
+    std::fs::write(&old, "an index").expect("wrote");
+    std::fs::write(&fresh, "an index").expect("wrote");
+    let long_ago = SystemTime::now() - Duration::from_secs(2 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&old)
+        .and_then(|file| file.set_modified(long_ago))
+        .expect("aged");
+
+    let _workspaces = Workspaces::new(&root);
+
+    assert!(!old.exists());
+    assert!(fresh.exists());
+}

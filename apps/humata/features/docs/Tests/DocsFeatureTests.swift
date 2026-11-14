@@ -138,6 +138,74 @@ final class DocsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.lines?.first, "# Plan")
     }
 
+    func testAFileIsReadWithTheLinesItThenShows() async throws {
+        let (daemon, session) = try await chat()
+        let store = store(daemon, session)
+        let carried = LockIsolated<[String]?>(nil)
+        await store.send(.refresh)
+        await store.receive { action in
+            guard case .read(_, let lines, _, _) = action else { return false }
+            carried.setValue(lines)
+            return true
+        }
+        XCTAssertEqual(carried.value, ["# Plan", "", "Ship the reader.", "Then the chat."])
+        XCTAssertEqual(store.state.lines, carried.value)
+    }
+
+    func testACommentAddedWhileTheOthersAreSentStaysADraft() async throws {
+        let (daemon, session) = try await chat()
+        let (held, release) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let send = client.send
+        client.send = { session, text, mode in
+            for await _ in held { break }
+            try await send(session, text, mode)
+        }
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.read)
+        await store.send(.lineTapped(1, extending: false))
+        await store.send(.binding(.set(\.comment, "Rename it.")))
+        await store.send(.commentSaved)
+
+        await store.send(.sendTapped)
+        await store.send(.lineTapped(3, extending: false))
+        await store.send(.binding(.set(\.comment, "Say which reader.")))
+        await store.send(.commentSaved)
+        XCTAssertEqual(store.state.drafts.count, 2)
+
+        release.yield()
+        await store.receive(\.sent)
+        XCTAssertEqual(store.state.drafts.map(\.text), ["Say which reader."])
+        XCTAssertFalse(store.state.sending)
+    }
+
+    func testAClickedBlocksQuoteIsCutShortButSelectedTextIsKeptWhole() async throws {
+        let (daemon, session) = try await chat()
+        let store = store(daemon, session)
+        await store.send(.refresh)
+        await store.receive(\.read)
+        let long = (1...40).map { "Line \($0) of a long block." }.joined(separator: "\n")
+
+        await store.send(.blockTapped(startLine: 1, endLine: 40, quote: long))
+        let quote = try XCTUnwrap(store.state.picked?.quote)
+        XCTAssertLessThan(quote.count, long.count)
+        XCTAssertTrue(quote.hasPrefix("Line 1 of a long block.\nLine 2 of a long block."))
+        XCTAssertFalse(quote.contains("Line 40"))
+
+        await store.send(.textSelected(startLine: 1, endLine: 40, quote: long))
+        XCTAssertEqual(store.state.picked?.quote, long)
+
+        await store.send(.blockTapped(startLine: 3, endLine: 4, quote: "Ship the reader.\nThen the chat."))
+        XCTAssertEqual(store.state.picked?.quote, "Ship the reader.\nThen the chat.")
+    }
+
     func testAFailedSendKeepsTheDrafts() async throws {
         let (daemon, session) = try await chat()
         let store = store(daemon, session)

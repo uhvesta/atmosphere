@@ -27,7 +27,8 @@ package struct FileBrowserView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let failure = store.failure {
+            // Until the root is read, the tree's place says why it wasn't.
+            if let failure = store.failure, store.root != nil {
                 Label(failure, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .padding(8)
@@ -39,8 +40,7 @@ package struct FileBrowserView: View {
     }
 
     private var isMarkdown: Bool {
-        guard let path = store.selected else { return false }
-        return ["md", "markdown"].contains((path as NSString).pathExtension.lowercased())
+        store.selected.map(FileBrowserFeature.isMarkdown) ?? false
     }
 
     private var toolbar: some View {
@@ -84,8 +84,18 @@ package struct FileBrowserView: View {
 
     @ViewBuilder private var tree: some View {
         if store.root == nil {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let failure = store.failure {
+                ContentUnavailableView {
+                    Label("Can't Read the Folder", systemImage: "folder")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("Try Again") { store.send(.task) }
+                }
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         } else if store.folders[""]?.isEmpty ?? true {
             ContentUnavailableView("Empty Folder", systemImage: "folder")
         } else {
@@ -96,8 +106,19 @@ package struct FileBrowserView: View {
                         .onTapGesture {
                             store.send(row.entry.isDirectory ? .folderToggled(row.path) : .fileSelected(row.path))
                         }
-                    if row.entry.isDirectory, store.expanded.contains(row.path), store.cut.contains(row.path) {
-                        cutNote(depth: row.depth + 1)
+                    if row.entry.isDirectory, store.expanded.contains(row.path) {
+                        if store.folders[row.path] == nil {
+                            // A folder on a host takes a moment to list.
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Reading…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.leading, CGFloat(row.depth + 1) * 14 + 20)
+                        } else if store.cut.contains(row.path) {
+                            cutNote(depth: row.depth + 1)
+                        }
                     }
                 }
                 if store.cut.contains("") { cutNote(depth: 0) }
@@ -117,6 +138,14 @@ package struct FileBrowserView: View {
         if let path = store.selected {
             if let contents = store.contents, contents.path == path {
                 FileContentsView(contents: contents, rendered: rendered && isMarkdown)
+            } else if let failure = store.unread {
+                ContentUnavailableView {
+                    Label("Can't Read the File", systemImage: "doc")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("Try Again") { store.send(.refreshTapped) }
+                }
             } else {
                 ProgressView()
             }
@@ -165,7 +194,6 @@ private struct FileContentsView: View {
 
     var body: some View {
         if let text = contents.text {
-            let lines = text.components(separatedBy: "\n")
             VStack(spacing: 0) {
                 if contents.truncated {
                     Label(
@@ -181,7 +209,7 @@ private struct FileContentsView: View {
                 if rendered {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(MarkdownBlock.cached(lines)) { block in
+                            ForEach(MarkdownBlock.cached(text)) { block in
                                 MarkdownBlockView(block: block)
                             }
                         }
@@ -189,7 +217,7 @@ private struct FileContentsView: View {
                         .padding()
                     }
                 } else {
-                    SourceText(path: contents.path, lines: lines)
+                    SourceText(path: contents.path, lines: text.components(separatedBy: "\n"))
                 }
             }
         } else if let data = contents.data, let image = NSImage(data: data) {

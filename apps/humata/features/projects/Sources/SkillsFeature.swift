@@ -33,6 +33,8 @@ package struct SkillsFeature {
         package var saving: Set<SkillClash.ID> = []
         /// Why they couldn't be listed or the pick saved, and what to do.
         package var failure: String?
+        /// Whether the Mac and hosts are being looked through.
+        package var loading = false
 
         package init(list: SkillList? = nil) {
             self.list = list
@@ -78,14 +80,17 @@ package struct SkillsFeature {
             switch action {
             case .task, .refreshTapped:
                 state.failure = nil
+                state.loading = true
                 return load()
 
             case .loaded(let list, let projects):
+                state.loading = false
                 state.list = list
                 state.projects = Dictionary(projects.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
                 return .none
 
             case .failed(let message):
+                state.loading = false
                 state.failure = message
                 state.list = state.list ?? SkillList()
                 return .none
@@ -111,6 +116,7 @@ package struct SkillsFeature {
             case .pickFailed(let id, let message):
                 state.saving.remove(id)
                 state.failure = message
+                state.loading = true
                 return load()
 
             case .showInFinderTapped(let path):
@@ -166,8 +172,16 @@ package struct SkillsView: View {
             }
         }
         .toolbar {
+            // The first look shows its own spinner in place of the list.
+            if store.loading, store.list != nil {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking again…")
+                        .foregroundStyle(.secondary)
+                }
+            }
             Button("Look Again", systemImage: "arrow.clockwise") { store.send(.refreshTapped) }
-                .disabled(store.list == nil)
+                .disabled(store.loading || store.list == nil)
         }
         .task { await store.send(.task).finish() }
     }

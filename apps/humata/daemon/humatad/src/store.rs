@@ -2,7 +2,7 @@
 //! each session belongs to. A session's history stays with the agent on its
 //! host; this only says where to find it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1195,14 +1195,25 @@ impl Store {
     }
 
     /// Changes the fields `patch` sets, recording the change if there is
-    /// one.
+    /// one. The item is read and written under one lock, so two updates of
+    /// different fields at once both land and each change records what was
+    /// there before it.
     pub fn update_item(
         &self,
         id: &str,
         patch: ItemPatch,
         author: &Author,
     ) -> Result<Item, StoreError> {
-        let item = self.item(id)?;
+        let mut connection = self.lock();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        let read = |transaction: &Transaction<'_>| {
+            transaction
+                .query_row(&format!("{ITEM_COLUMNS} WHERE id = ?1"), [id], item_row)
+                .optional()
+        };
+        let item = read(&transaction)
+            .map_err(self.failed())?
+            .ok_or_else(|| StoreError::UnknownItem { id: id.to_owned() })?;
         let mut fields = item.fields.clone();
         if let Some(title) = patch.title {
             if title.trim().is_empty() {
@@ -1219,12 +1230,10 @@ impl Store {
         if let Some(priority) = patch.priority {
             fields.priority = priority;
         }
-        if fields == item.fields {
-            return Ok(item);
-        }
-        let mut connection = self.lock();
         let updated = (|| {
-            let transaction = connection.transaction()?;
+            if fields == item.fields {
+                return with_sessions(&transaction, item);
+            }
             update_fields(&transaction, id, &fields)?;
             log(
                 &transaction,
@@ -1234,11 +1243,13 @@ impl Store {
                 None,
                 author,
             )?;
-            transaction.commit()
+            // Read back for when it was updated.
+            let item = read(&transaction)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let item = with_sessions(&transaction, item)?;
+            transaction.commit()?;
+            Ok(item)
         })();
-        updated.map_err(self.failed())?;
-        drop(connection);
-        self.item(id)
+        updated.map_err(self.failed())
     }
 
     /// Removes item `id`, logged so reverting the change brings it back,
@@ -1319,13 +1330,29 @@ impl Store {
             let mut statement = connection.prepare(&format!(
                 "{ITEM_COLUMNS} WHERE project_id = ?1 ORDER BY created_unix_ms, rowid"
             ))?;
-            let items: Vec<Item> = statement
+            let mut items: Vec<Item> = statement
                 .query_map([project], item_row)?
                 .collect::<Result<_, _>>()?;
-            items
-                .into_iter()
-                .map(|item| with_sessions(&connection, item))
-                .collect()
+            // Every item's sessions in one read, not a query for each item.
+            let mut statement = connection.prepare_cached(
+                "SELECT sessions.item_id, sessions.id
+                 FROM sessions JOIN items ON items.id = sessions.item_id
+                 WHERE items.project_id = ?1 ORDER BY sessions.rowid",
+            )?;
+            let mut sessions: HashMap<String, Vec<String>> = HashMap::new();
+            let rows = statement.query_map([project], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (item, session) = row?;
+                sessions.entry(item).or_default().push(session);
+            }
+            for item in &mut items {
+                if let Some(ids) = sessions.remove(&item.id) {
+                    item.session_ids = ids;
+                }
+            }
+            Ok(items)
         })();
         let mut items = listed.map_err(self.failed())?;
         // Stable, so equal priorities keep the order they were added in.
@@ -1347,19 +1374,31 @@ impl Store {
         Ok(ordered)
     }
 
-    /// `project`'s board changes, newest first.
-    pub fn board_log(&self, project: &str) -> Result<Vec<Change>, StoreError> {
+    /// `project`'s board changes, newest first: those from change `since`
+    /// on, the newest `limit` of them unless it is 0, and only those to
+    /// `item` unless it is empty.
+    pub fn board_log(
+        &self,
+        project: &str,
+        since: u64,
+        limit: u32,
+        item: &str,
+    ) -> Result<Vec<Change>, StoreError> {
         self.project_exists(project)?;
         let connection = self.lock();
         let listed = (|| -> rusqlite::Result<Vec<Change>> {
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id,
                      approval_id, grant_id
                  FROM board_changes
-                 WHERE project_id = ?1 ORDER BY id DESC",
+                 WHERE project_id = ?1 AND id >= ?2 AND (?4 = '' OR item_id = ?4)
+                 ORDER BY id DESC LIMIT ?3",
             )?;
+            let since = i64::try_from(since).unwrap_or(i64::MAX);
+            // SQLite reads a negative limit as none.
+            let limit = if limit == 0 { -1 } else { i64::from(limit) };
             statement
-                .query_map([project], change_row)?
+                .query_map(params![project, since, limit, item], change_row)?
                 .collect::<Result<_, _>>()
         })();
         listed.map_err(self.failed())
@@ -2178,6 +2217,183 @@ mod tests {
             store.items("nope"),
             Err(StoreError::UnknownProject { .. })
         ));
+    }
+
+    /// A store with one project, and that project's id.
+    fn with_project(dir: &Path) -> (Store, String) {
+        let store = store(dir);
+        let project = store
+            .add_project(
+                "one".into(),
+                repositories("/code/one"),
+                BTreeMap::new(),
+                String::new(),
+                Vec::new(),
+            )
+            .expect("added");
+        (store, project.id)
+    }
+
+    fn task(title: &str) -> ItemFields {
+        ItemFields {
+            parent_id: None,
+            status: Status::Todo,
+            priority: Priority::None,
+            title: title.into(),
+            spec: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_board_log_is_read_from_a_change_on_up_to_a_limit_and_for_one_item() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (store, project) = with_project(dir.path());
+        let author = Author::on(pb::ChangeSurface::Humata);
+        let first = store
+            .add_item(&project, task("first"), &author)
+            .expect("added");
+        let second = store
+            .add_item(&project, task("second"), &author)
+            .expect("added");
+        for (item, status) in [
+            (&first, Status::InProgress),
+            (&second, Status::InProgress),
+            (&first, Status::Done),
+        ] {
+            let patch = ItemPatch {
+                status: Some(status),
+                ..ItemPatch::default()
+            };
+            store
+                .update_item(&item.id, patch, &author)
+                .expect("updated");
+        }
+        let ids = |changes: Vec<Change>| -> Vec<u64> {
+            changes.into_iter().map(|change| change.id).collect()
+        };
+        let all = ids(store.board_log(&project, 0, 0, "").expect("read"));
+        assert_eq!(all.len(), 5);
+        assert!(all.is_sorted_by(|a, b| a > b), "newest first: {all:?}");
+
+        // From the third change on: it and the two after it.
+        let since = ids(store.board_log(&project, all[2], 0, "").expect("read"));
+        assert_eq!(since, all[..3]);
+        // Only the newest.
+        let newest = ids(store.board_log(&project, 0, 1, "").expect("read"));
+        assert_eq!(newest, all[..1]);
+        // The newest of those from the third on.
+        let both = ids(store.board_log(&project, all[2], 2, "").expect("read"));
+        assert_eq!(both, all[..2]);
+        // One item's: added, and moved twice.
+        let of_first = store.board_log(&project, 0, 0, &first.id).expect("read");
+        assert_eq!(of_first.len(), 3);
+        assert!(of_first.iter().all(|change| change.item_id == first.id));
+        // Past the newest there is nothing.
+        let past = store.board_log(&project, all[0] + 1, 0, "").expect("read");
+        assert!(past.is_empty());
+    }
+
+    #[test]
+    fn a_patch_changes_only_its_fields_and_the_log_keeps_what_was_there() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (store, project) = with_project(dir.path());
+        let author = Author::on(pb::ChangeSurface::Humata);
+        let item = store
+            .add_item(&project, task("login"), &author)
+            .expect("added");
+        store
+            .place("s", "", Some(&project), Some(&item.id))
+            .expect("placed");
+
+        let spec = ItemPatch {
+            spec: Some("Sign in with a passkey.".into()),
+            ..ItemPatch::default()
+        };
+        let with_spec = store.update_item(&item.id, spec, &author).expect("updated");
+        let status = ItemPatch {
+            status: Some(Status::Done),
+            ..ItemPatch::default()
+        };
+        let done = store
+            .update_item(&item.id, status, &author)
+            .expect("updated");
+
+        // The second patch left the first one's field as the store had it.
+        assert_eq!(done.fields.spec, "Sign in with a passkey.");
+        assert_eq!(done.fields.status, Status::Done);
+        assert_eq!(done.fields.title, "login");
+        assert_eq!(done.session_ids, ["s"]);
+        assert_eq!(done, store.item(&item.id).expect("read"));
+        let log = store.board_log(&project, 0, 0, "").expect("read");
+        assert_eq!(log[0].before.as_ref(), Some(&with_spec.fields));
+        assert_eq!(log[0].after.as_ref(), Some(&done.fields));
+        assert_eq!(log[1].before.as_ref(), Some(&item.fields));
+
+        // A patch that changes nothing is no change.
+        let same = ItemPatch {
+            status: Some(Status::Done),
+            ..ItemPatch::default()
+        };
+        assert_eq!(
+            store.update_item(&item.id, same, &author).expect("updated"),
+            done
+        );
+        assert_eq!(store.board_log(&project, 0, 0, "").expect("read").len(), 3);
+        // Nor is one refused.
+        let untitled = ItemPatch {
+            title: Some("  ".into()),
+            ..ItemPatch::default()
+        };
+        assert!(matches!(
+            store.update_item(&item.id, untitled, &author),
+            Err(StoreError::NoTitle)
+        ));
+        assert!(matches!(
+            store.update_item("nope", ItemPatch::default(), &author),
+            Err(StoreError::UnknownItem { .. })
+        ));
+        assert_eq!(store.item(&item.id).expect("read"), done);
+    }
+
+    #[test]
+    fn a_projects_items_are_listed_with_the_sessions_on_each_in_the_order_placed() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (store, project) = with_project(dir.path());
+        let author = Author::on(pb::ChangeSurface::Humata);
+        let first = store
+            .add_item(&project, task("first"), &author)
+            .expect("added");
+        let second = store
+            .add_item(&project, task("second"), &author)
+            .expect("added");
+        let empty = store
+            .add_item(&project, task("third"), &author)
+            .expect("added");
+        for (session, item) in [("a", &first), ("b", &second), ("c", &first)] {
+            store
+                .place(session, "", Some(&project), Some(&item.id))
+                .expect("placed");
+        }
+        // One in the project and on no item is on none of them.
+        store
+            .place("loose", "", Some(&project), None)
+            .expect("placed");
+
+        let listed = store.items(&project).expect("listed");
+        let sessions = |id: &str| -> Vec<String> {
+            listed
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.session_ids.clone())
+                .expect("listed")
+        };
+        assert_eq!(sessions(&first.id), ["a", "c"]);
+        assert_eq!(sessions(&second.id), ["b"]);
+        assert!(sessions(&empty.id).is_empty());
+        // As each item reads on its own.
+        for item in &listed {
+            assert_eq!(*item, store.item(&item.id).expect("read"));
+        }
     }
 
     #[test]

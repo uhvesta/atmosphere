@@ -380,6 +380,7 @@ private struct Separately<Content: View>: View {
 private struct ChatList: View {
     let store: StoreOf<SessionFeature>
     @State private var selecting: TextToSelect?
+    @State private var replyParts = ReplyParts()
 
     var body: some View {
         let highlighted = store.highlightedItem
@@ -387,10 +388,15 @@ private struct ChatList: View {
         ScrollViewReader { reader in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(store.items) { item in
-                        ChatRow(item: item, shows: shows(item, highlighted: highlighted), store: store, select: select)
-                            .equatable()
-                            .id(item.id)
+                    ForEach(replyParts.lines(of: store.items, highlighted: highlighted)) { line in
+                        ChatRow(
+                            item: line.item, part: line.part, shows: shows(line.item, highlighted: highlighted),
+                            store: store, select: select
+                        )
+                        .equatable()
+                        // A reply's parts sit as close as its blocks do.
+                        .padding(.top, line.continues ? -4 : 0)
+                        .id(line.id)
                     }
                     TurnInProgress(store: store)
                 }
@@ -483,6 +489,51 @@ private struct ChatList: View {
     }
 }
 
+/// A row of the chat: an item, or one part of a long reply.
+private struct ChatLine: Identifiable {
+    let item: ChatItem
+    /// The part of the reply's text this row shows; nil for all the item.
+    var part: Range<String.Index>?
+    /// It's a part of a reply after its first.
+    var continues = false
+    let id: String
+}
+
+/// A long reply cut into parts, each a row of the chat, so scrolling lays
+/// out only the parts on screen however long the reply; each reply is cut
+/// once.
+@MainActor private final class ReplyParts {
+    private var kept: [String: (length: Int, parts: [Range<String.Index>])] = [:]
+
+    /// The chat's rows. A highlighted reply stays whole, so all of it is
+    /// highlighted.
+    func lines(of items: [ChatItem], highlighted: String?) -> [ChatLine] {
+        var lines: [ChatLine] = []
+        lines.reserveCapacity(items.count)
+        for item in items {
+            guard case .reply(let id, let text) = item, id != highlighted, text.utf8.count > Self.size else {
+                lines.append(ChatLine(item: item, id: item.id))
+                continue
+            }
+            let parts: [Range<String.Index>]
+            if let kept = kept[id], kept.length == text.utf8.count {
+                parts = kept.parts
+            } else {
+                parts = MarkdownText.parts(of: text, size: Self.size).map { $0.startIndex..<$0.endIndex }
+                kept[id] = (text.utf8.count, parts)
+            }
+            for (index, part) in parts.enumerated() {
+                lines.append(
+                    ChatLine(item: item, part: part, continues: index > 0, id: index == 0 ? id : "\(id)/\(index)"))
+            }
+        }
+        return lines
+    }
+
+    /// Bytes of Markdown in a part, about a screen of it.
+    private static let size = 500
+}
+
 /// One row of the chat: a message, thoughts, a tool call or a note. Equal
 /// when its item and what it shows are, whatever its actions, so a change
 /// elsewhere in the session doesn't draw it again. It reads nothing from
@@ -509,12 +560,14 @@ private struct ChatRow: View, Equatable {
     }
 
     let item: ChatItem
+    /// The part of a long reply the row shows; nil for all of the item.
+    var part: Range<String.Index>?
     let shows: Shows
     let store: StoreOf<SessionFeature>
     let select: (String) -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.item == rhs.item && lhs.shows == rhs.shows
+        lhs.item == rhs.item && lhs.part == rhs.part && lhs.shows == rhs.shows
     }
 
     var body: some View {
@@ -560,7 +613,13 @@ private struct ChatRow: View, Equatable {
                 }
             }
         case .reply(_, let text):
-            MessageView(role: .assistant, text: text, select: select)
+            if let part, part.upperBound <= text.endIndex {
+                MarkdownText(String(text[part]))
+                    .selectableOnMac()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                MessageView(role: .assistant, text: text, select: select)
+            }
         case .thinking(let id, let text):
             ThinkingDisclosure(
                 thinking: ModelThinking(text: text), isExpanded: shows.thinkingOpen,
@@ -771,31 +830,28 @@ struct ToolCallView: View {
     }
 }
 
-/// The lines a write takes out, in red, and puts in, in green.
+/// The lines a write takes out, in red, and puts in, in green: those the
+/// change kept, with a note of how many more there are.
 struct ChangeView: View {
     let change: ToolCall.Change
-    /// Lines past this are left out, with a note, to keep the chat quick.
-    private static let shown = 300
-    /// Characters of a line shown: a minified file's one line can be
-    /// megabytes.
-    private static let lineLength = 500
     /// Past this many lines the change scrolls in a box of its own.
     private static let boxedLines = 24
 
     var body: some View {
         let count = change.removed.count + change.added.count
+        let more = change.removedCount + change.addedCount - count
         VStack(alignment: .leading, spacing: 0) {
             if count > Self.boxedLines {
                 // Lazy, so only the lines scrolled to are laid out.
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) { lines(min(count, Self.shown)) }
+                    LazyVStack(alignment: .leading, spacing: 0) { lines(count) }
                 }
                 .frame(height: 320)
             } else {
                 lines(count)
             }
-            if count > Self.shown {
-                Text("\(count - Self.shown) more lines")
+            if more > 0 {
+                Text("\(more) more lines")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(6)
@@ -804,7 +860,7 @@ struct ChangeView: View {
         .textSelection(.enabled)
         .clipShape(.rect(cornerRadius: 8))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(change.removed.count) lines removed, \(change.added.count) added")
+        .accessibilityLabel("\(change.removedCount) lines removed, \(change.addedCount) added")
     }
 
     /// The first `count` lines, the removed ones first, each read only as
@@ -813,20 +869,14 @@ struct ChangeView: View {
         ForEach(0..<count, id: \.self) { index in
             let removed = index < change.removed.count
             let line = removed ? change.removed[index] : change.added[index - change.removed.count]
-            Text(verbatim: "\(removed ? "-" : "+") \(Self.shortened(line))")
+            Text(verbatim: "\(removed ? "-" : "+") \(line)")
                 .font(.caption.monospaced())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 6)
                 .background(removed ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
                 // Colour and glyph don't reach VoiceOver; the words do.
-                .accessibilityLabel(removed ? "Removed: \(Self.shortened(line))" : "Added: \(Self.shortened(line))")
+                .accessibilityLabel(removed ? "Removed: \(line)" : "Added: \(line)")
         }
-    }
-
-    private static func shortened(_ line: String) -> String {
-        guard line.utf8.count > lineLength else { return line }
-        let start = line.prefix(lineLength)
-        return start.endIndex < line.endIndex ? start + "…" : line
     }
 }
 
@@ -1253,19 +1303,32 @@ private struct WaitingStrip: View {
 }
 
 /// The turn under way at the chat's end: why it waits, or the reply as it
-/// streams. Its own view, so each streamed word redraws only this and not
-/// every row of the chat.
+/// streams; that it's stopping, once told to; and before any turn, that a
+/// message is on its way. Its own view, so each streamed word redraws only
+/// this and not every row of the chat.
 private struct TurnInProgress: View {
     let store: StoreOf<SessionFeature>
 
     var body: some View {
-        if store.isWorking, let reason = store.waitReason {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(reason).foregroundStyle(.secondary)
+        if store.stopping {
+            // What's written so far stays until the turn has stopped.
+            if !store.streaming.isEmpty {
+                ReplyInProgress(text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
             }
+            status("Stopping…")
+        } else if store.isWorking, let reason = store.waitReason {
+            status(reason)
         } else if store.isWorking, !store.isWaiting {
             ReplyInProgress(text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
+        } else if store.sending > 0, !store.isWorking {
+            status("Sending…")
+        }
+    }
+
+    private func status(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(text).foregroundStyle(.secondary)
         }
     }
 }
@@ -1388,6 +1451,7 @@ private struct SessionComposer: View {
                 Button("Stop and Edit") { store.send(.stopAndEditTapped) }
                     .font(.caption)
                     .buttonStyle(.borderless)
+                    .disabled(store.stopping)
                     .help("Stop this turn and put your message back in the box")
             }
             .padding(.horizontal, 4)

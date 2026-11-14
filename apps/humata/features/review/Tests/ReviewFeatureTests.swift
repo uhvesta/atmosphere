@@ -332,6 +332,202 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.alert)
     }
 
+    /// A session whose agent wrote two Markdown files.
+    private func documents() async throws -> (InMemoryDaemon, Session) {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .write(path: "a.md", contents: "# A\n\nThe first.\n"),
+                .write(path: "b.md", contents: "# B\n\nThe second.\n"),
+                .say("Done."),
+            ]
+        }
+        let project = try await daemon.client.createProject("Humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "Write the documents", .enqueue)
+        return (daemon, session)
+    }
+
+    func testACommentSavedWhileTheChangesAreReadAgainIsntWipedByThem() async throws {
+        let (daemon, session) = try await session()
+        let holding = LockIsolated(false)
+        let (asked, wasAsked) = AsyncStream.makeStream(of: Void.self)
+        let (answers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let changes = client.changes
+        client.changes = { session, query in
+            let read = try await changes(session, query)
+            if holding.value {
+                wasAsked.yield()
+                for await _ in answers { break }
+            }
+            return read
+        }
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        // The next read of the changes is still going when the comment is saved.
+        holding.setValue(true)
+        await store.send(.refresh)
+        for await _ in asked { break }
+        await store.send(.lineTapped(1, extending: false))
+        await store.send(.binding(.set(\.comment, "Call it total.")))
+        await store.send(.commentSaved)
+        await store.receive(\.threadSaved)
+        XCTAssertEqual(store.state.pending, 1)
+
+        answer.yield()
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.threads.count, 1)
+        XCTAssertEqual(store.state.pending, 1)
+    }
+
+    func testAWholeFileReadThatComesLateDoesntReplaceTheFilePickedAfter() async throws {
+        let (daemon, session) = try await documents()
+        let first = FileRef(repository: "code", path: "a.md")
+        let second = FileRef(repository: "code", path: "b.md")
+        let (firstAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (firstAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let changes = client.changes
+        client.changes = { session, query in
+            // The whole of a.md is held until it's let go.
+            if query.wholeFile, query.file == first {
+                asked.yield()
+                for await _ in firstAnswers { break }
+            }
+            return try await changes(session, query)
+        }
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.selected, first)
+
+        await store.send(.wholeFileToggled)
+        for await _ in firstAsked { break }
+        await store.send(.fileSelected(second))
+        await store.receive(\.wholeLoaded)
+        XCTAssertEqual(store.state.whole?.path, "b.md")
+
+        answer.yield()
+        // a.md's, which changes nothing.
+        await store.receive(\.wholeLoaded)
+        XCTAssertEqual(store.state.whole?.path, "b.md")
+        XCTAssertEqual(store.state.file?.path, "b.md")
+        XCTAssertFalse(store.state.readingWhole)
+    }
+
+    func testRenderedWaitsForTheWholeFileInsteadOfShowingItsChanges() async throws {
+        let (daemon, session) = try await documents()
+        let (answers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let changes = client.changes
+        client.changes = { session, query in
+            if query.wholeFile {
+                for await _ in answers { break }
+            }
+            return try await changes(session, query)
+        }
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.file, "Its changes show until Rendered is on")
+
+        await store.send(.renderedToggled)
+        XCTAssertNil(store.state.file)
+        XCTAssertTrue(store.state.readingWhole)
+
+        answer.yield()
+        await store.receive(\.wholeLoaded)
+        XCTAssertNotNil(store.state.whole)
+        XCTAssertEqual(store.state.file, store.state.whole)
+        XCTAssertFalse(store.state.readingWhole)
+    }
+
+    func testAWholeFileThatCouldntBeReadSaysSoWhereItWouldShowUntilItIs() async throws {
+        let (daemon, session) = try await documents()
+        let reachable = LockIsolated(false)
+        var client = daemon.client
+        let changes = client.changes
+        client.changes = { session, query in
+            if query.wholeFile, !reachable.value { throw DaemonError.disconnected }
+            return try await changes(session, query)
+        }
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.renderedToggled)
+        await store.receive(\.wholeFailed)
+        XCTAssertNotNil(store.state.wholeFailure)
+        XCTAssertNil(store.state.file, "Its changes alone aren't drawn as the document")
+        XCTAssertNil(store.state.alert)
+
+        reachable.setValue(true)
+        await store.send(.wholeRetryTapped)
+        await store.receive(\.wholeLoaded)
+        XCTAssertNil(store.state.wholeFailure)
+        XCTAssertNotNil(store.state.file)
+    }
+
+    func testTwoRepositoriesFilesAtTheSamePathDontShareAWholeFile() async {
+        let one = FileRef(repository: "one", path: "README.md")
+        let two = FileRef(repository: "two", path: "README.md")
+        var state = ReviewFeature.State(sessionID: "s1")
+        state.repositories = ["one", "two"].map { name in
+            RepositoryChanges(
+                name: name, patch: "", files: [FileDiff(path: "README.md", status: .modified, blob: name, hunks: [])])
+        }
+        state.selected = one
+        let (held, release) = AsyncStream.makeStream(of: Void.self)
+        let store = TestStore(initialState: state) {
+            ReviewFeature()
+        } withDependencies: {
+            // Each whole file's blob names its repository; the first one's is
+            // held until it's let go.
+            $0.daemon.changes = { _, query in
+                guard let file = query.file else { return [] }
+                if file == one {
+                    for await _ in held { break }
+                }
+                let whole = FileDiff(path: file.path, status: .unchanged, blob: "whole \(file.repository)", hunks: [])
+                return [RepositoryChanges(name: file.repository, patch: "", files: [whole])]
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.wholeFileToggled)
+        await store.send(.fileSelected(two))
+        await store.receive(\.wholeLoaded)
+        XCTAssertEqual(store.state.file?.blob, "whole two")
+
+        release.yield()
+        // The first repository's, which isn't the second's.
+        await store.receive(\.wholeLoaded)
+        XCTAssertEqual(store.state.file?.blob, "whole two")
+    }
+
     func testAKeptBranchRangeShowsItsBranchInTheField() {
         var left = ReviewFeature.State(sessionID: "s1")
         left.range = .branch("develop")

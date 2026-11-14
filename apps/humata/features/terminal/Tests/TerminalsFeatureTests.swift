@@ -51,6 +51,31 @@ final class TerminalsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.selected, terminal.id)
     }
 
+    func testAListThatCouldntBeReadSaysWhyUntilItsReadAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let terminal = try await daemon.client.openTerminal(HostPlace(host: "build"), .standard)
+        let answers = LockIsolated(false)
+        let store = store(daemon, TerminalsFeature.State(place: HostPlace(host: "build"), opensFirst: false)) {
+            let list = $0.daemon.terminals
+            $0.daemon.terminals = { host in
+                guard answers.value else { throw DaemonError.unexpected("no answer") }
+                return try await list(host)
+            }
+        }
+
+        await store.send(.task)
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.listFailure)
+        XCTAssertFalse(store.state.listed)
+
+        answers.setValue(true)
+        await store.send(.task)
+        XCTAssertNil(store.state.listFailure)
+        await store.receive(\.listed)
+        XCTAssertNil(store.state.listFailure)
+        XCTAssertEqual(store.state.tabs.ids, [terminal.id])
+    }
+
     func testAShellThatExitedShowsItsCodeAndClosingForgetsIt() async throws {
         let daemon = InMemoryDaemon()
         let store = store(daemon, TerminalsFeature.State(place: HostPlace(), opensFirst: false))

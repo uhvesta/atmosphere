@@ -563,6 +563,151 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(page.item.id, item.id)
     }
 
+    func testAMessageThatFailsAfterLookingAwayGoesBackInItsSessionsBox() async throws {
+        let first = Session(id: "unsent-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        let second = Session(id: "unsent-second", name: "second", backend: .scripted, workingDirectory: "/work")
+        let image = DraftImage(
+            id: "i1", name: "shot.png", image: ImageAttachment(mediaType: "image/png", data: Data([1])))
+        var open = SessionFeature.State(session: first)
+        open.readsImages = true
+        open.images = [image]
+        var state = AppFeature.State()
+        state.sidebar.sessions = [first, second]
+        state.sidebar.selection = .session(first.id)
+        state.session = open
+        // The send is still under way when the other session opens.
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.sendImages = { _, _, _, _ in
+                for await _ in answered { break }
+                throw DaemonError.disconnected
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "ship it")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+        await store.send(\.sidebar.selected, .session(second.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, second.id)
+
+        answer.yield()
+        await store.receive(\.sendFailed)
+        XCTAssertNotNil(store.state.sendFailure, "it says which session's message wasn't sent")
+        XCTAssertEqual(store.state.session?.draft, "", "the session now open is left alone")
+        XCTAssertEqual(SessionFeature.State(session: first).draft, "ship it")
+
+        // The alert opens the session, with the message back in its box.
+        await store.send(.sendFailure(.presented(.openSession(first.id))))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, first.id)
+        XCTAssertEqual(store.state.session?.draft, "ship it")
+        XCTAssertEqual(store.state.session?.images.map(\.id), [image.id])
+        XCTAssertNil(store.state.sendFailure)
+    }
+
+    func testAMessageThatFailsWhileItsSessionIsOpenGoesBackInItsBox() async throws {
+        let session = Session(id: "unsent-open", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        state.session = SessionFeature.State(session: session)
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "ship it")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.sendFailed)
+        XCTAssertEqual(store.state.session?.draft, "ship it")
+        XCTAssertEqual(store.state.session?.sending, 0)
+        XCTAssertNotNil(store.state.session?.alert)
+        XCTAssertNil(store.state.sendFailure)
+    }
+
+    func testAMessageToASessionDeletedSinceIsNotKept() async throws {
+        let session = Session(id: "unsent-deleted", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        state.sidebar.selection = .session(session.id)
+        state.session = SessionFeature.State(session: session)
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, _, _ in
+                for await _ in answered { break }
+                throw DaemonError.disconnected
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "ship it")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+        await store.send(\.sidebar.sessionDeleted, session.id)
+        answer.yield()
+        await store.receive(\.sendFailed)
+        XCTAssertNil(store.state.sendFailure)
+        XCTAssertEqual(SessionFeature.State(session: session).draft, "")
+    }
+
+    func testAMessageShowsAsBeingSentUntilTheDaemonHasIt() async throws {
+        let session = Session(id: "sending", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        state.session = SessionFeature.State(session: session)
+        let sent = LockIsolated<[String]>([])
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, text, _ in
+                for await _ in answered { break }
+                sent.withValue { $0.append(text) }
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "ship it")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+        XCTAssertEqual(store.state.session?.sending, 1)
+
+        answer.yield()
+        await store.receive(\.session.sent)
+        XCTAssertEqual(store.state.session?.sending, 0)
+        XCTAssertEqual(sent.value, ["ship it"])
+    }
+
+    func testDeletingASessionForgetsWhatWasBeingWrittenToIt() async throws {
+        let session = Session(id: "deleted-draft", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        state.sidebar.selection = .session(session.id)
+        state.session = SessionFeature.State(session: session)
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "half written")
+        await store.send(\.session.binding.draft, "half written" + String(repeating: "x", count: 2_000))
+        XCTAssertEqual(SessionFeature.State(session: session).draft, "half written")
+        XCTAssertEqual(SessionFeature.State(session: session).pastes.count, 1)
+
+        await store.send(\.sidebar.sessionDeleted, session.id)
+        XCTAssertEqual(SessionFeature.State(session: session).draft, "")
+        XCTAssertEqual(SessionFeature.State(session: session).pastes, [])
+    }
+
     func testLinksThatNameNothingAreIgnored() throws {
         for text in ["humata://session", "humata://elsewhere/x", "https://session/x", "humata://task/only-a-project"] {
             XCTAssertNil(HumataLink(try XCTUnwrap(URL(string: text))), text)

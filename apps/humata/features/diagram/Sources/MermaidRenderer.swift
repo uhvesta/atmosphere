@@ -17,7 +17,8 @@ package enum DiagramError: Error, Equatable {
 /// Draws mermaid diagrams as images, in one web view kept off screen that
 /// runs the bundled mermaid.js with no network. Each image is kept by its
 /// text, appearance and scale, so a diagram scrolled past and back, or in
-/// two places, is drawn once.
+/// two places, is drawn once. So is what's wrong with one whose text has a
+/// mistake, which drawing again wouldn't change.
 @MainActor
 package final class MermaidRenderer {
     /// Over the mermaid.js in the Resources of the bundle this is linked
@@ -54,8 +55,17 @@ package final class MermaidRenderer {
     /// that never answers doesn't hold up every diagram after it.
     private static let patience = Duration.seconds(10)
 
+    /// How many diagrams with a mistake are remembered as such; the one
+    /// found longest ago goes first.
+    private static let mistakesKept = 64
+
     private let resources: URL?
     private let cache = NSCache<NSString, NSImage>()
+    /// What's wrong with each diagram whose text has a mistake. A draw the
+    /// page failed isn't kept: that can pass the next time.
+    private var mistakes: [Key: DiagramError] = [:]
+    /// The keys of `mistakes`, oldest first.
+    private var mistakesFound: [Key] = []
     private var drawing: [Key: Task<Result<NSImage, DiagramError>, Never>] = [:]
     /// The draw before the newest, which the newest waits for: they share
     /// the page.
@@ -74,10 +84,17 @@ package final class MermaidRenderer {
         cache.object(forKey: Self.name(Key(source: source, dark: dark, scale: scale)))
     }
 
+    /// What's wrong with `source`, if drawing it before found a mistake in
+    /// its text.
+    package func cachedFailure(_ source: String, dark: Bool, scale: Double = 1) -> DiagramError? {
+        mistakes[Key(source: source, dark: dark, scale: scale)]
+    }
+
     /// `source` drawn, light or `dark`, at `scale` times its size.
     package func image(_ source: String, dark: Bool, scale: Double = 1) async throws(DiagramError) -> NSImage {
         let key = Key(source: source, dark: dark, scale: scale)
         if let image = cache.object(forKey: Self.name(key)) { return image }
+        if let mistake = mistakes[key] { throw mistake }
         if let running = drawing[key] { return try await running.value.get() }
         let previous = queue
         let task = Task { @MainActor in
@@ -88,10 +105,21 @@ package final class MermaidRenderer {
         queue = Task { _ = await task.value }
         let result = await task.value
         drawing[key] = nil
-        if case .success(let image) = result {
+        switch result {
+        case .success(let image):
             cache.setObject(image, forKey: Self.name(key), cost: Self.bytes(of: image))
+        case .failure(let error):
+            if case .invalid = error { keep(mistake: error, for: key) }
         }
         return try result.get()
+    }
+
+    /// Remembers that `key`'s text has `mistake`.
+    private func keep(mistake: DiagramError, for key: Key) {
+        if mistakes.updateValue(mistake, forKey: key) == nil { mistakesFound.append(key) }
+        if mistakesFound.count > Self.mistakesKept {
+            mistakes[mistakesFound.removeFirst()] = nil
+        }
     }
 
     /// The memory `image`'s largest bitmap takes, at four bytes a pixel;

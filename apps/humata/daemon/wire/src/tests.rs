@@ -461,6 +461,49 @@ async fn a_long_envelope_for_a_peer_that_reads_zstd_is_smaller_and_reads_back_th
     assert_eq!(read, Some(envelope));
 }
 
+/// A message of `text`, as long as a backup or a long history is.
+fn long_message(text: String) -> pb::Envelope {
+    pb::Envelope {
+        id: 9,
+        body: Some(pb::envelope::Body::Request(pb::Request {
+            kind: Some(pb::request::Kind::SendMessage(pb::SendMessage {
+                session_id: "known".to_owned(),
+                text,
+                ..Default::default()
+            })),
+        })),
+    }
+}
+
+#[tokio::test]
+async fn a_very_long_envelope_reads_back_the_same_compressed_or_not() {
+    // One that shrinks to almost nothing, and one that hardly shrinks, so
+    // what's sent is long too.
+    let repeated = "the agent ran the tests and they passed. ".repeat(8_000);
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let varied: String = (0..300_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(b'!' + (state % 90) as u8)
+        })
+        .collect();
+    for text in [repeated, varied] {
+        let envelope = long_message(text);
+        for compress in [false, true] {
+            let mut written = Vec::new();
+            crate::write(&mut written, &envelope, compress)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+            let read = crate::read(&mut written.as_slice())
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+            assert_eq!(read.as_ref(), Some(&envelope), "compressed: {compress}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_corrupt_compressed_envelope_is_refused() {
     let mut compressed = Vec::new();

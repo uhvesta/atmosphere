@@ -211,6 +211,8 @@ pub struct LocalModelRunner {
     /// How long a server may send nothing of a reply before the turn is
     /// stopped.
     stall: Duration,
+    /// How often a turn waiting for the app's model server asks again.
+    retry: Duration,
 }
 
 impl LocalModelRunner {
@@ -228,6 +230,7 @@ impl LocalModelRunner {
             env: Env::default(),
             mcp: None,
             stall: STALL,
+            retry: SERVER_RETRY,
         }
     }
 
@@ -236,6 +239,14 @@ impl LocalModelRunner {
     #[cfg(test)]
     fn with_stall(mut self, stall: Duration) -> Self {
         self.stall = stall;
+        self
+    }
+
+    /// Asks a server that's down again every `retry`, for a test that
+    /// can't wait as long as a person would.
+    #[cfg(test)]
+    fn with_retry(mut self, retry: Duration) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -300,6 +311,7 @@ impl Runner for LocalModelRunner {
         let (base_url, apps) = self.base_url(own.base_url);
         let request = Request {
             url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            models: format!("{}/models", base_url.trim_end_matches('/')),
             api_key: own.api_key.or_else(|| self.defaults.api_key.clone()),
             model: turn
                 .record()
@@ -379,6 +391,8 @@ impl Runner for LocalModelRunner {
 
 struct Request {
     url: String,
+    /// Where the same server lists its models.
+    models: String,
     api_key: Option<String>,
     model: String,
 }
@@ -424,13 +438,12 @@ impl LocalModelRunner {
     ) -> Result<Reply, LocalModelError> {
         let mut waiting = false;
         loop {
-            // Asked afresh each time, so steering sent while it waited is in.
-            let messages = messages(
-                turn.record().instructions.as_deref(),
-                &turn.history(),
-                Some(&turn.images_folder()),
-                budget,
-            );
+            // Built afresh each time, so steering sent while it waited is in.
+            let instructions = turn.record().instructions;
+            let images = turn.images_folder();
+            let messages = turn.with_history(|history| {
+                messages(instructions.as_deref(), history, Some(&images), budget)
+            })?;
             match self.complete(turn, request, tools, messages).await {
                 Err(LocalModelError::Connect { .. }) if apps => {
                     if !waiting {
@@ -439,9 +452,28 @@ impl LocalModelRunner {
                             reason: "Humata's model server isn't running. Open the Humata app on the Mac; the turn goes on when it's back.".to_owned(),
                         })?;
                     }
-                    tokio::time::sleep(SERVER_RETRY).await;
+                    self.server_back(request).await;
                 }
                 reply => return reply,
+            }
+        }
+    }
+
+    /// Waits until the server answers again, asking for its models now and
+    /// then: a small request, where sending the chat again would build the
+    /// whole conversation each time only to find the server still down.
+    async fn server_back(&self, request: &Request) {
+        loop {
+            tokio::time::sleep(self.retry).await;
+            let http = self.http.clone();
+            let url = request.models.clone();
+            let api_key = request.api_key.clone();
+            let asked =
+                tokio::task::spawn_blocking(move || listing(&http, &url, api_key.as_deref())).await;
+            // Any answer will do, and so will an ask that stopped, which
+            // can't say the server is down: the chat request finds out.
+            if !matches!(asked, Ok(Err(LocalModelError::Connect { .. }))) {
+                return;
             }
         }
     }
@@ -669,7 +701,7 @@ fn listing(http: &ureq::Agent, url: &str, api_key: Option<&str>) -> Result<Value
             source,
         })?;
     if status != 200 {
-        text.truncate(4096);
+        cut(&mut text, 4096);
         return Err(LocalModelError::ListStatus {
             url: url.to_owned(),
             status,
@@ -1231,7 +1263,7 @@ async fn run_tool(
                     .ask(PermissionKind::Shell, format!("Run `{command}`"))
                     .await?
                 {
-                    shell(&root, env, &command).await
+                    shell(&root, env, &command, SHELL_TIMEOUT).await
                 } else {
                     denied()
                 }
@@ -1321,7 +1353,40 @@ async fn run_tool(
     })
 }
 
-async fn shell(root: &Path, env: &Env, command: &str) -> (bool, String) {
+/// The process group a shell command runs in, with whatever it started.
+/// Dropped before the shell has ended, it kills them all: at the time
+/// limit, and when the turn is stopped part way through the command.
+struct CommandGroup(Option<rustix::process::Pid>);
+
+impl CommandGroup {
+    /// The group the shell `child` leads.
+    fn of(child: &tokio::process::Child) -> Self {
+        Self(
+            child
+                .id()
+                .and_then(|pid| i32::try_from(pid).ok())
+                .and_then(rustix::process::Pid::from_raw),
+        )
+    }
+
+    /// The shell has ended, so what it left running in the background is
+    /// left to run.
+    fn ended(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for CommandGroup {
+    fn drop(&mut self) {
+        if let Some(group) = self.0 {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// Runs `command` with `/bin/sh` in `root`, for at most `limit`: what it
+/// printed, and whether it succeeded.
+async fn shell(root: &Path, env: &Env, command: &str, limit: Duration) -> (bool, String) {
     let spawned = tokio::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(command)
@@ -1330,12 +1395,15 @@ async fn shell(root: &Path, env: &Env, command: &str) -> (bool, String) {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // A group of its own, so stopping it stops what it started too.
+        .process_group(0)
         .kill_on_drop(true)
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => return (false, format!("Couldn't run it: {error}")),
     };
+    let mut group = CommandGroup::of(&child);
     let mut printed = Capped::default();
     let run = async {
         let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
@@ -1354,19 +1422,20 @@ async fn shell(root: &Path, env: &Env, command: &str) -> (bool, String) {
         }
         child.wait().await
     };
-    let finished = tokio::time::timeout(SHELL_TIMEOUT, run).await;
+    let finished = tokio::time::timeout(limit, run).await;
     match finished {
         Err(_) => {
-            let _ = child.start_kill();
+            drop(group);
             let mut text = printed.text();
             text.push_str(&format!(
                 "\n(stopped after {} seconds without finishing; this is what it printed)",
-                SHELL_TIMEOUT.as_secs()
+                limit.as_secs()
             ));
             (false, text)
         }
         Ok(Err(error)) => (false, format!("Couldn't run it: {error}")),
         Ok(Ok(status)) => {
+            group.ended();
             let mut text = printed.text();
             if let Some(code) = status.code().filter(|code| *code != 0) {
                 text.push_str(&format!("\n(exit status {code})"));
@@ -1739,14 +1808,21 @@ fn outside(path: &Path) -> (bool, String) {
 
 fn truncated(mut text: String) -> String {
     if text.len() > MAX_OUTPUT {
-        let mut end = MAX_OUTPUT;
+        cut(&mut text, MAX_OUTPUT);
+        text.push_str("\n(cut off here)");
+    }
+    text
+}
+
+/// Cuts `text` to at most `max` bytes, ending at a whole character.
+fn cut(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
         while !text.is_char_boundary(end) {
             end -= 1;
         }
         text.truncate(end);
-        text.push_str("\n(cut off here)");
     }
-    text
 }
 
 #[cfg(test)]
@@ -2143,6 +2219,89 @@ mod tests {
         assert_eq!(app.requests()[0]["model"], "apple");
     }
 
+    #[tokio::test]
+    async fn a_turn_waiting_for_the_apps_server_sends_its_chat_again_only_once_it_is_back() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let port = listener.local_addr().expect("an address").port();
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let kept = methods.clone();
+        tokio::spawn(async move {
+            // As while the app is closed: the first requests get no answer.
+            let mut unanswered = 5;
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut socket = tokio::io::BufReader::new(socket);
+                let mut method = String::new();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if method.is_empty() {
+                        method = line.split(' ').next().unwrap_or_default().to_owned();
+                    }
+                    let line = line.trim_end().to_ascii_lowercase();
+                    if line.is_empty() {
+                        break;
+                    }
+                    if let Some(value) = line.strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut request = vec![0; length];
+                let _ = socket.read_exact(&mut request).await;
+                kept.lock().expect("not poisoned").push(method.clone());
+                if unanswered > 0 {
+                    unanswered -= 1;
+                    continue;
+                }
+                let (kind, body) = if method == "GET" {
+                    ("application/json", json!({"data": []}).to_string())
+                } else {
+                    ("text/event-stream", sse(&[text("back")]))
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.get_mut().write_all(response.as_bytes()).await;
+                let _ = socket.get_mut().shutdown().await;
+            }
+        });
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let work = tempfile::tempdir().expect("a temporary folder");
+        let server = ModelServer::open(state.path().join("model-server"));
+        server.set_port(port).expect("the port is kept");
+        let runner = LocalModelRunner::new(LocalModelConfig::default())
+            .with_server(server)
+            .with_retry(Duration::from_millis(20));
+        let fixture = Fixture {
+            agent: LocalAgent::open(state.path().join("local"), runner).expect("the agent opens"),
+            work,
+            _state: state,
+        };
+        let id = fixture.start(Some("apple")).await;
+        fixture.send(&id, "hi").await;
+
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::AssistantMessage { text } if text == "back"
+        )));
+        // Once to find the server down, and once when it was back.
+        let chats = methods
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .filter(|method| *method == "POST")
+            .count();
+        assert_eq!(chats, 2);
+    }
+
     #[test]
     fn the_apps_server_is_kept_for_after_a_restart() {
         let state = tempfile::tempdir().expect("a temporary folder");
@@ -2193,6 +2352,7 @@ mod tests {
         });
         let request = Request {
             url: format!("{}/chat/completions", server.base_url),
+            models: format!("{}/models", server.base_url),
             api_key: None,
             model: "nope".into(),
         };
@@ -2256,6 +2416,7 @@ mod tests {
             .with_stall(Duration::from_millis(200));
         let request = Request {
             url: format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            models: format!("http://127.0.0.1:{port}/v1/models"),
             api_key: None,
             model: "m".into(),
         };
@@ -2293,6 +2454,47 @@ mod tests {
         .expect("the thread finishes");
 
         assert!(matches!(result, Err(LocalModelError::Connect { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_long_refusal_to_list_models_in_another_script_is_still_an_error() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let port = listener.local_addr().expect("an address").port();
+        tokio::spawn(async move {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut socket = tokio::io::BufReader::new(socket);
+            loop {
+                let mut line = String::new();
+                let read = socket.read_line(&mut line).await.unwrap_or(0);
+                if read == 0 || line.trim_end().is_empty() {
+                    break;
+                }
+            }
+            // Three bytes a character, so no fixed cut is sure to fall
+            // between two.
+            let body = "界".repeat(4000);
+            let response = format!(
+                "HTTP/1.1 500 X\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.get_mut().write_all(response.as_bytes()).await;
+            let _ = socket.get_mut().shutdown().await;
+        });
+        let runner = LocalModelRunner::new(LocalModelConfig::default());
+
+        let listed = server_models(
+            runner.http.clone(),
+            &format!("http://127.0.0.1:{port}/v1"),
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(listed, Err(LocalModelError::ListStatus { status: 500, .. })),
+            "{listed:?}"
+        );
     }
 
     #[test]
@@ -2721,11 +2923,71 @@ mod tests {
     #[tokio::test]
     async fn a_command_prints_its_output_and_its_failure() {
         let root = std::env::temp_dir();
-        let (ok, text) = shell(&root, &Env::default(), "echo out; echo err >&2; exit 3").await;
+        let (ok, text) = shell(
+            &root,
+            &Env::default(),
+            "echo out; echo err >&2; exit 3",
+            SHELL_TIMEOUT,
+        )
+        .await;
         assert!(!ok);
         assert!(text.contains("out"));
         assert!(text.contains("err"));
         assert!(text.contains('3'));
+    }
+
+    /// The process a command said it started, by the id it printed first.
+    fn started_process(printed: &str) -> rustix::process::Pid {
+        printed
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse().ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .unwrap_or_else(|| panic!("no process id in {printed:?}"))
+    }
+
+    #[tokio::test]
+    async fn a_command_stopped_at_its_time_limit_takes_what_it_started_with_it() {
+        let root = std::env::temp_dir();
+        let (ok, text) = shell(
+            &root,
+            &Env::default(),
+            "sleep 30 & echo $!; wait",
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(!ok);
+        let child = started_process(&text);
+
+        // Gone once it's killed and whoever took it over has reaped it.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while rustix::process::test_kill_process(child).is_ok() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "process {child:?} still runs"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_that_ends_leaves_what_it_started_in_the_background_running() {
+        let root = std::env::temp_dir();
+        let (ok, text) = shell(
+            &root,
+            &Env::default(),
+            "sleep 30 >/dev/null 2>&1 & echo $!",
+            SHELL_TIMEOUT,
+        )
+        .await;
+        assert!(ok, "{text}");
+        let child = started_process(&text);
+
+        // Long enough for a kill sent as the command ended to have landed.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let runs = rustix::process::test_kill_process(child).is_ok();
+        let _ = rustix::process::kill_process(child, rustix::process::Signal::KILL);
+        assert!(runs);
     }
 
     #[test]

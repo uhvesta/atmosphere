@@ -759,6 +759,14 @@ pub enum DaemonError {
     },
 
     #[error(
+        "couldn't drop the histories of idle sessions on this Mac from memory; nothing is lost: they stay loaded, and humatad tries again in an hour"
+    )]
+    Rest {
+        #[source]
+        source: Box<HostError>,
+    },
+
+    #[error(
         "couldn't remove the unused clone {path}; check that the folder is writable, or move it to the Trash yourself"
     )]
     RemoveClone {
@@ -921,7 +929,7 @@ impl DaemonError {
             | Self::StorageDays { .. }
             | Self::PullRefreshMinutes { .. } => pb::ErrorCode::InvalidRequest,
             Self::CleanupRunning => pb::ErrorCode::Busy,
-            Self::Seal { source } => source.code(),
+            Self::Seal { source } | Self::Rest { source } => source.code(),
             Self::DeleteOffline { .. } => pb::ErrorCode::HostUnavailable,
             Self::MoveWhileWorking { .. } => pb::ErrorCode::Busy,
             Self::AlreadyThere { .. } | Self::MoveForked { .. } => pb::ErrorCode::InvalidRequest,

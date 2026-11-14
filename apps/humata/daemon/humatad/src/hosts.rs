@@ -287,8 +287,9 @@ impl Remote {
     }
 
     /// Takes `config` for the next connection, and sends the host its
-    /// variables and setup script now if it is connected.
-    pub async fn reconfigure(&self, config: HostConfig) -> Result<(), DaemonError> {
+    /// variables now if it is connected, and its setup script after them
+    /// without waiting for it to run.
+    pub async fn reconfigure(self: &Arc<Self>, config: HostConfig) -> Result<(), DaemonError> {
         let configure = config.configure(self.model_server.port());
         *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
         let client = self
@@ -299,7 +300,31 @@ impl Remote {
             .filter(|(client, _)| client.is_connected())
             .map(|(client, _)| client.clone());
         if let Some(client) = client {
-            self.send_configure(&client, configure).await?;
+            self.set_up(&client, configure).await?;
+        }
+        Ok(())
+    }
+
+    /// Sends the host on `client` its variables and waits for them to be
+    /// set, then sends its setup script in the background: the script can
+    /// take minutes, nothing waits for it, and the host's status says how
+    /// it went.
+    async fn set_up(
+        self: &Arc<Self>,
+        client: &Arc<Client>,
+        mut configure: pb::ConfigureHost,
+    ) -> Result<(), DaemonError> {
+        let script = std::mem::take(&mut configure.setup_script);
+        self.send_configure(client, configure.clone()).await?;
+        if !script.trim().is_empty() {
+            configure.setup_script = script;
+            let remote = self.clone();
+            let setup = client.clone();
+            tokio::spawn(async move {
+                if let Err(error) = remote.send_configure(&setup, configure).await {
+                    eprintln!("humatad: {}", humata_wire::describe(&error));
+                }
+            });
         }
         Ok(())
     }
@@ -464,19 +489,8 @@ impl Remote {
         let client = Arc::new(client);
         // The variables before anything else, then the setup script, which
         // can take minutes, without holding up the requests behind this one.
-        let mut configure = config.configure(self.model_server.port());
-        let script = std::mem::take(&mut configure.setup_script);
-        self.send_configure(&client, configure.clone()).await?;
-        if !script.trim().is_empty() {
-            configure.setup_script = script;
-            let remote = self.clone();
-            let setup = client.clone();
-            tokio::spawn(async move {
-                if let Err(error) = remote.send_configure(&setup, configure).await {
-                    eprintln!("humatad: {}", humata_wire::describe(&error));
-                }
-            });
-        }
+        self.set_up(&client, config.configure(self.model_server.port()))
+            .await?;
         self.watch_tool_calls(&client);
         Ok((client, child))
     }

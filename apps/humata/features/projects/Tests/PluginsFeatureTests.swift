@@ -26,7 +26,9 @@ final class PluginsFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
         await store.send(.task)
+        XCTAssertTrue(store.state.loading)
         await store.receive(\.loaded)
+        XCTAssertFalse(store.state.loading)
         XCTAssertEqual(store.state.list?.plugins.count, 2)
         XCTAssertEqual(store.state.list?.unreachable, ["laptop"])
         XCTAssertEqual(store.state.projectID, project.id)
@@ -74,7 +76,9 @@ final class PluginsFeatureTests: XCTestCase {
 
         await store.send(.choiceChanged(review, .on))
         await store.receive(\.choiceFailed)
+        XCTAssertTrue(store.state.loading)
         await store.receive(\.loaded)
+        XCTAssertFalse(store.state.loading)
         XCTAssertNotNil(store.state.failure)
         XCTAssertNil(store.state.projectID)
     }

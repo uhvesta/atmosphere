@@ -96,8 +96,10 @@ pub struct Daemon {
     forwards: std::sync::Mutex<BTreeMap<String, forwards::Forwarding>>,
     next_forward: std::sync::atomic::AtomicU64,
     /// Held while the search index catches up, so two searches don't index
-    /// one session's events twice.
-    indexing: tokio::sync::Mutex<()>,
+    /// one session's events twice. It keeps how each session at work or
+    /// waiting was when its history was last read, so one that has said
+    /// nothing since isn't read again.
+    indexing: tokio::sync::Mutex<HashMap<String, search::LastRead>>,
     /// Told when the search index caught up, while it catches up in the
     /// background, so a search waits on that one instead of starting another.
     catching_up: std::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>,
@@ -161,7 +163,7 @@ impl Daemon {
             copy_removals: std::sync::Mutex::default(),
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
-            indexing: tokio::sync::Mutex::new(()),
+            indexing: tokio::sync::Mutex::default(),
             catching_up: std::sync::Mutex::default(),
             listings: std::sync::Mutex::default(),
             approvals_changed: tokio::sync::Notify::new(),
@@ -612,7 +614,10 @@ impl Daemon {
 
     /// `project`'s items, each with the status its sessions give it.
     async fn shown_items(&self, project: &str) -> Result<Vec<pb::Item>, DaemonError> {
-        let mut items: Vec<pb::Item> = self.store.items(project)?.iter().map(Item::wire).collect();
+        // Off the executor: the board asks every two seconds.
+        let of = project.to_owned();
+        let items = self.store.apart(move |store| store.items(&of)).await?;
+        let mut items: Vec<pb::Item> = items.iter().map(Item::wire).collect();
         let sessions = self.list(project).await?;
         board::show(&mut items, &sessions.sessions);
         Ok(items)
@@ -1101,7 +1106,7 @@ impl Daemon {
         }
         // What the daemon knows of them, read at once for all of them and
         // off the executor, as the app lists every two seconds.
-        let (listed, known, mut moved) = self
+        let (listed, known, mut moved, backed_up) = self
             .store
             .apart(move |store| {
                 let mut all = Vec::with_capacity(listed.len());
@@ -1125,7 +1130,17 @@ impl Daemon {
                     .flat_map(|(_, sessions)| sessions.iter().map(|session| session.id.as_str()))
                     .collect();
                 let known = store.known_many(&ids)?;
-                Ok((all, known, moved))
+                // How far each remote session's recovery copy has got, to
+                // tell which are owed a backup.
+                let remote: Vec<&str> = all
+                    .iter()
+                    .filter(|(host, _)| !host.is_empty())
+                    .flat_map(|(_, sessions)| sessions.iter())
+                    .filter(|session| !session.host_offline)
+                    .map(|session| session.id.as_str())
+                    .collect();
+                let backed_up = store.recovery_turns_many(&remote)?;
+                Ok((all, known, moved, backed_up))
             })
             .await?;
         for (host, sessions) in listed {
@@ -1139,7 +1154,8 @@ impl Daemon {
                     continue;
                 }
                 if !host.is_empty() && !session.host_offline {
-                    self.back_up_soon(&host, &session.id, Some(session.turns));
+                    let kept = backed_up.get(&session.id).copied();
+                    self.back_up_listed(&host, &session.id, session.turns, kept);
                 }
                 let was = known.get(&session.id).cloned();
                 self.own_known(&mut session, &host, None, None, was)?;
@@ -1608,7 +1624,18 @@ impl Daemon {
                 return Ok(Reply::Response(Response::CommandsLinked(linked)));
             }
             Request::ReadBoardLog(read) => {
-                let changes = self.store.board_log(&read.project_id)?;
+                let read = std::mem::take(read);
+                let changes = self
+                    .store
+                    .apart(move |store| {
+                        store.board_log(
+                            &read.project_id,
+                            read.since_change_id,
+                            read.limit,
+                            &read.item_id,
+                        )
+                    })
+                    .await?;
                 return Ok(Reply::Response(Response::BoardLog(pb::BoardLog {
                     changes: changes.iter().map(board::Change::wire).collect(),
                 })));

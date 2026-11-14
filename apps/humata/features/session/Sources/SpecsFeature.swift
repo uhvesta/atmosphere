@@ -236,6 +236,8 @@ package struct SpecsFeature {
                         }
                         var saved = page
                         saved.text = text
+                        // Off the main thread: focused, it's then found parsed.
+                        _ = MarkdownBlock.cached(text)
                         await send(.saved(saved))
                     } catch {
                         await send(.saveFailed(error.localizedDescription))
@@ -356,6 +358,8 @@ package struct SpecsFeature {
                         _ = try await daemon.updateItem(page.id, ItemUpdate(spec: version.text))
                         var restored = page
                         restored.text = version.text
+                        // Off the main thread: the spec is then found parsed.
+                        _ = MarkdownBlock.cached(version.text)
                         await send(.restored(restored))
                     } catch {
                         await send(.versionsFailed(.restoring, error.localizedDescription))
@@ -395,6 +399,11 @@ package struct SpecsFeature {
                     else { return nil }
                     return Version(id: change.id, time: change.time, author: change.author, text: after.spec)
                 }
+                // Off the main thread: a version picked is then found parsed.
+                // The newest last, as they're the ones kept longest.
+                for version in versions.prefix(Self.versionsParsed).reversed() {
+                    _ = MarkdownBlock.cached(version.text)
+                }
                 await send(.versionsListed(pageID: pageID, versions))
             } catch {
                 await send(.versionsFailed(.listing, error.localizedDescription))
@@ -414,6 +423,12 @@ package struct SpecsFeature {
         }
         .cancellable(id: CancelID.compare, cancelInFlight: true)
     }
+
+    /// How many of a spec's versions, from the newest, are parsed as they're
+    /// listed. Few texts are kept parsed at once, across the Spec, Files
+    /// and Review tabs, so parsing every version of a much-edited spec would
+    /// push out the spec itself; an older one is parsed when it's picked.
+    private static let versionsParsed = 6
 
     /// `text` split into lines, without the empty one after a last newline.
     static func lines(_ text: String) -> [String] {
@@ -439,6 +454,8 @@ package struct SpecsFeature {
                 pages.append(Page(id: item.id, kind: .task, title: item.title, text: item.spec))
             }
         }
+        // Off the main thread: a spec focused is then found parsed.
+        for page in pages { _ = MarkdownBlock.cached(page.text) }
         return pages
     }
 }

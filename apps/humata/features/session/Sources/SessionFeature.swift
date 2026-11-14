@@ -80,9 +80,8 @@ package struct SessionFeature {
         /// what's typed; kept with the draft.
         package var pastes: [Paste]
         @Shared var savedPastes: String
-        /// Images put in the box for the next message. Not kept with the
-        /// draft: they can be large, and the files they came from are still
-        /// there to add again.
+        /// Images put in the box for the next message. Kept while Humata
+        /// runs, not with the saved draft: they can be large.
         package var images: IdentifiedArrayOf<DraftImage> = []
         /// Whether the session's model can see images; nil until known.
         package var readsImages: Bool?
@@ -115,6 +114,8 @@ package struct SessionFeature {
         /// The message the last rewind put back in the box, so undoing it
         /// takes it out again if it wasn't changed.
         var rewoundText: String?
+        /// The chip it went back as, when it was too long for the field.
+        var rewoundPaste: Paste.ID?
         /// The rewind the chat was last read again for, so reading it
         /// again doesn't start over once more.
         var restartedFor: String?
@@ -132,6 +133,10 @@ package struct SessionFeature {
         package var answering: Set<String> = []
         /// The last message is being sent again after a failed turn.
         package var retrying = false
+        /// Messages sent from the box that the daemon hasn't answered for.
+        package var sending = 0
+        /// The turn was told to stop and hasn't ended yet.
+        package var stopping = false
         /// The event a search found, shown highlighted with a way to fork
         /// from it; nil when none is.
         package var highlighted: String?
@@ -160,11 +165,14 @@ package struct SessionFeature {
         /// Whether there's anything to send.
         package var canSend: Bool {
             guard !images.contains(where: \.isPreparing) else { return false }
+            // Images wait until it's known the model can see them.
+            guard images.isEmpty || readsImages == true else { return false }
             return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pastes.isEmpty
                 || !images.isEmpty
         }
 
-        /// Whether images can go with the next message.
+        /// Whether the model is known to see images, so the box offers to
+        /// add them.
         package var takesImages: Bool { readsImages == true && !session.archived }
 
         /// The chat row of the highlighted event, once the history has it:
@@ -192,6 +200,32 @@ package struct SessionFeature {
         /// Where the session's draft is kept; storage keys can't hold dots.
         static func draftKey(_ session: String) -> String {
             "draft_" + session.replacingOccurrences(of: ".", with: "_")
+        }
+
+        /// Puts a message that wasn't sent back for its session, which
+        /// isn't open: its text and pastes ahead of the draft kept for it,
+        /// and its images in `left`, for when it opens again.
+        package static func keepUnsent(_ message: Outgoing, in left: inout Left) {
+            if !message.typed.isEmpty {
+                let draft = Shared(wrappedValue: "", .appStorage(draftKey(message.session)))
+                draft.withLock { $0 = $0.isEmpty ? message.typed : message.typed + "\n\n" + $0 }
+            }
+            if !message.pastes.isEmpty {
+                let pastes = Shared(wrappedValue: "", .appStorage(draftKey(message.session) + "_pastes"))
+                let since = Paste.decode(pastes.wrappedValue)
+                let unsent = message.pastes.filter { paste in !since.contains { $0.id == paste.id } }
+                let kept = Paste.encode(unsent + since)
+                pastes.withLock { $0 = kept }
+            }
+            let images = message.images.filter { !$0.isPreparing && left.images[id: $0.id] == nil }
+            if !images.isEmpty { left.images = IdentifiedArray(uniqueElements: images + left.images) }
+        }
+
+        /// Forgets the draft and pastes kept for `session`, as once it's
+        /// deleted.
+        package static func forgetDraft(of session: Session.ID) {
+            Shared(wrappedValue: "", .appStorage(draftKey(session))).withLock { $0 = "" }
+            Shared(wrappedValue: "", .appStorage(draftKey(session) + "_pastes")).withLock { $0 = "" }
         }
 
         /// Messages sent while a turn ran, waiting for their own turn,
@@ -233,6 +267,7 @@ package struct SessionFeature {
         private mutating func derive() {
             if isWorking != chat.working { isWorking = chat.working }
             let working = isWorking
+            if stopping, !working { stopping = false }
             if let land, land.turnRunning != working { self.land?.turnRunning = working }
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
             if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
@@ -276,8 +311,8 @@ package struct SessionFeature {
         /// What's kept of a session looked away from while Humata runs:
         /// the view it showed, the file it showed with the comment being
         /// written on it and those not sent yet, the review comment half
-        /// written, the spec being edited, and the message and the queued
-        /// message being edited.
+        /// written, the spec being edited, the message and the queued
+        /// message being edited, and the images in the box.
         package struct Left: Equatable, Sendable {
             package var tab: Tab
             var drafts: IdentifiedArrayOf<DocsFeature.Draft>
@@ -293,6 +328,10 @@ package struct SessionFeature {
             var edited: String
             var editingQueued: String?
             var queuedEdit: String
+            /// The images in the box that are ready to send. One still
+            /// being prepared isn't kept: its result doesn't come to the
+            /// session opened again, so it would never be ready.
+            var images: IdentifiedArrayOf<DraftImage>
         }
 
         package var left: Left {
@@ -302,7 +341,8 @@ package struct SessionFeature {
                 return Left(
                     tab: tab, drafts: docs.drafts, file: docs.selected, picked: docs.picked, comment: docs.comment,
                     review: review.kept, spec: spec, editing: editing, edited: edited,
-                    editingQueued: editingQueued, queuedEdit: queuedEdit)
+                    editingQueued: editingQueued, queuedEdit: queuedEdit,
+                    images: IdentifiedArray(uniqueElements: images.filter { !$0.isPreparing }))
             }
             set {
                 tab = newValue.tab
@@ -316,6 +356,7 @@ package struct SessionFeature {
                 edited = newValue.edited
                 editingQueued = newValue.editingQueued
                 queuedEdit = newValue.queuedEdit
+                images = newValue.images
             }
         }
 
@@ -349,6 +390,7 @@ package struct SessionFeature {
             var added: [SessionEvent] = []
             var replaced = false
             var stale = false
+            var turnEnded = false
             var streaming = self.streaming
             var streamed = self.streamed
             for event in batch {
@@ -373,6 +415,7 @@ package struct SessionFeature {
                         streamed = []
                     default: break
                     }
+                    if case .turnEnded = event.kind { turnEnded = true }
                 }
                 // Code may have changed off the Review tab: it reads again
                 // when next shown.
@@ -382,6 +425,9 @@ package struct SessionFeature {
                 }
             }
             if stale { review.stale = true }
+            // The turn told to stop has ended, even if the next one queued
+            // started in the same batch.
+            if turnEnded, stopping { stopping = false }
             if streaming != self.streaming { self.streaming = streaming }
             if streamed != self.streamed { self.streamed = streamed }
             guard replaced || !added.isEmpty else {
@@ -407,6 +453,21 @@ package struct SessionFeature {
         }
     }
 
+    /// A message handed on to be sent, with what it was made of, so it can
+    /// go back in its session's box if it isn't sent.
+    package struct Outgoing: Equatable, Sendable {
+        package let session: Session.ID
+        /// The session's name, to say whose message wasn't sent.
+        package let name: String
+        /// What was typed, and the chips and images that went with it.
+        package let typed: String
+        package let pastes: [Paste]
+        package let images: [DraftImage]
+        package let mode: SendMode
+        /// The message as it's sent: what was typed, then each paste.
+        package let text: String
+    }
+
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         /// The view appeared; watches the session until it goes.
@@ -424,6 +485,8 @@ package struct SessionFeature {
         case historyLoading(read: UInt64, total: UInt64)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
+        /// A message sent from the box reached the daemon.
+        case sent
         /// The message wasn't sent; what was typed, pasted and added goes
         /// back in the box, before anything put there since.
         case sendFailed(text: String, pastes: [Paste], images: [DraftImage], message: String)
@@ -549,6 +612,11 @@ package struct SessionFeature {
             case openItem(projectID: Project.ID, itemID: Item.ID)
             /// Answer the agent's request, as the inbox does.
             case answerRequest(AgentRequest.ID, RequestAnswer)
+            /// Send the message from the box. Whoever shows the session
+            /// sends it, so it's answered for with `sent` or `sendFailed`
+            /// while the session is open, and put back in its box after
+            /// it's looked away from.
+            case send(Outgoing)
         }
     }
 
@@ -761,8 +829,9 @@ package struct SessionFeature {
                 return .merge(
                     readsImages(&state),
                     .run { send in
-                        // What comes while a batch is shown goes as the
-                        // next one, so the history is shown all at once.
+                        // The history goes as one batch once it has all
+                        // come; after it, what comes while a batch is shown
+                        // goes as the next one.
                         let batches = EventBatches()
                         let reader = Task {
                             do {
@@ -842,30 +911,24 @@ package struct SessionFeature {
 
             case .sendTapped(let mode):
                 guard state.canSend else { return .none }
-                let typed = state.draft
-                let pastes = state.pastes
-                let text = Paste.message(draft: typed, pastes: pastes)
-                let drafted = Array(state.images)
-                let images = drafted.compactMap(\.image)
+                let outgoing = Outgoing(
+                    session: state.session.id, name: state.session.name, typed: state.draft, pastes: state.pastes,
+                    images: Array(state.images), mode: mode,
+                    text: Paste.message(draft: state.draft, pastes: state.pastes))
                 state.draft = ""
                 state.$savedDraft.withLock { $0 = "" }
                 state.pastes = []
                 state.$savedPastes.withLock { $0 = "" }
                 state.images = []
-                let session = state.session.id
-                return .run { _ in
-                    if images.isEmpty {
-                        try await daemon.send(session, text, mode)
-                    } else {
-                        try await daemon.sendImages(session, text, images, mode)
-                    }
-                } catch: { error, send in
-                    await send(
-                        .sendFailed(
-                            text: typed, pastes: pastes, images: drafted, message: error.localizedDescription))
-                }
+                state.sending += 1
+                return .send(.delegate(.send(outgoing)))
+
+            case .sent:
+                if state.sending > 0 { state.sending -= 1 }
+                return .none
 
             case .sendFailed(let text, let pastes, let images, let message):
+                if state.sending > 0 { state.sending -= 1 }
                 // Ahead of what was typed and added since, in the order
                 // it would have been sent.
                 if !text.isEmpty {
@@ -887,10 +950,16 @@ package struct SessionFeature {
 
             case .readsImagesFound(let reads):
                 state.readsImages = reads
-                return .none
+                // Those added before it was known come out, with why.
+                guard !reads, !state.images.isEmpty else { return .none }
+                state.images = []
+                return Self.refuseImages(&state)
 
             case .imagesAdded(let urls):
-                guard state.takesImages else { return Self.refuseImages(&state) }
+                // Taken until the model is known not to see them.
+                guard state.readsImages != false, !state.session.archived else {
+                    return Self.refuseImages(&state)
+                }
                 return .merge(
                     urls.map { url in
                         let id = uuid().uuidString
@@ -909,7 +978,9 @@ package struct SessionFeature {
                 return .none
 
             case .imagePasted(let data):
-                guard state.takesImages else { return Self.refuseImages(&state) }
+                guard state.readsImages != false, !state.session.archived else {
+                    return Self.refuseImages(&state)
+                }
                 let id = uuid().uuidString
                 let name = "Pasted image"
                 state.images.append(DraftImage(id: id, name: name))
@@ -951,6 +1022,10 @@ package struct SessionFeature {
                 return .none
 
             case .abortTapped:
+                guard !state.stopping else { return .none }
+                // Shown until the turn ends; with none under way, nothing
+                // would end it.
+                if state.isWorking { state.stopping = true }
                 let session = state.session.id
                 return .run { _ in
                     try await daemon.abort(session)
@@ -983,7 +1058,7 @@ package struct SessionFeature {
             case .putBackTapped(let id):
                 guard let message = state.dropped.first(where: { $0.id == id }) else { return .none }
                 state.putBack.insert(id)
-                Self.putInDraft(message.text, &state)
+                putInBox(message.text, ahead: false, &state)
                 return .none
 
             case .unqueueTapped(let queued):
@@ -1022,7 +1097,7 @@ package struct SessionFeature {
                 }
 
             case .editQueuedFailed(let text, let error, let message):
-                Self.putInDraft(text, &state)
+                putInBox(text, ahead: false, &state)
                 if case .refused(.unknownQueuedMessage, _)? = error {
                     state.alert = AlertState {
                         TextState("Its turn already started")
@@ -1039,10 +1114,10 @@ package struct SessionFeature {
                 return .none
 
             case .stopAndEditTapped:
-                guard state.isWorking, let text = state.lastMessage else { return .none }
+                guard state.isWorking, !state.stopping, let text = state.lastMessage else { return .none }
+                state.stopping = true
                 let session = state.session.id
-                state.draft = state.draft.isEmpty ? text : text + "\n\n" + state.draft
-                state.$savedDraft.withLock { $0 = state.draft }
+                putInBox(text, ahead: true, &state)
                 return .run { _ in
                     try await daemon.abort(session)
                 } catch: { error, send in
@@ -1097,8 +1172,8 @@ package struct SessionFeature {
             case .rewound(let text):
                 state.rewinding = false
                 state.rewoundText = text
-                state.draft = state.draft.isEmpty ? text : text + "\n\n" + state.draft
-                state.$savedDraft.withLock { $0 = state.draft }
+                let paste = putInBox(text, ahead: true, &state)
+                state.rewoundPaste = paste
                 return .none
 
             case .undoRewindTapped:
@@ -1114,11 +1189,18 @@ package struct SessionFeature {
 
             case .rewindUndone:
                 state.rewinding = false
-                if let text = state.rewoundText, state.draft == text {
+                if let paste = state.rewoundPaste {
+                    if state.pastes.contains(where: { $0.id == paste }) {
+                        state.pastes.removeAll { $0.id == paste }
+                        let pastes = Paste.encode(state.pastes)
+                        state.$savedPastes.withLock { $0 = pastes }
+                    }
+                } else if let text = state.rewoundText, state.draft == text {
                     state.draft = ""
                     state.$savedDraft.withLock { $0 = "" }
                 }
                 state.rewoundText = nil
+                state.rewoundPaste = nil
                 return .none
 
             case .rewindFailed(let message):
@@ -1243,7 +1325,8 @@ package struct SessionFeature {
                 case .forking: state.forking = false
                 case .retrying: state.retrying = false
                 case .answering(let request): state.answering.remove(request)
-                case .stopping, .unqueueing: break
+                case .stopping: state.stopping = false
+                case .unqueueing: break
                 }
                 state.alert = Self.alert(Self.title(doing), message)
                 return .none
@@ -1276,10 +1359,25 @@ package struct SessionFeature {
         }
     }
 
-    /// Adds `text` to the end of the draft, after a blank line, and keeps it.
-    private static func putInDraft(_ text: String, _ state: inout State) {
-        state.draft = state.draft.isEmpty ? text : state.draft + "\n\n" + text
+    /// Puts `text` in the box and keeps it: ahead of what's typed or after
+    /// it, a blank line apart. Text too long to edit in the field goes back
+    /// as a chip instead, whose id this gives.
+    @discardableResult
+    private func putInBox(_ text: String, ahead: Bool, _ state: inout State) -> Paste.ID? {
+        guard text.utf8.count <= Paste.putBackBytes else {
+            let paste = Paste(id: uuid().uuidString, text: text)
+            state.pastes.insert(paste, at: ahead ? 0 : state.pastes.count)
+            let pastes = Paste.encode(state.pastes)
+            state.$savedPastes.withLock { $0 = pastes }
+            return paste.id
+        }
+        if state.draft.isEmpty {
+            state.draft = text
+        } else {
+            state.draft = ahead ? text + "\n\n" + state.draft : state.draft + "\n\n" + text
+        }
         state.$savedDraft.withLock { $0 = state.draft }
+        return nil
     }
 
     private static func title(_ doing: Action.Doing) -> String {
@@ -1310,8 +1408,8 @@ extension SessionEvent.Kind {
     }
 }
 
-/// A watch's events, handed on in batches: everything that came since the
-/// last batch was taken goes as one.
+/// A watch's events, handed on in batches: the history it starts with as
+/// one, then everything that came since the last batch was taken.
 private actor EventBatches {
     enum Batch {
         /// `replayed` when they end the history the watch starts with.
@@ -1325,6 +1423,9 @@ private actor EventBatches {
     /// all sent and no batch has said so yet: the next one holds those and
     /// says so, even with no events.
     private var historyEnd: Int?
+    /// Whether the history the watch starts with has been handed on. Until
+    /// then its events wait for its end, however they arrive.
+    private var historyDone = false
     private var ended: Batch?
     private var cancelled = false
     private var waiter: CheckedContinuation<Void, Never>?
@@ -1345,9 +1446,11 @@ private actor EventBatches {
         wake()
     }
 
-    /// The next batch, waiting for one; nil once cancelled.
+    /// The next batch, waiting for one; nil once cancelled. A watch that
+    /// ends before its history has all come gives what did come.
     func next() async -> Batch? {
-        if pending.isEmpty, historyEnd == nil, ended == nil, !cancelled {
+        // Each event added wakes it, so it looks again before going on.
+        while !cancelled, ended == nil, historyEnd == nil, !historyDone || pending.isEmpty {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { waiter = $0 }
             } onCancel: {
@@ -1360,6 +1463,7 @@ private actor EventBatches {
             let history = Array(pending.prefix(end))
             pending.removeFirst(min(end, pending.count))
             historyEnd = nil
+            historyDone = true
             return .events(history, replayed: true)
         }
         if !pending.isEmpty {

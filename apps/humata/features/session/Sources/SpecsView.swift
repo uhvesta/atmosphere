@@ -57,6 +57,10 @@ struct SpecsView: View {
                     }
                     Button("Edit") { store.send(.editTapped(page.id)) }
                         .disabled(store.draft != nil)
+                        .help(
+                            store.draft != nil
+                                ? "Another spec is being edited; save or cancel it to edit this one"
+                                : "Edit this spec")
                 }
             }
             if editing, let draft = store.draft {
@@ -182,14 +186,20 @@ struct SpecsView: View {
                 .labelsHidden()
                 .frame(maxWidth: 260)
                 .disabled(store.draft != nil)
-                .help("The spec shown")
+                .help(
+                    store.draft != nil
+                        ? "A spec is being edited; save or cancel it to show another"
+                        : "The spec shown")
             }
             Toggle(
                 "Versions", isOn: Binding(get: { store.versions != nil }, set: { _ in store.send(.versionsToggled) })
             )
             .toggleStyle(.button)
             .disabled(editing)
-            .help("List the versions of this spec the board kept")
+            .help(
+                editing
+                    ? "This spec is being edited; save or cancel it to list its versions"
+                    : "List the versions of this spec the board kept")
             if let versions = store.versions, versions.shown != nil {
                 Toggle(
                     "Compare with Now",
@@ -210,11 +220,23 @@ struct SpecsView: View {
                 }
                 Button("Edit") { store.send(.editTapped(page.id)) }
                     .disabled(store.draft != nil || store.versions?.shown != nil)
+                    .help(editHelp)
             }
         }
         .controlSize(.small)
         .padding(.horizontal)
         .padding(.vertical, 8)
+    }
+
+    /// What the focused spec's Edit does, or why it can't now.
+    private var editHelp: LocalizedStringKey {
+        if store.draft != nil {
+            "Another spec is being edited; save or cancel it to edit this one"
+        } else if store.versions?.shown != nil {
+            "An older version is shown; pick Now in Versions to edit the spec, or Restore… to bring this one back"
+        } else {
+            "Edit this spec"
+        }
     }
 
     @ViewBuilder

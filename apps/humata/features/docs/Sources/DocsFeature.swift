@@ -108,13 +108,15 @@ package struct DocsFeature {
             files.first { $0.path == selected }?.isMarkdown ?? false
         }
 
-        package mutating func show(_ contents: FileContents?) {
+        /// Shows `contents`, with its text as `lines` when whoever read it
+        /// split it already, so it isn't split again here.
+        package mutating func show(_ contents: FileContents?, lines: [String]? = nil) {
             self.contents = contents
             guard let contents, let text = contents.text else {
-                lines = nil
+                self.lines = nil
                 return
             }
-            lines = DocsFeature.lines(text)
+            self.lines = lines ?? DocsFeature.lines(text)
         }
 
         /// The drafts as the one message they're sent as: each quote, where
@@ -147,9 +149,10 @@ package struct DocsFeature {
         /// The view appeared, or the chat's turn ended; lists and reads again.
         case refresh
         case listed(ChatFiles)
-        /// A file read, with the lines that changed since it was read last,
-        /// and the `readGeneration` it was started in.
-        case read(FileContents, changed: Set<Int>, generation: Int)
+        /// A file read, with its text split into lines, the lines that
+        /// changed since it was read last, and the `readGeneration` it was
+        /// started in.
+        case read(FileContents, lines: [String]?, changed: Set<Int>, generation: Int)
         case failed(Doing, String)
         case fileSelected(String)
         case renderedToggled
@@ -177,7 +180,9 @@ package struct DocsFeature {
         case commentSaved
         case draftRemoved(Draft.ID)
         case sendTapped
-        case sent
+        /// The drafts sent, which aren't all of them if more were added
+        /// meanwhile.
+        case sent([Draft.ID])
         case alert(PresentationAction<Alert>)
     }
 
@@ -243,13 +248,13 @@ package struct DocsFeature {
                 if state.versions != nil { state.versions = state.selected.map(Versions.init) }
                 return .merge(read(state), listVersions(state))
 
-            case .read(let contents, let changed, let generation):
+            case .read(let contents, let lines, let changed, let generation):
                 guard contents.path == state.selected, generation == state.readGeneration else { return .none }
                 state.readFailure = nil
                 guard contents != state.contents else { return .none }
                 // Read again unchanged, the file keeps its marks.
                 state.changed = state.contents == nil ? [] : changed
-                state.show(contents)
+                state.show(contents, lines: lines)
                 return compare(state)
 
             case .failed(.reading(let path), let message):
@@ -351,7 +356,10 @@ package struct DocsFeature {
                 let path = versions.path
                 return .run { send in
                     let contents = try await daemon.readFileVersion(session, path, turn)
-                    await send(.versionRead(path: path, turn: turn, lines: Self.lines(contents.text ?? "")))
+                    let lines = Self.lines(contents.text ?? "")
+                    // Off the main thread: the view then finds it parsed.
+                    Self.parse(lines, at: path)
+                    await send(.versionRead(path: path, turn: turn, lines: lines))
                 } catch: { error, send in
                     await send(.versionsFailed(.reading(turn: turn), error.localizedDescription))
                 }
@@ -433,11 +441,17 @@ package struct DocsFeature {
                 } else {
                     state.picked = Picked(path: path, startLine: line, endLine: line)
                 }
-                let quote = quote(state)
+                let quote = Self.cut(quote(state))
                 state.picked?.quote = quote
                 return .none
 
-            case .blockTapped(let start, let end, let quote), .textSelected(let start, let end, let quote):
+            case .blockTapped(let start, let end, let quote):
+                guard let path = state.selected else { return .none }
+                state.picked = Picked(path: path, startLine: start, endLine: end, quote: Self.cut(quote))
+                return .none
+
+            case .textSelected(let start, let end, let quote):
+                // Whole: the person chose those words.
                 guard let path = state.selected else { return .none }
                 state.picked = Picked(path: path, startLine: start, endLine: end, quote: quote)
                 return .none
@@ -466,17 +480,19 @@ package struct DocsFeature {
                 state.sending = true
                 let session = state.sessionID
                 let message = state.message
+                let sent = Array(state.drafts.ids)
                 return .run { send in
                     try await daemon.send(session, message, .enqueue)
-                    await send(.sent)
+                    await send(.sent(sent))
                 } catch: { error, send in
                     await send(.failed(.sending, error.localizedDescription))
                 }
 
-            case .sent:
-                // Kept until now, so a failed send loses nothing.
+            case .sent(let ids):
+                // Kept until now, so a failed send loses nothing. One added
+                // while it was sent wasn't in the message, and stays.
                 state.sending = false
-                state.drafts = []
+                for id in ids { state.drafts.remove(id: id) }
                 return .none
             }
         }
@@ -490,9 +506,12 @@ package struct DocsFeature {
         let generation = state.readGeneration
         return .run { send in
             let contents = try await daemon.readFile(session, path)
-            // Off the main thread: a long file's diff takes a moment.
-            let changed = old.map { MarkdownComparison.changedLines(from: $0, to: Self.lines(contents.text ?? "")) }
-            await send(.read(contents, changed: changed ?? [], generation: generation))
+            // Off the main thread: a long file's split, diff and Markdown
+            // take a moment, and the view then finds it parsed.
+            let lines = contents.text.map(Self.lines)
+            if let lines { Self.parse(lines, at: path) }
+            let changed = old.map { MarkdownComparison.changedLines(from: $0, to: lines ?? []) }
+            await send(.read(contents, lines: lines, changed: changed ?? [], generation: generation))
         } catch: { error, send in
             await send(.failed(.reading(path: path), error.localizedDescription))
         }
@@ -532,6 +551,29 @@ package struct DocsFeature {
         var lines = text.components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }
         return lines
+    }
+
+    /// Parses `lines` as the Markdown of the file at `path`, when it is
+    /// Markdown, and keeps the blocks for the view, which asks for the same
+    /// lines. Called off the main thread.
+    private static func parse(_ lines: [String], at path: String) {
+        guard ChatFile(path: path).isMarkdown else { return }
+        _ = MarkdownBlock.cached(lines)
+    }
+
+    /// The most of a clicked block or line that's quoted with its comment.
+    private static let quoteLines = 6
+    private static let quoteCharacters = 300
+
+    /// `quote` cut to its first lines and characters, with "…" where it was
+    /// cut: the comment's path and lines name the rest, and all of it would
+    /// be sent to the agent.
+    static func cut(_ quote: String) -> String {
+        let lines = quote.split(separator: "\n", omittingEmptySubsequences: false)
+        let text = lines.prefix(quoteLines).joined(separator: "\n")
+        let kept = text.prefix(quoteCharacters)
+        guard lines.count > quoteLines || kept.endIndex != text.endIndex else { return quote }
+        return String(kept) + "…"
     }
 
     /// A version, by its turn, as the person reads it.

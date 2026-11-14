@@ -14,6 +14,56 @@ public struct MarkdownText: View {
         self.text = text
     }
 
+    /// A long piece of Markdown cut where one block ends and the next
+    /// begins, each part at least `size` bytes but the last, so a long
+    /// reply can be rows of a lazy list and only those on screen are laid
+    /// out. Each part reads as the same blocks as it did in the whole. Text
+    /// under `size` is one part; finding the cuts reads each line once.
+    public static func parts(of text: String, size: Int = 2_000) -> [Substring] {
+        guard text.utf8.count > size else { return [text[...]] }
+        var parts: [Substring] = []
+        var start = text.startIndex
+        var fence: Substring?
+        var blank = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let end = text[index...].firstIndex(of: "\n") ?? text.endIndex
+            let line = text[index..<end]
+            let trimmed = line.drop { $0 == " " }
+            if let open = fence {
+                if trimmed.hasPrefix(open) { fence = nil }
+            } else if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                if blank, Self.startsBlock(line), text.utf8.distance(from: start, to: index) >= size {
+                    parts.append(text[start..<index])
+                    start = index
+                }
+                fence = trimmed.prefix(3)
+            } else if line.allSatisfy(\.isWhitespace) {
+                blank = true
+                index = end < text.endIndex ? text.index(after: end) : end
+                continue
+            } else if blank, Self.startsBlock(line), text.utf8.distance(from: start, to: index) >= size {
+                parts.append(text[start..<index])
+                start = index
+            }
+            blank = false
+            index = end < text.endIndex ? text.index(after: end) : end
+        }
+        parts.append(text[start...])
+        return parts
+    }
+
+    /// Whether `line`, after a blank one, starts a block of its own rather
+    /// than going on with the one before: not indented, as a list item's
+    /// next paragraph is, and not an item of a list that goes on.
+    private static func startsBlock(_ line: Substring) -> Bool {
+        guard let first = line.first, first != " ", first != "\t" else { return false }
+        if "-*+".contains(first), line.dropFirst().first == " " { return false }
+        let digits = line.prefix { $0.isASCII && $0.isNumber }
+        if !digits.isEmpty, let mark = line.dropFirst(digits.count).first, mark == "." || mark == ")" { return false }
+        return true
+    }
+
     init(text: String, isWriting: Bool = false) {
         self.text = text
         self.isWriting = isWriting
@@ -46,7 +96,13 @@ public struct MarkdownText: View {
             return stream.blocks.dropLast() + [Markdown.inProgress(last)]
         }
 
-        @MainActor private static let finished = NSCache<NSString, Kept<[MarkdownBlock]>>()
+        /// About as many replies as a few screens show, so a long chat
+        /// scrolled through doesn't keep all of it.
+        @MainActor private static let finished: NSCache<NSString, Kept<[MarkdownBlock]>> = {
+            let finished = NSCache<NSString, Kept<[MarkdownBlock]>>()
+            finished.countLimit = 200
+            return finished
+        }()
     }
 }
 
@@ -150,7 +206,7 @@ struct InlineText: View {
     }
 
     var body: some View {
-        Text(Self.styled(text))
+        Text(Self.cachedStyled(text))
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier(ModelText.identifier)
     }
@@ -174,7 +230,12 @@ struct InlineText: View {
         return string
     }
 
-    @MainActor private static let styledTexts = NSCache<NSString, Kept<AttributedString>>()
+    /// About as many paragraphs as a few screens show.
+    @MainActor private static let styledTexts: NSCache<NSString, Kept<AttributedString>> = {
+        let styled = NSCache<NSString, Kept<AttributedString>>()
+        styled.countLimit = 2_000
+        return styled
+    }()
 }
 
 /// A value an `NSCache` can hold.
@@ -251,7 +312,7 @@ private struct ListBlock: View {
 
 /// Fenced code: monospaced on a tint, scrolling sideways rather than
 /// wrapping, with its language and Copy.
-private struct CodeBlock: View {
+struct CodeBlock: View {
     let language: String?
     let code: String
     @State private var copied = false
@@ -312,9 +373,13 @@ private struct CodeBlock: View {
                 // around it stays quick to lay out.
                 ScrollView([.horizontal, .vertical]) { text }
                     .frame(height: 480)
-            } else {
+            } else if Self.isWide(preview.shown) {
                 ScrollView(.horizontal) { text }
                     .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            } else {
+                // No scroll view for code that fits: one each made a long
+                // reply slow to scroll into view.
+                text
             }
             if preview.isCut {
                 Text("Only the first 20,000 characters show here; Copy takes all of it.")
@@ -332,35 +397,60 @@ private struct CodeBlock: View {
             copied = false
         }
     }
+
+    /// Whether a line of `code` may be too long to fit a message's width.
+    static func isWide(_ code: String) -> Bool {
+        code.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false).contains {
+            $0.count > 80
+        }
+    }
 }
 
 /// A table, scrolling sideways when it's wider than the message, its
 /// columns aligned as the delimiter row says.
-private struct TableBlock: View {
+struct TableBlock: View {
     let table: MarkdownTable
 
     var body: some View {
-        ScrollView(.horizontal) {
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                GridRow {
-                    ForEach(table.header.indices, id: \.self) { column in
-                        InlineText(table.header[column])
-                            .fontWeight(.semibold)
-                            .gridColumnAlignment(alignment(column))
-                    }
+        if Self.isWide(table) {
+            ScrollView(.horizontal) { grid }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        } else {
+            // No scroll view for a table that fits, as for code.
+            grid
+        }
+    }
+
+    /// Whether `table` may be wider than a message: many columns, or long
+    /// cells.
+    static func isWide(_ table: MarkdownTable) -> Bool {
+        let columns = ([table.header] + table.rows).map(\.count).max() ?? 0
+        guard columns <= 5 else { return true }
+        let widest = (0..<columns).map { column in
+            ([table.header] + table.rows).map { column < $0.count ? $0[column].utf8.count : 0 }.max() ?? 0
+        }
+        return widest.reduce(0, +) > 70
+    }
+
+    private var grid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+            GridRow {
+                ForEach(table.header.indices, id: \.self) { column in
+                    InlineText(table.header[column])
+                        .fontWeight(.semibold)
+                        .gridColumnAlignment(alignment(column))
                 }
-                ForEach(table.rows.indices, id: \.self) { row in
-                    Divider().gridCellUnsizedAxes(.horizontal)
-                    GridRow {
-                        ForEach(table.rows[row].indices, id: \.self) { column in
-                            InlineText(table.rows[row][column])
-                        }
+            }
+            ForEach(table.rows.indices, id: \.self) { row in
+                Divider().gridCellUnsizedAxes(.horizontal)
+                GridRow {
+                    ForEach(table.rows[row].indices, id: \.self) { column in
+                        InlineText(table.rows[row][column])
                     }
                 }
             }
-            .padding(.vertical, 2)
         }
-        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .padding(.vertical, 2)
     }
 
     private func alignment(_ column: Int) -> HorizontalAlignment {

@@ -6,10 +6,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use humata_wire::{Client, pb};
 
-use super::{after_turns, board, daemon, git_repository, item, project, started};
+use super::{
+    after_turns, board, client_of, daemon, daemon_itself, git_repository, item, project, started,
+};
+use crate::daemon::Daemon;
 use crate::github::{GitHub, GitHubError, Repo};
 use crate::hosts::Hosts;
 
@@ -36,6 +40,9 @@ struct Hub {
     /// Opening a pull request fails while set and another repository has
     /// one open.
     second_open_fails: bool,
+    /// Every read is refused as over the rate limit, to wait two minutes,
+    /// while set.
+    limited: bool,
 }
 
 /// How the stand-in GitHub refuses to open a pull request.
@@ -161,6 +168,11 @@ fn stand_in(hub: Arc<Mutex<Hub>>) -> String {
                         status = refusal.status;
                         refusal.headers.clone_into(&mut headers);
                         refusal.reply.to_owned()
+                    }
+                    ("GET", _) if hub.limited => {
+                        status = "429 Too Many Requests";
+                        "Retry-After: 120\r\n".clone_into(&mut headers);
+                        r#"{"message": "You have exceeded a secondary rate limit."}"#.to_owned()
                     }
                     ("GET", _) if !etag.is_empty() && if_none_match == etag => {
                         status = "304 Not Modified";
@@ -292,6 +304,7 @@ struct Landed {
     repository: tempfile::TempDir,
     _origins: tempfile::TempDir,
     hub: Arc<Mutex<Hub>>,
+    daemon: Arc<Daemon>,
     client: Client,
     project: pb::Project,
     task: pb::Item,
@@ -304,7 +317,8 @@ async fn land_a_task() -> Landed {
     let (repository, origin) = repository_of(origins.path(), "widgets");
 
     let hub = Arc::new(Mutex::new(Hub::default()));
-    let client = daemon(state.path(), hosts_with(&hub)).await;
+    let daemon = daemon_itself(state.path(), hosts_with(&hub)).await;
+    let client = client_of(daemon.clone()).await;
     let project = project(&client, repository.path()).await;
     let task = item(&client, &project.id, "", "Keep notes").await;
     let session = started(
@@ -360,6 +374,7 @@ async fn land_a_task() -> Landed {
         repository,
         _origins: origins,
         hub,
+        daemon,
         client,
         project,
         task,
@@ -582,6 +597,60 @@ async fn a_pull_request_that_cant_be_read_shows_why_and_the_list_still_comes() {
     let read = pulls_of(client, &task.id, true).await;
     assert!(read[0].problem.is_empty());
     assert_eq!(read[0].review(), pb::ReviewStanding::Approved);
+}
+
+#[tokio::test]
+async fn the_follower_leaves_github_alone_until_a_rate_limit_ends() {
+    let landed = land_a_task().await;
+    let Landed {
+        hub,
+        daemon,
+        client,
+        task,
+        ..
+    } = &landed;
+    let limit = |limited: bool| {
+        hub.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .limited = limited;
+    };
+    let asked = || {
+        hub.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read
+            .len()
+    };
+    let before = asked();
+    limit(true);
+    let now = tokio::time::Instant::now();
+    let mut limited_until = None;
+    daemon.follow_round(true, &mut limited_until, now).await;
+    // The read that ran into the limit, which says why on the pull request.
+    let refused = asked();
+    assert!(refused > before);
+    assert!(
+        !pulls_of(client, &task.id, false).await[0]
+            .problem
+            .is_empty()
+    );
+
+    // A round within the two minutes GitHub asked for sends it nothing.
+    daemon
+        .follow_round(true, &mut limited_until, now + Duration::from_secs(60))
+        .await;
+    assert_eq!(asked(), refused);
+
+    // One after them reads again.
+    limit(false);
+    daemon
+        .follow_round(true, &mut limited_until, now + Duration::from_secs(121))
+        .await;
+    assert!(asked() > refused);
+    assert!(
+        pulls_of(client, &task.id, false).await[0]
+            .problem
+            .is_empty()
+    );
 }
 
 #[tokio::test]

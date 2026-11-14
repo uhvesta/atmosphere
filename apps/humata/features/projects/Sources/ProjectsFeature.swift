@@ -381,7 +381,15 @@ package struct ProjectsFeature {
                 if state.projects != projects { state.projects = projects }
                 let order = State.order(of: sessions, before: state.sessions, kept: state.order)
                 if state.order != order { state.order = order }
-                let sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
+                // A working session is active again at every read. The rows
+                // show when to the minute and sort by `order`, so the
+                // seconds are dropped and the read leaves them equal.
+                let listed = sessions.map { session -> Session in
+                    var session = session
+                    session.lastActive = session.lastActive?.toTheMinute
+                    return session
+                }
+                let sessions = IdentifiedArray(listed, uniquingIDsWith: { _, last in last })
                 if state.sessions != sessions { state.sessions = sessions }
                 guard !notices.isEmpty || badge != nil else { return .none }
                 return .run { [activity] _ in
@@ -1169,6 +1177,8 @@ package struct NewSessionFeature {
         package var models: [ModelChoice] = []
         /// Why they couldn't be listed; a typed model name still works.
         package var modelsUnavailable: String?
+        /// Whether the list is being read, which on a host takes a while.
+        package var modelsLoading = false
         /// Numbers each listing asked for, so only the latest one's list
         /// shows: effects can start out of the order they were asked in.
         var modelsRequest = 0
@@ -1352,6 +1362,7 @@ package struct NewSessionFeature {
                 return .none
 
             case .modelsLoaded(_, .success(let models)):
+                state.modelsLoading = false
                 state.models = models
                 state.modelsUnavailable = nil
                 // Others take a typed name their list lacks; a local server
@@ -1364,6 +1375,7 @@ package struct NewSessionFeature {
                 return .none
 
             case .modelsLoaded(_, .failure(let error)):
+                state.modelsLoading = false
                 state.models = []
                 state.modelsUnavailable = error.localizedDescription
                 return .none
@@ -1410,6 +1422,7 @@ package struct NewSessionFeature {
         state.models = []
         state.modelsUnavailable = nil
         state.modelsRequest += 1
+        state.modelsLoading = state.backend != .scripted
         guard state.backend != .scripted else { return .none }
         guard let delay else { return fetchModels(state) }
         let request = state.modelsRequest

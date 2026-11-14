@@ -519,9 +519,11 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.send(\.destination.compare.task)
         await store.receive(\.destination.compare.loaded)
         let compare = try XCTUnwrap(store.state.destination?.compare)
-        XCTAssertTrue(compare.leftChanges?.contains { $0.patch.contains("+one") } == true)
-        XCTAssertTrue(compare.rightChanges?.contains { $0.patch.contains("+two") } == true)
-        XCTAssertFalse(compare.rightChanges?.contains { $0.patch.contains("+one") } == true)
+        let leftLines = compare.leftChanges?.patches.flatMap(\.lines) ?? []
+        let rightLines = compare.rightChanges?.patches.flatMap(\.lines) ?? []
+        XCTAssertTrue(leftLines.contains { $0.contains("+one") })
+        XCTAssertTrue(rightLines.contains { $0.contains("+two") })
+        XCTAssertFalse(rightLines.contains { $0.contains("+one") })
 
         await store.send(\.destination.compare.keepTapped, fork.id)
         await store.receive(\.destination.compare.marked)
@@ -1593,6 +1595,137 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.destination?.alert)
         await store.send(.destination(.dismiss))
         XCTAssertNil(store.state.destination)
+    }
+
+    func testAWorkingSessionsSecondsDontChangeTheSessionsListed() async {
+        let project = Project(id: "p1", name: "Humata", repositories: [], created: Self.at(0))
+        func working(at minutes: Double) -> Session {
+            Session(
+                id: "a", name: "a", backend: .scripted, workingDirectory: "/", state: .working, projectID: "p1",
+                lastActive: Self.at(minutes))
+        }
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Self.at(20))
+            $0.notifications = .previewValue
+        }
+        store.exhaustivity = .off
+
+        await store.send(.loaded(projects: [project], sessions: [working(at: 2.1)], inbox: []))
+        let listed = store.state.sessions
+        let order = store.state.order
+
+        // Read again seconds later, mid-reply: nothing a row shows changed.
+        await store.send(.loaded(projects: [project], sessions: [working(at: 2.6)], inbox: []))
+        XCTAssertEqual(store.state.sessions, listed)
+        XCTAssertEqual(store.state.order, order)
+
+        // A minute on, its row says so.
+        await store.send(.loaded(projects: [project], sessions: [working(at: 3.2)], inbox: []))
+        XCTAssertNotEqual(store.state.sessions, listed)
+        XCTAssertEqual(store.state.order, order)
+    }
+
+    func testALongDiffShowsItsFirstLinesUntilTheRestIsAskedFor() async {
+        let long = (1...12_000).map { "+line \($0)\n" }.joined()
+        let changed = [RepositoryChanges(name: "app", patch: long), RepositoryChanges(name: "api", patch: "+more\n")]
+        let left = Session(id: "a", name: "a", backend: .scripted, workingDirectory: "/")
+        let right = Session(id: "b", name: "b", backend: .scripted, workingDirectory: "/")
+        let store = TestStore(initialState: CompareFeature.State(left: left, right: right)) {
+            CompareFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+            $0.daemon.changes = { session, _ in session == "a" ? changed : [RepositoryChanges(name: "app", patch: "")] }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.leftChanges?.lineCount, 12_001)
+        XCTAssertEqual(store.state.leftChanges?.shownCount, 5_000)
+        XCTAssertEqual(store.state.leftChanges?.hidden, 7_001)
+        XCTAssertEqual(store.state.rightChanges?.isEmpty, true)
+        XCTAssertEqual(store.state.rightChanges?.hidden, 0)
+
+        // Asking for one side's rest leaves the other as it was.
+        await store.send(.showRestTapped("b"))
+        XCTAssertEqual(store.state.leftChanges?.shownCount, 5_000)
+        await store.send(.showRestTapped("a"))
+        XCTAssertEqual(store.state.leftChanges?.shownCount, 12_001)
+        XCTAssertEqual(store.state.leftChanges?.hidden, 0)
+        XCTAssertEqual(store.state.leftChanges?.patches.map(\.shown), [12_000, 1])
+    }
+
+    func testTasksThatCantBeReadSaySoInTheSheetAndAreReadAgainOnAsking() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "first", projectID: project.id))
+        let answers = LockIsolated(false)
+        var client = daemon.client
+        let items = client.items
+        client.items = { project in
+            guard answers.value else { throw DaemonError.unexpected("no answer") }
+            return try await items(project)
+        }
+        let store = TestStore(initialState: MoveSessionFeature.State(session: session)) {
+            MoveSessionFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.itemsFailed)
+        XCTAssertNotNil(store.state.itemsFailure)
+        XCTAssertNil(store.state.items)
+        // Nothing was moved, so no alert says a move failed.
+        XCTAssertNil(store.state.alert)
+
+        answers.setValue(true)
+        await store.send(.task)
+        XCTAssertNil(store.state.itemsFailure)
+        await store.receive(\.itemsLoaded)
+        XCTAssertEqual(store.state.items?.map(\.id), [task.id])
+    }
+
+    func testListingModelsShowsUntilTheListArrives() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setModels([ModelChoice(id: "apple", name: "Apple")], for: .local)
+        let (listAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (listAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        var client = daemon.client
+        let listed = client.models
+        client.models = { host, backend, config in
+            asked.yield()
+            for await _ in listAnswers { break }
+            return try await listed(host, backend, config)
+        }
+        var initial = NewSessionFeature.State(project: nil)
+        initial.backend = .scripted
+        let store = TestStore(initialState: initial) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = client
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        XCTAssertFalse(store.state.modelsLoading)
+
+        await store.send(\.binding.backend, .local)
+        XCTAssertTrue(store.state.modelsLoading)
+        for await _ in listAsked { break }
+        answer.yield()
+        await store.receive(\.modelsLoaded)
+        XCTAssertFalse(store.state.modelsLoading)
+        XCTAssertEqual(store.state.model, "apple")
+
+        // An agent with nothing to list isn't waited on.
+        await store.send(\.binding.backend, .scripted)
+        XCTAssertFalse(store.state.modelsLoading)
     }
 
     func testARepositoryRowSaysWhenItNeedsAFullPath() {
