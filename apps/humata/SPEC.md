@@ -1152,16 +1152,18 @@ reads only the config Humata writes from Settings, never
   both ways: keys in order, replay on attach clearing what was drawn, the
   pty's size sent on change, the shell's exit code as its own, and
   reconnecting after a dropped connection
-- [ ] Terminals look and behave as before: the same tabs, the exit and
+- [x] Terminals look and behave as before: the same tabs, the exit and
   closed-elsewhere notes, and Reattach when the pipe ended otherwise
 - [ ] Drawn by Ghostty with Metal: true color, wide and combining
   characters and emoji, complex scripts, and no stutter while a command
   prints fast
-- [ ] Keys as Ghostty sends them, Option as Meta, and input methods for
+  (Ghostty draws all of these itself; nothing here tests wide or
+  combining characters, emoji or complex scripts, or measures printing fast)
+- [x] Keys as Ghostty sends them, Option as Meta, and input methods for
   composed text; Humata keeps its own ⌘ shortcuts
-- [ ] Select with the mouse, copy with ⌘C, paste with ⌘V (bracketed when
+- [x] Select with the mouse, copy with ⌘C, paste with ⌘V (bracketed when
   the program asks), and mouse reporting for programs like vim and htop
-- [ ] Scroll back with the wheel or trackpad; ⌘F finds text in it
+- [x] Scroll back with the wheel or trackpad; ⌘F finds text in it
 - [x] Settings › Terminal: the font and size, and a color theme with light
   and dark palettes; Ghostty's own config files are never read
 - [x] VoiceOver reads the screen
@@ -1334,17 +1336,17 @@ The owner, 2026-11-12: see the specs for a chat.
 The owner, 2026-11-13: /rewind with a picker of checkpoints, and /compact
 on every backend.
 
-- [ ] `/rewind` in a chat's box opens a picker of its checkpoints, the
+- [x] `/rewind` in a chat's box opens a picker of its checkpoints, the
   person's messages and the compactions, newest first; typing narrows
   them, arrows move, Return picks and asks what to rewind (the chat, or
   the chat and the files), Escape closes it. It's offered in every chat
   that isn't archived
-- [ ] Rewinding to a compaction gives the agent back everything from
+- [x] Rewinding to a compaction gives the agent back everything from
   before it was summed up, and puts no message back in the box. One the
   person asked for goes with its whole turn; one the agent made mid-turn
   cuts the turn there. With the files, they go back as they were saved
   when it started. Undo Rewind brings it back as for a message
-- [ ] `/compact` sums the conversation up to make room, in a turn of its
+- [x] `/compact` sums the conversation up to make room, in a turn of its
   own that holds no message of the person's, as each backend does it:
   Claude Code runs its own `/compact`, with what to keep in mind after it;
   Copilot is asked over `session.history.compact` or
@@ -1352,15 +1354,15 @@ on every backend.
   to keep in mind; the local model writes the summary itself, shown as
   its reply, and later turns send the summary in place of what it sums
   up, while the history keeps everything
-- [ ] The app asks the session's host which commands its agent takes when
+- [x] The app asks the session's host which commands its agent takes when
   the / list loads, so `/compact` is offered only where it works, and with
   what to keep in mind only where that's taken. A built-in command wins
   over a skill or plugin command of the same name
-- [ ] `/compact` while the session works stops the turn first, after
+- [x] `/compact` while the session works stops the turn first, after
   asking; what's queued runs after the summary. From the CLI
   (`humata compact`) and MCP (`compact_session`) a working session is
   refused unless told to stop it
-- [ ] A compaction that fails says why and how to go on, records no
+- [x] A compaction that fails says why and how to go on, records no
   compaction, and offers no Try Again
 
 #### Q9 Running skills, and the box
@@ -1603,26 +1605,26 @@ projects were made with, and those of GitHub users and organizations the
 person adds in Settings, to pick from with fuzzy search. Projects keep
 their own copies, so changing the list never changes a project.
 
-- [ ] The store keeps saved repositories (name, location, used or from
+- [x] The store keeps saved repositories (name, location, used or from
   GitHub, its owner, when added and last used), filled from the projects'
   repositories when it's brought up to date; a folder that moves is moved
   in the list too
-- [ ] Making a project or changing its repositories saves each as used and
+- [x] Making a project or changing its repositories saves each as used and
   makes it the last used; a name the person gave it is kept, and the same
   GitHub repository listed for an owner, as `.git` or over SSH, becomes it
-- [ ] The daemon lists them last used first, then by name, and renames or
+- [x] The daemon lists them last used first, then by name, and renames or
   removes one; removing one never touches a project, and one from GitHub
   that was removed stays out when its owner is listed again
-- [ ] GitHub owners are saved by login (`octo-org`, `@octo-org` or its
+- [x] GitHub owners are saved by login (`octo-org`, `@octo-org` or its
   page); their repositories are listed with This Mac's token, an
   organization's with its private ones, a user's own with theirs, 100 a
   page, once when added, every 6 hours while the daemon runs, and when
   asked
-- [ ] A listing that fails keeps what was listed before and records why on
+- [x] A listing that fails keeps what was listed before and records why on
   the owner, for the person: no such user or organization, the token
   refused or not authorized for single sign-on, or the rate limit, to wait;
   removing an owner removes only the repositories listed for it
-- [ ] `humata repository list|rename|remove` and `humata repository owner
+- [x] `humata repository list|rename|remove` and `humata repository owner
   list|add|remove|refresh`, as `humata host` is
 - [x] The repository picker in New Project and a project's settings, with
   fuzzy search over name and location, the saved list first
