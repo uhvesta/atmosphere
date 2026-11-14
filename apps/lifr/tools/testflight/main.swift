@@ -217,7 +217,7 @@ func run(_ arguments: [String]) async throws(Failure) {
         guard let bundle = try await bundleIDResource(api, identifier) else {
             throw .unexpected("\(identifier) isn't registered")
         }
-        let enabled = try await api.list("/v1/bundleIds/\(bundle)/bundleIdCapabilities?limit=200")
+        let enabled = try await api.list("/v1/bundleIds/\(bundle)/bundleIdCapabilities")
         guard !enabled.contains(where: { attributes($0)["capabilityType"] as? String == type }) else { return }
         try await api.call(
             "POST", "/v1/bundleIdCapabilities",
