@@ -2442,6 +2442,9 @@
         }
       }
     },
+    "Lifr couldn't keep the task to add (%@). Open Lifr and add it with Quick Add." : {
+
+    },
     "Lifr couldn't keep the task to add at %@ (%@). Open Lifr and add it with Quick Add." : {
       "localizations" : {
         "en" : {
@@ -2451,6 +2454,9 @@
           }
         }
       }
+    },
+    "Lifr couldn't reach the tasks added from the share sheet in the keychain (%@). Unlock the device and try again; if it keeps happening, add the task with Quick Add." : {
+
     },
     "Lifr couldn't read %@: %@. Unlock this device and try again." : {
       "localizations" : {

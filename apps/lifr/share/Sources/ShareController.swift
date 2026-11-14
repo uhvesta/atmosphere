@@ -72,8 +72,8 @@ private struct ShareRoot: View {
         ShareView(title: shared.title, details: shared.details, avenues: Self.avenues) { task in
             guard let task else { return finish(false) }
             do throws(SharedTasksError) {
-                guard let file = SharedTasksFile.shared else { throw SharedTasksError.noAppGroup }
-                try file.append(task)
+                guard let queue = SharedTasks.shared else { throw SharedTasksError.noAppGroup }
+                try queue.append(task)
                 finish(true)
             } catch {
                 self.error = error

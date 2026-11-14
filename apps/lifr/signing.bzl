@@ -33,6 +33,11 @@ _PRODUCTION = """\t<key>com.apple.developer.icloud-container-environment</key>
 \t<string>Production</string>
 """
 
+_KEYCHAIN = """\t<key>keychain-access-groups</key>
+\t<array>
+{}\t</array>
+"""
+
 # macOS only runs sandboxed extensions, such as the widgets.
 _SANDBOX = """\t<key>com.apple.security.app-sandbox</key>
 \t<true/>
@@ -58,6 +63,9 @@ def _lifr_entitlements_impl(ctx):
         keys += _ICLOUD.format(ICLOUD_CONTAINER)
         if ctx.attr.production:
             keys += _PRODUCTION
+    groups = [group for group in ctx.attr.keychain_groups if group]
+    if groups:
+        keys += _KEYCHAIN.format("".join(["\t\t<string>{}</string>\n".format(group) for group in groups]))
     if ctx.attr.microphone:
         keys += _MICROPHONE
     if ctx.attr.sandbox:
@@ -79,6 +87,10 @@ lifr_entitlements = rule(
         "ios_app_group": attr.bool(
             doc = "Whether to grant the iPhone App Group the widgets read Today from, when user.bazelrc " +
                   "sets one.",
+        ),
+        "keychain_groups": attr.string_list(
+            doc = "The keychain access groups it may use, the first being where its own items go. Empty " +
+                  "ones, as unsigned builds have, are left out.",
         ),
         "microphone": attr.bool(
             doc = "Whether to let the Mac app, under the hardened runtime, record from the microphone.",

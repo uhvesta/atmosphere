@@ -1,10 +1,12 @@
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load(
     "@lifr_identity//:defs.bzl",
+    "APP_KEYCHAIN_GROUP",
     "BUNDLE_ID",
     "ICLOUD_CONTAINER",
     "IOS_APP_GROUP",
     "SHARE_IN_APP",
+    "SHARE_KEYCHAIN_GROUP",
     "TEAM_ID",
 )
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
@@ -87,9 +89,8 @@ ios_application(
         "//apps/lifr:is_app_store": ":ios_app_store_entitlements",
         "//apps/lifr:is_signed": ":ios_app_group",
         "//conditions:default": None,
-    }) if IOS_APP_GROUP or ICLOUD_CONTAINER else None,
-    # Today on the Home Screen, and the share sheet once LIFR_IOS_EXTRAS
-    # in user.bazelrc lists share.
+    }) if IOS_APP_GROUP or ICLOUD_CONTAINER or SHARE_IN_APP else None,
+    # Today on the Home Screen, and, signed, the share sheet.
     extensions = ["//apps/lifr/widgets:ios"] + (["//apps/lifr/share:ios"] if SHARE_IN_APP else []),
     families = [
         "iphone",
@@ -190,6 +191,13 @@ lifr_entitlements(
     microphone = True,
 )
 
+# The app keeps its own keychain items first and reads the tasks the share
+# extension leaves in the group they share.
+_SHARED_KEYCHAIN = [
+    APP_KEYCHAIN_GROUP,
+    SHARE_KEYCHAIN_GROUP,
+] if SHARE_IN_APP else []
+
 lifr_entitlements(
     name = "ios_signing_check",
 )
@@ -198,11 +206,13 @@ lifr_entitlements(
     name = "ios_app_group",
     icloud = False,
     ios_app_group = True,
+    keychain_groups = _SHARED_KEYCHAIN,
 )
 
 lifr_entitlements(
     name = "ios_app_store_entitlements",
     ios_app_group = True,
+    keychain_groups = _SHARED_KEYCHAIN,
     production = True,
 )
 
@@ -220,7 +230,7 @@ local_provisioning_profile(
 )
 
 # The App Store profiles tools/testflight makes and installs, for the
-# iPhone app, its widgets and, with LIFR_IOS_EXTRAS, the share extension.
+# iPhone app, its widgets and the share extension.
 local_provisioning_profile(
     name = "ios_app_store",
     profile_name = "Lifr App Store",
@@ -234,7 +244,7 @@ local_provisioning_profile(
     visibility = ["//apps/lifr/widgets:__pkg__"],
 )
 
-# Only looked for with LIFR_IOS_EXTRAS=share: until then it isn't made.
+# Only looked for in App Store builds, which tools/testflight makes it for.
 local_provisioning_profile(
     name = "ios_share_app_store",
     profile_name = "Lifr Share App Store",

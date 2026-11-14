@@ -200,6 +200,14 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(try file.take(), [])
     }
 
+    func testTasksFromTheKeychainComeOldestFirstWithoutTheUnreadable() throws {
+        let first = SharedTask(id: UUID(), title: "Read this", details: "", avenueID: nil, due: nil, sharedAt: now)
+        let second = SharedTask(
+            id: UUID(), title: "Call back", details: "", avenueID: nil, due: "2026-11-20", sharedAt: now + 60)
+        let items = [try JSONEncoder().encode(second), Data("not a task".utf8), try JSONEncoder().encode(first)]
+        XCTAssertEqual(SharedTasksKeychain.tasks(from: items), [first, second])
+    }
+
     func testOnlyThisUserCanReadTheSharedTasks() throws {
         let file = SharedTasksFile(url: try folder().appendingPathComponent("Share/Tasks.json"))
         try file.append(

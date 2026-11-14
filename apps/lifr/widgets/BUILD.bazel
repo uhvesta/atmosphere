@@ -1,5 +1,5 @@
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
-load("@lifr_identity//:defs.bzl", "APP_GROUP", "IOS_APP_GROUP", "WIDGETS_BUNDLE_ID")
+load("@lifr_identity//:defs.bzl", "APP_GROUP", "IOS_APP_GROUP", "SHARE_KEYCHAIN_GROUP", "WIDGETS_BUNDLE_ID")
 load("@rules_apple//apple:ios.bzl", "ios_extension")
 load("@rules_apple//apple:macos.bzl", "macos_extension", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
@@ -25,6 +25,14 @@ write_file(
         "    #else",
         "        /// The iPhone App Group; empty when user.bazelrc sets none.",
         "        package static let id = \"%s\"" % IOS_APP_GROUP,
+        "    #endif",
+        "",
+        "    /// The keychain group the iPhone share extension leaves tasks in when",
+        "    /// there's no App Group; empty when unsigned or on the Mac.",
+        "    #if os(iOS)",
+        "        package static let sharedKeychain = \"%s\"" % SHARE_KEYCHAIN_GROUP,
+        "    #else",
+        "        package static let sharedKeychain = \"\"",
         "    #endif",
         "}",
         "",

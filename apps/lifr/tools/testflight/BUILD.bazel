@@ -49,7 +49,7 @@ sh_binary(
         "'" + BUNDLE_ID + "|Lifr|Lifr App Store|lifr-app-store'",
         "'" + WIDGETS_BUNDLE_ID + "|Lifr Widgets|Lifr Widgets App Store|lifr-widgets-app-store'",
     ] + ([
-        # The share extension, once LIFR_IOS_EXTRAS in user.bazelrc lists it.
+        # The share extension, in signed builds.
         "'" + SHARE_BUNDLE_ID + "|Lifr Share|Lifr Share App Store|lifr-share-app-store'",
     ] if SHARE_IN_APP else []),
     data = [":asc"],

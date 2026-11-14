@@ -11,7 +11,7 @@ extension GlanceClient {
     /// Takes what the widgets marked Done from `marks`.
     /// Takes what was added from the share sheet from `shared`.
     package static func live(
-        file: GlanceFile?, marks: MarksFile? = MarksFile.shared, shared: SharedTasksFile? = SharedTasksFile.shared
+        file: GlanceFile?, marks: MarksFile? = MarksFile.shared, shared: SharedTasks? = SharedTasks.shared
     ) -> Self {
         let last = LockIsolated<TodayGlance?>(nil)
         let write: @Sendable (TodayGlance) async -> Void = { glance in

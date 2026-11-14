@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// A task added from the share sheet, waiting for Lifr to save it. The
 /// share extension can't open the records, so it leaves these in the App
@@ -32,6 +33,10 @@ package enum SharedTasksError: Error, CustomStringConvertible {
     case readFailed(URL, any Error)
     /// The file couldn't be written or removed.
     case writeFailed(URL, any Error)
+    /// The task couldn't be made into data to keep.
+    case unencodable(any Error)
+    /// The keychain refused to keep, read or remove a task.
+    case keychainFailed(OSStatus)
 
     package var description: String {
         switch self {
@@ -53,7 +58,27 @@ package enum SharedTasksError: Error, CustomStringConvertible {
                     Lifr couldn't keep the task to add at \(url.path) (\(error.localizedDescription)). \
                     Open Lifr and add it with Quick Add.
                     """)
+        case .unencodable(let error):
+            String(
+                localized: """
+                    Lifr couldn't keep the task to add (\(error.localizedDescription)). Open Lifr and add it \
+                    with Quick Add.
+                    """)
+        case .keychainFailed(let status):
+            String(
+                localized: """
+                    Lifr couldn't reach the tasks added from the share sheet in the keychain \
+                    (\(Self.message(status))). Unlock the device and try again; if it keeps happening, add the \
+                    task with Quick Add.
+                    """)
         }
+    }
+}
+
+extension SharedTasksError {
+    /// What the keychain says `status` means, or its number.
+    fileprivate static func message(_ status: OSStatus) -> String {
+        (SecCopyErrorMessageString(status, nil) as String?) ?? "\(status)"
     }
 }
 

@@ -1,4 +1,4 @@
-load("@lifr_identity//:defs.bzl", "IOS_APP_GROUP", "SHARE_BUNDLE_ID")
+load("@lifr_identity//:defs.bzl", "SHARE_BUNDLE_ID", "SHARE_KEYCHAIN_GROUP")
 load("@rules_apple//apple:ios.bzl", "ios_extension")
 load("@rules_apple//apple:macos.bzl", "macos_extension", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
@@ -6,7 +6,8 @@ load("//apps/lifr:signing.bzl", "lifr_entitlements")
 
 # Lifr in the share sheet: a link or text another app shares becomes a
 # task. The extension can't open the records, so it queues the task in the
-# App Group and Lifr adds it the next time it opens.
+# App Group, or on an iPhone without one in a keychain group it shares with
+# Lifr, and Lifr adds it the next time it opens.
 
 swift_library(
     name = "share_lib",
@@ -22,17 +23,16 @@ swift_library(
     ],
 )
 
-# In the iPhone app once LIFR_IOS_EXTRAS in user.bazelrc lists share: its
-# App ID needs the App Group in the developer portal first, and
-# tools/testflight then makes its App Store profile.
+# In signed iPhone builds; tools/testflight registers its App ID and makes
+# its App Store profile.
 ios_extension(
     name = "ios",
     bundle_id = SHARE_BUNDLE_ID,
     bundle_name = "LifrShare",
     entitlements = select({
-        "//apps/lifr:is_signed": ":ios_app_group",
+        "//apps/lifr:is_signed": ":ios_entitlements_signed",
         "//conditions:default": None,
-    }) if IOS_APP_GROUP else None,
+    }),
     families = [
         "iphone",
         "ipad",
@@ -69,9 +69,10 @@ macos_extension(
 )
 
 lifr_entitlements(
-    name = "ios_app_group",
+    name = "ios_entitlements_signed",
     icloud = False,
     ios_app_group = True,
+    keychain_groups = [SHARE_KEYCHAIN_GROUP],
 )
 
 lifr_entitlements(
