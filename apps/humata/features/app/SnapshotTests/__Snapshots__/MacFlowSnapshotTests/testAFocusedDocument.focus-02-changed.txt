@@ -49,7 +49,7 @@
     [Unknown] "Changed" help: "Click to comment on this"
     [StaticText] "" value: "Words" help: "Click to comment on this"
     [StaticText] "" value: "Tap a word to hear it and see what it means." help: "Click to comment on this"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Write the spec"
     [Button, selected] "SPEC.md"
     [StaticText] "" value: "Allowed by the approval mode"

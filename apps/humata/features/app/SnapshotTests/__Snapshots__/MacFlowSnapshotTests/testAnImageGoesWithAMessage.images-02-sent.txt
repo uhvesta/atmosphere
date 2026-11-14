@@ -24,7 +24,7 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [Image] "Image"
     [StaticText] "" value: "What is in this picture?"
     [StaticText] "" value: "A green hill under a blue sky."

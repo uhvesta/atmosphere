@@ -24,25 +24,7 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
-    [StaticText] "" value: "Look at this:
-A pasted log line that goes on for a while.
-A pasted log line that goes on for a while.
-A pasted log line that goes on for a while.
-A pasted log line that goes on for a while.
-A pasted l"
-    [Button] "Show More"
-    [Button] "Thoughts" help: "Shows the thinking"
-    [Button, selected] "cat fixtures.csv"
-    [StaticText] "" value: "Allowed by the approval mode"
-    [StaticText] "" value: "Fixture 495 parses; all rows are fine."
-    [StaticText] "" value: "a · 100 in · 10 out · 1 premium" help: "What this turn used"
-    [StaticText] "" value: "Check fixture 496"
-    [Button] "Thoughts" help: "Shows the thinking"
-    [Button, selected] "cat fixtures.csv"
-    [StaticText] "" value: "Allowed by the approval mode"
-    [StaticText] "" value: "Fixture 496 parses; all rows are fine."
-    [StaticText] "" value: "a · 100 in · 10 out · 1 premium" help: "What this turn used"
+  [List] "Chat"
     [StaticText] "" value: "Check fixture 497"
     [Button] "Thoughts" help: "Shows the thinking"
     [Button, selected] "cat fixtures.csv"
@@ -61,6 +43,24 @@ A pasted l"
     [StaticText] "" value: "Allowed by the approval mode"
     [StaticText] "" value: "Fixture 499 parses; all rows are fine."
     [StaticText] "" value: "a · 100 in · 10 out · 1 premium" help: "What this turn used"
+    [StaticText] "" value: "Fixture 495 parses; all rows are fine."
+    [StaticText] "" value: "a · 100 in · 10 out · 1 premium" help: "What this turn used"
+    [StaticText] "" value: "Check fixture 496"
+    [Button] "Thoughts" help: "Shows the thinking"
+    [Button, selected] "cat fixtures.csv"
+    [StaticText] "" value: "Allowed by the approval mode"
+    [StaticText] "" value: "Fixture 496 parses; all rows are fine."
+    [StaticText] "" value: "a · 100 in · 10 out · 1 premium" help: "What this turn used"
+    [StaticText] "" value: "Look at this:
+A pasted log line that goes on for a while.
+A pasted log line that goes on for a while.
+A pasted log line that goes on for a while.
+A pasted log line that goes on for a while.
+A pasted l"
+    [Button] "Show More"
+    [Button] "Thoughts" help: "Shows the thinking"
+    [Button, selected] "cat fixtures.csv"
+    [StaticText] "" value: "Allowed by the approval mode"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Plan Mode" help: "Plan mode: from the next message, the agent reads and proposes, and changes no files"

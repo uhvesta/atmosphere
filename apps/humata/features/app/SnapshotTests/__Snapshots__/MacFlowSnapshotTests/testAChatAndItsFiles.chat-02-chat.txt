@@ -24,7 +24,7 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Write a plan for the reader app"
     [Button, selected] "plan.md"
     [StaticText] "" value: "Allowed by the approval mode"

@@ -2234,10 +2234,10 @@ read top to bottom grows by up to 33,582 pt in one step and 4,297 pt on
 a second read, because the lazy stack guesses the heights of rows it
 hasn't drawn.
 
-- [ ] The chat keeps every row's height once measured, and a row not
+- [x] The chat keeps every row's height once measured, and a row not
   yet measured takes a height worked out from its text, off the main
   thread; the scroll bar moves only when a row's height really changes
-- [ ] Only the rows in view, and a screen's worth either side, are drawn;
+- [x] Only the rows in view, and a screen's worth either side, are drawn;
   a row that changes height above what's in view moves the chat by as
   much, so what's in view stays put
 - [ ] Opening a 1,000-turn chat holds the main thread under 100 ms in any
@@ -2249,9 +2249,24 @@ hasn't drawn.
   well as a mouse's beside it: today, with them over it, what was in view
   drifts by about a row when earlier messages come
 
-Tests: `LongChatScrollTests` (a chat read twice keeps its length, and Show
-Earlier Messages keeping its place with overlay scroll bars, both now
-expected failures), `ChatPerfTests` (open, scroll and tool-heavy limits).
+The two layout items are done: a chat read twice changes its length by
+0 pt (it was 8,666), and scrolling redraws only the rows that come into
+view. The owner set the time limits aside on 2026-11-14; they're unmet:
+
+    perf: chat scroll, 40 turns: median 130 ms a step, p95 286 ms
+    perf: chat scroll, 200 turns: median 131 ms a step, p95 284 ms
+    perf: chat open, 1,000 turns: shown in 1022 ms, longest pass 292 ms
+    perf: tool-heavy turn, 300 calls: longest pass 184 ms, busy 100%
+    perf: scroll while streaming: p95 267 ms
+
+Most of a scroll step is the window's root hosting view measuring the whole
+view tree again, the header's `ViewThatFits` included; what sets it off on
+each step isn't known yet.
+
+Tests: `LongChatScrollTests` (a chat read twice keeps its length; Show
+Earlier Messages keeps its place with both scroll bar styles),
+`RedrawTests` (scrolling draws only the rows that come into view),
+`ChatPerfTests` (open, scroll and tool-heavy limits, still failing).
 
 ## Later
 

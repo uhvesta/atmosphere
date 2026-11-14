@@ -69,9 +69,12 @@ final class ChatScrollView: NSScrollView {
 
     override func scrollWheel(with event: NSEvent) {
         super.scrollWheel(with: event)
-        // A mouse wheel has no phases, and no live scroll: where it leaves
-        // the chat says whether it keeps to its end.
-        if event.phase.isEmpty, event.momentumPhase.isEmpty { document.following = document.isAtEnd }
+        // A mouse wheel has no phases, and no live scroll: a turn up the
+        // chat stops it keeping to its end, even one that leaves the end
+        // nearly in view, and where a turn down leaves it says whether it
+        // keeps to it.
+        guard event.phase.isEmpty, event.momentumPhase.isEmpty else { return }
+        document.following = event.scrollingDeltaY > 0 ? false : document.isAtEnd
     }
 
     @objc private func clipMoved(_ notification: Notification) { document.clipMoved() }
@@ -123,6 +126,14 @@ final class ChatDocumentView: NSView {
     private var arranging = false
     private var insetTop: CGFloat = 0
     private var insetBottom: CGFloat = 0
+    /// Rows that don't keep what's in view in place, such as a button
+    /// that stays first as rows come under it.
+    private var unanchored: Set<String> = []
+    /// What the hosted rows read changed: they're built again at the next
+    /// layout.
+    private var needsRefresh = false
+    /// The person's hand is on the scrolling, coasting included.
+    private var liveScrolling = false
 
     override var isFlipped: Bool { true }
 
@@ -130,6 +141,10 @@ final class ChatDocumentView: NSView {
         super.init(frame: frame)
         footerHost.isHidden = true
         addSubview(footerHost)
+        // VoiceOver reads the rows as one list, as it did the stack's.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.list)
+        setAccessibilityLabel(String(localized: "Chat"))
     }
 
     required init?(coder: NSCoder) { nil }
@@ -151,6 +166,7 @@ final class ChatDocumentView: NSView {
         let old = rows.ids
         let new = keys.map(\.id)
         let changedIDs = old != new
+        unanchored = Set(keys.lazy.filter { !$0.holdsPlace }.map(\.id))
         if changedIDs { splice(old: old, keys: keys) }
         if rescaled { rows.apply(.unmeasureAll) }
         var stale = Set<String>()
@@ -162,6 +178,7 @@ final class ChatDocumentView: NSView {
         }
         if !stale.isEmpty { rows.apply(.unmeasure(stale)) }
         refreshHosted(force: redraw || rescaled)
+        needsRefresh = false
         if redraw || rescaled { footerMeasured = false }
         if let pending = pendingScroll, rows.contains(pending.id) {
             scroll(to: pending.id, placement: pending.placement, animated: pending.animated)
@@ -198,7 +215,11 @@ final class ChatDocumentView: NSView {
         willChange()
         insetTop = top
         insetBottom = bottom
+        // The clip view moved by the insets isn't the person scrolling.
+        let wasArranging = arranging
+        arranging = true
         enclosingScrollView?.contentInsets = NSEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
+        arranging = wasArranging
         needsLayout = true
     }
 
@@ -207,6 +228,13 @@ final class ChatDocumentView: NSView {
         guard !heights.isEmpty else { return }
         willChange()
         rows.apply(.estimates(heights))
+        needsLayout = true
+    }
+
+    /// Something the hosted rows were built from changed: they're built
+    /// again, and those that draw anew measured again, at the next layout.
+    func reread() {
+        needsRefresh = true
         needsLayout = true
     }
 
@@ -264,6 +292,10 @@ final class ChatDocumentView: NSView {
     func clipMoved() {
         guard !arranging else { return }
         scrolled()
+        // Moved other than by the chat itself, as by a scroll bar, a key
+        // or another view: where it's left says whether it keeps to its
+        // end. Under the person's hand, that waits until they let go.
+        if !liveScrolling { following = isAtEnd }
         // A step that brings no new row in does nothing more.
         let range = rows.range(in: window(at: visibleTop))
         if range.lowerBound < placed.lowerBound || range.upperBound > placed.upperBound {
@@ -274,12 +306,14 @@ final class ChatDocumentView: NSView {
     /// The person's hand is on the scrolling: rows measured as it moves
     /// don't take the chat back to its end under it.
     func handStarted() {
+        liveScrolling = true
         following = false
     }
 
     /// The scrolling stopped, coasting included: where it stopped says
     /// whether the chat keeps to its end.
     func handEnded() {
+        liveScrolling = false
         following = isAtEnd
     }
 
@@ -298,8 +332,12 @@ final class ChatDocumentView: NSView {
         defer { arranging = false }
         let clip = scroll.contentView
         let width = clip.bounds.width
-        let anchor = pendingAnchor ?? rows.anchor(visible: visible, following: following)
+        let anchor = pendingAnchor ?? currentAnchor()
         pendingAnchor = nil
+        if needsRefresh {
+            needsRefresh = false
+            refreshHosted(force: false)
+        }
         if abs(width - measuredWidth) > 0.5 {
             measuredWidth = width
             rows.apply(.unmeasureAll)
@@ -315,9 +353,11 @@ final class ChatDocumentView: NSView {
         // Rows measured above move the rows in view: a few rounds settle it.
         for _ in 0..<4 {
             var measuredAny = false
-            for row in rows.range(in: window(at: origin)) where !rows.measured[row] {
+            for row in rows.range(in: window(at: origin)) {
+                // Hosted first: a row drawn anew in its host is measured
+                // again, even one measured before.
                 let id = rows.ids[row]
-                guard let host = host(for: id) else { continue }
+                guard let host = host(for: id), !rows.measured[row] else { continue }
                 rows.setHeight(host.measure(width: width), of: id, measured: true)
                 measuredAny = true
             }
@@ -362,7 +402,19 @@ final class ChatDocumentView: NSView {
     /// Keeps what's in view now, for the changes until the next layout.
     private func willChange() {
         guard pendingAnchor == nil, enclosingScrollView != nil else { return }
-        pendingAnchor = rows.anchor(visible: visible, following: following)
+        pendingAnchor = currentAnchor()
+    }
+
+    /// What's in view now, kept by the first row in view that holds its
+    /// place: past a button over the rows, which stays first as rows come
+    /// under it, to the row it's over.
+    private func currentAnchor() -> ChatRowLayout.Anchor {
+        let anchor = rows.anchor(visible: visible, following: following)
+        guard case .row(let id, _, let fallback) = anchor, unanchored.contains(id),
+            let row = rows.position(of: id), row + 1 < rows.count
+        else { return anchor }
+        let next = row + 1
+        return .row(id: rows.ids[next], offset: visibleTop - rows.top(at: next), fallback: fallback)
     }
 
     private func splice(old: [String], keys: [ChatWindowKey]) {
@@ -379,7 +431,7 @@ final class ChatDocumentView: NSView {
             kept[old[row]] = ChatRowLayout.Row(id: old[row], height: rows.heights[row], measured: rows.measured[row])
         }
         let inserted = keys[prefix..<(new.count - suffix)].map { key in
-            kept[key.id] ?? ChatRowLayout.Row(id: key.id, height: key.guess)
+            kept[key.id] ?? ChatRowLayout.Row(id: key.id, height: key.guess, measured: key.measured)
         }
         rows.apply(.splice(removed, inserted))
         let present = Set(new)
@@ -461,7 +513,8 @@ final class ChatDocumentView: NSView {
         guard width > 0 else { return }
         func measure(_ index: Int) -> CGFloat {
             let id = rows.ids[index]
-            if !rows.measured[index], let host = host(for: id) {
+            // Hosted first: a row drawn anew is measured again.
+            if let host = host(for: id), !rows.measured[index] {
                 rows.setHeight(host.measure(width: width), of: id, measured: true)
             }
             return rows.heights[index] + ChatRowLayout.spacing
@@ -483,10 +536,12 @@ final class ChatDocumentView: NSView {
 
     private func place(_ range: Range<Int>, width: CGFloat) {
         var shown = Set<String>()
+        var unmeasured = false
         for row in range {
             let id = rows.ids[row]
             guard let host = host(for: id) else { continue }
             shown.insert(id)
+            unmeasured = unmeasured || !rows.measured[row]
             let frame = NSRect(x: 0, y: rows.top(at: row), width: width, height: rows.heights[row])
             if host.frame != frame { host.frame = frame }
             host.isHidden = false
@@ -497,6 +552,9 @@ final class ChatDocumentView: NSView {
             if footerHost.frame != frame { footerHost.frame = frame }
         }
         placed = range
+        // A row hosted only now, past the rounds of measuring, is measured
+        // at the next layout.
+        if unmeasured { needsLayout = true }
     }
 }
 
@@ -553,6 +611,7 @@ private struct RowSizeReporter: View {
 
     var body: some View {
         content
+            .padding(.horizontal, ChatRowLayout.padding)
             .fixedSize(horizontal: false, vertical: true)
             .onGeometryChange(for: CGFloat.self, of: \.size.height) { reported($0) }
             .frame(maxWidth: .infinity, alignment: .topLeading)

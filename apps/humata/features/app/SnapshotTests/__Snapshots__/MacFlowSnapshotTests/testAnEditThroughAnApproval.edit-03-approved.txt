@@ -30,7 +30,29 @@
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [Image] "Block" id: hand.raised
+  [StaticText] "" value: "Run `cat > CHANGELOG.md <<'EOF'
+# Changelog
+
+- M1: shipped
+- M2: shipped
+- M3: shipped
+- M4: shipped
+- M5: shipped
+- M6: shipped
+- M7: shipped
+- M8: shipped
+- M9: shipped
+- M10: shipped
+- M11: shipped"
+  [Button] "Deny" help: "Deny (⇧⌘D)"
+  [Button] "Approve" help: "Approve (⇧⌘A)"
+  [MenuButton] "More Answers" help: "Stop asking in this session"
+  [List] "Chat"
+    [StaticText] "" value: "Write the release notes for M1"
+    [Button] "Thoughts" help: "Shows the thinking"
+    [Button, selected] "/code/humata/NOTES.md"
+    [StaticText] "" value: "Approved"
     [Button, disabled] "cat > CHANGELOG.md <<'EOF'
 # Changelog
 
@@ -61,24 +83,6 @@
 - M10: shipped
 - M11: shipped"
     [StaticText] "" value: "Waiting for you: Approve or Deny over the message box (⇧⌘A, ⇧⌘D)."
-  [Image] "Block" id: hand.raised
-  [StaticText] "" value: "Run `cat > CHANGELOG.md <<'EOF'
-# Changelog
-
-- M1: shipped
-- M2: shipped
-- M3: shipped
-- M4: shipped
-- M5: shipped
-- M6: shipped
-- M7: shipped
-- M8: shipped
-- M9: shipped
-- M10: shipped
-- M11: shipped"
-  [Button] "Deny" help: "Deny (⇧⌘D)"
-  [Button] "Approve" help: "Approve (⇧⌘A)"
-  [MenuButton] "More Answers" help: "Stop asking in this session"
   [Button] "Stop and Edit" help: "Stop this turn and put your message back in the box"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus

@@ -31,7 +31,7 @@
   [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [Link] "Sign in" help: "Open Sign in on the board"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Build the form"
     [Button, selected] "/code/humata/LoginForm.swift"
     [StaticText] "" value: "Allowed by the approval mode"

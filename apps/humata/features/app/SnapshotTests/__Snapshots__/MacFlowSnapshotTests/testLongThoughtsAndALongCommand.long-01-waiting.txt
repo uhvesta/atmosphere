@@ -26,7 +26,24 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [Image] "Block" id: hand.raised
+  [StaticText] "" value: "Run `cat > fixtures.csv <<'EOF'
+row-1,ok,2026
+row-2,ok,2026
+row-3,ok,2026
+row-4,ok,2026
+row-5,ok,2026
+row-6,ok,2026
+row-7,ok,2026
+row-8,ok,2026
+row-9,ok,2026
+row-10,ok,2026
+row-11,ok,2026
+row-12,ok,20"
+  [Button] "Deny" help: "Deny (⇧⌘D)"
+  [Button] "Approve" help: "Approve (⇧⌘A)"
+  [MenuButton] "More Answers" help: "Stop asking in this session"
+  [List] "Chat"
     [StaticText] "" value: "Write the fixtures"
     [Button, selected] "Thoughts" help: "Hides the thinking"
     [StaticText] "" value: "Step 1: check the fixture for month 1 still parses.
@@ -62,23 +79,6 @@ row-11,ok,2026
 row-12,ok,20"
     [Link] "Show All" help: "Only the first 20,000 characters show here; open all of them to read before you answer"
     [StaticText] "" value: "Waiting for you: Approve or Deny over the message box (⇧⌘A, ⇧⌘D)."
-  [Image] "Block" id: hand.raised
-  [StaticText] "" value: "Run `cat > fixtures.csv <<'EOF'
-row-1,ok,2026
-row-2,ok,2026
-row-3,ok,2026
-row-4,ok,2026
-row-5,ok,2026
-row-6,ok,2026
-row-7,ok,2026
-row-8,ok,2026
-row-9,ok,2026
-row-10,ok,2026
-row-11,ok,2026
-row-12,ok,20"
-  [Button] "Deny" help: "Deny (⇧⌘D)"
-  [Button] "Approve" help: "Approve (⇧⌘A)"
-  [MenuButton] "More Answers" help: "Stop asking in this session"
   [Button] "Stop and Edit" help: "Stop this turn and put your message back in the box"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus

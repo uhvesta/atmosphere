@@ -26,7 +26,7 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Draft the notes"
     [StaticText] "" value: "Done: Draft the notes."
     [StaticText] "" value: "Rewound the chat to here"

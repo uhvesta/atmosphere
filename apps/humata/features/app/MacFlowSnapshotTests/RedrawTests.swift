@@ -94,6 +94,39 @@ final class RedrawTests: XCTestCase {
         #endif
     }
 
+    func testScrollingDrawsOnlyTheRowsThatComeIntoView() async throws {
+        #if DEBUG
+            var maker = ChatMaker(seed: 13)
+            let (store, window, task) = try await opened(maker.history(turns: 200))
+            defer {
+                task.cancel()
+                window.close()
+                window.contentViewController = nil
+            }
+            await quiet(window) { SessionBodyRuns.counts }
+            let scroll = try XCTUnwrap(Self.chatScroll(in: window.contentView), "no scroll view holds the chat")
+
+            let before = SessionBodyRuns.counts
+            // A screen at a time up the chat, so each step brings rows in.
+            for _ in 0..<30 {
+                let clip = scroll.contentView
+                clip.scroll(to: NSPoint(x: 0, y: max(0, clip.bounds.minY - 600)))
+                scroll.reflectScrolledClipView(clip)
+                await drawn(window)
+            }
+            await settle(window)
+            let drew = Self.drew(since: before, SessionBodyRuns.counts)
+
+            XCTAssertGreaterThan(drew(.chatRow), 0, "no row was drawn as it came into view")
+            XCTAssertEqual(drew(.chatList), 0, "scrolling drew the chat's list again")
+            XCTAssertEqual(drew(.composer), 0, "scrolling drew the box again")
+            XCTAssertEqual(drew(.header), 0, "scrolling drew the header again")
+            XCTAssertEqual(drew(.session), 0, "scrolling drew the whole session again")
+        #else
+            throw XCTSkip("Views count how often they're drawn only in debug builds.")
+        #endif
+    }
+
     func testAReadOfTheSidebarWithNothingNewToShowDrawsNoRow() async throws {
         #if DEBUG
             let minute = Date(timeIntervalSince1970: 1_794_000_600)
@@ -247,6 +280,18 @@ final class RedrawTests: XCTestCase {
         try? FileManager.default.removeItem(at: url)
         FileHandle.standardError.write(Data(text.utf8))
         return text
+    }
+
+    /// The scroll view in `view` with the tallest document: the chat's.
+    private static func chatScroll(in view: NSView?) -> NSScrollView? {
+        guard let view else { return nil }
+        var found: [NSScrollView] = []
+        func walk(_ view: NSView) {
+            if let scroll = view as? NSScrollView { found.append(scroll) }
+            for child in view.subviews { walk(child) }
+        }
+        walk(view)
+        return found.max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }
     }
 
     /// How many more times each view was drawn in `after` than in `before`.

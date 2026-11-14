@@ -125,6 +125,8 @@ package struct SessionFeature {
         package var items: [ChatItem] { chat.items }
         /// The chat's rows, oldest first: a long reply's parts are each one.
         var lines: [ChatLine] { chat.lines }
+        /// One for each item, moved on each time the item changes.
+        var itemVersions: [UInt32] { chat.versions }
 
         /// A chat's history as it was when the chat was looked away from:
         /// its events and what they were worked out to show, so it shows

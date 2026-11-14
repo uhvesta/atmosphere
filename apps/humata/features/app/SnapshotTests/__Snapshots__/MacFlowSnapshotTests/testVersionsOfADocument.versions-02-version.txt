@@ -62,7 +62,7 @@
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "After turn 1"
       [StaticText] "" value: "Nov 6 at 1:20 PM"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Write the spec"
     [Button, selected] "SPEC.md"
     [StaticText] "" value: "Allowed by the approval mode"

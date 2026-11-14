@@ -30,7 +30,7 @@
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Write the release notes for M1"
     [Button] "Thoughts" help: "Shows the thinking"
     [Button, selected] "/code/humata/NOTES.md"

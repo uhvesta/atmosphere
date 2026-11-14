@@ -40,7 +40,7 @@ final class LongChatScrollTests: XCTestCase {
             window.contentViewController = nil
         }
         let scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
-        func height() -> CGFloat { scroll.documentView?.frame.height ?? 0 }
+        func height() -> CGFloat { rowsHeight(in: scroll) }
 
         let closed = height()
         store.send(.toolToggled(id: row))
@@ -254,15 +254,7 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertGreaterThan(height(), before.height + 500, "no earlier rows came")
         // What's in view is as far from the chat's end as it was, within a
         // row: the rows came above it.
-        // With the scroll bars over the chat, its rows are wider than
-        // the lazy stack guesses for those out of view, so the place
-        // drifts by about a row; Milestone SW replaces the stack.
-        let expected = XCTExpectedFailure.Options()
-        expected.isEnabled = style == .overlay
-        expected.isStrict = false
-        XCTExpectFailure("the lazy stack guesses rows' heights; SPEC Milestone SW", options: expected) {
-            XCTAssertEqual(aboveEnd(scroll), before.aboveEnd, accuracy: 60, "what was in view moved")
-        }
+        XCTAssertEqual(aboveEnd(scroll), before.aboveEnd, accuracy: 60, "what was in view moved")
     }
 
     /// A proposed spec edit shows what it takes out of the spec and puts
@@ -306,7 +298,7 @@ final class LongChatScrollTests: XCTestCase {
             await settle(window)
             await settle(window)
             let scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
-            return (scroll.documentView?.frame.height ?? 0, spinners(in: scroll))
+            return (rowsHeight(in: scroll), spinners(in: scroll))
         }
 
         let asEdit = try await shown(edit)
@@ -359,11 +351,7 @@ final class LongChatScrollTests: XCTestCase {
                 + "then \(Int(second)) pt")
 
         XCTAssertGreaterThan(seen, 5_000, "the chat is too short to read through")
-        // The lazy stack still guesses the heights of rows out of view, so
-        // its length moves as they're read; Milestone SW replaces it.
-        XCTExpectFailure("the lazy stack guesses rows' heights; SPEC Milestone SW") {
-            XCTAssertLessThan(second, 150, "the chat's length changed as rows already seen were read again")
-        }
+        XCTAssertLessThan(second, 150, "the chat's length changed as rows already seen were read again")
         XCTAssertEqual(height(), seen, accuracy: 150, "the chat read again isn't as long as it was")
     }
 
@@ -524,6 +512,14 @@ final class LongChatScrollTests: XCTestCase {
     }
 
     /// How many spinners or progress bars are drawn in the chat.
+    /// How tall the chat's rows stand together: a short chat's scrolled
+    /// view is as tall as the pane, whatever its rows are.
+    private func rowsHeight(in scroll: NSScrollView) -> CGFloat {
+        let shown = (scroll.documentView?.subviews ?? []).filter { !$0.isHidden }.map(\.frame)
+        guard let top = shown.map(\.minY).min(), let bottom = shown.map(\.maxY).max() else { return 0 }
+        return bottom - top
+    }
+
     private func spinners(in scroll: NSScrollView) -> Int {
         var count = 0
         func walk(_ view: NSView) {

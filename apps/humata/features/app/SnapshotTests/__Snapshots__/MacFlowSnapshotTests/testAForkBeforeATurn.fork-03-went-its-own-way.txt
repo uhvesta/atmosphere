@@ -32,7 +32,7 @@
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "notes"
     [Button, selected] "/notes.md"
     [StaticText] "" value: "Allowed by the approval mode"

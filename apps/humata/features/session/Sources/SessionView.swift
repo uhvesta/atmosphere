@@ -521,30 +521,6 @@ private struct Fills: Layout {
     ) -> CGFloat? { nil }
 }
 
-/// The end of the chat, kept in view as it grows.
-private enum ChatEnd {
-    static func inView(_ geometry: ScrollGeometry) -> Bool {
-        geometry.visibleRect.maxY >= geometry.contentSize.height - 40
-    }
-
-    /// Where the chat is scrolled, and how long it is.
-    struct Place: Equatable {
-        let offset: CGFloat
-        let height: CGFloat
-        /// How much of it the pane shows: less while a strip sits over its
-        /// bottom.
-        let shown: CGFloat
-        let endInView: Bool
-
-        init(geometry: ScrollGeometry) {
-            offset = geometry.contentOffset.y
-            height = geometry.contentSize.height
-            shown = geometry.visibleRect.height
-            endInView = ChatEnd.inView(geometry)
-        }
-    }
-}
-
 /// Draws `content` in a body of its own, so what it reads of the store
 /// redraws only it and not the view around it.
 private struct Separately<Content: View>: View {
@@ -553,168 +529,55 @@ private struct Separately<Content: View>: View {
     var body: some View { content() }
 }
 
-/// The chat, scrolling, kept at its end as it grows. Where it's scrolled
-/// changes as a reply streams, and each change draws this again, so it
-/// holds only the scrolling: the rows are a view of their own, `ChatRows`,
-/// the same each time and so left as they are.
+/// The chat, scrolling, kept at its end as it grows. The chat's own
+/// scroll view lays out its rows and keeps to its end; this holds what's
+/// drawn over it and the jumps asked for, and the rows are a view of their
+/// own, `ChatRows`, drawn again only when the rows or the room over them
+/// change.
 private struct ChatList: View {
     let store: StoreOf<SessionFeature>
-    /// Whether the chat keeps to its end as it grows: on while the end is in
-    /// view, off once the person scrolls up to read.
-    @State private var following = true
-    /// Moves the chat to its end. Not `scrollTo` by id: that looks for the
-    /// id past every row before it, and ran on each frame of a reply.
-    @State private var position = ScrollPosition(idType: String.self)
-    /// How many rows above the chat's last the person has asked to see.
-    @State private var earlier = 0
-    /// Earlier rows were just asked for: when they come, above what's in
-    /// view, the chat stays on what it showed.
-    @State private var keepsPlace = false
-    /// A jump to a row was asked for and hasn't landed: until it has, the
-    /// chat's end being in view is where the jump left from, not a reason
-    /// to keep to it.
-    @State private var jumping = false
-    /// The person's hand is on the scrolling, or it's coasting from it:
-    /// until it stops, a row measured near the chat's end doesn't take the
-    /// chat back there.
-    @State private var byHand = false
-    /// Which rows the pointer rests on, for all the rows.
-    @State private var pointed = PointedRows()
+    /// Takes the chat to a row or to its end.
+    @State private var scrolling = ChatScrolling()
+    /// The room the banner and the strip take over the chat.
+    @State private var topInset: CGFloat = 0
+    @State private var bottomInset: CGFloat = 0
 
     var body: some View {
-        ScrollViewReader { reader in chat(reader) }
-    }
-
-    @ViewBuilder
-    private func chat(_ reader: ScrollViewProxy) -> some View {
         let highlighted = store.highlightedItem
-        ScrollView {
-            ChatRows(store: store, earlier: earlier, pointed: pointed) { more, first in
-                keepsPlace = true
-                earlier += more
-                // The rows above are measured as they're drawn, after the
-                // first growth: the row that was first goes back to the
-                // top once they are, so what was in view stays.
-                Task { @MainActor in
-                    await Task.yield()
-                    reader.scrollTo(first, anchor: .top)
-                }
-            }
+        ChatRows(store: store, scrolling: scrolling, topInset: topInset, bottomInset: bottomInset)
             .equatable()
-        }
-        .scrollPosition($position)
-        // At its end when it opens; as it grows, what's in view stays.
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        // A chat shorter than the pane sits at its bottom, just above
-        // the box.
-        .defaultScrollAnchor(.bottom, for: .alignment)
-        .onScrollGeometryChange(for: ChatEnd.Place.self) {
-            ChatEnd.Place(geometry: $0)
-        } action: { old, new in
-            // A change that starts away from the end: the jump landed.
-            if jumping, !old.endInView { jumping = false }
-            // A pointer the chat moves under isn't resting on a row.
-            if new.offset != old.offset { pointed.moved() }
-            if new.height > old.height, keepsPlace {
-                // Earlier rows came above what's in view: it moves down
-                // by their height, and the chat with it.
-                keepsPlace = false
-                position.scrollTo(y: old.offset + new.height - old.height)
-            } else if new.height != old.height {
-                // Grown or shrunk with its end in view: keep to the end,
-                // unless a jump is leaving it. The rows a jump brings
-                // above come as a growth with the end still in view. Nor
-                // while the person scrolls: a row measured, or a word
-                // written, just as they set off up the chat took it back
-                // to its end under their hand.
-                if old.endInView, !jumping, !byHand { following = true }
-                if following { position.scrollTo(edge: .bottom) }
-            } else if new.shown != old.shown {
-                // The pane showed more or less of it, as a strip came
-                // or went over its bottom: a chat kept to its end stays
-                // there, its last row above the strip.
-                if following { position.scrollTo(edge: .bottom) }
-            } else if new.offset < old.offset - 1, !new.endInView {
-                // Read up, by any means: a mouse wheel has no phases. An
-                // upward move that leaves the end in view is the chat
-                // getting shorter, as a row's guessed height is measured.
-                following = false
-            } else if new.endInView, new.offset > old.offset {
-                following = true
+            .overlay { ChatLoading(store: store) }
+            .onChange(of: highlighted, initial: true) { _, item in
+                guard let item else { return }
+                scrolling.scroll(to: item, placement: .center, animated: false)
             }
-        }
-        // Only the person's scrolling stops or starts the following:
-        // rows measured as they come move what's in view by themselves.
-        .onScrollPhaseChange { _, phase, context in
-            switch phase {
-            case .tracking, .interacting:
-                following = false
-                jumping = false
-                byHand = true
-            case .idle:
-                jumping = false
-                byHand = false
-                // Only on: the stop after the chat's own scroll to its
-                // end can come while rows are still being measured.
-                if ChatEnd.inView(context.geometry) { following = true }
-            case .decelerating, .animating:
-                break
-            @unknown default:
-                break
+            // A message sent takes the chat to its end to show it and what
+            // the agent says to it, wherever the person had scrolled.
+            .onChange(of: store.sending) { old, new in
+                guard new > old else { return }
+                scrolling.scrollToEnd()
             }
-        }
-        .overlay { ChatLoading(store: store) }
-        .onChange(of: highlighted, initial: true) { _, item in
-            guard let item else {
-                jumping = false
-                return
+            .onChange(of: store.scrollTarget) { _, item in
+                guard let item else { return }
+                scrolling.scroll(to: item, placement: .top, animated: true)
+                store.send(.scrolled)
             }
-            jump(to: item, anchor: .center, animated: false, reader)
-        }
-        // A message sent takes the chat to its end to show it and what
-        // the agent says to it, wherever the person had scrolled.
-        .onChange(of: store.sending) { old, new in
-            guard new > old else { return }
-            following = true
-            jumping = false
-            position.scrollTo(edge: .bottom)
-        }
-        .onChange(of: store.scrollTarget) { _, item in
-            guard let item else { return }
-            jump(to: item, anchor: .top, animated: true, reader)
-            store.send(.scrolled)
-        }
-        .safeAreaInset(edge: .top) {
-            if store.highlighted != nil {
-                highlightBanner(found: highlighted != nil)
+            // Over the chat, with room for them left over and under its
+            // rows: they don't change the chat's frame.
+            .overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    if store.highlighted != nil {
+                        highlightBanner(found: highlighted != nil)
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { topInset = $0 }
             }
-        }
-        // An inset, not a row over the box: in the stack beside the chat it
-        // changed the chat's frame, and the chat, kept at its bottom, laid
-        // itself out again without end.
-        .safeAreaInset(edge: .bottom) {
-            WaitingStrip(store: store)
-        }
-    }
-
-    /// Takes the chat to the row `item`. Through the chat's position: one
-    /// left at the chat's end keeps it there as the rows a jump brings
-    /// above come in, so the jump must replace it. And through the reader:
-    /// the position finds a row by id only among a scroll target layout's,
-    /// which the rows aren't, so by itself it moved nothing when the row
-    /// was already among those shown.
-    private func jump(to item: String, anchor: UnitPoint, animated: Bool, _ reader: ScrollViewProxy) {
-        following = false
-        jumping = true
-        if animated {
-            withAnimation {
-                position.scrollTo(id: item, anchor: anchor)
-                reader.scrollTo(item, anchor: anchor)
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    WaitingStrip(store: store)
+                }
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { bottomInset = $0 }
             }
-        } else {
-            position.scrollTo(id: item, anchor: anchor)
-            reader.scrollTo(item, anchor: anchor)
-        }
     }
 
     /// Over the chat while a search hit is highlighted: forks from it, or
@@ -761,75 +624,121 @@ private struct ChatLoading: View {
     }
 }
 
-/// The chat's rows, with the turn under way at the end. Its own view, so
-/// a change to the chat redraws only this; and each row is drawn again only
-/// when what it shows changes. Equal for the same session, so the
-/// scrolling around it drawn again leaves it as it is: what it shows it
-/// reads from the store itself.
+/// The chat's rows, with the turn under way at the end, in a scroll view
+/// that hosts only those near what's in view. Its own view, so a change to
+/// the chat redraws only this; and each row is built again only when what
+/// it shows changes, read as it's built. Equal for the same session and
+/// room over and under it: what it shows it reads from the store itself.
 private struct ChatRows: View, Equatable {
     let store: StoreOf<SessionFeature>
+    let scrolling: ChatScrolling
+    let topInset: CGFloat
+    let bottomInset: CGFloat
     /// How many rows above the chat's last the person has asked to see.
-    let earlier: Int
-    /// Which rows the pointer rests on: the same for the chat's life.
-    let pointed: PointedRows
-    /// Asks for that many more rows, given the id of the row shown first now.
-    let showEarlier: (Int, String) -> Void
+    @State private var earlier = 0
+    /// Which rows the pointer rests on, for all the rows.
+    @State private var pointed = PointedRows()
     @State private var selecting: TextToSelect?
     @State private var tail = ChatTail()
-    @State private var heights = RowHeights()
+    /// The finished parts of the reply being written.
+    @State private var streamed = StreamedRows()
     /// Text at another size makes every row another height.
     @Environment(\.textScale) private var textScale
 
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.earlier == rhs.earlier }
+    private static let earlierID = "chat.earlier"
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.topInset == rhs.topInset && lhs.bottomInset == rhs.bottomInset
+    }
 
     var body: some View {
         // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.chatList)
-        // swiftlint:disable:next redundant_discardable_let
-        let _ = heights.measured(at: textScale)
         let highlighted = store.highlightedItem
-        let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
         let items = store.items
+        let versions = store.itemVersions
         let all = store.lines
-        // Only the chat's last rows are handed to the list, and those above
+        // Only the chat's last rows are handed to the chat, and those above
         // them once asked for or jumped to, or with a message left open to
-        // change: what the list does for every row it holds, seen or not,
-        // is what made a long chat slow to open.
+        // change: a long chat opens with a few screens of rows.
         let start = tail.start(
             in: all, earlier: earlier, showing: [highlighted, store.scrollTarget, store.editing])
-        LazyVStack(alignment: .leading, spacing: 14) {
-            if start > 0 {
-                // As many again as are shown, and no more than there are.
-                let more = min(max(ChatTail.rows, all.count - start), start)
-                Button("Show Earlier Messages") { showEarlier(more, all[start].id) }
+        let shown = Array(Self.whole(highlighted, in: all[start...]))
+        // As many again as are shown, and no more than there are.
+        let more = start > 0 ? min(max(ChatTail.rows, all.count - start), start) : 0
+        let factor = textScale.factor
+        var keys: [ChatWindowKey] = []
+        if more > 0 {
+            // Stays first as rows come under it: what's in view keeps to
+            // the row after it.
+            keys.append(
+                ChatWindowKey(
+                    id: Self.earlierID, version: UInt32(clamping: more), guess: 28 * factor, holdsPlace: false))
+        }
+        for line in shown {
+            let item = line.item < items.count ? items[line.item] : nil
+            let version = line.item < versions.count ? versions[line.item] : 0
+            keys.append(
+                ChatWindowKey(
+                    id: line.id, version: version, guess: RowEstimate.constant(for: item, scale: textScale)))
+        }
+        let byID = Dictionary(shown.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ChatWindow(
+            rows: keys,
+            row: { id in row(id, lines: byID, items: items, highlighted: highlighted, more: more) },
+            footer: AnyView(TurnInProgress(store: store, streamed: streamed)),
+            streamed: streamed,
+            streamedRow: { index, text in
+                ChatWindowRow(value: text) {
+                    StreamedPart(text: text).equatable()
+                        .padding(.top, index > 0 ? -4 : 0)
+                }
+            },
+            estimate: { width, scale in
+                let heights = RowEstimate.heights(lines: shown, items: items, width: width, scale: scale)
+                return Dictionary(zip(shown.map(\.id), heights), uniquingKeysWith: { first, _ in first })
+            },
+            topInset: topInset,
+            bottomInset: bottomInset,
+            scrolling: scrolling,
+            moved: { pointed.moved() }
+        )
+        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+    }
+
+    /// The row `id` as it shows now: the button for earlier rows, or one
+    /// of `lines`. Run as the row is hosted, so only hosted rows read what
+    /// they show of the session.
+    private func row(
+        _ id: String, lines: [String: ChatLine], items: [ChatItem], highlighted: String?, more: Int
+    ) -> ChatWindowRow? {
+        if id == Self.earlierID {
+            guard more > 0 else { return nil }
+            return ChatWindowRow(value: more) {
+                Button("Show Earlier Messages") { earlier += more }
                     .buttonStyle(ChatRowButtonStyle())
                     .frame(maxWidth: .infinity)
                     .help(more == 1 ? "Show the row before these" : "Show the \(more) rows before these")
-                    .accessibilityIdentifier("chat.earlier")
+                    .accessibilityIdentifier(Self.earlierID)
             }
-            ForEach(Self.whole(highlighted, in: all[start...])) { line in
-                // A row's item is always among the chat's; the note stands
-                // in only so nothing is read past their end.
-                let item = line.item < items.count ? items[line.item] : ChatItem.notice(id: line.id, text: "")
-                let row = ChatRow(
-                    item: item, part: line.part, shows: shows(item, highlighted: highlighted),
-                    store: store, select: select
-                )
-                KeptHeight(id: line.id, row: row, heights: heights) {
-                    PointedRow(id: line.id, rows: pointed) {
-                        row
-                            .equatable()
-                            // A reply's parts sit as close as its blocks do.
-                            .padding(.top, line.continues ? -4 : 0)
-                            .environment(\.rowResizing, heights.resizing(line.id))
-                    }
-                }
-                .id(line.id)
-            }
-            TurnInProgress(store: store)
         }
-        .padding()
-        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+        guard let line = lines[id] else { return nil }
+        // A row's item is always among the chat's; the note stands in only
+        // so nothing is read past their end.
+        let item = line.item < items.count ? items[line.item] : ChatItem.notice(id: line.id, text: "")
+        let chatRow = ChatRow(
+            item: item, part: line.part, shows: shows(item, highlighted: highlighted),
+            store: store, select: { selecting = TextToSelect(text: $0) }
+        )
+        let pointed = self.pointed
+        return ChatWindowRow(value: chatRow) {
+            PointedRow(id: line.id, rows: pointed) {
+                chatRow
+                    .equatable()
+                    // A reply's parts sit as close as its blocks do.
+                    .padding(.top, line.continues ? -4 : 0)
+            }
+        }
     }
 
     /// `lines` with the highlighted reply as one row, not its parts, so all
@@ -956,80 +865,6 @@ private struct PointedRow<Content: View>: View {
     }
 }
 
-/// The heights chat rows had, each with what the row showed and the width
-/// it had: a row scrolled back to, unchanged, isn't measured again. Without
-/// them the stack measured each row it passed, and its guesses at heights
-/// it hadn't measured were what made scrolling stall.
-private final class RowHeights: @unchecked Sendable {
-    // Only read and changed on the main thread, by the chat's layout and
-    // its rows; `@unchecked` so a row can hold it in its `RowResizing`.
-    private var kept: [String: (row: ChatRow, width: CGFloat, height: CGFloat)] = [:]
-    /// The text scale the kept heights were measured at.
-    private var scale = TextScale.actual
-
-    /// Forgets the heights measured at another text scale than `scale`,
-    /// which made each row another height.
-    func measured(at scale: TextScale) {
-        guard self.scale != scale else { return }
-        self.scale = scale
-        kept.removeAll(keepingCapacity: true)
-    }
-
-    func height(of id: String, row: ChatRow, width: CGFloat) -> CGFloat? {
-        guard let kept = kept[id], kept.width == width, kept.row == row else { return nil }
-        return kept.height
-    }
-
-    func keep(_ height: CGFloat, of id: String, row: ChatRow, width: CGFloat) {
-        // Enough for a very long chat; past it, rows are measured again.
-        if kept.count >= Self.limit { kept.removeAll(keepingCapacity: true) }
-        kept[id] = (row, width, height)
-    }
-
-    /// What the row `id` calls before it changes its own height.
-    func resizing(_ id: String) -> RowResizing {
-        RowResizing(row: id, list: ObjectIdentifier(self)) { [self] in kept[$0] = nil }
-    }
-
-    private static let limit = 20_000
-}
-
-/// Lays out its one view as it is, but gives its height from `heights`
-/// while the row and width are those it was measured with.
-private struct KeptHeight: Layout {
-    let id: String
-    let row: ChatRow
-    let heights: RowHeights
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let view = subviews.first else { return .zero }
-        guard let width = proposal.width else { return view.sizeThatFits(proposal) }
-        if let height = heights.height(of: id, row: row, width: width) {
-            return CGSize(width: width, height: height)
-        }
-        let size = view.sizeThatFits(ProposedViewSize(width: width, height: nil))
-        heights.keep(size.height, of: id, row: row, width: width)
-        return CGSize(width: width, height: size.height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.first?.place(
-            at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
-    }
-
-    // Without these, a stack asking where this view's alignment guides are
-    // has it place its view to find out, laying out all of it.
-    func explicitAlignment(
-        of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
-        cache: inout ()
-    ) -> CGFloat? { nil }
-
-    func explicitAlignment(
-        of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews,
-        cache: inout ()
-    ) -> CGFloat? { nil }
-}
-
 /// A finished part of the reply being written.
 private struct StreamedPart: View, Equatable {
     let text: String
@@ -1042,7 +877,7 @@ private struct StreamedPart: View, Equatable {
 }
 
 /// The reply being written cut into parts as `Chat` cuts a finished
-/// one, so its parts are rows of the lazy list. A part, once followed by
+/// one, so its finished parts are rows of the chat's. A part, once followed by
 /// another, stays as it is, so each call reads only what came after the
 /// last of them.
 @MainActor private final class StreamedParts {
@@ -2181,43 +2016,50 @@ private struct WaitingStrip: View {
 /// The turn under way at the chat's end: why it waits, or the reply as it
 /// streams; that it's stopping, once told to; and before any turn, that a
 /// message is on its way. Its own view, so each streamed word redraws only
-/// this and not every row of the chat.
+/// this and not every row of the chat. The reply's finished parts it hands
+/// to `streamed`, rows of the chat's own: only the part being written is
+/// drawn here.
 private struct TurnInProgress: View {
     let store: StoreOf<SessionFeature>
+    let streamed: StreamedRows
     @State private var parts = StreamedParts()
 
     var body: some View {
         // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.turnInProgress)
-        if store.stopping {
-            // What's written so far stays until the turn has stopped.
-            if !store.streaming.isEmpty {
-                reply(store.streaming)
+        let text = replyText
+        let (done, writing) = text.map { parts.split($0) } ?? ([], "")
+        // swiftlint:disable:next redundant_discardable_let
+        let _ = streamed.post(done)
+        VStack(alignment: .leading, spacing: 14) {
+            if text != nil {
+                ReplyInProgress(text: writing, thinking: nil, showsThinking: false, toggleThinking: {})
+                    .padding(.top, done.isEmpty ? 0 : -4)
             }
-            status("Stopping…")
-        } else if store.isWorking, let reason = store.waitReason {
-            status(reason)
-        } else if store.isCompacting, !store.isWaiting, store.streaming.isEmpty {
-            // A summary the agent writes out shows as a reply instead.
-            status("Compacting the conversation…")
-        } else if store.isWorking, !store.isWaiting {
-            reply(store.streaming)
-        } else if store.sending > 0, !store.isWorking {
-            status("Sending…")
+            if store.stopping {
+                status("Stopping…")
+            } else if store.isWorking, let reason = store.waitReason {
+                status(reason)
+            } else if store.isCompacting, !store.isWaiting, store.streaming.isEmpty {
+                // A summary the agent writes out shows as a reply instead.
+                status("Compacting the conversation…")
+            } else if store.sending > 0, !store.isWorking {
+                status("Sending…")
+            }
         }
     }
 
-    /// The reply being written: its finished parts as rows of their own,
-    /// drawn once, and only the part being written drawn again as it grows.
-    @ViewBuilder
-    private func reply(_ text: String) -> some View {
-        let (done, writing) = parts.split(text)
-        ForEach(done.indices, id: \.self) { index in
-            StreamedPart(text: done[index]).equatable()
-                .padding(.top, index > 0 ? -4 : 0)
+    /// The reply being written, when it shows: while the turn works and
+    /// waits for nothing, and once told to stop, what's written so far
+    /// until the turn has stopped.
+    private var replyText: String? {
+        if store.stopping {
+            return store.streaming.isEmpty ? nil : store.streaming
         }
-        ReplyInProgress(text: writing, thinking: nil, showsThinking: false, toggleThinking: {})
-            .padding(.top, done.isEmpty ? 0 : -4)
+        if store.isWorking, store.waitReason != nil { return nil }
+        if store.isCompacting, !store.isWaiting, store.streaming.isEmpty { return nil }
+        if store.isWorking, !store.isWaiting { return store.streaming }
+        return nil
     }
 
     private func status(_ text: String) -> some View {

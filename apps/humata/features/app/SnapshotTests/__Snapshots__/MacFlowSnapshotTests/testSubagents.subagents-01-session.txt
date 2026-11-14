@@ -26,7 +26,7 @@
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [OpaqueProviderGroup/OpaqueProviderList] ""
+  [List] "Chat"
     [StaticText] "" value: "Where's the parser, and do its tests pass?"
     [Button] "Thoughts" help: "Shows the thinking"
     [Button, selected] "Finished, Explore, Find the parser, 5s, · 18K tokens, · 2 tools" help: "Read what this agent did" id: subagent.card
