@@ -138,6 +138,16 @@ final class SessionFeatureTests: XCTestCase {
         await watching.cancel()
     }
 
+    func testAToolCallOpensAndClosesAndOthersStayAsTheyAre() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) { SessionFeature() }
+
+        await store.send(.toolToggled(id: "read")) { $0.expandedTools = ["read"] }
+        await store.send(.toolToggled(id: "grep")) { $0.expandedTools = ["read", "grep"] }
+        await store.send(.toolToggled(id: "read")) { $0.expandedTools = ["grep"] }
+    }
+
     func testABlankMessageIsNotSent() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         var state = SessionFeature.State(session: session)

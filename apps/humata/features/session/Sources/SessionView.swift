@@ -447,7 +447,9 @@ private struct ChatList: View {
                 case .tracking, .interacting:
                     following = false
                 case .idle:
-                    following = ChatEnd.inView(context.geometry)
+                    // Only on: the stop after the chat's own scroll to its
+                    // end can come while rows are still being measured.
+                    if ChatEnd.inView(context.geometry) { following = true }
                 case .decelerating, .animating:
                     break
                 @unknown default:
@@ -506,6 +508,7 @@ private struct ChatList: View {
         case .thinking(let id, _):
             shows.thinkingOpen = store.expandedThinking.contains(id)
         case .tool(let call):
+            shows.toolOpen = store.expandedTools.contains(call.id)
             if let proposal = store.proposals.proposals[id: call.id] {
                 shows.proposal = proposal
                 shows.deciding = store.proposals.deciding.contains(call.id)
@@ -695,6 +698,8 @@ private struct ChatRow: View, Equatable {
         /// The loaded thumbnails of the message's images, by name.
         var thumbnails: [String: Data] = [:]
         var thinkingOpen = false
+        /// The tool call's output or change is open.
+        var toolOpen = false
         /// The proposal the tool call made, shown as a card.
         var proposal: Proposal?
         var deciding = false
@@ -778,7 +783,9 @@ private struct ChatRow: View, Equatable {
                     store.send(.proposals($0))
                 }
             } else {
-                ToolCallView(call: call, select: select)
+                ToolCallView(
+                    call: call, expanded: shows.toolOpen, toggle: { store.send(.toolToggled(id: call.id)) },
+                    select: select)
                 if let failure = shows.proposalFailure {
                     Label("Couldn’t read this proposal: \(failure)", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -872,17 +879,19 @@ private struct MessageEditor: View {
 
 /// A tool the agent called: what it ran or wrote, the permission it asked
 /// for, and its output, folded away until opened.
-struct ToolCallView: View {
+/// A tool call, opened to show its output or change. Whether it's open is
+/// the session's, not the view's: the chat keeps each row's height by what
+/// it shows, so a row that opened by itself kept the height it had closed.
+private struct ToolCallView: View {
     let call: ToolCall
+    let expanded: Bool
+    let toggle: () -> Void
     /// Opens text to select from, for output too long to show in the chat.
     var select: (String) -> Void = { _ in }
-    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
-                expanded.toggle()
-            } label: {
+            Button(action: toggle) {
                 HStack(spacing: 6) {
                     Image(systemName: icon)
                         .foregroundStyle(tint)
@@ -925,7 +934,7 @@ struct ToolCallView: View {
     /// A double-click on what's open closes it, wherever it was scrolled
     /// to; dragging still selects.
     private var collapse: some Gesture {
-        TapGesture(count: 2).onEnded { expanded = false }
+        TapGesture(count: 2).onEnded { if expanded { toggle() } }
     }
 
     /// The output as the chat shows it, worked out when it came: its first

@@ -91,6 +91,8 @@ package struct SessionFeature {
         var loadingThumbnails: Set<String> = []
         /// The thinking the person opened, by item id.
         package var expandedThinking: Set<String> = []
+        /// The tool calls the person opened, by call id.
+        package var expandedTools: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
         package var disconnected = false
         /// Why watching ended, when it's more than the connection dropping.
@@ -549,6 +551,7 @@ package struct SessionFeature {
         case experimentalToggled(Bool)
         case experimentalRefused(previous: Bool, message: String)
         case thinkingToggled(id: String)
+        case toolToggled(id: String)
         /// Forks the session before `event`, or with all of it if nil. A
         /// chat-only fork keeps working in this session's copy of the code.
         case forkTapped(before: String?, chatOnly: Bool)
@@ -1269,6 +1272,10 @@ package struct SessionFeature {
 
             case .thinkingToggled(let id):
                 state.expandedThinking.formSymmetricDifference([id])
+                return .none
+
+            case .toolToggled(let id):
+                state.expandedTools.formSymmetricDifference([id])
                 return .none
 
             case .forkTapped(let before, let chatOnly):
