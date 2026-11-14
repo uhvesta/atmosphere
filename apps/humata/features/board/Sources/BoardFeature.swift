@@ -101,12 +101,15 @@ package struct BoardFeature {
         }
 
         /// Keeps what was written on `page`'s spec once it closes. Comments
-        /// being sent aren't kept: the session may have them already.
+        /// still being sent are kept too: the send stops with the page, so
+        /// they may not have reached the session, and showing them again
+        /// beats losing them.
         mutating func keepComments(of page: ItemFeature.State) {
             var comments = page.comments
             comments.alert = nil
+            comments.sending = false
             let unsent = !comments.drafts.isEmpty || !comments.comment.isEmpty
-            keptComments[page.item.id] = unsent && !comments.sending ? comments : nil
+            keptComments[page.item.id] = unsent ? comments : nil
         }
 
         /// Keeps the title and spec being edited on `page` once it closes,

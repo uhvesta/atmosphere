@@ -394,6 +394,35 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.destination?.item?.comments.drafts.map(\.text), ["And a magic link."])
     }
 
+    func testSpecCommentsBeingSentWhenTheTasksPageClosesAreThereWhenItOpensAgain() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.uuid = .incrementing
+            // The send is still going when the page closes.
+            $0.daemon.send = { _, _, _ in try await Task.never() }
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let block = MarkdownBlock(kind: .paragraph, startLine: 1, endLine: 1, text: "Email and password.")
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(\.destination.item.comments.blockTapped, block)
+        await store.send(\.destination.item.comments.binding.comment, "And a magic link.")
+        await store.send(\.destination.item.comments.commentSaved)
+        await store.send(\.destination.item.comments.sendTapped, "s1")
+        XCTAssertEqual(store.state.destination?.item?.comments.sending, true)
+        await store.send(.destination(.dismiss))
+        XCTAssertNil(store.state.destination)
+
+        await store.send(.cardTapped(board.task.id))
+        XCTAssertEqual(store.state.destination?.item?.comments.drafts.map(\.text), ["And a magic link."])
+        XCTAssertEqual(store.state.destination?.item?.comments.sending, false)
+    }
+
     func testSpecCommentsGoOnlyToSessionsStillWorking() async throws {
         let board = try await board()
         let old = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))

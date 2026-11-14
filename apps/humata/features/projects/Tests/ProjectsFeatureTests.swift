@@ -471,6 +471,41 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertTrue(history.contains { $0.kind == .turnEnded(aborted: true) })
     }
 
+    func testASessionInATurnIsNeitherArchivedNorMoved() async throws {
+        let daemon = InMemoryDaemon()
+        var session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        session.state = .working
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let updates = LockIsolated(0)
+        let hostReads = LockIsolated(0)
+        let client = daemon.client
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemon.update = { id, update in
+                updates.withValue { $0 += 1 }
+                return try await client.update(id, update)
+            }
+            $0.daemon.hosts = {
+                hostReads.withValue { $0 += 1 }
+                return try await client.hosts()
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.archiveTapped(session.id, archived: true))
+        await store.send(.moveToHostTapped(session.id))
+        await Task.megaYield()
+        XCTAssertEqual(updates.value, 0)
+        XCTAssertEqual(hostReads.value, 0)
+        XCTAssertEqual(store.state.busy, [])
+        XCTAssertEqual(store.state.archived, [])
+        XCTAssertNil(store.state.destination)
+    }
+
     func testRenamingASessionShowsTheNewName() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(

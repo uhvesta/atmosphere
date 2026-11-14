@@ -197,6 +197,27 @@ package struct ProjectsView: View {
     private func row(_ session: Session) -> some View {
         let busy = store.busy.contains(session.id)
         let inTurn = session.state == .working || session.state == .waitingForApproval
+        let hold = store.state.hold(on: session)
+        // Says why Archive and Move to Host are greyed out: a menu item's
+        // help doesn't always show.
+        let held: LocalizedStringKey? =
+            switch hold {
+            case .busy: "A change to it is still being made: wait for it to finish"
+            case .inTurn: "Its turn is running: stop it to archive or move it"
+            case nil: nil
+            }
+        let moveHelp: LocalizedStringKey =
+            switch hold {
+            case .busy: "Wait for the change being made to it to finish, then move it"
+            case .inTurn: "Its turn is running; stop it or wait for it to end, then move it"
+            case nil: "Run it on this Mac or one of your hosts"
+            }
+        let archiveHelp: LocalizedStringKey =
+            switch hold {
+            case .busy: "Wait for the change being made to it to finish, then archive it"
+            case .inTurn: "Its turn is running; use Stop and Archive, or wait for it to end"
+            case nil: "Put it away under Archived; its copy of the code stays until it's deleted"
+            }
         return SessionRow(session: session, now: store.now, busy: busy)
             .tag(SidebarItem.session(session.id))
             .contextMenu {
@@ -206,13 +227,8 @@ package struct ProjectsView: View {
                 }
                 if !session.archived {
                     Button("Move to Host…") { store.send(.moveToHostTapped(session.id)) }
-                        .disabled(inTurn || busy)
-                        .help(
-                            busy
-                                ? "Wait for the change being made to it to finish"
-                                : inTurn
-                                    ? "Its turn is running; stop it or wait for it to end, then move it"
-                                    : "Run it on this Mac or one of your hosts")
+                        .disabled(hold != nil)
+                        .help(moveHelp)
                 }
                 Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
                     store.send(.keeperTapped(session.id, keeper: !session.keeper))
@@ -232,18 +248,10 @@ package struct ProjectsView: View {
                     Button("Delete…", role: .destructive) { store.send(.deleteSessionTapped(session.id)) }
                         .disabled(store.busy.contains(session.id))
                 } else {
-                    if inTurn {
-                        // Says why Archive and Move to Host are greyed out.
-                        Text("Its turn is running: stop it to archive or move it")
-                    }
+                    if let held { Text(held) }
                     Button("Archive") { store.send(.archiveTapped(session.id, archived: true)) }
-                        .disabled(inTurn || busy)
-                        .help(
-                            busy
-                                ? "Wait for the change being made to it to finish"
-                                : inTurn
-                                    ? "Its turn is running; use Stop and Archive, or wait for it to end"
-                                    : "Put it away under Archived; its copy of the code stays until it's deleted")
+                        .disabled(hold != nil)
+                        .help(archiveHelp)
                     if inTurn {
                         Button("Stop and Archive") { store.send(.stopAndArchiveTapped(session.id)) }
                             .disabled(busy)

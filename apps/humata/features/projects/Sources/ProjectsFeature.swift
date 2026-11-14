@@ -531,6 +531,10 @@ package struct ProjectsFeature {
                 return .none
 
             case .archiveTapped(let id, let archived):
+                // A running turn holds an archive: Stop and Archive ends it first.
+                if archived, let session = state.sessions[id: id], state.hold(on: session) == .inTurn {
+                    return .none
+                }
                 guard state.busy.insert(id).inserted else { return .none }
                 return update(id, SessionUpdate(archived: archived))
 
@@ -599,6 +603,8 @@ package struct ProjectsFeature {
                 return .none
 
             case .moveToHostTapped(let id):
+                // It moves with its files, so not while they're changing.
+                if let session = state.sessions[id: id], state.hold(on: session) != nil { return .none }
                 return .run { send in
                     let hosts = try await daemon.hosts().map(\.name).filter { !$0.isEmpty }
                     await send(.moveHostsLoaded(id, hosts: hosts))
@@ -938,7 +944,23 @@ package struct ProjectsFeature {
 
 extension ProjectsFeature.Destination.State: Equatable {}
 
+/// What keeps a session from being archived or moved to a host now.
+enum SessionHold: Equatable, Sendable {
+    /// It's being moved, archived or deleted already.
+    case busy
+    /// Its turn is running.
+    case inTurn
+}
+
 extension ProjectsFeature.State {
+    /// What keeps `session` from being archived or moved now; nil when
+    /// nothing does.
+    func hold(on session: Session) -> SessionHold? {
+        if busy.contains(session.id) { return .busy }
+        if session.state == .working || session.state == .waitingForApproval { return .inTurn }
+        return nil
+    }
+
     /// The unarchived sessions on the item that answering request `id` with
     /// `answer` closes; none if it closes none.
     fileprivate func closing(_ id: AgentRequest.ID, with answer: RequestAnswer) -> [Session] {
