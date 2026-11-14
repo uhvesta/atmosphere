@@ -180,16 +180,24 @@ struct MainThread: CustomStringConvertible {
     let longest: Duration
     /// The part of the time it was at work, from 0 to 1.
     let busy: Double
+    /// How long it had been watched when the longest pass began, to tell
+    /// what the pass was for.
+    var longestAt = Duration.zero
 
-    var description: String { "longest pass \(longest.inMilliseconds) ms, busy \(Int((busy * 100).rounded()))%" }
+    var description: String {
+        "longest pass \(longest.inMilliseconds) ms (\(longestAt.inMilliseconds) ms in), "
+            + "busy \(Int((busy * 100).rounded()))%"
+    }
 
     /// Watches the main thread until `stop()`. A pass is from when its run
     /// loop wakes to when it next waits; the one under way at either end
-    /// counts for the part of it that was watched.
+    /// counts for the part of it that was watched. A pass ends after
+    /// everything else that runs before the wait: the window's layout and
+    /// drawing are done there, and are most of what a view costs.
     @MainActor
     final class Watch {
         private let passes: Passes
-        private let observer: CFRunLoopObserver?
+        private let observers: [CFRunLoopObserver]
         private let clock: ContinuousClock
         private let start: ContinuousClock.Instant
 
@@ -198,28 +206,33 @@ struct MainThread: CustomStringConvertible {
             self.clock = clock
             let now = clock.now
             start = now
-            let passes = Passes()
+            let passes = Passes(start: now)
             passes.woke = now
             self.passes = passes
-            let activities: CFRunLoopActivity = [.afterWaiting, .beforeWaiting]
-            observer = CFRunLoopObserverCreateWithHandler(nil, activities.rawValue, true, 0) {
-                [passes, clock] _, activity in
-                if activity.contains(.afterWaiting) {
-                    passes.woke = clock.now
-                } else {
-                    passes.end(at: clock.now)
-                }
+            // First of all to hear the run loop wake, and last of all to
+            // hear it's about to wait: after the window's display cycle and
+            // its layers' commit, which are observers of the same kind.
+            let woke = CFRunLoopObserverCreateWithHandler(
+                nil, CFRunLoopActivity.afterWaiting.rawValue, true, CFIndex.min
+            ) { [passes, clock] _, _ in
+                passes.woke = clock.now
             }
-            if let observer { CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes) }
+            let waits = CFRunLoopObserverCreateWithHandler(
+                nil, CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max
+            ) { [passes, clock] _, _ in
+                passes.end(at: clock.now)
+            }
+            observers = [woke, waits].compactMap { $0 }
+            for observer in observers { CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes) }
         }
 
         func stop() -> MainThread {
-            if let observer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes) }
+            for observer in observers { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes) }
             let now = clock.now
             passes.end(at: now)
             let watched = now - start
             let busy = watched > .zero ? passes.total / watched : 0
-            return MainThread(longest: passes.longest, busy: min(max(busy, 0), 1))
+            return MainThread(longest: passes.longest, busy: min(max(busy, 0), 1), longestAt: passes.longestAt)
         }
     }
 
@@ -228,12 +241,21 @@ struct MainThread: CustomStringConvertible {
     private final class Passes: @unchecked Sendable {
         var woke: ContinuousClock.Instant?
         var longest = Duration.zero
+        var longestAt = Duration.zero
         var total = Duration.zero
+        private let start: ContinuousClock.Instant
+
+        init(start: ContinuousClock.Instant) {
+            self.start = start
+        }
 
         func end(at now: ContinuousClock.Instant) {
             guard let woke else { return }
             let pass = now - woke
-            longest = max(longest, pass)
+            if pass > longest {
+                longest = pass
+                longestAt = woke - start
+            }
             total += pass
             self.woke = nil
         }

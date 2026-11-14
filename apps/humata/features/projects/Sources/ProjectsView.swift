@@ -182,6 +182,7 @@ private struct SidebarItems: View {
                 } header: {
                     HStack {
                         Text(project.name)
+                            .accessibilityAddTraits(.isHeader)
                         Spacer()
                         Button {
                             store.send(.newSessionTapped(projectID: project.id))
@@ -202,6 +203,9 @@ private struct SidebarItems: View {
                         .fixedSize()
                         .help("New session, plan, settings or delete for \(project.name)")
                     }
+                    // The name, New Session and the menu, each its own: one
+                    // element would read as a menu named after the project.
+                    .accessibilityElement(children: .contain)
                     .contextMenu { projectActions(project) }
                 }
             }

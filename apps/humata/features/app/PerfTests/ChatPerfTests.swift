@@ -17,6 +17,9 @@ final class ChatPerfTests: XCTestCase {
     /// Opening a chat keeps the window live: the longest the main thread
     /// goes without drawing or taking a key doesn't grow with the chat.
     func testOpeningAChatKeepsTheWindowLiveHoweverLongItIs() async throws {
+        // The first window a process opens costs what none after it does:
+        // one is opened and thrown away, so neither chat is charged for it.
+        _ = try await open(turns: 5)
         let short = try await open(turns: 200)
         let long = try await open(turns: 1_000)
         Budget.note("chat open, 200 turns: \(short)")
@@ -209,9 +212,10 @@ final class ChatPerfTests: XCTestCase {
     }
 
     /// A session's store whose daemon answers a watch with `history`, then
-    /// with what `live` sends for as long as the chat is watched.
+    /// with what `live` sends for as long as the chat is watched. With
+    /// `begun`, the history is held back until it's set.
     private static func store(
-        _ history: [SessionEvent],
+        _ history: [SessionEvent], when begun: LockIsolated<Bool>? = nil,
         live: @escaping @Sendable (AsyncThrowingStream<WatchItem, any Error>.Continuation) async throws -> Void =
             { _ in }
     ) -> StoreOf<SessionFeature> {
@@ -223,9 +227,19 @@ final class ChatPerfTests: XCTestCase {
             $0.continuousClock = ContinuousClock()
             $0.daemon.watch = { _, _ in
                 AsyncThrowingStream { continuation in
-                    for event in history { continuation.yield(.event(event)) }
-                    continuation.yield(.historyLoaded)
-                    let writer = Task { try await live(continuation) }
+                    guard let begun else {
+                        for event in history { continuation.yield(.event(event)) }
+                        continuation.yield(.historyLoaded)
+                        let writer = Task { try await live(continuation) }
+                        continuation.onTermination = { _ in writer.cancel() }
+                        return
+                    }
+                    let writer = Task {
+                        while !begun.value { try await Task.sleep(for: .milliseconds(2)) }
+                        for event in history { continuation.yield(.event(event)) }
+                        continuation.yield(.historyLoaded)
+                        try await live(continuation)
+                    }
                     continuation.onTermination = { _ in writer.cancel() }
                 }
             }
@@ -237,7 +251,8 @@ final class ChatPerfTests: XCTestCase {
     private struct Opened: CustomStringConvertible {
         var events = 0
         var rows = 0
-        /// From opening the window to the chat's rows on screen.
+        /// From the history's coming, to a window already up, to the
+        /// chat's rows on screen.
         var shown = Duration.zero
         var main = MainThread(longest: .zero, busy: 0)
         /// Bytes memory grew by.
@@ -250,21 +265,26 @@ final class ChatPerfTests: XCTestCase {
     }
 
     /// Opens a chat of `turns` turns in a session's window and waits for
-    /// its rows to show.
+    /// its rows to show. The window is up and drawn, empty, before the
+    /// history comes, and the main thread is watched only from then: what
+    /// is measured is the chat opening, not a window being made.
     private func open(turns: Int) async throws -> Opened {
         let history = Seeds.chat(turns: turns, seed: 21)
-        let store = Self.store(history)
+        let begun = LockIsolated(false)
+        let store = Self.store(history, when: begun)
         var opened = Opened(events: history.count)
-        let before = Memory.footprint()
-        let clock = ContinuousClock()
-        let start = clock.now
-        let watch = MainThread.Watch()
         let window = PerfWindow(SessionView(store: store))
         let task = store.send(.task)
         defer {
             task.cancel()
             window.close()
         }
+        await window.settle()
+        let before = Memory.footprint()
+        let clock = ContinuousClock()
+        let start = clock.now
+        let watch = MainThread.Watch()
+        begun.setValue(true)
         // Its rows show once it holds them and its list is taller than the
         // window: a chat this long fills it many times over.
         let shown = await window.until(.seconds(120)) {

@@ -15,6 +15,10 @@ package struct AppFeature {
     @ObservableState
     package struct State: Equatable {
         package var daemon = DaemonStatus.starting
+        /// Each session's messages on their way to the daemon, oldest
+        /// first: the first is being sent, the rest wait for it, so two
+        /// sent quickly reach the session in the order they were sent.
+        var outbox: [Session.ID: [SessionFeature.Outgoing]] = [:]
         /// Whether the daemon was looked for, and started again if gone,
         /// since the sidebar last read: once for each run of failed reads.
         var daemonRetried = false
@@ -318,6 +322,30 @@ package struct AppFeature {
 
     package init() {}
 
+    /// Takes the session's sent message off its outbox and sends the one
+    /// waiting behind it, if any.
+    private func sendNext(in session: Session.ID, _ state: inout State) -> Effect<Action> {
+        guard var waiting = state.outbox[session], !waiting.isEmpty else { return .none }
+        waiting.removeFirst()
+        state.outbox[session] = waiting.isEmpty ? nil : waiting
+        guard let next = waiting.first else { return .none }
+        return deliver(next)
+    }
+
+    private func deliver(_ outgoing: SessionFeature.Outgoing) -> Effect<Action> {
+        .run { send in
+            let images = outgoing.images.compactMap(\.image)
+            if images.isEmpty {
+                try await daemon.send(outgoing.session, outgoing.text, outgoing.mode)
+            } else {
+                try await daemon.sendImages(outgoing.session, outgoing.text, images, outgoing.mode)
+            }
+            await send(.sendFinished(outgoing.session))
+        } catch: { error, send in
+            await send(.sendFailed(outgoing, error.localizedDescription))
+        }
+    }
+
     package var body: some ReducerOf<Self> {
         Scope(state: \.sidebar, action: \.sidebar) { ProjectsFeature() }
         Scope(state: \.settings, action: \.settings) { EnvironmentsFeature() }
@@ -328,6 +356,21 @@ package struct AppFeature {
         Scope(state: \.skills, action: \.skills) { SkillsFeature() }
         Scope(state: \.plugins, action: \.plugins) { PluginsFeature() }
         Scope(state: \.models, action: \.models) { ModelDefaultsFeature() }
+        Reduce { state, action in
+            // The outbox's order, kept before the sends are answered for.
+            switch action {
+            case .session(.presented(.delegate(.send(let outgoing)))),
+                .side(.presented(.delegate(.send(let outgoing)))):
+                state.outbox[outgoing.session, default: []].append(outgoing)
+                return .none
+            case .sendFinished(let session):
+                return sendNext(in: session, &state)
+            case .sendFailed(let outgoing, _):
+                return sendNext(in: outgoing.session, &state)
+            default:
+                return .none
+            }
+        }
         Reduce { state, action in
             switch action {
             case .task:
@@ -657,17 +700,9 @@ package struct AppFeature {
                 // Sent from here and not from the session, so that looking
                 // at another session doesn't stop it: the daemon may already
                 // have the request, and a failure must still be answered for.
-                return .run { send in
-                    let images = outgoing.images.compactMap(\.image)
-                    if images.isEmpty {
-                        try await daemon.send(outgoing.session, outgoing.text, outgoing.mode)
-                    } else {
-                        try await daemon.sendImages(outgoing.session, outgoing.text, images, outgoing.mode)
-                    }
-                    await send(.sendFinished(outgoing.session))
-                } catch: { error, send in
-                    await send(.sendFailed(outgoing, error.localizedDescription))
-                }
+                // One sent while an earlier one is on its way waits for it.
+                guard state.outbox[outgoing.session]?.count == 1 else { return .none }
+                return deliver(outgoing)
 
             case .sendFinished(let session):
                 if state.side?.session.id == session { return .send(.side(.presented(.sent))) }

@@ -216,12 +216,30 @@ extension ChatItem {
     }
 }
 
+/// A row of the chat: an item, or one part of a long reply.
+struct ChatLine: Identifiable, Equatable, Sendable {
+    /// Where its item is among the chat's items.
+    let item: Int
+    /// The part of the reply's text this row shows; nil for all the item.
+    var part: Range<String.Index>?
+    /// It's a part of a reply after its first.
+    var continues = false
+    let id: String
+}
+
 /// The chat worked out an event at a time, so a live event is added to it
 /// instead of the chat being worked out again from the start. A value of
 /// values, so a history's chat can be worked out off the main thread and
 /// handed to it.
 struct Chat: Equatable, Sendable {
     private(set) var items: [ChatItem] = []
+    /// The chat's rows, oldest first: one for each item, but a long reply's
+    /// parts each have their own. Worked out as items are added, so where a
+    /// history is worked out off the main thread its rows are too, and the
+    /// chat's view cuts no reply as it draws.
+    private(set) var lines: [ChatLine] = []
+    /// Bytes of Markdown in a part of a long reply, about a screen of it.
+    static let partSize = 500
     private var calls: [String: Int] = [:]
     private var running: String?
     private var requests: [String: Int] = [:]
@@ -344,6 +362,23 @@ struct Chat: Equatable, Sendable {
         rewound = nil
     }
 
+    /// Puts `item` at the chat's end, with its rows. A reply is cut once,
+    /// here: it never changes once it's in the chat.
+    private mutating func append(_ item: ChatItem) {
+        let index = items.count
+        items.append(item)
+        guard case .reply(let id, let text) = item, text.utf8.count > Self.partSize else {
+            lines.append(ChatLine(item: index, id: item.id))
+            return
+        }
+        for (number, part) in MarkdownText.parts(of: text, size: Self.partSize).enumerated() {
+            lines.append(
+                ChatLine(
+                    item: index, part: part.startIndex..<part.endIndex, continues: number > 0,
+                    id: number == 0 ? id : "\(id)/\(number)"))
+        }
+    }
+
     mutating func add(_ event: SessionEvent) {
         tally(event)
         if case .usage = event.kind { turn.append(event) }
@@ -354,35 +389,35 @@ struct Chat: Equatable, Sendable {
             requests = [:]
             if case .turnEnded(aborted: true) = event.kind {
                 running = nil
-                items.append(.stopped(id: event.id))
+                append(.stopped(id: event.id))
             }
-            if let usage = Usage.total(turn) { items.append(.cost(id: "\(event.id)-cost", usage)) }
+            if let usage = Usage.total(turn) { append(.cost(id: "\(event.id)-cost", usage)) }
             return
         }
         switch event.kind {
         case .userMessage(let text, let images):
             settleRewind()
             if let sender = AgentSender(text) {
-                items.append(.fromSession(id: event.id, sender))
+                append(.fromSession(id: event.id, sender))
             } else if let notice = HumataNotice(text) {
                 // Humata's own word, such as that a request was allowed.
-                items.append(.notice(id: event.id, text: notice.text))
+                append(.notice(id: event.id, text: notice.text))
             } else {
-                items.append(.person(id: event.id, text: text, images: images))
+                append(.person(id: event.id, text: text, images: images))
             }
         case .assistantMessage(let text):
-            items.append(.reply(id: event.id, text: text))
+            append(.reply(id: event.id, text: text))
         case .reasoning(let text):
             if case .thinking(let id, let before)? = items.last {
                 items[items.count - 1] = .thinking(id: id, text: before + text)
             } else {
-                items.append(.thinking(id: event.id, text: text))
+                append(.thinking(id: event.id, text: text))
             }
         case .toolStarted(let callID, let tool, let arguments):
             calls[callID] = items.count
             running = callID
             let parts = ToolCall.parts(of: arguments)
-            items.append(
+            append(
                 .tool(ToolCall(id: event.id, callID: callID, tool: tool, subject: parts.subject, change: parts.change)))
         case .toolCompleted(let callID, let success, let output):
             if running == callID { running = nil }
@@ -400,7 +435,7 @@ struct Chat: Equatable, Sendable {
                 requests[request] = index
             } else {
                 requests[request] = items.count
-                items.append(.permission(id: event.id, permission))
+                append(.permission(id: event.id, permission))
             }
         case .permissionCompleted(let request, let approved, let automatic, let judged):
             answer(
@@ -408,17 +443,17 @@ struct Chat: Equatable, Sendable {
                 judged ? .allowedByJudge : automatic ? .allowedByMode : approved ? .approved : .denied)
             requests[request] = nil
         case .failed(let message):
-            items.append(.failure(id: event.id, message: message))
+            append(.failure(id: event.id, message: message))
         case .notice(let text):
-            items.append(.notice(id: event.id, text: text))
+            append(.notice(id: event.id, text: text))
         case .rewound(_, _, let files):
             settleRewind()
             rewound = items.count
-            items.append(.rewound(id: event.id, files: files, undoable: true))
+            append(.rewound(id: event.id, files: files, undoable: true))
         case .rewindUndone:
             settleRewind()
         case .compacted:
-            items.append(.compacted(id: event.id))
+            append(.compacted(id: event.id))
         case .compacting:
             // The turn it starts shows it; like a message, it ends the
             // chance to undo a rewind.

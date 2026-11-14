@@ -124,6 +124,105 @@ final class FoldedHistoryTests: XCTestCase {
         XCTAssertEqual(ahead, stepped)
     }
 
+    /// A store with only what taking a history in asks of the daemon.
+    private func store() -> TestStoreOf<SessionFeature> {
+        let store = TestStore(initialState: state()) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.chatCommands = { _ in ChatCommands() }
+            $0.daemon.markSeen = { _, _ in }
+            $0.appActivity = AppActivity(isActive: { true }, activations: { AsyncStream { _ in } }, setBadge: { _ in })
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAHistoryReceivedWithItsChatWorkedOutAheadShowsWhatItsEventsAloneDo() async {
+        let history = history
+        let ahead = store()
+        let plain = store()
+        await ahead.send(.receivedAll(history, folded: FoldedHistory(history)))
+        await plain.send(.receivedAll(history))
+        await ahead.finish()
+        await plain.finish()
+
+        XCTAssertTrue(ahead.state.historyLoaded)
+        XCTAssertFalse(ahead.state.items.isEmpty)
+        XCTAssertEqual(ahead.state.items, plain.state.items)
+        XCTAssertEqual(ahead.state.events, plain.state.events)
+        XCTAssertEqual(ahead.state.streaming, plain.state.streaming)
+        XCTAssertEqual(ahead.state, plain.state)
+    }
+
+    func testWhatComesAfterAHistoryReceivedWorkedOutAheadGoesOnTheEndOfItsChat() async {
+        let history = history
+        let next = [event("e34", .assistantMessage("Running the tests.")), event("e35", .turnEnded(aborted: false))]
+        let ahead = store()
+        let plain = store()
+        await ahead.send(.receivedAll(history, folded: FoldedHistory(history)))
+        await ahead.send(.receivedAll(next))
+        await plain.send(.receivedAll(history + next))
+        await ahead.finish()
+        await plain.finish()
+
+        XCTAssertEqual(ahead.state.items, plain.state.items)
+        XCTAssertEqual(ahead.state.streaming, "")
+        XCTAssertFalse(ahead.state.isWorking)
+        XCTAssertEqual(ahead.state.events, plain.state.events)
+    }
+
+    func testALongReplyIsRowsThatTogetherHoldAllOfItInOrder() {
+        let paragraph = String(repeating: "A sentence of the reply. ", count: 12)
+        let long = (0..<8).map { "Part \($0). \(paragraph)" }.joined(separator: "\n\n")
+        let history = [
+            event("e1", .userMessage("go on")), event("e2", .assistantMessage("Short.")),
+            event("e3", .assistantMessage(long)), event("e4", .userMessage("thanks")),
+        ]
+        var stepped = state()
+        for event in history { stepped.receive(event) }
+        var ahead = state()
+        ahead.receive(history, folded: FoldedHistory(history))
+
+        let lines = stepped.lines
+        XCTAssertEqual(lines, ahead.lines)
+        XCTAssertEqual(Set(lines.map(\.id)).count, lines.count, "two rows have one id")
+        XCTAssertEqual(lines.map(\.item), lines.map(\.item).sorted())
+        XCTAssertEqual(Set(lines.map(\.item)), Set(stepped.items.indices), "an item has no row")
+        // What isn't a long reply is one row, all of its item.
+        XCTAssertEqual(lines.filter { $0.item != 2 }.map(\.part), [nil, nil, nil])
+        guard case .reply(_, let text) = stepped.items[2] else { return XCTFail("the long reply isn't an item") }
+        let parts = lines.filter { $0.item == 2 }.compactMap { line in line.part.map { String(text[$0]) } }
+        XCTAssertGreaterThan(parts.count, 1, "the long reply is one row")
+        XCTAssertEqual(parts.joined(), long)
+    }
+
+    func testAChatKeptCountsAsMuchHoweverItsHistoryCame() {
+        let history = history
+        var ahead = state()
+        ahead.receive(history, folded: FoldedHistory(history))
+        ahead.historyLoaded = true
+        var stepped = state()
+        for event in history { stepped.receive(event) }
+        stepped.historyLoaded = true
+        var set = state()
+        set.events = stepped.events
+        set.streaming = stepped.streaming
+        set.historyLoaded = true
+        var restored = state()
+        if let kept = stepped.history { restored.restore(kept) }
+
+        let bytes = stepped.history?.bytes ?? 0
+        XCTAssertGreaterThan(bytes, history.count, "its events aren't counted")
+        XCTAssertEqual(ahead.history?.bytes, bytes)
+        XCTAssertEqual(set.history?.bytes, bytes)
+        XCTAssertEqual(restored.history?.bytes, bytes)
+
+        // What comes later is counted too.
+        let reply = String(repeating: "word ", count: 400)
+        stepped.receive(event("e34", .assistantMessage(reply)))
+        XCTAssertGreaterThanOrEqual((stepped.history?.bytes ?? 0) - bytes, reply.utf8.count - 4)
+    }
+
     func testAChatRestoredFromItsHistoryHasItsThumbnailsAndReadsNoneAgain() async {
         let picture = Data([1, 2, 3])
         var left = state()

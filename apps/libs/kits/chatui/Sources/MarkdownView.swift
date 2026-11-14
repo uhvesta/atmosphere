@@ -22,7 +22,10 @@ public struct MarkdownText: View {
     /// finds its end by byte, as a reply can be megabytes. A line ends at a
     /// line feed, but not at one after a carriage return, which is one
     /// character with it.
-    public static func parts(of text: String, size: Int = 2_000) -> [Substring] {
+    ///
+    /// It touches no view, so a chat's rows can be worked out off the main
+    /// thread.
+    public nonisolated static func parts(of text: String, size: Int = 2_000) -> [Substring] {
         guard text.utf8.count > size else { return [text[...]] }
         var parts: [Substring] = []
         var start = text.startIndex
@@ -69,7 +72,7 @@ public struct MarkdownText: View {
     /// Whether `line`, after a blank one, starts a block of its own rather
     /// than going on with the one before: not indented, as a list item's
     /// next paragraph is, and not an item of a list that goes on.
-    private static func startsBlock(_ line: Substring) -> Bool {
+    private nonisolated static func startsBlock(_ line: Substring) -> Bool {
         guard let first = line.first, first != " ", first != "\t" else { return false }
         if "-*+".contains(first), line.dropFirst().first == " " { return false }
         let digits = line.prefix { $0.isASCII && $0.isNumber }

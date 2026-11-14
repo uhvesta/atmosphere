@@ -1669,8 +1669,25 @@ final class SessionFeatureTests: XCTestCase {
         var state = SessionFeature.State(session: session, highlighted: "e3")
         XCTAssertNil(state.highlightedItem)
         state.events = IdentifiedArray(uniqueElements: events)
-        XCTAssertEqual(state.highlightedItem, "c1")
+        XCTAssertEqual(state.highlightedItem, "e2")
         XCTAssertNil(state.forkPointAfterHighlight)
+    }
+
+    func testAHighlightedOutputOfACallIdUsedAgainIsShownOnItsOwnTurnsRow() {
+        let session = Session(id: "s", name: "s", backend: .scripted, workingDirectory: "/work")
+        let now = Date(timeIntervalSince1970: 0)
+        let events = [
+            SessionEvent(id: "e1", time: now, kind: .toolStarted(callID: "c1", tool: "shell", argumentsJSON: "{}")),
+            SessionEvent(id: "e2", time: now, kind: .toolCompleted(callID: "c1", success: true, output: "one")),
+            SessionEvent(id: "e3", time: now, kind: .turnEnded(aborted: false)),
+            SessionEvent(id: "e4", time: now, kind: .toolStarted(callID: "c1", tool: "shell", argumentsJSON: "{}")),
+            SessionEvent(id: "e5", time: now, kind: .toolCompleted(callID: "c1", success: true, output: "two")),
+        ]
+        var state = SessionFeature.State(session: session, highlighted: "e2")
+        state.events = IdentifiedArray(uniqueElements: events)
+        XCTAssertEqual(state.highlightedItem, "e1")
+        state.highlighted = "e5"
+        XCTAssertEqual(state.highlightedItem, "e4")
     }
 
     private func store(_ state: SessionFeature.State) -> TestStoreOf<SessionFeature> {
@@ -1739,9 +1756,16 @@ final class SessionFeatureTests: XCTestCase {
             Proposal(id: "p2", title: "Log in"),
             Proposal(id: "p3", title: "Log out"),
         ]
+        let now = Date(timeIntervalSince1970: 0)
+        state.events = IdentifiedArray(
+            uniqueElements: ["p1", "p2", "p3"].enumerated().map { index, call in
+                SessionEvent(
+                    id: "e\(index)", time: now,
+                    kind: .toolStarted(callID: call, tool: "humata__propose_task", argumentsJSON: "{}"))
+            })
         let store = store(state)
         await store.send(.showProposalsTapped) {
-            $0.scrollTarget = "p2"
+            $0.scrollTarget = "e1"
         }
         await store.send(.scrolled) {
             $0.scrollTarget = nil

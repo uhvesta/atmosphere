@@ -311,6 +311,77 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.commandSession?.session.id, first.id)
     }
 
+    func testTwoMessagesSentQuicklyReachTheSessionInTheOrderTheyWereSent() async {
+        let session = Session(id: "in-order", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        state.sidebar.selection = .session(session.id)
+        state.session = SessionFeature.State(session: session)
+        let sent = LockIsolated<[String]>([])
+        // The first send is slow to be answered.
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, text, _ in
+                sent.withValue { $0.append(text) }
+                if text == "first" {
+                    for await _ in answered { break }
+                }
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "first")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+        await store.send(\.session.binding.draft, "second")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+        XCTAssertEqual(sent.value, ["first"], "the second waits for the first")
+
+        answer.yield()
+        await store.receive(\.sendFinished)
+        await store.receive(\.sendFinished)
+        XCTAssertEqual(sent.value, ["first", "second"])
+        await store.skipInFlightEffects()
+    }
+
+    func testAMessageSentAfterOneThatFailedIsStillSent() async {
+        let session = Session(id: "after-failed", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        state.sidebar.selection = .session(session.id)
+        state.session = SessionFeature.State(session: session)
+        let sent = LockIsolated<[String]>([])
+        let (answered, answer) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, text, _ in
+                sent.withValue { $0.append(text) }
+                if text == "first" {
+                    for await _ in answered { break }
+                    throw DaemonError.disconnected
+                }
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.session.binding.draft, "first")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+        await store.send(\.session.binding.draft, "second")
+        await store.send(\.session.sendTapped, .enqueue)
+        await store.receive(\.session.delegate.send)
+
+        answer.yield()
+        await store.receive(\.sendFailed)
+        await store.receive(\.sendFinished)
+        XCTAssertEqual(sent.value, ["first", "second"])
+        await store.skipInFlightEffects()
+    }
+
     func testAMessageFromASideChatClosedBeforeItsSendFailsGoesBackInItsBox() async throws {
         let first = Session(id: "unsent-beside", name: "first", backend: .scripted, workingDirectory: "/work")
         var side = Session(id: "unsent-side", name: "side", backend: .scripted, workingDirectory: "/work")

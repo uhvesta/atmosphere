@@ -1576,6 +1576,21 @@ measured:
   at a time: left until a cold open measures slow with the folded history
   kept
 
+Opening a long chat (`testOpeningAChatKeepsTheWindowLiveHoweverLongItIs`;
+not yet measured again after these):
+
+- [x] The open test watches the main thread only once a window is up, after
+  one opened and thrown away, and counts the window's layout and drawing
+- [x] A history worked out off the main thread brings its log, its rows
+  (long replies cut there) and what the reducer read from its events; the
+  main thread only takes them
+- [x] The chat's list holds its last 300 rows; Show Earlier Messages at
+  their top adds as many again, keeping what's in view, and a search hit or
+  a proposal above them brings the rows from it on
+- [x] A chat left counts its bytes as its events come, not when it's left
+- [ ] A page jump's cost (about 53 ms for 600 points) is its rows' first
+  layout; needs a profile
+
 ### Milestone R2: saved repositories
 
 The owner, 2026-11-13: picking a repository for a project shouldn't mean

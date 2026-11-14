@@ -56,13 +56,24 @@ package struct SessionFeature {
                 log = newValue
                 var chat = Chat()
                 var subagents = SubagentLog()
-                for event in newValue { Self.fold(event, into: &chat, &subagents) }
+                var bytes = 0
+                for event in newValue {
+                    Self.fold(event, into: &chat, &subagents)
+                    bytes += Self.bytes(of: event)
+                }
+                logBytes = bytes
                 self.chat = chat
                 subagentLog = subagents
                 derive()
             }
         }
         private var log: IdentifiedArrayOf<SessionEvent> = []
+        /// About how much memory the log holds, counted as its events come,
+        /// so nothing reads the whole of it to say. Nothing draws it.
+        @ObservationStateIgnored private var logBytes = 0
+        /// About how much memory `event` holds: its text, and its id, its
+        /// time and its row.
+        fileprivate static func bytes(of event: SessionEvent) -> Int { event.kind.bytes + 128 }
         /// The chat, worked out an event at a time: the session's own
         /// agent's events only.
         private var chat = Chat()
@@ -98,16 +109,16 @@ package struct SessionFeature {
 
         /// What the chat shows, oldest first.
         package var items: [ChatItem] { chat.items }
+        /// The chat's rows, oldest first: a long reply's parts are each one.
+        var lines: [ChatLine] { chat.lines }
 
         /// A chat's history as it was when the chat was looked away from:
         /// its events and what they were worked out to show, so it shows
         /// again at once and is watched on from its last event.
         package struct History: Equatable, Sendable {
-            /// Counted for each event besides its text: its id, its time
-            /// and its row.
-            private static let eventBytes = 128
-
             fileprivate var log: IdentifiedArrayOf<SessionEvent>
+            /// About how much memory the log holds.
+            fileprivate var logBytes: Int
             fileprivate var chat: Chat
             fileprivate var subagents: SubagentLog
             /// The reply being written, and its parts taken in, so one
@@ -122,17 +133,20 @@ package struct SessionFeature {
             package let bytes: Int
 
             fileprivate init(
-                log: IdentifiedArrayOf<SessionEvent>, chat: Chat, subagents: SubagentLog, streaming: String,
-                streamed: Set<String>, thumbnails: [String: Data]
+                log: IdentifiedArrayOf<SessionEvent>, logBytes: Int, chat: Chat, subagents: SubagentLog,
+                streaming: String, streamed: Set<String>, thumbnails: [String: Data]
             ) {
                 self.log = log
+                self.logBytes = logBytes
                 self.chat = chat
                 self.subagents = subagents
                 self.streaming = streaming
                 self.streamed = streamed
                 self.thumbnails = thumbnails
                 let images = thumbnails.reduce(0) { $0 + $1.key.utf8.count + $1.value.count }
-                bytes = log.reduce(streaming.utf8.count + images) { $0 + $1.kind.bytes + Self.eventBytes }
+                // The log's part was counted as its events came: counting
+                // it here read a long chat whole each time it was left.
+                bytes = logBytes + streaming.utf8.count + images
             }
         }
 
@@ -142,14 +156,15 @@ package struct SessionFeature {
         package var history: History? {
             guard historyLoaded, !replaying, !rewinding, !log.isEmpty else { return nil }
             return History(
-                log: log, chat: chat, subagents: subagentLog, streaming: streaming, streamed: streamed,
-                thumbnails: thumbnails)
+                log: log, logBytes: logBytes, chat: chat, subagents: subagentLog, streaming: streaming,
+                streamed: streamed, thumbnails: thumbnails)
         }
 
         /// Shows `history`, kept when the chat was last looked away from,
         /// without reading it again: watching goes on from its last event.
         package mutating func restore(_ history: History) {
             log = history.log
+            logBytes = history.logBytes
             chat = history.chat
             subagentLog = history.subagents
             streaming = history.streaming
@@ -409,11 +424,23 @@ package struct SessionFeature {
         /// The chat row of the highlighted event, once the history has it:
         /// a tool's row for its call or output, otherwise the event's own.
         package var highlightedItem: String? {
-            guard let highlighted, let event = events[id: highlighted] else { return nil }
+            guard let highlighted, let index = events.index(id: highlighted) else { return nil }
+            let event = events[index]
             switch event.kind {
-            case .toolStarted(let callID, _, _), .toolCompleted(let callID, _, _): return callID
+            case .toolCompleted(let callID, _, _): return row(ofCall: callID, before: index + 1)
             default: return event.id
             }
+        }
+
+        /// The chat row of the agent's tool call `callID`: the event that
+        /// started it, the latest one before `end`, as an agent can use one
+        /// id again in a later turn.
+        func row(ofCall callID: String, before end: Int? = nil) -> String? {
+            let end = end ?? events.count
+            let started = events.elements[..<end].last {
+                if case .toolStarted(callID, _, _) = $0.kind { true } else { false }
+            }
+            return started?.id
         }
 
         /// Where a fork from the highlighted event starts: before the first
@@ -644,12 +671,35 @@ package struct SessionFeature {
             receive([event])
         }
 
+        /// Whether `folded`, a history worked out ahead, is all the chat
+        /// will hold once it's taken in: the chat has nothing yet, and the
+        /// history says no event twice. It's then taken as it is, without
+        /// reading its events again.
+        func opens(with folded: FoldedHistory) -> Bool {
+            folded.unique && folded.count > 0 && log.isEmpty && streaming.isEmpty && streamed.isEmpty
+        }
+
         /// Takes in `batch` and works out the chat once, so a history of
         /// thousands of events shows at once instead of one at a time.
         /// `folded` is the chat already worked out for the batch, off the
         /// main thread: it's taken as it is when the batch is the whole
         /// history of a chat that had none, each event once.
         mutating func receive(_ batch: [SessionEvent], folded: FoldedHistory? = nil) {
+            if let folded, opens(with: folded) {
+                // Everything the batch comes to was worked out ahead, its
+                // log too: nothing here reads the batch.
+                if folded.changedCode { review.stale = true }
+                if folded.turnEnded, stopping { stopping = false }
+                if self.streaming != folded.streaming { self.streaming = folded.streaming }
+                self.streamed = folded.streamed
+                self.log = folded.log
+                self.logBytes = folded.bytes
+                self.chat = folded.chat
+                self.subagentLog = folded.subagents
+                derive()
+                if folded.turnStarted { review.turns = max(review.turns, self.chat.turnsStarted) }
+                return
+            }
             let opensEmpty = log.isEmpty
             // A reply's words alone, as most batches are while it streams,
             // change only the reply being written: the log stays where it
@@ -673,6 +723,7 @@ package struct SessionFeature {
             var log = self.log
             self.log = []
             var added: [SessionEvent] = []
+            var addedBytes = 0
             var replaced = false
             var stale = false
             var turnEnded = false
@@ -691,6 +742,7 @@ package struct SessionFeature {
                 } else {
                     log.append(event)
                     added.append(event)
+                    addedBytes += Self.bytes(of: event)
                     // Only a reply that's new ends the one being written: a
                     // history sent again holds the replies before it.
                     // A subagent's message leaves the agent's own as it is.
@@ -722,6 +774,7 @@ package struct SessionFeature {
                 events = log
             } else {
                 self.log = log
+                logBytes += addedBytes
                 // Live events go on the end of the chat; only a changed
                 // event means working it out again. Taken out to change, as
                 // the log is.
@@ -1253,19 +1306,30 @@ package struct SessionFeature {
         // A watch sends the history first. Only something new shows the
         // session is live: an offline host's cached history ends its watch
         // at once, and must not be fetched every second.
-        let new = events.filter { state.events[id: $0.id] == nil }
-        if new.contains(where: \.kind.isLive) { state.watchRetries = 0 }
+        // A history worked out ahead for a chat that has nothing yet says
+        // all of this itself, so its events aren't read again here, on the
+        // main thread.
+        let whole = folded.flatMap { state.opens(with: $0) ? $0 : nil }
+        let new = whole == nil ? events.filter { state.events[id: $0.id] == nil } : []
+        if whole != nil || new.contains(where: \.kind.isLive) { state.watchRetries = 0 }
         // A rewind or its undo replaced the history: read it again from
         // the start, once for each. One in the history of a chat that
         // opened empty happened before it was read, so that history
         // already is what it left.
-        if let restart = new.last(where: { event in
-            switch event.kind {
-            case .rewound, .rewindUndone: true
-            default: false
-            }
-        }), restart.id != state.restartedFor {
-            state.restartedFor = restart.id
+        let restart: String?
+        if let whole {
+            restart = whole.restart
+        } else {
+            restart =
+                new.last(where: { event in
+                    switch event.kind {
+                    case .rewound, .rewindUndone: true
+                    default: false
+                    }
+                })?.id
+        }
+        if let restart, restart != state.restartedFor {
+            state.restartedFor = restart
             if !state.replaying, !state.events.isEmpty {
                 state.events = []
                 state.streaming = ""
@@ -1278,14 +1342,17 @@ package struct SessionFeature {
         // A history still being sent again isn't yet what the queue holds.
         if !state.replaying { queuedEditLeftBehind(was: editedBefore, &state) }
         var effects: [Effect<Action>] = []
-        if new.contains(where: { event in
-            if case .toolCompleted(let call, true, _) = event.kind { state.proposes(call) } else { false }
-        }) {
-            effects.append(.send(.proposals(.refresh)))
-        }
+        let proposed =
+            whole?.proposed
+            ?? new.contains(where: { event in
+                if case .toolCompleted(let call, true, _) = event.kind { state.proposes(call) } else { false }
+            })
+        if proposed { effects.append(.send(.proposals(.refresh))) }
         // The agent may have answered the review, or changed the code or
         // the files.
-        if new.contains(where: { if case .turnEnded = $0.kind { true } else { false } }) {
+        let turnEnded =
+            whole?.turnEnded ?? new.contains(where: { if case .turnEnded = $0.kind { true } else { false } })
+        if turnEnded {
             effects.append(markSeen(state))
             switch state.tab {
             case .chat, .terminal: break
@@ -2041,7 +2108,7 @@ package struct SessionFeature {
                 return .send(.delegate(.answerRequest(request.id, .dismiss)))
 
             case .showProposalsTapped:
-                state.scrollTarget = state.pendingProposals.first?.id
+                state.scrollTarget = state.pendingProposals.first.flatMap { state.row(ofCall: $0.id) }
                 return .none
 
             case .scrolled:
@@ -2680,19 +2747,86 @@ package struct FoldedHistory: Sendable {
     /// How many events it was worked out from: all but a reply's parts as
     /// it streamed, which the chat doesn't keep.
     let count: Int
+    /// Those events as the chat keeps them, by id, so a chat that takes
+    /// the history whole builds nothing on the main thread.
+    let log: IdentifiedArrayOf<SessionEvent>
+    /// Whether no event came twice. Only then are `log` and what follows
+    /// what a chat with nothing yet comes to.
+    let unique: Bool
+    /// About how much memory the log holds.
+    let bytes: Int
+    /// The reply still being written where the history ends, and its
+    /// parts taken in.
+    let streaming: String
+    let streamed: Set<String>
+    /// The last rewind or undo of one in it.
+    let restart: String?
+    let turnStarted: Bool
+    let turnEnded: Bool
+    /// A tool finished or a turn ended, so the code may have changed.
+    let changedCode: Bool
+    /// A call proposing a task or a spec edit finished well.
+    let proposed: Bool
 
     init(_ events: [SessionEvent]) {
         var chat = Chat()
         var subagents = SubagentLog()
         var count = 0
+        var log: IdentifiedArrayOf<SessionEvent> = []
+        var unique = true
+        var bytes = 0
+        var streaming = ""
+        var streamed: Set<String> = []
+        var restart: String?
+        var turnStarted = false
+        var turnEnded = false
+        var toolCompleted = false
         for event in events {
-            if case .assistantDelta = event.kind { continue }
+            if case .assistantDelta(let text) = event.kind {
+                // A subagent's words aren't the reply's.
+                if event.parentCallID == nil, streamed.insert(event.id).inserted { streaming += text }
+                continue
+            }
             SessionFeature.State.fold(event, into: &chat, &subagents)
             count += 1
+            guard log.append(event).inserted else {
+                unique = false
+                continue
+            }
+            bytes += SessionFeature.State.bytes(of: event)
+            switch event.kind {
+            case .assistantMessage where event.parentCallID == nil:
+                // The reply's whole message ends the one being written.
+                streaming = ""
+                streamed = []
+            case .turnEnded:
+                streaming = ""
+                streamed = []
+                turnEnded = true
+            case .turnStarted: turnStarted = true
+            case .toolCompleted: toolCompleted = true
+            case .rewound, .rewindUndone: restart = event.id
+            default: break
+            }
         }
         self.chat = chat
         self.subagents = subagents
         self.count = count
+        self.log = log
+        self.unique = unique
+        self.bytes = bytes
+        self.streaming = streaming
+        self.streamed = streamed
+        self.restart = restart
+        self.turnStarted = turnStarted
+        self.turnEnded = turnEnded
+        changedCode = toolCompleted || turnEnded
+        let proposals = chat.proposals
+        proposed =
+            !proposals.isEmpty
+            && events.contains { event in
+                if case .toolCompleted(let call, true, _) = event.kind { proposals.contains(call) } else { false }
+            }
     }
 }
 

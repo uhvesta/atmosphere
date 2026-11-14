@@ -481,12 +481,21 @@ private struct ChatList: View {
     /// Moves the chat to its end. Not `scrollTo` by id: that looks for the
     /// id past every row before it, and ran on each frame of a reply.
     @State private var position = ScrollPosition(idType: String.self)
+    /// How many rows above the chat's last the person has asked to see.
+    @State private var earlier = 0
+    /// Earlier rows were just asked for: when they come, above what's in
+    /// view, the chat stays on what it showed.
+    @State private var keepsPlace = false
 
     var body: some View {
         let highlighted = store.highlightedItem
         ScrollViewReader { reader in
             ScrollView {
-                ChatRows(store: store).equatable()
+                ChatRows(store: store, earlier: earlier) { more in
+                    keepsPlace = true
+                    earlier += more
+                }
+                .equatable()
             }
             .scrollPosition($position)
             // At its end when it opens; as it grows, what's in view stays.
@@ -494,7 +503,12 @@ private struct ChatList: View {
             .onScrollGeometryChange(for: ChatEnd.Place.self) {
                 ChatEnd.Place(geometry: $0)
             } action: { old, new in
-                if new.height != old.height {
+                if new.height > old.height, keepsPlace {
+                    // Earlier rows came above what's in view: it moves down
+                    // by their height, and the chat with it.
+                    keepsPlace = false
+                    position.scrollTo(y: old.offset + new.height - old.height)
+                } else if new.height != old.height {
                     // Grown or shrunk with its end in view: keep to the end.
                     if old.endInView { following = true }
                     if following { position.scrollTo(edge: .bottom) }
@@ -607,20 +621,41 @@ private struct ChatLoading: View {
 /// reads from the store itself.
 private struct ChatRows: View, Equatable {
     let store: StoreOf<SessionFeature>
+    /// How many rows above the chat's last the person has asked to see.
+    let earlier: Int
+    /// Asks for that many more.
+    let showEarlier: (Int) -> Void
     @State private var selecting: TextToSelect?
-    @State private var replyParts = ReplyParts()
+    @State private var tail = ChatTail()
     @State private var heights = RowHeights()
 
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.earlier == rhs.earlier }
 
     var body: some View {
         let _ = SessionBodyRuns.ran(.chatList)
         let highlighted = store.highlightedItem
         let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
+        let items = store.items
+        let all = store.lines
+        // Only the chat's last rows are handed to the list, and those above
+        // them once asked for or jumped to: what the list does for every
+        // row it holds, seen or not, is what made a long chat slow to open.
+        let start = tail.start(in: all, earlier: earlier, showing: [highlighted, store.scrollTarget])
         LazyVStack(alignment: .leading, spacing: 14) {
-            ForEach(replyParts.lines(of: store.items, highlighted: highlighted)) { line in
+            if start > 0 {
+                let shown = all.count - start
+                Button("Show Earlier Messages") { showEarlier(max(ChatTail.rows, shown)) }
+                    .buttonStyle(.borderless)
+                    .frame(maxWidth: .infinity)
+                    .help("Only the latest part of a long chat is laid out until you ask for more")
+                    .accessibilityIdentifier("chat.earlier")
+            }
+            ForEach(Self.whole(highlighted, in: all[start...])) { line in
+                // A row's item is always among the chat's; the note stands
+                // in only so nothing is read past their end.
+                let item = line.item < items.count ? items[line.item] : ChatItem.notice(id: line.id, text: "")
                 let row = ChatRow(
-                    item: line.item, part: line.part, shows: shows(line.item, highlighted: highlighted),
+                    item: item, part: line.part, shows: shows(item, highlighted: highlighted),
                     store: store, select: select
                 )
                 KeptHeight(id: line.id, row: row, heights: heights) {
@@ -636,6 +671,20 @@ private struct ChatRows: View, Equatable {
         }
         .padding()
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+    }
+
+    /// `lines` with the highlighted reply as one row, not its parts, so all
+    /// of it is highlighted.
+    private static func whole(_ highlighted: String?, in lines: ArraySlice<ChatLine>) -> ArraySlice<ChatLine> {
+        guard let highlighted, let first = lines.firstIndex(where: { $0.id == highlighted }),
+            lines[first].part != nil
+        else { return lines }
+        let item = lines[first].item
+        var end = lines.index(after: first)
+        while end < lines.endIndex, lines[end].item == item { end = lines.index(after: end) }
+        var whole = lines
+        whole.replaceSubrange(first..<end, with: [ChatLine(item: item, id: highlighted)])
+        return whole
     }
 
     /// What `item`'s row shows of the session besides the item, reading
@@ -743,16 +792,6 @@ private struct KeptHeight: Layout {
     ) -> CGFloat? { nil }
 }
 
-/// A row of the chat: an item, or one part of a long reply.
-private struct ChatLine: Identifiable {
-    let item: ChatItem
-    /// The part of the reply's text this row shows; nil for all the item.
-    var part: Range<String.Index>?
-    /// It's a part of a reply after its first.
-    var continues = false
-    let id: String
-}
-
 /// A finished part of the reply being written.
 private struct StreamedPart: View, Equatable {
     let text: String
@@ -764,7 +803,7 @@ private struct StreamedPart: View, Equatable {
     }
 }
 
-/// The reply being written cut into parts as `ReplyParts` cuts a finished
+/// The reply being written cut into parts as `Chat` cuts a finished
 /// one, so its parts are rows of the lazy list. A part, once followed by
 /// another, stays as it is, so each call reads only what came after the
 /// last of them.
@@ -799,48 +838,51 @@ private struct StreamedPart: View, Equatable {
         return utf8[start..<end].elementsEqual(tail)
     }
 
-    /// Bytes of Markdown in a part, as `ReplyParts` cuts them.
-    private static let size = 500
+    /// Bytes of Markdown in a part, as `Chat` cuts them.
+    private static let size = Chat.partSize
 }
 
-/// A long reply cut into parts, each a row of the chat, so scrolling lays
-/// out only the parts on screen however long the reply; each reply is cut
-/// once.
-@MainActor private final class ReplyParts {
-    /// Each long reply's rows, by its id, with the reply's length in bytes
-    /// when they were made. The rows are kept, not only where the parts
-    /// start and end: `lines` runs at every change to the chat, and making
-    /// a row and its id again for every part of every reply was most of
-    /// what it cost.
-    private var kept: [String: (length: Int, lines: [ChatLine])] = [:]
+/// Which of a chat's rows its list holds: the last of them when the chat
+/// opened, those that came since, and those above that the person asked
+/// for or was taken to. Where they start stays put as rows are added, so
+/// what's in view doesn't move.
+@MainActor private final class ChatTail {
+    /// How many rows a chat opens with: a few screens of them.
+    static let rows = 300
+    /// Rows shown above one the chat is taken to, so it isn't the first.
+    private static let lead = 20
 
-    /// The chat's rows. A highlighted reply stays whole, so all of it is
-    /// highlighted.
-    func lines(of items: [ChatItem], highlighted: String?) -> [ChatLine] {
-        var lines: [ChatLine] = []
-        lines.reserveCapacity(items.count)
-        for item in items {
-            guard case .reply(let id, let text) = item, id != highlighted, text.utf8.count > Self.size else {
-                lines.append(ChatLine(item: item, id: item.id))
-                continue
-            }
-            if let kept = kept[id], kept.length == text.utf8.count {
-                lines.append(contentsOf: kept.lines)
-                continue
-            }
-            let parts = MarkdownText.parts(of: text, size: Self.size).enumerated().map { index, part in
-                ChatLine(
-                    item: item, part: part.startIndex..<part.endIndex, continues: index > 0,
-                    id: index == 0 ? id : "\(id)/\(index)")
-            }
-            kept[id] = (text.utf8.count, parts)
-            lines.append(contentsOf: parts)
+    /// The first row shown before any were asked for; nil until the chat
+    /// has rows. Below 0 once rows above the first were all taken in.
+    private var first: Int?
+    /// How many rows had been asked for when `first` was set: only those
+    /// asked for since count.
+    private var asked = 0
+
+    /// Where the rows shown start in `lines`, with `earlier` rows asked for
+    /// in all and the rows `targets` name shown, when `lines` holds them.
+    func start(in lines: [ChatLine], earlier: Int, showing targets: [String?]) -> Int {
+        guard !lines.isEmpty else {
+            // Emptied, as before a history is read again: the next rows
+            // open at their end as the first did.
+            first = nil
+            return 0
         }
-        return lines
+        var first = self.first ?? lines.count
+        if first >= lines.count {
+            first = max(0, lines.count - Self.rows)
+            asked = earlier
+        }
+        var start = max(0, first - max(0, earlier - asked))
+        for case let target? in targets where start > 0 {
+            guard let index = lines[..<start].lastIndex(where: { $0.id == target }) else { continue }
+            let above = max(0, index - Self.lead)
+            first -= start - above
+            start = above
+        }
+        self.first = first
+        return start
     }
-
-    /// Bytes of Markdown in a part, about a screen of it.
-    private static let size = 500
 }
 
 /// One row of the chat: a message, thoughts, a tool call or a note. Equal
