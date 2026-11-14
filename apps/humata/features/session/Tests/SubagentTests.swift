@@ -69,6 +69,17 @@ final class SubagentTests: XCTestCase {
         XCTAssertEqual(state.streaming, "")
     }
 
+    func testAnAgentCallKeepsItsRawResultOnceItsRowShowsTheSubagent() {
+        var state = state()
+        state.receive(history)
+        let results = state.items.compactMap { item -> String?? in
+            guard case .tool(let call) = item, state.subagents[id: call.callID] != nil else { return nil }
+            return .some(call.output)
+        }
+        // The first returned; the second still runs, so has nothing to show.
+        XCTAssertEqual(results, ["src/parser.rs", nil])
+    }
+
     func testASubagentsWordsLeaveTheReplyBeingWrittenAlone() {
         var state = state()
         state.receive(Array(history.prefix(6)))

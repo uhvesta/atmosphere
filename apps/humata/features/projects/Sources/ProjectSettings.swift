@@ -4,7 +4,8 @@ import SwiftUI
 
 /// A project's name, its repositories, its instructions and its skills:
 /// what every session in it reads, from the next turn each starts, and
-/// what sessions started after work in.
+/// what sessions started after work in; and what its agents may do to
+/// other sessions.
 @Reducer
 package struct ProjectSettingsFeature {
     /// A skill as it's being written; one left empty is dropped on saving.
@@ -32,6 +33,8 @@ package struct ProjectSettingsFeature {
         var nextRepository: Int
         /// The saved repositories and folders offered under the row typed in.
         package var search = RepositorySearchFeature.State()
+        /// What its sessions' agents may do to other sessions.
+        package var agentSessions: AgentSessions
         package var saving = false
         @Presents package var alert: AlertState<Never>?
 
@@ -46,6 +49,7 @@ package struct ProjectSettingsFeature {
             nextRow = project.skills.count
             repositories = Self.rows(project)
             nextRepository = project.repositories.count
+            agentSessions = project.agentSessions
         }
 
         static func rows(_ project: Project) -> IdentifiedArrayOf<RepositoryRow> {
@@ -133,7 +137,8 @@ package struct ProjectSettingsFeature {
                     name: name == project.name ? nil : name,
                     instructions: state.instructions == project.instructions ? nil : state.instructions,
                     skills: skills == project.skills ? nil : skills,
-                    repositories: repositories == unchanged ? nil : repositories)
+                    repositories: repositories == unchanged ? nil : repositories,
+                    agentSessions: state.agentSessions == project.agentSessions ? nil : state.agentSessions)
                 return .run { send in
                     await send(.delegate(.saved(try await daemon.updateProject(project.id, update))))
                 } catch: { error, send in
@@ -239,6 +244,28 @@ struct ProjectSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Picker("Starting and writing to sessions", selection: $store.agentSessions.mode) {
+                    Text("Off").tag(AgentSessions.Mode.off)
+                    Text("Ask Each Time").tag(AgentSessions.Mode.ask)
+                    Text("Allow").tag(AgentSessions.Mode.allow)
+                }
+                if store.agentSessions.mode != .off {
+                    Toggle("Write to sessions they didn’t start", isOn: $store.agentSessions.messageOthers)
+                    Stepper(
+                        "At most \(store.agentSessions.maxChildren) sessions started by one session",
+                        value: $store.agentSessions.maxChildren, in: 1...64)
+                    Stepper(
+                        "Nested at most \(store.agentSessions.maxDepth) deep",
+                        value: $store.agentSessions.maxDepth, in: 1...16)
+                }
+            } header: {
+                Text("Agent Sessions")
+            } footer: {
+                Text(agentSessionsNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(minWidth: 480, minHeight: 420)
@@ -252,5 +279,23 @@ struct ProjectSettingsView: View {
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    /// What the mode picked lets the project's agents do.
+    private var agentSessionsNote: String {
+        switch store.agentSessions.mode {
+        case .off:
+            String(localized: "Agents in this project can’t start, write to or read other sessions.")
+        case .ask:
+            String(
+                localized:
+                    "An agent can ask to start a session of its own, or to write to one. Each waits in the Inbox for you to allow, and a session it starts shows under it in the sidebar."
+            )
+        case .allow:
+            String(
+                localized:
+                    "Agents start sessions of their own and write to them without asking, within the limits here. Each started session shows under its parent in the sidebar."
+            )
+        }
     }
 }

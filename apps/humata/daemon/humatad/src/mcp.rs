@@ -124,11 +124,11 @@ impl Server {
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "humata", "version": crate::VERSION},
-                    "instructions": instructions(self.place().await),
+                    "instructions": instructions(self.offered().await),
                 })
             }
             "ping" => json!({}),
-            "tools/list" => json!({"tools": tools(self.place().await)}),
+            "tools/list" => json!({"tools": tools(self.offered().await)}),
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or_default();
                 let empty = json!({});
@@ -176,6 +176,11 @@ impl Server {
                         let more = results.hits.len() > SEARCH_HITS as usize;
                         results.hits.truncate(SEARCH_HITS as usize);
                         let mut text = found(&results);
+                        if results.catching_up {
+                            text.push_str(
+                                "\nThe search index was still being brought up to date, so hits may be missing; search again in a few seconds for the rest.\n",
+                            );
+                        }
                         if more {
                             text.push_str(&format!(
                                 "There are more than {SEARCH_HITS} hits; add words or a time to narrow them.\n"
@@ -362,7 +367,102 @@ impl Server {
                     )),
                 }
             }
+            "start_session" => {
+                let start = pb::AgentStartSession {
+                    session_id: self.session.clone(),
+                    name: required(text("name"), "name")?,
+                    text: required(text("message"), "message")?,
+                };
+                let name = start.name.clone();
+                match self
+                    .ask(pb::request::Kind::AgentStartSession(start))
+                    .await?
+                {
+                    pb::response::Kind::AgentActed(pb::AgentActed {
+                        session: Some(started),
+                        ..
+                    }) => Ok(format!(
+                        "Started session {name:?}, id {}; it has your message and works on it. read_session with that id shows what it does, and waits for it with wait_seconds; send_message writes to it.",
+                        started.id
+                    )),
+                    pb::response::Kind::AgentActed(_) => Ok(format!(
+                        "Asked the person to allow starting session {name:?}; it waits in their inbox. Your next message says whether it started, and its id. End your turn unless you can carry on without it."
+                    )),
+                    other => Err(unexpected(&other)),
+                }
+            }
+            "send_message" => {
+                let send = pb::AgentSendMessage {
+                    session_id: self.session.clone(),
+                    to_session_id: required(text("session_id"), "session_id")?,
+                    text: required(text("text"), "text")?,
+                };
+                let to = send.to_session_id.clone();
+                match self.ask(pb::request::Kind::AgentSendMessage(send)).await? {
+                    pb::response::Kind::AgentActed(pb::AgentActed {
+                        session: Some(_), ..
+                    }) => Ok(format!(
+                        "Sent to session {to}, which reads it as from this session. read_session shows what it does with it."
+                    )),
+                    pb::response::Kind::AgentActed(_) => Ok(format!(
+                        "Asked the person to allow your message to session {to}; it waits in their inbox. Your next message says whether it was sent. End your turn unless you can carry on without it."
+                    )),
+                    other => Err(unexpected(&other)),
+                }
+            }
+            "read_session" => {
+                let session_id = required(text("session_id"), "session_id")?;
+                let wait = arguments["wait_seconds"].as_u64().unwrap_or(0);
+                self.read_session(&session_id, wait).await
+            }
             _ => Err(format!("humata has no tool {name:?}; see tools/list")),
+        }
+    }
+
+    /// Session `id`'s recent conversation, once it stops working or `wait`
+    /// seconds pass.
+    async fn read_session(&self, id: &str, wait: u64) -> Result<String, String> {
+        if self.session().await?.agent_sessions() == pb::AgentSessionsMode::Off {
+            return Err(
+                "this project has agents' sessions off, so read_session isn't offered; only the person can turn it on, in the project's settings under Agent Sessions"
+                    .to_owned(),
+            );
+        }
+        let until = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(wait.min(LONGEST_READ_WAIT));
+        // One on another host isn't listed here; it's read as it is.
+        let listed = loop {
+            let listed = self.listed(id).await?;
+            let working = listed
+                .as_ref()
+                .is_some_and(|session| session.state() == pb::SessionState::Working);
+            if !working || tokio::time::Instant::now() >= until {
+                break listed;
+            }
+            tokio::time::sleep(READ_POLL).await;
+        };
+        let read = pb::ReadHistory {
+            session_id: id.to_owned(),
+        };
+        match self.ask(pb::request::Kind::ReadHistory(read)).await? {
+            pb::response::Kind::History(history) => {
+                Ok(session_text(id, listed.as_ref(), &history.events))
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Session `id` as humatad lists it here; None if it doesn't.
+    async fn listed(&self, id: &str) -> Result<Option<pb::SessionInfo>, String> {
+        let listed = self
+            .ask(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+            .await?;
+        match listed {
+            pb::response::Kind::Sessions(sessions) => Ok(sessions
+                .sessions
+                .into_iter()
+                .find(|session| session.id == id)),
+            other => Err(unexpected(&other)),
         }
     }
 
@@ -393,22 +493,12 @@ impl Server {
     }
 
     async fn session(&self) -> Result<pb::SessionInfo, String> {
-        let listed = self
-            .ask(pb::request::Kind::ListSessions(pb::ListSessions::default()))
-            .await?;
-        let pb::response::Kind::Sessions(sessions) = listed else {
-            return Err(unexpected(&listed));
-        };
-        sessions
-            .sessions
-            .into_iter()
-            .find(|session| session.id == self.session)
-            .ok_or_else(|| {
-                format!(
-                    "humatad doesn't know the session {}; it may have been removed",
-                    self.session
-                )
-            })
+        self.listed(&self.session).await?.ok_or_else(|| {
+            format!(
+                "humatad doesn't know the session {}; it may have been removed",
+                self.session
+            )
+        })
     }
 
     async fn items(&self, project: &str) -> Result<Vec<pb::Item>, String> {
@@ -425,12 +515,22 @@ impl Server {
 
     /// Where this session is, to offer only the tools that work there. When
     /// humatad can't say, every tool is offered.
-    async fn place(&self) -> Place {
-        match self.session().await {
-            Err(_) => Place::Unknown,
-            Ok(session) if session.project_id.is_empty() => Place::Alone,
-            Ok(session) if session.item_id.is_empty() => Place::Project,
-            Ok(_) => Place::Task,
+    async fn offered(&self) -> Offered {
+        let Ok(session) = self.session().await else {
+            return Offered {
+                place: Place::Unknown,
+                sessions: true,
+            };
+        };
+        Offered {
+            place: if session.project_id.is_empty() {
+                Place::Alone
+            } else if session.item_id.is_empty() {
+                Place::Project
+            } else {
+                Place::Task
+            },
+            sessions: session.agent_sessions() != pb::AgentSessionsMode::Off,
         }
     }
 
@@ -454,6 +554,15 @@ impl Server {
             other => Err(unexpected(&other)),
         }
     }
+}
+
+/// What decides the tools a session gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Offered {
+    place: Place,
+    /// Whether its project lets agents start, write to and read other
+    /// sessions, asking the person or not.
+    sessions: bool,
 }
 
 /// Where a session is, which decides the tools it gets: one outside a
@@ -631,25 +740,10 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
         .iter()
         .filter(|found| found.parent_call_id.is_empty())
     {
-        if at == turn {
-            let part = match &found.kind {
-                Some(Kind::UserMessage(message)) => Some(format!("The person: {}", message.text)),
-                Some(Kind::AssistantMessage(message)) => Some(format!("Agent: {}", message.text)),
-                Some(Kind::ToolStarted(call)) => Some(format!(
-                    "Tool {}: {}",
-                    call.tool,
-                    cut(&call.arguments_json, TURN_PART)
-                )),
-                Some(Kind::ToolCompleted(done)) => Some(format!(
-                    "{}: {}",
-                    if done.success { "Output" } else { "Failed" },
-                    cut(&done.output, TURN_PART)
-                )),
-                _ => None,
-            };
-            if let Some(part) = part {
-                parts.push((found.id.clone(), part));
-            }
+        if at == turn
+            && let Some(part) = event_text(found, usize::MAX, TURN_PART)
+        {
+            parts.push((found.id.clone(), part));
         }
         if matches!(found.kind, Some(Kind::TurnEnded(_))) {
             at += 1;
@@ -683,6 +777,101 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
         text.push_str("Nothing was said or done in this turn.");
     }
     Some(text)
+}
+
+/// What `event` said or did, as an agent reads it: a message cut to
+/// `message` bytes, a tool's arguments or output to `tool`. None for
+/// events that say nothing.
+fn event_text(event: &pb::SessionEvent, message: usize, tool: usize) -> Option<String> {
+    use pb::session_event::Kind;
+    match &event.kind {
+        Some(Kind::UserMessage(sent)) => Some(match crate::sender::sender(&sent.text) {
+            Some(from) => format!(
+                "Session {:?} ({}): {}",
+                from.name,
+                from.id,
+                cut(from.text, message)
+            ),
+            None => format!("The person: {}", cut(&sent.text, message)),
+        }),
+        Some(Kind::AssistantMessage(reply)) => {
+            Some(format!("Agent: {}", cut(&reply.text, message)))
+        }
+        Some(Kind::ToolStarted(call)) => Some(format!(
+            "Tool {}: {}",
+            call.tool,
+            cut(&call.arguments_json, tool)
+        )),
+        Some(Kind::ToolCompleted(done)) => Some(format!(
+            "{}: {}",
+            if done.success { "Output" } else { "Failed" },
+            cut(&done.output, tool)
+        )),
+        _ => None,
+    }
+}
+
+/// The longest read_session waits for a session to stop working.
+const LONGEST_READ_WAIT: u64 = 600;
+/// How often it looks meanwhile.
+const READ_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+/// The most read_session gives, so it fits the agent's context.
+const SESSION_TEXT: usize = 16 * 1024;
+/// The most of each message in it, and of each tool's arguments or output.
+const SESSION_MESSAGE: usize = 4 * 1024;
+const SESSION_TOOL: usize = 300;
+
+/// Session `id` as another session's agent reads it: how it stands, as
+/// `listed` if humatad lists it here, then the end of its conversation, as
+/// much as fits.
+fn session_text(id: &str, listed: Option<&pb::SessionInfo>, events: &[pb::SessionEvent]) -> String {
+    let mut text = match listed {
+        Some(session) => format!(
+            "Session {:?} ({id}) {}, after {} turns.\n",
+            session.name,
+            match session.state() {
+                pb::SessionState::Working => "is working",
+                pb::SessionState::WaitingForApproval => "waits for the person to allow something",
+                pb::SessionState::Failed => "failed its last turn",
+                pb::SessionState::Idle | pb::SessionState::Unspecified => "is idle",
+            },
+            session.turns
+        ),
+        None => format!("Session {id}:\n"),
+    };
+    // The newest that fit, as the chat shows them, without subagents' steps.
+    let mut room = SESSION_TEXT;
+    let mut kept: Vec<String> = Vec::new();
+    let mut left_out = false;
+    for event in events
+        .iter()
+        .rev()
+        .filter(|event| event.parent_call_id.is_empty())
+    {
+        let Some(part) = event_text(event, SESSION_MESSAGE, SESSION_TOOL) else {
+            continue;
+        };
+        if part.len() + 1 > room {
+            left_out = true;
+            break;
+        }
+        room -= part.len() + 1;
+        kept.push(part);
+    }
+    if kept.is_empty() && !left_out {
+        text.push_str("Nothing was said or done in it yet.\n");
+        return text;
+    }
+    if left_out {
+        text.push_str(
+            "(Its earlier conversation is left out; search_sessions and read_turn reach it.)\n",
+        );
+    }
+    for part in kept.iter().rev() {
+        text.push_str(part);
+        text.push('\n');
+    }
+    text
 }
 
 fn cut(text: &str, most: usize) -> String {
@@ -776,7 +965,8 @@ fn status_named(name: &str) -> Option<pb::ItemStatus> {
 
 /// What the server tells the agent at the start, naming only the tools it
 /// has at `place`.
-fn instructions(place: Place) -> String {
+fn instructions(offered: Offered) -> String {
+    let place = offered.place;
     let mut text = String::from("Humata is directing this session.");
     if place.has_board() {
         text.push_str(
@@ -796,16 +986,25 @@ fn instructions(place: Place) -> String {
     if place.has_board() {
         text.push_str(" read_skill reads a project skill your instructions list.");
     }
+    if offered.sessions {
+        text.push_str(
+            " start_session hands work to a new session of your own, send_message writes to \
+             it and read_session reads what it did; the person may have to allow each.",
+        );
+    }
     text
 }
 
-/// The tools a session at `place` has: outside a project, none for a board,
-/// proposals, review or project skills; on no task, none to ask to move it.
+/// The tools a session has: outside a project, none for a board,
+/// proposals, review or project skills; on no task, none to ask to move it;
+/// where its project has agents' sessions off, none for other sessions.
 /// Each listed tool costs tokens on every request, so only those that work
 /// there are offered.
-fn tools(place: Place) -> Value {
+fn tools(offered: Offered) -> Value {
+    let place = offered.place;
     let wanted = |tool: &Value| match tool["name"].as_str().unwrap_or_default() {
         "ask_person" | "search_sessions" | "read_turn" => true,
+        "start_session" | "send_message" | "read_session" => offered.sessions,
         "request_move" => place.has_task(),
         _ => place.has_board(),
     };
@@ -911,6 +1110,36 @@ fn every_tool() -> Value {
             "description": "A project skill's text, by the name your instructions list it under. Read it before work it covers.",
             "inputSchema": object(json!({"name": string("The skill's name.")}), &["name"]),
         },
+        // Each of these says whether it only reads, changes something or
+        // destroys something, for clients and for switches that gate them.
+        {
+            "name": "start_session",
+            "description": "Start another session, as a child of this one, to hand it a piece of work: it runs where this one does, on the same task, with the same agent and model, and knows nothing of this conversation, so the message must say all it needs. The person may have to allow it first; then your next message says it started. A session may have only so many, nested only so deep.",
+            "inputSchema": object(json!({
+                "name": string("What to call it, a few words, as the person sees it in Humata."),
+                "message": string("Its first message: what to do, what to read first, and what to answer when done."),
+            }), &["name", "message"]),
+            "annotations": {"readOnlyHint": false, "destructiveHint": false},
+        },
+        {
+            "name": "send_message",
+            "description": "Write to another session, which reads it as from this session, not the person, and starts a turn on it. Unless the person set the project otherwise, only to sessions this one started; they may have to allow each message first.",
+            "inputSchema": object(json!({
+                "session_id": string("The session's id, from start_session."),
+                "text": string("The message, in Markdown."),
+            }), &["session_id", "text"]),
+            "annotations": {"readOnlyHint": false, "destructiveHint": false},
+        },
+        {
+            "name": "read_session",
+            "description": "How another session stands and the end of its conversation: what was said to it, what its agent answered and the tools it ran, the newest that fit. To read what a session you started has done.",
+            "inputSchema": object(json!({
+                "session_id": string("The session's id, from start_session."),
+                "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 600,
+                    "description": "Wait up to this long for it to stop working before reading; 0, the default, reads it as it is."},
+            }), &["session_id"]),
+            "annotations": {"readOnlyHint": true, "destructiveHint": false},
+        },
     ])
 }
 
@@ -1002,7 +1231,14 @@ mod tests {
     }
 
     fn names(place: Place) -> Vec<String> {
-        tools(place)
+        offered_names(Offered {
+            place,
+            sessions: false,
+        })
+    }
+
+    fn offered_names(offered: Offered) -> Vec<String> {
+        tools(offered)
             .as_array()
             .into_iter()
             .flatten()
@@ -1024,6 +1260,131 @@ mod tests {
         assert!(task.iter().any(|name| name == "request_move"), "{task:?}");
         assert_eq!(task, names(Place::Unknown));
         assert_eq!(task.len(), project.len() + 1);
+    }
+
+    #[test]
+    fn the_tools_for_other_sessions_are_offered_only_where_the_project_allows_them() {
+        let with = offered_names(Offered {
+            place: Place::Alone,
+            sessions: true,
+        });
+        for tool in ["start_session", "send_message", "read_session"] {
+            assert!(with.iter().any(|name| name == tool), "{tool}: {with:?}");
+            assert!(!names(Place::Task).iter().any(|name| name == tool));
+        }
+    }
+
+    #[test]
+    fn a_session_is_read_from_its_end_within_a_size_and_names_who_wrote() {
+        use pb::session_event::Kind;
+        let message = |id: &str, text: String| {
+            said(
+                id,
+                Kind::UserMessage(pb::UserMessage {
+                    text,
+                    ..Default::default()
+                }),
+            )
+        };
+        let mut events = vec![message("first", "the oldest ask".to_owned())];
+        // More than fits.
+        for index in 0..40 {
+            events.push(said(
+                &format!("reply-{index}"),
+                Kind::AssistantMessage(pb::AssistantMessage {
+                    text: "words ".repeat(200),
+                }),
+            ));
+        }
+        events.push(message(
+            "from-parent",
+            crate::sender::headed("parent-id", "Parent", "the newest ask"),
+        ));
+        let text = session_text("child-id", None, &events);
+        assert!(text.len() <= SESSION_TEXT + 1024, "{}", text.len());
+        assert!(text.contains("the newest ask"), "{text}");
+        assert!(!text.contains("the oldest ask"));
+        // Its sender is named; it isn't put down to the person.
+        assert!(text.contains("parent-id") && !text.contains("The person: "));
+
+        let short = session_text("child-id", None, &events[..1]);
+        assert!(short.contains("The person: the oldest ask"), "{short}");
+    }
+
+    #[tokio::test]
+    async fn an_agent_starts_a_session_once_the_person_allows_it_and_reads_it() {
+        use crate::tests::{daemon, git_repository, project, start_on};
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let repository = git_repository();
+        let client = daemon(state.path(), crate::hosts::Hosts::default()).await;
+        let project = project(&client, repository.path()).await;
+        let task = crate::tests::item(&client, &project.id, "", "login").await;
+        let session = crate::tests::started(&client, start_on(&task.id)).await;
+        let server = server(client, &session.id);
+
+        let (_, failed) = call(
+            &server,
+            "start_session",
+            json!({"name": "Tests", "message": "hello"}),
+        )
+        .await;
+        assert!(!failed);
+        // A session to start needs its first message.
+        let (_, failed) = call(&server, "start_session", json!({"name": "Tests"})).await;
+        assert!(failed);
+
+        // Nothing starts until the person allows it.
+        let sessions = || async {
+            match server
+                .client
+                .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+                .await
+            {
+                Ok(pb::response::Kind::Sessions(sessions)) => sessions.sessions,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(sessions().await.len(), 1);
+        let inbox = match server
+            .client
+            .call(pb::request::Kind::ListInbox(pb::ListInbox {}))
+            .await
+        {
+            Ok(pb::response::Kind::Inbox(inbox)) => inbox,
+            other => panic!("{other:?}"),
+        };
+        let asked: Vec<pb::AgentRequest> = inbox
+            .entries
+            .into_iter()
+            .filter_map(|entry| entry.request)
+            .collect();
+        let [request] = asked.as_slice() else {
+            panic!("{asked:?}")
+        };
+        assert_eq!(request.kind(), pb::AgentRequestKind::StartSession);
+        let allowed = server
+            .client
+            .call(pb::request::Kind::AnswerRequest(pb::AnswerRequest {
+                request_id: request.id.clone(),
+                answer: Some(pb::answer_request::Answer::Approve(true)),
+            }))
+            .await;
+        assert!(allowed.is_ok(), "{allowed:?}");
+
+        let listed = sessions().await;
+        let child = listed
+            .iter()
+            .find(|listed| listed.started_by_session_id == session.id)
+            .unwrap_or_else(|| panic!("no child in {listed:?}"));
+        crate::tests::after_turns(&server.client, &child.id, 1).await;
+        let (read, failed) = call(&server, "read_session", json!({"session_id": child.id})).await;
+        assert!(!failed, "{read}");
+        // What this session wrote, as from it, and the child's answer.
+        assert!(
+            read.contains("hello") && read.contains(&session.id),
+            "{read}"
+        );
+        assert!(read.contains("hi there"), "{read}");
     }
 
     fn board_item(id: &str, parent: &str, status: pb::ItemStatus) -> pb::Item {

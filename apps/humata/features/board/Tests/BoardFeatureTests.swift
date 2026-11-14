@@ -56,6 +56,45 @@ final class BoardFeatureTests: XCTestCase {
         return store
     }
 
+    func testAReadOfTheBoardWithNothingNewIsNotTakenIn() async throws {
+        let board = try await board()
+        let clock = TestClock()
+        let made = LockIsolated(0)
+        let taken = LockIsolated(0)
+        var client = board.daemon.client
+        let items = client.items
+        client.items = { project in
+            made.withValue { $0 += 1 }
+            return try await items(project)
+        }
+        let counted = CombineReducers {
+            Reduce<BoardFeature.State, BoardFeature.Action> { _, action in
+                if case .loaded = action { taken.withValue { $0 += 1 } }
+                return .none
+            }
+            BoardFeature()
+        }
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            counted
+        } withDependencies: { [client] in
+            $0.daemon = client
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        // The reads are made in turn: by the third, the second, of the
+        // same board as the first, is over.
+        while made.value < 3 { await clock.advance(by: .seconds(2)) }
+        let added = try await board.daemon.client.createItem(board.project.id, ItemFields(title: "signup"))
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.items[id: added.id])
+        XCTAssertEqual(taken.value, 2)
+        await task.cancel()
+    }
+
     func testStartWorkStartsASessionOnTheCardWithTheDefaultsAndStaysOnTheBoard() async throws {
         let board = try await board()
         let store = try await store(board, defaultBackend: .scripted)

@@ -877,6 +877,15 @@ enum Command {
         /// of a planning session also gets a copy of the repositories.
         #[arg(long, default_value = "")]
         item: String,
+        /// Keep none of the chat: a new chat that is the session's child,
+        /// in its own copy of the code as last saved, or with --chat-only
+        /// in the session's copy.
+        #[arg(long)]
+        empty: bool,
+        /// A side chat: it reads the session's copy of the code and can
+        /// never write a file or run a command.
+        #[arg(long)]
+        read_only: bool,
     },
     /// Rename a session.
     Rename { session: String, name: String },
@@ -1126,6 +1135,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 instructions,
                 skills,
                 repositories,
+                agent_sessions: None,
             });
             match client.call(request).await? {
                 Response::ProjectUpdated(_) => {}
@@ -1431,6 +1441,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 notices: Vec::new(),
                 effort,
                 experimental,
+                // Only for sessions agents start.
+                config_from_session_id: String::new(),
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {
@@ -1644,6 +1656,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             name,
             chat_only,
             item,
+            empty,
+            read_only,
         } => {
             let request = Request::ForkSession(pb::ForkSession {
                 session_id: session,
@@ -1651,6 +1665,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 name,
                 chat_only,
                 item_id: item,
+                empty,
+                read_only,
                 ..Default::default()
             });
             match client.call(request).await? {

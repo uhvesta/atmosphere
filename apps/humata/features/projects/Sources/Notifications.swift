@@ -47,7 +47,7 @@ package struct Notice: Hashable, Sendable {
             case .approval: "Waiting for you to answer a request."
             case .reply: "Finished its turn."
             case .failed: "Its turn failed."
-            case .question: entry.request?.text ?? "Asked you something."
+            case .question: entry.request?.kind.sessionAsk ?? entry.request?.text ?? "Asked you something."
             case .move: "Finished; asks you to move it to \(entry.request?.kind.statusName ?? "another column")."
             }
         self.init(
@@ -57,6 +57,16 @@ package struct Notice: Hashable, Sendable {
 }
 
 extension AgentRequest.Kind {
+    /// What it asks to do to another session, in a line; nil for a
+    /// question or a move.
+    var sessionAsk: String? {
+        switch self {
+        case .startSession(let name): "Asks to start a session, “\(name)”."
+        case .sendMessage(let to, let name): "Asks to write to “\(name.isEmpty ? to : name)”."
+        case .question, .move: nil
+        }
+    }
+
     /// The column a move asks for, as the board names it; nil for a question.
     var statusName: String? {
         guard case .move(_, let status) = self else { return nil }

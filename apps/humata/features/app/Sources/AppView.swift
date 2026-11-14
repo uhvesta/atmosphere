@@ -60,12 +60,80 @@ package struct AppView: View {
             }
             .id(board.project.id)
         } else if let session = store.scope(state: \.session, action: \.session.presented) {
-            SessionView(store: session)
-                .id(session.session.id)
+            // The session keeps its place whether or not a side chat is
+            // beside it, so opening or closing one doesn't draw it anew.
+            HStack(spacing: 0) {
+                AtLeast(width: 360, height: 300) {
+                    SessionView(store: session)
+                        .id(session.session.id)
+                }
+                if let side = store.scope(state: \.side, action: \.side.presented) {
+                    SideChatColumn(store: side) { store.send(.side(.dismiss)) }
+                }
+            }
         } else {
             ContentUnavailableView(
                 "No Session Open", systemImage: "bubble.left.and.text.bubble.right",
                 description: Text("Pick a session in the sidebar, or start one in a project."))
+        }
+    }
+}
+
+/// A side chat beside the open session: a bar that says what it is and
+/// closes it, over its chat, as wide as it's dragged.
+private struct SideChatColumn: View {
+    let store: StoreOf<SessionFeature>
+    let close: () -> Void
+    @State private var width: CGFloat = 440
+    /// The width when a drag began; nil between drags.
+    @State private var dragFrom: CGFloat?
+
+    private static let widths: ClosedRange<CGFloat> = 360...900
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Divider()
+                .overlay {
+                    // Wider than the line, to be caught.
+                    Color.clear
+                        .frame(width: 8)
+                        .contentShape(.rect)
+                        .gesture(
+                            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                .onChanged { drag in
+                                    let from = dragFrom ?? width
+                                    dragFrom = from
+                                    let next = from - drag.translation.width
+                                    width = min(max(next, Self.widths.lowerBound), Self.widths.upperBound)
+                                }
+                                .onEnded { _ in dragFrom = nil }
+                        )
+                        .help("Drag to make the side chat wider or narrower")
+                }
+            AtLeast(width: Self.widths.lowerBound, height: 300) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Label("Side Chat", systemImage: "rectangle.righthalf.inset.filled")
+                            .font(.callout.weight(.medium))
+                        Text("Reads only")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button("Close", systemImage: "xmark", action: close)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .keyboardShortcut("w", modifiers: [.command, .option])
+                            .help("Close the side chat; it stays under its session in the sidebar (⌥⌘W)")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.bar)
+                    Divider()
+                    SessionView(store: store)
+                        .id(store.session.id)
+                }
+            }
+            .frame(width: width)
         }
     }
 }

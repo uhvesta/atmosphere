@@ -88,6 +88,9 @@ impl Connection {
         if app_only(&request) {
             return Err(DaemonError::AppOnly);
         }
+        if self.daemon.decides_agent_sessions(&request)? {
+            return Err(crate::error::AgentSessionsError::AppOnly.into());
+        }
         let Some(scope) = scope_of(&request) else {
             return self.daemon.answer(request).await;
         };

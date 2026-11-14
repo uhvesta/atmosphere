@@ -214,6 +214,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
         item_title: String::new(),
         effort: record.effort.clone().unwrap_or_default(),
         experimental: record.experimental,
+        read_only: record.read_only,
         turns: summary.turns,
         seen_turns: 0,
         pending: summary
@@ -227,6 +228,9 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, summary: &Summary) 
             .collect(),
         last_active_unix_ms: summary.last_active_unix_ms,
         last_message: summary.last_message.clone(),
+        // The daemon's to say.
+        started_by_session_id: String::new(),
+        agent_sessions: pb::AgentSessionsMode::Unspecified.into(),
     }
 }
 
@@ -304,6 +308,7 @@ pub fn project(project: Project) -> pb::Project {
             .collect(),
         plugins: project.plugins,
         defaults: project.defaults,
+        agent_sessions: Some(project.agent_sessions),
     }
 }
 

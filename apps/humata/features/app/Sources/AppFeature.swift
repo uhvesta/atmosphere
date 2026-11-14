@@ -18,6 +18,9 @@ package struct AppFeature {
         package var sidebar = ProjectsFeature.State()
         /// The open session; nil until one is picked.
         @Presents package var session: SessionFeature.State?
+        /// A side chat of the open session, shown beside it until it's
+        /// closed or another session opens; it stays in the sidebar.
+        @Presents package var side: SessionFeature.State?
         /// The open board; nil unless one is picked.
         @Presents package var board: BoardFeature.State?
         /// The hosts; nil unless they're open.
@@ -84,6 +87,8 @@ package struct AppFeature {
         /// Opens `next` in place of the open session, keeping what the one
         /// closed was showing; nil closes it.
         mutating func show(_ next: SessionFeature.State?) {
+            // A side chat is beside the session it was opened from only.
+            if session?.session.id != next?.session.id { side = nil }
             if let open = session {
                 if open.session.id != next?.session.id { left[open.session.id] = open.left }
                 // Kept for the session opened again in its own place too,
@@ -164,6 +169,8 @@ package struct AppFeature {
         case openLoginItemsTapped
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
+        /// The side chat beside the open session; dismissing it closes it.
+        case side(PresentationAction<SessionFeature.Action>)
         /// A message from a session's box reached the daemon.
         case sendFinished(Session.ID)
         /// It didn't, and this is why: the message goes back in its
@@ -247,7 +254,9 @@ package struct AppFeature {
                 // Its watch ended with the old daemon; watch the new one.
                 guard state.session != nil else { return .merge(.send(.sidebar(.refresh)), serveModels()) }
                 state.session?.alert = nil
-                return .merge(.send(.sidebar(.refresh)), .send(.session(.presented(.task))), serveModels())
+                state.side?.alert = nil
+                let side: Effect<Action> = state.side == nil ? .none : .send(.side(.presented(.task)))
+                return .merge(.send(.sidebar(.refresh)), .send(.session(.presented(.task))), side, serveModels())
 
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
@@ -288,6 +297,10 @@ package struct AppFeature {
                     state.session?.session = session
                     state.keepTab()
                 }
+                if state.side?.session.id == session.id {
+                    // Archived, it takes no more questions.
+                    if session.archived { state.side = nil } else { state.side?.session = session }
+                }
                 // A session moved to another host is read from there.
                 switch action {
                 case .sidebar(.sessionMoved), .sidebar(.destination(.presented(.move(.delegate(.moved))))):
@@ -301,7 +314,11 @@ package struct AppFeature {
                 // written to it: it won't open again.
                 state.left[id] = nil
                 state.histories.forget(id)
-                if state.session?.session.id == id { state.session = nil }
+                if state.session?.session.id == id {
+                    state.session = nil
+                    state.side = nil
+                }
+                if state.side?.session.id == id { state.side = nil }
                 SessionFeature.State.forgetDraft(of: id)
                 return .none
 
@@ -364,7 +381,8 @@ package struct AppFeature {
                 return .none
 
             case .search(.presented(.delegate(.openItem(let projectID, let itemID)))),
-                .session(.presented(.delegate(.openItem(let projectID, let itemID)))):
+                .session(.presented(.delegate(.openItem(let projectID, let itemID)))),
+                .side(.presented(.delegate(.openItem(let projectID, let itemID)))):
                 guard let project = state.sidebar.projects[id: projectID] else { return .none }
                 state.sidebar.selection = .board(projectID)
                 state.show(nil)
@@ -390,7 +408,19 @@ package struct AppFeature {
                 // Its sessions went with it.
                 return .send(.sidebar(.refresh))
 
+            case .session(.presented(.delegate(.openSide(let session)))),
+                .side(.presented(.delegate(.openSide(let session)))):
+                // Beside the open session, which stays as it is; a side
+                // chat of the side chat takes its place.
+                guard state.session != nil else { return .none }
+                if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
+                var side = SessionFeature.State(session: session)
+                side.beside = true
+                state.side = side
+                return .send(.sidebar(.refresh))
+
             case .session(.presented(.delegate(.openSession(let session)))),
+                .side(.presented(.delegate(.openSession(let session)))),
                 .board(.presented(.delegate(.openSession(let session)))):
                 if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
                 state.sidebar.selection = .session(session.id)
@@ -398,10 +428,12 @@ package struct AppFeature {
                 state.show(SessionFeature.State(session: session))
                 return .send(.sidebar(.refresh))
 
-            case .session(.presented(.delegate(.answerRequest(let id, let answer)))):
+            case .session(.presented(.delegate(.answerRequest(let id, let answer)))),
+                .side(.presented(.delegate(.answerRequest(let id, let answer)))):
                 return .send(.sidebar(.requestAnswered(id, answer)))
 
-            case .session(.presented(.delegate(.send(let outgoing)))):
+            case .session(.presented(.delegate(.send(let outgoing)))),
+                .side(.presented(.delegate(.send(let outgoing)))):
                 // Sent from here and not from the session, so that looking
                 // at another session doesn't stop it: the daemon may already
                 // have the request, and a failure must still be answered for.
@@ -418,10 +450,19 @@ package struct AppFeature {
                 }
 
             case .sendFinished(let session):
+                if state.side?.session.id == session { return .send(.side(.presented(.sent))) }
                 guard state.session?.session.id == session else { return .none }
                 return .send(.session(.presented(.sent)))
 
             case .sendFailed(let outgoing, let message):
+                if state.side?.session.id == outgoing.session {
+                    return .send(
+                        .side(
+                            .presented(
+                                .sendFailed(
+                                    text: outgoing.typed, pastes: outgoing.pastes, images: outgoing.images,
+                                    message: message))))
+                }
                 if state.session?.session.id == outgoing.session {
                     return .send(
                         .session(
@@ -450,12 +491,13 @@ package struct AppFeature {
                 guard state.sidebar.sessions[id: id] != nil else { return .none }
                 return .send(.sidebar(.selected(.session(id))))
 
-            case .sidebar, .session, .sendFailure, .board, .hosts, .search, .settings, .approvals, .storage,
+            case .sidebar, .session, .side, .sendFailure, .board, .hosts, .search, .settings, .approvals, .storage,
                 .github, .repositories, .skills, .plugins, .models:
                 return .none
             }
         }
         .ifLet(\.$session, action: \.session) { SessionFeature() }
+        .ifLet(\.$side, action: \.side) { SessionFeature() }
         .ifLet(\.$sendFailure, action: \.sendFailure)
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }

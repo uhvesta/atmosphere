@@ -128,7 +128,8 @@ impl Daemon {
         };
         let id = connected.connection_id;
         let _ = socket.set_nodelay(true);
-        let (mut reader, mut writer) = socket.into_split();
+        let mut socket = socket;
+        let (mut reader, mut writer) = socket.split();
         let to_server = async {
             let mut buffer = vec![0; CHUNK];
             loop {
@@ -149,17 +150,32 @@ impl Daemon {
                 }
             }
         };
+        // True if the port's bytes stopped short of what it sent, as when
+        // this side fell too far behind reading them.
         let to_browser = async {
-            while let Some(Ok(item)) = from_server.recv().await {
-                if let Some(pb::stream_item::Kind::PortData(data)) = item.kind
-                    && writer.write_all(&data.data).await.is_err()
-                {
-                    break;
+            loop {
+                match from_server.recv().await {
+                    Some(Ok(item)) => {
+                        if let Some(pb::stream_item::Kind::PortData(data)) = item.kind
+                            && writer.write_all(&data.data).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Some(Err(_)) => return true,
+                    None => break,
                 }
             }
             let _ = writer.shutdown().await;
+            false
         };
-        tokio::join!(to_server, to_browser);
+        let (cut_short, ()) = tokio::join!(to_browser, to_server);
+        if cut_short {
+            // Closed as broken, so the browser reports a failed load
+            // instead of taking half a response for a whole one.
+            let _ = socket.set_zero_linger();
+        }
+        drop(socket);
         self.close_port(host, id).await;
     }
 

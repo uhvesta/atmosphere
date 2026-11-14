@@ -46,6 +46,7 @@ struct Listing {
 /// through a turn.
 const SAVE_BACKUP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
+mod agent_sessions;
 mod approvals;
 pub use approvals::Connection;
 mod forwards;
@@ -497,6 +498,12 @@ impl Daemon {
         // that fell behind is asked for again rather than ended as lost.
         let again =
             matches!(request, pb::request::Kind::AttachTerminal(_)).then(|| request.clone());
+        // A port's bytes can't be asked for again, so a connection whose
+        // reader fell behind ends with an error, not as if the port closed.
+        let cut_short = matches!(request, pb::request::Kind::ConnectPort(_)).then(|| pb::Error {
+            code: pb::ErrorCode::Busy.into(),
+            message: "The forwarded connection was read too slowly and was cut off before everything was sent. Load the page again; if it keeps happening, fetch less at once through the forward.".to_owned(),
+        });
         let (response, mut stream) = match client.stream(request).await {
             Ok(answer) => answer,
             Err(source) => return failed(source),
@@ -519,7 +526,12 @@ impl Daemon {
                                 Err(_) => return,
                             }
                         }
-                        _ => return,
+                        _ => {
+                            if let Some(error) = cut_short.filter(|_| stream.fell_behind()) {
+                                let _ = items.send(Err(error)).await;
+                            }
+                            return;
+                        }
                     }
                 };
                 if items.send(item).await.is_err() {
@@ -615,6 +627,8 @@ impl Daemon {
         session.seen_turns = known.placement.seen_turns;
         session.planning = known.planning;
         session.asking = known.asking;
+        session.started_by_session_id = known.started_by.unwrap_or_default();
+        session.agent_sessions = known.agent_sessions.into();
         Ok(())
     }
 
@@ -805,18 +819,24 @@ impl Daemon {
             })
         };
         let doing = match answer.answer {
+            Some(Answer::Approve(_)) if agent_sessions::asks_for_session(&request) => {
+                return Box::pin(self.allow_agent_request(&request)).await;
+            }
             Some(Answer::Reply(text)) => {
                 let text = text.trim();
                 if text.is_empty() {
                     return Err(DaemonError::NoReply);
                 }
+                // Feedback on a session it asked to start, or a message it
+                // asked to send, declines it; the agent is told which.
+                let text = agent_sessions::declined_with(&request, text);
                 // Straight to the session: its other questions stay open.
                 // Named by the request, so answering it again, as after a
                 // crash before it was marked answered, sends it once.
                 let reply = self
                     .send_message(pb::SendMessage {
                         session_id: request.session_id.clone(),
-                        text: text.to_owned(),
+                        text,
                         client_id: format!("answer-{}", request.id),
                         ..Default::default()
                     })
@@ -834,7 +854,10 @@ impl Daemon {
                 move_to(pb::ItemStatus::try_from(status).unwrap_or_default()),
             ),
             Some(Answer::MoveTo(_)) => return Err(DaemonError::NothingToApprove),
-            Some(Answer::Dismiss(_)) | None => None,
+            Some(Answer::Dismiss(_)) | None => {
+                Box::pin(self.decline_agent_request(&request)).await;
+                None
+            }
         };
         if let Some(doing) = doing {
             let reply = Box::pin(self.answer(doing)).await?;
@@ -1771,6 +1794,14 @@ impl Daemon {
                     pb::RequestAnswered {},
                 )));
             }
+            Request::AgentStartSession(start) => {
+                let acted = Box::pin(self.agent_start_session(std::mem::take(start))).await?;
+                return Ok(Reply::Response(Response::AgentActed(acted)));
+            }
+            Request::AgentSendMessage(send) => {
+                let acted = Box::pin(self.agent_send_message(std::mem::take(send))).await?;
+                return Ok(Reply::Response(Response::AgentActed(acted)));
+            }
             Request::StartSession(start) => {
                 Box::pin(self.refuse_on_device_on_host(start)).await?;
                 (project, item) = self.from_project(start).await?;
@@ -2211,6 +2242,8 @@ impl Daemon {
             Some(Request::ListThreads(list)) => self.is_on(host, &list.session_id).await?,
             Some(Request::AskPerson(ask)) => self.is_on(host, &ask.session_id).await?,
             Some(Request::RequestMove(asked)) => self.is_on(host, &asked.session_id).await?,
+            Some(Request::AgentStartSession(start)) => self.is_on(host, &start.session_id).await?,
+            Some(Request::AgentSendMessage(send)) => self.is_on(host, &send.session_id).await?,
             Some(Request::ReadSpec(read)) => self.is_on(host, &read.session_id).await?,
             Some(Request::ReadSkill(read)) => self.is_on(host, &read.session_id).await?,
             // A session another host runs, in a project of this host's, as
@@ -2222,7 +2255,9 @@ impl Daemon {
                     .and_then(|placement| placement.project);
                 match project {
                     Some(project) => self.has_project(host, &project).await?,
-                    None => false,
+                    // A chat in no project, as one a chat's agent started,
+                    // is read from its own host.
+                    None => self.is_on(host, &read.session_id).await?,
                 }
             }
             Some(Request::Search(search)) => {

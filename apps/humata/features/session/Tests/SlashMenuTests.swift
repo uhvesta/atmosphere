@@ -57,6 +57,13 @@ final class SlashMenuTests: XCTestCase {
         XCTAssertEqual(remote.map(\.id), ["elsewhere"])
     }
 
+    func testAProjectsOwnSkillIsOfferedOnlyWhereTheDaemonWritesItOut() {
+        let skills = SkillList(skills: [FoundSkill(name: "house-style", origin: .project, projectID: "p1", hash: "a")])
+        XCTAssertEqual(offered(session(.local), skills: skills).map(\.id), ["house-style"])
+        XCTAssertEqual(offered(session(.claude), skills: skills), [])
+        XCTAssertEqual(offered(session(.copilot), skills: skills), [])
+    }
+
     func testAClashOffersOnlyThePickedFile() {
         let one = FoundSkill(name: "release", description: "one", origin: .claudeUser, hash: "a")
         let two = FoundSkill(name: "release", description: "two", origin: .claudeRepository, projectID: "p1", hash: "b")
@@ -122,6 +129,8 @@ final class SlashMenuTests: XCTestCase {
                 FoundSkill(name: "deploy", origin: .claudeUser, hash: "a"),
                 FoundSkill(name: "debug", origin: .claudeUser, hash: "b"),
             ]))
+        // No side chats, so /side isn't a third match.
+        daemon.setChatCommands(ChatCommands(compact: true, compactTakesFocus: true))
         let session = try await started(daemon)
         let store = store(daemon, session)
 
@@ -194,14 +203,14 @@ final class SlashMenuTests: XCTestCase {
     }
 
     func testANewNameHighlightsItsBestMatchAndTheSameListKeepsTheHighlight() async throws {
-        let daemon = skilled("release", "review", "rename")
+        let daemon = skilled("release", "review", "revise")
         let store = store(daemon, try await started(daemon))
 
-        await store.send(\.binding.draft, "/re")
+        await store.send(\.binding.draft, "/rev")
         await store.receive(\.slashLoaded, timeout: .seconds(1))
         await store.send(.slashMoved(by: 1))
         let highlighted = store.state.slashChoices[store.state.slashSelected]
-        await store.send(\.binding.draft, "/r")
+        await store.send(\.binding.draft, "/revi")
         XCTAssertEqual(store.state.slashChoices[store.state.slashSelected], highlighted, "same list, same highlight")
 
         await store.send(\.binding.draft, "/rel")
@@ -281,6 +290,35 @@ final class SlashMenuTests: XCTestCase {
             XCTAssertFalse(store.state.slashOpen, draft)
             XCTAssertEqual(store.state.slashChoices, [], draft)
         }
+    }
+
+    func testAChatOpenedAgainListsItsSkillsBeforeTheyAreFoundAgain() async throws {
+        let daemon = skilled("release")
+        let session = try await started(daemon)
+        let first = store(daemon, session)
+        await first.send(\.binding.draft, "/")
+        await first.receive(\.slashLoaded, timeout: .seconds(1))
+        await first.send(\.binding.draft, "")
+
+        // The chat is opened again while the skills can't be read.
+        daemon.setSkillsFail(true)
+        let again = store(daemon, session)
+        await again.send(\.binding.draft, "/")
+        XCTAssertEqual(shown(again), ["release"])
+        await again.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertEqual(shown(again), ["release"])
+
+        // And it looks again: a skill added since joins the list.
+        daemon.setSkillsFail(false)
+        daemon.setSkills(
+            SkillList(skills: [
+                FoundSkill(name: "release", origin: .claudeUser, hash: "a"),
+                FoundSkill(name: "review", origin: .claudeUser, hash: "b"),
+            ]))
+        await again.send(\.binding.draft, "")
+        await again.send(\.binding.draft, "/")
+        await again.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertEqual(shown(again), ["release", "review"])
     }
 
     func testAFailedLookIsShownAndTypingASlashAgainLooksAgain() async throws {

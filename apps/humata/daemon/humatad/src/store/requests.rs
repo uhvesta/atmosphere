@@ -7,7 +7,8 @@ use rusqlite::{OptionalExtension, Row, params};
 use super::{Store, now_unix_ms};
 use crate::error::StoreError;
 
-const COLUMNS: &str = "SELECT id, session_id, kind, text, item_id, status, created_unix_ms
+const COLUMNS: &str = "SELECT id, session_id, kind, text, item_id, status, created_unix_ms,
+        target_session_id, name
     FROM agent_requests";
 
 fn request_row(row: &Row<'_>) -> rusqlite::Result<pb::AgentRequest> {
@@ -19,6 +20,8 @@ fn request_row(row: &Row<'_>) -> rusqlite::Result<pb::AgentRequest> {
         item_id: row.get(4)?,
         status: row.get(5)?,
         created_unix_ms: row.get(6)?,
+        target_session_id: row.get(7)?,
+        name: row.get(8)?,
     })
 }
 
@@ -37,7 +40,8 @@ impl Store {
         let added = connection
             .execute(
                 "INSERT INTO agent_requests (id, session_id, kind, text, item_id, status,
-                    created_unix_ms, client_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    created_unix_ms, client_id, target_session_id, name)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                     ON CONFLICT (client_id) WHERE client_id != '' DO NOTHING",
                 params![
                     request.id,
@@ -48,6 +52,8 @@ impl Store {
                     request.status,
                     request.created_unix_ms,
                     client_id,
+                    request.target_session_id,
+                    request.name,
                 ],
             )
             .map_err(self.failed())?;
@@ -104,6 +110,19 @@ impl Store {
             return Err(StoreError::UnknownRequest { id: id.to_owned() });
         }
         Ok(())
+    }
+
+    /// How many sessions `session`'s agent asked to start that still wait
+    /// for the person.
+    pub fn open_starts(&self, session: &str) -> Result<u32, StoreError> {
+        self.lock()
+            .query_row(
+                "SELECT count(*) FROM agent_requests
+                 WHERE session_id = ?1 AND kind = ?2 AND answered_unix_ms IS NULL",
+                params![session, i32::from(pb::AgentRequestKind::StartSession)],
+                |row| row.get(0),
+            )
+            .map_err(self.failed())
     }
 
     /// Answers `session`'s open questions: the person wrote to it.

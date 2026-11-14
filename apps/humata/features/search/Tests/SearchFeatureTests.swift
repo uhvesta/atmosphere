@@ -154,6 +154,55 @@ final class SearchFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.isSearching)
     }
 
+    func testASearchMadeWhileTheIndexFillsIsMadeAgainUntilItHasFilled() async throws {
+        let daemon = daemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
+        try await daemon.client.send(session.id, "hello", .enqueue)
+        let calls = LockIsolated(0)
+        var client = daemon.client
+        let search = client.search
+        // The index has nothing the first time, and has caught up the third.
+        client.search = { query in
+            let call = calls.withValue {
+                $0 += 1
+                return $0
+            }
+            var results = try await search(query)
+            if call == 1 { results.hits = [] }
+            results.catchingUp = call < 3
+            return results
+        }
+        let clock = TestClock()
+        let store = TestStore(initialState: SearchFeature.State()) {
+            SearchFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.relatedWords.related = { _ in [] }
+            $0.calendar = Self.calendar
+            $0.continuousClock = clock
+            $0.date = .constant(daemon.start)
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.text, "hello")
+        await store.send(.submitted)
+        await store.receive(\.found)
+        XCTAssertEqual(store.state.hits, [])
+        XCTAssertTrue(store.state.indexing)
+
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.foundMore)
+        XCTAssertFalse(store.state.hits.isEmpty)
+        XCTAssertTrue(store.state.indexing)
+
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.foundMore)
+        await store.receive(\.finished)
+        XCTAssertFalse(store.state.indexing)
+        XCTAssertFalse(store.state.isSearching)
+        XCTAssertEqual(calls.value, 3)
+    }
+
     func testASlowEarlierSearchDoesNotReplaceTheResultsOfALaterOne() async throws {
         let daemon = daemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))

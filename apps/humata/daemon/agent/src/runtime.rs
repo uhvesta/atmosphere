@@ -188,9 +188,10 @@ impl Turn {
         self.session.lock().record.clone()
     }
 
-    /// What the session may do without asking, as it is now.
+    /// What the session may do without asking, as it is now; a read-only
+    /// session always asks.
     pub fn approval(&self) -> ApprovalMode {
-        self.session.lock().record.approval
+        self.session.lock().record.approval_in_effect()
     }
 
     /// Records a request of `kind` the agent's own judge let through, in
@@ -284,16 +285,19 @@ impl Turn {
                     kind,
                     summary: summary.into(),
                 }))?;
-            if control.record.approval.allows(kind) {
+            // A side chat changes nothing: refused here, for every
+            // backend, without asking.
+            let refused = control.record.read_only && changes(kind);
+            if refused || control.record.approval_in_effect().allows(kind) {
                 self.session
                     .log
                     .append(Event::now(EventKind::PermissionCompleted {
                         request_id,
-                        approved: true,
+                        approved: !refused,
                         automatic: true,
                         judged: false,
                     }))?;
-                return Ok(true);
+                return Ok(!refused);
             }
             control.pending.insert(request_id, Pending { kind, answer });
         }
@@ -463,6 +467,16 @@ impl Session {
         })
     }
 }
+
+/// Whether a request of `kind` can change files: a command or a write.
+/// Anything else, such as fetching a page or another server's tool, isn't
+/// known to, and is asked about as the approval mode says.
+fn changes(kind: PermissionKind) -> bool {
+    matches!(kind, PermissionKind::Shell | PermissionKind::Write)
+}
+
+/// Told to a side chat's agent after its other instructions.
+const READ_ONLY_INSTRUCTIONS: &str = "This is a side chat beside the session it was forked from. It is read-only: you can read and search files, but every request to edit or write a file or to run a command is refused. Answer from what you can read, and say what you would change instead of trying to change it.";
 
 /// A permission request waiting for its answer.
 struct Pending {
@@ -865,6 +879,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             plugins: options.plugins,
             effort: options.effort.filter(|effort| !effort.is_empty()),
             experimental: options.experimental,
+            read_only: false,
         };
         let notices = options
             .notices
@@ -1028,6 +1043,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
         };
         save(&session.dir, &record)?;
         control.record = record;
+        // A read-only session goes on asking.
+        let mode = control.record.approval_in_effect();
         let allowed: Vec<String> = control
             .pending
             .iter()
@@ -1065,7 +1082,19 @@ impl<R: Runner> Agent for LocalAgent<R> {
     ) -> Result<SessionRecord, AgentError> {
         let parent = self.session(id)?;
         let mut events = parent.log.events()?;
-        if let Some(before) = &options.before {
+        let empty = options.empty;
+        // A side chat reads its parent's copy of the code.
+        let chat_only = options.chat_only || options.read_only;
+        let before = options.before.filter(|_| !empty);
+        if empty {
+            // None of the chat; with its own copy of the code, where the
+            // parent last saved it, as the checkpoint it starts from.
+            let code = last_checkpoint(&events);
+            events.clear();
+            if !chat_only && !code.is_empty() {
+                events.push(Event::now(EventKind::Checkpoint { snapshots: code }));
+            }
+        } else if let Some(before) = &before {
             let index = events
                 .iter()
                 .position(|event| &event.id == before)
@@ -1077,6 +1106,16 @@ impl<R: Runner> Agent for LocalAgent<R> {
         }
         events.extend(closing(&events).into_iter().map(Event::now));
         let from = parent.lock().record.clone();
+        let read_only = options.read_only || from.read_only;
+        let instructions = options.instructions.or_else(|| from.instructions.clone());
+        let instructions = if read_only && !from.read_only {
+            Some(match instructions {
+                Some(instructions) => format!("{instructions}\n\n{READ_ONLY_INSTRUCTIONS}"),
+                None => READ_ONLY_INSTRUCTIONS.to_owned(),
+            })
+        } else {
+            instructions
+        };
         let fork = SessionId::random();
         let repositories = if from.repositories.is_empty() {
             options.repositories
@@ -1093,7 +1132,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 workspaces.working_directory(fork.as_str(), &repositories),
                 Vec::new(),
             )
-        } else if options.chat_only {
+        } else if chat_only {
             (from.working_directory.clone(), from.checkouts.clone())
         } else {
             // The code as it was where the fork starts; without a snapshot
@@ -1119,13 +1158,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
             working_directory,
             parent: Some(Parent {
                 session: id.clone(),
-                before: options.before,
+                before,
             }),
-            instructions: options.instructions.or(from.instructions),
+            instructions,
             repositories,
             checkouts,
             archived: false,
             keeper: false,
+            read_only,
             ..from
         };
         self.runner.forked(id, &record, &events)?;
@@ -1435,6 +1475,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             plugins: Default::default(),
             effort: None,
             experimental: false,
+            read_only: false,
         };
         self.create(record.clone(), imported.events)?;
         Ok(record)

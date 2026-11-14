@@ -8,6 +8,9 @@ import HumataDaemonClient
 package enum ChatItem: Identifiable, Hashable, Sendable {
     /// What the person sent, with the names of any images sent with it.
     case person(id: String, text: String, images: [String] = [])
+    /// What another session's agent sent, with its send_message tool or as
+    /// the first message of a session it started: not the person's words.
+    case fromSession(id: String, AgentSender)
     case reply(id: String, text: String)
     case thinking(id: String, text: String)
     case tool(ToolCall)
@@ -28,7 +31,8 @@ package enum ChatItem: Identifiable, Hashable, Sendable {
 
     package var id: String {
         switch self {
-        case .person(let id, _, _), .reply(let id, _), .thinking(let id, _), .permission(let id, _), .stopped(let id),
+        case .person(let id, _, _), .fromSession(let id, _), .reply(let id, _), .thinking(let id, _),
+            .permission(let id, _), .stopped(let id),
             .failure(let id, _), .notice(let id, _), .cost(let id, _), .rewound(let id, _, _), .compacted(let id):
             id
         case .tool(let call): call.id
@@ -229,6 +233,8 @@ struct Chat: Equatable, Sendable {
     private(set) var working = false
     /// The person's last message.
     private(set) var lastMessage: String?
+    /// The names of the images sent with it.
+    private(set) var lastImages: [String] = []
     /// Whether the last turn failed and nothing has started since.
     private(set) var lastTurnFailed = false
     /// Whether the last turn asked for was to sum up the conversation, not
@@ -263,8 +269,9 @@ struct Chat: Equatable, Sendable {
             pendingPermissions = []
         case .idle:
             working = false
-        case .userMessage(let text, _):
+        case .userMessage(let text, let images):
             lastMessage = text
+            lastImages = images
             lastTurnFailed = false
             compacting = false
             dropped = []
@@ -343,7 +350,11 @@ struct Chat: Equatable, Sendable {
         switch event.kind {
         case .userMessage(let text, let images):
             settleRewind()
-            items.append(.person(id: event.id, text: text, images: images))
+            if let sender = AgentSender(text) {
+                items.append(.fromSession(id: event.id, sender))
+            } else {
+                items.append(.person(id: event.id, text: text, images: images))
+            }
         case .assistantMessage(let text):
             items.append(.reply(id: event.id, text: text))
         case .reasoning(let text):

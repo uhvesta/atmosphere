@@ -20,6 +20,7 @@ mod peer;
 mod plugins;
 mod ports;
 mod relay;
+mod sender;
 mod skills;
 mod socket;
 mod store;

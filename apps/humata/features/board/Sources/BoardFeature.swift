@@ -208,6 +208,37 @@ package struct BoardFeature {
 
     /// How often the board is read again, for its sessions' states.
     static let refreshInterval = Duration.seconds(2)
+    /// How many reads in a row with nothing new go untaken before one is
+    /// taken in all the same: a change made here that the daemon didn't
+    /// keep is put right by then.
+    static let unchangedReads = 4
+
+    /// What a read changes on the board, to tell a read with nothing new
+    /// from one to take in.
+    private enum Shown: Equatable {
+        case board([Item], [Session])
+        case failure(String)
+        case other
+
+        init(_ read: Action) {
+            switch read {
+            case .loaded(let items, let sessions):
+                // As `showsTheSame` has it: when a session last did
+                // something and what it last said show nowhere here.
+                let sessions = sessions.map { session -> Session in
+                    var session = session
+                    session.lastActive = nil
+                    session.lastMessage = nil
+                    return session
+                }
+                self = .board(items, sessions)
+            case .failed(let message):
+                self = .failure(message)
+            default:
+                self = .other
+            }
+        }
+    }
 
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
@@ -251,8 +282,21 @@ package struct BoardFeature {
             case .task:
                 let project = state.project.id
                 let refresh = Effect<Action>.run { send in
+                    // Most reads show what the last did. They're told apart
+                    // here, off the main thread, and only one with
+                    // something new is taken in.
+                    var shown: Shown?
+                    var unchanged = 0
                     while !Task.isCancelled {
-                        await send(await load(project))
+                        let read = await load(project)
+                        let shows = Shown(read)
+                        if shows != shown || unchanged >= Self.unchangedReads {
+                            shown = shows
+                            unchanged = 0
+                            await send(read)
+                        } else {
+                            unchanged += 1
+                        }
                         await send(.proposals(.refresh))
                         try await clock.sleep(for: Self.refreshInterval)
                     }

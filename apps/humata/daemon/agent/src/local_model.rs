@@ -204,6 +204,10 @@ pub enum LocalModelError {
     Agent(#[from] AgentError),
 }
 
+/// Humata's tool that reads a project's own skill, and the name a skill
+/// run with a / is recorded as read under.
+const READ_SKILL: &str = "read_skill";
+
 /// Plays turns on a local model server.
 pub struct LocalModelRunner {
     defaults: LocalModelConfig,
@@ -332,6 +336,8 @@ impl Runner for LocalModelRunner {
                 }
             }
         };
+
+        self.run_skill(&turn, humata.as_mut()).await?;
 
         // Sized once a turn, so what's left out moves only a step at a time.
         let context = server_context(
@@ -465,6 +471,56 @@ enum Part {
 }
 
 impl LocalModelRunner {
+    /// When `turn`'s message is `/name arguments` and the session has a
+    /// skill of that name, records the skill as read, written out with the
+    /// arguments, so the model's first reply follows it. A repository's is
+    /// read from the folders the session works in; the project's own is
+    /// asked of Humata's tools. Any other message is left as it is.
+    async fn run_skill(
+        &self,
+        turn: &Turn,
+        humata: Option<&mut McpClient>,
+    ) -> Result<(), LocalModelError> {
+        let Some((name, arguments)) = crate::slash::command(turn.text()) else {
+            return Ok(());
+        };
+        let record = turn.record();
+        let mut roots = vec![record.working_directory.clone()];
+        for checkout in &record.checkouts {
+            if !roots.contains(&checkout.path) {
+                roots.push(checkout.path.clone());
+            }
+        }
+        let asked = json!({"name": name}).to_string();
+        let skill = match crate::slash::find(&roots, name) {
+            Some(file) => crate::slash::read(&file, arguments),
+            None => match humata {
+                Some(humata) if humata.owns(READ_SKILL) => {
+                    match humata.call(READ_SKILL, &asked).await {
+                        Ok((true, text)) => Some(crate::slash::expand(&text, arguments)),
+                        Ok((false, _)) | Err(_) => None,
+                    }
+                }
+                _ => None,
+            },
+        };
+        let Some(skill) = skill else {
+            return Ok(());
+        };
+        let call_id = format!("skill-{}", uuid::Uuid::new_v4());
+        turn.emit(EventKind::ToolStarted {
+            call_id: call_id.clone(),
+            tool: READ_SKILL.to_owned(),
+            arguments_json: asked,
+        })?;
+        turn.emit(EventKind::ToolCompleted {
+            call_id,
+            success: true,
+            output: crate::slash::told(name, arguments, &skill),
+        })?;
+        Ok(())
+    }
+
     /// Where `turn`'s session asks its model: the request's addresses, key
     /// and model, the server's base URL, and whether that is the app's.
     fn request(&self, turn: &Turn) -> Result<(Request, String, bool), LocalModelError> {
@@ -2145,6 +2201,65 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests[0]["model"], "qwen3");
         assert_eq!(said(&requests[0]), ["user: hi"]);
+    }
+
+    /// The text of every message sent to the model, the system's aside.
+    fn contents(request: &Value) -> Vec<String> {
+        request["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| message["role"] != "system")
+            .filter_map(|message| message["content"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_skill_run_with_a_slash_reaches_the_model_written_out_with_its_arguments() {
+        let server = serve(vec![(200, sse(&[text("released")]))]).await;
+        let fixture = fixture(&server);
+        let skill = fixture.work.path().join(".claude/skills/release");
+        std::fs::create_dir_all(&skill).expect("the skill's folder");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: release\n---\nTag version $ARGUMENTS and push it.\n",
+        )
+        .expect("the skill");
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "/release 1.2").await;
+
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let sent: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::UserMessage { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, ["/release 1.2"], "the chat keeps what was typed");
+        let told = contents(&server.requests()[0]);
+        assert!(
+            told.iter()
+                .any(|content| content.contains("Tag version 1.2 and push it.")),
+            "the model is given the skill with its arguments: {told:?}"
+        );
+        assert!(
+            !told.iter().any(|content| content.contains("$ARGUMENTS")),
+            "no placeholder is left: {told:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slash_that_names_no_skill_is_sent_as_it_is() {
+        let server = serve(vec![(200, sse(&[text("ok")]))]).await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "/nothing here").await;
+
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        assert_eq!(said(&server.requests()[0]), ["user: /nothing here"]);
     }
 
     #[tokio::test]

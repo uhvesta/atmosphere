@@ -280,6 +280,10 @@ impl Daemon {
             self.store
                 .set_repositories(&update.project_id, &repositories, &urls)?;
         }
+        if let Some(agent_sessions) = &update.agent_sessions {
+            self.store
+                .set_agent_sessions(&update.project_id, agent_sessions)?;
+        }
         Ok(crate::convert::project(
             self.store.project(&update.project_id)?,
         ))
@@ -695,6 +699,7 @@ mod tests {
             }],
             plugins: Vec::new(),
             defaults: None,
+            agent_sessions: Default::default(),
         };
         let task = item("login", None, "Let people sign in.");
         let subtask = item("form", Some("login"), "The form.");
@@ -739,6 +744,7 @@ mod tests {
             skills: Vec::new(),
             plugins: Vec::new(),
             defaults: None,
+            agent_sessions: Default::default(),
         };
         let mut task = item("login", None, "Let people sign in.");
         task.id = "id-of-task".into();

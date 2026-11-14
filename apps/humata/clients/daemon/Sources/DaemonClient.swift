@@ -76,6 +76,10 @@ package struct DaemonClient: Sendable {
     /// when it works in the same copy as the session.
     package var fork:
         @Sendable (_ session: String, _ before: String?, _ name: String?, _ chatOnly: Bool) async throws -> Session
+    /// A new chat that is `session`'s child, named `name`: empty, or a
+    /// read-only side chat with the chat so far. A side chat is refused
+    /// where `chatCommands` doesn't offer one.
+    package var newChild: @Sendable (_ session: String, _ name: String, _ kind: ChildChat) async throws -> Session
     /// A working session on `item` carrying on the planning session
     /// `session`, with all of its history and its own copy of the code.
     package var startWork: @Sendable (_ session: String, _ item: String) async throws -> Session

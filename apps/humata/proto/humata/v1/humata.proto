@@ -243,6 +243,11 @@ message Request {
     CompactSession compact_session = 120;
     // The chat commands a session's agent takes beyond its skills.
     GetChatCommands get_chat_commands = 121;
+    // From an agent, through the humata tools: start a session as a child
+    // of its own, or write to another session. Each goes by the project's
+    // AgentSessions: refused, kept in the inbox for the person, or done.
+    AgentStartSession agent_start_session = 130;
+    AgentSendMessage agent_send_message = 131;
   }
 }
 
@@ -358,6 +363,7 @@ message Response {
     RepositoryOwners repository_owners = 104;
     CompactStarted compact_started = 105;
     ChatCommands chat_commands = 106;
+    AgentActed agent_acted = 110;
   }
 }
 
@@ -472,6 +478,9 @@ message StartSession {
   // daemon when a repository couldn't be fetched or a folder is behind its
   // remote.
   repeated string notices = 17;
+  // Filled in by the daemon, for the host, when another session's agent
+  // starts this one: with no `backend_config`, it takes that session's.
+  string config_from_session_id = 30;
 }
 
 // What New Session starts from, for every project or for one; a project's
@@ -558,6 +567,36 @@ message Project {
   // What New Session starts from in it, over every project's; unset for
   // none of its own.
   SessionDefaults defaults = 9;
+  // What its sessions' agents may do to other sessions; always set, to
+  // the defaults when the person chose nothing.
+  AgentSessions agent_sessions = 12;
+}
+
+enum AgentSessionsMode {
+  // As ASK.
+  AGENT_SESSIONS_MODE_UNSPECIFIED = 0;
+  // Agents have no tools for other sessions.
+  AGENT_SESSIONS_MODE_OFF = 1;
+  // Each session an agent starts, and each message it sends one, waits in
+  // the inbox for the person to allow.
+  AGENT_SESSIONS_MODE_ASK = 2;
+  // They go ahead without asking.
+  AGENT_SESSIONS_MODE_ALLOW = 3;
+}
+
+// What a project's agents may do to other sessions with the humata tools
+// start_session, send_message and read_session.
+message AgentSessions {
+  AgentSessionsMode mode = 1;
+  // Whether an agent may write to sessions it didn't start itself; off, it
+  // writes only to its own children.
+  bool message_others = 2;
+  // The most sessions one session's agent may have started that aren't
+  // archived; 0 for the default, 8.
+  uint32 max_children = 3;
+  // How deep sessions started by agents may nest under one the person
+  // started; 0 for the default, 3.
+  uint32 max_depth = 4;
 }
 
 // A named piece of know-how, such as how to cut a release, in Markdown.
@@ -588,6 +627,9 @@ message UpdateProject {
   // Replaces every repository when set, for sessions started after; those
   // running keep their copies. Named as in CreateProject.
   Repositories repositories = 5;
+  // What its agents may do to other sessions, when set. The app's only:
+  // ERROR_CODE_APP_ONLY from any other client.
+  AgentSessions agent_sessions = 8;
 }
 
 message Repositories {
@@ -1044,6 +1086,15 @@ message ForkSession {
   // of its parent's.
   repeated Repository repositories = 6;
   optional string instructions = 7;
+  // A new chat here: the fork keeps none of the chat. With `chat_only` it
+  // works in its parent's copy of the code; otherwise in its own, as the
+  // parent last saved it. `before_event_id` is ignored.
+  bool empty = 8;
+  // A side chat: a fork that may read but never write files or run
+  // commands, whatever its approval mode, in its parent's copy of the code
+  // (as with `chat_only`). ERROR_CODE_INVALID_REQUEST for a session whose
+  // host can't hold it to that (see GetChatCommands).
+  bool read_only = 9;
 }
 
 // Changes a session's record. Unset fields are left as they are.
@@ -1637,6 +1688,9 @@ message ChatCommands {
   bool compact = 1;
   // Whether CompactSession takes a focus for it.
   bool compact_takes_focus = 2;
+  // Whether ForkSession with `read_only` works for it: its host holds its
+  // backend to reading only.
+  bool side = 3;
 }
 
 // Undoes the session's last rewind, unless a message was sent since.
@@ -1756,6 +1810,16 @@ message SessionInfo {
   string effort = 25;
   // Copilot's experimental mode.
   bool experimental = 26;
+  // A side chat: every request of its agent's to write a file or run a
+  // command is refused without asking.
+  bool read_only = 27;
+  // The session whose agent started it, with start_session; empty when
+  // the person did. It isn't a fork: it has nothing of that session's
+  // history or code. The daemon fills it in.
+  string started_by_session_id = 30;
+  // What its agent may do to other sessions, by its project. The daemon
+  // fills it in.
+  AgentSessionsMode agent_sessions = 31;
 }
 
 // A session's git worktree of one repository.
@@ -2177,6 +2241,10 @@ enum AgentRequestKind {
   AGENT_REQUEST_KIND_UNSPECIFIED = 0;
   AGENT_REQUEST_KIND_QUESTION = 1;
   AGENT_REQUEST_KIND_MOVE = 2;
+  // To start a session as its child; approving starts it.
+  AGENT_REQUEST_KIND_START_SESSION = 3;
+  // To write to another session; approving sends it.
+  AGENT_REQUEST_KIND_SEND_MESSAGE = 4;
 }
 
 // Something an agent asks of the person, kept until they answer it.
@@ -2184,12 +2252,17 @@ message AgentRequest {
   string id = 1;
   string session_id = 2;
   AgentRequestKind kind = 3;
-  // The question, or for a move what the agent did.
+  // The question, or for a move what the agent did; for a session to
+  // start, its first message, and for a message, its text.
   string text = 4;
   // For a move: the task or subtask, and the status asked for.
   string item_id = 5;
   ItemStatus status = 6;
   int64 created_unix_ms = 7;
+  // For a message: the session it goes to.
+  string target_session_id = 8;
+  // The name of the session to start, or of the one written to.
+  string name = 9;
 }
 
 message AskPerson {
@@ -2217,16 +2290,52 @@ message RequestMade {
   AgentRequest request = 1;
 }
 
+// Starts a session as a child of `session_id`, whose agent asks: on its
+// host, in its project and on its task, or for a chat in its folder, with
+// its backend, model and approval mode, and none of its history. `text` is
+// its first message, which it reads as from the session that started it.
+// ERROR_CODE_INVALID_REQUEST when the project has agents' sessions off, or
+// the session has as many children, or is as deep, as the project allows.
+message AgentStartSession {
+  string session_id = 1;
+  string name = 2;
+  string text = 3;
+}
+
+// Sends `text` to `to_session_id` from `session_id`, whose agent asks. The
+// session reads it as from that session, not the person: its text starts
+// with a line naming the sender, which the app shows as "From" it.
+// ERROR_CODE_INVALID_REQUEST when the project has agents' sessions off, or
+// the session isn't the sender's child and the project doesn't let agents
+// write to others.
+message AgentSendMessage {
+  string session_id = 1;
+  string to_session_id = 2;
+  string text = 3;
+}
+
+message AgentActed {
+  // Set while it waits in the inbox for the person to allow it; the agent
+  // hears what they decided as its next message.
+  AgentRequest request = 1;
+  // Otherwise the session started, or written to.
+  SessionInfo session = 2;
+}
+
 message AnswerRequest {
   string request_id = 1;
   oneof answer {
     // Sent to the session as a message, which it carries on from.
     string reply = 2;
-    // Moves the item as asked.
+    // Moves the item as asked, or starts the session or sends the message
+    // asked for. The app's only for those two: ERROR_CODE_APP_ONLY from
+    // any other client.
     bool approve = 3;
     // Moves the item to another status of the person's choosing.
     ItemStatus move_to = 4;
-    // Takes it out of the inbox without doing anything.
+    // Takes it out of the inbox without doing anything; a session's agent
+    // that asked to start a session or send a message is told it was
+    // declined.
     bool dismiss = 5;
   }
 }
@@ -2241,7 +2350,8 @@ enum InboxReason {
   INBOX_REASON_REPLY = 2;
   // Its turn failed.
   INBOX_REASON_FAILED = 3;
-  // It asked you a question or for your opinion.
+  // It asked you a question or for your opinion, or to start a session or
+  // write to one, as its request's kind says.
   INBOX_REASON_QUESTION = 4;
   // It finished and asks to move its task.
   INBOX_REASON_MOVE = 5;
@@ -2781,6 +2891,9 @@ message SearchResults {
   // The time searched, if any.
   int64 since_unix_ms = 3;
   int64 until_unix_ms = 4;
+  // The index was still being brought up to date when it was searched, so
+  // hits may be missing; searching again in a moment finds more.
+  bool catching_up = 5;
 }
 
 message LandSession {

@@ -103,6 +103,8 @@ extension Project {
             instructions: project.instructions, skills: project.skills.map(Skill.init),
             plugins: project.plugins.compactMap(PluginChoice.init),
             defaults: project.hasDefaults ? SessionDefaults(project.defaults) : nil,
+            // An older daemon says nothing of it, and asks for nothing.
+            agentSessions: project.hasAgentSessions ? AgentSessions(project.agentSessions) : AgentSessions(),
             created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
     }
 }
@@ -169,6 +171,36 @@ extension Session {
             planning: info.planning,
             asking: info.asking, lastMessage: optional(info.lastMessage), itemTitle: optional(info.itemTitle),
             effort: optional(info.effort), experimental: info.experimental)
+        readOnly = info.readOnly
+        startedBy = optional(info.startedBySessionID)
+    }
+}
+
+extension AgentSessions {
+    init(_ sessions: Humata_V1_AgentSessions) {
+        let mode: Mode =
+            switch sessions.mode {
+            case .off: .off
+            case .allow: .allow
+            case .ask, .unspecified, .UNRECOGNIZED: .ask
+            }
+        self.init(
+            mode: mode, messageOthers: sessions.messageOthers, maxChildren: Int(sessions.maxChildren),
+            maxDepth: Int(sessions.maxDepth))
+    }
+
+    var proto: Humata_V1_AgentSessions {
+        var sessions = Humata_V1_AgentSessions()
+        sessions.mode =
+            switch mode {
+            case .off: .off
+            case .ask: .ask
+            case .allow: .allow
+            }
+        sessions.messageOthers = messageOthers
+        sessions.maxChildren = UInt32(clamping: maxChildren)
+        sessions.maxDepth = UInt32(clamping: maxDepth)
+        return sessions
     }
 }
 
@@ -414,6 +446,8 @@ extension AgentRequest {
         switch request.kind {
         case .question: kind = .question
         case .move: kind = .move(item: request.itemID, status: ItemStatus(request.status))
+        case .startSession: kind = .startSession(name: request.name)
+        case .sendMessage: kind = .sendMessage(to: request.targetSessionID, name: request.name)
         case .unspecified, .UNRECOGNIZED: return nil
         }
         self.init(
@@ -424,7 +458,7 @@ extension AgentRequest {
 
 extension ChatCommands {
     init(_ commands: Humata_V1_ChatCommands) {
-        self.init(compact: commands.compact, compactTakesFocus: commands.compactTakesFocus)
+        self.init(compact: commands.compact, compactTakesFocus: commands.compactTakesFocus, side: commands.side)
     }
 }
 
@@ -818,7 +852,8 @@ extension SearchResults {
                     threadID: hit.threadID == 0 ? nil : hit.threadID,
                     snippet: SearchHit.runs(hit.snippet), related: hit.related)
             },
-            words: results.words, since: time(results.sinceUnixMs), until: time(results.untilUnixMs))
+            words: results.words, since: time(results.sinceUnixMs), until: time(results.untilUnixMs),
+            catchingUp: results.catchingUp)
     }
 }
 

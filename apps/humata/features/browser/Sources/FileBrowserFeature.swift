@@ -105,6 +105,11 @@ package struct FileBrowserFeature {
                 state.failure = nil
                 state.unread = nil
                 let open = [""] + state.expanded.sorted()
+                // A closed folder's listing is dropped, so opening it
+                // again reads it as it is by then.
+                let shown = Set(open)
+                state.folders = state.folders.filter { shown.contains($0.key) }
+                state.cut.formIntersection(shown)
                 let place = state.place
                 var effects = open.map { read($0, at: place) }
                 if let selected = state.selected { effects.append(readFile(selected, at: place)) }

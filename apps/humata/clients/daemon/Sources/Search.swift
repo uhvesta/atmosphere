@@ -112,11 +112,17 @@ package struct SearchResults: Hashable, Sendable {
     /// The time searched, if any.
     package var since: Date?
     package var until: Date?
+    /// Whether the index was still being brought up to date when it was
+    /// searched, so hits may be missing until it's searched again.
+    package var catchingUp: Bool
 
-    package init(hits: [SearchHit], words: String, since: Date? = nil, until: Date? = nil) {
+    package init(
+        hits: [SearchHit], words: String, since: Date? = nil, until: Date? = nil, catchingUp: Bool = false
+    ) {
         self.hits = hits
         self.words = words
         self.since = since
         self.until = until
+        self.catchingUp = catchingUp
     }
 }

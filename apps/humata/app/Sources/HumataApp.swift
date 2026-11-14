@@ -98,7 +98,7 @@ struct HumataApp: App {
         let live = session.map { !$0.session.archived } ?? false
         Button("Stop the Turn") { send(.abortTapped) }
             .keyboardShortcut(".", modifiers: .command)
-            .disabled(!(live && session?.isWorking == true))
+            .disabled(session?.canStop != true)
         Button("Try Again") { send(.retryTapped) }
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(
@@ -110,6 +110,16 @@ struct HumataApp: App {
             .disabled(session == nil || session?.forking == true)
         Button("Fork the Chat Only") { send(.forkTapped(before: nil, chatOnly: true)) }
             .disabled(session == nil || session?.forking == true)
+        Button("New Chat Here") { send(.childTapped(.empty(ownCopy: false), message: "")) }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+            .disabled(!live || session?.forking == true)
+        Button("New Chat Here With Its Own Copy") { send(.childTapped(.empty(ownCopy: true), message: "")) }
+            .disabled(!live || session?.forking == true)
+        // Greyed out until the session's host has said it holds a side
+        // chat to reading only, as when the / list was opened.
+        Button("Side Chat") { send(.childTapped(.side, message: "")) }
+            .keyboardShortcut("s", modifiers: [.command, .option])
+            .disabled(!live || session?.forking == true || session?.chatCommands?.side != true)
         Divider()
         Button("Land…") { send(.landTapped) }
             .disabled(session?.ships != true || session?.isWorking == true)

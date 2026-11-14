@@ -1801,6 +1801,109 @@ mod tests {
             assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
         }
 
+        fn messages(events: &[Event]) -> Vec<String> {
+            events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::UserMessage { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn an_empty_fork_has_none_of_the_chat_and_works_in_its_parents_copy() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let options = ForkOptions {
+                empty: true,
+                chat_only: true,
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            assert_eq!(
+                fork.parent.as_ref().map(|parent| &parent.session),
+                Some(&id)
+            );
+            let history = fixture.agent.history(&fork.id).await.expect("history");
+            assert_eq!(messages(&history), Vec::<String>::new());
+
+            let events = fixture.turn(&fork.id, "two", 1).await;
+            assert_eq!(messages(&events), vec!["two".to_owned()]);
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+        }
+
+        #[tokio::test]
+        async fn an_empty_fork_with_its_own_copy_starts_from_the_code_as_last_saved() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let options = ForkOptions {
+                empty: true,
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            let history = fixture.agent.history(&fork.id).await.expect("history");
+            assert_eq!(messages(&history), Vec::<String>::new());
+            assert_eq!(fixture.file(&fork.id).await.as_deref(), Some("one"));
+
+            fixture.turn(&fork.id, "two", 1).await;
+            assert_eq!(fixture.file(&fork.id).await.as_deref(), Some("two"));
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+        }
+
+        #[tokio::test]
+        async fn a_read_only_fork_keeps_the_chat_and_changes_no_file_whatever_it_may_do_unasked() {
+            let fixture = fixture();
+            // Its parent allows everything, and so would it.
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let options = ForkOptions {
+                read_only: true,
+                ..ForkOptions::default()
+            };
+            let side = fixture.agent.fork(&id, options).await.expect("forked");
+            assert_eq!(
+                side.working_directory,
+                record(&fixture.agent, &id).await.working_directory
+            );
+
+            let events = fixture.turn(&side.id, "two", 2).await;
+            assert_eq!(messages(&events), vec!["one".to_owned(), "two".to_owned()]);
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+            let asked = user_message(&events, "two").id;
+            let since = events
+                .iter()
+                .position(|event| event.id == asked)
+                .expect("the message is in the history");
+            assert!(
+                !events[since..].iter().any(|event| matches!(
+                    event.kind,
+                    EventKind::PermissionCompleted { approved: true, .. }
+                )),
+                "{events:#?}"
+            );
+
+            // Allowing everything afterwards changes nothing either.
+            fixture
+                .agent
+                .set_approval_mode(&side.id, ApprovalMode::AllowEverything)
+                .await
+                .expect("set");
+            fixture.turn(&side.id, "three", 3).await;
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+
+            // Nor does forking it.
+            let options = ForkOptions {
+                chat_only: true,
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&side.id, options).await.expect("forked");
+            fixture.turn(&fork.id, "two", 4).await;
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+        }
+
         #[tokio::test]
         async fn a_restored_session_has_its_code_and_history_and_carries_on() {
             let fixture = fixture();

@@ -188,6 +188,7 @@ extension InMemoryDaemon {
             }
             if let instructions = update.instructions { state.projects[index].instructions = instructions }
             if let repositories { state.projects[index].repositories = repositories }
+            if let agentSessions = update.agentSessions { state.projects[index].agentSessions = agentSessions }
             if let skills = update.skills {
                 state.projects[index].skills = skills.compactMap { skill in
                     let name = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)

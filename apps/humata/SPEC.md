@@ -155,8 +155,11 @@ original spec; lettered ones were added since.
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
 | Q8 Chat commands: /rewind and /compact | Done (9fb981d3) |
+| Q9 Running skills (`/name args`), and the box's loose ends | Built |
+| Q10 New chat here, /fork and read-only side chats | Built |
 | R2 Saved repositories | Done |
 | SA Subagents | Done |
+| AS Agents' sessions: start, write to and read other sessions | Built, to be run |
 | AC Agent access: switches for the CLI and MCP | Planned |
 | T1 Tokens and agent tools | Done |
 | U1 App jank | Done |
@@ -501,6 +504,10 @@ Structure:
 - [x] Open a result at the matching point in its session, and fork from there
 - [x] Give the agent a tool to search past sessions
 - [x] Search every machine's sessions in one query, including offline ones
+- [x] A search made while the index is still catching up says so
+  (`SearchResults.catching_up`): the app shows "Still Indexing…" in place
+  of No Results and searches again, a few times at most, and
+  `search_sessions` tells the agent to search again
 
 **Done when:** an end-to-end test finds a command run in one session from a
 search started in another project, and opens it at that turn.
@@ -1175,7 +1182,8 @@ the Mac. Built after S1, before T1.
 - [x] A message sent while one waits joins the queued one (a blank line
   between), so a turn takes them together; Steer Now still steers
 - [x] A queued message can be edited in place until its turn starts; an
-  edit that loses the race to the turn says so and puts the text back
+  edit that loses the race to the turn says so and puts the text back,
+  also when the turn starts while it's still being edited
 - [x] Cancel: a queued message is taken out; a running one is stopped and
   its text goes back in the box; one stopped before the agent read it
   leaves no trace in the history
@@ -1185,6 +1193,10 @@ the Mac. Built after S1, before T1.
 - [x] Images pasted, dropped or attached go with a message, as thumbnails
   in the box and the chat: to Claude Code and Copilot as images, and to a
   local model that can see them; one that can't says so before sending
+- [x] A message's images stay with it: sent again after a failed turn,
+  and back in the box with its text on Stop and Edit and on a rewind.
+  A dropped file that isn't an image says so; an image dragged from a
+  web page is taken as the image, not as its address
 
 #### Q2 Rewind and checkpoints
 
@@ -1350,6 +1362,72 @@ on every backend.
 - [ ] A compaction that fails says why and how to go on, records no
   compaction, and offers no Try Again
 
+#### Q9 Running skills, and the box
+
+The owner, 2026-11-13: `/name args` runs the skill on every backend, and
+the box's loose ends.
+
+- [x] `/name args` runs the skill or plugin command with its arguments.
+  Claude Code takes the message as it is. Copilot is asked to run it
+  (`session.commands.invoke`) when its CLI has the call and lists the name
+  among the session's skills and plugin commands, and what it gives the
+  agent is sent in the message's place; otherwise the message goes as
+  text. Copilot's own built-in commands aren't run this way
+- [x] For a local model the daemon writes the skill out: the repository's
+  `SKILL.md` from the folders the session works in, or the project's own,
+  with `$ARGUMENTS`, `$ARGUMENTS[N]` and `$N` (from 0) filled in, or the
+  arguments on a line at its end when it names none. The chat keeps
+  `/name args` as typed, followed by the skill as a `read_skill` step
+- [x] The / list holds only what runs: a project's own skills are offered
+  to local models only, as the CLIs run only the skills they find
+- [x] A paste's chip opens to edit its text (up to 200 KB; longer opens to
+  read), and Put in the Message moves it into the box while it's short
+  enough to edit there
+- [x] ⌘V with an image on the clipboard and no text, or image files copied
+  in the Finder, adds the image as a drop does; a model that can't see
+  images says so
+- [x] Stop the Turn in the Session menu is off while the turn is stopping
+- [x] Picking in the sidebar is sent after its table has reported the pick,
+  so opening a chat no longer changes the table inside its own callback
+  (the reentrant NSTableView warning)
+- [x] An Agent call's card has Show Result in its menu, with what the
+  subagent returned to the agent that started it
+
+#### Q10 New chat here and side chats
+
+The owner, 2026-11-13: an empty fork, and a read-only chat on the side.
+
+- [x] New Chat Here: a session with none of the chat, a child of the open
+  one in the sidebar, in the same copy of the code; or With Its Own Copy,
+  made from the code as the session last saved it. In the header's Fork
+  menu, the Session menu (⌥⌘N) and as `/new-here [copy]`; from the command
+  line, `humata fork --empty [--chat-only]`
+- [x] `/fork` forks the chat so far with its own copy of the code, as Fork
+  With the Code does; `/fork chat` shares this copy
+- [x] `/side [question]` makes a fork of the chat so far that works in the
+  session's copy and opens beside it, in a column that drags wider and
+  closes (⌥⌘W); the question, if any, is its first message. Closed, it
+  stays under its session in the sidebar, and opens from there as any
+  session does; opening another session closes the column
+- [x] A side chat changes nothing. The host refuses every request of its
+  agent's to write a file or run a command, without asking, whatever its
+  approval mode, for every backend; it always asks about the rest, so no
+  judge clears anything; Claude Code also runs without Bash, Edit, Write
+  and NotebookEdit, and Copilot without its shell and edit tools. Its
+  instructions say so, and its forks are held to the same. Other servers'
+  tools still ask the person
+- [x] `/side` and Side Chat are offered only when the session's host says
+  it holds side chats to reading (`ChatCommands.side`); the menus learn
+  that when the / list is first opened in the chat. A host from before
+  side chats is never asked for one, and a fork it made in place of one
+  is refused by the app
+
+Both are forks to the daemon (`ForkSession.empty`, `.read_only`), so they
+are kept, archived and deleted as forks are. `/new-here`, `/fork` and
+`/side` typed in full run on Return; picked from part of the name they
+wait for what may follow. Not built: the same entries in the sidebar's
+context menu.
+
 ### Milestone K: signed releases
 
 The owner, 2026-11-12: release signed apps and binaries on GitHub, and
@@ -1468,6 +1546,34 @@ only streamed.
 - [ ] Left each frame: copying the session's state for the streaming text,
   and comparing full rows for kept heights
 
+The smaller costs the second review found, reasoned from the code, not
+measured:
+
+- [x] A sidebar or board read that shows what the last did isn't taken in:
+  the two are told apart off the main thread, to the minute, as the
+  sidebar keeps them. Every fifth such read is taken in all the same, so a
+  change made in the app that the daemon didn't keep is put right within
+  10 seconds
+- [x] Typing finds what the draft shares with the one before by byte, with
+  nothing allocated, and stops there unless 17 bytes or more were put in;
+  a paste is still cut at whole characters
+- [x] The board's items are read with a statement kept ready
+- [x] Review reads a file's lines for its threads only when it has some,
+  and its rows are numbered, not named with text made at every draw
+- [x] The chat keeps each long reply's rows, not only where its parts
+  start, so a change to the chat makes none of them again
+- [x] The / list of a chat opened again shows the skills found before at
+  once, and looks for them again behind the list
+- [ ] The board still reads every item's spec at each read; titles and
+  statuses only, with a spec read when its page opens, needs a new request
+- [ ] The daemon still lists the sessions twice for one sidebar read (the
+  list and the inbox); one request for both, or events pushed in place of
+  the reads, needs a new request too
+- [ ] A chat's first / still waits for every host's skills
+- [ ] History sent as frames of many events, and old history read a page
+  at a time: left until a cold open measures slow with the folded history
+  kept
+
 ### Milestone R2: saved repositories
 
 The owner, 2026-11-13: picking a repository for a project shouldn't mean
@@ -1521,6 +1627,10 @@ Copilot sessions spend.
   call), and what the backend last reported of it as a `Subagent` event:
   its type, what it was asked, whether it runs, finished, failed or was
   stopped, and its tokens, tool calls and time so far
+- [x] A turn that's stopped leaves no subagent recorded as running, for
+  Claude Code as for Copilot. A Copilot subagent left in the background
+  and woken in a later turn reads as running again, under the call that
+  first started it
 - [ ] The session's chat shows only its own agent's events; each
   subagent's go to a chat of its own, worked out an event at a time. A
   subagent's streamed words are dropped, as its whole message follows
@@ -1547,6 +1657,36 @@ session's chat, the list holding each subagent as last reported, one
 running at its turn's end reading as stopped, and opening one showing its
 own messages; and a flow shows two subagents under their calls and one
 open.
+
+### Milestone AS: agents' sessions
+
+The owner, 2026-11-13: a session's agent can start sessions of its own,
+write to them and read them, when its project lets it.
+
+- [x] `humatad mcp` gains `start_session` (name, first message),
+  `send_message` and `read_session`, marked as changing or reading. A
+  started session is the caller's child: on its host, project and task,
+  with its agent, model and approval mode, and none of its history
+- [x] Per project, in its settings under Agent Sessions: Off, Ask (the
+  default) or Allow, and a switch, off by default, for writing to
+  sessions the agent didn't start. Only the app changes it. Off, the
+  tools aren't listed
+- [x] Ask: each start and each message waits in the inbox, as a move
+  does, for the person to allow or decline; only the app allows. The
+  agent hears what was decided as its next message
+- [x] Limits the daemon holds, each refusal saying which was hit: 8
+  unarchived children a session, counting those still asked for, and 3
+  deep; both set per project
+- [x] A message from an agent starts with a line naming its session; the
+  chat shows it as "From ‹name›", not as the person's
+- [x] `read_session` gives how the session stands and the end of its
+  conversation, up to 16 KiB, and can wait for it to stop working
+- [x] Children nest under their parent in the sidebar, as forks do
+- [ ] Milestone AC adds a switch for each of the three tools
+
+Tests: the daemon starts, asks, refuses at each limit and for another's
+session, and lets only the app allow; TestStore tests allow one from the
+inbox, nest the child and save the project's setting.
 
 ### Milestone AC: agent access
 

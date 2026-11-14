@@ -15,6 +15,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::board::{Author, Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
+mod agent_sessions;
 mod approvals;
 mod planning;
 mod pulls;
@@ -471,6 +472,23 @@ const MIGRATIONS: &[&str] = &["
         refreshed_unix_ms INTEGER,
         error TEXT
     );
+", "
+    -- What a project's agents may do to other sessions: `mode` is the
+    -- proto's AgentSessionsMode. A project without a row has the defaults.
+    CREATE TABLE agent_sessions (
+        project_id TEXT PRIMARY KEY,
+        mode INTEGER NOT NULL,
+        message_others INTEGER NOT NULL,
+        max_children INTEGER NOT NULL,
+        max_depth INTEGER NOT NULL
+    );
+    -- The session whose agent started this one; null when the person did.
+    ALTER TABLE sessions ADD COLUMN started_by TEXT;
+    CREATE INDEX sessions_by_starter ON sessions (started_by) WHERE started_by IS NOT NULL;
+    -- For an agent's request to write to a session, that session; and the
+    -- name of the session to start or written to.
+    ALTER TABLE agent_requests ADD COLUMN target_session_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE agent_requests ADD COLUMN name TEXT NOT NULL DEFAULT '';
 "];
 
 /// What reverting a board change did.
@@ -499,6 +517,9 @@ pub struct Project {
     pub plugins: Vec<pb::PluginChoice>,
     /// What New Session starts from in it, over every project's.
     pub defaults: Option<pb::SessionDefaults>,
+    /// What its agents may do to other sessions; the defaults when the
+    /// person chose nothing.
+    pub agent_sessions: pb::AgentSessions,
 }
 
 /// What the daemon knows of a session, beyond what its host says.
@@ -510,6 +531,10 @@ pub struct Known {
     pub planning: bool,
     /// Whether it waits on an answer from the person.
     pub asking: bool,
+    /// The session whose agent started it; None when the person did.
+    pub started_by: Option<String>,
+    /// What its agent may do to other sessions, by its project.
+    pub agent_sessions: pb::AgentSessionsMode,
 }
 
 /// Where a session is, as the daemon records it.
@@ -606,6 +631,7 @@ impl Store {
             skills,
             plugins: Vec::new(),
             defaults: None,
+            agent_sessions: agent_sessions::defaults(),
         };
         let mut connection = self.lock();
         let added = (|| {
@@ -750,6 +776,7 @@ impl Store {
             )?;
             transaction.execute("DELETE FROM project_plugins WHERE project_id = ?1", [id])?;
             transaction.execute("DELETE FROM session_defaults WHERE project_id = ?1", [id])?;
+            transaction.execute("DELETE FROM agent_sessions WHERE project_id = ?1", [id])?;
             transaction.execute("DELETE FROM projects WHERE id = ?1", [id])?;
             Ok(())
         })();
@@ -868,8 +895,11 @@ impl Store {
                          sessions.seen_turns, sessions.planning, items.title,
                          EXISTS (SELECT 1 FROM agent_requests
                              WHERE agent_requests.session_id = sessions.id
-                                 AND answered_unix_ms IS NULL)
+                                 AND answered_unix_ms IS NULL),
+                         sessions.started_by, agent_sessions.mode
                      FROM sessions LEFT JOIN items ON items.id = sessions.item_id
+                         LEFT JOIN agent_sessions
+                             ON agent_sessions.project_id = sessions.project_id
                      WHERE sessions.id = ?1",
                 )?
                 .query_row([session], |row| {
@@ -883,6 +913,8 @@ impl Store {
                         planning: row.get(4)?,
                         item_title: row.get(5)?,
                         asking: row.get(6)?,
+                        started_by: row.get(7)?,
+                        agent_sessions: agent_sessions::mode(row.get(8)?),
                     })
                 })
                 .optional()
@@ -904,8 +936,11 @@ impl Store {
                      sessions.seen_turns, sessions.planning, items.title,
                      EXISTS (SELECT 1 FROM agent_requests
                          WHERE agent_requests.session_id = sessions.id
-                             AND answered_unix_ms IS NULL)
+                             AND answered_unix_ms IS NULL),
+                     sessions.started_by, agent_sessions.mode
                  FROM sessions LEFT JOIN items ON items.id = sessions.item_id
+                     LEFT JOIN agent_sessions
+                         ON agent_sessions.project_id = sessions.project_id
                  WHERE sessions.id IN (SELECT value FROM json_each(?1))",
             )?;
             let rows = statement.query_map([ids], |row| {
@@ -921,6 +956,8 @@ impl Store {
                         planning: row.get(5)?,
                         item_title: row.get(6)?,
                         asking: row.get(7)?,
+                        started_by: row.get(8)?,
+                        agent_sessions: agent_sessions::mode(row.get(9)?),
                     },
                 ))
             })?;
@@ -1374,7 +1411,8 @@ impl Store {
         self.project_exists(project)?;
         let connection = self.lock();
         let listed = (|| -> rusqlite::Result<Vec<Item>> {
-            let mut statement = connection.prepare(&format!(
+            // Kept ready: an open board asks every two seconds.
+            let mut statement = connection.prepare_cached(&format!(
                 "{ITEM_COLUMNS} WHERE project_id = ?1 ORDER BY created_unix_ms, rowid"
             ))?;
             let mut items: Vec<Item> = statement
@@ -1860,6 +1898,7 @@ fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         skills: Vec::new(),
         plugins: Vec::new(),
         defaults: None,
+        agent_sessions: agent_sessions::defaults(),
     })
 }
 
@@ -1885,12 +1924,14 @@ fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Res
     let skills = planning::skills(connection, &project.id)?;
     let plugins = settings::project_plugins(connection, &project.id)?;
     let defaults = settings::session_defaults(connection, &project.id)?;
+    let agent_sessions = agent_sessions::of_project(connection, &project.id)?;
     Ok(Project {
         repositories,
         urls,
         skills,
         plugins,
         defaults,
+        agent_sessions,
         ..project
     })
 }

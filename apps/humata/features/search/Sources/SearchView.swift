@@ -34,6 +34,9 @@ package struct SearchView: View {
                     .onSubmit { store.send(.submitted) }
                 if store.isSearching {
                     ProgressView().controlSize(.small)
+                        .help(
+                            store.indexing
+                                ? "Still indexing what the sessions said; hits may be missing" : "Searching")
                 }
             }
             HStack(spacing: 12) {
@@ -91,6 +94,15 @@ package struct SearchView: View {
                 description: Text(
                     "Find what was said, run or answered in any session, on this Mac and every host. "
                         + "Name a time, as \"yesterday\" or \"past 3 days\", to search only then."))
+        } else if store.hits.isEmpty, store.searched, store.indexing {
+            // Not "No Results" yet: the index hasn't everything.
+            ContentUnavailableView {
+                Label("Still Indexing…", systemImage: "text.magnifyingglass")
+            } description: {
+                Text(
+                    "Nothing found so far. Humata is still reading what the sessions said, and searches "
+                        + "again as it does.")
+            }
         } else if store.hits.isEmpty, store.searched {
             ContentUnavailableView.search(text: store.words.isEmpty ? store.text : store.words)
         } else {

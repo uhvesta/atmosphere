@@ -55,6 +55,10 @@ const STDERR_KEPT: usize = 4096;
 /// Tools left out: Humata makes the worktrees, and the rest need the CLI's
 /// own terminal or outlive the turn.
 const LEFT_OUT: &str = "AskUserQuestion,EnterPlanMode,ExitPlanMode,EnterWorktree,ExitWorktree,CronCreate,CronDelete,CronList";
+/// Left out of a read-only session too: every tool of the CLI's own that
+/// changes files or runs commands. A tool left out is refused whatever the
+/// person's own settings allow, for the session's subagents as well.
+const LEFT_OUT_READ_ONLY: &str = "Bash,Edit,MultiEdit,Write,NotebookEdit";
 
 /// What the model is told when the person denies a tool.
 const DENIED: &str = "The person directing this session didn't allow this.";
@@ -158,6 +162,7 @@ impl ClaudeRunner {
     /// forked, or new. The Claude Code session it plays in.
     fn command(&self, record: &SessionRecord, links: &mut Links) -> (Command, String) {
         let mut command = Command::new(&self.options.program);
+        let without = left_out(record);
         command.args([
             "--print",
             "--verbose",
@@ -170,9 +175,9 @@ impl ClaudeRunner {
             "--permission-prompt-tool",
             "stdio",
             "--permission-mode",
-            permission_mode(record.approval),
+            permission_mode(record.approval_in_effect()),
             "--disallowedTools",
-            LEFT_OUT,
+            without.as_str(),
         ]);
         let session = match (&links.session, &links.fork) {
             (Some(session), _) => {
@@ -293,7 +298,7 @@ impl ClaudeRunner {
             sent: 0,
             replayed: 0,
             failure: None,
-            mode: permission_mode(record.approval),
+            mode: permission_mode(record.approval_in_effect()),
             subagents: subagents::Subagents::default(),
             compact: compacting.then_some(false),
         };
@@ -342,7 +347,7 @@ impl ClaudeRunner {
                 stderr: stderr.trim().to_owned(),
             });
         }
-        playing.failure.map_or(Ok(()), Err)
+        playing.failure.take().map_or(Ok(()), Err)
     }
 }
 
@@ -557,6 +562,15 @@ fn compact_command(focus: &str) -> String {
     }
 }
 
+/// The CLI's tools `record`'s session goes without.
+fn left_out(record: &SessionRecord) -> String {
+    if record.read_only {
+        format!("{LEFT_OUT},{LEFT_OUT_READ_ONLY}")
+    } else {
+        LEFT_OUT.to_owned()
+    }
+}
+
 /// The CLI's permission mode for `approval`. In auto its classifier lets
 /// through what it finds safe and refuses the rest, and asks over the pipe
 /// after several refusals; otherwise every tool asks over the pipe and the
@@ -583,6 +597,16 @@ fn read_images(paths: &[PathBuf]) -> Result<Vec<(&'static str, Vec<u8>)>, Claude
                 })
         })
         .collect()
+}
+
+/// A turn that's stopped, or fails, leaves no subagent recorded as running
+/// either: the CLI is killed with the turn, and its subagents with it.
+impl Drop for Playing<'_> {
+    fn drop(&mut self) {
+        // The turn is ending as it is; what can't be recorded is left.
+        let finished = self.subagents.finish();
+        let _ = self.record(finished);
+    }
 }
 
 impl Playing<'_> {
@@ -947,7 +971,7 @@ mod tests {
                     stderr: String::new(),
                 });
             }
-            playing.failure.map_or(Ok(()), Err)
+            playing.failure.take().map_or(Ok(()), Err)
         }
     }
 
@@ -1006,6 +1030,84 @@ mod tests {
                 .any(|event| event.kind == EventKind::Compacted)
         );
         assert_eq!(SessionState::after(&events), SessionState::Failed);
+    }
+
+    /// Has the CLI start a subagent, then never ends its turn.
+    struct Hangs {
+        links: PathBuf,
+    }
+
+    impl Runner for Hangs {
+        type Error = ClaudeError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), ClaudeError> {
+            let mut playing = Playing {
+                turn: &turn,
+                stdin: None,
+                links: Links::default(),
+                path: self.links.clone(),
+                session: "theirs".into(),
+                model: String::new(),
+                sent: 1,
+                replayed: 0,
+                failure: None,
+                mode: permission_mode(turn.approval()),
+                subagents: subagents::Subagents::default(),
+                compact: None,
+            };
+            let started = json!({"type": "assistant", "message": {"id": "reply-1", "content": [{
+                "type": "tool_use", "id": "call-1", "name": "Agent",
+                "input": {"subagent_type": "Explore", "description": "Look around"},
+            }]}});
+            playing.handle(&started).await?;
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    fn subagent_statuses(events: &[Event]) -> Vec<crate::event::SubagentStatus> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::Subagent { status, .. } => Some(*status),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn stopping_a_turn_stops_the_subagents_it_started() {
+        use crate::event::SubagentStatus;
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let runner = Hangs {
+            links: dir.path().join("links").join("session.json"),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, |events| {
+            subagent_statuses(events).last() == Some(&SubagentStatus::Running)
+        })
+        .await;
+
+        agent.abort(&id).await.expect("stops");
+
+        let events = wait_for(&agent, &id, |events| {
+            subagent_statuses(events).last() != Some(&SubagentStatus::Running)
+        })
+        .await;
+        assert_eq!(
+            subagent_statuses(&events).last(),
+            Some(&SubagentStatus::Stopped)
+        );
     }
 
     #[test]

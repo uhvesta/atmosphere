@@ -33,6 +33,9 @@ package struct SearchFeature {
         /// The related words searched as well.
         package var related: [String] = []
         package var isSearching = false
+        /// Whether the index was still filling when it was last searched:
+        /// it's searched again in a moment, as hits may be missing.
+        package var indexing = false
         /// Whether the text was searched since it last changed.
         package var searched = false
         package var failure: String?
@@ -55,6 +58,7 @@ package struct SearchFeature {
             var kept = self
             if kept.isSearching {
                 kept.isSearching = false
+                kept.indexing = false
                 kept.queried = ""
             }
             return kept
@@ -69,6 +73,8 @@ package struct SearchFeature {
         case due(request: Int)
         /// Searched: plain, or with `related`.
         case found(request: Int, SearchResults, related: [String])
+        /// Searched again, as the index was still filling the last time.
+        case foundMore(request: Int, SearchResults)
         /// Both searches are done.
         case finished(request: Int)
         case failed(request: Int, String)
@@ -98,6 +104,11 @@ package struct SearchFeature {
 
     /// How long typing pauses before it's searched.
     static let pause = Duration.milliseconds(300)
+    /// How long before searching again while the index fills, and how
+    /// many times at most: a host slow to give its histories is searched
+    /// as last indexed after that.
+    static let indexingPause = Duration.seconds(2)
+    static let indexingTries = 5
 
     package init() {}
 
@@ -123,6 +134,7 @@ package struct SearchFeature {
 
             // A where clause holds for only the pattern before it, so each has one.
             case .found(let request, _, _) where request != state.request,
+                .foundMore(let request, _) where request != state.request,
                 .finished(let request) where request != state.request,
                 .failed(let request, _) where request != state.request:
                 // For text, a period or a project changed since.
@@ -143,14 +155,24 @@ package struct SearchFeature {
                 state.related = related
                 state.searched = true
                 state.failure = nil
+                state.indexing = results.catchingUp
+                return .none
+
+            case .foundMore(_, let results):
+                // What the index has gained goes below what's shown.
+                let shown = Set(state.hits.map(\.id))
+                state.hits += results.hits.filter { !shown.contains($0.id) }
+                state.indexing = results.catchingUp
                 return .none
 
             case .finished:
                 state.isSearching = false
+                state.indexing = false
                 return .none
 
             case .failed(_, let message):
                 state.isSearching = false
+                state.indexing = false
                 state.searched = true
                 state.failure = message
                 return .none
@@ -180,10 +202,12 @@ package struct SearchFeature {
             state.hits = []
             state.related = []
             state.isSearching = false
+            state.indexing = false
             state.failure = nil
             return stop
         }
         state.isSearching = true
+        state.indexing = false
         guard let pause else { return .merge(stop, run(state)) }
         let request = state.request
         return .merge(
@@ -200,12 +224,23 @@ package struct SearchFeature {
         let (request, text) = (state.request, state.queried)
         let query = SearchQuery(text: text, projectID: state.projectID, since: since(state.period))
         return .run { send in
-            await send(.found(request: request, try await daemon.search(query), related: []))
+            var results = try await daemon.search(query)
+            await send(.found(request: request, results, related: []))
             let related = await relatedWords.related(text)
             var widened = query
             widened.related = related
             if !related.isEmpty {
-                await send(.found(request: request, try await daemon.search(widened), related: related))
+                results = try await daemon.search(widened)
+                await send(.found(request: request, results, related: related))
+            }
+            // The index was still filling: what it has gained since is
+            // searched for, a few times at most.
+            var tries = 0
+            while results.catchingUp, tries < Self.indexingTries {
+                tries += 1
+                try await clock.sleep(for: Self.indexingPause)
+                results = try await daemon.search(widened)
+                await send(.foundMore(request: request, results))
             }
             await send(.finished(request: request))
         } catch: { error, send in

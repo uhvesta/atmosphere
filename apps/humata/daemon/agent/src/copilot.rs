@@ -12,6 +12,7 @@
 //!
 //! [`LocalAgent`]: crate::LocalAgent
 
+mod commands;
 mod rpc;
 mod subagents;
 mod usage;
@@ -196,6 +197,9 @@ pub struct CopilotRunner {
     /// Aborts sent for stopped turns, by Copilot session, so its next turn
     /// starts after the last one has stopped.
     aborting: Mutex<HashMap<String, JoinHandle<()>>>,
+    /// The subagents each Copilot session has started, kept between its
+    /// turns: one left in the background can be woken in a later turn.
+    subagents: Mutex<HashMap<String, subagents::Subagents>>,
 }
 
 impl CopilotRunner {
@@ -206,7 +210,20 @@ impl CopilotRunner {
             options,
             cli: [tokio::sync::Mutex::new(None), tokio::sync::Mutex::new(None)],
             aborting: Mutex::new(HashMap::new()),
+            subagents: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The subagents `session` started in its earlier turns, for its next.
+    fn earlier_subagents(&self, session: &str) -> subagents::Subagents {
+        let mut subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(session)
+            .unwrap_or_default();
+        subagents.carry();
+        subagents
     }
 
     /// Where Copilot keeps its sessions, one folder each.
@@ -530,8 +547,13 @@ fn session_params(
         "streaming": true,
         // A subagent's replies are kept whole, not as they stream.
         "includeSubAgentStreamingEvents": false,
-        "permissionMode": permission_mode(record.approval),
+        "permissionMode": permission_mode(record.approval_in_effect()),
     });
+    // A read-only session goes without the CLI's tools that change files
+    // or run commands; one it still asks to use is refused when it asks.
+    if record.read_only {
+        params["excludedTools"] = json!(EXCLUDED_READ_ONLY);
+    }
     if let Some(id) = id {
         params["sessionId"] = json!(id);
     }
@@ -573,6 +595,19 @@ fn session_params(
     }
     params
 }
+
+/// The CLI's own tools that change files or run commands, by the names it
+/// gives them.
+const EXCLUDED_READ_ONLY: &[&str] = &[
+    "bash",
+    "write_bash",
+    "powershell",
+    "write_powershell",
+    "edit",
+    "create",
+    "str_replace_editor",
+    "apply_patch",
+];
 
 /// Copilot's permission mode for `approval`. Assisted has its judge assess
 /// each request, and Humata lets through those it approves; otherwise every
@@ -721,6 +756,25 @@ impl Runner for CopilotRunner {
             })
             .collect();
         let mut send = json!({"sessionId": session, "prompt": turn.text()});
+        // A skill or a plugin's command is run, and what it gives the
+        // agent is sent in the message's place.
+        match commands::run(&cli, &session, turn.text()).await? {
+            None => {}
+            Some(commands::Ran::Prompt { prompt, notice }) => {
+                if let Some(text) = notice {
+                    turn.emit(EventKind::Notice { text })?;
+                }
+                send["prompt"] = Value::String(prompt);
+                send["displayPrompt"] = Value::String(turn.text().to_owned());
+            }
+            Some(commands::Ran::Done(said)) => {
+                stop.cli = None;
+                if let Some(text) = said {
+                    turn.emit(EventKind::AssistantMessage { text })?;
+                }
+                return Ok(());
+            }
+        }
         if !attachments.is_empty() {
             send["attachments"] = Value::Array(attachments);
         }
@@ -735,7 +789,8 @@ impl Runner for CopilotRunner {
             failure: None,
             // The aborted turn's end can come after the abort answered.
             started: !after_abort,
-            subagents: subagents::Subagents::default(),
+            subagents: self.earlier_subagents(&session),
+            kept: &self.subagents,
         };
         let mut mode = permission_mode(turn.approval());
         let mut steer = tokio::time::interval(STEER_EVERY);
@@ -812,7 +867,8 @@ impl Runner for CopilotRunner {
             path,
             failure: None,
             started: true,
-            subagents: subagents::Subagents::default(),
+            subagents: self.earlier_subagents(&session),
+            kept: &self.subagents,
         };
         // Copilot says it's done as the call's answer and as an event of
         // the session, in either order; the event is the one a fork or a
@@ -942,6 +998,8 @@ struct Playing<'a> {
     /// another turn's.
     started: bool,
     subagents: subagents::Subagents,
+    /// Where the session's subagents are kept for its next turn.
+    kept: &'a Mutex<HashMap<String, subagents::Subagents>>,
 }
 
 /// Copilot's usage totals for `session` so far; None if it doesn't say, as
@@ -957,6 +1015,13 @@ impl Drop for Playing<'_> {
     fn drop(&mut self) {
         // The turn is ending as it is; what can't be recorded is left.
         let _ = self.finish();
+        let subagents = std::mem::take(&mut self.subagents);
+        if !subagents.is_empty() {
+            self.kept
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(self.session.to_owned(), subagents);
+        }
     }
 }
 

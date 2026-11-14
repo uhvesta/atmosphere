@@ -63,6 +63,7 @@ extension DaemonClient {
                 if let repositories = update.repositories {
                     request.repositories.repositories = repositories.map(\.proto)
                 }
+                if let agentSessions = update.agentSessions { request.agentSessions = agentSessions.proto }
                 guard case .projectUpdated(let updated) = try await daemon.call(.updateProject(request)) else {
                     throw DaemonError.unexpected("something other than the updated project")
                 }
@@ -260,6 +261,34 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the forked session")
                 }
                 return try Session(forked.session)
+            },
+            newChild: { session, name, kind in
+                var fork = Humata_V1_ForkSession()
+                fork.sessionID = session
+                fork.name = name
+                switch kind {
+                case .empty(let ownCopy):
+                    fork.empty = true
+                    fork.chatOnly = !ownCopy
+                case .side:
+                    fork.readOnly = true
+                    fork.chatOnly = true
+                }
+                guard case .sessionForked(let forked) = try await daemon.call(.forkSession(fork)) else {
+                    throw DaemonError.unexpected("something other than the new chat")
+                }
+                let child = try Session(forked.session)
+                // A host from before side chats makes a fork that can
+                // write: it mustn't pass for one that can't.
+                if kind == .side, !child.readOnly {
+                    throw DaemonError.refused(
+                        .invalidRequest,
+                        message: "The session's host runs an older Humata that can't hold a side chat to reading "
+                            + "only, so what it made, “\(child.name)” in the sidebar, is an ordinary fork that "
+                            + "can change files. Archive that fork, update Humata on the host, then start the "
+                            + "side chat again.")
+                }
+                return child
             },
             startWork: { session, item in
                 var fork = Humata_V1_ForkSession()

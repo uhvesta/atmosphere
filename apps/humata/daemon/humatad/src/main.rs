@@ -86,7 +86,15 @@ fn main() -> ExitCode {
             Err(error) => eprintln!("humatad: {}", humata_wire::describe(&error)),
         }
     }
-    let runtime = match tokio::runtime::Runtime::new() {
+    // A request can start a session or send a message on another's
+    // behalf from inside an answer, and an unoptimized build lays those
+    // nested futures out large, so each thread gets more than the 2 MiB
+    // default.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(8 << 20)
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("humatad: couldn't start: {error}");

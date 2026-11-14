@@ -84,11 +84,14 @@ package struct Project: Identifiable, Hashable, Sendable {
     /// What New Session starts from in it, over every project's; nil for
     /// none of its own.
     package var defaults: SessionDefaults?
+    /// What its sessions' agents may do to other sessions.
+    package var agentSessions: AgentSessions
     package var created: Date
 
     package init(
         id: String, name: String, repositories: [Repository], instructions: String = "", skills: [Skill] = [],
-        plugins: [PluginChoice] = [], defaults: SessionDefaults? = nil, created: Date
+        plugins: [PluginChoice] = [], defaults: SessionDefaults? = nil, agentSessions: AgentSessions = AgentSessions(),
+        created: Date
     ) {
         self.id = id
         self.name = name
@@ -97,6 +100,7 @@ package struct Project: Identifiable, Hashable, Sendable {
         self.skills = skills
         self.plugins = plugins
         self.defaults = defaults
+        self.agentSessions = agentSessions
         self.created = created
     }
 
@@ -110,6 +114,78 @@ package struct Project: Identifiable, Hashable, Sendable {
     /// The project's choice for a plugin; nil goes by its CLI.
     package func plugin(_ agent: Plugin.Agent, _ id: String) -> Bool? {
         plugins.first { $0.agent == agent && $0.id == id }?.enabled
+    }
+}
+
+/// What a project's agents may do to other sessions with their
+/// start_session, send_message and read_session tools.
+package struct AgentSessions: Hashable, Sendable {
+    package enum Mode: String, CaseIterable, Hashable, Sendable {
+        /// Agents have no tools for other sessions.
+        case off
+        /// Each session an agent starts, and each message it sends one,
+        /// waits in the inbox for the person to allow.
+        case ask
+        /// They go ahead without asking.
+        case allow
+    }
+
+    package var mode: Mode
+    /// Whether an agent may write to sessions it didn't start itself.
+    package var messageOthers: Bool
+    /// The most sessions one session's agent may have started that aren't
+    /// archived.
+    package var maxChildren: Int
+    /// How deep sessions started by agents may nest under one the person
+    /// started.
+    package var maxDepth: Int
+
+    package init(mode: Mode = .ask, messageOthers: Bool = false, maxChildren: Int = 8, maxDepth: Int = 3) {
+        self.mode = mode
+        self.messageOthers = messageOthers
+        self.maxChildren = maxChildren
+        self.maxDepth = maxDepth
+    }
+}
+
+/// Who sent a message one session's agent wrote to another: the daemon
+/// starts such a message with a line naming the sender, which the agent
+/// reading it understands as it is, and the chat shows as "From" it.
+///
+/// The daemon writes the line in `sender.rs` (daemon/humatad); change both
+/// together.
+package struct AgentSender: Hashable, Sendable {
+    /// The session whose agent sent it, and its name when it did.
+    package var sessionID: String
+    package var name: String
+    /// What it says, without the line naming the sender.
+    package var text: String
+
+    private static let start = "Message from the agent of session "
+    private static let end = "\", not from the person:\n\n"
+
+    /// Nil for a message the person sent.
+    package init?(_ message: String) {
+        guard message.hasPrefix(Self.start) else { return nil }
+        let rest = message.dropFirst(Self.start.count)
+        guard let quote = rest.range(of: " \""),
+            let close = rest.range(of: Self.end, range: quote.upperBound..<rest.endIndex)
+        else { return nil }
+        let id = rest[..<quote.lowerBound]
+        let name = rest[quote.upperBound..<close.lowerBound]
+        guard !id.isEmpty, !id.contains(where: \.isWhitespace), !name.contains("\""), !name.contains("\n") else {
+            return nil
+        }
+        sessionID = String(id)
+        self.name = String(name)
+        text = String(rest[close.upperBound...])
+    }
+
+    /// `text` as session `sessionID`, named `name`, sends it.
+    package static func headed(sessionID: String, name: String, text: String) -> String {
+        let name = String(name.map { $0 == "\"" || $0.isNewline ? " " : $0 })
+            .trimmingCharacters(in: .whitespaces)
+        return "\(start)\(sessionID) \"\(name)\(end)\(text)"
     }
 }
 
@@ -166,14 +242,18 @@ package struct ProjectUpdate: Hashable, Sendable {
     /// Replaces the repositories, for sessions started after; sessions
     /// already started keep their copies.
     package var repositories: [Repository]?
+    /// What its agents may do to other sessions. Only the app may set it.
+    package var agentSessions: AgentSessions?
 
     package init(
-        name: String? = nil, instructions: String? = nil, skills: [Skill]? = nil, repositories: [Repository]? = nil
+        name: String? = nil, instructions: String? = nil, skills: [Skill]? = nil, repositories: [Repository]? = nil,
+        agentSessions: AgentSessions? = nil
     ) {
         self.name = name
         self.instructions = instructions
         self.skills = skills
         self.repositories = repositories
+        self.agentSessions = agentSessions
     }
 }
 
@@ -278,6 +358,16 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var effort: String?
     /// Copilot's experimental features.
     package var experimental: Bool
+    /// A side chat: its agent reads, and every write or command it asks
+    /// for is refused.
+    package var readOnly = false
+    /// The session whose agent started it, with start_session; nil when
+    /// the person did. It isn't a fork: it has none of that one's history.
+    package var startedBy: String?
+
+    /// The session it shows under in the sidebar: the one it was forked
+    /// from, or the one whose agent started it.
+    package var nestsUnder: String? { parentID ?? startedBy }
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
@@ -560,18 +650,34 @@ package enum InboxReason: Hashable, Sendable {
     package var blocks: Bool { self != .reply }
 }
 
-/// A question an agent asked, or a move it asked for, waiting on you.
+/// A question an agent asked, or a move, a session to start or a message
+/// to send that it asked for, waiting on you.
 package struct AgentRequest: Identifiable, Hashable, Sendable {
     package enum Kind: Hashable, Sendable {
         case question
         /// Move `item` to `status`.
         case move(item: String, status: ItemStatus)
+        /// Start a session named `name` as its child; the request's text
+        /// is its first message.
+        case startSession(name: String)
+        /// Send the request's text to session `to`, named `name`.
+        case sendMessage(to: String, name: String)
+
+        /// Whether it asks to start a session or to write to one, which
+        /// the person allows or declines.
+        package var asksForSession: Bool {
+            switch self {
+            case .startSession, .sendMessage: true
+            case .question, .move: false
+            }
+        }
     }
 
     package var id: String
     package var sessionID: String
     package var kind: Kind
-    /// The question, or what it did and what to check.
+    /// The question, or what it did and what to check; for a session to
+    /// start its first message, and for a message its text.
     package var text: String
     package var created: Date
 
@@ -588,7 +694,8 @@ package struct AgentRequest: Identifiable, Hashable, Sendable {
 package enum RequestAnswer: Hashable, Sendable {
     /// Sent to the session as a message.
     case reply(String)
-    /// Makes the move asked for.
+    /// Makes the move asked for, or starts the session or sends the
+    /// message asked for.
     case approve
     /// Moves the item somewhere else.
     case move(ItemStatus)
@@ -1283,11 +1390,25 @@ package struct ChatCommands: Equatable, Sendable {
     package var compact = false
     /// Whether it takes what to keep in mind as it does.
     package var compactTakesFocus = false
+    /// Whether its host holds a side chat of it to reading only, so one
+    /// can be made.
+    package var side = false
 
-    package init(compact: Bool = false, compactTakesFocus: Bool = false) {
+    package init(compact: Bool = false, compactTakesFocus: Bool = false, side: Bool = false) {
         self.compact = compact
         self.compactTakesFocus = compactTakesFocus
+        self.side = side
     }
+}
+
+/// A chat made beside a session, as its child in the sidebar.
+package enum ChildChat: Hashable, Sendable {
+    /// A new chat with none of the session's: in the session's copy of the
+    /// code, or with `ownCopy` in its own, as the session last saved it.
+    case empty(ownCopy: Bool)
+    /// A side chat: all of the session's chat so far, in its copy of the
+    /// code, held to reading only.
+    case side
 }
 
 /// A subagent the agent started with a tool call, as its backend last

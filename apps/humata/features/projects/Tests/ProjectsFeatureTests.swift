@@ -290,6 +290,75 @@ final class ProjectsFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    /// A sidebar reading `daemon` on `clock`, with how many reads it made
+    /// and how many it took in.
+    private func polling(
+        _ daemon: InMemoryDaemon, on clock: TestClock<Duration>
+    ) -> (store: TestStoreOf<ProjectsFeature>, made: LockIsolated<Int>, taken: LockIsolated<Int>) {
+        let made = LockIsolated(0)
+        let taken = LockIsolated(0)
+        var client = daemon.client
+        let inbox = client.inbox
+        client.inbox = {
+            made.withValue { $0 += 1 }
+            return try await inbox()
+        }
+        let counted = CombineReducers {
+            Reduce<ProjectsFeature.State, ProjectsFeature.Action> { _, action in
+                if case .loaded = action { taken.withValue { $0 += 1 } }
+                return .none
+            }
+            ProjectsFeature()
+        }
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            counted
+        } withDependencies: { [client] in
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = client
+            $0.continuousClock = clock
+            $0.notifications = .previewValue
+        }
+        store.exhaustivity = .off
+        return (store, made, taken)
+    }
+
+    func testAReadWithNothingNewIsNotTakenIn() async throws {
+        let daemon = InMemoryDaemon()
+        let clock = TestClock()
+        let (store, made, taken) = polling(daemon, on: clock)
+        _ = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        // The reads are made in turn: by the third, the second, of the
+        // same list as the first, is over.
+        while made.value < 3 { await clock.advance(by: .seconds(2)) }
+        let added = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/more"))
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.sessions[id: added.id])
+        XCTAssertEqual(taken.value, 2)
+        await task.cancel()
+    }
+
+    func testAChangeMadeHereThatTheDaemonDidNotKeepIsPutRightInTime() async throws {
+        let daemon = InMemoryDaemon()
+        let clock = TestClock()
+        let (store, made, _) = polling(daemon, on: clock)
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        // The sidebar loses a session the daemon still has, and every read
+        // shows what the last did.
+        await store.send(.loaded(projects: [], sessions: [], inbox: []))
+        XCTAssertEqual(store.state.sessions, [])
+        while made.value < 12 { await clock.advance(by: .seconds(2)) }
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.sessions[id: session.id])
+        await task.cancel()
+    }
+
     func testAnUnreachableDaemonSaysWhatToDoAndRetrying() async {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
@@ -653,8 +722,9 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(posted.value.map(\.sessionID), [other.id])
         XCTAssertEqual(posted.value.first?.title, "Fix the login")
 
-        // The same wait isn't news again.
-        await clock.advance(by: .seconds(2))
+        // The same wait isn't news again, read now or once every read is
+        // taken in again.
+        await store.send(.refresh)
         await store.receive(\.loaded)
         XCTAssertEqual(posted.value.count, 1)
 

@@ -77,6 +77,24 @@ final class FileBrowserFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.rows.map(\.path), ["notes.txt"])
     }
 
+    func testAClosedFolderOpenedAfterARefreshShowsWhatItHoldsByThen() async {
+        let daemon = InMemoryDaemon()
+        daemon.addFile("/srv/app/src/main.rs", Data("fn main() {}\n".utf8), on: "build")
+        let store = store(daemon, HostPlace(host: "build", folder: "/srv/app"))
+        await store.send(.task)
+        await store.receive(\.folderRead)
+        await store.send(.folderToggled("src"))
+        await store.receive(\.folderRead)
+        await store.send(.folderToggled("src"))
+
+        daemon.addFile("/srv/app/src/lib.rs", Data("pub fn run() {}\n".utf8), on: "build")
+        await store.send(.refreshTapped)
+        await store.receive(\.folderRead)
+        await store.send(.folderToggled("src"))
+        await store.receive(\.folderRead)
+        XCTAssertEqual(store.state.rows.map(\.path), ["src", "src/lib.rs", "src/main.rs"])
+    }
+
     func testAFolderThatCantBeReadClosesAndIsReadWhenOpenedAgain() async {
         let daemon = InMemoryDaemon()
         daemon.addFile("/home/me/src/main.rs", Data("fn main() {}\n".utf8), on: "build")

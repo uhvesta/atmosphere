@@ -1281,6 +1281,61 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(removed.value, ["q1"])
     }
 
+    func testAnEditOfAQueuedMessageWhoseTurnStartsGoesInTheBox() async {
+        let store = queueStore("edit-left-queue") { _ in }
+        await store.send(
+            .receivedAll(
+                [event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))], folded: nil))
+        await store.send(.editQueuedTapped("q1"))
+        await store.send(\.binding.queuedEdit, "then the release notes")
+        await store.send(.received(event("e2", .dequeued(queueID: "q1"))))
+        XCTAssertNil(store.state.editingQueued)
+        XCTAssertEqual(store.state.queuedEdit, "")
+        XCTAssertEqual(store.state.draft, "then the release notes")
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testAnUnchangedEditOfAQueuedMessageWhoseTurnStartsJustCloses() async {
+        let store = queueStore("edit-left-queue-unchanged") { _ in }
+        await store.send(
+            .receivedAll(
+                [event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))], folded: nil))
+        await store.send(.editQueuedTapped("q1"))
+        await store.send(.received(event("e2", .dequeued(queueID: "q1"))))
+        XCTAssertNil(store.state.editingQueued)
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertNil(store.state.alert)
+    }
+
+    func testAKeptEditOfAQueuedMessageThatRanMeanwhileGoesInTheBox() async {
+        let store = queueStore("edit-left-queue-away") { _ in }
+        // As kept when the session was looked away from.
+        await store.send(\.binding.editingQueued, "q1")
+        await store.send(\.binding.queuedEdit, "then the release notes")
+        await store.send(
+            .receivedAll(
+                [
+                    event("e1", .messageQueued(queueID: "q1", text: "then the changelog")),
+                    event("e2", .dequeued(queueID: "q1")),
+                ], folded: nil))
+        await store.send(.historyReplayed)
+        XCTAssertNil(store.state.editingQueued)
+        XCTAssertEqual(store.state.draft, "then the release notes")
+    }
+
+    func testAQueuedMessageOfOnlyImagesEditedToNothingStaysQueued() async {
+        let removed = LockIsolated<[String]>([])
+        let store = queueStore("edit-images-only") {
+            $0.daemon.unqueue = { _, id in removed.withValue { $0.append(id) } }
+        }
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "", images: ["a.png"]))))
+        await store.send(.editQueuedTapped("q1"))
+        await store.send(.editQueuedSaved)
+        await store.finish()
+        XCTAssertEqual(removed.value, [])
+        XCTAssertEqual(store.state.queued.map(\.id), ["q1"])
+    }
+
     func testStopAndEditStopsTheTurnAndPutsTheMessageBack() async {
         let stopped = LockIsolated(0)
         let store = queueStore("stop-and-edit") { $0.daemon.abort = { _ in stopped.withValue { $0 += 1 } } }
@@ -1349,6 +1404,34 @@ final class SessionFeatureTests: XCTestCase {
         let taken = Paste.takeOut(old: "before after", new: "before " + pasted + "after")
         XCTAssertEqual(taken?.draft, "before after")
         XCTAssertEqual(taken?.pasted, pasted)
+    }
+
+    func testAPasteOverALongerSelectionIsStillTakenOut() {
+        let pasted = String(repeating: "line\n", count: 30)
+        let selected = String(repeating: "z", count: 4_000)
+        let taken = Paste.takeOut(old: "see " + selected + " here", new: "see " + pasted + " here")
+        XCTAssertEqual(taken?.draft, "see  here")
+        XCTAssertEqual(taken?.pasted, pasted)
+    }
+
+    func testAPasteBesideAccentsAndEmojiTakesWholeCharacters() {
+        // The two flags share their first half.
+        let pasted = "🇫🇷" + String(repeating: "y", count: 1_500) + "🇫🇷"
+        let taken = Paste.takeOut(old: "é🇫🇮", new: "é" + pasted + "🇫🇮")
+        XCTAssertEqual(taken?.draft, "é🇫🇮")
+        XCTAssertEqual(taken?.pasted, pasted)
+        // "©" and "é" share their last byte.
+        let over = String(repeating: "y", count: 1_500) + "é"
+        let replaced = Paste.takeOut(old: "a©", new: "a" + over)
+        XCTAssertEqual(replaced?.draft, "a")
+        XCTAssertEqual(replaced?.pasted, over)
+    }
+
+    func testTypingInALongDraftIsNotAPaste() {
+        let draft = String(repeating: "word é ", count: 2_000)
+        XCTAssertNil(Paste.takeOut(old: draft, new: draft + "s"))
+        XCTAssertNil(Paste.takeOut(old: draft + "s", new: draft))
+        XCTAssertNil(Paste.takeOut(old: draft, new: "a short line\n" + draft))
     }
 
     func testAReconnectsHistoryKeepsTheReplyStreamingInWithoutDoublingIt() async {
@@ -1783,6 +1866,64 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(many.addedCount, 200)
         XCTAssertEqual(many.removed, removed)
         XCTAssertEqual(many.added, Array(added.prefix(100)))
+    }
+
+    func testSendingAFailedMessageAgainSendsItsImagesToo() async throws {
+        let picture = ImageAttachment(mediaType: "image/png", data: try png())
+        let sent = LockIsolated<[String]>([])
+        let store = queueStore("retry-images") {
+            $0.daemon.readImage = { _, _ in picture }
+            $0.daemon.send = { _, text, _ in sent.withValue { $0.append("text only: \(text)") } }
+            $0.daemon.sendImages = { _, text, images, _ in
+                sent.withValue { $0.append("\(text) with \(images.count), same: \(images == [picture])") }
+            }
+        }
+        await store.send(.received(event("e1", .userMessage("what is this", images: ["a.png"]))))
+        await store.send(.received(event("e2", .turnStarted)))
+        await store.send(.received(event("e3", .failed("the model server went away"))))
+        await store.send(.received(event("e4", .turnEnded(aborted: false))))
+        await store.send(.retryTapped)
+        await store.finish()
+        XCTAssertEqual(sent.value, ["what is this with 1, same: true"])
+    }
+
+    func testAMessageRewoundToComesBackWithItsImagesThatUndoTakesOut() async throws {
+        let picture = ImageAttachment(mediaType: "image/png", data: try png())
+        let store = queueStore("rewound-images") {
+            $0.uuid = .incrementing
+            $0.daemon.readImage = { _, _ in picture }
+            $0.daemon.rewind = { _, _, _ in }
+        }
+        await store.send(\.binding.readsImages, true)
+        await store.send(.received(event("e1", .userMessage("what is this", images: ["a.png"]))))
+        await store.send(.rewindTapped("e1"))
+        await store.send(.rewindDialog(.presented(.chat("e1"))))
+        await store.receive(\.sentImagesRead)
+        await store.receive(\.rewound)
+        XCTAssertEqual(store.state.draft, "what is this")
+        XCTAssertEqual(store.state.images.map(\.name), ["a.png"])
+        XCTAssertEqual(store.state.images.map(\.image), [picture])
+        XCTAssertTrue(store.state.canSend)
+
+        await store.send(.rewindUndone)
+        XCTAssertEqual(store.state.images, [])
+        XCTAssertEqual(store.state.draft, "")
+    }
+
+    func testStopAndEditPutsTheMessagesImagesBackToo() async throws {
+        let picture = ImageAttachment(mediaType: "image/png", data: try png())
+        let store = queueStore("stop-and-edit-images") {
+            $0.uuid = .incrementing
+            $0.daemon.readImage = { _, _ in picture }
+            $0.daemon.abort = { _ in }
+        }
+        await store.send(\.binding.readsImages, true)
+        await store.send(.received(event("e1", .userMessage("what is this", images: ["a.png"]))))
+        await store.send(.received(event("e2", .turnStarted)))
+        await store.send(.stopAndEditTapped)
+        await store.receive(\.sentImagesRead)
+        XCTAssertEqual(store.state.draft, "what is this")
+        XCTAssertEqual(store.state.images.map(\.image), [picture])
     }
 
     func testAVeryLongMessageRewoundToComesBackAsAChipThatUndoTakesOut() async {

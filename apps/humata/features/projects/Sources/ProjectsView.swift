@@ -18,7 +18,7 @@ package struct ProjectsView: View {
     // what it changed.
     package var body: some View {
         let _ = SidebarBodyRuns.ran(.sidebar)
-        List(selection: $store.selection.sending(\.selected)) {
+        List(selection: selection) {
             SidebarItems(store: store)
         }
         .listStyle(.sidebar)
@@ -35,6 +35,18 @@ package struct ProjectsView: View {
             }
         }
         .modifier(Sheets(store: store))
+    }
+
+    /// What's picked. A pick is sent once the list's table is done telling
+    /// of it: opening what was picked changes rows, and a table changed
+    /// while it reports its selection warns of a reentrant operation and
+    /// can draw rows wrong.
+    private var selection: Binding<SidebarItem?> {
+        Binding(
+            get: { store.selection },
+            set: { picked in
+                Task { @MainActor in store.send(.selected(picked)) }
+            })
     }
 }
 
@@ -443,7 +455,9 @@ struct SessionRow: View {
     }
 
     private var icon: String {
-        session.parentID == nil ? "bubble.left.and.text.bubble.right" : "arrow.triangle.branch"
+        // A fork, a session another's agent started, or one the person did.
+        if session.parentID != nil { return "arrow.triangle.branch" }
+        return session.startedBy == nil ? "bubble.left.and.text.bubble.right" : "arrow.turn.down.right"
     }
 }
 

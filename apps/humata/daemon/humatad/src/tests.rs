@@ -259,6 +259,68 @@ async fn a_send_tried_again_after_its_answer_was_lost_runs_once() {
 }
 
 #[tokio::test]
+async fn an_empty_fork_has_none_of_the_chat_and_a_side_chat_says_it_reads_only() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let session = started(&client, start(state.path(), "")).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+
+    let forked = |fork: pb::ForkSession| {
+        let client = &client;
+        async move {
+            match client.call(pb::request::Kind::ForkSession(fork)).await {
+                Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+                    session: Some(fork),
+                })) => fork,
+                other => panic!("not forked: {other:?}"),
+            }
+        }
+    };
+    let empty = forked(pb::ForkSession {
+        session_id: session.id.clone(),
+        chat_only: true,
+        empty: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(empty.parent_id, session.id);
+    assert_eq!(empty.working_directory, session.working_directory);
+    assert!(!empty.read_only);
+    send(&client, &empty.id, "hello again").await;
+    let events = after_turns(&client, &empty.id, 1).await;
+    assert_eq!(said(&events), ["user: hello again", "agent: hi there"]);
+
+    let side = forked(pb::ForkSession {
+        session_id: session.id.clone(),
+        read_only: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(side.parent_id, session.id);
+    assert_eq!(side.working_directory, session.working_directory);
+    assert!(side.read_only);
+    let events = after_turns(&client, &side.id, 1).await;
+    assert_eq!(said(&events), ["user: hello", "agent: hi there"]);
+
+    let commands = client
+        .call(pb::request::Kind::GetChatCommands(pb::GetChatCommands {
+            session_id: session.id.clone(),
+        }))
+        .await;
+    assert!(
+        matches!(
+            commands,
+            Ok(pb::response::Kind::ChatCommands(pb::ChatCommands {
+                side: true,
+                ..
+            }))
+        ),
+        "{commands:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_fork_keeps_the_history_before_its_event_and_goes_its_own_way() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let client = host(state.path()).await;
@@ -3252,6 +3314,8 @@ async fn every_sessions_messages_are_searched_and_an_agent_searches_only_its_hos
         ..Default::default()
     };
     let found = searched(&client, search("migration")).await;
+    // The index caught up in time, so nothing is said to be missing.
+    assert!(!found.catching_up);
     let mut sessions: Vec<_> = found
         .hits
         .iter()
@@ -3339,6 +3403,7 @@ async fn every_sessions_messages_are_searched_and_an_agent_searches_only_its_hos
     );
 }
 
+mod agent_sessions;
 mod approvals;
 mod pulls;
 mod repositories;
@@ -4156,6 +4221,7 @@ async fn a_session_on_another_host_is_compacted_and_rewound_to_before_its_compac
             Ok(pb::response::Kind::ChatCommands(pb::ChatCommands {
                 compact: true,
                 compact_takes_focus: true,
+                ..
             }))
         ),
         "{commands:?}"

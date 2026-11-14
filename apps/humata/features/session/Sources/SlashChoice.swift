@@ -10,6 +10,15 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
         case rewind
         /// Has the agent sum up the conversation to make room.
         case compact
+        /// Starts an empty chat as the session's child, in its copy of
+        /// the code or, with "copy" after it, in a copy of its own.
+        case newHere = "new-here"
+        /// Forks the chat so far with its own copy of the code, or with
+        /// "chat" after it, in the session's copy.
+        case fork
+        /// Opens a read-only side chat beside this one, with the chat so
+        /// far, and sends it what's typed after the name.
+        case side
     }
 
     /// What follows the /, such as "release".
@@ -24,9 +33,10 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
         self.builtIn = builtIn
     }
 
-    /// Humata's own commands for `session`: rewinding unless it's
-    /// archived, and compacting when its agent says it can, in `commands`;
-    /// nil when it hasn't said.
+    /// Humata's own commands for `session`, none when it's archived:
+    /// rewinding, a new chat here and forking, and what its host says it
+    /// can do in `commands`, nil when it hasn't said: compacting, and a
+    /// read-only side chat.
     package static func builtIns(for session: Session, commands: ChatCommands?) -> [SlashChoice] {
         guard !session.archived else { return [] }
         var choices = [
@@ -39,6 +49,24 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
                 ? "Sum up the conversation to make room; add what to keep in mind"
                 : "Sum up the conversation to make room"
             choices.append(SlashChoice(BuiltIn.compact.rawValue, summary: summary, builtIn: .compact))
+        }
+        choices.append(
+            SlashChoice(
+                BuiltIn.newHere.rawValue,
+                summary: "Start an empty chat under this one, in the same copy of the code; add “copy” for its own",
+                builtIn: .newHere))
+        choices.append(
+            SlashChoice(
+                BuiltIn.fork.rawValue,
+                summary: "Fork the chat so far with its own copy of the code; add “chat” to share this copy",
+                builtIn: .fork))
+        // Only where the host holds it to reading.
+        if let commands, commands.side {
+            choices.append(
+                SlashChoice(
+                    BuiltIn.side.rawValue,
+                    summary: "Ask on the side, in a read-only chat beside this one; add the question",
+                    builtIn: .side))
         }
         return choices
     }
@@ -55,9 +83,10 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
         return (command, text)
     }
 
-    /// What `session`'s agent has, out of every host's skills and plugins:
-    /// its host's, those its backend reads, its project's, and the plugins
-    /// on for its project or, where the project doesn't say, its CLI. One
+    /// What `session`'s agent runs when sent as "/name", out of every
+    /// host's skills and plugins: its host's, those its backend reads, its
+    /// project's own for a model the daemon runs, and the plugins on for
+    /// its project or, where the project doesn't say, its CLI. One
     /// of each name, the one picked where two files differ. Humata's own
     /// commands come first, each in place of a skill of the same name.
     package static func offered(
@@ -66,8 +95,11 @@ package struct SlashChoice: Hashable, Identifiable, Sendable {
         let host = session.host ?? ""
         let origins: Set<FoundSkill.Origin> =
             switch session.backend {
-            case .claude: [.claudeUser, .claudeRepository, .project]
-            case .copilot: [.copilotUser, .githubRepository, .claudeRepository, .project]
+            // The project's own are Humata's, which only the daemon can
+            // write out for "/name": it does for the models it runs, while
+            // the CLIs run only the skills they find themselves.
+            case .claude: [.claudeUser, .claudeRepository]
+            case .copilot: [.copilotUser, .githubRepository, .claudeRepository]
             case .local, .scripted: [.claudeRepository, .githubRepository, .project]
             }
         let winners = Set(skills.clashes.compactMap(\.winner))

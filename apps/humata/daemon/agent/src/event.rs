@@ -434,6 +434,13 @@ pub struct ForkOptions {
     pub repositories: Vec<Repository>,
     /// Replaces the parent's instructions; None keeps them.
     pub instructions: Option<String>,
+    /// Keep none of the parent's chat: a new chat that is its child, in its
+    /// copy of the code with `chat_only`, or else in its own copy of the
+    /// code as the parent last saved it. `before` is ignored.
+    pub empty: bool,
+    /// A side chat: it may read but never write files or run commands,
+    /// whatever its approval mode, and so are the forks made from it.
+    pub read_only: bool,
 }
 
 /// Changes to a session's record; None leaves a field as it is.
@@ -491,4 +498,21 @@ pub struct SessionRecord {
     /// Copilot's experimental features.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub experimental: bool,
+    /// A side chat: its agent may read, but every request to write a file
+    /// or run a command is refused without asking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+}
+
+impl SessionRecord {
+    /// What the session may do without asking, as its turns take it: a
+    /// read-only session always asks, so no judge or mode lets a change
+    /// through before it's refused.
+    pub fn approval_in_effect(&self) -> ApprovalMode {
+        if self.read_only {
+            ApprovalMode::AskEveryTime
+        } else {
+            self.approval
+        }
+    }
 }

@@ -200,6 +200,11 @@ private struct RequestRow: View {
                 InboxRow(entry: entry, now: now)
             }
             .buttonStyle(.plain)
+            if let asks {
+                Text(asks)
+                    .font(.callout.weight(.medium))
+                    .padding(.leading, 30)
+            }
             Text(LocalizedStringKey(request.text))
                 .textSelection(.enabled)
                 .padding(.leading, 30)
@@ -227,6 +232,19 @@ private struct RequestRow: View {
                         Button("Move to \(status.title)") { answer(.approve) }
                             .buttonStyle(.borderedProminent)
                     }
+                } else if request.kind.asksForSession {
+                    Button("Decline") { answer(.dismiss) }
+                        .help("Don’t; the agent is told you declined")
+                    if shortcuts {
+                        ShortcutHint(deny: false)
+                        Button("Allow") { answer(.approve) }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut("a", modifiers: [.command, .shift])
+                            .help("Let the agent do it (⇧⌘A)")
+                    } else {
+                        Button("Allow") { answer(.approve) }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     Button("Dismiss") { answer(.dismiss) }
                 }
@@ -237,6 +255,18 @@ private struct RequestRow: View {
     }
 
     private var isQuestion: Bool { request.kind == .question }
+
+    /// What the agent asks to do to another session, above the message it
+    /// would send; nil for a question or a move.
+    private var asks: String? {
+        switch request.kind {
+        case .startSession(let name):
+            String(localized: "Asks to start a session, “\(name)”, with this message:")
+        case .sendMessage(let to, let name):
+            String(localized: "Asks to send “\(name.isEmpty ? to : name)” this message:")
+        case .question, .move: nil
+        }
+    }
 
     private var trimmed: String { reply.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -330,12 +360,21 @@ private struct InboxRow: View {
         }
     }
 
+    /// What it asks: a question, or to do something to another session.
+    private var asks: String {
+        switch entry.request?.kind {
+        case .startSession: String(localized: "Asks to start a session")
+        case .sendMessage: String(localized: "Asks to write to a session")
+        case .question, .move, nil: String(localized: "Asks you")
+        }
+    }
+
     private var reason: String {
         switch entry.reason {
         case .approval: String(localized: "Waiting for approval")
         case .failed: String(localized: "Failed")
         case .reply: String(localized: "Replied")
-        case .question: String(localized: "Asks you")
+        case .question: asks
         case .move: String(localized: "Asks to move it to \(entry.request?.kind.statusName ?? "")")
         }
     }

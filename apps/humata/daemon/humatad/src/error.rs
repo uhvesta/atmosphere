@@ -896,12 +896,66 @@ pub enum DaemonError {
     #[error("there is no grant {id}; list the grants in force with `humata approval list`")]
     UnknownGrant { id: String },
 
+    #[error(transparent)]
+    AgentSessions(#[from] AgentSessionsError),
+
     #[error("host {host:?} didn't answer")]
     Host {
         host: String,
         #[source]
         source: ClientError,
     },
+}
+
+/// Why a session's agent may not start or write to another session, for
+/// the agent to read, or why a client may not decide it.
+#[derive(Debug, thiserror::Error)]
+pub enum AgentSessionsError {
+    #[error(
+        "this project has agents' sessions off, so its agents can't start or write to other sessions. Carry on in this session; only the person can turn it on, in the project's settings under Agent Sessions"
+    )]
+    Off,
+
+    #[error(
+        "a session to start needs a name and a first message saying what it should do; give name and message"
+    )]
+    NoNameOrMessage,
+
+    #[error("a message needs some text; give text")]
+    NoText,
+
+    #[error(
+        "this session has started, or asked to start, {limit} sessions that aren't archived, the most this project lets one session have. Give the work to one of them with send_message, or ask the person to archive some or raise the limit in the project's settings under Agent Sessions"
+    )]
+    TooManyChildren { limit: u32 },
+
+    #[error(
+        "this session is {depth} deep under the one the person started, and this project lets agents' sessions nest {limit} deep, so it can't start another. Do the work in this session, or ask the person to raise the limit in the project's settings under Agent Sessions"
+    )]
+    TooDeep { depth: u32, limit: u32 },
+
+    #[error(
+        "session {target} isn't one this session started, and this project lets agents write only to sessions they started. Write to one from start_session, or ask the person to let agents write to other sessions in the project's settings under Agent Sessions"
+    )]
+    NotOwnChild { target: String },
+
+    #[error(
+        "session {target} is in another project; agents write only to sessions in their own project. Ask the person to pass it on"
+    )]
+    AnotherProject { target: String },
+
+    #[error("a session can't write to itself; give the id of another session, from start_session")]
+    Itself,
+
+    #[error(
+        "the host answered starting {name:?} with something other than the session; update humatad there to this Mac's build, then start it again"
+    )]
+    NotStarted { name: String },
+
+    #[error(
+        "only the Humata app can allow an agent to start or write to a session, or change what a project's agents may do. Open Humata: allow it in the inbox, or change it in the project's settings under Agent Sessions"
+    )]
+    AppOnly,
 }
 
 fn said(stderr: &str) -> String {
@@ -944,6 +998,8 @@ impl DaemonError {
             Self::Refused { code, .. } => *code,
             Self::GitHub(_) => pb::ErrorCode::Github,
             Self::AppOnly => pb::ErrorCode::AppOnly,
+            Self::AgentSessions(AgentSessionsError::AppOnly) => pb::ErrorCode::AppOnly,
+            Self::AgentSessions(_) => pb::ErrorCode::InvalidRequest,
             Self::UnknownApproval { .. } | Self::UnknownGrant { .. } => {
                 pb::ErrorCode::UnknownApproval
             }

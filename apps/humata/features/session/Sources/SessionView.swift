@@ -34,10 +34,14 @@ package struct SessionView: View {
         VStack(spacing: 0) {
             // In a view of its own, so what it reads, such as the usage,
             // redraws only it.
-            Separately { header }
-                // The narrowest header fits; the window goes no narrower.
-                .frame(minWidth: 560)
-            Divider()
+            // Beside another session it's the chat alone, in a column too
+            // narrow for the header.
+            if !store.beside {
+                Separately { header }
+                    // The narrowest header fits; the window goes no narrower.
+                    .frame(minWidth: 560)
+                Divider()
+            }
             if store.tab == .review {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
             } else if store.tab == .files {
@@ -87,7 +91,8 @@ package struct SessionView: View {
                     .padding([.horizontal, .bottom])
             }
         }
-        .navigationTitle(store.session.name.isEmpty ? "Session" : store.session.name)
+        // The window is named for the session a side chat is beside.
+        .modifier(WindowTitle(title: store.beside ? nil : store.session.name.isEmpty ? "Session" : store.session.name))
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
         .confirmationDialog($store.scope(state: \.rewindDialog, action: \.rewindDialog))
@@ -227,12 +232,27 @@ package struct SessionView: View {
             Menu {
                 Button("Fork With the Code") { store.send(.forkTapped(before: nil, chatOnly: false)) }
                 Button("Fork the Chat Only") { store.send(.forkTapped(before: nil, chatOnly: true)) }
+                if !store.session.archived {
+                    Divider()
+                    Button("New Chat Here") { store.send(.childTapped(.empty(ownCopy: false), message: "")) }
+                        .help("An empty chat under this one, in the same copy of the code")
+                    Button("New Chat Here With Its Own Copy") {
+                        store.send(.childTapped(.empty(ownCopy: true), message: ""))
+                    }
+                    .help("An empty chat under this one, in its own copy of the code as it was last saved")
+                    // Only once the session's host has said it holds one
+                    // to reading, as when the / list was opened.
+                    if store.chatCommands?.side == true {
+                        Button("Side Chat") { store.send(.childTapped(.side, message: "")) }
+                            .help("A read-only chat beside this one, with the chat so far: it can't change files")
+                    }
+                }
             } label: {
                 Label("Fork", systemImage: "arrow.triangle.branch")
             }
             .disabled(store.forking)
             .fixedSize()
-            .help("Try something else from here, while this session stays as it is")
+            .help("Try something else from here, or start a chat under this one, while this session stays as it is")
             if store.ships {
                 Menu {
                     if store.isWorking {
@@ -274,15 +294,25 @@ package struct SessionView: View {
             .help(
                 store.session.host.map { "The folder it works in on \($0)" }
                     ?? "The folder it works in, to look at or work in yourself")
-            Picker("Approvals", selection: approvalMode) {
-                ForEach(ApprovalMode.offered(for: store.session.backend), id: \.self) { mode in
-                    Text(Self.name(mode)).tag(mode)
+            if store.session.readOnly {
+                // Nothing to allow: what would change a file is refused.
+                Label("Read-Only", systemImage: "eye")
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .help(
+                        "A side chat: its agent reads and searches, and every write or command it asks for is "
+                            + "refused")
+            } else {
+                Picker("Approvals", selection: approvalMode) {
+                    ForEach(ApprovalMode.offered(for: store.session.backend), id: \.self) { mode in
+                        Text(Self.name(mode)).tag(mode)
+                    }
                 }
+                .pickerStyle(.menu)
+                .modifier(HidesLabel(hidden: !names))
+                .fixedSize()
+                .help("What the agent may do without asking")
             }
-            .pickerStyle(.menu)
-            .modifier(HidesLabel(hidden: !names))
-            .fixedSize()
-            .help("What the agent may do without asking")
             if store.session.backend == .copilot {
                 Toggle(
                     "Experimental", systemImage: "flask",
@@ -629,7 +659,7 @@ private struct ChatRows: View, Equatable {
         case .compacted:
             shows.rewinding = store.rewinding
             shows.archived = store.session.archived
-        case .reply, .permission, .stopped, .notice, .cost:
+        case .reply, .permission, .stopped, .notice, .cost, .fromSession:
             break
         }
         return shows
@@ -764,7 +794,12 @@ private struct StreamedPart: View, Equatable {
 /// out only the parts on screen however long the reply; each reply is cut
 /// once.
 @MainActor private final class ReplyParts {
-    private var kept: [String: (length: Int, parts: [Range<String.Index>])] = [:]
+    /// Each long reply's rows, by its id, with the reply's length in bytes
+    /// when they were made. The rows are kept, not only where the parts
+    /// start and end: `lines` runs at every change to the chat, and making
+    /// a row and its id again for every part of every reply was most of
+    /// what it cost.
+    private var kept: [String: (length: Int, lines: [ChatLine])] = [:]
 
     /// The chat's rows. A highlighted reply stays whole, so all of it is
     /// highlighted.
@@ -776,17 +811,17 @@ private struct StreamedPart: View, Equatable {
                 lines.append(ChatLine(item: item, id: item.id))
                 continue
             }
-            let parts: [Range<String.Index>]
             if let kept = kept[id], kept.length == text.utf8.count {
-                parts = kept.parts
-            } else {
-                parts = MarkdownText.parts(of: text, size: Self.size).map { $0.startIndex..<$0.endIndex }
-                kept[id] = (text.utf8.count, parts)
+                lines.append(contentsOf: kept.lines)
+                continue
             }
-            for (index, part) in parts.enumerated() {
-                lines.append(
-                    ChatLine(item: item, part: part, continues: index > 0, id: index == 0 ? id : "\(id)/\(index)"))
+            let parts = MarkdownText.parts(of: text, size: Self.size).enumerated().map { index, part in
+                ChatLine(
+                    item: item, part: part.startIndex..<part.endIndex, continues: index > 0,
+                    id: index == 0 ? id : "\(id)/\(index)")
             }
+            kept[id] = (text.utf8.count, parts)
+            lines.append(contentsOf: parts)
         }
         return lines
     }
@@ -878,6 +913,8 @@ private struct ChatRow: View, Equatable {
                     .disabled(store.forking)
                 }
             }
+        case .fromSession(_, let sender):
+            SentBySession(sender: sender, select: select)
         case .reply(_, let text):
             if let part, part.upperBound <= text.endIndex {
                 MarkdownText(String(text[part]))
@@ -896,7 +933,9 @@ private struct ChatRow: View, Equatable {
                     store.send(.proposals($0))
                 }
             } else if let subagent = shows.subagent {
-                SubagentCard(run: subagent) { store.send(.subagentTapped(callID: call.callID)) }
+                SubagentCard(run: subagent, result: call.output, showResult: select) {
+                    store.send(.subagentTapped(callID: call.callID))
+                }
                 // The call may itself wait on the person to be allowed.
                 if let permission = call.permission {
                     PermissionCard(permission: permission, select: select)
@@ -969,6 +1008,25 @@ private struct ChatRow: View, Equatable {
                 }
             }
         }
+    }
+}
+
+/// A message another session's agent sent this one, under who sent it, so
+/// it doesn't read as the person's.
+struct SentBySession: View {
+    let sender: AgentSender
+    let select: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Label("From \(sender.name.isEmpty ? sender.sessionID : sender.name)", systemImage: "arrow.left.arrow.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("Sent by that session’s agent, not by you")
+            MessageView(role: .person, text: sender.text, select: select)
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -1350,11 +1408,17 @@ private struct ImageChips: View {
     }
 }
 
-/// The long texts pasted into the box, each a chip to read or take out.
+/// The long texts pasted into the box, each a chip that opens to read and
+/// change, or to take out.
 private struct PasteChips: View {
     let pastes: [Paste]
     let remove: (String) -> Void
+    /// A chip's id and its text as changed.
+    let edit: (String, String) -> Void
+    let moveToBox: (String, String) -> Void
+    /// A chip too long to edit, open to read.
     @State private var open: OpenAttachment?
+    @State private var editing: Paste?
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -1362,13 +1426,16 @@ private struct PasteChips: View {
                 ForEach(pastes) { paste in
                     HStack(spacing: 4) {
                         Button {
-                            open = .file(name: "Pasted Text", text: paste.text)
+                            show(paste)
                         } label: {
                             Label(paste.label, systemImage: "doc.on.clipboard")
                                 .monospacedDigit()
                         }
                         .buttonStyle(.borderless)
-                        .help("Read what was pasted")
+                        .help(
+                            paste.isEditable
+                                ? "Read or change what was pasted"
+                                : "Read what was pasted; it’s too long to change here")
                         Button("Remove", systemImage: "xmark.circle.fill") { remove(paste.id) }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.borderless)
@@ -1379,11 +1446,80 @@ private struct PasteChips: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.fill.quaternary, in: .capsule)
+                    .contextMenu {
+                        Button(paste.isEditable ? "Edit…" : "Read…") { show(paste) }
+                        if Paste.fitsInBox(paste.text) {
+                            Button("Put in the Message") { moveToBox(paste.id, paste.text) }
+                        }
+                        Button("Remove", role: .destructive) { remove(paste.id) }
+                    }
                 }
             }
         }
         .scrollIndicators(.never)
         .attachmentViewer($open)
+        .sheet(item: $editing) { paste in
+            PasteEditor(
+                paste: paste, save: { edit(paste.id, $0) }, moveToBox: { moveToBox(paste.id, $0) })
+        }
+    }
+
+    private func show(_ paste: Paste) {
+        if paste.isEditable {
+            editing = paste
+        } else {
+            open = .file(name: "Pasted Text", text: paste.text)
+        }
+    }
+}
+
+/// A pasted chip's text, open to change: Save keeps it as a chip, and Put
+/// in the Message moves it into the box while it's short enough to edit
+/// there.
+private struct PasteEditor: View {
+    let paste: Paste
+    let save: (String) -> Void
+    let moveToBox: (String) -> Void
+    @State private var text: String
+    @Environment(\.dismiss) private var dismiss
+
+    init(paste: Paste, save: @escaping (String) -> Void, moveToBox: @escaping (String) -> Void) {
+        self.paste = paste
+        self.save = save
+        self.moveToBox = moveToBox
+        _text = State(initialValue: paste.text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Pasted Text")
+                .font(.headline)
+            TextEditor(text: $text)
+                .font(.body.monospaced())
+                .frame(minWidth: 560, minHeight: 320)
+                .accessibilityLabel("Pasted text")
+            HStack {
+                Button("Put in the Message") {
+                    moveToBox(text)
+                    dismiss()
+                }
+                .disabled(!Paste.fitsInBox(text))
+                .help(
+                    Paste.fitsInBox(text)
+                        ? "Move this text into the message’s box, after what’s typed"
+                        : "Too long for the message’s box; shorten it, or keep it as a chip")
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    save(text)
+                    dismiss()
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Keep the change; with nothing left, the chip is taken out")
+            }
+        }
+        .padding(16)
     }
 }
 
@@ -1537,6 +1673,20 @@ private struct WaitingStrip: View {
                 Button("Move to \(status.title)") { store.send(.moveApproved) }
                     .buttonStyle(.borderedProminent)
             }
+        case .startSession(let name):
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Asks to start a session, “\(name)”", systemImage: "plus.bubble")
+                Text("Allow or decline it in the Inbox.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .sendMessage(let to, let name):
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Asks to write to “\(name.isEmpty ? to : name)”", systemImage: "arrow.left.arrow.right")
+                Text("Allow or decline it in the Inbox.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1679,18 +1829,32 @@ private struct SessionComposer: View {
                 guard !store.session.archived else { return false }
                 return drop(providers)
             }
+            // ⌘V of an image, which the field itself would ignore; as a
+            // drop, one the model can't see is refused with a note.
+            .background {
+                if !store.session.archived {
+                    ImagePasteCatcher { pasted in
+                        switch pasted {
+                        case .files(let urls): store.send(.imagesAdded(urls))
+                        case .data(let data): store.send(.imagePasted(data))
+                        }
+                    }
+                }
+            }
     }
 
     /// Adds dropped image files, and images dragged from other apps.
     private func drop(_ providers: [NSItemProvider]) -> Bool {
         var taken = false
         for provider in providers {
-            if provider.canLoadObject(ofClass: URL.self) {
+            // Only a file is read from its URL: an image dragged from a web
+            // page carries its address too, and is taken as the image.
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 taken = true
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url, UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true else {
-                        return
-                    }
+                    // A file that isn't an image is refused once it's read,
+                    // with a note saying so, instead of vanishing.
+                    guard let url, url.isFileURL else { return }
                     Task { @MainActor in store.send(.imagesAdded([url])) }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
@@ -1702,16 +1866,6 @@ private struct SessionComposer: View {
             }
         }
         return taken
-    }
-
-    /// The image on the clipboard, if there is one. Read only when asked
-    /// for, as it can be large.
-    private var pastedImage: Data? {
-        let pasteboard = NSPasteboard.general
-        for type in [NSPasteboard.PasteboardType.png, .tiff] {
-            if let data = pasteboard.data(forType: type) { return data }
-        }
-        return nil
     }
 
     /// The skills and plugin commands matching what's typed after the /,
@@ -1764,7 +1918,7 @@ private struct SessionComposer: View {
                 // Always on: the clipboard can change while the menu is
                 // closed, so it's read only when picked.
                 Button("Paste Image", systemImage: "doc.on.clipboard") {
-                    if let data = pastedImage {
+                    if let data = ClipboardImage.image {
                         store.send(.imagePasted(data))
                     } else {
                         store.send(.noImageToPaste)
@@ -1796,7 +1950,10 @@ private struct SessionComposer: View {
             ImageChips(images: store.images) { store.send(.removeImageTapped($0)) }
         }
         if !store.pastes.isEmpty {
-            PasteChips(pastes: store.pastes) { store.send(.removePasteTapped($0)) }
+            PasteChips(
+                pastes: store.pastes, remove: { store.send(.removePasteTapped($0)) },
+                edit: { store.send(.pasteEdited(id: $0, text: $1)) },
+                moveToBox: { store.send(.pasteMovedToBox(id: $0, text: $1)) })
         }
         ForEach(store.dropped) { dropped in
             DroppedRow(message: dropped) { store.send(.putBackTapped(dropped.id)) }
@@ -1979,6 +2136,15 @@ private struct HidesLabel: ViewModifier {
 }
 
 /// Labels as icons alone when `enabled`, otherwise with their titles.
+/// Names the window `title`, or leaves its name alone for nil.
+private struct WindowTitle: ViewModifier {
+    let title: String?
+
+    func body(content: Content) -> some View {
+        if let title { content.navigationTitle(title) } else { content }
+    }
+}
+
 private struct IconsOnly: ViewModifier {
     let enabled: Bool
 

@@ -898,6 +898,13 @@ impl Host {
                 if start.working_directory.is_empty() && start.repositories.is_empty() {
                     start.working_directory = self.chat_folder()?.display().to_string();
                 }
+                // Started by another session's agent, it is set up as that
+                // session is.
+                if start.backend_config.is_empty() && !start.config_from_session_id.is_empty() {
+                    let from = SessionId::new(std::mem::take(&mut start.config_from_session_id));
+                    let like = record(self.owner(&from)?.1.as_ref(), &from).await?;
+                    start.backend_config = like.backend_config.unwrap_or_default();
+                }
                 let agent = self.backend(backend)?;
                 let record = agent
                     .start(StartOptions {
@@ -973,6 +980,8 @@ impl Host {
             | Request::AskPerson(_)
             | Request::RequestMove(_)
             | Request::AnswerRequest(_)
+            | Request::AgentStartSession(_)
+            | Request::AgentSendMessage(_)
             | Request::ListHosts(_)
             | Request::ListRecoveries(_)
             | Request::RestoreSession(_)
@@ -1127,6 +1136,10 @@ impl Host {
                 Response::ChatCommands(pb::ChatCommands {
                     compact,
                     compact_takes_focus,
+                    // Every backend here asks before it writes a file or
+                    // runs a command, and a read-only session's requests
+                    // are refused as they're asked.
+                    side: true,
                 })
             }
             Request::ListImportable(_) => {
@@ -1223,6 +1236,8 @@ impl Host {
                         .map(convert::repository)
                         .collect(),
                     instructions: fork.instructions,
+                    empty: fork.empty,
+                    read_only: fork.read_only,
                 };
                 let record = agent.fork(&session, options).await?;
                 self.owners

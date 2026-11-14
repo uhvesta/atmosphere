@@ -7,9 +7,14 @@ import SwiftUI
 
 /// A subagent where its tool call sits in the chat: what kind it is and
 /// what it was asked, whether it still runs, how long it has, what it
-/// used, and, while it runs, what it last did. Clicking opens its chat.
+/// used, and, while it runs, what it last did. Clicking opens its chat;
+/// its menu also shows what it returned to the agent that started it.
 struct SubagentCard: View {
     let run: SubagentRun
+    /// What its call returned: the raw result the agent that started it
+    /// got. Nil while it runs.
+    var result: String?
+    var showResult: (String) -> Void = { _ in }
     let open: () -> Void
 
     var body: some View {
@@ -39,6 +44,13 @@ struct SubagentCard: View {
         .background(.fill.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
         .help("Read what this agent did")
         .accessibilityIdentifier("subagent.card")
+        .contextMenu {
+            Button("Open the Agent’s Chat", action: open)
+            Button("Show Result") {
+                if let result { showResult(result) }
+            }
+            .disabled(result?.isEmpty != false)
+        }
     }
 }
 
@@ -365,6 +377,8 @@ private struct SubagentChatRow: View, Equatable {
         switch item {
         case .person(_, let text, _):
             MessageView(role: .person, text: text, select: select)
+        case .fromSession(_, let sender):
+            SentBySession(sender: sender, select: select)
         case .reply(_, let text):
             MessageView(role: .assistant, text: text, select: select)
         case .thinking(_, let text):
@@ -373,7 +387,7 @@ private struct SubagentChatRow: View, Equatable {
                 select: select, answering: true)
         case .tool(let call):
             if let nested {
-                SubagentCard(run: nested) { open(call.callID) }
+                SubagentCard(run: nested, result: call.output, showResult: select) { open(call.callID) }
             } else {
                 ToolCallView(call: call, expanded: toolOpen, toggle: toggleTool, select: select)
             }

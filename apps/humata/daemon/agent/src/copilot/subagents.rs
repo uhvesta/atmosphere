@@ -2,7 +2,7 @@
 //! carry the subagent's id and the call that started it, and how far each
 //! has got.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -20,6 +20,9 @@ pub(super) struct Subagents {
     calls: HashMap<String, String>,
     /// Every subagent started, by the call that started it.
     known: HashMap<String, Known>,
+    /// The subagents of earlier turns not heard from in this one, by the
+    /// call that started each: one left in the background can be woken.
+    earlier: HashSet<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -113,9 +116,26 @@ impl Subagents {
                 .filter(|_| event_type == "subagent.started")
         });
         if let (Some(agent), Some(call)) = (event["agentId"].as_str(), starter) {
-            self.calls.insert(agent.to_owned(), call.to_owned());
+            // One woken by a later call is still the one its first started.
+            let listed = self
+                .calls
+                .get(agent)
+                .is_some_and(|first| self.known.contains_key(first));
+            if !listed {
+                self.calls.insert(agent.to_owned(), call.to_owned());
+            }
         }
         let mut tagged = Vec::new();
+        // A subagent of an earlier turn that's at it again was woken. News
+        // of its start or end says how it stands itself.
+        if owns(event) && !event_type.starts_with("subagent.") {
+            let parent = self.parent(event);
+            if self.earlier.remove(&parent) {
+                self.update(&parent, &mut tagged, |known| {
+                    known.status = SubagentStatus::Running;
+                });
+            }
+        }
         if owns(event)
             && !matches!(
                 event_type,
@@ -151,7 +171,8 @@ impl Subagents {
                 self.known.insert(call, known);
             }
             "subagent.started" => {
-                let call = self.subject(call);
+                let call = self.subject(event, call);
+                self.earlier.remove(&call);
                 self.update(&call, &mut tagged, |known| {
                     if known.agent_type.is_empty() {
                         known.agent_type = field("agentName");
@@ -164,7 +185,7 @@ impl Subagents {
             }
             "subagent.completed" => {
                 let cancelled = data["cancelled"].as_bool() == Some(true);
-                let call = self.subject(call);
+                let call = self.subject(event, call);
                 self.update(&call, &mut tagged, |known| {
                     // One torn down after it had finished did finish.
                     if !cancelled {
@@ -178,7 +199,7 @@ impl Subagents {
                 });
             }
             "subagent.failed" => {
-                let call = self.subject(call);
+                let call = self.subject(event, call);
                 self.update(&call, &mut tagged, |known| {
                     known.status = SubagentStatus::Failed;
                     known.total_tokens = count("totalTokens").unwrap_or(known.total_tokens);
@@ -235,10 +256,29 @@ impl Subagents {
         }
     }
 
-    /// The call that started the subagent whose start or end names
-    /// `named`: `named` itself, unless it's the id of a subagent whose
-    /// call is known instead.
-    fn subject(&self, named: String) -> String {
+    /// For the next turn of the session: the subagents so far are earlier
+    /// ones, each as it was left, until heard from again.
+    pub(super) fn carry(&mut self) {
+        self.earlier = self.known.keys().cloned().collect();
+    }
+
+    /// Whether no subagent has been started.
+    pub(super) fn is_empty(&self) -> bool {
+        self.known.is_empty()
+    }
+
+    /// The call that started the subagent whose start or end, `event`,
+    /// names `named`: the one that started the subagent the event is from,
+    /// if that's listed, as a later call can wake it; else `named` itself,
+    /// unless it's the id of a subagent whose call is known instead.
+    fn subject(&self, event: &Value, named: String) -> String {
+        if let Some(first) = event["agentId"]
+            .as_str()
+            .and_then(|agent| self.calls.get(agent))
+            .filter(|first| self.known.contains_key(*first))
+        {
+            return first.clone();
+        }
         if self.known.contains_key(&named) {
             return named;
         }
@@ -585,6 +625,67 @@ mod tests {
         subagents.take(&json!({"type": "system.notification",
             "data": {"kind": {"type": "agent_idle", "agentId": "sub-1"}}}));
         assert!(statuses(&subagents.take(&cancelled)).is_empty());
+    }
+
+    /// A subagent left in the background that did what it was asked, and
+    /// the turn it was started in over.
+    fn idle_since_an_earlier_turn() -> Subagents {
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        subagents.take(&json!({"type": "system.notification",
+            "data": {"kind": {"type": "agent_idle", "agentId": "sub-1"}}}));
+        subagents.finish();
+        subagents.carry();
+        subagents
+    }
+
+    #[test]
+    fn a_background_subagent_woken_in_a_later_turn_runs_again() {
+        let mut subagents = idle_since_an_earlier_turn();
+        // The main agent's own steps wake nothing.
+        let main = subagents.take(&json!({"type": "tool.execution_start",
+            "data": {"toolCallId": "call-7", "toolName": "write_agent", "arguments": {}}}));
+        assert!(statuses(&main).is_empty());
+
+        let woken = subagents.take(&json!({"type": "tool.execution_start", "agentId": "sub-1",
+            "data": {"toolCallId": "call-8", "toolName": "grep", "arguments": {}}}));
+        assert_eq!(
+            statuses(&woken),
+            [("call-1".to_owned(), SubagentStatus::Running)]
+        );
+        // Its steps go under the call that first started it.
+        assert!(woken.iter().all(|(call, _)| call == "call-1"));
+
+        let more = subagents.take(&json!({"type": "assistant.message", "agentId": "sub-1",
+            "data": {"content": "Done."}}));
+        assert!(statuses(&more).is_empty());
+        let idle = subagents.take(&json!({"type": "system.notification",
+            "data": {"kind": {"type": "agent_idle", "agentId": "sub-1"}}}));
+        assert_eq!(
+            statuses(&idle),
+            [("call-1".to_owned(), SubagentStatus::Completed)]
+        );
+    }
+
+    #[test]
+    fn a_start_that_wakes_a_subagent_lists_no_second_one() {
+        let mut subagents = idle_since_an_earlier_turn();
+        let woken = subagents.take(&json!({"type": "subagent.started", "agentId": "sub-1",
+            "data": {"toolCallId": "call-7", "agentName": "explore"}}));
+        assert_eq!(
+            statuses(&woken),
+            [("call-1".to_owned(), SubagentStatus::Running)]
+        );
+        assert_eq!(
+            statuses(&subagents.finish()),
+            [("call-1".to_owned(), SubagentStatus::Stopped)]
+        );
+    }
+
+    #[test]
+    fn an_earlier_turns_subagent_not_heard_from_stays_as_it_ended() {
+        let mut subagents = idle_since_an_earlier_turn();
+        assert!(subagents.finish().is_empty());
     }
 
     #[test]

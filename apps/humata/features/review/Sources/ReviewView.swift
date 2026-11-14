@@ -317,8 +317,7 @@ private struct DiffLines: View {
     var body: some View {
         let highlighter = Highlighter(path: file.path)
         let threads = store.state.shownThreads(on: ref)
-        let shown = Set(file.hunks.flatMap(\.lines).compactMap(\.new))
-        let inline = store.canComment ? threads.filter { shown.contains($0.endLine) } : []
+        let inline = store.canComment ? Self.inline(threads, in: file) : []
         let elsewhere = threads.filter { thread in !inline.contains { $0.id == thread.id } }
         let byLine = Dictionary(grouping: inline, by: \.endLine)
         ScrollView {
@@ -360,6 +359,22 @@ private struct DiffLines: View {
             }
             .padding(.bottom)
         }
+    }
+
+    /// The threads that end on a line `file` shows. The body runs at each
+    /// line picked and each thread changed: a file with no thread isn't
+    /// read at all, and one with some is read through with nothing made
+    /// for each of its lines.
+    private static func inline(_ threads: [ReviewThread], in file: FileDiff) -> [ReviewThread] {
+        guard !threads.isEmpty else { return [] }
+        var hidden = Set(threads.map(\.endLine))
+        search: for hunk in file.hunks {
+            for line in hunk.lines {
+                guard let new = line.new, hidden.remove(new) != nil else { continue }
+                if hidden.isEmpty { break search }
+            }
+        }
+        return hidden.isEmpty ? threads : threads.filter { !hidden.contains($0.endLine) }
     }
 
     /// A line, with the threads that end on it and the comment being
@@ -764,7 +779,9 @@ private struct DiffRow: Identifiable {
     /// The line's index in its hunk; nil for the hunk's header.
     let line: Int?
 
-    var id: String { line.map { "\(hunk).\($0)" } ?? "\(hunk)" }
+    /// A number, not text made for each row at every draw: the hunk in
+    /// its upper half, and the line, counted from one, in its lower.
+    var id: Int { hunk << 32 | (line.map { $0 + 1 } ?? 0) }
 
     static func rows(of file: FileDiff) -> [DiffRow] {
         var rows: [DiffRow] = []

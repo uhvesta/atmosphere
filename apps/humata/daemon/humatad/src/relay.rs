@@ -197,6 +197,8 @@ impl Relay {
                 | pb::request::Kind::ListThreads(_)
                 | pb::request::Kind::AskPerson(_)
                 | pb::request::Kind::RequestMove(_)
+                | pb::request::Kind::AgentStartSession(_)
+                | pb::request::Kind::AgentSendMessage(_)
                 | pb::request::Kind::ReadSpec(_)
                 | pb::request::Kind::ReadSkill(_)
                 | pb::request::Kind::ReadHistory(_)

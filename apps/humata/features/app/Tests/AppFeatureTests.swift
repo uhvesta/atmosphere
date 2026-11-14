@@ -164,6 +164,75 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(Set(store.state.sidebar.sessions.ids), [session.id, fork.id])
     }
 
+    /// A store with `first` open and a side chat of it beside, asked
+    /// `question`.
+    private func withASideChat(
+        _ daemon: InMemoryDaemon, of first: Session, others: [Session] = [], question: String = ""
+    ) async throws -> TestStoreOf<AppFeature> {
+        var state = AppFeature.State()
+        state.sidebar.sessions = IdentifiedArray(uniqueElements: [first] + others)
+        state.sidebar.selection = .session(first.id)
+        state.session = SessionFeature.State(session: first)
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        await store.send(.session(.presented(.childTapped(.side, message: question))))
+        await store.receive(\.session.delegate.openSide)
+        await store.receive(\.sidebar.loaded)
+        return store
+    }
+
+    func testASideChatOpensBesideItsSessionTakesItsOwnMessagesAndStaysInTheSidebarWhenClosed() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "first"))
+        try await daemon.client.send(session.id, "hello", .enqueue)
+        let store = try await withASideChat(daemon, of: session, question: "and why?")
+
+        let side = try XCTUnwrap(store.state.side?.session)
+        XCTAssertEqual(store.state.session?.session.id, session.id, "the session stays open")
+        XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+        XCTAssertEqual(side.parentID, session.id)
+        XCTAssertTrue(side.readOnly)
+        XCTAssertEqual(store.state.side?.tabs, [.chat])
+        XCTAssertTrue(daemon.history(side.id).contains { $0.kind == .userMessage("and why?") })
+
+        await store.send(\.side.binding.draft, "more")
+        await store.send(\.side.sendTapped, .enqueue)
+        await store.receive(\.side.sent)
+        XCTAssertTrue(daemon.history(side.id).contains { $0.kind == .userMessage("more") })
+        XCTAssertFalse(daemon.history(session.id).contains { $0.kind == .userMessage("more") })
+
+        await store.send(.side(.dismiss))
+        XCTAssertNil(store.state.side)
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+        XCTAssertEqual(Set(store.state.sidebar.sessions.ids), [session.id, side.id], "it stays under its session")
+    }
+
+    func testOpeningAnotherSessionClosesTheSideChatAndPickingItOpensItAsASession() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "first"))
+        let other = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "second"))
+        let store = try await withASideChat(daemon, of: session, others: [other])
+        let side = try XCTUnwrap(store.state.side?.session)
+
+        await store.send(\.sidebar.selected, .session(other.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, other.id)
+        XCTAssertNil(store.state.side)
+
+        await store.send(\.sidebar.selected, .session(side.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.session.id, side.id)
+        XCTAssertNil(store.state.side)
+    }
+
     func testHostsOpenBesideTheSidebarAndCloseForASession() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         var state = AppFeature.State()

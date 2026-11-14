@@ -81,8 +81,9 @@ final class ChatCommandTests: XCTestCase {
 
         await store.send(\.binding.draft, "/")
         await store.receive(\.slashLoaded, timeout: .seconds(1))
-        XCTAssertEqual(store.state.slashChoices.map(\.id), ["rewind", "compact", "release"])
-        XCTAssertEqual(store.state.slashChoices.map(\.builtIn), [.rewind, .compact, nil])
+        XCTAssertEqual(
+            store.state.slashChoices.map(\.id), ["rewind", "compact", "new-here", "fork", "side", "release"])
+        XCTAssertEqual(store.state.slashChoices.map(\.builtIn), [.rewind, .compact, .newHere, .fork, .side, nil])
     }
 
     func testAnAgentThatCantCompactIsNotOfferedItAndTheCommandGoesToItAsAMessage() async throws {
@@ -94,7 +95,7 @@ final class ChatCommandTests: XCTestCase {
 
         await store.send(\.binding.draft, "/")
         await store.receive(\.slashLoaded, timeout: .seconds(1))
-        XCTAssertEqual(store.state.slashChoices.map(\.id), ["rewind", "release"])
+        XCTAssertEqual(store.state.slashChoices.map(\.id), ["rewind", "new-here", "fork", "release"])
 
         await store.send(\.binding.draft, "/compact the notes")
         await store.send(.sendTapped(.enqueue))
@@ -115,14 +116,15 @@ final class ChatCommandTests: XCTestCase {
 
         await store.send(\.binding.draft, "/")
         await store.receive(\.slashLoaded, timeout: .seconds(1))
-        XCTAssertEqual(store.state.slashChoices.map(\.id), ["rewind", "release"])
+        XCTAssertEqual(store.state.slashChoices.map(\.id), ["rewind", "new-here", "fork", "release"])
         XCTAssertNil(store.state.slashFailure)
     }
 
     func testAnArchivedSessionIsOfferedNoneOfHumatasCommands() {
         var session = Session(id: "s1", name: "chat", backend: .claude, workingDirectory: "/work")
         let commands = ChatCommands(compact: true, compactTakesFocus: true)
-        XCTAssertEqual(SlashChoice.builtIns(for: session, commands: commands).map(\.builtIn), [.rewind, .compact])
+        XCTAssertEqual(
+            SlashChoice.builtIns(for: session, commands: commands).map(\.builtIn), [.rewind, .compact, .newHere, .fork])
         session.archived = true
         XCTAssertEqual(SlashChoice.builtIns(for: session, commands: commands), [])
     }
@@ -426,5 +428,141 @@ final class ChatCommandTests: XCTestCase {
         XCTAssertEqual(ChatItem.items(rewound).last, .rewound(id: "e4", files: false, undoable: true))
         let compacting = rewound + [event("e5", .compacting(focus: ""))]
         XCTAssertEqual(ChatItem.items(compacting).last, .rewound(id: "e4", files: false, undoable: false))
+    }
+
+    // MARK: /new-here, /fork and /side
+
+    func testNewHereStartsAnEmptyChatUnderTheSessionInTheSameCopyAndOpensIt() async throws {
+        let daemon = InMemoryDaemon { _ in [.write(path: "a.txt", contents: "one")] }
+        let session = try await started(daemon)
+        try await daemon.client.setApprovalMode(session.id, .allowEverything)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/new-here")
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        let child = try XCTUnwrap(daemon.sessions.last)
+        XCTAssertEqual(child.parentID, session.id)
+        XCTAssertEqual(child.workingDirectory, session.workingDirectory)
+        XCTAssertEqual(daemon.history(child.id), [])
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertFalse(store.state.forking)
+        XCTAssertFalse(
+            daemon.history(session.id).contains { $0.kind == .userMessage("/new-here") },
+            "the command isn't sent as a message")
+    }
+
+    func testNewHereWithACopyStartsFromTheCodeAsItIsAndLeavesTheSessionsAlone() async throws {
+        let daemon = InMemoryDaemon { text in [.write(path: "a.txt", contents: text)] }
+        let project = try await daemon.client.createProject(
+            "App", [Repository(name: "app", path: "/code/app")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "first", approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/new-here copy")
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        let child = try XCTUnwrap(daemon.sessions.last)
+        XCTAssertEqual(daemon.history(child.id), [])
+        XCTAssertEqual(daemon.files(of: child.id), ["a.txt": "one"])
+
+        try await daemon.client.send(child.id, "two", .enqueue)
+        XCTAssertEqual(daemon.files(of: child.id), ["a.txt": "two"])
+        XCTAssertEqual(daemon.files(of: session.id), ["a.txt": "one"])
+    }
+
+    func testForkForksTheChatSoFarAndWithChatSharesTheCopy() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/fork chat")
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.openSession, timeout: .seconds(1))
+        let fork = try XCTUnwrap(daemon.sessions.last)
+        XCTAssertEqual(fork.parentID, session.id)
+        XCTAssertEqual(fork.workingDirectory, session.workingDirectory)
+        XCTAssertEqual(daemon.history(fork.id), daemon.history(session.id))
+        XCTAssertFalse(fork.readOnly)
+        XCTAssertEqual(store.state.draft, "")
+    }
+
+    func testSideOpensAReadOnlyChatBesideWithTheChatSoFarAndSendsItTheQuestion() async throws {
+        let daemon = InMemoryDaemon { text in
+            text == "one" ? [.say("done")] : [.write(path: "a.txt", contents: "changed"), .say("answered")]
+        }
+        let session = try await started(daemon)
+        try await daemon.client.setApprovalMode(session.id, .allowEverything)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let before = daemon.history(session.id)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(.sendTapped(.enqueue))
+        var opened: Session?
+        await store.receive(
+            { action in
+                guard case .delegate(.openSide(let side)) = action else { return false }
+                opened = side
+                return true
+            }, timeout: .seconds(1))
+        let side = try XCTUnwrap(opened)
+        XCTAssertEqual(side.parentID, session.id)
+        XCTAssertTrue(side.readOnly)
+        XCTAssertEqual(side.workingDirectory, session.workingDirectory)
+        XCTAssertEqual(store.state.draft, "")
+
+        let history = daemon.history(side.id)
+        XCTAssertEqual(Array(history.prefix(before.count)), before, "it starts with the chat so far")
+        XCTAssertTrue(history.contains { $0.kind == .userMessage("why is it slow?") })
+        XCTAssertTrue(history.contains { $0.kind == .assistantMessage("answered") })
+        XCTAssertEqual(daemon.files(of: session.id), [:], "its write was refused, though the session allows all")
+        XCTAssertEqual(daemon.history(session.id), before, "the session itself is as it was")
+    }
+
+    func testSideIsOfferedOnlyWhereTheHostHoldsItToReadingAndElseGoesToTheAgentAsTyped() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setChatCommands(ChatCommands(compact: true, compactTakesFocus: true))
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertFalse(store.state.slashChoices.contains { $0.builtIn == .side })
+
+        await store.send(\.binding.draft, "/side why?")
+        await store.send(.sendTapped(.enqueue))
+        var sent: String?
+        await store.receive({ action in
+            guard case .delegate(.send(let outgoing)) = action else { return false }
+            sent = outgoing.text
+            return true
+        })
+        XCTAssertEqual(sent, "/side why?")
+        XCTAssertEqual(daemon.sessions.count, 1, "no chat was made")
+    }
+
+    func testASideChatThatCantBeMadeSaysSoAndKeepsTheQuestionInTheBox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        let store = store(daemon, session)
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        // The host stops offering side chats after the list was read.
+        daemon.setChatCommands(ChatCommands(compact: true, compactTakesFocus: true))
+
+        await store.send(\.binding.draft, "/side why is it slow?")
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.failed, timeout: .seconds(1))
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertFalse(store.state.forking)
+        XCTAssertEqual(store.state.draft, "/side why is it slow?")
+        XCTAssertEqual(daemon.sessions.count, 1)
     }
 }

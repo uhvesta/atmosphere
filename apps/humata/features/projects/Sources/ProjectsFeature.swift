@@ -77,7 +77,9 @@ package struct ProjectsFeature {
             if let approval = approvals.first { return .approval(approval.id) }
             for entry in inbox where entry.reason.blocks {
                 if let request = entry.request {
-                    if case .move = request.kind { return .request(entry: entry.id, request.id) }
+                    // A move, or what an agent asks to do to another
+                    // session, is allowed from where it is.
+                    if request.kind != .question { return .request(entry: entry.id, request.id) }
                 } else if entry.reason == .approval, !entry.session.hostOffline,
                     let permission = entry.session.pending.first
                 {
@@ -153,19 +155,20 @@ package struct ProjectsFeature {
         }
 
         /// The project's sessions that aren't archived, each under the one
-        /// it was forked from; nil for sessions in no project. A fork whose
-        /// parent is archived or elsewhere is at the top.
+        /// it was forked from or whose agent started it; nil for sessions
+        /// in no project. One whose parent is archived or elsewhere is at
+        /// the top.
         package func tree(in project: Project.ID?) -> [SessionNode] {
             let shown = sessions.filter { $0.projectID == project && !$0.archived }
             let ids = Set(shown.map(\.id))
-            let children = Dictionary(grouping: shown.filter { $0.parentID.map(ids.contains) == true }) {
-                $0.parentID ?? ""
+            let children = Dictionary(grouping: shown.filter { $0.nestsUnder.map(ids.contains) == true }) {
+                $0.nestsUnder ?? ""
             }
             func node(_ session: Session) -> SessionNode {
                 let under = sortedNodes((children[session.id] ?? []).map(node))
                 return SessionNode(session: session, children: under.isEmpty ? nil : under)
             }
-            return sortedNodes(shown.filter { $0.parentID.map(ids.contains) != true }.map(node))
+            return sortedNodes(shown.filter { $0.nestsUnder.map(ids.contains) != true }.map(node))
         }
 
         /// `nodes`, the one whose tree was most recently active first.
@@ -308,6 +311,43 @@ package struct ProjectsFeature {
 
     /// How often the list is read again, for sessions' states.
     static let refreshInterval = Duration.seconds(2)
+    /// How many reads in a row with nothing new go untaken before one is
+    /// taken in all the same: a change made here that the daemon didn't
+    /// keep is put right by then.
+    static let unchangedReads = 4
+
+    /// What a read changes in the sidebar, to tell a read with nothing new
+    /// from one to take in: the lists as the sidebar keeps them, and the
+    /// minute its times are shown against.
+    private enum Shown: Equatable {
+        case lists([Project], [Session], [InboxEntry], [AdminApproval], minute: Date)
+        case failure(String)
+        case other
+
+        init(_ read: Action, at now: Date) {
+            switch read {
+            case .loaded(let projects, let sessions, let inbox, let approvals):
+                // As `.loaded` keeps them: times to the minute, and not what
+                // a session last said, which only the inbox's entries show.
+                let sessions = sessions.map { session -> Session in
+                    var session = session
+                    session.lastActive = session.lastActive?.toTheMinute
+                    session.lastMessage = nil
+                    return session
+                }
+                let inbox = inbox.map { entry -> InboxEntry in
+                    var entry = entry
+                    entry.session.lastActive = entry.session.lastActive?.toTheMinute
+                    return entry
+                }
+                self = .lists(projects, sessions, inbox, approvals, minute: now.toTheMinute)
+            case .loadFailed(let message):
+                self = .failure(message)
+            default:
+                self = .other
+            }
+        }
+    }
 
     @Dependency(\.daemon) var daemon
     @Dependency(\.appActivity) var activity
@@ -325,8 +365,21 @@ package struct ProjectsFeature {
             case .task:
                 return .merge(
                     .run { send in
+                        // Most reads show what the last did. They're told
+                        // apart here, off the main thread, and only one
+                        // with something new is taken in.
+                        var shown: Shown?
+                        var unchanged = 0
                         while !Task.isCancelled {
-                            await send(await load())
+                            let read = await load()
+                            let shows = Shown(read, at: date.now)
+                            if shows != shown || unchanged >= Self.unchangedReads {
+                                shown = shows
+                                unchanged = 0
+                                await send(read)
+                            } else {
+                                unchanged += 1
+                            }
                             try await clock.sleep(for: Self.refreshInterval)
                         }
                     }
@@ -1016,7 +1069,8 @@ package enum InboxShortcut: Hashable, Sendable {
     case approval(AdminApproval.ID)
     /// The first permission request of the session in row `entry`.
     case permission(entry: InboxEntry.ID, requestID: String)
-    /// An agent's request to move its item, in row `entry`.
+    /// An agent's request to move its item, to start a session or to
+    /// write to one, in row `entry`.
     case request(entry: InboxEntry.ID, AgentRequest.ID)
 }
 

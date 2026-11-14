@@ -176,8 +176,10 @@ package struct SessionFeature {
         /// Sent images being read for their thumbnails.
         var loadingThumbnails: Set<String> = []
         /// The skills and plugin commands the agent has, for the / list;
-        /// nil until first looked for.
-        package var slashOffered: [SlashChoice]?
+        /// nil until first looked for. Kept per session while Humata runs,
+        /// so a chat opened again lists them at once, and looks for them
+        /// again behind the list.
+        @Shared var slashOffered: [SlashChoice]?
         /// Those matching what's typed after a /, best first; empty when
         /// the list isn't showing.
         package var slashChoices: [SlashChoice] = []
@@ -240,6 +242,8 @@ package struct SessionFeature {
         var rewoundText: String?
         /// The chip it went back as, when it was too long for the field.
         var rewoundPaste: Paste.ID?
+        /// The images the last rewind put back in the box with it.
+        var rewoundImages: [DraftImage.ID] = []
         /// The rewind the chat was last read again for, so reading it
         /// again doesn't start over once more.
         var restartedFor: String?
@@ -250,8 +254,12 @@ package struct SessionFeature {
         @Presents package var land: LandFeature.State?
         /// Merging the base in is under way.
         package var updating = false
-        /// A fork, or an edited message's fork, is being made.
+        /// A fork, an edited message's fork or a new chat under this one
+        /// is being made.
         package var forking = false
+        /// Shown beside another session, as a side chat is: its chat
+        /// alone, under whatever bar its column gives it.
+        package var beside = false
         /// Permission requests answered and not yet taken by the agent, so
         /// their buttons can't send a second answer.
         package var answering: Set<String> = []
@@ -284,6 +292,7 @@ package struct SessionFeature {
             let pasted = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id) + "_pastes"))
             _savedPastes = pasted
             pastes = Paste.decode(pasted.wrappedValue)
+            _slashOffered = Shared(wrappedValue: nil, .inMemory("slash_" + session.id))
         }
 
         /// Whether there's anything to send.
@@ -298,6 +307,9 @@ package struct SessionFeature {
         /// Whether the model is known to see images, so the box offers to
         /// add them.
         package var takesImages: Bool { readsImages == true && !session.archived }
+
+        /// Whether there's a turn to stop that hasn't been told to yet.
+        package var canStop: Bool { isWorking && !stopping && !session.archived }
 
         /// The chat row of the highlighted event, once the history has it:
         /// a tool's row for its call or output, otherwise the event's own.
@@ -369,6 +381,7 @@ package struct SessionFeature {
         /// The views it has: a review only for a project's code, and no
         /// terminal once archived, when its folder is gone.
         package var tabs: [Tab] {
+            guard !beside else { return [.chat] }
             var tabs: [Tab] = session.projectID == nil ? [.chat, .files] : [.chat, .review, .files, .spec]
             if !session.archived { tabs.append(.terminal) }
             return tabs
@@ -377,7 +390,7 @@ package struct SessionFeature {
         /// Whether it has code of a project's to land or update: not a
         /// planning session, and not archived.
         package var ships: Bool {
-            session.projectID != nil && !session.planning && !session.archived
+            session.projectID != nil && !session.planning && !session.archived && !session.readOnly
         }
 
         /// Whether a turn has started and not yet ended. Kept, as views
@@ -399,6 +412,7 @@ package struct SessionFeature {
             if stopping, !working { stopping = false }
             if let land, land.turnRunning != working { self.land?.turnRunning = working }
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
+            if lastImages != chat.lastImages { lastImages = chat.lastImages }
             if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
             if !lastTurnFailed, retrying { retrying = false }
             if subagents != subagentLog.runs { subagents = subagentLog.runs }
@@ -443,6 +457,8 @@ package struct SessionFeature {
 
         /// The person's last message, to send again after a failed turn.
         package private(set) var lastMessage: String?
+        /// The names of the images sent with it, which go with it again.
+        package private(set) var lastImages: [String] = []
 
         /// Whether the last turn failed and nothing has started since.
         package private(set) var lastTurnFailed = false
@@ -738,6 +754,12 @@ package struct SessionFeature {
         case unqueueTapped(String)
         /// Takes a pasted chip out of the message.
         case removePasteTapped(String)
+        /// A pasted chip's text was changed; with nothing left, it's taken
+        /// out.
+        case pasteEdited(id: String, text: String)
+        /// A pasted chip's text, as last changed, goes into the box after
+        /// what's typed, to edit there, if it's short enough for the field.
+        case pasteMovedToBox(id: String, text: String)
         /// Opens the queued message to edit in place.
         case editQueuedTapped(String)
         case editQueuedCancelled
@@ -766,6 +788,9 @@ package struct SessionFeature {
         /// The chat was cut back; `text` goes back in the box, unless it's
         /// empty, as for a compaction.
         case rewound(String)
+        /// The images of a sent message, read again to go back in the box
+        /// with its text: after a rewind, or for Stop and Edit.
+        case sentImagesRead([DraftImage], rewound: Bool)
         case undoRewindTapped
         case rewindUndone
         case rewindFailed(String)
@@ -799,6 +824,13 @@ package struct SessionFeature {
         /// The fork for an edited message was made, but the message
         /// couldn't be sent to it: the fork opens with it in the box.
         case forkSendFailed(fork: Session, text: String)
+        /// Starts a chat as this session's child: an empty one, which
+        /// opens in its place, or a read-only side chat, which opens
+        /// beside it and is sent `message` unless that's empty.
+        case childTapped(ChildChat, message: String)
+        /// The side chat was made. `unsent` is its first message if that
+        /// couldn't be sent: it waits in the side chat's box.
+        case sideMade(Session, unsent: String)
         case failed(Doing, String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
@@ -826,6 +858,7 @@ package struct SessionFeature {
             case retrying
             case unqueueing
             case forking
+            case startingChild
             case updating
             case answering(requestID: String)
         }
@@ -846,6 +879,8 @@ package struct SessionFeature {
         package enum Delegate: Equatable {
             /// A fork was made, or work started on a proposed task; open it.
             case openSession(Session)
+            /// A side chat was made; open it beside this session.
+            case openSide(Session)
             /// Open the board at the task it works on.
             case openItem(projectID: Project.ID, itemID: Item.ID)
             /// Answer the agent's request, as the inbox does.
@@ -1004,7 +1039,10 @@ package struct SessionFeature {
                 return .send(.task)
             }
         }
+        let editedBefore = state.editingQueued.flatMap { id in state.queued.first { $0.id == id }?.text }
         state.receive(events, folded: folded)
+        // A history still being sent again isn't yet what the queue holds.
+        if !state.replaying { queuedEditLeftBehind(was: editedBefore, &state) }
         var effects: [Effect<Action>] = []
         if new.contains(where: { event in
             if case .toolCompleted(let call, true, _) = event.kind { state.proposes(call) } else { false }
@@ -1023,6 +1061,45 @@ package struct SessionFeature {
             }
         }
         return .merge(effects)
+    }
+
+    /// The images `names` of a message sent in `session`, read again as
+    /// they were sent, ready for the box. One that can't be read is left
+    /// out: the text goes back all the same.
+    private static func sentImages(
+        _ names: [String], of session: Session.ID, _ daemon: DaemonClient, _ uuid: UUIDGenerator
+    ) async -> [DraftImage] {
+        var images: [DraftImage] = []
+        for name in names {
+            guard let image = try? await daemon.readImage(session, name) else { continue }
+            let thumbnail = ImagePrep.thumbnail(image.data, side: ImagePrep.thumbnailSide)
+            images.append(DraftImage(id: uuid().uuidString, name: name, image: image, thumbnail: thumbnail))
+        }
+        return images
+    }
+
+    /// Closes the edit of a queued message that's no longer queued, as
+    /// once its turn started: it ran as it was, so an edit that changed it
+    /// goes in the box, and the person is told. `original` is its text
+    /// while it was queued, when that's known.
+    private func queuedEditLeftBehind(was original: String?, _ state: inout State) {
+        guard state.historyLoaded, let id = state.editingQueued,
+            !state.queued.contains(where: { $0.id == id })
+        else { return }
+        let text = state.queuedEdit.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.editingQueued = nil
+        state.queuedEdit = ""
+        guard !text.isEmpty, text != original?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        putInBox(text, ahead: false, &state)
+        state.alert = AlertState {
+            TextState("Its turn already started")
+        } message: {
+            TextState(
+                """
+                The message left the queue while you were editing it, so it ran as it was. Your edit is in \
+                the box: send it to follow up, or steer the running turn with it.
+                """)
+        }
     }
 
     /// The longest wait before watching again.
@@ -1107,7 +1184,7 @@ package struct SessionFeature {
                 if state.chatCommands != commands { state.chatCommands = commands }
                 switch result {
                 case .success(let offered):
-                    state.slashOffered = offered
+                    if state.slashOffered != offered { state.$slashOffered.withLock { $0 = offered } }
                     state.slashFailure = nil
                 case .failure(let failure):
                     state.slashFailure = failure.message
@@ -1131,6 +1208,13 @@ package struct SessionFeature {
                     // Nothing more to type: it's asked for at once.
                     clearDraft(&state)
                     return .send(.compactAsked(focus: ""))
+                case .newHere?, .fork?, .side?:
+                    // Typed in full, it's carried out; picked from part of
+                    // its name, what may follow it is typed first.
+                    guard SlashChoice.query(in: state.draft) == name else { break }
+                    state.draft = "/\(name) "
+                    slashHidden(&state)
+                    return .send(.sendTapped(.enqueue))
                 case .compact?, nil:
                     break
                 }
@@ -1215,6 +1299,27 @@ package struct SessionFeature {
                 state.pastes.removeAll { $0.id == id }
                 let pastes = Paste.encode(state.pastes)
                 state.$savedPastes.withLock { $0 = pastes }
+                return .none
+
+            case .pasteEdited(let id, let text):
+                guard let index = state.pastes.firstIndex(where: { $0.id == id }) else { return .none }
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    state.pastes.remove(at: index)
+                } else {
+                    state.pastes[index] = Paste(id: id, text: text)
+                }
+                let pastes = Paste.encode(state.pastes)
+                state.$savedPastes.withLock { $0 = pastes }
+                return .none
+
+            case .pasteMovedToBox(let id, let text):
+                guard let index = state.pastes.firstIndex(where: { $0.id == id }), Paste.fitsInBox(text) else {
+                    return .none
+                }
+                state.pastes.remove(at: index)
+                let pastes = Paste.encode(state.pastes)
+                state.$savedPastes.withLock { $0 = pastes }
+                putInBox(text, ahead: false, &state)
                 return .none
 
             case .proposals(.delegate(.openSession(let session))):
@@ -1352,6 +1457,9 @@ package struct SessionFeature {
 
             case .historyReplayed:
                 state.replaying = false
+                // The queued message whose edit was kept may have run
+                // while the session wasn't shown.
+                queuedEditLeftBehind(was: nil, &state)
                 return .none
 
             case .historyLoading(let read, let total):
@@ -1393,6 +1501,18 @@ package struct SessionFeature {
                         // It stays in the box until it's under way, so
                         // cancelling leaves it there.
                         return .send(.compactAsked(focus: text))
+                    case .newHere:
+                        guard !state.forking else { return .none }
+                        clearDraft(&state)
+                        return .send(.childTapped(.empty(ownCopy: text.lowercased() == "copy"), message: ""))
+                    case .fork:
+                        guard !state.forking else { return .none }
+                        clearDraft(&state)
+                        return .send(.forkTapped(before: nil, chatOnly: text.lowercased() == "chat"))
+                    case .side:
+                        // It stays in the box until the side chat is made,
+                        // so a failure doesn't lose the question.
+                        return .send(.childTapped(.side, message: text))
                     }
                 }
                 guard state.canSend else { return .none }
@@ -1524,8 +1644,14 @@ package struct SessionFeature {
                 guard let text = state.lastMessage, !state.isWorking, !state.retrying else { return .none }
                 state.retrying = true
                 let session = state.session.id
+                let images = state.lastImages
                 return .run { _ in
-                    try await daemon.send(session, text, .enqueue)
+                    guard !images.isEmpty else { return try await daemon.send(session, text, .enqueue) }
+                    // Its images go with it again; one that can't be read
+                    // fails the retry, as the message isn't whole without.
+                    var attachments: [ImageAttachment] = []
+                    for name in images { attachments.append(try await daemon.readImage(session, name)) }
+                    try await daemon.sendImages(session, text, attachments, .enqueue)
                 } catch: { error, send in
                     await send(.failed(.retrying, error.localizedDescription))
                 }
@@ -1573,8 +1699,13 @@ package struct SessionFeature {
                 state.editingQueued = nil
                 state.queuedEdit = ""
                 let session = state.session.id
-                guard !text.isEmpty else { return .send(.unqueueTapped(id)) }
-                guard state.queued.first(where: { $0.id == id })?.text != text else { return .none }
+                let queued = state.queued.first(where: { $0.id == id })
+                // Emptied, it's taken out of the queue; one that is only
+                // images had no text to begin with, and stays.
+                guard !text.isEmpty else {
+                    return queued?.images.isEmpty == false ? .none : .send(.unqueueTapped(id))
+                }
+                guard queued?.text != text else { return .none }
                 return .run { _ in
                     try await daemon.editQueued(session, id, text)
                 } catch: { error, send in
@@ -1607,11 +1738,23 @@ package struct SessionFeature {
                 state.stopping = true
                 let session = state.session.id
                 putInBox(text, ahead: true, &state)
-                return .run { _ in
-                    try await daemon.abort(session)
-                } catch: { error, send in
-                    await send(.failed(.stopping, error.localizedDescription))
-                }
+                let images = state.takesImages ? state.lastImages : []
+                // Its images go back in the box with it.
+                let reading: Effect<Action> =
+                    images.isEmpty
+                    ? .none
+                    : .run { [daemon, uuid] send in
+                        let read = await Self.sentImages(images, of: session, daemon, uuid)
+                        if !read.isEmpty { await send(.sentImagesRead(read, rewound: false)) }
+                    }
+                return .merge(
+                    .run { _ in
+                        try await daemon.abort(session)
+                    } catch: { error, send in
+                        await send(.failed(.stopping, error.localizedDescription))
+                    },
+                    reading
+                )
 
             case .rewindTapped(let id):
                 guard let event = state.events[id: id], event.parentCallID == nil, !state.rewinding else {
@@ -1656,15 +1799,26 @@ package struct SessionFeature {
                     }
                 // A compaction puts nothing back in the box.
                 let text: String
+                var images: [String] = []
                 switch state.events[id: before]?.kind {
-                case .userMessage(let sent, _): text = sent
+                case .userMessage(let sent, let names):
+                    text = sent
+                    if state.takesImages { images = names }
                 case .compacted: text = ""
                 default: return .none
                 }
                 state.rewinding = true
+                state.rewoundImages = []
                 let session = state.session.id
-                return .run { send in
+                // Names for the images, only when there are some to name.
+                let uuid: UUIDGenerator? = images.isEmpty ? nil : uuid
+                return .run { [daemon] send in
+                    // Read before the rewind, which takes the message out
+                    // of the history its images belong to.
+                    var read: [DraftImage] = []
+                    if let uuid { read = await Self.sentImages(images, of: session, daemon, uuid) }
                     try await daemon.rewind(session, before, files)
+                    if !read.isEmpty { await send(.sentImagesRead(read, rewound: true)) }
                     await send(.rewound(text))
                 } catch: { error, send in
                     await send(.rewindFailed(error.localizedDescription))
@@ -1683,6 +1837,13 @@ package struct SessionFeature {
                 state.rewoundText = text
                 let paste = putInBox(text, ahead: true, &state)
                 state.rewoundPaste = paste
+                return .none
+
+            case .sentImagesRead(let images, let rewound):
+                // The model may have changed since they were sent.
+                guard state.takesImages else { return .none }
+                state.images = IdentifiedArray(uniqueElements: images + state.images)
+                if rewound { state.rewoundImages = images.map(\.id) }
                 return .none
 
             case .undoRewindTapped:
@@ -1709,6 +1870,8 @@ package struct SessionFeature {
                     state.$savedDraft.withLock { $0 = "" }
                     slashHidden(&state)
                 }
+                for image in state.rewoundImages { state.images.remove(id: image) }
+                state.rewoundImages = []
                 state.rewoundText = nil
                 state.rewoundPaste = nil
                 return .none
@@ -1842,10 +2005,45 @@ package struct SessionFeature {
                 draft.withLock { $0 = $0.isEmpty ? text : $0 + "\n\n" + text }
                 return .send(.forked(fork))
 
+            case .childTapped(let kind, let message):
+                guard !state.forking, !state.session.archived else { return .none }
+                state.forking = true
+                let session = state.session
+                let name = kind == .side ? "\(session.name) side" : "New chat"
+                let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .run { send in
+                    let child = try await daemon.newChild(session.id, name, kind)
+                    guard kind == .side else {
+                        await send(.forked(child))
+                        return
+                    }
+                    var unsent = ""
+                    if !text.isEmpty {
+                        do {
+                            try await daemon.send(child.id, text, .enqueue)
+                        } catch {
+                            unsent = text
+                        }
+                    }
+                    await send(.sideMade(child, unsent: unsent))
+                } catch: { error, send in
+                    await send(.failed(.startingChild, error.localizedDescription))
+                }
+
+            case .sideMade(let side, let unsent):
+                state.forking = false
+                if SlashChoice.command(in: state.draft)?.command == .side { clearDraft(&state) }
+                if !unsent.isEmpty {
+                    // The side chat's box keeps it, to send from there.
+                    let draft = Shared(wrappedValue: "", .appStorage(State.draftKey(side.id)))
+                    draft.withLock { $0 = $0.isEmpty ? unsent : $0 + "\n\n" + unsent }
+                }
+                return .send(.delegate(.openSide(side)))
+
             case .failed(let doing, let message):
                 switch doing {
                 case .updating: state.updating = false
-                case .forking: state.forking = false
+                case .forking, .startingChild: state.forking = false
                 case .retrying: state.retrying = false
                 case .answering(let request): state.answering.remove(request)
                 case .stopping: state.stopping = false
@@ -1911,6 +2109,7 @@ package struct SessionFeature {
         case .retrying: "Couldn’t send your message again"
         case .unqueueing: "Couldn’t take the message out of the queue"
         case .forking: "Couldn’t fork the session"
+        case .startingChild: "Couldn’t start the chat"
         case .updating: "Couldn’t update from the base branch"
         case .answering: "Couldn’t answer the permission request"
         }

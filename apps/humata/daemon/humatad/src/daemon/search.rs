@@ -76,7 +76,7 @@ impl Daemon {
             }
             (Some(_), false) => vec![search.project_id.clone()],
         };
-        self.catch_up_soon().await;
+        let catching_up = !self.catch_up_soon().await;
         let sessions: HashMap<String, String> = self
             .list("")
             .await?
@@ -156,15 +156,18 @@ impl Daemon {
             words: words.join(" "),
             since_unix_ms: since.unwrap_or_default(),
             until_unix_ms: until.unwrap_or_default(),
+            catching_up,
         })
     }
 
     /// Catches the index up in the background, waiting a little for it: a
     /// search then finds what was just said, yet a host slow to give a
     /// history can't hold it up, and searches what was indexed before.
-    async fn catch_up_soon(&self) {
+    /// False if the wait ran out with the index still catching up, so the
+    /// search may miss what isn't indexed yet.
+    async fn catch_up_soon(&self) -> bool {
         let Some(daemon) = self.me.upgrade() else {
-            return;
+            return true;
         };
         // One catching up already is waited on instead of starting another.
         let mut done = {
@@ -191,7 +194,9 @@ impl Daemon {
             }
         };
         // Given up, it goes on, and the next search may find what it adds.
-        let _ = tokio::time::timeout(CATCH_UP_WAIT, done.wait_for(|done| *done)).await;
+        tokio::time::timeout(CATCH_UP_WAIT, done.wait_for(|done| *done))
+            .await
+            .is_ok()
     }
 
     /// Indexes what every session did since it was last indexed. A session

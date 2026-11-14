@@ -66,7 +66,7 @@ package final class InMemoryDaemon: Sendable {
         var plugins = PluginList()
         /// The chat commands every session's agent takes; nil when asking
         /// fails.
-        var commands: ChatCommands? = ChatCommands(compact: true, compactTakesFocus: true)
+        var commands: ChatCommands? = ChatCommands(compact: true, compactTakesFocus: true, side: true)
         /// Those of the sessions that differ, by session id.
         var sessionCommands: [String: ChatCommands?] = [:]
         var sessionDefaults = SessionDefaults()
@@ -563,6 +563,7 @@ package final class InMemoryDaemon: Sendable {
             fork: { session, before, name, chatOnly in
                 try self.fork(session, before: before, name: name, chatOnly: chatOnly)
             },
+            newChild: { session, name, kind in try self.newChild(session, name: name, kind: kind) },
             startWork: { session, item in try self.startWork(session, on: item) },
             proposals: { session in try self.proposals(session) },
             outsideProposals: { project in self.outsideProposals(project) },
@@ -986,10 +987,11 @@ package final class InMemoryDaemon: Sendable {
             case .run(let command, _), .write(let command, _):
                 let (tool, kind) = step.isRun ? ("shell", PermissionKind.shell) : ("write_file", .write)
                 let summary = step.isRun ? "Run `\(command)`" : "Write \(command)"
-                let (callID, request, mode) = state.withValue { state in
+                let (callID, request, mode, readOnly) = state.withValue { state in
                     defer { state.nextRequest += 1 }
-                    let mode = state.sessions.first { $0.id == session }?.approvalMode ?? .askEveryTime
-                    return ("c\(state.nextRequest)", "r\(state.nextRequest)", mode)
+                    let asking = state.sessions.first { $0.id == session }
+                    let mode = asking?.approvalMode ?? .askEveryTime
+                    return ("c\(state.nextRequest)", "r\(state.nextRequest)", mode, asking?.readOnly ?? false)
                 }
                 let key = step.isRun ? "command" : "path"
                 let arguments =
@@ -997,7 +999,11 @@ package final class InMemoryDaemon: Sendable {
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 append(.toolStarted(callID: callID, tool: tool, argumentsJSON: arguments), to: session)
                 append(.permissionRequested(requestID: request, kind: kind, summary: summary), to: session)
-                if mode.allows(kind) {
+                if readOnly {
+                    // A side chat's writes and commands are refused unasked.
+                    append(.permissionCompleted(requestID: request, approved: false, automatic: true), to: session)
+                    complete(session, step, callID: callID, approved: false)
+                } else if mode.allows(kind) {
                     append(.permissionCompleted(requestID: request, approved: true, automatic: true), to: session)
                     complete(session, step, callID: callID, approved: true)
                 } else {
@@ -1288,14 +1294,39 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    func fork(_ session: String, before: String?, name: String?, chatOnly: Bool) throws -> Session {
+    /// A new chat that is `session`'s child: empty, or a side chat where
+    /// its commands offer one.
+    private func newChild(_ session: String, name: String, kind: ChildChat) throws -> Session {
+        switch kind {
+        case .empty(let ownCopy):
+            return try fork(session, before: nil, name: name, chatOnly: !ownCopy, empty: true)
+        case .side:
+            try known(session)
+            guard commands(of: session)?.side == true else {
+                throw DaemonError.refused(
+                    .invalidRequest,
+                    message: "Session \(session)'s host can't hold a side chat to reading only. Update Humata on "
+                        + "that host, or fork the chat only and ask the agent not to change anything.")
+            }
+            return try fork(session, before: nil, name: name, chatOnly: true, readOnly: true)
+        }
+    }
+
+    func fork(
+        _ session: String, before: String?, name: String?, chatOnly: Bool, empty: Bool = false,
+        readOnly: Bool = false
+    ) throws -> Session {
         try known(session)
         return try state.withValue { state in
             guard let parent = state.sessions.first(where: { $0.id == session }) else {
                 throw Self.unknown(session)
             }
             var history = state.histories[session] ?? []
-            if let before {
+            // An empty one's own copy holds the code as it is now.
+            let saved = Set(history.map(\.id))
+            if empty {
+                history = []
+            } else if let before {
                 guard let index = history.firstIndex(where: { $0.id == before }) else {
                     throw DaemonError.refused(.unknownEvent, message: "Session \(session) has no event \(before).")
                 }
@@ -1310,11 +1341,12 @@ package final class InMemoryDaemon: Sendable {
             fork.archived = false
             fork.keeper = false
             fork.turns = 0
+            fork.readOnly = parent.readOnly || readOnly
             state.nextSession += 1
             if chatOnly {
                 state.copyOf[fork.id] = state.copyOf[parent.id]
             } else {
-                let kept = Set(history.map(\.id))
+                let kept = empty ? saved : Set(history.map(\.id))
                 let writes = state.copyOf[parent.id].flatMap { state.copies[$0] } ?? []
                 state.copies[fork.id] = writes.filter { kept.contains($0.event) }
                 state.copyOf[fork.id] = fork.id
@@ -1754,9 +1786,39 @@ extension InMemoryDaemon {
             _ = try updateItem(item, ItemUpdate(status: status), by: .session(request.sessionID))
         case (.approve, .question), (.move, .question):
             throw DaemonError.refused(.invalidRequest, message: "A question is answered with a reply.")
+        case (.approve, .startSession(let name)):
+            try startChild(of: request.sessionID, named: name, message: request.text)
+        case (.approve, .sendMessage(let to, _)):
+            try send(to, Self.headed(request.text, from: request.sessionID, in: state.value), .enqueue)
+        case (.move, .startSession), (.move, .sendMessage):
+            throw DaemonError.refused(.invalidRequest, message: "It is allowed or declined, not moved.")
         case (.dismiss, _): break
         }
         state.withValue { $0.requests.removeAll { $0.id == id } }
+    }
+
+    /// Starts the session `parent`'s agent asked for: where `parent` is,
+    /// set up as it is, with `message` as from `parent`.
+    private func startChild(of parent: String, named name: String, message: String) throws {
+        guard let from = state.value.sessions.first(where: { $0.id == parent }) else { throw Self.unknown(parent) }
+        let child = try startSession(
+            StartRequest(
+                backend: from.backend, workingDirectory: from.projectID == nil ? from.workingDirectory : nil,
+                name: name, host: from.host, model: from.model, effort: from.effort,
+                experimental: from.experimental, approvalMode: from.approvalMode, projectID: from.projectID,
+                itemID: from.itemID))
+        state.withValue { state in
+            if let index = state.sessions.firstIndex(where: { $0.id == child.id }) {
+                state.sessions[index].startedBy = parent
+            }
+        }
+        try send(child.id, Self.headed(message, from: parent, in: state.value), .enqueue)
+    }
+
+    /// `text` as session `sender`'s agent sends it to another session.
+    private static func headed(_ text: String, from sender: String, in state: State) -> String {
+        let name = state.sessions.first { $0.id == sender }?.name ?? ""
+        return AgentSender.headed(sessionID: sender, name: name, text: text)
     }
 
     private func answerRequests(where answered: (AgentRequest) -> Bool) {
@@ -1771,7 +1833,8 @@ extension InMemoryDaemon {
         let asked = state.requests.compactMap { request -> InboxEntry? in
             guard let session = state.sessions.first(where: { $0.id == request.sessionID }), !session.archived
             else { return nil }
-            let reason: InboxReason = if case .question = request.kind { .question } else { .move }
+            // What it asks to do to another session waits as a question does.
+            let reason: InboxReason = if case .move = request.kind { .move } else { .question }
             return InboxEntry(
                 session: session, reason: reason, projectName: project(session),
                 itemTitle: state.items.first { $0.id == session.itemID }?.title, request: request)

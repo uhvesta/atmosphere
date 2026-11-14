@@ -384,6 +384,12 @@ pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
         pb::InboxReason::Move => "move",
         pb::InboxReason::Unspecified => "-",
     };
+    // What an agent asks to do to another session waits as a question does.
+    let reason = match entry.request.as_ref().map(pb::AgentRequest::kind) {
+        Some(pb::AgentRequestKind::StartSession) => "start_session",
+        Some(pb::AgentRequestKind::SendMessage) => "send_message",
+        _ => reason,
+    };
     let asked = entry.request.as_ref().map_or_else(String::new, |request| {
         let status = match request.kind() {
             pb::AgentRequestKind::Move => status(request.status()),

@@ -26,6 +26,7 @@ mod paths;
 mod plugins;
 mod runtime;
 mod scripted;
+mod slash;
 mod summary;
 
 use std::future::Future;
