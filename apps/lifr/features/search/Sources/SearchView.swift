@@ -6,9 +6,13 @@ import SwiftUI
 
 package struct SearchView: View {
     @Bindable package var store: StoreOf<SearchFeature>
+    private let fieldPlacement: SearchFieldPlacement
 
-    package init(store: StoreOf<SearchFeature>) {
+    /// `fieldPlacement` is where the search field goes; the system picks
+    /// unless told.
+    package init(store: StoreOf<SearchFeature>, fieldPlacement: SearchFieldPlacement = .automatic) {
         self.store = store
+        self.fieldPlacement = fieldPlacement
     }
 
     package var body: some View {
@@ -23,7 +27,7 @@ package struct SearchView: View {
             }
         }
         .emptyAction(store.filter.filterCount == 0 ? nil : "Clear Filters") { store.send(.clearFiltersTapped) }
-        .modifier(SearchField(store: store))
+        .modifier(SearchField(store: store, placement: fieldPlacement))
         .navigationTitle(store.savedFilter?.name ?? String(localized: "Search"))
         .toolbar {
             Menu {
@@ -141,11 +145,12 @@ extension Binding {
 /// The search field, with the keyboard in it after ⌘F.
 private struct SearchField: ViewModifier {
     @Bindable var store: StoreOf<SearchFeature>
+    let placement: SearchFieldPlacement
     @FocusState private var isFocused: Bool
 
     func body(content: Content) -> some View {
         content
-            .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
+            .searchable(text: $store.filter.text, placement: placement, prompt: "Titles, details and comments")
             .searchFocused($isFocused)
             .bind($store.isFieldFocused, to: $isFocused)
     }

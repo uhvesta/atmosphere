@@ -180,11 +180,23 @@
                 unchanged = lines == last && frames == lastFrames ? unchanged + 1 : 0
                 last = lines
                 lastFrames = frames
-                if unchanged == 3 {
+                // Two seconds still is settled, morphing or not, as a morph
+                // left behind never ends.
+                if unchanged >= 25 || (unchanged >= 3 && !Self.isMorphing(window)) {
                     return last
                 }
             }
             return nil
+        }
+
+        /// Whether the system is still morphing its own chrome, as the tab
+        /// bar does folding up beside a search field. The tree can hold still
+        /// partway through, listing stand-ins for the parts on the move and
+        /// the tabs the fold takes away, so a step waits for the fold to end.
+        private static func isMorphing(_ view: UIView) -> Bool {
+            if view.isHidden || view.alpha == 0 { return false }
+            if NSStringFromClass(type(of: view)).contains("MorphAnimationContainer") { return true }
+            return view.subviews.contains { isMorphing($0) }
         }
 
         /// The tree settles before the system's own transitions finish

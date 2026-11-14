@@ -191,8 +191,9 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
     /// A search saved as a filter: it's listed on the Avenues tab, opens
     /// with its tasks, can be updated, and is deleted only after asking.
     func testSavedFilters() async throws {
-        let (store, flow) = app("saved-filters")
-        store.tab = .search
+        // Opens on Search, as switching to it on screen leaves where the
+        // system puts the search field, and the tab bar, to timing.
+        let (store, flow) = app("saved-filters", tab: .search)
         store.send(.search(.binding(.set(\.filter.priorities, [.high]))))
         await flow.step("search")
         store.send(.search(.saveFilterTapped))

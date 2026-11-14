@@ -349,7 +349,13 @@ private struct PhoneRootView: View {
                         ShelfView(store: store, shelf: shelf)
                     }
                     .navigationDestination(item: $store.scope(state: \.savedFilter, action: \.savedFilter)) {
-                        SearchView(store: $0)
+                        // Always under the title: left to the system, it
+                        // sometimes opens with the field tucked away.
+                        #if os(iOS)
+                            SearchView(store: $0, fieldPlacement: .navigationBarDrawer(displayMode: .always))
+                        #else
+                            SearchView(store: $0)
+                        #endif
                     }
                 }
             }
