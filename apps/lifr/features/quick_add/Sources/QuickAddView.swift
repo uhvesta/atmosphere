@@ -96,6 +96,13 @@ package struct QuickAddView: View {
                     Text("Sub tasks of \(parent.name)")
                 }
             } else {
+                if !store.addedTasks.isEmpty {
+                    Section("Added") {
+                        ForEach(Array(store.addedTasks.enumerated()), id: \.offset) { _, title in
+                            Label(title, systemImage: "checkmark.circle")
+                        }
+                    }
+                }
                 switch store.kind {
                 case .task: fields
                 case .project: avenueField
@@ -119,6 +126,16 @@ package struct QuickAddView: View {
                     Button("Done") { store.send(.doneTapped) }
                 }
             }
+            #if os(macOS)
+                ToolbarItem(placement: .primaryAction) {
+                    if store.parent == nil {
+                        Button("Add and Keep Open") { store.send(.addAndKeepOpenTapped) }
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(!store.canAdd)
+                            .help("Adds it and clears the title for the next task (⌘Return)")
+                    }
+                }
+            #endif
         }
         .onAppear { titleFocused = true }
     }

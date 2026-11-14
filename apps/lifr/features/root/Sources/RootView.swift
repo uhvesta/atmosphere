@@ -425,6 +425,9 @@ private struct SyncTroubleButton: View {
 private struct SyncFooter: View {
     let store: StoreOf<RootFeature>
     let now: Date
+    #if os(macOS)
+        @Environment(\.openSettings) private var openSettings
+    #endif
 
     var body: some View {
         let status = SyncStatusText.status(store.sync, now: now)
@@ -442,8 +445,12 @@ private struct SyncFooter: View {
             .accessibilityHint(Text("Syncs now"))
             if SyncStatusText.needsFix(store.sync) {
                 #if os(macOS)
-                    SettingsLink { Text("Fix") }
-                        .buttonStyle(.borderless)
+                    // Straight to the tab that fixes it.
+                    Button("Fix") {
+                        store.send(.settings(.pagePicked(.sync)))
+                        openSettings()
+                    }
+                    .buttonStyle(.borderless)
                 #else
                     Button("Fix") { store.isSettingsShown = true }
                         .buttonStyle(.borderless)

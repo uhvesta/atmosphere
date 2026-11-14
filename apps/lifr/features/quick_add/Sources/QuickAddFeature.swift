@@ -67,6 +67,10 @@ package struct QuickAddFeature {
         package var parent: Choice?
         /// Titles added under `parent` so far.
         package var addedSubtasks: [String] = []
+        /// Titles ⌘Return added while keeping Quick Add open.
+        package var addedTasks: [String] = []
+        /// The add on its way came from ⌘Return, so Quick Add stays open.
+        package var keepsOpen = false
         package var error: String?
         /// A save is on its way, so Add waits for it.
         package var isAdding = false
@@ -131,6 +135,9 @@ package struct QuickAddFeature {
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case addTapped
+        /// ⌘Return: adds, then clears the title for the next task, keeping
+        /// the Avenue and the rest.
+        case addAndKeepOpenTapped
         /// The title field's text as typed. A line break in it becomes a
         /// space, and one typed at the end adds, as Return does in a
         /// one-line field.
@@ -197,6 +204,11 @@ package struct QuickAddFeature {
                     await send(.added(Result { try await store.createTask(new) }))
                 }
 
+            case .addAndKeepOpenTapped:
+                guard state.canAdd, state.parent == nil else { return .none }
+                state.keepsOpen = true
+                return .send(.addTapped)
+
             case .titleTyped(let typed):
                 state.title = Self.oneLine(typed)
                 return typed.last?.isNewline == true ? .send(.addTapped) : .none
@@ -233,6 +245,13 @@ package struct QuickAddFeature {
                 if let avenueID = created?.avenueID ?? state.avenueID {
                     state.$lastAvenue.withLock { $0 = avenueID.uuidString }
                 }
+                if state.keepsOpen {
+                    state.keepsOpen = false
+                    state.addedTasks.append(state.finalTitle)
+                    state.title = ""
+                    state.ignored = []
+                    return .send(.delegate(.saved(saved.snapshot)))
+                }
                 if state.kind == .task, state.subtaskMode, let created {
                     state.parent = Choice(id: created.id, name: created.title)
                     state.title = ""
@@ -246,6 +265,7 @@ package struct QuickAddFeature {
 
             case .added(.failure(let error)):
                 state.isAdding = false
+                state.keepsOpen = false
                 state.error = (error as? LifrError)?.description ?? error.localizedDescription
                 return .none
 

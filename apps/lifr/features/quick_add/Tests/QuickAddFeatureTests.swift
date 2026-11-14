@@ -242,6 +242,27 @@ final class QuickAddFeatureTests: XCTestCase {
         return try await store.dependencies.store.load()
     }
 
+    func testAddAndKeepOpenAddsEachTaskAndStaysForTheNext() async throws {
+        _ = home
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.avenueID, home.id)))
+
+        await store.send(.binding(.set(\.title, "Buy paint")))
+        await store.send(.addAndKeepOpenTapped)
+        await store.receive(\.added.success)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.title, "")
+        XCTAssertEqual(store.state.avenueID, home.id)
+
+        await store.send(.binding(.set(\.title, "Buy brushes")))
+        await store.send(.addTapped)
+        await store.receive(\.added.success)
+        let titles = try await store.dependencies.store.load().tasks.values.map(\.title).sorted()
+        XCTAssertEqual(titles, ["Buy brushes", "Buy paint"])
+        XCTAssertEqual(store.state.addedTasks, ["Buy paint"])
+        await store.finish()
+    }
+
     func testReturnTypedInTheTitleAddsTheTask() async throws {
         _ = home
         let store = try quickAdd()

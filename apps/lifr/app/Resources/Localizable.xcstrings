@@ -785,6 +785,9 @@
     "Add an Avenue first, on the Avenues tab." : {
 
     },
+    "Add and Keep Open" : {
+
+    },
     "Add context" : {
 
     },
@@ -854,6 +857,9 @@
 
     },
     "Adds a task to Lifr, due today unless you pick otherwise." : {
+
+    },
+    "Adds it and clears the title for the next task (⌘Return)" : {
 
     },
     "Adds this task, then keeps Quick Add open for its Sub tasks." : {
