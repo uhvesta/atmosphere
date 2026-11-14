@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
     Agent, AgentError, ApprovalMode, BackendFile, Backup, BackupSince, Checkout, ClaudeOptions,
-    ClaudeRunner, CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId,
-    ForkOptions, Held, Image, Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner,
-    McpServer, Merged, Message, ModelServer, Query, Repository, Script, ScriptedRunner, SendMode,
-    SessionId, SessionRecord, SessionUpdate, StartOptions, Summary, Watch, Workspaces, bundle,
+    ClaudeRunner, Compaction, CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event,
+    EventId, ForkOptions, Held, Image, Importable, Landed, LocalAgent, LocalModelConfig,
+    LocalModelRunner, McpServer, Merged, Message, ModelServer, Query, Repository, Script,
+    ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Summary,
+    Watch, Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -63,6 +64,13 @@ trait Backend: Send + Sync {
         files: bool,
     ) -> BoxFuture<'a, ()>;
     fn undo_rewind<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
+    fn compaction<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Compaction>;
+    fn compact<'a>(
+        &'a self,
+        session: &'a SessionId,
+        focus: String,
+        stop: bool,
+    ) -> BoxFuture<'a, ()>;
     fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()>;
     fn edit_queued<'a>(
         &'a self,
@@ -209,6 +217,21 @@ where
     }
     fn undo_rewind<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
         Box::pin(async move { Agent::undo_rewind(self, session).await.map_err(Into::into) })
+    }
+    fn compaction<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Compaction> {
+        Box::pin(async move { Agent::compaction(self, session).await.map_err(Into::into) })
+    }
+    fn compact<'a>(
+        &'a self,
+        session: &'a SessionId,
+        focus: String,
+        stop: bool,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            Agent::compact(self, session, focus, stop)
+                .await
+                .map_err(Into::into)
+        })
     }
     fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
@@ -1081,6 +1104,26 @@ impl Host {
                 let session = SessionId::new(undo.session_id);
                 self.owner(&session)?.1.undo_rewind(&session).await?;
                 Response::RewindUndone(pb::RewindUndone {})
+            }
+            Request::CompactSession(compact) => {
+                let session = SessionId::new(compact.session_id);
+                self.owner(&session)?
+                    .1
+                    .compact(&session, compact.focus, compact.stop)
+                    .await?;
+                Response::CompactStarted(pb::CompactStarted {})
+            }
+            Request::GetChatCommands(get) => {
+                let session = SessionId::new(get.session_id);
+                let (compact, compact_takes_focus) =
+                    match self.owner(&session)?.1.compaction(&session).await? {
+                        Compaction::Unsupported => (false, false),
+                        Compaction::Supported { focus } => (true, focus),
+                    };
+                Response::ChatCommands(pb::ChatCommands {
+                    compact,
+                    compact_takes_focus,
+                })
             }
             Request::ListImportable(_) => {
                 let mut sessions = Vec::new();

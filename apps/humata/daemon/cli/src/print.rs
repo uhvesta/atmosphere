@@ -77,6 +77,7 @@ pub fn event(event: &pb::SessionEvent) -> String {
         ),
         Some(Kind::RewindUndone(_)) => ("rewind-undone", String::new()),
         Some(Kind::Compacted(_)) => ("compacted", String::new()),
+        Some(Kind::Compacting(compacting)) => ("compacting", compacting.focus.clone()),
         Some(Kind::Subagent(subagent)) => (
             "subagent",
             format!(

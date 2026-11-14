@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 
+use crate::Compaction;
 use crate::backup::{self, BackendFile};
 use crate::children;
 use crate::env::Env;
@@ -118,6 +119,16 @@ pub enum ClaudeError {
         "Claude Code no longer has this session's conversation ({session}.jsonl isn't under {}), so it can't go on with it; something removed it, such as Claude Code's own clean-up of old sessions. Sending again or forking won't help, as both need it: start a new session, and copy what it needs from this one's history, which Humata keeps", projects.display()
     )]
     Gone { session: String, projects: PathBuf },
+
+    #[error(
+        "Claude Code has no conversation of session {session} to sum up, as it starts a new one at its next message; send a message first"
+    )]
+    NoConversation { session: SessionId },
+
+    #[error(
+        "Claude Code ended /compact without summing up the conversation ({said}). There may be too little to sum up yet; if not, compare `claude --version` with {CLAUDE_VERSION}, the version Humata is tested with"
+    )]
+    NotCompacted { said: String },
 
     #[error(transparent)]
     Agent(#[from] AgentError),
@@ -230,6 +241,108 @@ impl ClaudeRunner {
             .process_group(0)
             .kill_on_drop(true);
         (command, session)
+    }
+
+    /// Plays `turn` on the CLI: its message, or, `compacting`, the CLI's
+    /// own `/compact` with the turn's text as what to keep in mind.
+    async fn play(&self, turn: &Turn, compacting: bool) -> Result<(), ClaudeError> {
+        let record = turn.record();
+        let path = Links::path(&self.options.state, record.id.as_str());
+        let mut links = Links::load(&path)?;
+        // Resumed, Claude Code would fail on every turn without saying why.
+        if let (Some(session), Some(projects)) = (&links.session, self.transcripts())
+            && projects.is_dir()
+            && import::claude_transcript(&projects, session).is_err()
+        {
+            return Err(ClaudeError::Gone {
+                session: session.clone(),
+                projects,
+            });
+        }
+        if links.session.is_none() && links.fork.is_none() {
+            if compacting {
+                return Err(ClaudeError::NoConversation { session: record.id });
+            }
+            if turn.with_history(crate::links::had_turns)? {
+                turn.emit(EventKind::Notice {
+                    text: crate::links::STARTED_OVER.to_owned(),
+                })?;
+            }
+        }
+        let (mut command, session) = self.command(&record, &mut links);
+        let mut child = command.spawn().map_err(|source| ClaudeError::Start {
+            program: self.options.program.clone(),
+            source,
+        })?;
+        let _noted = children::Noted::note(&self.options.state.join(RUNNING), child.id());
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            return Err(ClaudeError::Pipe {
+                source: std::io::Error::other("the CLI's standard streams weren't piped"),
+            });
+        };
+        let stderr = tokio::spawn(tail(stderr));
+        let mut playing = Playing {
+            turn,
+            stdin: Some(stdin),
+            links,
+            path,
+            session,
+            model: record.model.clone().unwrap_or_default(),
+            sent: 0,
+            replayed: 0,
+            failure: None,
+            mode: permission_mode(record.approval),
+            subagents: subagents::Subagents::default(),
+            compact: compacting.then_some(false),
+        };
+        if compacting {
+            playing.send(&compact_command(turn.text())).await?;
+        } else {
+            let images = read_images(turn.images())?;
+            playing.send_with(turn.text(), &images).await?;
+        }
+        let mut lines = BufReader::new(stdout).lines();
+        let mut steer = tokio::time::interval(STEER_EVERY);
+        let ended = loop {
+            tokio::select! {
+                line = lines.next_line() => {
+                    let line = line.map_err(|source| ClaudeError::Pipe { source })?;
+                    let Some(line) = line else { break false };
+                    // Anything else it writes, such as a warning, is skipped.
+                    let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
+                    if playing.handle(&event).await? {
+                        break true;
+                    }
+                }
+                _ = steer.tick() => {
+                    for text in turn.take_steering() {
+                        playing.send(&text).await?;
+                    }
+                    let mode = permission_mode(turn.approval());
+                    if mode != playing.mode {
+                        playing.set_mode(mode).await?;
+                    }
+                }
+            }
+        };
+        // Closing its input lets it finish writing its session and exit.
+        playing.stdin = None;
+        let exited = tokio::time::timeout(EXIT_WAIT, child.wait()).await;
+        if !ended && playing.failure.is_none() {
+            let status = match exited {
+                Ok(Ok(status)) => status.to_string(),
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => "still running".to_owned(),
+            };
+            let stderr = stderr.await.unwrap_or_default();
+            return Err(ClaudeError::Exited {
+                status,
+                stderr: stderr.trim().to_owned(),
+            });
+        }
+        playing.failure.map_or(Ok(()), Err)
     }
 }
 
@@ -352,96 +465,16 @@ impl Runner for ClaudeRunner {
     }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), ClaudeError> {
-        let record = turn.record();
-        let path = Links::path(&self.options.state, record.id.as_str());
-        let mut links = Links::load(&path)?;
-        // Resumed, Claude Code would fail on every turn without saying why.
-        if let (Some(session), Some(projects)) = (&links.session, self.transcripts())
-            && projects.is_dir()
-            && import::claude_transcript(&projects, session).is_err()
-        {
-            return Err(ClaudeError::Gone {
-                session: session.clone(),
-                projects,
-            });
-        }
-        if links.session.is_none()
-            && links.fork.is_none()
-            && turn.with_history(crate::links::had_turns)?
-        {
-            turn.emit(EventKind::Notice {
-                text: crate::links::STARTED_OVER.to_owned(),
-            })?;
-        }
-        let (mut command, session) = self.command(&record, &mut links);
-        let mut child = command.spawn().map_err(|source| ClaudeError::Start {
-            program: self.options.program.clone(),
-            source,
-        })?;
-        let _noted = children::Noted::note(&self.options.state.join(RUNNING), child.id());
-        let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            return Err(ClaudeError::Pipe {
-                source: std::io::Error::other("the CLI's standard streams weren't piped"),
-            });
-        };
-        let stderr = tokio::spawn(tail(stderr));
-        let mut playing = Playing {
-            turn: &turn,
-            stdin: Some(stdin),
-            links,
-            path,
-            session,
-            model: record.model.clone().unwrap_or_default(),
-            sent: 0,
-            replayed: 0,
-            failure: None,
-            mode: permission_mode(record.approval),
-            subagents: subagents::Subagents::default(),
-        };
-        let images = read_images(turn.images())?;
-        playing.send_with(turn.text(), &images).await?;
-        let mut lines = BufReader::new(stdout).lines();
-        let mut steer = tokio::time::interval(STEER_EVERY);
-        let ended = loop {
-            tokio::select! {
-                line = lines.next_line() => {
-                    let line = line.map_err(|source| ClaudeError::Pipe { source })?;
-                    let Some(line) = line else { break false };
-                    // Anything else it writes, such as a warning, is skipped.
-                    let Ok(event) = serde_json::from_str::<Value>(&line) else { continue };
-                    if playing.handle(&event).await? {
-                        break true;
-                    }
-                }
-                _ = steer.tick() => {
-                    for text in turn.take_steering() {
-                        playing.send(&text).await?;
-                    }
-                    let mode = permission_mode(turn.approval());
-                    if mode != playing.mode {
-                        playing.set_mode(mode).await?;
-                    }
-                }
-            }
-        };
-        // Closing its input lets it finish writing its session and exit.
-        playing.stdin = None;
-        let exited = tokio::time::timeout(EXIT_WAIT, child.wait()).await;
-        if !ended && playing.failure.is_none() {
-            let status = match exited {
-                Ok(Ok(status)) => status.to_string(),
-                Ok(Err(error)) => error.to_string(),
-                Err(_) => "still running".to_owned(),
-            };
-            let stderr = stderr.await.unwrap_or_default();
-            return Err(ClaudeError::Exited {
-                status,
-                stderr: stderr.trim().to_owned(),
-            });
-        }
-        playing.failure.map_or(Ok(()), Err)
+        self.play(&turn, false).await
+    }
+
+    async fn compaction(&self, _record: &SessionRecord) -> Compaction {
+        Compaction::Supported { focus: true }
+    }
+
+    /// Has Claude Code run its own `/compact` on the conversation.
+    async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), ClaudeError> {
+        self.play(&turn, true).await
     }
 
     fn forked(
@@ -508,6 +541,20 @@ struct Playing<'a> {
     /// The CLI's permission mode, as last set.
     mode: &'static str,
     subagents: subagents::Subagents,
+    /// For a turn that has the CLI sum up the conversation: whether it has
+    /// said it did. None for a turn that replies to a message.
+    compact: Option<bool>,
+}
+
+/// The CLI's command to sum up the conversation, keeping `focus` in mind;
+/// on one line, as the command ends with its line.
+fn compact_command(focus: &str) -> String {
+    let focus = focus.split_whitespace().collect::<Vec<_>>().join(" ");
+    if focus.is_empty() {
+        "/compact".to_owned()
+    } else {
+        format!("/compact {focus}")
+    }
 }
 
 /// The CLI's permission mode for `approval`. In auto its classifier lets
@@ -627,6 +674,9 @@ impl Playing<'_> {
             // Its context was summed up to make room.
             "system" if event["subtype"] == "compact_boundary" => {
                 self.turn.emit(EventKind::Compacted)?;
+                if let Some(summed) = &mut self.compact {
+                    *summed = true;
+                }
             }
             "stream_event" => {
                 let delta = &event["event"]["delta"];
@@ -791,8 +841,9 @@ impl Playing<'_> {
         self.write(&response).await
     }
 
-    /// Records the end of a reply. True if it ends the turn: it failed, or
-    /// the CLI has taken every message sent.
+    /// Records the end of a reply. True if it ends the turn: it failed, the
+    /// CLI has taken every message sent, or it was asked to sum up the
+    /// conversation, which it may not echo back as a message.
     fn result(&mut self, event: &Value) -> Result<bool, ClaudeError> {
         let usage = &event["usage"];
         let count = |field: &str| usage[field].as_u64().unwrap_or(0);
@@ -825,6 +876,144 @@ impl Playing<'_> {
             return Ok(true);
         }
         self.started()?;
-        Ok(self.replayed >= self.sent)
+        let Some(summed) = self.compact else {
+            return Ok(self.replayed >= self.sent);
+        };
+        if !summed {
+            let said = event["result"]
+                .as_str()
+                .map(str::trim)
+                .filter(|said| !said.is_empty())
+                .unwrap_or("it said nothing more");
+            self.failure = Some(ClaudeError::NotCompacted {
+                said: said.to_owned(),
+            });
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Event, SendMode, SessionState, StartOptions};
+    use crate::runtime::tests::{idle_turns, wait_for};
+    use crate::{Agent, LocalAgent};
+
+    /// Replies to a message itself; asked to sum up, takes `written` as
+    /// what the CLI wrote in answer to its `/compact`.
+    struct Written {
+        written: Vec<Value>,
+        links: PathBuf,
+    }
+
+    impl Runner for Written {
+        type Error = ClaudeError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), ClaudeError> {
+            turn.emit(EventKind::AssistantMessage { text: "hi".into() })?;
+            Ok(())
+        }
+
+        async fn compaction(&self, _record: &SessionRecord) -> Compaction {
+            Compaction::Supported { focus: true }
+        }
+
+        async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), ClaudeError> {
+            let mut playing = Playing {
+                turn: &turn,
+                stdin: None,
+                links: Links::default(),
+                path: self.links.clone(),
+                session: "theirs".into(),
+                model: String::new(),
+                sent: 1,
+                replayed: 0,
+                failure: None,
+                mode: permission_mode(turn.approval()),
+                subagents: subagents::Subagents::default(),
+                compact: Some(false),
+            };
+            let mut ended = false;
+            for event in &self.written {
+                if playing.handle(event).await? {
+                    ended = true;
+                    break;
+                }
+            }
+            if !ended && playing.failure.is_none() {
+                return Err(ClaudeError::Exited {
+                    status: "the test's events ran out".into(),
+                    stderr: String::new(),
+                });
+            }
+            playing.failure.map_or(Ok(()), Err)
+        }
+    }
+
+    /// A session's history after a turn and then a compaction for which
+    /// the CLI wrote `written`.
+    async fn compacted_with(written: Vec<Value>) -> Vec<Event> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let runner = Written {
+            written,
+            links: dir.path().join("links").join("session.json"),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+        agent
+            .compact(&id, String::new(), false)
+            .await
+            .expect("compacting");
+        wait_for(&agent, &id, idle_turns(2)).await
+    }
+
+    fn result() -> Value {
+        json!({"type": "result", "subtype": "success", "is_error": false, "result": "", "usage": {}})
+    }
+
+    #[tokio::test]
+    async fn a_compaction_the_cli_reports_is_recorded_and_its_result_ends_the_turn() {
+        let boundary = json!({"type": "system", "subtype": "compact_boundary"});
+
+        let events = compacted_with(vec![boundary, result()]).await;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == EventKind::Compacted)
+        );
+        assert_eq!(SessionState::after(&events), SessionState::Idle);
+    }
+
+    #[tokio::test]
+    async fn a_result_without_a_compaction_fails_the_turn_and_records_none() {
+        let events = compacted_with(vec![result()]).await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.kind == EventKind::Compacted)
+        );
+        assert_eq!(SessionState::after(&events), SessionState::Failed);
+    }
+
+    #[test]
+    fn what_to_keep_in_mind_goes_on_the_commands_one_line() {
+        assert_eq!(compact_command(""), "/compact");
+        assert_eq!(
+            compact_command("the API notes\nand the plan"),
+            "/compact the API notes and the plan"
+        );
     }
 }

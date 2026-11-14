@@ -227,8 +227,9 @@ pub enum EventKind {
         snapshots: Vec<Snapshot>,
     },
     /// The history before this was cut back to just before the person's
-    /// message `text`, the session's `rewind`th rewind; what was cut is kept
-    /// apart, hidden, until the session is deleted. With `files`, the code
+    /// message `text`, or, with no text, to before a compaction, as the
+    /// session's `rewind`th rewind; what was cut is kept apart, hidden,
+    /// until the session is deleted. With `files`, the code
     /// went back too, and `snapshots` hold it as it was, for undoing. It can
     /// be undone until the next message is sent.
     Rewound {
@@ -244,9 +245,17 @@ pub enum EventKind {
     /// cut, whole again.
     RewindUndone,
     /// The agent's backend summed up its conversation to make room. The
-    /// code was saved as it was then; rewinding to a message before this
-    /// gives the agent back everything from before the summary.
+    /// code was saved as it was then; rewinding to this event, or to a
+    /// message before it, gives the agent back everything from before the
+    /// summary.
     Compacted,
+    /// The person asked for the conversation to be summed up, keeping
+    /// `focus` in mind: the turn that follows does it and holds no message
+    /// of theirs. [`EventKind::Compacted`] follows once it's done.
+    Compacting {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        focus: String,
+    },
     /// A subagent the agent started with the tool call the event's
     /// `parent_call_id` names, as last reported; a later one for the same
     /// call replaces it.

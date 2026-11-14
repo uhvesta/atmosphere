@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Compaction;
 use crate::error::AgentError;
-use crate::event::{EventKind, PermissionKind};
+use crate::event::{EventKind, PermissionKind, SessionRecord};
 use crate::runtime::{Runner, Turn};
 
 /// What the agent does for each message: the first rule whose `when` is in
@@ -146,6 +147,25 @@ impl Runner for ScriptedRunner {
         for (index, step) in rule.steps.iter().enumerate() {
             play(&turn, index, step).await?;
         }
+        Ok(())
+    }
+
+    async fn compaction(&self, _record: &SessionRecord) -> Compaction {
+        Compaction::Supported { focus: true }
+    }
+
+    /// Sums nothing up, as it keeps no conversation, and says it did; asked
+    /// to keep "fail" in mind, it fails instead.
+    async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), ScriptedError> {
+        if turn.text().contains("fail") {
+            return Err(ScriptedError::Scripted {
+                message: format!(
+                    "the scripted agent fails to sum up when asked to keep {:?} in mind; ask again without \"fail\" in it",
+                    turn.text()
+                ),
+            });
+        }
+        turn.emit(EventKind::Compacted)?;
         Ok(())
     }
 }
@@ -1303,6 +1323,245 @@ mod tests {
     }
 
     /// Sessions that work in a repository, each in its own copy.
+    fn compacted(events: &[Event]) -> Event {
+        events
+            .iter()
+            .rev()
+            .find(|event| event.kind == EventKind::Compacted)
+            .cloned()
+            .expect("a compaction is in the history")
+    }
+
+    fn ids(events: &[Event]) -> Vec<crate::event::EventId> {
+        events.iter().map(|event| event.id.clone()).collect()
+    }
+
+    /// A session with one finished turn, and its history then.
+    async fn after_a_turn(fixture: &Fixture) -> (SessionId, Vec<Event>) {
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        // As it's kept: without the reply's words as they streamed.
+        let events = fixture.agent.history(&id).await.expect("history");
+        (id, events)
+    }
+
+    #[tokio::test]
+    async fn compacting_an_idle_session_sums_it_up_in_a_turn_of_its_own() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let (id, before) = after_a_turn(&fixture).await;
+
+        fixture
+            .agent
+            .compact(&id, "keep the API notes".into(), false)
+            .await
+            .expect("compacting");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+
+        assert_eq!(
+            kinds(&events[before.len()..]),
+            vec![
+                EventKind::Compacting {
+                    focus: "keep the API notes".into()
+                },
+                EventKind::TurnStarted,
+                EventKind::Compacted,
+                EventKind::TurnEnded { aborted: false },
+                EventKind::Idle,
+            ]
+        );
+        assert_eq!(user_messages(&events), vec!["hello"]);
+    }
+
+    #[tokio::test]
+    async fn a_compaction_that_fails_fails_its_turn_and_records_none() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let (id, _) = after_a_turn(&fixture).await;
+
+        fixture
+            .agent
+            .compact(&id, "fail".into(), false)
+            .await
+            .expect("compacting");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+
+        assert_eq!(SessionState::after(&events), SessionState::Failed);
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.kind == EventKind::Compacted)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_working_session_is_compacted_only_once_told_to_stop_and_its_queue_runs_after() {
+        let fixture = fixture(vec![
+            rule("first", vec![write_file("a.txt", "one")]),
+            rule("", vec![say("done")]),
+        ]);
+        let (id, _) = after_a_turn(&fixture).await;
+        queue_behind_a_turn(&fixture, &id, &["second"]).await;
+        wait_for(&fixture.agent, &id, |events| !queued_ids(events).is_empty()).await;
+
+        let refused = fixture.agent.compact(&id, String::new(), false).await;
+        assert!(
+            matches!(refused, Err(AgentError::CompactWhileWorking { .. })),
+            "{refused:?}"
+        );
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert_eq!(
+            SessionState::after(&history),
+            SessionState::WaitingForApproval
+        );
+
+        fixture
+            .agent
+            .compact(&id, String::new(), true)
+            .await
+            .expect("compacting");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+
+        let position = |kind: EventKind| {
+            events
+                .iter()
+                .position(|event| event.kind == kind)
+                .unwrap_or_else(|| panic!("{kind:?} is in the history: {events:#?}"))
+        };
+        let stopped = position(EventKind::TurnEnded { aborted: true });
+        let asked = position(EventKind::Compacting {
+            focus: String::new(),
+        });
+        let summed = position(EventKind::Compacted);
+        let second = position(EventKind::UserMessage {
+            text: "second".into(),
+            images: Vec::new(),
+        });
+        assert!(stopped < asked && asked < summed && summed < second);
+        assert_eq!(user_messages(&events), vec!["hello", "first", "second"]);
+        assert!(!fixture.work.path().join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn rewinding_to_a_compaction_that_was_asked_for_takes_its_whole_turn_and_undoing_brings_it_back()
+     {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let (id, before) = after_a_turn(&fixture).await;
+        fixture
+            .agent
+            .compact(&id, String::new(), false)
+            .await
+            .expect("compacting");
+        wait_for(&fixture.agent, &id, idle_turns(2)).await;
+        let events = fixture.agent.history(&id).await.expect("history");
+        let compaction = compacted(&events);
+
+        fixture
+            .agent
+            .rewind(&id, &compaction.id, false)
+            .await
+            .expect("rewound");
+        let history = fixture.agent.history(&id).await.expect("history");
+        let (last, kept) = history.split_last().expect("a history");
+        assert_eq!(ids(kept), ids(&before));
+        assert!(
+            matches!(&last.kind, EventKind::Rewound { text, images, .. } if text.is_empty() && images.is_empty()),
+            "{last:?}"
+        );
+
+        fixture.agent.undo_rewind(&id).await.expect("undone");
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert_eq!(ids(&history[..events.len()]), ids(&events));
+    }
+
+    #[tokio::test]
+    async fn a_compaction_asked_for_after_a_rewind_ends_the_time_to_undo_it() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let (id, _) = after_a_turn(&fixture).await;
+        fixture
+            .agent
+            .send(&id, "again".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+        let again = user_message(&events, "again");
+        fixture
+            .agent
+            .rewind(&id, &again.id, false)
+            .await
+            .expect("rewound");
+
+        fixture
+            .agent
+            .compact(&id, String::new(), false)
+            .await
+            .expect("compacting");
+        wait_for(&fixture.agent, &id, |events| {
+            events
+                .iter()
+                .any(|event| event.kind == EventKind::Compacted)
+                && idle_turns(2)(events)
+        })
+        .await;
+
+        assert!(matches!(
+            fixture.agent.undo_rewind(&id).await,
+            Err(AgentError::NothingToUndo { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_session_without_a_finished_turn_has_nothing_to_compact() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let id = fixture.start().await;
+
+        let refused = fixture.agent.compact(&id, String::new(), false).await;
+
+        assert!(
+            matches!(refused, Err(AgentError::NothingToCompact { .. })),
+            "{refused:?}"
+        );
+        assert!(
+            fixture
+                .agent
+                .history(&id)
+                .await
+                .expect("history")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_archived_session_isnt_compacted() {
+        let fixture = fixture(vec![rule("", vec![say("done")])]);
+        let (id, before) = after_a_turn(&fixture).await;
+        assert_eq!(
+            fixture.agent.compaction(&id).await.expect("asked"),
+            crate::Compaction::Supported { focus: true }
+        );
+        let archive = crate::SessionUpdate {
+            archived: Some(true),
+            ..crate::SessionUpdate::default()
+        };
+        fixture.agent.update(&id, archive).await.expect("archived");
+
+        let refused = fixture.agent.compact(&id, String::new(), false).await;
+
+        assert!(
+            matches!(refused, Err(AgentError::Archived { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(
+            fixture.agent.compaction(&id).await.expect("asked"),
+            crate::Compaction::Unsupported
+        );
+        let history = fixture.agent.history(&id).await.expect("history");
+        assert_eq!(ids(&history), ids(&before));
+    }
+
     mod code {
         use std::path::Path;
 
@@ -1499,7 +1758,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn only_a_message_of_the_persons_can_be_rewound_to() {
+        async fn an_event_that_is_neither_a_message_nor_a_compaction_cant_be_rewound_to() {
             let fixture = fixture();
             let id = fixture.start().await;
             let events = fixture.turn(&id, "one", 1).await;
@@ -1509,7 +1768,7 @@ mod tests {
                 .expect("an event that isn't a message");
             assert!(matches!(
                 fixture.agent.rewind(&id, &reply.id, false).await,
-                Err(AgentError::NotAMessage { .. })
+                Err(AgentError::NotARewindPoint { .. })
             ));
         }
 
@@ -1787,6 +2046,38 @@ mod tests {
                 matches!(result, Err(AgentError::NoWorkspaces { .. })),
                 "{result:?}"
             );
+        }
+
+        #[tokio::test]
+        async fn a_rewind_with_files_to_a_compaction_puts_back_what_was_changed_by_hand_before_it()
+        {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let file = record(&fixture.agent, &id)
+                .await
+                .working_directory
+                .join("a.txt");
+            std::fs::write(&file, "by hand").expect("wrote");
+            fixture
+                .agent
+                .compact(&id, String::new(), false)
+                .await
+                .expect("compacting");
+            let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+            let compaction = compacted(&events);
+            fixture.turn(&id, "two", 3).await;
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+
+            fixture
+                .agent
+                .rewind(&id, &compaction.id, true)
+                .await
+                .expect("rewound");
+
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("by hand"));
+            let history = fixture.agent.history(&id).await.expect("history");
+            assert!(!history.iter().any(|event| event.id == compaction.id));
         }
     }
 }

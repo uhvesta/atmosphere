@@ -143,6 +143,17 @@ package struct SessionFeature {
         /// The name the list shows choices for; nil while it's closed.
         var slashQuery: String?
 
+        /// The chat commands the session's agent takes, as its host last
+        /// said; nil until asked, and when its host couldn't say.
+        package var chatCommands: ChatCommands?
+        /// Where the chat can be rewound to, to pick from, after /rewind;
+        /// nil while closed. Only the box reads it.
+        package var rewindPicker: RewindPicker?
+        /// Asks whether to stop the running turn to compact.
+        @Presents package var compactDialog: ConfirmationDialogState<Action.CompactChoice>?
+        /// A compaction was asked for and its turn hasn't started yet.
+        package var compactStarting = false
+
         /// Whether a / and a name are being typed, with the list not
         /// closed: the list, or why it's empty, shows. Only for the draft
         /// the list was made for, so text put in the box another way
@@ -320,6 +331,9 @@ package struct SessionFeature {
         /// Whether a turn has started and not yet ended. Kept, as views
         /// read it on every key typed.
         package private(set) var isWorking = false
+        /// Whether the turn under way sums up the conversation: it has no
+        /// message of the person's to stop and edit.
+        package private(set) var isCompacting = false
 
         /// Takes from the chat what its events add up to, kept there as each
         /// event comes, so views read it instead of working it out again.
@@ -328,6 +342,8 @@ package struct SessionFeature {
         private mutating func derive() {
             if isWorking != chat.working { isWorking = chat.working }
             let working = isWorking
+            let compacting = working && chat.compacting
+            if isCompacting != compacting { isCompacting = compacting }
             if stopping, !working { stopping = false }
             if let land, land.turnRunning != working { self.land?.turnRunning = working }
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
@@ -352,7 +368,8 @@ package struct SessionFeature {
             let putBack = putBack
             let dropped = chat.dropped.filter { !putBack.contains($0.id) }
             if self.dropped != dropped { self.dropped = dropped }
-            let retryable = lastTurnFailed && lastMessage != nil ? chat.lastFailure : nil
+            // A compaction that failed has no message to send again.
+            let retryable = lastTurnFailed && lastMessage != nil && !chat.compacting ? chat.lastFailure : nil
             if retryableFailure != retryable { retryableFailure = retryable }
         }
 
@@ -555,6 +572,24 @@ package struct SessionFeature {
         }
     }
 
+    /// The /rewind picker: where the chat can be cut back to, narrowed by
+    /// what's typed in its own field.
+    package struct RewindPicker: Equatable, Sendable {
+        package var query: String
+        /// Every point, newest first.
+        var all: [RewindPoint]
+        /// Those matching the query, best first.
+        package var points: [RewindPoint]
+        /// The one Return picks, as arrows move it.
+        package var selected = 0
+
+        init(query: String, all: [RewindPoint]) {
+            self.query = query
+            self.all = all
+            points = RewindPoint.matching(query, in: all)
+        }
+    }
+
     /// A message handed on to be sent, with what it was made of, so it can
     /// go back in its session's box if it isn't sent.
     package struct Outgoing: Equatable, Sendable {
@@ -587,12 +622,29 @@ package struct SessionFeature {
         case historyLoading(read: UInt64, total: UInt64)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
-        case slashLoaded(Result<[SlashChoice], SlashLoadFailure>)
+        /// The skills were looked for, and the agent's host asked which
+        /// chat commands it takes; nil when it couldn't say.
+        case slashLoaded(Result<[SlashChoice], SlashLoadFailure>, commands: ChatCommands?)
         /// An arrow moved the / list's pick by `by` rows.
         case slashMoved(by: Int)
         case slashPicked(String)
         /// Escape closed the / list.
         case slashClosed
+        /// What's typed in the /rewind picker's field.
+        case rewindPickerQueryChanged(String)
+        /// An arrow moved the /rewind picker's pick by `by` rows.
+        case rewindPickerMoved(by: Int)
+        /// Picked the event to rewind to; asks how far, as its row does.
+        case rewindPickerPicked(String)
+        case rewindPickerClosed
+        /// Has the agent sum up the conversation, keeping `focus` in mind;
+        /// asks first when that stops a turn.
+        case compactAsked(focus: String)
+        case compactDialog(PresentationAction<CompactChoice>)
+        /// The compaction's turn started; the chat shows how it goes.
+        case compactStarted
+        /// It didn't start; a `focus` typed goes back in the box.
+        case compactFailed(focus: String, message: String)
         /// A message sent from the box reached the daemon.
         case sent
         /// The message wasn't sent; what was typed, pasted and added goes
@@ -641,10 +693,12 @@ package struct SessionFeature {
         case showProposalsTapped
         /// The chat scrolled to the target.
         case scrolled
-        /// Asks how far to rewind to before the person's message `event`.
+        /// Asks how far to rewind to before `event`: one of the person's
+        /// messages, or a compaction.
         case rewindTapped(String)
         case rewindDialog(PresentationAction<RewindChoice>)
-        /// The chat was cut back; `text` goes back in the box.
+        /// The chat was cut back; `text` goes back in the box, unless it's
+        /// empty, as for a compaction.
         case rewound(String)
         case undoRewindTapped
         case rewindUndone
@@ -717,6 +771,11 @@ package struct SessionFeature {
             case chatAndFiles(String)
         }
 
+        package enum CompactChoice: Equatable {
+            /// Stop the running turn, then compact with `focus` in mind.
+            case stopAndCompact(focus: String)
+        }
+
         @CasePathable
         package enum Delegate: Equatable {
             /// A fork was made, or work started on a proposed task; open it.
@@ -759,8 +818,12 @@ package struct SessionFeature {
             slashHidden(&state)
             return .none
         }
+        if state.rewindPicker != nil { state.rewindPicker = nil }
         let opening = state.slashQuery == nil
-        let choices = SlashChoice.matching(query, in: state.slashOffered ?? [])
+        // Humata's own commands show before the skills are first found.
+        let offered =
+            state.slashOffered ?? SlashChoice.builtIns(for: state.session, commands: state.chatCommands)
+        let choices = SlashChoice.matching(query, in: offered)
         // The highlight stays only on the same list; a new one starts at
         // its best match.
         if opening || choices != state.slashChoices { state.slashSelected = 0 }
@@ -772,22 +835,24 @@ package struct SessionFeature {
         state.slashLoading = true
         let session = state.session
         return .run { send in
+            // A host from before chat commands can't say which it takes:
+            // it's offered none of them, and its skills all the same.
+            async let asked = daemon.chatCommands(session.id)
             do {
                 async let skills = daemon.skills()
                 async let plugins = daemon.plugins()
                 async let projects = daemon.projects()
+                let commands = try? await asked
                 let project = try await projects.first { $0.id == session.projectID }
                 let offered = SlashChoice.offered(
-                    to: session, skills: try await skills, plugins: try await plugins, project: project)
-                await send(.slashLoaded(.success(offered)))
+                    to: session, skills: try await skills, plugins: try await plugins, project: project,
+                    commands: commands)
+                await send(.slashLoaded(.success(offered), commands: commands))
             } catch {
-                await send(
-                    .slashLoaded(
-                        .failure(
-                            SlashLoadFailure(
-                                message:
-                                    "Couldn't look for skills: \(error.localizedDescription) Check the daemon and hosts are reachable, then type / again."
-                            ))))
+                let failure = SlashLoadFailure(
+                    message: "Couldn't look for skills: \(error.localizedDescription) "
+                        + "Check the daemon and hosts are reachable, then type / again.")
+                await send(.slashLoaded(.failure(failure), commands: try? await asked))
             }
         }
         .cancellable(id: CancelID.slash, cancelInFlight: true)
@@ -802,6 +867,47 @@ package struct SessionFeature {
         state.slashQuery = nil
         state.slashChoices = []
         state.slashSelected = 0
+        if state.rewindPicker != nil { state.rewindPicker = nil }
+    }
+
+    /// Whether the session is offered `command`, as the / list would list
+    /// it.
+    private static func offers(_ command: SlashChoice.BuiltIn, _ state: State) -> Bool {
+        SlashChoice.builtIns(for: state.session, commands: state.chatCommands).contains { $0.builtIn == command }
+    }
+
+    private func clearDraft(_ state: inout State) {
+        state.draft = ""
+        state.$savedDraft.withLock { $0 = "" }
+        slashHidden(&state)
+    }
+
+    /// Opens the /rewind picker on what `query` finds, in place of what's
+    /// typed in the box.
+    private func rewindPickerOpened(_ query: String, _ state: inout State) {
+        clearDraft(&state)
+        let points = RewindPoint.points(in: state.events)
+        guard !points.isEmpty else {
+            state.alert = Self.alert(
+                "Nothing to rewind to yet",
+                "A chat is rewound to before a message you sent, or before a compaction, and this one has "
+                    + "neither. Send a message first.")
+            return
+        }
+        state.rewindPicker = RewindPicker(query: query, all: points)
+    }
+
+    /// Asks for the compaction, taking the command out of the box.
+    private func compact(_ focus: String, stop: Bool, _ state: inout State) -> Effect<Action> {
+        if SlashChoice.command(in: state.draft)?.command == .compact { clearDraft(&state) }
+        state.compactStarting = true
+        let session = state.session.id
+        return .run { send in
+            try await daemon.compact(session, focus, stop)
+            await send(.compactStarted)
+        } catch: { error, send in
+            await send(.compactFailed(focus: focus, message: error.localizedDescription))
+        }
     }
 
     private func received(_ events: [SessionEvent], _ state: inout State) -> Effect<Action> {
@@ -925,9 +1031,10 @@ package struct SessionFeature {
                 state.$savedDraft.withLock { $0 = state.draft }
                 return slashFollows(&state)
 
-            case .slashLoaded(let result):
+            case .slashLoaded(let result, let commands):
                 state.slashLoading = false
                 state.slashLoadedAt = date.now
+                if state.chatCommands != commands { state.chatCommands = commands }
                 switch result {
                 case .success(let offered):
                     state.slashOffered = offered
@@ -946,9 +1053,77 @@ package struct SessionFeature {
                 return .none
 
             case .slashPicked(let name):
+                switch state.slashChoices.first(where: { $0.id == name })?.builtIn {
+                case .rewind?:
+                    rewindPickerOpened("", &state)
+                    return .none
+                case .compact? where state.chatCommands?.compactTakesFocus != true:
+                    // Nothing more to type: it's asked for at once.
+                    clearDraft(&state)
+                    return .send(.compactAsked(focus: ""))
+                case .compact?, nil:
+                    break
+                }
                 state.draft = "/\(name) "
                 state.$savedDraft.withLock { $0 = state.draft }
                 slashHidden(&state)
+                return .none
+
+            case .rewindPickerQueryChanged(let query):
+                guard var picker = state.rewindPicker, picker.query != query else { return .none }
+                picker.query = query
+                picker.points = RewindPoint.matching(query, in: picker.all)
+                picker.selected = 0
+                state.rewindPicker = picker
+                return .none
+
+            case .rewindPickerMoved(let by):
+                guard let count = state.rewindPicker?.points.count, count > 0 else { return .none }
+                let selected = state.rewindPicker?.selected ?? 0
+                state.rewindPicker?.selected = ((selected + by) % count + count) % count
+                return .none
+
+            case .rewindPickerPicked(let id):
+                guard state.rewindPicker != nil else { return .none }
+                state.rewindPicker = nil
+                return .send(.rewindTapped(id))
+
+            case .rewindPickerClosed:
+                state.rewindPicker = nil
+                return .none
+
+            case .compactAsked(let focus):
+                guard !state.compactStarting, !state.session.archived else { return .none }
+                guard state.isWorking else { return compact(focus, stop: false, &state) }
+                state.compactDialog = ConfirmationDialogState {
+                    TextState("Stop the turn and compact?")
+                } actions: {
+                    ButtonState(action: .stopAndCompact(focus: focus)) { TextState("Stop and Compact") }
+                    ButtonState(role: .cancel) { TextState("Cancel") }
+                } message: {
+                    TextState(
+                        "The agent’s turn stops where it is, and the agent sums up the conversation so far. "
+                            + "Queued messages run after. Or cancel, and compact once the turn has ended.")
+                }
+                return .none
+
+            case .compactDialog(.presented(.stopAndCompact(let focus))):
+                guard !state.compactStarting else { return .none }
+                return compact(focus, stop: true, &state)
+
+            case .compactDialog:
+                return .none
+
+            case .compactStarted:
+                state.compactStarting = false
+                return .none
+
+            case .compactFailed(let focus, let message):
+                state.compactStarting = false
+                if !focus.isEmpty { putInBox("/compact \(focus)", ahead: true, &state) }
+                state.alert = Self.alert(
+                    "Couldn’t compact",
+                    message + (focus.isEmpty ? "" : " What you asked it to keep in mind is back in the box."))
                 return .none
 
             case .slashClosed:
@@ -1132,6 +1307,21 @@ package struct SessionFeature {
                 // Return with the / list showing picks from it.
                 if state.slashOpen, state.slashChoices.indices.contains(state.slashSelected) {
                     return .send(.slashPicked(state.slashChoices[state.slashSelected].id))
+                }
+                // One of Humata's own commands is carried out, not sent;
+                // one the session isn't offered goes to the agent as typed.
+                if state.pastes.isEmpty, state.images.isEmpty,
+                    let (command, text) = SlashChoice.command(in: state.draft), Self.offers(command, state)
+                {
+                    switch command {
+                    case .rewind:
+                        rewindPickerOpened(text, &state)
+                        return .none
+                    case .compact:
+                        // It stays in the box until it's under way, so
+                        // cancelling leaves it there.
+                        return .send(.compactAsked(focus: text))
+                    }
                 }
                 guard state.canSend else { return .none }
                 let outgoing = Outgoing(
@@ -1339,7 +1529,9 @@ package struct SessionFeature {
                 return .none
 
             case .stopAndEditTapped:
-                guard state.isWorking, !state.stopping, let text = state.lastMessage else { return .none }
+                guard state.isWorking, !state.isCompacting, !state.stopping, let text = state.lastMessage else {
+                    return .none
+                }
                 state.stopping = true
                 let session = state.session.id
                 putInBox(text, ahead: true, &state)
@@ -1350,11 +1542,29 @@ package struct SessionFeature {
                 }
 
             case .rewindTapped(let id):
-                guard case .userMessage? = state.events[id: id]?.kind, !state.rewinding else { return .none }
+                guard let event = state.events[id: id], event.parentCallID == nil, !state.rewinding else {
+                    return .none
+                }
+                let compaction: Bool
+                switch event.kind {
+                case .userMessage: compaction = false
+                case .compacted: compaction = true
+                default: return .none
+                }
                 let files = state.session.projectID != nil && !state.session.archived
-                let working = state.isWorking
+                let stops = state.isWorking ? "The agent’s turn stops and queued messages are dropped. " : ""
+                let cuts =
+                    compaction
+                    ? "The agent gets back everything from before it was summed up, and what came after the "
+                        + "compaction leaves the chat. "
+                    : "Everything after it leaves the chat, and the message goes back in the box to edit. "
+                let code =
+                    files
+                    ? "Rewinding files too puts the code back as it was then, uncommitted changes included. "
+                    : ""
+                let message = stops + cuts + code + "Undo brings it all back until you send another message."
                 state.rewindDialog = ConfirmationDialogState {
-                    TextState("Rewind to before this message?")
+                    TextState(compaction ? "Rewind to before this compaction?" : "Rewind to before this message?")
                 } actions: {
                     ButtonState(action: .chat(id)) { TextState("Rewind the Chat") }
                     if files {
@@ -1362,16 +1572,7 @@ package struct SessionFeature {
                     }
                     ButtonState(role: .cancel) { TextState("Cancel") }
                 } message: {
-                    TextState(
-                        (working
-                            ? "The agent’s turn stops and queued messages are dropped. "
-                            : "")
-                            + "Everything after it leaves the chat, and the message goes back in the box to edit. "
-                            + (files
-                                ? "Rewinding files too puts the code back as it was then, "
-                                    + "uncommitted changes included. "
-                                : "")
-                            + "Undo brings it all back until you send another message.")
+                    TextState(message)
                 }
                 return .none
 
@@ -1381,7 +1582,13 @@ package struct SessionFeature {
                     case .chat(let id): (id, false)
                     case .chatAndFiles(let id): (id, true)
                     }
-                guard case .userMessage(let text, _)? = state.events[id: before]?.kind else { return .none }
+                // A compaction puts nothing back in the box.
+                let text: String
+                switch state.events[id: before]?.kind {
+                case .userMessage(let sent, _): text = sent
+                case .compacted: text = ""
+                default: return .none
+                }
                 state.rewinding = true
                 let session = state.session.id
                 return .run { send in
@@ -1396,6 +1603,11 @@ package struct SessionFeature {
 
             case .rewound(let text):
                 state.rewinding = false
+                guard !text.isEmpty else {
+                    state.rewoundText = nil
+                    state.rewoundPaste = nil
+                    return .none
+                }
                 state.rewoundText = text
                 let paste = putInBox(text, ahead: true, &state)
                 state.rewoundPaste = paste
@@ -1573,6 +1785,7 @@ package struct SessionFeature {
         }
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$rewindDialog, action: \.rewindDialog)
+        .ifLet(\.$compactDialog, action: \.compactDialog)
         .ifLet(\.$land, action: \.land) {
             LandFeature()
         }

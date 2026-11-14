@@ -229,9 +229,12 @@ impl HostError {
             }
             Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
             Self::Agent(
-                AgentError::NotAMessage { .. }
+                AgentError::NotARewindPoint { .. }
                 | AgentError::NothingToUndo { .. }
-                | AgentError::SharedFiles { .. },
+                | AgentError::SharedFiles { .. }
+                | AgentError::CannotCompact { .. }
+                | AgentError::NothingToCompact { .. }
+                | AgentError::CompactTakesNoFocus { .. },
             ) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::UnknownSkipped { .. }) => pb::ErrorCode::UnknownSession,
             Self::Agent(AgentError::UnknownImport { .. } | AgentError::NothingToImport { .. }) => {
@@ -244,7 +247,8 @@ impl HostError {
             Self::Agent(
                 AgentError::ArchiveWhileWorking { .. }
                 | AgentError::LandWhileWorking { .. }
-                | AgentError::UpdateWhileWorking { .. },
+                | AgentError::UpdateWhileWorking { .. }
+                | AgentError::CompactWhileWorking { .. },
             ) => pb::ErrorCode::Busy,
             Self::Agent(
                 AgentError::NoWorkspaces { .. }

@@ -4104,6 +4104,139 @@ async fn a_rewound_session_on_another_host_is_backed_up_as_rewound() {
     backed_up(&client, &session.id, 2).await;
 }
 
+async fn compact(
+    client: &Client,
+    session: &str,
+    stop: bool,
+) -> Result<pb::response::Kind, ClientError> {
+    client
+        .call(pb::request::Kind::CompactSession(pb::CompactSession {
+            session_id: session.to_owned(),
+            focus: String::new(),
+            stop,
+        }))
+        .await
+}
+
+fn compactions(events: &[pb::SessionEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|event| matches!(event.kind, Some(pb::session_event::Kind::Compacted(_))))
+        .map(|event| event.id.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_session_on_another_host_is_compacted_and_rewound_to_before_its_compaction() {
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts
+        .hosts
+        .insert("far".to_owned(), host_reached_by_command(dir.path()).await);
+    let (mac, work) = (dir.path().join("mac"), dir.path().join("work"));
+    for folder in [&mac, &work] {
+        std::fs::create_dir_all(folder).unwrap_or_else(|error| panic!("{error}"));
+    }
+    let client = daemon(&mac, hosts).await;
+    let session = started(&client, start(&work, "far")).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+
+    let commands = client
+        .call(pb::request::Kind::GetChatCommands(pb::GetChatCommands {
+            session_id: session.id.clone(),
+        }))
+        .await;
+    assert!(
+        matches!(
+            commands,
+            Ok(pb::response::Kind::ChatCommands(pb::ChatCommands {
+                compact: true,
+                compact_takes_focus: true,
+            }))
+        ),
+        "{commands:?}"
+    );
+    let compacting = compact(&client, &session.id, false).await;
+    assert!(
+        matches!(compacting, Ok(pb::response::Kind::CompactStarted(_))),
+        "{compacting:?}"
+    );
+    let events = after_turns(&client, &session.id, 2).await;
+    let compacted = compactions(&events);
+    assert_eq!(compacted.len(), 1, "{events:#?}");
+    assert_eq!(said(&events), ["user: hello", "agent: hi there"]);
+
+    let rewound = client
+        .call(pb::request::Kind::RewindSession(pb::RewindSession {
+            session_id: session.id.clone(),
+            before_event_id: compacted[0].clone(),
+            files: false,
+        }))
+        .await;
+    assert!(
+        matches!(rewound, Ok(pb::response::Kind::SessionRewound(_))),
+        "{rewound:?}"
+    );
+    let history = history_of(&client, &session.id).await;
+    assert!(compactions(&history).is_empty(), "{history:#?}");
+    assert!(
+        !history
+            .iter()
+            .any(|event| matches!(event.kind, Some(pb::session_event::Kind::Compacting(_)))),
+        "{history:#?}"
+    );
+    assert_eq!(said(&history), ["user: hello", "agent: hi there"]);
+}
+
+#[tokio::test]
+async fn a_working_session_is_too_busy_to_compact_until_told_to_stop() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let script = r#"{"rules": [
+        {"when": "wait", "steps": [{"step": "wait_for", "path": "never"}]},
+        {"when": "", "steps": [{"step": "say", "text": "hi there"}]}
+    ]}"#;
+    let mut request = start(state.path(), "");
+    if let pb::request::Kind::StartSession(start) = &mut request {
+        start.backend_config = script.to_owned();
+    }
+    let session = started(&client, request).await.id;
+    send(&client, &session, "hello").await;
+    after_turns(&client, &session, 1).await;
+    send(&client, &session, "wait").await;
+
+    let busy = compact(&client, &session, false).await;
+    assert!(refused_with(&busy, pb::ErrorCode::Busy), "{busy:?}");
+    assert!(compactions(&history_of(&client, &session).await).is_empty());
+
+    let stopped = compact(&client, &session, true).await;
+    assert!(
+        matches!(stopped, Ok(pb::response::Kind::CompactStarted(_))),
+        "{stopped:?}"
+    );
+    // Idle again only once the compaction's own turn has ended.
+    let events = after_turns(&client, &session, 2).await;
+    assert_eq!(compactions(&events).len(), 1, "{events:#?}");
+}
+
+#[tokio::test]
+async fn a_session_with_no_finished_turn_has_nothing_to_compact() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let session = started(&client, start(state.path(), "")).await.id;
+
+    let refused = compact(&client, &session, false).await;
+
+    assert!(
+        refused_with(&refused, pb::ErrorCode::InvalidRequest),
+        "{refused:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_session_deleted_from_another_host_is_gone_from_the_next_list() {
     let dir = tempfile::Builder::new()

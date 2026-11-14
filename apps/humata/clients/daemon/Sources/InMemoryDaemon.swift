@@ -64,6 +64,11 @@ package final class InMemoryDaemon: Sendable {
         /// Whether listing skills fails, as with the daemon gone.
         var skillsFail = false
         var plugins = PluginList()
+        /// The chat commands every session's agent takes; nil when asking
+        /// fails.
+        var commands: ChatCommands? = ChatCommands(compact: true, compactTakesFocus: true)
+        /// Those of the sessions that differ, by session id.
+        var sessionCommands: [String: ChatCommands?] = [:]
         var sessionDefaults = SessionDefaults()
         var nextQueued = 1
         /// Images sent to each session, by session id then name.
@@ -358,6 +363,20 @@ package final class InMemoryDaemon: Sendable {
         state.withValue { $0.skillsFail = fail }
     }
 
+    /// Sets the chat commands `session`'s agent takes, or every session's
+    /// with nil; nil commands make asking for them fail, as a host from
+    /// before there were any does.
+    package func setChatCommands(_ commands: ChatCommands?, for session: String? = nil) {
+        state.withValue { state in
+            if let session {
+                state.sessionCommands.updateValue(commands, forKey: session)
+            } else {
+                state.commands = commands
+                state.sessionCommands = [:]
+            }
+        }
+    }
+
     /// Sets what `backend` offers; nil makes listing them fail, as on a
     /// Copilot account without the feature.
     package func setModels(_ models: [ModelChoice]?, for backend: Backend) {
@@ -528,6 +547,17 @@ package final class InMemoryDaemon: Sendable {
             },
             rewind: { session, before, files in try self.rewind(session, before: before, files: files) },
             undoRewind: { session in try self.undoRewind(session) },
+            compact: { session, focus, stop in try self.compact(session, focus: focus, stop: stop) },
+            chatCommands: { session in
+                try self.known(session)
+                guard let commands = self.commands(of: session) else {
+                    throw DaemonError.refused(
+                        .invalidRequest,
+                        message: "Session \(session)'s host is from before chat commands and can't say which it "
+                            + "takes. Update Humata on that host, then try again.")
+                }
+                return commands
+            },
             unqueue: { session, queueID in try self.unqueue(session, queueID) },
             editQueued: { session, queueID, text in try self.editQueued(session, queueID, text) },
             fork: { session, before, name, chatOnly in
@@ -1107,15 +1137,90 @@ package final class InMemoryDaemon: Sendable {
         guard let index = history.firstIndex(where: { $0.id == before }) else {
             throw DaemonError.refused(.unknownEvent, message: "Session \(session) has no event \(before).")
         }
-        guard case .userMessage(let text, let images) = history[index].kind else {
+        var cut = index
+        var text = ""
+        var images: [String] = []
+        switch history[index].kind {
+        case .userMessage(let sent, let names):
+            text = sent
+            images = names
+        case .compacted where history[index].parentCallID == nil:
+            // A turn asked to compact holds nothing else, so all of it goes.
+            let turn = history[..<index].lastIndex { $0.kind == .turnStarted && $0.parentCallID == nil }
+            if let turn, turn > 0, case .compacting = history[turn - 1].kind { cut = turn - 1 }
+        default:
             throw DaemonError.refused(
-                .invalidRequest, message: "Only one of your messages can be rewound to; pick a message you sent.")
+                .invalidRequest,
+                message: "Event \(before) of session \(session) is neither a message you sent nor a compaction, so "
+                    + "there is nothing to rewind to before it; pick one of those.")
         }
         state.withValue { state in
             state.rewinds[session, default: []].append(history)
-            state.histories[session] = Array(history[..<index])
+            state.histories[session] = Array(history[..<cut])
         }
         append(.rewound(text: text, images: images, files: files), to: session)
+    }
+
+    private func commands(of session: String) -> ChatCommands? {
+        let state = state.value
+        if let own = state.sessionCommands[session] { return own }
+        return state.commands
+    }
+
+    /// Sums the session up in a turn of its own, after stopping the turn
+    /// that waits if asked to. A focus with "fail" in it fails the turn.
+    private func compact(_ session: String, focus: String, stop: Bool) throws {
+        try known(session)
+        if state.value.sessions.first(where: { $0.id == session })?.archived == true {
+            throw DaemonError.refused(
+                .archived, message: "Session \(session) is archived; unarchive it to work in it again.")
+        }
+        guard let commands = commands(of: session), commands.compact else {
+            throw DaemonError.refused(
+                .invalidRequest,
+                message: "Session \(session)'s agent has no way to sum up its conversation on request. Rewind to "
+                    + "an earlier message, or start a new session and tell it what to carry over.")
+        }
+        let focus = focus.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard focus.isEmpty || commands.compactTakesFocus else {
+            throw DaemonError.refused(
+                .invalidRequest,
+                message: "Session \(session)'s agent sums up its own way and takes nothing to keep in mind; ask "
+                    + "again without it.")
+        }
+        let history = state.value.histories[session] ?? []
+        guard history.contains(where: { $0.kind.endsTurn && $0.parentCallID == nil }) else {
+            throw DaemonError.refused(
+                .invalidRequest,
+                message: "Session \(session) has no finished turn to sum up yet; send it a message first.")
+        }
+        let stopped = try state.withValue { state -> Bool in
+            guard state.paused[session] != nil else { return false }
+            guard stop else {
+                throw DaemonError.refused(
+                    .busy,
+                    message: "Session \(session) is in the middle of a turn. Wait for it to end, or ask again with "
+                        + "stop, which cuts the turn short; queued messages run after.")
+            }
+            state.paused[session] = nil
+            return true
+        }
+        if stopped { append(.turnEnded(aborted: true), to: session) }
+        append(.compacting(focus: focus), to: session)
+        append(.turnStarted, to: session)
+        if focus.localizedCaseInsensitiveContains("fail") {
+            append(
+                .failed("The scripted agent was told to fail this compaction; ask again without \"fail\" in it."),
+                to: session)
+        } else {
+            append(.compacted, to: session)
+        }
+        append(.turnEnded(aborted: false), to: session)
+        if let next = nextQueued(session) {
+            play(session, next.text, images: next.images)
+        } else {
+            append(.idle, to: session)
+        }
     }
 
     private func undoRewind(_ session: String) throws {
@@ -1123,7 +1228,7 @@ package final class InMemoryDaemon: Sendable {
         let history = state.value.histories[session] ?? []
         let undoable = history.last {
             switch $0.kind {
-            case .rewound, .rewindUndone, .userMessage: true
+            case .rewound, .rewindUndone, .userMessage, .compacting: true
             default: false
             }
         }

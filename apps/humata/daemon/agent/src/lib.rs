@@ -72,6 +72,14 @@ pub struct Model {
     pub default_effort: Option<String>,
 }
 
+/// Whether a backend sums up a session's conversation on request, and
+/// whether it takes what to keep in mind while it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compaction {
+    Unsupported,
+    Supported { focus: bool },
+}
+
 /// One version of a file in a session's folder: the code as a turn left it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileVersion {
@@ -169,9 +177,11 @@ pub trait Agent: Send + Sync {
     ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
 
     /// Cuts `session`'s history back to just before `before`, one of the
-    /// person's messages, stopping it first if it's working; with `files`,
-    /// its code goes back to how it was there too. What was cut is kept,
-    /// hidden, for [`Agent::undo_rewind`] and until the session is deleted.
+    /// person's messages or a compaction of its own agent's, stopping it
+    /// first if it's working; with `files`, its code goes back to how it
+    /// was there too. Before a compaction the person asked for, the turn
+    /// that made it goes whole. What was cut is kept, hidden, for
+    /// [`Agent::undo_rewind`] and until the session is deleted.
     fn rewind(
         &self,
         session: &SessionId,
@@ -180,10 +190,28 @@ pub trait Agent: Send + Sync {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Brings back what the last rewind cut, chat and code, if no message
-    /// was sent since.
+    /// was sent and no compaction asked for since.
     fn undo_rewind(
         &self,
         session: &SessionId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Whether [`Agent::compact`] works for `session`, as its backend is
+    /// on this host now.
+    fn compaction(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<Compaction, Self::Error>> + Send;
+
+    /// Starts a turn that sums up `session`'s conversation to make room,
+    /// keeping `focus` in mind (empty for none), and returns once it has
+    /// started. While the session works it is refused, unless `stop`: then
+    /// the running turn is stopped first, and queued messages run after.
+    fn compact(
+        &self,
+        session: &SessionId,
+        focus: String,
+        stop: bool,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     fn history(

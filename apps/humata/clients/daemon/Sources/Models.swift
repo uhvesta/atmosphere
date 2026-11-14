@@ -1212,8 +1212,13 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         /// The last rewind was undone; the history is as it was before it.
         /// A watcher watches again to read it.
         case rewindUndone
-        /// The agent summed up its earlier context to make room.
+        /// The agent summed up its earlier context to make room. Rewinding
+        /// to this event gives it back everything from before it.
         case compacted
+        /// The person asked for the conversation to be summed up, keeping
+        /// `focus` in mind if not empty. It stands where a message would:
+        /// the turn that follows does it and holds no message of theirs.
+        case compacting(focus: String)
         /// The subagent the call `parentCallID` names started, as last
         /// reported: a later one for the same call replaces it.
         case subagent(Subagent)
@@ -1232,6 +1237,19 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         self.time = time
         self.kind = kind
         self.parentCallID = parentCallID
+    }
+}
+
+/// The chat commands a session's agent takes beyond its skills.
+package struct ChatCommands: Equatable, Sendable {
+    /// Whether it sums up the conversation on request.
+    package var compact = false
+    /// Whether it takes what to keep in mind as it does.
+    package var compactTakesFocus = false
+
+    package init(compact: Bool = false, compactTakesFocus: Bool = false) {
+        self.compact = compact
+        self.compactTakesFocus = compactTakesFocus
     }
 }
 

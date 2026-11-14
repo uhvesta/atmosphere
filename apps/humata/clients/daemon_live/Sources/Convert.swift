@@ -422,6 +422,12 @@ extension AgentRequest {
     }
 }
 
+extension ChatCommands {
+    init(_ commands: Humata_V1_ChatCommands) {
+        self.init(compact: commands.compact, compactTakesFocus: commands.compactTakesFocus)
+    }
+}
+
 extension SessionEvent {
     /// Nil for a kind of event this app doesn't know, from a newer daemon.
     init?(_ event: Humata_V1_SessionEvent) {
@@ -452,6 +458,7 @@ extension SessionEvent {
             kind = .rewound(text: rewound.text, images: rewound.images, files: rewound.files)
         case .rewindUndone: kind = .rewindUndone
         case .compacted: kind = .compacted
+        case .compacting(let compacting): kind = .compacting(focus: compacting.focus)
         case .usage(let usage):
             kind = .usage(
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,

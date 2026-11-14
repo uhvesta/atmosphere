@@ -39,9 +39,29 @@ pub enum AgentError {
     UnknownEvent { session: SessionId, event: EventId },
 
     #[error(
-        "event {event} of session {session} isn't a message the person sent, so there is nothing to rewind to before it; rewind to one of their messages"
+        "event {event} of session {session} is neither a message the person sent nor a compaction, so there is nothing to rewind to before it; rewind to one of those, as the session's history lists them"
     )]
-    NotAMessage { session: SessionId, event: EventId },
+    NotARewindPoint { session: SessionId, event: EventId },
+
+    #[error(
+        "session {session}'s agent has no way to sum up its conversation on request. For Copilot, update its CLI to the version Humata is tested with, which has one; until then, rewind to an earlier message, or start a new session and tell it what to carry over"
+    )]
+    CannotCompact { session: SessionId },
+
+    #[error(
+        "session {session} is working, so its conversation can't be summed up now; wait for its turn to end, or ask again with stop, which cuts the turn short where it is and runs what is queued after the summary"
+    )]
+    CompactWhileWorking { session: SessionId },
+
+    #[error(
+        "session {session} has no finished turn yet, so there is nothing to sum up; send it a message first"
+    )]
+    NothingToCompact { session: SessionId },
+
+    #[error(
+        "session {session}'s agent sums up its conversation its own way and takes nothing to keep in mind; ask again without one"
+    )]
+    CompactTakesNoFocus { session: SessionId },
 
     #[error(
         "session {session} has no rewind to undo: a message was sent since, or it was undone already. What was cut is still kept, hidden, until the session is deleted"

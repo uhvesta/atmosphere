@@ -30,7 +30,7 @@ use crate::event::{
 use crate::import::{Importable, Imported};
 use crate::log::{EventLog, Rested};
 use crate::summary::Summary;
-use crate::{Agent, FileVersion, Model, Watch};
+use crate::{Agent, Compaction, FileVersion, Model, Watch};
 
 const RECORD_FILE: &str = "session.json";
 const EVENTS_FILE: &str = "events.jsonl";
@@ -48,6 +48,29 @@ pub trait Runner: Send + Sync + 'static {
         self: Arc<Self>,
         turn: Turn,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Whether [`Runner::compact`] works for `record`'s session, as the
+    /// backend is on this host now. A runner that can't sum up on request
+    /// says so.
+    fn compaction(&self, record: &SessionRecord) -> impl Future<Output = Compaction> + Send {
+        let _ = record;
+        async { Compaction::Unsupported }
+    }
+
+    /// Sums up the session's conversation to make room, keeping
+    /// `turn.text()` in mind (empty for nothing in particular), and records
+    /// [`EventKind::Compacted`] once it's done. The turn's start and end
+    /// are recorded around it, as around [`Runner::run_turn`].
+    fn compact(
+        self: Arc<Self>,
+        turn: Turn,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move {
+            Err(Self::Error::from(AgentError::CannotCompact {
+                session: turn.record().id,
+            }))
+        }
+    }
 
     /// Called when `fork` is made from `parent`, with the history it keeps,
     /// before it runs a turn. A runner that keeps its own state per session
@@ -144,7 +167,8 @@ impl Turn {
         self.reading.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The message the turn replies to.
+    /// The message the turn replies to; for a turn that sums up the
+    /// conversation, what to keep in mind, empty for nothing in particular.
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -323,9 +347,20 @@ struct Control {
     generation: u64,
     /// Between a turn's start and its end.
     turn_open: bool,
+    /// The open turn sums up the conversation, so it takes no steering.
+    compacting: bool,
     queue: VecDeque<Queued>,
     steering: VecDeque<String>,
     pending: HashMap<String, Pending>,
+}
+
+/// What a turn does.
+enum Job {
+    /// Replies to the person's message; `images` are file names in the
+    /// session's images folder.
+    Message { text: String, images: Vec<String> },
+    /// Sums up the conversation, keeping `focus` in mind.
+    Compact { focus: String },
 }
 
 /// A message waiting for the running turn to end.
@@ -416,13 +451,16 @@ impl Session {
     }
 
     /// The next queued message, which leaves the queue to run.
-    fn next_queued(&self, control: &mut Control) -> Option<(String, Vec<String>)> {
+    fn next_queued(&self, control: &mut Control) -> Option<Job> {
         let next = control.queue.pop_front()?;
         self.note(EventKind::Dequeued {
             queue_id: next.id,
             dropped: false,
         });
-        Some((next.text, next.images))
+        Some(Job::Message {
+            text: next.text,
+            images: next.images,
+        })
     }
 }
 
@@ -446,6 +484,7 @@ impl Control {
             running: None,
             generation: 0,
             turn_open: false,
+            compacting: false,
             queue: VecDeque::new(),
             steering: VecDeque::new(),
             pending: HashMap::new(),
@@ -621,15 +660,9 @@ impl<R: Runner> LocalAgent<R> {
         Ok(session)
     }
 
-    /// Starts a driver for `text`. The caller holds `control` and has checked
-    /// that nothing is running.
-    fn start_driver(
-        &self,
-        session: &Arc<Session>,
-        control: &mut Control,
-        text: String,
-        images: Vec<String>,
-    ) {
+    /// Starts a driver for `first`. The caller holds `control` and has
+    /// checked that nothing is running.
+    fn start_driver(&self, session: &Arc<Session>, control: &mut Control, first: Job) {
         control.generation += 1;
         let generation = control.generation;
         let handle = tokio::spawn(drive(
@@ -637,27 +670,87 @@ impl<R: Runner> LocalAgent<R> {
             self.runner.clone(),
             self.workspaces.clone(),
             generation,
-            text,
-            images,
+            first,
         ));
         control.running = Some(Running {
             generation,
             handle: Some(handle),
         });
     }
+
+    /// Stops the running turn, if any, then starts `first`; without it,
+    /// the next queued message, which waits behind `first` otherwise. A
+    /// turn another call is already stopping can't be followed by `first`.
+    async fn abort_then(&self, id: &SessionId, first: Option<Job>) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let handle = {
+            let mut control = session.lock();
+            control.generation += 1;
+            let generation = control.generation;
+            if control.running.is_none() {
+                if let Some(first) = first {
+                    self.start_driver(&session, &mut control, first);
+                }
+                return Ok(());
+            }
+            let taken = control.running.as_mut().and_then(|running| {
+                let handle = running.handle.take()?;
+                running.generation = generation;
+                Some(handle)
+            });
+            let Some(handle) = taken else {
+                // Already being stopped: whoever stops it starts what is
+                // next, which leaves no place for `first`.
+                return match first {
+                    Some(_) => Err(AgentError::CompactWhileWorking {
+                        session: id.clone(),
+                    }),
+                    None => Ok(()),
+                };
+            };
+            control.pending.clear();
+            handle.abort();
+            handle
+        };
+        // Cancelled, or it finished first: either way it has stopped.
+        let _ = handle.await;
+        let open = session.lock().turn_open;
+        let checkpoint = if open {
+            checkpoint(&session, self.workspaces.as_deref()).await
+        } else {
+            Ok(None)
+        };
+        let mut control = session.lock();
+        if control.turn_open {
+            note_checkpoint(&session, checkpoint);
+            session.note(EventKind::TurnEnded { aborted: true });
+            control.turn_open = false;
+        }
+        control.compacting = false;
+        control.steering.clear();
+        control.running = None;
+        let next = match first {
+            Some(first) => Some(first),
+            None => session.next_queued(&mut control),
+        };
+        match next {
+            Some(next) => self.start_driver(&session, &mut control, next),
+            None => session.note(EventKind::Idle),
+        }
+        Ok(())
+    }
 }
 
-/// Plays `text` and `images`, then each queued message, until the queue is empty or the
-/// driver is stopped.
+/// Plays `first`, then each queued message, until the queue is empty or
+/// the driver is stopped.
 async fn drive<R: Runner>(
     session: Arc<Session>,
     runner: Arc<R>,
     workspaces: Option<Arc<Workspaces>>,
     generation: u64,
-    text: String,
-    images: Vec<String>,
+    first: Job,
 ) {
-    let (mut text, mut images) = (text, images);
+    let mut job = first;
     // A session at rest is read here once; were the read to fail, the
     // turn's first event fails the same way and says so.
     if let Err(error) = load_history(&session).await {
@@ -675,14 +768,21 @@ async fn drive<R: Runner>(
                 return;
             }
             control.turn_open = true;
-            session.note(EventKind::UserMessage {
-                text: text.clone(),
-                images: images.clone(),
+            control.compacting = matches!(job, Job::Compact { .. });
+            session.note(match &job {
+                Job::Message { text, images } => EventKind::UserMessage {
+                    text: text.clone(),
+                    images: images.clone(),
+                },
+                Job::Compact { focus } => EventKind::Compacting {
+                    focus: focus.clone(),
+                },
             });
             session.note(EventKind::TurnStarted);
         }
-        let result = match prepared {
-            Ok(()) => runner
+        let result = match (prepared, job) {
+            (Err(error), _) => Err(describe(&error)),
+            (Ok(()), Job::Message { text, images }) => runner
                 .clone()
                 .run_turn(Turn {
                     session: session.clone(),
@@ -696,7 +796,22 @@ async fn drive<R: Runner>(
                 })
                 .await
                 .map_err(|error| describe(&error)),
-            Err(error) => Err(describe(&error)),
+            (Ok(()), Job::Compact { focus }) => {
+                // The code as it is before the summary, changes made by
+                // hand since the last turn included, for a rewind to here.
+                save_now(&session, workspaces.as_deref()).await;
+                runner
+                    .clone()
+                    .compact(Turn {
+                        session: session.clone(),
+                        workspaces: workspaces.clone(),
+                        text: focus,
+                        images: Vec::new(),
+                        reading: Mutex::default(),
+                    })
+                    .await
+                    .map_err(|error| describe(&error))
+            }
         };
         let checkpoint = checkpoint(&session, workspaces.as_deref()).await;
         let mut control = session.lock();
@@ -709,10 +824,11 @@ async fn drive<R: Runner>(
         note_checkpoint(&session, checkpoint);
         session.note(EventKind::TurnEnded { aborted: false });
         control.turn_open = false;
+        control.compacting = false;
         control.steering.clear();
         control.pending.clear();
         match session.next_queued(&mut control) {
-            Some(next) => (text, images) = next,
+            Some(next) => job = next,
             None => {
                 control.running = None;
                 session.note(EventKind::Idle);
@@ -777,7 +893,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             });
         }
         if control.running.is_none() {
-            self.start_driver(&session, &mut control, text, images);
+            self.start_driver(&session, &mut control, Job::Message { text, images });
             return Ok(());
         }
         match mode {
@@ -791,15 +907,18 @@ impl<R: Runner> Agent for LocalAgent<R> {
                     session.queue(&mut control, text, images, false, false);
                 }
             }
-            SendMode::Immediate if control.turn_open && images.is_empty() => {
+            SendMode::Immediate
+                if control.turn_open && !control.compacting && images.is_empty() =>
+            {
                 session.log.append(Event::now(EventKind::UserMessage {
                     text: text.clone(),
                     images: Vec::new(),
                 }))?;
                 control.steering.push_back(text);
             }
-            // Between turns, while one is being stopped, or with images a
-            // running turn can't take: it goes next.
+            // Between turns, while one is being stopped, while the
+            // conversation is summed up, or with images a running turn
+            // can't take: it goes next.
             SendMode::Immediate => session.queue(&mut control, text, images, true, false),
         }
         Ok(())
@@ -936,49 +1055,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn abort(&self, id: &SessionId) -> Result<(), AgentError> {
-        let session = self.session(id)?;
-        let handle = {
-            let mut control = session.lock();
-            control.generation += 1;
-            let generation = control.generation;
-            let Some(running) = control.running.as_mut() else {
-                return Ok(());
-            };
-            // Already being stopped.
-            let Some(handle) = running.handle.take() else {
-                return Ok(());
-            };
-            running.generation = generation;
-            control.pending.clear();
-            handle.abort();
-            handle
-        };
-        // Cancelled, or it finished first: either way it has stopped.
-        let _ = handle.await;
-        let open = session.lock().turn_open;
-        let checkpoint = if open {
-            checkpoint(&session, self.workspaces.as_deref()).await
-        } else {
-            Ok(None)
-        };
-        let mut control = session.lock();
-        if control.turn_open {
-            note_checkpoint(&session, checkpoint);
-            session.note(EventKind::TurnEnded { aborted: true });
-            control.turn_open = false;
-        }
-        control.steering.clear();
-        match session.next_queued(&mut control) {
-            Some((next, images)) => {
-                control.running = None;
-                self.start_driver(&session, &mut control, next, images);
-            }
-            None => {
-                control.running = None;
-                session.note(EventKind::Idle);
-            }
-        }
-        Ok(())
+        self.abort_then(id, None).await
     }
 
     async fn fork(
@@ -1086,13 +1163,19 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 session: id.clone(),
                 event: before.clone(),
             })?;
-        let EventKind::UserMessage { text, images } = events[index].kind.clone() else {
-            return Err(AgentError::NotAMessage {
+        let (cut, text, images) =
+            rewind_point(&events, index).ok_or_else(|| AgentError::NotARewindPoint {
                 session: id.clone(),
                 event: before.clone(),
-            });
+            })?;
+        // Before a compaction the code is as it was saved there; a message
+        // was sent between turns, so the last checkpoint before it has it.
+        let code = if matches!(events[index].kind, EventKind::UserMessage { .. }) {
+            last_checkpoint(&events[..cut])
+        } else {
+            code_at(&events, cut)
         };
-        let mut kept = events[..index].to_vec();
+        let mut kept = events[..cut].to_vec();
         kept.extend(closing(&kept).into_iter().map(Event::now));
         let rewinds = session.dir.join(REWINDS_FOLDER);
         let rewind = count_entries(&rewinds)? + 1;
@@ -1120,7 +1203,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 .await
                 .map_err(workspace_failed(id))?;
             workspaces
-                .restore(&record.checkouts, &last_checkpoint(&kept))
+                .restore(&record.checkouts, &code)
                 .await
                 .map_err(workspace_failed(id))?;
             saved
@@ -1150,7 +1233,9 @@ impl<R: Runner> Agent for LocalAgent<R> {
             .take_while(|event| {
                 !matches!(
                     event.kind,
-                    EventKind::UserMessage { .. } | EventKind::RewindUndone
+                    EventKind::UserMessage { .. }
+                        | EventKind::Compacting { .. }
+                        | EventKind::RewindUndone
                 )
             })
             .find_map(|event| match &event.kind {
@@ -1181,6 +1266,50 @@ impl<R: Runner> Agent for LocalAgent<R> {
         self.runner.rewind_undone(&record, rewind)?;
         restored.push(Event::now(EventKind::RewindUndone));
         session.log.replace(restored)
+    }
+
+    async fn compaction(&self, id: &SessionId) -> Result<Compaction, AgentError> {
+        let session = self.session(id)?;
+        let record = session.lock().record.clone();
+        if record.archived {
+            return Ok(Compaction::Unsupported);
+        }
+        Ok(self.runner.compaction(&record).await)
+    }
+
+    async fn compact(&self, id: &SessionId, focus: String, stop: bool) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let record = session.lock().record.clone();
+        if record.archived {
+            return Err(AgentError::Archived {
+                session: id.clone(),
+            });
+        }
+        if session.log.summary().turns == 0 {
+            return Err(AgentError::NothingToCompact {
+                session: id.clone(),
+            });
+        }
+        match self.runner.compaction(&record).await {
+            Compaction::Unsupported => {
+                return Err(AgentError::CannotCompact {
+                    session: id.clone(),
+                });
+            }
+            Compaction::Supported { focus: false } if !focus.trim().is_empty() => {
+                return Err(AgentError::CompactTakesNoFocus {
+                    session: id.clone(),
+                });
+            }
+            Compaction::Supported { .. } => {}
+        }
+        if !stop && session.lock().running.is_some() {
+            return Err(AgentError::CompactWhileWorking {
+                session: id.clone(),
+            });
+        }
+        let focus = focus.trim().to_owned();
+        self.abort_then(id, Some(Job::Compact { focus })).await
     }
 
     async fn skipped(&self) -> Result<Vec<Skipped>, AgentError> {
@@ -1738,6 +1867,43 @@ fn last_checkpoint(events: &[Event]) -> Vec<Snapshot> {
         .unwrap_or_default()
 }
 
+/// Where a rewind to `events[index]` cuts, and the message it puts back:
+/// before one of the person's messages, or before a compaction of the
+/// session's own agent, which puts none back. A compaction the person asked
+/// for goes with all of its turn, which holds nothing else.
+fn rewind_point(events: &[Event], index: usize) -> Option<(usize, String, Vec<String>)> {
+    let event = events.get(index)?;
+    match &event.kind {
+        EventKind::UserMessage { text, images } => Some((index, text.clone(), images.clone())),
+        EventKind::Compacted if event.is_main() => {
+            let asked = events[..index]
+                .iter()
+                .rposition(|event| matches!(event.kind, EventKind::TurnStarted))
+                .and_then(|started| started.checked_sub(1))
+                .filter(|asked| matches!(events[*asked].kind, EventKind::Compacting { .. }));
+            Some((asked.unwrap_or(index), String::new(), Vec::new()))
+        }
+        _ => None,
+    }
+}
+
+/// The code as it was at `events[cut]`, where a compaction starts: the
+/// first checkpoint or save from there, taken before a tool ran or the
+/// turn ended, else the last one before it; none if there is none.
+fn code_at(events: &[Event], cut: usize) -> Vec<Snapshot> {
+    events[cut..]
+        .iter()
+        .take_while(|event| {
+            !matches!(
+                event.kind,
+                EventKind::ToolStarted { .. } | EventKind::TurnEnded { .. }
+            )
+        })
+        .find_map(|event| event.kind.code())
+        .map(<[Snapshot]>::to_vec)
+        .unwrap_or_else(|| last_checkpoint(&events[..cut]))
+}
+
 /// `read` given the session's events so far. A history at rest is read
 /// from disk for this alone, off the executor, and stays at rest.
 async fn peek<T: Send + 'static>(
@@ -1902,36 +2068,53 @@ fn save_soon(session: &Arc<Session>, workspaces: Option<Arc<Workspaces>>) {
     }
     session.unsaved.store(true, Ordering::SeqCst);
     let session = session.clone();
-    tokio::spawn(async move {
-        let _capturing = session.capturing.lock().await;
-        if !session.unsaved.swap(false, Ordering::SeqCst) {
-            return;
-        }
-        let checkouts = session.lock().record.checkouts.clone();
-        let summary = session.log.summary();
-        match workspaces
-            .save(
-                session.id.as_str(),
-                summary.saves,
-                &checkouts,
-                &summary.code,
-            )
-            .await
-        {
-            Ok(Some(snapshots)) => session.note(EventKind::Saved { snapshots }),
-            // Nothing changed since the last save: there's nothing to keep.
-            Ok(None) => {}
-            // The turn's end still checkpoints the code; a save that
-            // couldn't be taken only loses the mid-turn copy.
-            Err(source) => eprintln!(
-                "humata: {}",
-                describe(&AgentError::Workspace {
-                    session: session.id.clone(),
-                    source,
-                })
-            ),
-        }
-    });
+    tokio::spawn(async move { save_unsaved(&session, &workspaces).await });
+}
+
+/// Saves the session's code as it is now, part way through its turn, and
+/// returns once it's saved.
+async fn save_now(session: &Session, workspaces: Option<&Workspaces>) {
+    let Some(workspaces) = workspaces else {
+        return;
+    };
+    if session.lock().record.checkouts.is_empty() {
+        return;
+    }
+    session.unsaved.store(true, Ordering::SeqCst);
+    save_unsaved(session, workspaces).await;
+}
+
+/// Saves the session's code if it's marked unsaved, once no other capture
+/// of it runs.
+async fn save_unsaved(session: &Session, workspaces: &Workspaces) {
+    let _capturing = session.capturing.lock().await;
+    if !session.unsaved.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let checkouts = session.lock().record.checkouts.clone();
+    let summary = session.log.summary();
+    match workspaces
+        .save(
+            session.id.as_str(),
+            summary.saves,
+            &checkouts,
+            &summary.code,
+        )
+        .await
+    {
+        Ok(Some(snapshots)) => session.note(EventKind::Saved { snapshots }),
+        // Nothing changed since the last save: there's nothing to keep.
+        Ok(None) => {}
+        // The turn's end still checkpoints the code; a save that
+        // couldn't be taken only loses the mid-turn copy.
+        Err(source) => eprintln!(
+            "humata: {}",
+            describe(&AgentError::Workspace {
+                session: session.id.clone(),
+                source,
+            })
+        ),
+    }
 }
 
 /// Records a turn's checkpoint, or why it couldn't be taken.
@@ -2213,6 +2396,192 @@ pub(crate) mod tests {
         ];
         assert!(closing(&events).is_empty());
         assert!(closing(&[]).is_empty());
+    }
+
+    /// Sums up mid-turn on its own, as a backend short of room does, and on
+    /// request once `release` is told, taking nothing to keep in mind.
+    #[derive(Default)]
+    struct SumsUp {
+        release: tokio::sync::Notify,
+    }
+
+    impl Runner for SumsUp {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            turn.emit(EventKind::AssistantMessage {
+                text: "before".into(),
+            })?;
+            turn.emit(EventKind::Compacted)?;
+            turn.emit(EventKind::AssistantMessage {
+                text: "after".into(),
+            })?;
+            Ok(())
+        }
+
+        async fn compaction(&self, _record: &SessionRecord) -> Compaction {
+            Compaction::Supported { focus: false }
+        }
+
+        async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            self.release.notified().await;
+            turn.emit(EventKind::Compacted)?;
+            Ok(())
+        }
+    }
+
+    /// Only replies: it has no way to sum up.
+    struct OnlyReplies;
+
+    impl Runner for OnlyReplies {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            turn.emit(EventKind::AssistantMessage { text: "hi".into() })?;
+            Ok(())
+        }
+    }
+
+    /// An agent of `runner`'s with a session that has finished one turn.
+    async fn after_a_turn<R: Runner>(
+        runner: R,
+    ) -> (tempfile::TempDir, LocalAgent<R>, SessionId, Vec<Event>) {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&agent, &id, idle_turns(1)).await;
+        (dir, agent, id, events)
+    }
+
+    fn position(events: &[Event], found: impl Fn(&EventKind) -> bool) -> usize {
+        events
+            .iter()
+            .position(|event| found(&event.kind))
+            .unwrap_or_else(|| panic!("not in the history: {events:#?}"))
+    }
+
+    #[tokio::test]
+    async fn a_steer_sent_while_the_conversation_is_summed_up_runs_after_it() {
+        let (_dir, agent, id, _) = after_a_turn(SumsUp::default()).await;
+        agent
+            .compact(&id, String::new(), false)
+            .await
+            .expect("compacting");
+        wait_for(&agent, &id, |events| {
+            events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Compacting { .. }))
+        })
+        .await;
+
+        agent
+            .send(&id, "steer".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        agent.runner.release.notify_one();
+        let events = wait_for(&agent, &id, idle_turns(2)).await;
+
+        let asked = position(&events, |kind| matches!(kind, EventKind::Compacting { .. }));
+        let summed = asked
+            + position(&events[asked..], |kind| {
+                matches!(kind, EventKind::Compacted)
+            });
+        let ended = summed
+            + position(&events[summed..], |kind| {
+                matches!(kind, EventKind::TurnEnded { .. })
+            });
+        let steer = position(
+            &events,
+            |kind| matches!(kind, EventKind::UserMessage { text, .. } if text == "steer"),
+        );
+        assert!(ended < steer, "{events:#?}");
+    }
+
+    #[tokio::test]
+    async fn a_rewind_to_a_compaction_the_agent_made_mid_turn_cuts_the_turn_there() {
+        let (_dir, agent, id, events) = after_a_turn(SumsUp::default()).await;
+        let summed = position(&events, |kind| matches!(kind, EventKind::Compacted));
+
+        agent
+            .rewind(&id, &events[summed].id, false)
+            .await
+            .expect("rewound");
+
+        let history = agent.history(&id).await.expect("history");
+        let kept: Vec<&EventId> = history[..summed].iter().map(|event| &event.id).collect();
+        let before: Vec<&EventId> = events[..summed].iter().map(|event| &event.id).collect();
+        assert_eq!(kept, before);
+        assert!(!history.iter().any(|event| event.id == events[summed].id));
+        assert_eq!(SessionState::after(&history), SessionState::Idle);
+        assert!(
+            matches!(
+                history.last().map(|event| &event.kind),
+                Some(EventKind::Rewound { text, .. }) if text.is_empty()
+            ),
+            "{history:#?}"
+        );
+        agent.undo_rewind(&id).await.expect("undone");
+        let history = agent.history(&id).await.expect("history");
+        assert!(history.iter().any(|event| event.id == events[summed].id));
+    }
+
+    #[tokio::test]
+    async fn a_subagents_compaction_cant_be_rewound_to() {
+        let (_dir, agent, id, events) = after_a_turn(OnlyReplies).await;
+        let session = agent.session(&id).expect("the session exists");
+        let mut theirs = Event::now(EventKind::Compacted);
+        theirs.parent_call_id = Some("call-1".into());
+        let theirs = session.log.append(theirs).expect("recorded");
+
+        let refused = agent.rewind(&id, &theirs.id, false).await;
+
+        assert!(
+            matches!(refused, Err(AgentError::NotARewindPoint { .. })),
+            "{refused:?}"
+        );
+        let history = agent.history(&id).await.expect("history");
+        assert_eq!(history.len(), events.len() + 1);
+    }
+
+    #[tokio::test]
+    async fn a_backend_with_no_way_to_sum_up_refuses_to_compact() {
+        let (_dir, agent, id, events) = after_a_turn(OnlyReplies).await;
+
+        let refused = agent.compact(&id, String::new(), false).await;
+
+        assert!(
+            matches!(refused, Err(AgentError::CannotCompact { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(
+            agent.compaction(&id).await.expect("asked"),
+            Compaction::Unsupported
+        );
+        let history = agent.history(&id).await.expect("history");
+        assert_eq!(history.len(), events.len());
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_takes_nothing_to_keep_in_mind_refuses_one() {
+        let (_dir, agent, id, events) = after_a_turn(SumsUp::default()).await;
+
+        let refused = agent.compact(&id, "keep the API notes".into(), false).await;
+
+        assert!(
+            matches!(refused, Err(AgentError::CompactTakesNoFocus { .. })),
+            "{refused:?}"
+        );
+        let history = agent.history(&id).await.expect("history");
+        assert_eq!(history.len(), events.len());
     }
 
     #[tokio::test]

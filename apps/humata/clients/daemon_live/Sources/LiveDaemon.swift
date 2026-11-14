@@ -220,6 +220,23 @@ extension DaemonClient {
                 undo.sessionID = session
                 _ = try await daemon.call(.undoRewind(undo))
             },
+            compact: { session, focus, stop in
+                var compact = Humata_V1_CompactSession()
+                compact.sessionID = session
+                compact.focus = focus
+                compact.stop = stop
+                guard case .compactStarted = try await daemon.call(.compactSession(compact)) else {
+                    throw DaemonError.unexpected("something other than the compaction having started")
+                }
+            },
+            chatCommands: { session in
+                var get = Humata_V1_GetChatCommands()
+                get.sessionID = session
+                guard case .chatCommands(let commands) = try await daemon.call(.getChatCommands(get)) else {
+                    throw DaemonError.unexpected("something other than the session's chat commands")
+                }
+                return ChatCommands(commands)
+            },
             unqueue: { session, queueID in
                 var unqueue = Humata_V1_Unqueue()
                 unqueue.sessionID = session

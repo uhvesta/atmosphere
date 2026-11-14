@@ -239,10 +239,10 @@ fn tool_list() -> Vec<Tool> {
         },
         Tool {
             name: "rewind_session",
-            description: "Cuts a session's chat back to before one of the person's messages, stopping its turn and dropping what's queued; with files, its code goes back as it was then too. undo_rewind brings it all back until the next message.",
+            description: "Cuts a session's chat back to before one of the person's messages or before a compaction, stopping its turn and dropping what's queued; with files, its code goes back as it was then too. undo_rewind brings it all back until the next message.",
             properties: json!({
                 "session_id": session(),
-                "before_event_id": string("The id of the person's message to cut from"),
+                "before_event_id": string("The id of the person's message, or of the compaction, to cut from"),
                 "files": boolean("Put the code back as it was then too"),
             }),
             required: &["session_id", "before_event_id"],
@@ -252,6 +252,17 @@ fn tool_list() -> Vec<Tool> {
             name: "undo_rewind",
             description: "Undoes a session's last rewind, chat and files, if no message was sent since.",
             properties: json!({"session_id": session()}),
+            required: &["session_id"],
+            effect: Effect::Changes,
+        },
+        Tool {
+            name: "compact_session",
+            description: "Has a session's agent sum up its conversation so far to make room, in a turn of its own; the history then holds a compaction, and rewind_session to it brings the full conversation back. A working session is refused unless stop is given.",
+            properties: json!({
+                "session_id": session(),
+                "focus": string("What the summary should keep in mind, for an agent that takes it"),
+                "stop": boolean("Stop the running turn first; what's queued runs after the summary"),
+            }),
             required: &["session_id"],
             effect: Effect::Changes,
         },
@@ -580,6 +591,17 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
             });
             match ask(client, request).await? {
                 Response::RewindUndone(_) => Ok("Undid its rewind.".to_owned()),
+                other => Err(unexpected(&other)),
+            }
+        }
+        "compact_session" => {
+            let request = Request::CompactSession(pb::CompactSession {
+                session_id: arguments.required("session_id")?,
+                focus: arguments.text("focus"),
+                stop: arguments.flag("stop"),
+            });
+            match ask(client, request).await? {
+                Response::CompactStarted(_) => Ok("Compacting it.".to_owned()),
                 other => Err(unexpected(&other)),
             }
         }

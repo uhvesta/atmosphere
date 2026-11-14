@@ -803,12 +803,13 @@ enum Command {
     },
     /// Stop a session's running turn.
     Abort { session: String },
-    /// Cut a session's chat back to before one of your messages, stopping
-    /// its turn and dropping what's queued. Undo it with `undo-rewind`
-    /// before sending another message.
+    /// Cut a session's chat back to before one of your messages, or before
+    /// a compaction, stopping its turn and dropping what's queued. Undo it
+    /// with `undo-rewind` before sending another message.
     Rewind {
         session: String,
-        /// The id of your message to cut from, as `events` prints it.
+        /// The id of your message, or of the compaction, to cut from, as
+        /// `events` prints it.
         before: String,
         /// Put the session's code back as it was then too.
         #[arg(long)]
@@ -816,6 +817,21 @@ enum Command {
     },
     /// Undo a session's last rewind, if no message was sent since.
     UndoRewind { session: String },
+    /// Sum up a session's conversation to make room. Rewind to the
+    /// compaction it records to get the full conversation back.
+    Compact {
+        session: String,
+        /// What the summary should keep in mind, for an agent that takes it.
+        focus: Option<String>,
+        /// Stop the session's running turn first; what's queued runs after
+        /// the summary. Without it, a working session isn't compacted.
+        #[arg(long)]
+        stop: bool,
+        /// Print what happens until the session is idle again or waits for
+        /// a permission answer.
+        #[arg(long)]
+        wait: bool,
+    },
     /// List the skills on this Mac and each host, then each clash: two or
     /// more files with one name that one session would get, with the
     /// hashes to pick between.
@@ -1584,6 +1600,32 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 |response| matches!(response, Response::RewindUndone(_)),
                 "RewindUndone",
             )?;
+        }
+        Command::Compact {
+            session,
+            focus,
+            stop,
+            wait,
+        } => {
+            let request = Request::CompactSession(pb::CompactSession {
+                session_id: session.clone(),
+                focus: focus.unwrap_or_default(),
+                stop,
+            });
+            let started = |response: &Response| matches!(response, Response::CompactStarted(_));
+            if wait {
+                call_and_wait(
+                    &client,
+                    &session,
+                    request,
+                    started,
+                    "CompactStarted",
+                    printed,
+                )
+                .await?;
+            } else {
+                expect_ok(client.call(request).await?, started, "CompactStarted")?;
+            }
         }
         Command::Unqueue { session, queue_id } => {
             let request = Request::Unqueue(pb::Unqueue {

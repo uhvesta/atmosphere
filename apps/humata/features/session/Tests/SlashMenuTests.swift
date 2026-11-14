@@ -31,6 +31,15 @@ final class SlashMenuTests: XCTestCase {
         Session(id: "s1", name: "chat", backend: backend, workingDirectory: "/work", host: host, projectID: project)
     }
 
+    /// The skills and plugin commands `session` is offered, without
+    /// Humata's own commands.
+    private func offered(
+        _ session: Session, skills: SkillList = SkillList(), plugins: PluginList = PluginList()
+    ) -> [SlashChoice] {
+        SlashChoice.offered(to: session, skills: skills, plugins: plugins, project: nil, commands: nil)
+            .filter { $0.builtIn == nil }
+    }
+
     func testEachBackendIsOfferedOnlyTheSkillsItReads() {
         let skills = SkillList(skills: [
             FoundSkill(name: "mine", origin: .claudeUser, hash: "a"),
@@ -40,12 +49,11 @@ final class SlashMenuTests: XCTestCase {
             FoundSkill(name: "other-project", origin: .project, projectID: "p2", hash: "e"),
             FoundSkill(name: "elsewhere", origin: .claudeUser, hash: "f", host: "box"),
         ])
-        let claude = SlashChoice.offered(to: session(.claude), skills: skills, plugins: PluginList(), project: nil)
+        let claude = offered(session(.claude), skills: skills)
         XCTAssertEqual(Set(claude.map(\.id)), ["mine", "repo"])
-        let copilot = SlashChoice.offered(to: session(.copilot), skills: skills, plugins: PluginList(), project: nil)
+        let copilot = offered(session(.copilot), skills: skills)
         XCTAssertEqual(Set(copilot.map(\.id)), ["copilots", "repo", "github"])
-        let remote = SlashChoice.offered(
-            to: session(.claude, host: "box"), skills: skills, plugins: PluginList(), project: nil)
+        let remote = offered(session(.claude, host: "box"), skills: skills)
         XCTAssertEqual(remote.map(\.id), ["elsewhere"])
     }
 
@@ -54,8 +62,7 @@ final class SlashMenuTests: XCTestCase {
         let two = FoundSkill(name: "release", description: "two", origin: .claudeRepository, projectID: "p1", hash: "b")
         let skills = SkillList(
             skills: [one, two], clashes: [SkillClash(name: "release", candidates: [one, two], winner: "b")])
-        let offered = SlashChoice.offered(to: session(.claude), skills: skills, plugins: PluginList(), project: nil)
-        XCTAssertEqual(offered, [SlashChoice("release", summary: "two")])
+        XCTAssertEqual(offered(session(.claude), skills: skills), [SlashChoice("release", summary: "two")])
     }
 
     func testPluginsOfferTheirSkillsAndCommandsWhenOnForTheAgent() {
@@ -64,8 +71,7 @@ final class SlashMenuTests: XCTestCase {
             Plugin(agent: .claude, pluginID: "off@m", enabled: false, commands: ["hidden"]),
             Plugin(agent: .copilot, pluginID: "cop@m", commands: ["copilot-only"]),
         ])
-        let offered = SlashChoice.offered(to: session(.claude), skills: SkillList(), plugins: plugins, project: nil)
-        XCTAssertEqual(offered.map(\.id), ["audit", "ship"])
+        XCTAssertEqual(offered(session(.claude), plugins: plugins).map(\.id), ["audit", "ship"])
     }
 
     private func store(_ daemon: InMemoryDaemon, _ session: Session, draft: String? = nil)
@@ -100,7 +106,7 @@ final class SlashMenuTests: XCTestCase {
         await store.send(\.binding.draft, "/")
         await store.receive(\.slashLoaded, timeout: .seconds(1))
         XCTAssertTrue(store.state.slashOpen)
-        XCTAssertEqual(store.state.slashChoices.map(\.id), ["release", "review"])
+        XCTAssertEqual(shown(store), ["release", "review"])
 
         await store.send(\.binding.draft, "/rev")
         XCTAssertEqual(store.state.slashChoices.map(\.id), ["review"])
@@ -113,13 +119,13 @@ final class SlashMenuTests: XCTestCase {
         let daemon = InMemoryDaemon()
         daemon.setSkills(
             SkillList(skills: [
-                FoundSkill(name: "release", origin: .claudeUser, hash: "a"),
-                FoundSkill(name: "review", origin: .claudeUser, hash: "b"),
+                FoundSkill(name: "deploy", origin: .claudeUser, hash: "a"),
+                FoundSkill(name: "debug", origin: .claudeUser, hash: "b"),
             ]))
         let session = try await started(daemon)
         let store = store(daemon, session)
 
-        await store.send(\.binding.draft, "/re")
+        await store.send(\.binding.draft, "/de")
         await store.receive(\.slashLoaded, timeout: .seconds(1))
         await store.send(.slashMoved(by: 1))
         await store.send(.slashMoved(by: 1))
@@ -157,8 +163,9 @@ final class SlashMenuTests: XCTestCase {
         return daemon
     }
 
+    /// The skills the list shows, without Humata's own commands.
     private func shown(_ store: TestStoreOf<SessionFeature>) -> [String] {
-        store.state.slashOpen ? store.state.slashChoices.map(\.id) : []
+        store.state.slashOpen ? store.state.slashChoices.filter { $0.builtIn == nil }.map(\.id) : []
     }
 
     func testEscapeHoldsOnlyUntilTheNameIsTypedAgain() async throws {

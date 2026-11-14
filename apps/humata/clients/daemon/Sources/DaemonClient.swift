@@ -53,10 +53,19 @@ package struct DaemonClient: Sendable {
     /// after it: as before archiving.
     package var stopAll: @Sendable (_ session: String) async throws -> Void
     /// Stops the turn, drops what's queued and cuts the chat back to
-    /// before the person's message `before`; with `files`, the code too.
+    /// before the event `before`: one of the person's messages, or a
+    /// compaction, which gives the agent back everything from before it.
+    /// With `files`, the code too.
     package var rewind: @Sendable (_ session: String, _ before: String, _ files: Bool) async throws -> Void
     /// Undoes the last rewind, unless a message was sent since.
     package var undoRewind: @Sendable (_ session: String) async throws -> Void
+    /// Starts a turn that sums up the session's conversation to make room,
+    /// keeping `focus` in mind if not empty; returns once it has started.
+    /// Refused with `.busy` while a turn runs unless `stop`, which stops
+    /// that turn first; what's queued runs after.
+    package var compact: @Sendable (_ session: String, _ focus: String, _ stop: Bool) async throws -> Void
+    /// The chat commands the session's agent takes beyond its skills.
+    package var chatCommands: @Sendable (_ session: String) async throws -> ChatCommands
     /// Takes a queued message out before its turn starts.
     package var unqueue: @Sendable (_ session: String, _ queueID: String) async throws -> Void
     /// Changes a queued message's text before its turn starts; refused

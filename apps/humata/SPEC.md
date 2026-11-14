@@ -154,6 +154,7 @@ original spec; lettered ones were added since.
 | Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Done |
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
+| Q8 Chat commands: /rewind and /compact | In progress |
 | T1 Tokens and agent tools | Done |
 | U1 App jank | Done |
 | D1 Mermaid diagrams | Done |
@@ -1184,9 +1185,9 @@ the Mac. Built after S1, before T1.
 
 #### Q2 Rewind and checkpoints
 
-- [x] Rewind to before any message the person sent: the chat only, or the
-  chat and the files, back to that turn's snapshot; the message goes back
-  in the box
+- [x] Rewind to before any message the person sent, or to any compaction:
+  the chat only, or the chat and the files, back to that turn's snapshot;
+  the message goes back in the box (a compaction puts none back)
 - [x] Undo Rewind brings back what was cut, chat and files, until the next
   message is sent; after that the cut part stays as a hidden fork, kept
   until the session is deleted
@@ -1196,9 +1197,9 @@ the Mac. Built after S1, before T1.
 - [x] Rewind runs on every backend: Claude Code resumes at the turn,
   Copilot forks at the event, the local model cuts its history; a session
   working is stopped first, after asking
-- The local model never compacts, so it makes no compaction checkpoint;
-  Claude Code's and Copilot's are saved when their compaction is reported,
-  as nothing changes the files while they compact
+- The local model compacts only when asked. Claude Code's and Copilot's
+  own compactions are saved when they're reported, as nothing changes the
+  files while they compact; one that was asked for saves the files first
 
 #### Q3 Skills from the agents' folders
 
@@ -1311,6 +1312,40 @@ The owner, 2026-11-12: see the specs for a chat.
   board's editor; an item's edit is saved to the board and reaches the
   session as any spec edit does; the project's reaches sessions started
   after, as in Project Settings. Open on the Board shows the item there
+
+#### Q8 Chat commands
+
+The owner, 2026-11-13: /rewind with a picker of checkpoints, and /compact
+on every backend.
+
+- [ ] `/rewind` in a chat's box opens a picker of its checkpoints, the
+  person's messages and the compactions, newest first; typing narrows
+  them, arrows move, Return picks and asks what to rewind (the chat, or
+  the chat and the files), Escape closes it. It's offered in every chat
+  that isn't archived
+- [ ] Rewinding to a compaction gives the agent back everything from
+  before it was summed up, and puts no message back in the box. One the
+  person asked for goes with its whole turn; one the agent made mid-turn
+  cuts the turn there. With the files, they go back as they were saved
+  when it started. Undo Rewind brings it back as for a message
+- [ ] `/compact` sums the conversation up to make room, in a turn of its
+  own that holds no message of the person's, as each backend does it:
+  Claude Code runs its own `/compact`, with what to keep in mind after it;
+  Copilot is asked over `session.history.compact` or
+  `session.compaction.compact`, whichever its CLI has, and takes nothing
+  to keep in mind; the local model writes the summary itself, shown as
+  its reply, and later turns send the summary in place of what it sums
+  up, while the history keeps everything
+- [ ] The app asks the session's host which commands its agent takes when
+  the / list loads, so `/compact` is offered only where it works, and with
+  what to keep in mind only where that's taken. A built-in command wins
+  over a skill or plugin command of the same name
+- [ ] `/compact` while the session works stops the turn first, after
+  asking; what's queued runs after the summary. From the CLI
+  (`humata compact`) and MCP (`compact_session`) a working session is
+  refused unless told to stop it
+- [ ] A compaction that fails says why and how to go on, records no
+  compaction, and offers no Try Again
 
 ### Milestone K: signed releases
 

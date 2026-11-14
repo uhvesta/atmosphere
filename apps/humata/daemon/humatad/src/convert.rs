@@ -96,6 +96,9 @@ pub fn event(event: &Event) -> pb::SessionEvent {
         }),
         EventKind::RewindUndone => Kind::RewindUndone(pb::RewindUndoneEvent {}),
         EventKind::Compacted => Kind::Compacted(pb::Compacted {}),
+        EventKind::Compacting { focus } => Kind::Compacting(pb::Compacting {
+            focus: focus.clone(),
+        }),
         EventKind::Waiting { reason } => Kind::Waiting(pb::Waiting {
             reason: reason.clone(),
         }),

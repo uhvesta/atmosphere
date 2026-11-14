@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
+use crate::Compaction;
 use crate::backup::{self, BackendFile};
 use crate::claude::McpServer;
 use crate::env::Env;
@@ -34,7 +35,7 @@ use crate::event::{SessionId, SessionRecord};
 use crate::import::{self, Importable, Imported};
 use crate::links::{Cut, Links};
 use crate::runtime::{Runner, Turn};
-use rpc::{Cli, PROTOCOL_VERSION};
+use rpc::{Cli, METHOD_NOT_FOUND, PROTOCOL_VERSION};
 
 /// The Copilot CLI version this backend is written against, pinned in
 /// `//apps/humata/copilot`.
@@ -48,6 +49,14 @@ const PAGE: u64 = 500;
 
 /// How long Copilot gets to say the session's usage so far.
 const METRICS_WAIT: Duration = Duration::from_secs(5);
+
+/// The CLI's calls that sum up a session's conversation, as its versions
+/// have named it; the first it has is used.
+const COMPACT_METHODS: [&str; 2] = ["session.history.compact", "session.compaction.compact"];
+
+/// How long Copilot gets, once it has answered a call to sum up, to say so
+/// as an event of the session too, which is what a fork is cut by.
+const COMPACT_EVENT_WAIT: Duration = Duration::from_secs(5);
 
 pub struct CopilotOptions {
     /// The `copilot` program.
@@ -147,6 +156,16 @@ pub enum CopilotError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error(
+        "this Copilot CLI has no way to sum up a session on request (it has neither {tried}); update it to {COPILOT_VERSION}, the version Humata is tested with, or rewind to an earlier message to make room"
+    )]
+    CannotCompact { tried: String },
+
+    #[error(
+        "Copilot couldn't sum up the conversation: {message}. The conversation is as it was; ask again, and if it keeps failing, rewind to an earlier message or start a new session"
+    )]
+    CompactFailed { message: String },
 
     #[error(transparent)]
     Plugins(#[from] crate::plugins::OverlayError),
@@ -288,6 +307,32 @@ impl CopilotRunner {
         Ok(session)
     }
 
+    /// What every turn starts with: the CLI, with the turn's session open
+    /// on it as its links say.
+    async fn begin(&self, turn: &Turn) -> Result<Begun, CopilotError> {
+        let record = turn.record();
+        let config = match &record.backend_config {
+            Some(json) => serde_json::from_str::<CopilotConfig>(json)
+                .map_err(|source| CopilotError::BadConfig { source })?,
+            None => CopilotConfig::default(),
+        };
+        let provider = config.provider.or_else(|| self.options.provider.clone());
+        let path = Links::path(&self.options.state, record.id.as_str());
+        let mut links = Links::load(&path)?;
+        let cli = self.cli(record.experimental).await?;
+        let session = self
+            .open(&cli, turn, provider.as_ref(), &mut links, &path)
+            .await?;
+        let after_abort = self.settle(&session).await;
+        Ok(Begun {
+            cli,
+            session,
+            links,
+            path,
+            after_abort,
+        })
+    }
+
     /// Waits for the abort of the session's last turn, if it was stopped.
     /// True if it was.
     async fn settle(&self, session: &str) -> bool {
@@ -304,6 +349,62 @@ impl CopilotRunner {
             None => false,
         }
     }
+}
+
+/// A turn's session, open on the CLI.
+struct Begun {
+    cli: Arc<Cli>,
+    /// Copilot's session.
+    session: String,
+    links: Links,
+    /// Where the links are kept.
+    path: PathBuf,
+    /// Whether the session's last turn was stopped, and its abort waited
+    /// for.
+    after_abort: bool,
+}
+
+/// The call `cli` has that sums up a session's conversation; None if it
+/// has none, or stopped before it could say.
+async fn compact_method(cli: &Cli) -> Option<&'static str> {
+    for method in COMPACT_METHODS {
+        if cli.has(method).await {
+            return Some(method);
+        }
+    }
+    None
+}
+
+/// What one of Copilot's events says of the summing up that was asked for;
+/// None for an event that doesn't end it.
+fn summed_up(event: &Value) -> Option<Result<(), CopilotError>> {
+    let data = &event["data"];
+    match event["type"].as_str()? {
+        "session.compaction_complete" if data["success"].as_bool() == Some(false) => {
+            Some(Err(CopilotError::CompactFailed {
+                message: why_not(data),
+            }))
+        }
+        "session.compaction_complete" => Some(Ok(())),
+        "session.error" => Some(Err(CopilotError::Session {
+            message: data["message"].as_str().unwrap_or_default().to_owned(),
+        })),
+        _ => None,
+    }
+}
+
+/// Why Copilot says it couldn't sum up, from an answer or an event's data.
+fn why_not(said: &Value) -> String {
+    ["error", "message"]
+        .iter()
+        .find_map(|&field| {
+            said[field]
+                .as_str()
+                .or_else(|| said[field]["message"].as_str())
+        })
+        .filter(|why| !why.is_empty())
+        .unwrap_or("it didn't say why")
+        .to_owned()
 }
 
 /// Forks `source` where `links` say. None if it keeps nothing of it.
@@ -594,19 +695,13 @@ impl Runner for CopilotRunner {
     }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), CopilotError> {
-        let config = match &turn.record().backend_config {
-            Some(json) => serde_json::from_str::<CopilotConfig>(json)
-                .map_err(|source| CopilotError::BadConfig { source })?,
-            None => CopilotConfig::default(),
-        };
-        let provider = config.provider.or_else(|| self.options.provider.clone());
-        let path = Links::path(&self.options.state, turn.record().id.as_str());
-        let mut links = Links::load(&path)?;
-        let cli = self.cli(turn.record().experimental).await?;
-        let session = self
-            .open(&cli, &turn, provider.as_ref(), &mut links, &path)
-            .await?;
-        let after_abort = self.settle(&session).await;
+        let Begun {
+            cli,
+            session,
+            links,
+            path,
+            after_abort,
+        } = self.begin(&turn).await?;
 
         let mut events = cli.subscribe(&session);
         let mut stop = StopOnDrop {
@@ -675,6 +770,102 @@ impl Runner for CopilotRunner {
             playing.unreported(&before, &after)?;
         }
         playing.failure.map_or(Ok(()), Err)
+    }
+
+    async fn compaction(&self, record: &SessionRecord) -> Compaction {
+        // A CLI that can't be started sums nothing up either.
+        let Ok(cli) = self.cli(record.experimental).await else {
+            return Compaction::Unsupported;
+        };
+        match compact_method(&cli).await {
+            Some(_) => Compaction::Supported { focus: false },
+            None => Compaction::Unsupported,
+        }
+    }
+
+    /// Has Copilot sum up the session's conversation, its own way: it
+    /// takes nothing to keep in mind.
+    async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), CopilotError> {
+        let Begun {
+            cli,
+            session,
+            links,
+            path,
+            ..
+        } = self.begin(&turn).await?;
+        let cannot = || CopilotError::CannotCompact {
+            tried: COMPACT_METHODS.join(" nor "),
+        };
+        let method = compact_method(&cli).await.ok_or_else(cannot)?;
+        let mut events = cli.subscribe(&session);
+        let mut stop = StopOnDrop {
+            runner: self.clone(),
+            cli: Some(cli.clone()),
+            session: session.clone(),
+        };
+        let mut playing = Playing {
+            turn: &turn,
+            cli: &cli,
+            session: &session,
+            links,
+            path,
+            failure: None,
+            started: true,
+            subagents: subagents::Subagents::default(),
+        };
+        // Copilot says it's done as the call's answer and as an event of
+        // the session, in either order; the event is the one a fork or a
+        // rewind can be cut by, so it's waited for a while after the answer.
+        let answer = {
+            let call = cli.call(method, json!({"sessionId": session}));
+            tokio::pin!(call);
+            loop {
+                tokio::select! {
+                    answer = &mut call => break answer,
+                    event = events.recv() => {
+                        let Some(event) = event else {
+                            return Err(CopilotError::Exited);
+                        };
+                        if let Some(outcome) = summed_up(&event) {
+                            stop.cli = None;
+                            outcome?;
+                            return playing.compacted(Some(&event));
+                        }
+                    }
+                }
+            }
+        };
+        stop.cli = None;
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(CopilotError::Rpc {
+                code: METHOD_NOT_FOUND,
+                ..
+            }) => return Err(cannot()),
+            Err(error) => return Err(error),
+        };
+        if answer["success"].as_bool() == Some(false) {
+            return Err(CopilotError::CompactFailed {
+                message: why_not(&answer),
+            });
+        }
+        let said = tokio::time::timeout(COMPACT_EVENT_WAIT, async {
+            loop {
+                let event = events.recv().await?;
+                if let Some(outcome) = summed_up(&event) {
+                    return Some((event, outcome));
+                }
+            }
+        })
+        .await;
+        match said {
+            Ok(Some((event, outcome))) => {
+                outcome?;
+                playing.compacted(Some(&event))
+            }
+            // The answer said it's done, and no event will say more.
+            Ok(None) | Err(_) => playing.compacted(None),
+        }
     }
 
     fn forked(
@@ -821,6 +1012,16 @@ impl Playing<'_> {
         let ours = self.turn.emit(kind)?;
         self.link(event, ours.id)?;
         Ok(false)
+    }
+
+    /// Records that Copilot summed up the conversation, linked to its
+    /// `event` that says so, if it sent one.
+    fn compacted(&mut self, event: Option<&Value>) -> Result<(), CopilotError> {
+        let ours = self.turn.emit(EventKind::Compacted)?;
+        if let Some(event) = event {
+            self.link(event, ours.id)?;
+        }
+        Ok(())
     }
 
     /// Links a lasting event of Copilot's to ours.

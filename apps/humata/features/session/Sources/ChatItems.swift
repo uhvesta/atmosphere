@@ -229,6 +229,9 @@ struct Chat: Equatable {
     private(set) var lastMessage: String?
     /// Whether the last turn failed and nothing has started since.
     private(set) var lastTurnFailed = false
+    /// Whether the last turn asked for was to sum up the conversation, not
+    /// to answer a message: it holds no message to send again or edit.
+    private(set) var compacting = false
     /// The newest failure's row.
     private(set) var lastFailure: String?
     /// Everything the session's turns report used; nil if they report nothing.
@@ -261,7 +264,11 @@ struct Chat: Equatable {
         case .userMessage(let text, _):
             lastMessage = text
             lastTurnFailed = false
+            compacting = false
             dropped = []
+        case .compacting:
+            compacting = true
+            lastTurnFailed = false
         case .failed:
             lastTurnFailed = true
             lastFailure = event.id
@@ -384,6 +391,10 @@ struct Chat: Equatable {
             settleRewind()
         case .compacted:
             items.append(.compacted(id: event.id))
+        case .compacting:
+            // The turn it starts shows it; like a message, it ends the
+            // chance to undo a rewind.
+            settleRewind()
         case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
             .waiting, .subagent:
             return

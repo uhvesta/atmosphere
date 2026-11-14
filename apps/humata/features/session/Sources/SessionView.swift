@@ -91,6 +91,7 @@ package struct SessionView: View {
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
         .confirmationDialog($store.scope(state: \.rewindDialog, action: \.rewindDialog))
+        .confirmationDialog($store.scope(state: \.compactDialog, action: \.compactDialog))
         .overlay(alignment: .top) {
             if let progress {
                 Label {
@@ -121,6 +122,7 @@ package struct SessionView: View {
     /// What's under way that the person waits on, shown over the view.
     private var progress: LocalizedStringKey? {
         if store.rewinding { return "Rewinding…" }
+        if store.compactStarting { return "Starting to compact…" }
         if store.forking { return "Forking…" }
         if store.updating { return "Updating from the base branch…" }
         return nil
@@ -624,7 +626,10 @@ private struct ChatRows: View, Equatable {
             shows.rewinding = store.rewinding
         case .failure(let id, _):
             shows.retryable = id == store.retryableFailure && !store.isWorking
-        case .reply, .permission, .stopped, .notice, .cost, .compacted:
+        case .compacted:
+            shows.rewinding = store.rewinding
+            shows.archived = store.session.archived
+        case .reply, .permission, .stopped, .notice, .cost:
             break
         }
         return shows
@@ -933,13 +938,18 @@ private struct ChatRow: View, Equatable {
                         .help("Bring back what the rewind cut; possible until you send another message")
                 }
             }
-        case .compacted:
+        case .compacted(let id):
             Label(
                 "Context compacted: the agent summed up what came before to make room",
                 systemImage: "rectangle.compress.vertical"
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
+            .contextMenu {
+                Button("Rewind to Before This…") { store.send(.rewindTapped(id)) }
+                    .disabled(shows.rewinding || shows.archived)
+            }
+            .help("Rewinding to before it gives the agent back everything it summed up")
         case .notice(_, let text):
             Label(text, systemImage: "info.circle")
                 .font(.footnote)
@@ -1596,6 +1606,9 @@ private struct TurnInProgress: View {
             status("Stopping…")
         } else if store.isWorking, let reason = store.waitReason {
             status(reason)
+        } else if store.isCompacting, !store.isWaiting, store.streaming.isEmpty {
+            // A summary the agent writes out shows as a reply instead.
+            status("Compacting the conversation…")
         } else if store.isWorking, !store.isWaiting {
             reply(store.streaming)
         } else if store.sending > 0, !store.isWorking {
@@ -1636,6 +1649,17 @@ private struct SessionComposer: View {
             // The / list's arrows, Tab and Escape; Return picks through
             // sending, which picks while the list shows.
             .onKeyPress(keys: [.upArrow, .downArrow, .tab, .escape]) { press in
+                // The /rewind picker's, when the keys come from the
+                // message's field and not its own.
+                if store.rewindPicker != nil {
+                    switch press.key {
+                    case .upArrow: store.send(.rewindPickerMoved(by: -1))
+                    case .downArrow: store.send(.rewindPickerMoved(by: 1))
+                    case .escape: store.send(.rewindPickerClosed)
+                    default: return .ignored
+                    }
+                    return .handled
+                }
                 // Escape also closes a spinner or failure; the rest need a
                 // choice, or go to the field as usual.
                 guard store.slashOpen, press.key == .escape || !store.slashChoices.isEmpty else { return .ignored }
@@ -1702,7 +1726,7 @@ private struct SessionComposer: View {
             }
             .font(.callout)
             .foregroundStyle(.secondary)
-        } else if let failure = store.slashFailure, store.slashChoices.isEmpty {
+        } else if let failure = store.slashFailure, !store.slashChoices.contains(where: { $0.builtIn == nil }) {
             Label(failure, systemImage: "exclamationmark.triangle")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1762,6 +1786,12 @@ private struct SessionComposer: View {
         if store.slashOpen {
             slash
         }
+        if let picker = store.rewindPicker {
+            RewindPoints(
+                picker: picker, search: { store.send(.rewindPickerQueryChanged($0)) },
+                move: { store.send(.rewindPickerMoved(by: $0)) }, pick: { store.send(.rewindPickerPicked($0)) },
+                close: { store.send(.rewindPickerClosed) })
+        }
         if !store.images.isEmpty {
             ImageChips(images: store.images) { store.send(.removeImageTapped($0)) }
         }
@@ -1782,7 +1812,7 @@ private struct SessionComposer: View {
                     remove: { store.send(.unqueueTapped(queued.id)) })
             }
         }
-        if store.isWorking, store.draft.isEmpty, store.lastMessage != nil {
+        if store.isWorking, !store.isCompacting, store.draft.isEmpty, store.lastMessage != nil {
             HStack {
                 Spacer()
                 Button("Stop and Edit") { store.send(.stopAndEditTapped) }
@@ -1812,6 +1842,130 @@ private struct SessionComposer: View {
             }
             .padding(.horizontal, 4)
         }
+    }
+}
+
+/// The /rewind picker over the box: a field to search in, and the messages
+/// and compactions the chat can be cut back to, newest first. Arrows move
+/// the pick, Return takes it, Escape closes.
+private struct RewindPoints: View {
+    let picker: SessionFeature.RewindPicker
+    let search: (String) -> Void
+    let move: (Int) -> Void
+    let pick: (String) -> Void
+    let close: () -> Void
+    @FocusState private var focused: Bool
+    /// About one row, at the person's text size.
+    @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 32
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.backward.circle")
+                    .foregroundStyle(.secondary)
+                TextField("Rewind to before…", text: Binding(get: { picker.query }, set: search))
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .onSubmit {
+                        if picker.points.indices.contains(picker.selected) { pick(picker.points[picker.selected].id) }
+                    }
+                    .onKeyPress(keys: [.upArrow, .downArrow, .escape]) { press in
+                        switch press.key {
+                        case .upArrow: move(-1)
+                        case .downArrow: move(1)
+                        default: close()
+                        }
+                        return .handled
+                    }
+                Button("Close", systemImage: "xmark.circle.fill", action: close)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("Close without rewinding (Esc)")
+            }
+            if picker.points.isEmpty {
+                Text("No message or compaction has that. Type less of it, or clear the field to see them all.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                rows
+                if picker.query.isEmpty, picker.points.count < picker.all.count {
+                    Text("These are the newest \(picker.points.count). Type to find an older one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .onAppear { focused = true }
+        .accessibilityIdentifier("composer.rewind")
+    }
+
+    private var rows: some View {
+        ScrollViewReader { reader in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(picker.points) { point in
+                        row(point, selected: point.id == selectedID)
+                    }
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            // Five and a half rows, so a cut row says there's more.
+            .frame(maxHeight: rowHeight * 5.5)
+            .fixedSize(horizontal: false, vertical: true)
+            .onChange(of: selectedID) { _, selected in
+                if let selected { reader.scrollTo(selected) }
+            }
+        }
+    }
+
+    private var selectedID: String? {
+        picker.points.indices.contains(picker.selected) ? picker.points[picker.selected].id : nil
+    }
+
+    private func row(_ point: RewindPoint, selected: Bool) -> some View {
+        Button {
+            pick(point.id)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                switch point.kind {
+                case .message(let text):
+                    Image(systemName: "text.bubble")
+                        .foregroundStyle(.secondary)
+                    Text(verbatim: Self.firstLine(of: text))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                case .compaction:
+                    Image(systemName: "rectangle.compress.vertical")
+                        .foregroundStyle(.secondary)
+                    Text("Context compacted")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Text(point.time.formatted(.relative(presentation: .named)))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                selected ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 6)
+            )
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .id(point.id)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// The first line of `text` with anything on it; a message of images
+    /// alone has none.
+    private static func firstLine(of text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline).first { !$0.allSatisfy(\.isWhitespace) }
+        return line.map(String.init) ?? String(localized: "A message with images only")
     }
 }
 

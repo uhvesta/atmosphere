@@ -25,6 +25,9 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// A message bigger than this is taken as a broken stream.
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
+/// JSON-RPC's code for a method the other side doesn't have.
+pub(super) const METHOD_NOT_FOUND: i64 = -32601;
+
 /// How a call failed on the other side.
 type Answer = Result<Value, (i64, String)>;
 
@@ -47,6 +50,8 @@ struct Shared {
     /// Copilot sessions this process has created or resumed, with what
     /// they were opened with.
     live: HashMap<String, String>,
+    /// Whether the CLI has each method [`Cli::has`] was asked about.
+    methods: HashMap<&'static str, bool>,
 }
 
 impl Cli {
@@ -143,6 +148,29 @@ impl Cli {
             shared.subscribers.insert(session.to_owned(), sender);
         }
         receiver
+    }
+
+    /// Whether the CLI has the session call `method`, which versions of it
+    /// differ on: it's called for a session that doesn't exist, which a
+    /// CLI without the method refuses as an unknown method, and one with
+    /// it answers some other way, changing nothing. Asked of the CLI once.
+    /// False, and asked again next time, if the CLI stops before it says.
+    pub(super) async fn has(&self, method: &'static str) -> bool {
+        let known = self.lock().methods.get(method).copied();
+        if let Some(known) = known {
+            return known;
+        }
+        let nobody = format!("humata-probe-{}", uuid::Uuid::new_v4());
+        let has = match self.call(method, json!({"sessionId": nobody})).await {
+            Err(CopilotError::Rpc {
+                code: METHOD_NOT_FOUND,
+                ..
+            }) => false,
+            Err(CopilotError::Exited | CopilotError::Pipe { .. }) => return false,
+            Ok(_) | Err(_) => true,
+        };
+        self.lock().methods.insert(method, has);
+        has
     }
 
     pub(super) async fn call(&self, method: &str, params: Value) -> Result<Value, CopilotError> {
@@ -280,7 +308,7 @@ async fn dispatch(message: Value, stdin: &tokio::sync::Mutex<ChildStdin>, shared
             let refusal = json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "error": {"code": -32601, "message": format!("Humata doesn't handle {method}")},
+                "error": {"code": METHOD_NOT_FOUND, "message": format!("Humata doesn't handle {method}")},
             });
             let _ = write(stdin, &refusal).await;
         }
@@ -335,5 +363,59 @@ mod tests {
             "{:?}",
             started.err()
         );
+    }
+
+    /// A server that answers the hello, refuses `gone.method` as a method
+    /// it doesn't have and any other call as about a session it doesn't
+    /// know, and adds a line to the file beside it for each such call.
+    const SERVER: &str = r#"#!/bin/sh
+while IFS= read -r header; do
+  length=$(printf '%s' "$header" | tr -dc '0-9')
+  IFS= read -r blank
+  body=$(dd bs=1 count="$length" 2>/dev/null)
+  id=$(printf '%s' "$body" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$body" in
+    *'"method":"connect"'*)
+      answer="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"protocolVersion\":3}}" ;;
+    *'"method":"gone.method"'*)
+      echo call >> "$0.calls"
+      answer="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"no such method\"}}" ;;
+    *)
+      echo call >> "$0.calls"
+      answer="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32000,\"message\":\"no such session\"}}" ;;
+  esac
+  printf 'Content-Length: %s\r\n\r\n%s' "${#answer}" "$answer"
+done
+"#;
+
+    #[tokio::test]
+    async fn a_method_is_had_unless_the_cli_says_it_has_none_and_is_asked_about_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let program = dir.path().join("server");
+        std::fs::write(&program, SERVER).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let cli = Cli::start_within(
+            &program,
+            "--no-experimental",
+            &[],
+            &dir.path().join("running"),
+            HELLO_TIMEOUT,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+        let answers = [
+            cli.has("gone.method").await,
+            cli.has("session.known").await,
+            cli.has("gone.method").await,
+            cli.has("session.known").await,
+        ];
+
+        assert_eq!(answers, [false, true, false, true]);
+        let calls = std::fs::read_to_string(dir.path().join("server.calls"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(calls.lines().count(), 2);
     }
 }

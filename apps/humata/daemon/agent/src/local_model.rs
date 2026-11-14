@@ -14,14 +14,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::Model;
 use crate::claude::McpServer;
 use crate::env::Env;
 use crate::error::AgentError;
-use crate::event::{Event, EventKind, PermissionKind};
+use crate::event::{Event, EventKind, PermissionKind, SessionRecord};
 use crate::mcp_client::McpClient;
 use crate::paths::inside;
 use crate::runtime::{Runner, Turn, describe};
+use crate::{Compaction, Model};
 
 /// Ollama's address; llama.cpp's server and LM Studio need theirs set.
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -146,7 +146,7 @@ pub enum LocalModelError {
     },
 
     #[error(
-        "the chat no longer fits in the context of {model} (the server at {url} said: {body}). Fork the chat from an earlier message, start a new session, or load the model with a longer context"
+        "the chat no longer fits in the context of {model} (the server at {url} said: {body}). Send /compact to sum the chat up, which makes room and keeps the gist; or fork the chat from an earlier message, start a new session, or load the model with a longer context"
     )]
     ContextFull {
         url: String,
@@ -194,6 +194,11 @@ pub enum LocalModelError {
         "the model kept calling tools for {MAX_STEPS} replies without finishing; send a narrower request, or stop the turn and steer it"
     )]
     TooManySteps,
+
+    #[error(
+        "{model} at {url} wrote no summary of the conversation when asked to sum it up: it said nothing, or called tools instead. The conversation is as it was; ask again, and if it keeps happening, rewind to an earlier message to make room, or use a model that follows instructions more closely"
+    )]
+    NoSummary { url: String, model: String },
 
     #[error(transparent)]
     Agent(#[from] AgentError),
@@ -303,22 +308,7 @@ impl Runner for LocalModelRunner {
     }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), LocalModelError> {
-        let own = match &turn.record().backend_config {
-            Some(json) => serde_json::from_str::<LocalModelConfig>(json)
-                .map_err(|source| LocalModelError::BadConfig { source })?,
-            None => LocalModelConfig::default(),
-        };
-        let (base_url, apps) = self.base_url(own.base_url);
-        let request = Request {
-            url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
-            models: format!("{}/models", base_url.trim_end_matches('/')),
-            api_key: own.api_key.or_else(|| self.defaults.api_key.clone()),
-            model: turn
-                .record()
-                .model
-                .clone()
-                .ok_or(LocalModelError::NoModel)?,
-        };
+        let (request, base_url, apps) = self.request(&turn)?;
 
         // Without Humata's tools the turn still has the files to work on.
         let mut offered = tools();
@@ -355,7 +345,9 @@ impl Runner for LocalModelRunner {
 
         let mut calls = 0_usize;
         for _ in 0..MAX_STEPS {
-            let reply = self.reply(&turn, &request, &offered, budget, apps).await?;
+            let reply = self
+                .reply(&turn, &request, &offered, budget, apps, None)
+                .await?;
             if reply.calls.is_empty() {
                 return Ok(());
             }
@@ -387,7 +379,52 @@ impl Runner for LocalModelRunner {
         }
         Err(LocalModelError::TooManySteps)
     }
+
+    async fn compaction(&self, _record: &SessionRecord) -> Compaction {
+        Compaction::Supported { focus: true }
+    }
+
+    /// Has the model write a summary of the conversation, shown as its
+    /// reply. From then on only the summary and what came after it are
+    /// sent; the history keeps everything.
+    async fn compact(self: Arc<Self>, turn: Turn) -> Result<(), LocalModelError> {
+        let (request, base_url, apps) = self.request(&turn)?;
+        // It's asked to write, not to work, so it's offered no tools.
+        let offered = json!([]);
+        let context = server_context(
+            self.http.clone(),
+            &base_url,
+            request.api_key.clone(),
+            request.model.clone(),
+        )
+        .await;
+        let budget = budget(context, &offered);
+        let mut asked = SUMMARIZE.to_owned();
+        if !turn.text().is_empty() {
+            asked.push_str("\n\nKeep in mind: ");
+            asked.push_str(turn.text());
+        }
+        let reply = self
+            .reply(&turn, &request, &offered, budget, apps, Some(&asked))
+            .await?;
+        if !reply.said || !reply.calls.is_empty() {
+            return Err(LocalModelError::NoSummary {
+                url: request.url,
+                model: request.model,
+            });
+        }
+        turn.emit(EventKind::Compacted)?;
+        Ok(())
+    }
 }
+
+/// What the model is asked in order to sum up the conversation.
+const SUMMARIZE: &str = "Sum up this conversation so far. Your summary replaces everything before this point: it is all you will have of it when the work carries on, so write it for yourself to carry on from. Cover, in this order: what the person wants, and which of it is done and which still open; the decisions made, and why; the files changed, by path, and why; the problems still open; the next steps; and how the person prefers things done. Keep names, paths, commands and numbers exact. Reply with the summary alone, and call no tools.";
+
+/// What comes before the summary of an earlier part of the conversation,
+/// where the model is told of it.
+const SUMMARY_FOLLOWS: &str =
+    "Summary of the conversation before this point, which it replaced to make room:";
 
 struct Request {
     url: String,
@@ -406,6 +443,8 @@ struct Call {
 }
 
 struct Reply {
+    /// Whether it said anything, beyond what it called.
+    said: bool,
     calls: Vec<Call>,
 }
 
@@ -426,8 +465,30 @@ enum Part {
 }
 
 impl LocalModelRunner {
-    /// The model's next reply. While the app's server is down, the turn
-    /// says so and waits for it, until it's back or the turn is stopped.
+    /// Where `turn`'s session asks its model: the request's addresses, key
+    /// and model, the server's base URL, and whether that is the app's.
+    fn request(&self, turn: &Turn) -> Result<(Request, String, bool), LocalModelError> {
+        let record = turn.record();
+        let own = match &record.backend_config {
+            Some(json) => serde_json::from_str::<LocalModelConfig>(json)
+                .map_err(|source| LocalModelError::BadConfig { source })?,
+            None => LocalModelConfig::default(),
+        };
+        let (base_url, apps) = self.base_url(own.base_url);
+        let request = Request {
+            url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            models: format!("{}/models", base_url.trim_end_matches('/')),
+            api_key: own.api_key.or_else(|| self.defaults.api_key.clone()),
+            model: record.model.ok_or(LocalModelError::NoModel)?,
+        };
+        Ok((request, base_url, apps))
+    }
+
+    /// The model's next reply: to the conversation so far, or, with
+    /// `asked`, to that as one more message after it, which isn't the
+    /// person's and is in no history. While the app's server is down, the
+    /// turn says so and waits for it, until it's back or the turn is
+    /// stopped.
     async fn reply(
         &self,
         turn: &Turn,
@@ -435,15 +496,21 @@ impl LocalModelRunner {
         tools: &Value,
         budget: usize,
         apps: bool,
+        asked: Option<&str>,
     ) -> Result<Reply, LocalModelError> {
         let mut waiting = false;
         loop {
             // Built afresh each time, so steering sent while it waited is in.
             let instructions = turn.record().instructions;
             let images = turn.images_folder();
-            let messages = turn.with_history(|history| {
-                messages(instructions.as_deref(), history, Some(&images), budget)
+            // A summary is of what was said: the images aren't sent again.
+            let images = asked.is_none().then_some(images.as_path());
+            let mut messages = turn.with_history(|history| {
+                messages(instructions.as_deref(), history, images, budget)
             })?;
+            if let Some(asked) = asked {
+                messages.push(json!({"role": "user", "content": asked}));
+            }
             match self.complete(turn, request, tools, messages).await {
                 Err(LocalModelError::Connect { .. }) if apps => {
                     if !waiting {
@@ -486,14 +553,18 @@ impl LocalModelRunner {
         tools: &Value,
         messages: Vec<Value>,
     ) -> Result<Reply, LocalModelError> {
-        let body = json!({
+        let mut body = json!({
             "model": request.model,
             "messages": messages,
-            "tools": tools,
             "stream": true,
             "stream_options": {"include_usage": true},
-        })
-        .to_string();
+        });
+        // Servers refuse an empty list of tools; none are offered by
+        // leaving it out.
+        if tools.as_array().is_some_and(|tools| !tools.is_empty()) {
+            body["tools"] = tools.clone();
+        }
+        let body = body.to_string();
         let (parts, mut received) = mpsc::channel(256);
         let http = self.http.clone();
         let url = request.url.clone();
@@ -566,11 +637,12 @@ impl LocalModelRunner {
         if !reasoning.is_empty() {
             turn.emit(EventKind::Reasoning { text: reasoning })?;
         }
+        let said = !text.trim().is_empty();
         if !text.is_empty() {
             turn.emit(EventKind::AssistantMessage { text })?;
         }
         calls.retain(|call| !call.name.is_empty());
-        Ok(Reply { calls })
+        Ok(Reply { said, calls })
     }
 }
 
@@ -908,7 +980,9 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 /// request too large. Once what's sent outgrows `budget` bytes, the oldest
 /// tool calls' long arguments, such as a write's contents, and their
 /// output are left out, a step at a time so what's sent stays the same
-/// between steps and the server can reuse what it read before.
+/// between steps and the server can reuse what it read before. Where the
+/// conversation was summed up, the summary goes with the instructions in
+/// place of everything before it.
 fn messages(
     instructions: Option<&str>,
     history: &[Event],
@@ -922,6 +996,16 @@ fn messages(
         system.push_str("\n\n");
         system.push_str(instructions);
     }
+    let history = match summed_up(history) {
+        Some((after, summary)) => {
+            system.push_str("\n\n");
+            system.push_str(SUMMARY_FOLLOWS);
+            system.push('\n');
+            system.push_str(summary);
+            &history[after..]
+        }
+        None => history,
+    };
     let latest = history.iter().rposition(
         |event| matches!(&event.kind, EventKind::UserMessage { images, .. } if !images.is_empty()),
     );
@@ -1024,6 +1108,35 @@ fn messages(
     }
     reply.end(&mut messages, &mut waiting);
     messages
+}
+
+/// Where the conversation was last summed up, by the session's own agent:
+/// where the history carries on after it, and the summary, which is what
+/// the model last said in the turn that summed it up. A summing up that
+/// left no summary to send in its place doesn't count. None if there is
+/// none.
+fn summed_up(history: &[Event]) -> Option<(usize, &str)> {
+    history
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, event)| event.is_main() && matches!(event.kind, EventKind::Compacted))
+        .find_map(|(compacted, _)| {
+            let started = history[..compacted]
+                .iter()
+                .rposition(|event| matches!(event.kind, EventKind::TurnStarted))?;
+            let summary =
+                history[started..compacted]
+                    .iter()
+                    .rev()
+                    .find_map(|event| match &event.kind {
+                        EventKind::AssistantMessage { text } if event.is_main() => {
+                            Some(text.as_str())
+                        }
+                        _ => None,
+                    })?;
+            Some((compacted + 1, summary))
+        })
 }
 
 /// About how many bytes of text a token is; few, so a budget sized from
@@ -2163,6 +2276,205 @@ mod tests {
             said(&requests[2]),
             ["user: one", "assistant: One.", "user: three"]
         );
+    }
+
+    fn event_of(events: &[Event], found: impl Fn(&EventKind) -> bool) -> Event {
+        events
+            .iter()
+            .find(|event| found(&event.kind))
+            .cloned()
+            .unwrap_or_else(|| panic!("not in the history: {events:#?}"))
+    }
+
+    /// What the model was told apart from the conversation: its system
+    /// message.
+    fn told(request: &Value) -> String {
+        request["messages"][0]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn summing_up_asks_for_a_summary_without_tools_and_later_turns_send_it_in_place_of_what_it_sums_up()
+     {
+        let server = serve(vec![
+            (200, sse(&[text("One.")])),
+            (200, sse(&[text("The gist of it.")])),
+            (200, sse(&[text("Two.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "one").await;
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        fixture
+            .agent
+            .compact(&id, "the API notes".into(), false)
+            .await
+            .expect("compacting");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+        fixture.send(&id, "two").await;
+        wait_for(&fixture.agent, &id, idle_turns(3)).await;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == EventKind::Compacted)
+        );
+        assert!(events.iter().any(|event| {
+            event.kind
+                == EventKind::AssistantMessage {
+                    text: "The gist of it.".into(),
+                }
+        }));
+        let requests = server.requests();
+        assert!(requests[0]["tools"].is_array());
+        let asked = said(&requests[1]);
+        assert_eq!(asked[..2], ["user: one", "assistant: One."]);
+        assert_eq!(asked.len(), 3);
+        assert!(asked[2].starts_with("user: "), "{asked:?}");
+        assert!(asked[2].contains("the API notes"), "{asked:?}");
+        assert!(requests[1].get("tools").is_none(), "{}", requests[1]);
+        assert_eq!(said(&requests[2]), ["user: two"]);
+        assert!(told(&requests[2]).contains("The gist of it."));
+        assert!(!told(&requests[1]).contains("The gist of it."));
+    }
+
+    /// The conversation sent with the turn after a summing up the model
+    /// answered with `reply`, and the session's events after the summing up.
+    async fn after_summing_up_answered(reply: String) -> (Vec<String>, Vec<Event>) {
+        let server = serve(vec![
+            (200, sse(&[text("One.")])),
+            (200, reply),
+            (200, sse(&[text("Two.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "one").await;
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        fixture
+            .agent
+            .compact(&id, String::new(), false)
+            .await
+            .expect("compacting");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+        fixture.send(&id, "two").await;
+        wait_for(&fixture.agent, &id, idle_turns(3)).await;
+        (said(&server.requests()[2]), events)
+    }
+
+    #[tokio::test]
+    async fn a_summing_up_the_model_answers_with_nothing_fails_and_the_conversation_is_sent_whole()
+    {
+        let (sent, events) = after_summing_up_answered(sse(&[])).await;
+
+        assert_eq!(
+            crate::event::SessionState::after(&events),
+            crate::event::SessionState::Failed
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.kind == EventKind::Compacted)
+        );
+        assert_eq!(sent, ["user: one", "assistant: One.", "user: two"]);
+    }
+
+    #[tokio::test]
+    async fn a_summing_up_the_model_answers_with_a_tool_call_fails_and_runs_no_tool() {
+        let reply = sse(&call("c1", "shell", json!({"command": "touch ran"})));
+
+        let (sent, events) = after_summing_up_answered(reply).await;
+
+        assert_eq!(
+            crate::event::SessionState::after(&events),
+            crate::event::SessionState::Failed
+        );
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.kind,
+                EventKind::Compacted | EventKind::ToolStarted { .. }
+            )
+        }));
+        assert_eq!(sent, ["user: one", "assistant: One.", "user: two"]);
+    }
+
+    #[tokio::test]
+    async fn a_fork_or_a_rewind_to_before_a_summary_sends_the_whole_conversation_again() {
+        let server = serve(vec![
+            (200, sse(&[text("One.")])),
+            (200, sse(&[text("The gist of it.")])),
+            (200, sse(&[text("Three.")])),
+            (200, sse(&[text("Two.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "one").await;
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        fixture
+            .agent
+            .compact(&id, String::new(), false)
+            .await
+            .expect("compacting");
+        let events = wait_for(&fixture.agent, &id, idle_turns(2)).await;
+        let asked = event_of(&events, |kind| matches!(kind, EventKind::Compacting { .. }));
+        let summed = event_of(&events, |kind| matches!(kind, EventKind::Compacted));
+
+        let options = ForkOptions {
+            before: Some(asked.id.clone()),
+            ..ForkOptions::default()
+        };
+        let fork = fixture.agent.fork(&id, options).await.expect("forked");
+        fixture.send(&fork.id, "three").await;
+        wait_for(&fixture.agent, &fork.id, idle_turns(2)).await;
+        fixture
+            .agent
+            .rewind(&id, &summed.id, false)
+            .await
+            .expect("rewound");
+        fixture.send(&id, "two").await;
+        wait_for(&fixture.agent, &id, idle_turns(2)).await;
+
+        let requests = server.requests();
+        assert_eq!(
+            said(&requests[2]),
+            ["user: one", "assistant: One.", "user: three"]
+        );
+        assert_eq!(
+            said(&requests[3]),
+            ["user: one", "assistant: One.", "user: two"]
+        );
+    }
+
+    #[test]
+    fn a_compaction_that_left_no_summary_or_was_a_subagents_replaces_nothing() {
+        let mut theirs = Event::now(EventKind::Compacted);
+        theirs.parent_call_id = Some("c1".into());
+        let mut history: Vec<Event> = [
+            user("go"),
+            EventKind::TurnStarted,
+            EventKind::Compacted,
+            EventKind::AssistantMessage {
+                text: "Done.".into(),
+            },
+        ]
+        .map(Event::now)
+        .into();
+        history.push(theirs);
+        history.extend([EventKind::TurnEnded { aborted: false }, user("next")].map(Event::now));
+
+        let messages = messages(None, &history, None, UNKNOWN_CONTEXT_SENT);
+
+        let sent: Vec<&str> = messages
+            .iter()
+            .skip(1)
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+        assert_eq!(sent, ["go", "Done.", "next"]);
     }
 
     /// A port nothing listens on, for now.
