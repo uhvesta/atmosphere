@@ -153,6 +153,16 @@ pub enum LocalModelError {
     },
 
     #[error(
+        "the model {model} in the Humata app couldn't answer (its server at {url} answered {status}: {body}). Send the message again; if it keeps failing, quit and reopen the Humata app on the Mac, or pick another model for this chat"
+    )]
+    AppModelFailed {
+        url: String,
+        model: String,
+        status: u16,
+        body: String,
+    },
+
+    #[error(
         "the chat no longer fits in the context of {model} (the server at {url} said: {body}). Send /compact to sum the chat up, which makes room and keeps the gist; or fork the chat from an earlier message, start a new session, or load the model with a longer context"
     )]
     ContextFull {
@@ -383,7 +393,10 @@ impl Runner for LocalModelRunner {
             }
             for call in reply.calls {
                 calls += 1;
-                let call_id = call.id.unwrap_or_else(|| format!("call-{calls}"));
+                // Unique across turns too: a proposal is known by its call's id.
+                let call_id = call
+                    .id
+                    .unwrap_or_else(|| format!("call-{calls}-{}", uuid::Uuid::new_v4()));
                 turn.emit(EventKind::ToolStarted {
                     call_id: call_id.clone(),
                     tool: call.name.clone(),
@@ -584,16 +597,37 @@ impl LocalModelRunner {
             // in, and taken with the history it is read from: the reply to
             // this request is its answer, and it isn't answered again.
             let instructions = turn.record().instructions;
-            let images = turn.images_folder();
+            let folder = turn.images_folder();
             // A summary is of what was said: the images aren't sent again.
-            let images = asked.is_none().then_some(images.as_path());
-            let mut messages = turn.with_history_taking_steering(|history| {
-                messages(instructions.as_deref(), history, images, budget)
-            })?;
+            let with_images = asked.is_none();
+            // The images are read and encoded with the history unlocked,
+            // so a long read holds up nothing sent to the session.
+            let mut messages = turn.with_history_taking_steering_loading(
+                |history| with_images.then(|| images_to_send(history)),
+                |names| names.map(|names| image_parts(&names, &folder)),
+                |history, images| {
+                    messages(instructions.as_deref(), history, images.as_deref(), budget)
+                },
+            )?;
             if let Some(asked) = asked {
                 messages.push(json!({"role": "user", "content": asked}));
             }
             match self.complete(turn, request, tools, messages).await {
+                // Humata's own server serves only the models it lists, so
+                // pulling one with Ollama is no help.
+                Err(LocalModelError::Status {
+                    url,
+                    model,
+                    status,
+                    body,
+                }) if apps => {
+                    return Err(LocalModelError::AppModelFailed {
+                        url,
+                        model,
+                        status,
+                        body,
+                    });
+                }
                 Err(LocalModelError::Connect { .. }) if apps => {
                     if !waiting {
                         waiting = true;
@@ -1031,17 +1065,47 @@ fn chunk_parts(chunk: Chunk) -> Vec<Part> {
     parts
 }
 
-/// A user message's content: its text alone, or with its images first as
-/// image_url parts. An image gone from the folder is said to be missing.
-fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
-    let Some(folder) = folder.filter(|_| !names.is_empty()) else {
-        return json!(text);
-    };
-    let mut parts: Vec<Value> = names
+/// What a request says in place of an image that can't be read.
+fn missing_image() -> Value {
+    json!({"type": "text", "text": "[an image sent here is missing]"})
+}
+
+/// The part of the history a request is built from: what follows the last
+/// summary, when there is one.
+fn since_summary(history: &[Event]) -> &[Event] {
+    match summed_up(history) {
+        Some((after, _)) => &history[after..],
+        None => history,
+    }
+}
+
+/// Where in `history`, which starts after any summary, the latest message
+/// with images is: the one whose images a request carries.
+fn latest_with_images(history: &[Event]) -> Option<usize> {
+    history.iter().rposition(
+        |event| matches!(&event.kind, EventKind::UserMessage { images, .. } if !images.is_empty()),
+    )
+}
+
+/// The names of the images a request built from `history` carries: those
+/// of the latest message that has any. Cheap, for the history's lock.
+fn images_to_send(history: &[Event]) -> Vec<String> {
+    let history = since_summary(history);
+    match latest_with_images(history).map(|index| &history[index].kind) {
+        Some(EventKind::UserMessage { images, .. }) => images.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// Each of the images `names` in `folder` as an image_url part of a
+/// request, by its name. An image gone from the folder is said to be
+/// missing. Reads and encodes every one, so not for under a lock.
+fn image_parts(names: &[String], folder: &Path) -> Vec<(String, Value)> {
+    names
         .iter()
         .map(|name| {
             let path = folder.join(name);
-            match std::fs::read(&path) {
+            let part = match std::fs::read(&path) {
                 Ok(data) => json!({
                     "type": "image_url",
                     "image_url": {"url": format!(
@@ -1050,8 +1114,27 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
                         crate::images::base64(&data),
                     )},
                 }),
-                Err(_) => json!({"type": "text", "text": "[an image sent here is missing]"}),
-            }
+                Err(_) => missing_image(),
+            };
+            (name.clone(), part)
+        })
+        .collect()
+}
+
+/// A user message's content: its text alone, or with its images first as
+/// the parts [`image_parts`] made of them. An image with no part is said
+/// to be missing.
+fn user_content(text: &str, names: &[String], images: Option<&[(String, Value)]>) -> Value {
+    let Some(images) = images.filter(|_| !names.is_empty()) else {
+        return json!(text);
+    };
+    let mut parts: Vec<Value> = names
+        .iter()
+        .map(|name| {
+            images
+                .iter()
+                .find(|(image, _)| image == name)
+                .map_or_else(missing_image, |(_, part)| part.clone())
         })
         .collect();
     if !text.is_empty() {
@@ -1072,8 +1155,8 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 /// server, or between a step's last result and the next request, was in
 /// that request, which answered it once, and is shown one reply late in
 /// later ones.
-/// The images of the latest message that has any, read from `images`, go
-/// with it as data URLs; an earlier message's are only noted, since
+/// The images of the latest message that has any go with it as data URLs,
+/// from `images`, which [`image_parts`] made of [`images_to_send`]; an earlier message's are only noted, since
 /// sending every image again each turn costs tokens and can make the
 /// request too large. Once what's sent outgrows `budget` bytes, the oldest
 /// tool calls' long arguments, such as a write's contents, and their
@@ -1084,7 +1167,7 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 fn messages(
     instructions: Option<&str>,
     history: &[Event],
-    images: Option<&Path>,
+    images: Option<&[(String, Value)]>,
     budget: usize,
 ) -> Vec<Value> {
     let mut system = String::from(
@@ -1104,9 +1187,7 @@ fn messages(
         }
         None => history,
     };
-    let latest = history.iter().rposition(
-        |event| matches!(&event.kind, EventKind::UserMessage { images, .. } if !images.is_empty()),
-    );
+    let latest = latest_with_images(history);
     // Each call's arguments with their long strings left out, where any are.
     let shortened: Vec<Option<String>> = history
         .iter()
@@ -3466,7 +3547,8 @@ mod tests {
             },
         ]
         .map(Event::now);
-        let messages = messages(None, &history, Some(folder.path()), UNKNOWN_CONTEXT_SENT);
+        let sent = image_parts(&images_to_send(&history), folder.path());
+        let messages = messages(None, &history, Some(&sent), UNKNOWN_CONTEXT_SENT);
         let images: Vec<&str> = messages
             .iter()
             .filter_map(|message| message["content"].as_array())

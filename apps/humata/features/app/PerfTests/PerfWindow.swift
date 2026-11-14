@@ -111,13 +111,13 @@ final class PerfWindow {
     func move(_ scroll: NSScrollView, to target: (CGFloat) -> CGFloat) async -> (took: Duration, atAnEnd: Bool) {
         let height = scroll.documentView?.frame.height ?? 0
         let furthest = max(0, height - scroll.contentView.bounds.height)
-        let y = min(max(target(furthest), 0), furthest)
+        let offset = min(max(target(furthest), 0), furthest)
         let start = clock.now
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: offset))
         scroll.reflectScrolledClipView(scroll.contentView)
         draw()
         await Task.yield()
-        return (clock.now - start, y <= 0 || y >= furthest)
+        return (clock.now - start, offset <= 0 || offset >= furthest)
     }
 
     /// Reads `scroll` from its end up to its start and down again, `points`

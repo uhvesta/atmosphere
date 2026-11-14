@@ -75,6 +75,7 @@ package struct TerminalsFeature {
     }
 
     @Dependency(\.daemon) var daemon
+    @Dependency(FirstOpens.self) var firstOpens
 
     package init() {}
 
@@ -85,7 +86,12 @@ package struct TerminalsFeature {
                 // Asked again after a list that failed, it shows it's reading.
                 if !state.listed { state.failure = nil }
                 let host = state.place.host
+                // A first shell asked for here before these tabs were made,
+                // by a session since left, is waited for: the host lists it
+                // once it has opened, and no second is asked for.
+                let awaited = state.opensFirst && !state.opening ? state.id : nil
                 return .run { send in
+                    if let awaited { await firstOpens.settled(awaited) }
                     await send(.listed(try await daemon.terminals(host)))
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
@@ -106,8 +112,19 @@ package struct TerminalsFeature {
                 guard !state.opening else { return .none }
                 state.opening = true
                 let place = state.place
+                // A session's first shell goes on opening when the session
+                // is left, and is the one any later ask for it gets.
+                guard state.opensFirst, state.tabs.isEmpty else {
+                    return .run { send in
+                        await send(.opened(try await daemon.openTerminal(place, .standard)))
+                    } catch: { error, send in
+                        await send(.failed(error.localizedDescription))
+                    }
+                }
+                let key = state.id
                 return .run { send in
-                    await send(.opened(try await daemon.openTerminal(place, .standard)))
+                    let terminal = try await firstOpens.open(key) { try await daemon.openTerminal(place, .standard) }
+                    await send(.opened(terminal))
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
@@ -115,7 +132,9 @@ package struct TerminalsFeature {
             case .opened(let terminal):
                 state.opening = false
                 state.failure = nil
-                state.tabs.append(TerminalFeature.State(terminal: terminal))
+                if state.tabs[id: terminal.id] == nil {
+                    state.tabs.append(TerminalFeature.State(terminal: terminal))
+                }
                 state.selected = terminal.id
                 return .none
 
@@ -190,6 +209,43 @@ package struct TerminalsFeature {
             await send(.closeFailed(id, error.localizedDescription))
         }
     }
+}
+
+/// The first shells being opened, by place. One goes on opening when the
+/// tabs that asked for it are gone, and whoever asks for the same place's
+/// first shell meanwhile gets that one.
+package final class FirstOpens: Sendable {
+    private let opening = LockIsolated<[[String?]: Task<Terminal, any Error>]>([:])
+
+    package init() {}
+
+    /// The shell `open` makes at `place`, or the one already being made
+    /// there. Ending the caller's task doesn't end the open.
+    func open(_ place: [String?], _ open: @escaping @Sendable () async throws -> Terminal) async throws -> Terminal {
+        let task = opening.withValue { tasks -> Task<Terminal, any Error> in
+            if let task = tasks[place] { return task }
+            let task = Task<Terminal, any Error> { [opening] in
+                defer { opening.withValue { $0[place] = nil } }
+                return try await open()
+            }
+            tasks[place] = task
+            return task
+        }
+        return try await task.value
+    }
+
+    /// Returns once no first shell is being opened at `place`, whether the
+    /// one that was opened or failed.
+    func settled(_ place: [String?]) async {
+        guard let task = opening.withValue({ $0[place] }) else { return }
+        _ = try? await task.value
+    }
+}
+
+extension FirstOpens: DependencyKey {
+    package static let liveValue = FirstOpens()
+    /// Each test's own, so one test's slow open isn't joined by another's.
+    package static var testValue: FirstOpens { FirstOpens() }
 }
 
 /// One terminal, drawn by a surface that runs a command piping it from its

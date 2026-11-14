@@ -84,7 +84,59 @@ fn is_app(exe: &Path) -> bool {
     else {
         return false;
     };
-    contents.ends_with("Contents") && exe.parent() == Some(contents.join("MacOS").as_path())
+    contents.ends_with("Contents") && is_app_of(&contents, exe)
+}
+
+/// Whether `exe` is the app of the bundle whose `Contents` is `contents`:
+/// the program in its `Contents/MacOS`, or that same program run from
+/// another path. macOS runs an app opened where it was downloaded from a
+/// read-only copy elsewhere (App Translocation), while launchd runs the
+/// bundle's login agent, this humatad, from where the bundle really is.
+fn is_app_of(contents: &Path, exe: &Path) -> bool {
+    let programs = contents.join("MacOS");
+    if exe.parent() == Some(programs.as_path()) {
+        return true;
+    }
+    let Some(name) = exe.file_name() else {
+        return false;
+    };
+    exe.parent()
+        .is_some_and(|folder| folder.ends_with("Contents/MacOS"))
+        && same_contents(&programs.join(name), exe)
+}
+
+/// Whether files `ours` and `theirs` hold the same bytes; false if either
+/// can't be read.
+fn same_contents(ours: &Path, theirs: &Path) -> bool {
+    use std::io::BufRead;
+    const CHUNK: usize = 64 * 1024;
+    let (Ok(our_file), Ok(their_file)) = (std::fs::File::open(ours), std::fs::File::open(theirs))
+    else {
+        return false;
+    };
+    let same_size = match (our_file.metadata(), their_file.metadata()) {
+        (Ok(ours), Ok(theirs)) => ours.is_file() && theirs.is_file() && ours.len() == theirs.len(),
+        _ => false,
+    };
+    if !same_size {
+        return false;
+    }
+    let mut ours = std::io::BufReader::with_capacity(CHUNK, our_file);
+    let mut theirs = std::io::BufReader::with_capacity(CHUNK, their_file);
+    loop {
+        let (Ok(ours_read), Ok(theirs_read)) = (ours.fill_buf(), theirs.fill_buf()) else {
+            return false;
+        };
+        if ours_read.is_empty() || theirs_read.is_empty() {
+            return ours_read.is_empty() && theirs_read.is_empty();
+        }
+        let shared = ours_read.len().min(theirs_read.len());
+        if ours_read[..shared] != theirs_read[..shared] {
+            return false;
+        }
+        ours.consume(shared);
+        theirs.consume(shared);
+    }
 }
 
 /// In end-to-end tests only, the program that stands in for the app.
@@ -182,6 +234,41 @@ mod tests {
     #[test]
     fn a_program_outside_the_bundle_is_not_the_app() {
         assert!(!is_app(Path::new("/usr/local/bin/humata")));
+    }
+
+    /// A bundle's `Contents` under `root`, with `program` as its app.
+    fn bundle(root: &Path, program: &[u8]) -> PathBuf {
+        let contents = root.join("Humata.app/Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(contents.join("MacOS/Humata"), program)
+            .unwrap_or_else(|error| panic!("{error}"));
+        contents
+    }
+
+    #[test]
+    fn the_app_run_from_a_copy_of_its_bundle_elsewhere_is_the_app() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let program = vec![7u8; 200_000];
+        let ours = bundle(&dir.path().join("Downloads"), &program);
+        let moved = bundle(&dir.path().join("AppTranslocation/1234/d"), &program);
+        assert!(is_app_of(&ours, &ours.join("MacOS/Humata")));
+        assert!(is_app_of(&ours, &moved.join("MacOS/Humata")));
+    }
+
+    #[test]
+    fn another_program_in_a_bundle_elsewhere_is_not_the_app() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let ours = bundle(&dir.path().join("Downloads"), &[7u8; 200_000]);
+        let mut changed = vec![7u8; 200_000];
+        changed[150_000] = 8;
+        let other = bundle(&dir.path().join("other"), &changed);
+        let shorter = bundle(&dir.path().join("shorter"), &[7u8; 100]);
+        assert!(!is_app_of(&ours, &other.join("MacOS/Humata")));
+        assert!(!is_app_of(&ours, &shorter.join("MacOS/Humata")));
+        // The same bytes, but not run as a bundle's app.
+        let loose = dir.path().join("Humata");
+        std::fs::write(&loose, [7u8; 200_000]).unwrap_or_else(|error| panic!("{error}"));
+        assert!(!is_app_of(&ours, &loose));
     }
 
     #[tokio::test]

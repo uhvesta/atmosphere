@@ -129,7 +129,9 @@ package struct ProposalsFeature {
 
             case .listed(let proposals, let changes):
                 if state.listFailure != nil { state.listFailure = nil }
-                let listed = IdentifiedArray(uniqueElements: proposals)
+                // A model may name two calls alike; the later proposal is
+                // kept rather than the app stopping.
+                let listed = IdentifiedArray(proposals) { _, later in later }
                 if listed != state.proposals { state.proposals = listed }
                 if changes != state.changes { state.changes = changes }
                 return .none

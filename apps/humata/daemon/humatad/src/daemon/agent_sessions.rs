@@ -157,6 +157,20 @@ fn starting(starts: &Mutex<HashMap<String, u32>>, session: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// How many of the sessions an agent `started` count against its limit:
+/// those `listed` that aren't archived, and those in `unlisted`, which the
+/// daemon started and no listing has shown yet, as when their host didn't
+/// answer and is listed as it last was. One listed before and gone from
+/// `listed` was deleted, and makes room.
+fn children(listed: &[pb::SessionInfo], started: &[String], unlisted: &HashSet<String>) -> u32 {
+    let counts = |id: &&String| match listed.iter().find(|session| session.id == **id) {
+        Some(session) => !session.archived,
+        None => unlisted.contains(*id),
+    };
+    let count = started.iter().filter(counts).count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 /// A request to start a session being allowed, until this is dropped.
 struct Allowing<'a> {
     requests: &'a Mutex<HashSet<String>>,
@@ -286,15 +300,16 @@ impl Daemon {
             }
             .into());
         }
-        // Those archived or deleted since make room.
-        let kept = caller
-            .sessions
-            .iter()
-            .filter(|session| !session.archived && started.contains(&session.id))
-            .count();
-        let children = u32::try_from(kept)
-            .unwrap_or(u32::MAX)
-            .saturating_add(waiting);
+        // Those archived or deleted since make room; one just started
+        // that the listing doesn't have yet doesn't.
+        let kept = {
+            let unlisted = self
+                .agent_unlisted
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            children(&caller.sessions, started, &unlisted)
+        };
+        let children = kept.saturating_add(waiting);
         if children >= caller.allowed.max_children {
             return Err(AgentSessionsError::TooManyChildren {
                 limit: caller.allowed.max_children,
@@ -514,6 +529,11 @@ impl Daemon {
             }
             .into());
         };
+        // Counted from here on, whether or not a listing has it yet.
+        self.agent_unlisted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(child.id.clone());
         self.store.set_started_by(&child.id, &parent.id)?;
         child.started_by_session_id.clone_from(&parent.id);
         Ok(child)
@@ -703,5 +723,44 @@ impl Daemon {
                 format!("declined-{}", request.id),
             )
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str, archived: bool) -> pb::SessionInfo {
+        pb::SessionInfo {
+            id: id.to_owned(),
+            archived,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_child_started_but_not_listed_yet_still_counts() {
+        let started = ["one".to_owned(), "two".to_owned()];
+        let listed = [session("parent", false), session("one", false)];
+        // The host is listed as it last was, before "two" was started.
+        let unlisted = HashSet::from(["two".to_owned()]);
+        assert_eq!(children(&listed, &started, &unlisted), 2);
+        // Once a listing has it, it counts once.
+        let both = [session("one", false), session("two", false)];
+        assert_eq!(children(&both, &started, &unlisted), 2);
+    }
+
+    #[test]
+    fn a_child_archived_or_deleted_makes_room() {
+        let started = ["one".to_owned(), "two".to_owned(), "three".to_owned()];
+        // "two" is archived, and "three", listed before, is gone.
+        let listed = [session("one", false), session("two", true)];
+        assert_eq!(children(&listed, &started, &HashSet::new()), 1);
+        // One archived makes room even if it's still held as not listed.
+        let unlisted = HashSet::from(["two".to_owned()]);
+        assert_eq!(children(&listed, &started, &unlisted), 1);
+        // Another session's child that isn't listed yet isn't this one's.
+        let other = HashSet::from(["elsewhere".to_owned()]);
+        assert_eq!(children(&listed, &started, &other), 1);
     }
 }

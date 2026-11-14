@@ -3,6 +3,7 @@
 //! Mac; the Mac then follows them, brings their review comments into
 //! threads, and when all have merged, finishes the task and cleans up.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use humata_wire::{Reply, pb};
@@ -31,10 +32,40 @@ const EVERY_MINUTES: &str = "pulls.every_minutes";
 /// test.
 const API_VARIABLE: &str = "HUMATA_GITHUB_API";
 
+/// The GitHub token to use and where it comes from: the first of
+/// [`github::TOKENS`] that `env` holds, or else what `command_line` gives,
+/// the GitHub command line's sign-in. That one only github.com takes, so
+/// with `other_api` it isn't asked for.
+async fn token_from<F>(
+    env: &BTreeMap<String, String>,
+    other_api: bool,
+    command_line: impl FnOnce() -> F,
+) -> Option<(pb::GithubTokenSource, String)>
+where
+    F: Future<Output = Option<String>>,
+{
+    let sources = [
+        pb::GithubTokenSource::GhToken,
+        pb::GithubTokenSource::GithubToken,
+    ];
+    let given = github::TOKENS
+        .iter()
+        .zip(sources)
+        .find_map(|(name, source)| {
+            let token = env.get(*name).filter(|token| !token.is_empty())?;
+            Some((source, token.clone()))
+        });
+    if given.is_some() || other_api {
+        return given;
+    }
+    let token = command_line().await?;
+    Some((pb::GithubTokenSource::CommandLine, token))
+}
+
 impl Daemon {
-    /// GitHub, with This Mac's token, and whether it is another server
-    /// standing in for github.com.
-    pub(super) async fn github(&self) -> Result<(GitHub, bool), GitHubError> {
+    /// This Mac's GitHub token and where it comes from, if there is one,
+    /// and the API named instead of GitHub's, if one is.
+    async fn github_token(&self) -> (Option<(pb::GithubTokenSource, String)>, Option<String>) {
         let env = self
             .coordinator_env
             .lock()
@@ -45,17 +76,25 @@ impl Daemon {
             .cloned()
             .or_else(|| std::env::var(API_VARIABLE).ok())
             .filter(|api| !api.is_empty());
-        let given = github::TOKENS
-            .iter()
-            .find_map(|name| env.get(*name).filter(|token| !token.is_empty()).cloned());
-        // Without one, the GitHub command line's, which only github.com takes.
-        let token = match given {
-            Some(token) => token,
-            None if other.is_none() => github::cli_token().await.ok_or(GitHubError::NoToken)?,
-            None => return Err(GitHubError::NoToken),
-        };
+        let token = token_from(&env, other.is_some(), github::cli_token).await;
+        (token, other)
+    }
+
+    /// GitHub, with This Mac's token, and whether it is another server
+    /// standing in for github.com.
+    pub(super) async fn github(&self) -> Result<(GitHub, bool), GitHubError> {
+        let (token, other) = self.github_token().await;
+        let (_, token) = token.ok_or(GitHubError::NoToken)?;
         let api = other.as_deref().unwrap_or(github::API);
         Ok((GitHub::new(api, &token), other.is_some()))
+    }
+
+    /// Where This Mac's GitHub token comes from, never the token itself.
+    pub(super) async fn github_token_source(&self) -> pb::GithubTokenSource {
+        match self.github_token().await.0 {
+            Some((source, _)) => source,
+            None => pb::GithubTokenSource::NoToken,
+        }
     }
 
     /// Lands the session on its host, and with `open_pull_requests`, pushes
@@ -193,9 +232,11 @@ impl Daemon {
             .and_then(|minutes| minutes.parse().ok())
             .filter(|minutes| (1..=MOST_MINUTES).contains(minutes))
             .unwrap_or(DEFAULT_MINUTES);
+        // Where the token comes from is said only to the person's read.
         Ok(pb::PullRefresh {
             manual,
             every_minutes,
+            token_source: pb::GithubTokenSource::Unspecified.into(),
         })
     }
 
@@ -813,11 +854,61 @@ fn wire(pull: &PullRequest, item: Option<&str>) -> pb::PullRequest {
 mod tests {
     use super::*;
 
+    fn env(variables: &[(&str, &str)]) -> BTreeMap<String, String> {
+        variables
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    async fn signed_in() -> Option<String> {
+        Some("from-gh".to_owned())
+    }
+
+    async fn signed_out() -> Option<String> {
+        None
+    }
+
+    #[tokio::test]
+    async fn a_token_in_a_variable_goes_before_the_command_lines() {
+        let both = env(&[("GITHUB_TOKEN", "second"), ("GH_TOKEN", "first")]);
+        assert_eq!(
+            token_from(&both, false, signed_in).await,
+            Some((pb::GithubTokenSource::GhToken, "first".to_owned()))
+        );
+        // An empty one is none.
+        let other = env(&[("GITHUB_TOKEN", "second"), ("GH_TOKEN", "")]);
+        assert_eq!(
+            token_from(&other, false, signed_in).await,
+            Some((pb::GithubTokenSource::GithubToken, "second".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_variable_the_command_lines_sign_in_is_the_token() {
+        let unrelated = env(&[("CARGO_HOME", "/tmp/cargo")]);
+        assert_eq!(
+            token_from(&unrelated, false, signed_in).await,
+            Some((pb::GithubTokenSource::CommandLine, "from-gh".to_owned()))
+        );
+        assert_eq!(token_from(&unrelated, false, signed_out).await, None);
+    }
+
+    #[tokio::test]
+    async fn another_api_takes_only_a_variables_token() {
+        assert_eq!(token_from(&env(&[]), true, signed_in).await, None);
+        assert_eq!(
+            token_from(&env(&[("GH_TOKEN", "first")]), true, signed_in).await,
+            Some((pb::GithubTokenSource::GhToken, "first".to_owned()))
+        );
+    }
+
     #[test]
     fn manual_pull_requests_are_never_read_on_their_own() {
         let manual = pb::PullRefresh {
             manual: true,
             every_minutes: 5,
+            ..Default::default()
         };
         assert_eq!(next_read(&manual, Duration::ZERO), None);
         assert_eq!(next_read(&manual, Duration::from_secs(86_400)), None);
@@ -828,6 +919,7 @@ mod tests {
         let every = |minutes| pb::PullRefresh {
             manual: false,
             every_minutes: minutes,
+            ..Default::default()
         };
         assert_eq!(
             next_read(&every(5), Duration::from_secs(60)),
@@ -849,6 +941,7 @@ mod tests {
         let one = pb::PullRefresh {
             manual: false,
             every_minutes: 1,
+            ..Default::default()
         };
         // Twenty minutes into waiting out an hour, one minute is past.
         assert_eq!(

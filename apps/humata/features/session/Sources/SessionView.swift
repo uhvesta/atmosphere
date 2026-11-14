@@ -30,6 +30,7 @@ package struct SessionView: View {
     }
 
     package var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.session)
         VStack(spacing: 0) {
             // In a view of its own, so what it reads, such as the usage,
@@ -451,11 +452,15 @@ private enum ChatEnd {
     struct Place: Equatable {
         let offset: CGFloat
         let height: CGFloat
+        /// How much of it the pane shows: less while a strip sits over its
+        /// bottom.
+        let shown: CGFloat
         let endInView: Bool
 
         init(geometry: ScrollGeometry) {
             offset = geometry.contentOffset.y
             height = geometry.contentSize.height
+            shown = geometry.visibleRect.height
             endInView = ChatEnd.inView(geometry)
         }
     }
@@ -492,89 +497,93 @@ private struct ChatList: View {
     @State private var jumping = false
 
     var body: some View {
+        ScrollViewReader { reader in chat(reader) }
+    }
+
+    @ViewBuilder
+    private func chat(_ reader: ScrollViewProxy) -> some View {
         let highlighted = store.highlightedItem
-        ScrollViewReader { reader in
-            ScrollView {
-                ChatRows(store: store, earlier: earlier) { more in
-                    keepsPlace = true
-                    earlier += more
-                }
-                .equatable()
+        ScrollView {
+            ChatRows(store: store, earlier: earlier) { more in
+                keepsPlace = true
+                earlier += more
             }
-            .scrollPosition($position)
-            // At its end when it opens; as it grows, what's in view stays.
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            // A chat shorter than the pane sits at its bottom, just above
-            // the box.
-            .defaultScrollAnchor(.bottom, for: .alignment)
-            .onScrollGeometryChange(for: ChatEnd.Place.self) {
-                ChatEnd.Place(geometry: $0)
-            } action: { old, new in
-                // A change that starts away from the end: the jump landed.
-                if jumping, !old.endInView { jumping = false }
-                if new.height > old.height, keepsPlace {
-                    // Earlier rows came above what's in view: it moves down
-                    // by their height, and the chat with it.
-                    keepsPlace = false
-                    position.scrollTo(y: old.offset + new.height - old.height)
-                } else if new.height != old.height {
-                    // Grown or shrunk with its end in view: keep to the end,
-                    // unless a jump is leaving it. The rows a jump brings
-                    // above come as a growth with the end still in view.
-                    if old.endInView, !jumping { following = true }
-                    if following { position.scrollTo(edge: .bottom) }
-                } else if new.offset < old.offset - 1, !new.endInView {
-                    // Read up, by any means: a mouse wheel has no phases. An
-                    // upward move that leaves the end in view is the chat
-                    // getting shorter, as a row's guessed height is measured.
-                    following = false
-                } else if new.endInView, new.offset > old.offset {
-                    following = true
-                }
-            }
-            // Only the person's scrolling stops or starts the following:
-            // rows measured as they come move what's in view by themselves.
-            .onScrollPhaseChange { _, phase, context in
-                switch phase {
-                case .tracking, .interacting:
-                    following = false
-                    jumping = false
-                case .idle:
-                    jumping = false
-                    // Only on: the stop after the chat's own scroll to its
-                    // end can come while rows are still being measured.
-                    if ChatEnd.inView(context.geometry) { following = true }
-                case .decelerating, .animating:
-                    break
-                @unknown default:
-                    break
-                }
-            }
-            .overlay { ChatLoading(store: store) }
-            .onChange(of: highlighted, initial: true) { _, item in
-                guard let item else {
-                    jumping = false
-                    return
-                }
+            .equatable()
+        }
+        .scrollPosition($position)
+        // At its end when it opens; as it grows, what's in view stays.
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        // A chat shorter than the pane sits at its bottom, just above
+        // the box.
+        .defaultScrollAnchor(.bottom, for: .alignment)
+        .onScrollGeometryChange(for: ChatEnd.Place.self) {
+            ChatEnd.Place(geometry: $0)
+        } action: { old, new in
+            // A change that starts away from the end: the jump landed.
+            if jumping, !old.endInView { jumping = false }
+            if new.height > old.height, keepsPlace {
+                // Earlier rows came above what's in view: it moves down
+                // by their height, and the chat with it.
+                keepsPlace = false
+                position.scrollTo(y: old.offset + new.height - old.height)
+            } else if new.height != old.height {
+                // Grown or shrunk with its end in view: keep to the end,
+                // unless a jump is leaving it. The rows a jump brings
+                // above come as a growth with the end still in view.
+                if old.endInView, !jumping { following = true }
+                if following { position.scrollTo(edge: .bottom) }
+            } else if new.shown != old.shown {
+                // The pane showed more or less of it, as a strip came
+                // or went over its bottom: a chat kept to its end stays
+                // there, its last row above the strip.
+                if following { position.scrollTo(edge: .bottom) }
+            } else if new.offset < old.offset - 1, !new.endInView {
+                // Read up, by any means: a mouse wheel has no phases. An
+                // upward move that leaves the end in view is the chat
+                // getting shorter, as a row's guessed height is measured.
                 following = false
-                jumping = true
-                reader.scrollTo(item, anchor: .center)
-            }
-            // A message sent takes the chat to its end to show it and what
-            // the agent says to it, wherever the person had scrolled.
-            .onChange(of: store.sending) { old, new in
-                guard new > old else { return }
+            } else if new.endInView, new.offset > old.offset {
                 following = true
-                jumping = false
-                position.scrollTo(edge: .bottom)
             }
-            .onChange(of: store.scrollTarget) { _, item in
-                guard let item else { return }
+        }
+        // Only the person's scrolling stops or starts the following:
+        // rows measured as they come move what's in view by themselves.
+        .onScrollPhaseChange { _, phase, context in
+            switch phase {
+            case .tracking, .interacting:
                 following = false
-                jumping = true
-                withAnimation { reader.scrollTo(item, anchor: .top) }
-                store.send(.scrolled)
+                jumping = false
+            case .idle:
+                jumping = false
+                // Only on: the stop after the chat's own scroll to its
+                // end can come while rows are still being measured.
+                if ChatEnd.inView(context.geometry) { following = true }
+            case .decelerating, .animating:
+                break
+            @unknown default:
+                break
             }
+        }
+        .overlay { ChatLoading(store: store) }
+        .onChange(of: highlighted, initial: true) { _, item in
+            guard let item else {
+                jumping = false
+                return
+            }
+            jump(to: item, anchor: .center, animated: false, reader)
+        }
+        // A message sent takes the chat to its end to show it and what
+        // the agent says to it, wherever the person had scrolled.
+        .onChange(of: store.sending) { old, new in
+            guard new > old else { return }
+            following = true
+            jumping = false
+            position.scrollTo(edge: .bottom)
+        }
+        .onChange(of: store.scrollTarget) { _, item in
+            guard let item else { return }
+            jump(to: item, anchor: .top, animated: true, reader)
+            store.send(.scrolled)
         }
         .safeAreaInset(edge: .top) {
             if store.highlighted != nil {
@@ -586,6 +595,26 @@ private struct ChatList: View {
         // itself out again without end.
         .safeAreaInset(edge: .bottom) {
             WaitingStrip(store: store)
+        }
+    }
+
+    /// Takes the chat to the row `item`. Through the chat's position: one
+    /// left at the chat's end keeps it there as the rows a jump brings
+    /// above come in, so the jump must replace it. And through the reader:
+    /// the position finds a row by id only among a scroll target layout's,
+    /// which the rows aren't, so by itself it moved nothing when the row
+    /// was already among those shown.
+    private func jump(to item: String, anchor: UnitPoint, animated: Bool, _ reader: ScrollViewProxy) {
+        following = false
+        jumping = true
+        if animated {
+            withAnimation {
+                position.scrollTo(id: item, anchor: anchor)
+                reader.scrollTo(item, anchor: anchor)
+            }
+        } else {
+            position.scrollTo(id: item, anchor: anchor)
+            reader.scrollTo(item, anchor: anchor)
         }
     }
 
@@ -651,6 +680,7 @@ private struct ChatRows: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.earlier == rhs.earlier }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.chatList)
         let highlighted = store.highlightedItem
         let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
@@ -667,7 +697,7 @@ private struct ChatRows: View, Equatable {
                 // As many again as are shown, and no more than there are.
                 let more = min(max(ChatTail.rows, all.count - start), start)
                 Button("Show Earlier Messages") { showEarlier(more) }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(ChatRowButtonStyle())
                     .frame(maxWidth: .infinity)
                     .help(more == 1 ? "Show the row before these" : "Show the \(more) rows before these")
                     .accessibilityIdentifier("chat.earlier")
@@ -955,6 +985,7 @@ private struct ChatRow: View, Equatable {
     }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.chatRow)
         content
             .padding(shows.highlighted ? 6 : 0)
@@ -1808,7 +1839,11 @@ private struct WaitingStrip: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.orange.opacity(0.1), in: .rect(cornerRadius: 10))
             .padding(.horizontal)
+            .padding(.top, 6)
             .padding(.bottom, 6)
+            // Opaque: the chat scrolls under an inset, and its rows showed
+            // through the strip's tint, over its words.
+            .background(.background)
         }
     }
 
@@ -1971,6 +2006,7 @@ private struct TurnInProgress: View {
     @State private var parts = StreamedParts()
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.turnInProgress)
         if store.stopping {
             // What's written so far stays until the turn has stopped.
@@ -2018,6 +2054,7 @@ private struct SessionComposer: View {
     @State private var choosing = false
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.composer)
         composer
             // The / list's arrows, Tab and Escape; Return picks through

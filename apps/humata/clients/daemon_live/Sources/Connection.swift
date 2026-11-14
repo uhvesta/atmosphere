@@ -30,7 +30,10 @@ final class Connection: Sendable {
 
     private let descriptor: Int32
     private let state = OSAllocatedUnfairLock(initialState: State())
-    private let writing = OSAllocatedUnfairLock()
+    /// Writes every frame after the hello, one at a time and in the order
+    /// they were handed over, so no caller's thread waits for the socket:
+    /// a large frame, such as a message with images, would hold it up.
+    private let writer = DispatchQueue(label: "humata.daemon.connection.write", qos: .userInitiated)
     let peer: Humata_V1_Hello
 
     private init(descriptor: Int32, peer: Humata_V1_Hello) {
@@ -107,11 +110,77 @@ final class Connection: Sendable {
 
     /// Sends a request answered with one response. An error response throws
     /// `DaemonError.refused`.
+    ///
+    /// A request that only reads (`onlyReads`) is cut when the caller's task
+    /// is cancelled: it throws `CancellationError` at once and its answer is
+    /// dropped when it comes. One that changes something waits for its
+    /// answer whatever happens to the task, so the caller always learns
+    /// whether it was done.
     func call(_ request: Humata_V1_Request.OneOf_Kind) async throws -> Humata_V1_Response.OneOf_Kind {
-        let response = try await withCheckedThrowingContinuation { continuation in
-            send(request, as: .call(continuation)) { continuation.resume(throwing: DaemonError.disconnected) }
+        guard Self.onlyReads(request) else {
+            let response = try await withCheckedThrowingContinuation { continuation in
+                send(request, as: .call(continuation)) { continuation.resume(throwing: DaemonError.disconnected) }
+            }
+            return try Self.refused(response)
+        }
+        try Task.checkCancellation()
+        // The request's id once it is sent, and whether the task was
+        // cancelled: whichever of the two comes second cuts the call.
+        typealias Answer = CheckedContinuation<Humata_V1_Response.OneOf_Kind, any Error>
+        let cut = OSAllocatedUnfairLock(initialState: (id: UInt64?.none, cancelled: false))
+        let response = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: Answer) in
+                let sent = self.send(request, as: .call(continuation)) {
+                    continuation.resume(throwing: DaemonError.disconnected)
+                }
+                guard let sent else { return }
+                let cancelled = cut.withLock { state -> Bool in
+                    state.id = sent
+                    return state.cancelled
+                }
+                if cancelled { self.abandon(sent) }
+            }
+        } onCancel: {
+            let sent = cut.withLock { state -> UInt64? in
+                state.cancelled = true
+                return state.id
+            }
+            if let sent { self.abandon(sent) }
         }
         return try Self.refused(response)
+    }
+
+    /// Whether a request changes nothing, so a caller that no longer wants
+    /// its answer can stop waiting for it. A request not listed here is
+    /// taken to change something.
+    private static func onlyReads(_ request: Humata_V1_Request.OneOf_Kind) -> Bool {
+        switch request {
+        case .listProjects, .listSessions, .listImportable, .listModels, .listSkipped,
+            .readHistory, .readImage, .getChatCommands, .listProposals,
+            .readChanges, .listThreads,
+            .listFiles, .readFile, .listFileVersions, .listFolder,
+            .listItems, .readBoardLog, .listInbox, .listApprovals,
+            .getStorage, .listSkills, .listPlugins, .getSessionDefaults,
+            .listHosts, .listSshHosts, .listRecoveries, .listTerminals, .listForwards,
+            .search, .listPullRequests, .getPullRefresh,
+            .listSavedRepositories, .listRepositoryOwners:
+            true
+        default:
+            false
+        }
+    }
+
+    /// Stops waiting for the call `id`: its caller gets `CancellationError`
+    /// and its answer, if one still comes, is dropped. Nothing happens if it
+    /// was already answered. The daemon isn't told, as it finishes a plain
+    /// call's work either way.
+    private func abandon(_ id: UInt64) {
+        let waiting = state.withLock { state -> CheckedContinuation<Humata_V1_Response.OneOf_Kind, any Error>? in
+            guard case .call(let answer) = state.pending[id] else { return nil }
+            state.pending[id] = nil
+            return answer
+        }
+        waiting?.resume(throwing: CancellationError())
     }
 
     /// Sends a request answered with a response and a stream of items, and
@@ -133,7 +202,7 @@ final class Connection: Sendable {
     }
 
     /// Stops the stream `id`. Its entry goes at once, so nothing more is
-    /// delivered to it; telling the daemon is handed to a queue, since the
+    /// delivered to it; telling the daemon is handed to the writer, since the
     /// write waits for whichever frame is being written, and the thread that
     /// cancels is often the main one.
     private func cancel(_ id: UInt64) {
@@ -145,8 +214,8 @@ final class Connection: Sendable {
         let cancel = envelope
         // Holds the connection until the write is over, so its descriptor
         // is still open then.
-        DispatchQueue.global().async { [self] in
-            _ = writing.withLock { Self.write(cancel, to: descriptor) }
+        writer.async { [self] in
+            _ = Self.write(cancel, to: descriptor)
         }
     }
 
@@ -155,6 +224,10 @@ final class Connection: Sendable {
         shutdown(descriptor, SHUT_RDWR)
     }
 
+    /// Registers `pending` and hands the request to the writer, without
+    /// waiting for the socket. Requests are written in the order of their
+    /// ids, which is the order this was called in. On a closed connection
+    /// nothing is sent and `failed` runs at once.
     @discardableResult
     private func send(_ request: Humata_V1_Request.OneOf_Kind, as pending: Pending, failed: () -> Void) -> UInt64? {
         let id: UInt64? = state.withLock { state in
@@ -162,23 +235,29 @@ final class Connection: Sendable {
             let id = state.nextID
             state.nextID += 1
             state.pending[id] = pending
+            // Handed over under the lock, so two sends can't swap places
+            // between taking their ids and joining the queue.
+            writer.async { [self] in writeRequest(request, id: id) }
             return id
         }
-        guard let id else {
-            failed()
-            return nil
-        }
+        if id == nil { failed() }
+        return id
+    }
+
+    /// Writes the request `id`, on the writer's queue.
+    private func writeRequest(_ request: Humata_V1_Request.OneOf_Kind, id: UInt64) {
+        // Nothing waits for it any more: a read cut before its turn, or
+        // the connection closed.
+        guard state.withLock({ $0.pending[id] != nil }) else { return }
         var envelope = Humata_V1_Envelope()
         envelope.id = id
         var body = Humata_V1_Request()
         body.kind = request
         envelope.request = body
-        let outgoing = envelope
-        if !writing.withLock({ Self.write(outgoing, to: descriptor) }) {
+        if !Self.write(envelope, to: descriptor) {
             // The reader sees the hang-up and fails what is pending, this too.
             shutdown(descriptor, SHUT_RDWR)
         }
-        return id
     }
 
     private static func refused(_ response: Humata_V1_Response.OneOf_Kind) throws -> Humata_V1_Response.OneOf_Kind {

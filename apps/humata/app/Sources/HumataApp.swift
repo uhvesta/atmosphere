@@ -7,6 +7,7 @@ import HumataDiagram
 import HumataProjects
 import HumataSession
 import SwiftUI
+import os
 
 /// Humata: a window for directing coding agents, over humatad.
 @main
@@ -46,7 +47,19 @@ struct HumataApp: App {
         return state
     }
 
+    /// Marks each run of the scene's body in Instruments (Points of
+    /// Interest), to see how often a working session makes it run.
+    private static let signposter = OSSignposter(subsystem: "humata", category: .pointsOfInterest)
+
     var body: some Scene {
+        let interval = Self.signposter.beginInterval("SceneBody")
+        defer { Self.signposter.endInterval("SceneBody", interval) }
+        return scenes
+    }
+
+    /// The menus' items are views over the store, so what they read of the
+    /// sidebar and the session redraws them alone, not the scene.
+    @SceneBuilder private var scenes: some Scene {
         WindowGroup("Humata") {
             // The window's least size is the view's own, which widens it for
             // a focused document.
@@ -74,16 +87,7 @@ struct HumataApp: App {
             // greyed out while the sidebar shows a sheet or an alert: it
             // would take the place of what the person is filling in.
             CommandGroup(replacing: .newItem) {
-                Button("New Chat") { store.send(.sidebar(.newChatTapped)) }
-                    .keyboardShortcut("n", modifiers: .command)
-                    .disabled(store.sidebar.presenting)
-                Button("Add Project…") { store.send(.sidebar(.addProjectTapped)) }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                    .disabled(store.sidebar.presenting)
-                Divider()
-                projectCommands
-                Button("Import Session…") { store.send(.sidebar(.importTapped)) }
-                    .disabled(store.sidebar.presenting)
+                NewCommands(store: store)
             }
             CommandMenu("Go") {
                 Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
@@ -96,15 +100,40 @@ struct HumataApp: App {
                 Button("Hosts") { store.send(.sidebar(.selected(.hosts))) }
             }
             CommandMenu("Session") {
-                sessionCommands
+                SessionCommands(store: store)
             }
         }
     }
+}
 
-    /// What the sidebar offers for a project, for the project of the board
-    /// that's open or of the session that is, each naming it; greyed out
-    /// with neither, and while the sidebar shows a sheet or an alert.
-    @ViewBuilder private var projectCommands: some View {
+/// New Chat, Add Project, what the sidebar offers for a project, and Import
+/// Session. Each opens a sheet, so each is greyed out while the sidebar
+/// shows a sheet or an alert.
+private struct NewCommands: View {
+    let store: StoreOf<AppFeature>
+
+    var body: some View {
+        let presenting = store.sidebar.presenting
+        Button("New Chat") { store.send(.sidebar(.newChatTapped)) }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(presenting)
+        Button("Add Project…") { store.send(.sidebar(.addProjectTapped)) }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(presenting)
+        Divider()
+        ProjectCommands(store: store)
+        Button("Import Session…") { store.send(.sidebar(.importTapped)) }
+            .disabled(presenting)
+    }
+}
+
+/// What the sidebar offers for a project, for the project of the board
+/// that's open or of the session that is, each naming it; greyed out
+/// with neither, and while the sidebar shows a sheet or an alert.
+private struct ProjectCommands: View {
+    let store: StoreOf<AppFeature>
+
+    var body: some View {
         let id = store.sidebar.commandProject
         let name = id.flatMap { store.sidebar.projects[id: $0]?.name } ?? ""
         let off = id == nil || store.sidebar.presenting
@@ -121,11 +150,15 @@ struct HumataApp: App {
         }
         .disabled(off)
     }
+}
 
-    /// What can be done to the session of the column the person is in, so
-    /// it's found in the menu bar and has a shortcut; each is greyed out
-    /// when it can't be done now, and says so when it acts on the side chat.
-    @ViewBuilder private var sessionCommands: some View {
+/// What can be done to the session of the column the person is in, so
+/// it's found in the menu bar and has a shortcut; each is greyed out
+/// when it can't be done now, and says so when it acts on the side chat.
+private struct SessionCommands: View {
+    let store: StoreOf<AppFeature>
+
+    var body: some View {
         let session = store.commandSession
         let side = store.focusedColumn == .side && store.side != nil
         let live = session.map { !$0.session.archived } ?? false
@@ -215,15 +248,23 @@ struct HumataApp: App {
                 .disabled(session == nil)
         }
         Divider()
-        sidebarCommands(for: session?.id)
+        SidebarCommands(store: store, id: session?.id)
     }
 
-    /// What the sidebar's row offers for the session, as the sidebar has
-    /// it; greyed out for one the sidebar doesn't list, and while it's
-    /// being moved, archived or deleted. Those that open a sheet or an
-    /// alert are also greyed out while the sidebar shows one.
-    @ViewBuilder
-    private func sidebarCommands(for id: Session.ID?) -> some View {
+    private func send(_ action: SessionFeature.Action) {
+        store.send(.sessionCommand(action))
+    }
+}
+
+/// What the sidebar's row offers for the session, as the sidebar has
+/// it; greyed out for one the sidebar doesn't list, and while it's
+/// being moved, archived or deleted. Those that open a sheet or an
+/// alert are also greyed out while the sidebar shows one.
+private struct SidebarCommands: View {
+    let store: StoreOf<AppFeature>
+    let id: Session.ID?
+
+    var body: some View {
         let menu = id.flatMap { store.sidebar.menuState(of: $0) }
         let presenting = store.sidebar.presenting
         Button("Rename…") {
@@ -257,9 +298,5 @@ struct HumataApp: App {
                 }
             }
         }
-    }
-
-    private func send(_ action: SessionFeature.Action) {
-        store.send(.sessionCommand(action))
     }
 }

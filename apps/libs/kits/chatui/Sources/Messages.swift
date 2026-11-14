@@ -134,11 +134,11 @@ struct PersonText: View {
                         expanded.toggle()
                     }
                     .font(.callout.weight(.semibold))
-                    .buttonStyle(.borderless)
+                    .buttonStyle(ChatRowButtonStyle())
                     if expanded, preview.isCut, let select {
                         Button("Select All of It") { select(text) }
                             .font(.callout)
-                            .buttonStyle(.borderless)
+                            .buttonStyle(ChatRowButtonStyle())
                             .help("Only its first 20,000 characters show here; open all of it to read and select")
                     }
                 }
@@ -243,7 +243,7 @@ public struct ThinkingDisclosure: View {
             if preview.isCut, let select {
                 Button("Show All") { select(all) }
                     .help("Only the first 20,000 characters show here; open all of them to read and select")
-                    .buttonStyle(.borderless)
+                    .buttonStyle(ChatRowButtonStyle())
                     .font(.caption)
             }
         }
@@ -351,7 +351,8 @@ public struct BranchSwitcher: View {
                 .disabled(index == count - 1 || !canGo)
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
+        .buttonStyle(ChatRowButtonStyle())
+        .tint(.secondary)
         .font(.caption)
         .foregroundStyle(.secondary)
     }
@@ -402,7 +403,7 @@ public struct AttachmentChip: View {
             if let remove {
                 Button("Remove", systemImage: "xmark.circle.fill", action: remove)
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(ChatRowButtonStyle())
                     .tint(.secondary)
                     .accessibilityLabel(Text("Remove ") + title)
             }

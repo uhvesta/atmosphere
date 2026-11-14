@@ -22,6 +22,11 @@ package struct AppFeature {
         /// Whether the daemon was looked for, and started again if gone,
         /// since the sidebar last read: once for each run of failed reads.
         var daemonRetried = false
+        /// Whether the daemon was started again in this run of failed
+        /// reads and hasn't been looked for since: the next read that fails
+        /// looks once more, so that one found answering, and gone later, is
+        /// started again.
+        var daemonStartedAgain = false
         package var sidebar = ProjectsFeature.State()
         /// The open session; nil until one is picked.
         @Presents package var session: SessionFeature.State?
@@ -457,8 +462,17 @@ package struct AppFeature {
                 // is gone is started again, once until the sidebar reads.
                 // One that goes while an update waits is started again too:
                 // the banner's restart would otherwise never come.
-                guard state.daemon == .running || state.daemon == .updatePending, !state.daemonRetried else {
-                    return .none
+                guard state.daemon == .running || state.daemon == .updatePending else { return .none }
+                guard !state.daemonRetried else {
+                    // Started again, and a read still fails. If it answers,
+                    // the read failed for another reason and the next one
+                    // that fails looks for it again; if it doesn't, starting
+                    // it didn't keep it, and it isn't started over and over.
+                    guard state.daemonStartedAgain else { return .none }
+                    state.daemonStartedAgain = false
+                    return .run { send in
+                        if (try? await service.isCurrent()) != nil { await send(.daemonAnswered) }
+                    }
                 }
                 state.daemonRetried = true
                 return .run { send in
@@ -475,6 +489,7 @@ package struct AppFeature {
                 // read. One found gone leaves this set, so a run of failed
                 // reads starts it once.
                 state.daemonRetried = false
+                state.daemonStartedAgain = false
                 return .none
 
             case .restartRefused(let message, let askedInHosts):
@@ -490,6 +505,7 @@ package struct AppFeature {
             case .daemonGone:
                 guard state.daemon == .running || state.daemon == .updatePending else { return .none }
                 state.daemon = .restarting
+                state.daemonStartedAgain = true
                 return .run { send in
                     try await service.start()
                     await send(.restarted)
@@ -504,6 +520,7 @@ package struct AppFeature {
                 // Every two seconds: set only what changed, so the open
                 // session isn't drawn again for nothing.
                 if state.daemonRetried { state.daemonRetried = false }
+                if state.daemonStartedAgain { state.daemonStartedAgain = false }
                 if let open = state.session {
                     if let listed = sessions.first(where: { $0.id == open.session.id }) {
                         // What changes outside its chat: its host is lost or

@@ -143,6 +143,31 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertGreaterThan(belowView(scroll), 200, "the chat went back to its end")
     }
 
+    /// Show goes to a proposal near the top of a chat whose rows are all
+    /// in its list, each time it's pressed, after the chat was scrolled
+    /// back to its end.
+    func testShowingAProposalNearTheTopGoesToItEachTime() async throws {
+        let (store, window, task) = try await opened(Self.long(turns: 40, proposingInTurn: 1))
+        defer {
+            task.cancel()
+            window.close()
+            window.contentViewController = nil
+        }
+        let scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
+        XCTAssertLessThan(belowView(scroll), 60, "the chat didn't open at its end")
+        store.send(.proposals(.listed([Proposal(id: "proposed", title: "Login form")], changes: [:])))
+        await settle(window)
+        for press in 1...2 {
+            store.send(.showProposalsTapped)
+            await settle(window)
+            await settle(window)
+            XCTAssertLessThan(aboveView(scroll), 300, "Show didn't go to the proposal, press \(press)")
+            scrollToEnd(scroll)
+            await settle(window)
+            XCTAssertLessThan(belowView(scroll), 60, "the chat didn't go back to its end")
+        }
+    }
+
     /// Show Earlier Messages brings rows above those the chat opened with,
     /// and what was in view stays in view.
     func testShowingEarlierMessagesKeepsWhatWasInView() async throws {
@@ -160,12 +185,10 @@ final class LongChatScrollTests: XCTestCase {
             scrollToTop(scroll)
             await settle(window)
         }
-        let button = try XCTUnwrap(
-            element(identified: "chat.earlier", under: window.contentView),
-            "a chat of 2,000 rows doesn't offer its earlier ones")
         let before = (height: height(), aboveEnd: aboveEnd(scroll))
 
-        XCTAssertTrue(button.accessibilityPerformPress(), "Show Earlier Messages couldn't be pressed")
+        // The button is the first thing in the list, above its first row.
+        try pressFirstControl(in: scroll)
         await settle(window)
         await settle(window)
 
@@ -227,16 +250,17 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertGreaterThan(asEdit.height, asTask.height + 40, "the chat made no room for what the edit changes")
     }
 
-    /// A chat of 1,000 short turns, each a message and a reply: 2,000 rows,
-    /// far more than a chat opens with. Each turn is four events, so turn
-    /// `n`'s message is the event `x(4n)`. The turn `proposingInTurn` also
+    /// A chat of `turns` short turns, each a message and a reply: by
+    /// default 2,000 rows, far more than a chat opens with. Each turn is
+    /// four events, so turn `n`'s message is the event `x(4n)` up to the
+    /// proposing turn. The turn `proposingInTurn` also
     /// makes the tool call `proposed`.
-    private static func long(proposingInTurn proposing: Int? = nil) -> [SessionEvent] {
+    private static func long(turns: Int = 1_000, proposingInTurn proposing: Int? = nil) -> [SessionEvent] {
         var history: [SessionEvent] = []
         func add(_ kind: SessionEvent.Kind) {
             history.append(SessionEvent(id: "x\(history.count)", time: Date(timeIntervalSince1970: 0), kind: kind))
         }
-        for turn in 0..<1_000 {
+        for turn in 0..<turns {
             add(.userMessage("Check fixture \(turn)."))
             add(.turnStarted)
             if turn == proposing {
@@ -312,6 +336,21 @@ final class LongChatScrollTests: XCTestCase {
         return document.isFlipped ? document.frame.height - visible.maxY : visible.minY
     }
 
+    /// How much of the chat is above what's in view: nothing at its top.
+    private func aboveView(_ scroll: NSScrollView) -> CGFloat {
+        guard let document = scroll.documentView else { return 0 }
+        let visible = scroll.documentVisibleRect
+        return document.isFlipped ? visible.minY : document.frame.height - visible.maxY
+    }
+
+    /// Scrolls the chat to its end.
+    private func scrollToEnd(_ scroll: NSScrollView) {
+        guard let document = scroll.documentView else { return }
+        let end = document.isFlipped ? max(0, document.frame.height - scroll.contentView.bounds.height) : 0
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: end))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
     /// How far above the chat's end the top of what's in view is.
     private func aboveEnd(_ scroll: NSScrollView) -> CGFloat {
         guard let document = scroll.documentView else { return 0 }
@@ -327,15 +366,31 @@ final class LongChatScrollTests: XCTestCase {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
-    /// The control named `identifier` under `root`, as assistive
-    /// technology finds it.
-    private func element(identified identifier: String, under root: Any?, depth: Int = 0) -> NSAccessibilityProtocol? {
-        guard depth < 60, let node = root as? NSAccessibilityProtocol else { return nil }
-        if node.accessibilityIdentifier() == identifier { return node }
-        for child in node.accessibilityChildren() ?? [] {
-            if let found = element(identified: identifier, under: child, depth: depth + 1) { return found }
+    /// Clicks the middle of the top line of the chat's list, where the
+    /// first control sits, with events sent to its window alone: the
+    /// pointer doesn't move.
+    private func pressFirstControl(in scroll: NSScrollView) throws {
+        let document = try XCTUnwrap(scroll.documentView, "the chat has no list")
+        let window = try XCTUnwrap(scroll.window, "the chat isn't in a window")
+        // Below the list's padding, inside the button's line.
+        let fromTop: CGFloat = 26
+        let point = NSPoint(
+            x: document.bounds.midX,
+            y: document.isFlipped ? fromTop : document.bounds.height - fromTop)
+        let location = document.convert(point, to: nil)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(
+                NSEvent.mouseEvent(
+                    with: type, location: location, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1),
+                "a click couldn't be made")
         }
-        return nil
+        window.makeKey()
+        // The button follows the press until the button comes up, reading
+        // the queue: the release waits there first.
+        NSApp.postEvent(try event(.leftMouseUp), atStart: false)
+        window.sendEvent(try event(.leftMouseDown))
     }
 
     /// How many spinners or progress bars are drawn in the chat.

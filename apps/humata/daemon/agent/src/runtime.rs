@@ -246,17 +246,45 @@ impl Turn {
         &self,
         read: impl FnOnce(&[Event]) -> T,
     ) -> Result<T, AgentError> {
-        let length = {
-            // The session's lock, then the log's, as a send takes them.
-            let mut control = self.session.lock();
-            let length = self.session.log.with_events(<[Event]>::len)?;
-            control.steering.clear();
-            length
-        };
+        let length = self.history_length_taking_steering()?;
         // A steer sent since is past `length` and still to be taken.
         self.session
             .log
             .with_events(|history| read(&history[..length.min(history.len())]))
+    }
+
+    /// [`Self::with_history_taking_steering`] for a request that needs
+    /// something slow to make, such as images read from disk: `find` says
+    /// what the history needs, `load` makes it with neither the session
+    /// nor the log locked, so messages are sent and recorded meanwhile,
+    /// and `read` builds from the same history and what `load` made. A
+    /// steer sent while `load` runs is not in that history and is still
+    /// to be taken.
+    pub(crate) fn with_history_taking_steering_loading<Found, Loaded, T>(
+        &self,
+        find: impl FnOnce(&[Event]) -> Found,
+        load: impl FnOnce(Found) -> Loaded,
+        read: impl FnOnce(&[Event], Loaded) -> T,
+    ) -> Result<T, AgentError> {
+        let length = self.history_length_taking_steering()?;
+        let found = self
+            .session
+            .log
+            .with_events(|history| find(&history[..length.min(history.len())]))?;
+        let loaded = load(found);
+        self.session
+            .log
+            .with_events(|history| read(&history[..length.min(history.len())], loaded))
+    }
+
+    /// How long the history is now, taking every steer sent so far: all of
+    /// them are within that length.
+    fn history_length_taking_steering(&self) -> Result<usize, AgentError> {
+        // The session's lock, then the log's, as a send takes them.
+        let mut control = self.session.lock();
+        let length = self.session.log.with_events(<[Event]>::len)?;
+        control.steering.clear();
+        Ok(length)
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
@@ -2903,6 +2931,101 @@ pub(crate) mod tests {
             .collect();
         // The listing came back while the read was still under way.
         assert_eq!(replies, ["listed"]);
+    }
+
+    /// Says it is loading what its request needs and stays there until
+    /// `steered` is told or five seconds pass; then replies with the
+    /// messages its request is built from and how many steers were left.
+    struct LoadsSlowly {
+        loading: tokio::sync::mpsc::UnboundedSender<()>,
+        steered: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Runner for LoadsSlowly {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            let read = turn.with_history_taking_steering_loading(
+                |history| history.len(),
+                |found| {
+                    let _ = self.loading.send(());
+                    let told = self
+                        .steered
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .is_ok();
+                    (found, told)
+                },
+                |history, (found, told)| {
+                    let texts = history
+                        .iter()
+                        .filter_map(|event| match &event.kind {
+                            EventKind::UserMessage { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let same = found == history.len();
+                    format!("{texts}; told {told}; same {same}")
+                },
+            )?;
+            turn.emit(EventKind::AssistantMessage { text: read })?;
+            let left = turn.take_steering().len();
+            turn.emit(EventKind::AssistantMessage {
+                text: format!("{left} left"),
+            })?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_steer_sent_while_a_request_loads_is_recorded_and_left_for_the_next() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let (loading, mut loads) = tokio::sync::mpsc::unbounded_channel();
+        let (tell, steered) = std::sync::mpsc::channel();
+        let runner = LoadsSlowly {
+            loading,
+            steered: std::sync::Mutex::new(steered),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        loads.recv().await.expect("the runner loads");
+
+        // Sent, recorded and read back while the load is still under way.
+        agent
+            .send(&id, "steer".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        let during = agent.history(&id).await.expect("history");
+        let _ = tell.send(());
+        let events = wait_for(&agent, &id, idle_turns(1)).await;
+
+        assert!(
+            during.iter().any(
+                |event| matches!(&event.kind, EventKind::UserMessage { text, .. } if text == "steer")
+            ),
+            "{during:#?}"
+        );
+        let replies: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::AssistantMessage { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The request was built from the history as it was found, and the
+        // steer waits for the next one.
+        assert_eq!(replies, ["hello; told true; same true", "1 left"]);
     }
 
     #[tokio::test]

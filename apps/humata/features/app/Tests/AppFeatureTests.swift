@@ -1671,6 +1671,46 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.sidebar.loaded)
     }
 
+    func testADaemonStartedAgainWhoseReadsStillFailIsStartedAgainWhenItGoes() async throws {
+        let gone = LockIsolated(true)
+        let failing = LockIsolated(true)
+        let starts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            let projects = $0.daemon.projects
+            $0.daemon.projects = {
+                if failing.value { throw DaemonError.unexpected("a list it couldn't make") }
+                return try await projects()
+            }
+            // Started, it answers; the second time its reads work too.
+            $0.daemonService = service(gone: gone, starts: starts) {
+                gone.setValue(false)
+                if starts.value > 1 { failing.setValue(false) }
+            }
+        }
+        store.exhaustivity = .off
+
+        // Gone, it's started and answers, and the read after it still fails.
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.restarted)
+        await store.finish()
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 1)
+
+        // Then it goes, with no read having succeeded in between.
+        gone.setValue(true)
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.restarted)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 2)
+        await store.receive(\.sidebar.loaded)
+    }
+
     func testARestartOfADaemonHumataDidntStartLeavesItRunningAndSaysSoInHosts() async throws {
         var state = AppFeature.State()
         state.daemon = .running

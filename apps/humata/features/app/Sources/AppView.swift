@@ -15,6 +15,9 @@ package struct AppView: View {
     @Bindable var store: StoreOf<AppFeature>
     /// The chat column the keyboard is in; nil when it's in neither.
     @FocusedValue(\.sessionColumn) private var column
+    /// The width the side chat was last left at, which the window's least
+    /// width makes room for while one is open.
+    @AppStorage(SideChatWidth.key) private var sideChatWidth = SideChatWidth.initial
 
     package init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -32,11 +35,17 @@ package struct AppView: View {
         }
     }
 
+    /// The least widths of the window, the detail column and the open
+    /// session, which make room for a side chat while one is beside it.
+    private var least: WindowLeast {
+        WindowLeast(sideChat: store.session != nil && store.side != nil ? sideChatWidth : nil)
+    }
+
     package var body: some View {
         // The window's own view asks its content for its smallest size on
         // every change; this answers without measuring the chat, and is here
         // so that whatever hosts this view lays out what the app does.
-        AtLeast(width: 820, height: 520, fits: focusesDocument) { split }
+        AtLeast(width: least.window, height: 520, fits: focusesDocument) { split }
     }
 
     private var split: some View {
@@ -49,11 +58,11 @@ package struct AppView: View {
                     ProjectsView(store: store.scope(state: \.sidebar, action: \.sidebar))
                 }
             }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+            .navigationSplitViewColumnWidth(min: WindowLeast.sidebar, ideal: 260)
         } detail: {
             // The column's own window view asks its content for its smallest
             // size on every change; this answers without measuring the chat.
-            AtLeast(width: 360, height: 300, fits: focusesDocument) { detail }
+            AtLeast(width: least.detail, height: 300, fits: focusesDocument) { detail }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             DaemonBanner(store: store)
@@ -87,7 +96,7 @@ package struct AppView: View {
             // The session keeps its place whether or not a side chat is
             // beside it, so opening or closing one doesn't draw it anew.
             HStack(spacing: 0) {
-                AtLeast(width: 360, height: 300, fits: focusesDocument) {
+                AtLeast(width: least.session, height: 300, fits: focusesDocument) {
                     SessionView(store: session)
                         .id(session.session.id)
                 }
@@ -117,19 +126,16 @@ private struct SideChatColumn: View {
     let store: StoreOf<SessionFeature>
     let close: () -> Void
     /// The width it was last left at, kept between runs.
-    @AppStorage("sideChatWidth") private var keptWidth = 440.0
+    @AppStorage(SideChatWidth.key) private var keptWidth = SideChatWidth.initial
     /// The width while it's dragged; nil between drags, so only the end
     /// of a drag is written down.
     @State private var dragged: CGFloat?
     /// The width when a drag began; nil between drags.
     @State private var dragFrom: CGFloat?
 
-    private static let widths: ClosedRange<CGFloat> = 360...900
+    private static let widths = SideChatWidth.range
 
-    /// What's kept may be from another build, or edited: held to the range.
-    private var width: CGFloat {
-        dragged ?? min(max(CGFloat(keptWidth), Self.widths.lowerBound), Self.widths.upperBound)
-    }
+    private var width: CGFloat { dragged ?? SideChatWidth.held(keptWidth) }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -179,6 +185,49 @@ private struct SideChatColumn: View {
             }
             .frame(width: width)
         }
+    }
+}
+
+/// The side chat's width as it's kept between runs.
+private enum SideChatWidth {
+    static let key = "sideChatWidth"
+    static let initial = 440.0
+    static let range: ClosedRange<CGFloat> = 360...900
+
+    /// What's kept may be from another build, or edited: held to the range.
+    static func held(_ kept: Double) -> CGFloat {
+        min(max(CGFloat(kept), range.lowerBound), range.upperBound)
+    }
+}
+
+/// The least widths the window answers with, worked out and never measured.
+/// Alone, a session can be as narrow as its column's least. With a side chat
+/// beside it, the session keeps the least its header needs and the window
+/// and the column are as much wider as the side chat was last left, so the
+/// header's end isn't under the side chat.
+package struct WindowLeast: Equatable {
+    package var window: CGFloat
+    package var detail: CGFloat
+    package var session: CGFloat
+
+    /// The sidebar's least width, as its column sets it.
+    static let sidebar: CGFloat = 220
+    /// What a session's header needs beside a side chat.
+    static let header: CGFloat = 560
+
+    /// `sideChat` is the side chat's kept width while one is open beside a
+    /// session, else nil.
+    package init(sideChat: Double?) {
+        guard let sideChat else {
+            window = 820
+            detail = 360
+            session = 360
+            return
+        }
+        session = Self.header
+        // The side chat, and the line between the two.
+        detail = Self.header + SideChatWidth.held(sideChat) + 1
+        window = max(820, Self.sidebar + detail)
     }
 }
 

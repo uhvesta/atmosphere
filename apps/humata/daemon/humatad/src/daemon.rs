@@ -135,6 +135,11 @@ pub struct Daemon {
     /// by the asking session. Each counts against its limits until it is
     /// one of its sessions or has failed.
     agent_starting: std::sync::Mutex<HashMap<String, u32>>,
+    /// The sessions this daemon started for agents that no listing has
+    /// shown yet, by id. A host that doesn't answer a listing is shown as
+    /// it last was, without them, and they still count against the asking
+    /// session's limit.
+    agent_unlisted: std::sync::Mutex<HashSet<String>>,
     /// The requests to start a session that the person's allowing is being
     /// carried out for right now, by request id, so one allowed twice
     /// starts once.
@@ -201,6 +206,7 @@ impl Daemon {
             owners_listing: tokio::sync::Mutex::new(()),
             agent_asks: tokio::sync::Mutex::new(()),
             agent_starting: std::sync::Mutex::default(),
+            agent_unlisted: std::sync::Mutex::default(),
             agent_allowing: std::sync::Mutex::default(),
             agent_messages: std::sync::Mutex::default(),
         });
@@ -1243,6 +1249,11 @@ impl Daemon {
                 Ok((all, known, moved, backed_up))
             })
             .await?;
+        let unlisted = !self
+            .agent_unlisted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty();
         for (host, sessions) in listed {
             let moved = moved.remove(&host).unwrap_or_default();
             for mut session in sessions {
@@ -1259,6 +1270,14 @@ impl Daemon {
                 }
                 let was = known.get(&session.id).cloned();
                 self.own_known(&mut session, &host, None, None, was)?;
+                if unlisted {
+                    // Listed now, so from here on a listing says whether
+                    // it's still there.
+                    self.agent_unlisted
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&session.id);
+                }
                 if project.is_empty() || session.project_id == project {
                     all.push(session);
                 }
@@ -1762,11 +1781,15 @@ impl Daemon {
                 )));
             }
             Request::GetPullRefresh(_) => {
-                return Ok(Reply::Response(Response::PullRefresh(self.pull_refresh()?)));
+                let mut refresh = self.pull_refresh()?;
+                refresh.set_token_source(self.github_token_source().await);
+                return Ok(Reply::Response(Response::PullRefresh(refresh)));
             }
             Request::SetPullRefresh(set) => {
                 self.set_pull_refresh(&set.settings.clone().unwrap_or_default())?;
-                return Ok(Reply::Response(Response::PullRefresh(self.pull_refresh()?)));
+                let mut refresh = self.pull_refresh()?;
+                refresh.set_token_source(self.github_token_source().await);
+                return Ok(Reply::Response(Response::PullRefresh(refresh)));
             }
             Request::DeclineProposal(decline) => {
                 let proposal = self.decline_proposal(decline).await?;
@@ -2020,7 +2043,7 @@ impl Daemon {
                 })));
             }
             Request::StopForward(stop) => {
-                self.stop_forward(&stop.id)?;
+                self.stop_forward(&stop.id).await?;
                 return Ok(Reply::Response(Response::ForwardStopped(
                     pb::ForwardStopped {},
                 )));

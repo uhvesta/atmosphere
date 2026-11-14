@@ -446,6 +446,16 @@ package struct SessionFeature {
             return started?.id
         }
 
+        /// The chat row of the proposal not decided yet that comes first in
+        /// the chat, whatever order they're listed in; nil when none of them
+        /// has a row here.
+        var firstWaitingProposalRow: String? {
+            pendingProposals
+                .compactMap { proposal in row(ofCall: proposal.id).flatMap { events.index(id: $0) } }
+                .min()
+                .map { events[$0].id }
+        }
+
         /// Where a fork from the highlighted event starts: before the first
         /// event after its turn ended, so the fork keeps that whole turn; nil
         /// to keep everything, when its turn is the last.
@@ -2119,7 +2129,13 @@ package struct SessionFeature {
                 return .send(.delegate(.answerRequest(request.id, .dismiss)))
 
             case .showProposalsTapped:
-                state.scrollTarget = state.pendingProposals.first.flatMap { state.row(ofCall: $0.id) }
+                guard let row = state.firstWaitingProposalRow else {
+                    // None of them is a row of this chat, as after the chat
+                    // was cut back: the list is read again, so the strip
+                    // says what waits now.
+                    return .send(.proposals(.refresh))
+                }
+                state.scrollTarget = row
                 return .none
 
             case .scrolled:

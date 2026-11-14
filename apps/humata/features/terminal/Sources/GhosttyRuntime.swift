@@ -234,6 +234,7 @@ private func ghosttyAction(_ app: ghostty_app_t?, _ target: ghostty_target_s, _ 
 @MainActor
 private func openLink(_ link: ghostty_action_open_url_s) -> Bool {
     guard let start = link.url else { return false }
+    // swiftlint:disable:next optional_data_string_conversion
     let text = String(decoding: UnsafeRawBufferPointer(start: start, count: Int(link.len)), as: UTF8.self)
     guard let url = URL(string: text), let scheme = url.scheme?.lowercased(),
         ["http", "https", "mailto"].contains(scheme)
@@ -332,6 +333,7 @@ private func ghosttyWriteClipboard(
     for index in 0..<count {
         let entry = content[index]
         guard let mime = entry.mime, String(cString: mime) == "text/plain", let data = entry.data else { continue }
+        // swiftlint:disable:next optional_data_string_conversion
         let text = String(decoding: UnsafeRawBufferPointer(start: data, count: entry.len), as: UTF8.self)
         MainActor.assumeIsolated {
             NSPasteboard.general.clearContents()

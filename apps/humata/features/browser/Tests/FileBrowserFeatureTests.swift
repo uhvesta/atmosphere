@@ -37,6 +37,7 @@ final class FileBrowserFeatureTests: XCTestCase {
         await store.send(.fileSelected("src/main.rs"))
         await store.receive(\.fileRead)
         XCTAssertEqual(store.state.contents?.text, "fn main() {}\n")
+        XCTAssertEqual(store.state.lines, ["fn main() {}", ""])
         XCTAssertEqual(store.state.absolutePath, "/srv/app/src/main.rs")
 
         // Closing a folder hides what's in it without reading it again.
@@ -56,6 +57,7 @@ final class FileBrowserFeatureTests: XCTestCase {
         await store.receive(\.fileRead)
         XCTAssertNil(store.state.contents?.text)
         XCTAssertEqual(store.state.contents?.data, png)
+        XCTAssertTrue(store.state.lines.isEmpty)
     }
 
     func testAHostThatCantBeReachedSaysSo() async {

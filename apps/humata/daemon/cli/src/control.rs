@@ -43,16 +43,18 @@ type Connecting =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Client, CliError>> + Send>>;
 
 /// The daemon as `humata mcp` reaches it for as long as it runs: the
-/// connection in hand, and how to make another once that one has ended, as
-/// it does whenever the daemon is restarted or updated.
+/// connection in hand, if one has been made, and how to make another once
+/// that one has ended, as it does whenever the daemon is restarted or
+/// updated. It starts with none, so `humata mcp` runs before the daemon does.
 pub struct Connection {
-    client: tokio::sync::Mutex<Arc<Client>>,
+    client: tokio::sync::Mutex<Option<Arc<Client>>>,
     connect: Box<dyn Fn() -> Connecting + Send + Sync>,
 }
 
 impl Connection {
-    /// `client` is the connection already made; `connect` makes the next.
-    pub fn new<Connect, Made>(client: Arc<Client>, connect: Connect) -> Self
+    /// `client` is the connection already made, if any; `connect` makes
+    /// the next.
+    pub fn new<Connect, Made>(client: Option<Arc<Client>>, connect: Connect) -> Self
     where
         Connect: Fn() -> Made + Send + Sync + 'static,
         Made: std::future::Future<Output = Result<Client, CliError>> + Send + 'static,
@@ -69,10 +71,12 @@ impl Connection {
     /// call tries again.
     async fn client(&self) -> Result<Arc<Client>, CliError> {
         let mut client = self.client.lock().await;
-        if !client.is_connected() {
-            *client = Arc::new((self.connect)().await?);
+        if let Some(open) = client.as_ref().filter(|client| client.is_connected()) {
+            return Ok(open.clone());
         }
-        Ok(client.clone())
+        let made = Arc::new((self.connect)().await?);
+        *client = Some(made.clone());
+        Ok(made)
     }
 }
 
@@ -337,7 +341,7 @@ fn tool_list() -> Vec<Tool> {
         },
         Tool {
             name: "send_message",
-            description: "Sends a session a message, then waits until it is idle or asks for something, and answers what it did: one event per line, `id<TAB>kind<TAB>detail`. A permission_requested line's detail starts with the request's id, for approve. Long events are cut, each saying how many bytes were left out, and when there are too many the earliest are left out, with a first line naming the before_event_id that read_history takes to show them.",
+            description: "Sends a session a message, then waits until it is idle or asks for something, and answers what it did: one event per line, `id<TAB>kind<TAB>detail`. A permission_requested line's detail starts with the request's id, for approve. Long events are cut, each saying how many bytes were left out and the from_byte that read_event takes to read on, and when there are too many the earliest are left out, with a first line naming the before_event_id that read_history takes to show them.",
             properties: json!({
                 "session_id": session(),
                 "text": string("The message"),
@@ -410,13 +414,24 @@ fn tool_list() -> Vec<Tool> {
         },
         Tool {
             name: "read_history",
-            description: "A session's events, one per line, as send_message prints them. Long events are cut, each saying how many bytes were left out. When they don't all fit, the latest are shown and a first line says how many earlier ones aren't: call again with before_event_id set to the id it names to read those.",
+            description: "A session's events, one per line, as send_message prints them. Long events are cut, each saying how many bytes were left out and the from_byte that read_event takes to read on. When they don't all fit, the latest are shown and a first line says how many earlier ones aren't: call again with before_event_id set to the id it names to read those.",
             properties: json!({
                 "session_id": session(),
                 "last": {"type": "integer", "description": "Only the last this many"},
                 "before_event_id": string("Only events before the one with this id; with last, the last that many before it"),
             }),
             required: &["session_id"],
+            effect: Effect::Reads,
+        },
+        Tool {
+            name: "read_event",
+            description: "One event's line from a byte of it, to read on where read_history or send_message cut it. A part that isn't the event's end says the from_byte of the next.",
+            properties: json!({
+                "session_id": session(),
+                "event_id": string("The event's id, the first field of its line"),
+                "from_byte": {"type": "integer", "minimum": 0, "description": "Where to read from, as the note at a cut gives it. Default 0, the line's start."},
+            }),
+            required: &["session_id", "event_id"],
             effect: Effect::Reads,
         },
         Tool {
@@ -570,20 +585,34 @@ impl Arguments<'_> {
     }
 }
 
-/// `line` cut to `limit` bytes, at a character's end, saying how many bytes
-/// were left out.
-fn cut(mut line: String, limit: usize) -> String {
-    if line.len() <= limit {
-        return line;
+/// The part of `line`, the line of the event `id`, from byte `from`, moved
+/// back to a character's start, that is at most `most` bytes long. A part
+/// that isn't the line's end says how many bytes were left out and how
+/// read_event reads on. It always takes at least one character, so reading
+/// from each note in turn reaches the end.
+fn part(line: &str, from: usize, most: usize, id: &str) -> String {
+    let mut from = from.min(line.len());
+    while !line.is_char_boundary(from) {
+        from -= 1;
     }
-    let mut end = limit;
+    let mut end = from.saturating_add(most).min(line.len());
     while !line.is_char_boundary(end) {
         end -= 1;
     }
-    let left_out = line.len() - end;
-    line.truncate(end);
-    line.push_str(&format!(" [cut here: {left_out} more bytes left out]"));
-    line
+    if end == from {
+        end = line[from..]
+            .chars()
+            .next()
+            .map_or(from, |first| from + first.len_utf8());
+    }
+    let mut part = line[from..end].to_owned();
+    if end < line.len() {
+        part.push_str(&format!(
+            " [cut here: {} more bytes left out; read_event with event_id {id} and from_byte {end} reads on]",
+            line.len() - end
+        ));
+    }
+    part
 }
 
 /// An event's line as [`print::event`] gives it, cut for an agent's
@@ -596,7 +625,7 @@ fn event_line(event: &pb::SessionEvent, last_reply: bool) -> String {
         Some(Kind::UserMessage(_) | Kind::AssistantMessage(_)) => MESSAGE_BYTES,
         _ => EVENT_BYTES,
     };
-    cut(print::event(event), limit)
+    part(&print::event(event), 0, limit, &event.id)
 }
 
 /// The events as an answer for an agent: a line each, cut, the latest that
@@ -881,6 +910,29 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
             } else {
                 "It has no events before that one.".to_owned()
             })
+        }
+        "read_event" => {
+            let session = arguments.required("session_id")?;
+            let id = arguments.required("event_id")?;
+            let events = crate::history(client, &session)
+                .await
+                .map_err(|error| humata_wire::describe(&error))?;
+            let event = events.iter().find(|event| event.id == id).ok_or_else(|| {
+                format!(
+                    "the session's history has no event {id}; it may have been rewound since. Call read_history to see the ids it has now"
+                )
+            })?;
+            let line = print::event(event);
+            let from = arguments
+                .number("from_byte")
+                .map_or(0, |from| usize::try_from(from).unwrap_or(usize::MAX));
+            if from > 0 && from >= line.len() {
+                return Err(format!(
+                    "the event's line is {} bytes long, so nothing starts at byte {from}; give a from_byte below that, or none to read it from its start",
+                    line.len()
+                ));
+            }
+            Ok(part(&line, from, LAST_REPLY_BYTES, &id))
         }
         "list_inbox" => match ask(client, Request::ListInbox(pb::ListInbox {})).await? {
             Response::Inbox(inbox) => Ok(lines(
@@ -1226,6 +1278,43 @@ mod tests {
         assert_eq!(event_line(&short, false), print::event(&short));
     }
 
+    /// The `from_byte` a cut part's note names, if it was cut.
+    fn next_byte(part: &str) -> Option<usize> {
+        let (_, rest) = part.rsplit_once("from_byte ")?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    #[test]
+    fn a_cut_event_is_read_to_its_end_from_the_byte_each_part_names() {
+        // Three bytes a character, and a limit they don't divide.
+        let whole = format!("e1\tuser\t{}", "\u{20ac}".repeat(400));
+        let mut read = String::new();
+        let mut from = 0;
+        let mut parts = 0;
+        loop {
+            let part = part(&whole, from, 100, "e1");
+            let taken = kept(&part, &whole[from..]);
+            assert!(taken > 0 && taken <= 100, "{taken}");
+            read.push_str(&whole[from..from + taken]);
+            parts += 1;
+            assert!(parts <= whole.len(), "it never reaches the end");
+            match next_byte(&part) {
+                Some(next) if from + taken < whole.len() => {
+                    assert_eq!(next, from + taken);
+                    from = next;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(read, whole);
+        assert!(parts > 1);
+
+        // A byte inside a character reads from that character's start.
+        let inside = part(&whole, 9, 100, "e1");
+        assert!(inside.starts_with('\u{20ac}'), "{inside}");
+    }
+
     #[test]
     fn a_history_too_long_keeps_its_end_and_names_where_the_rest_starts() {
         let events: Vec<pb::SessionEvent> = (0..40)
@@ -1349,7 +1438,7 @@ mod tests {
 
     /// A connection with no way to make another.
     fn only(client: Arc<Client>) -> Connection {
-        Connection::new(client, || async { Err(CliError::NoSocket) })
+        Connection::new(Some(client), || async { Err(CliError::NoSocket) })
     }
 
     /// A connection whose daemon has gone away, once the client knows.
@@ -1681,7 +1770,7 @@ mod tests {
     #[tokio::test]
     async fn a_call_after_the_daemon_restarted_is_answered_by_the_new_one() {
         let (tries, connect) = connector(0);
-        let connection = Connection::new(gone().await, connect);
+        let connection = Connection::new(Some(gone().await), connect);
         let (mut requests, input) = duplex(4096);
         let (output, answers) = duplex(64 * 1024);
         let mut answers = BufReader::new(answers).lines();
@@ -1710,7 +1799,7 @@ mod tests {
     #[tokio::test]
     async fn a_daemon_that_cant_be_reached_says_so_and_the_next_call_tries_again() {
         let (tries, connect) = connector(1);
-        let connection = Connection::new(gone().await, connect);
+        let connection = Connection::new(Some(gone().await), connect);
         let (mut requests, input) = duplex(4096);
         let (output, answers) = duplex(64 * 1024);
         let mut answers = BufReader::new(answers).lines();
@@ -1743,6 +1832,70 @@ mod tests {
             json!(false),
             "{}",
             answered[1]
+        );
+        assert_eq!(tries.load(Ordering::Relaxed), 2);
+    }
+
+    /// A request with no parameters.
+    fn request(id: u64, method: &str) -> Vec<u8> {
+        line(json!({"jsonrpc": "2.0", "id": id, "method": method}))
+    }
+
+    #[tokio::test]
+    async fn it_serves_before_a_daemon_runs_and_reaches_one_that_starts_later() {
+        let (tries, connect) = connector(1);
+        let connection = Connection::new(None, connect);
+        let (mut requests, input) = duplex(4096);
+        let (output, answers) = duplex(64 * 1024);
+        let mut answers = BufReader::new(answers).lines();
+        let drive = async {
+            let mut answered = Vec::new();
+            let lines = [
+                request(1, "initialize"),
+                request(2, "tools/list"),
+                send_and_go(3),
+                send_and_go(4),
+            ];
+            for line in lines {
+                requests.write_all(&line).await.expect("written");
+                let answer = answers.next_line().await.expect("read").expect("an answer");
+                answered.push(serde_json::from_str::<Value>(&answer).expect("JSON"));
+            }
+            answered
+        };
+
+        let answered = tokio::select! {
+            ended = serve(connection, input, output) => panic!("it stopped serving: {ended:?}"),
+            answered = tokio::time::timeout(Duration::from_secs(10), drive) => answered,
+        };
+
+        let answered = answered.expect("each is answered");
+        assert!(
+            answered[0]["result"]["protocolVersion"].is_string(),
+            "{}",
+            answered[0]
+        );
+        assert!(
+            answered[1]["result"]["tools"]
+                .as_array()
+                .is_some_and(|tools| !tools.is_empty()),
+            "{}",
+            answered[1]
+        );
+        // Neither of those looked for the daemon.
+        assert_eq!(answered[2]["id"], json!(3));
+        assert_eq!(
+            answered[2]["result"]["isError"],
+            json!(true),
+            "{}",
+            answered[2]
+        );
+        assert_eq!(answered[3]["id"], json!(4));
+        assert_eq!(
+            answered[3]["result"]["isError"],
+            json!(false),
+            "{}",
+            answered[3]
         );
         assert_eq!(tries.load(Ordering::Relaxed), 2);
     }

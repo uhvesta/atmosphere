@@ -1648,25 +1648,25 @@ Copilot sessions spend.
   Claude Code as for Copilot. A Copilot subagent left in the background
   and woken in a later turn reads as running again, under the call that
   first started it
-- [ ] The session's chat shows only its own agent's events; each
+- [x] The session's chat shows only its own agent's events; each
   subagent's go to a chat of its own, worked out an event at a time. A
   subagent's streamed words are dropped, as its whole message follows
   them, so nothing is worked out per word for a chat nobody may be reading
-- [ ] The Agent or task call's row shows the subagent in place: type,
+- [x] The Agent or task call's row shows the subagent in place: type,
   description, a spinner while it runs, time counting live, tokens, tool
   calls, and its latest step while it runs; a permission the call itself
   waits on still shows under it. One still running when its turn ends
   reads as stopped
-- [ ] The header gains Agents once a session has a subagent, with how many
+- [x] The header gains Agents once a session has a subagent, with how many
   run. It and a subagent's row open a sheet: Main, then each subagent with
   the same columns, beside the picked one's chat, read only, drawn with
   the chat's own message, thinking, tool call and permission views. A
   subagent started by a subagent opens from its row there. Main closes it
-- [ ] Usage: a subagent's own usage is kept apart from the session's. The
+- [x] Usage: a subagent's own usage is kept apart from the session's. The
   header's total adds it for every backend: each counts a turn's main
   agent apart from its subagents, Claude Code's result.usage included. A
   subagent that reports no totals shows what its steps add up to
-- [ ] Copilot sessions show their tokens and premium requests in the
+- [x] Copilot sessions show their tokens and premium requests in the
   header and under each turn, from the usage the daemon now records
 
 **Done when:** TestStore tests show a subagent's events staying out of the
@@ -1885,6 +1885,39 @@ Fable found and judged, with three items from the flow snapshots: 30 kept,
   bar's redraws, images read before the history's lock, closing a session
   deleted elsewhere, earlier rows kept across tabs, the side chat's width in
   the window's least
+
+### Fixes before v0.12.0
+
+The two bugs reported from v0.11.0, the deferred items above, and what a
+profile of opening a long chat found.
+
+- [x] The app run from a copy of its bundle elsewhere, such as a download
+  macOS moved aside, is still the app to its daemon: deciding a proposal no
+  longer asks for approval and fails; another program in such a bundle is
+  still not the app
+- [x] Show on the waiting strip goes to the earliest proposal waiting in the
+  chat each time it's pressed, and lists them again when none is in the
+  chat; the strip no longer covers the row above it
+- [x] A model from the Humata app that fails says to send again or reopen
+  the app, not to pull it with Ollama; a local model's tool calls have ids
+  unique across turns, and proposals listed twice under one id don't stop
+  the app
+- [x] A terminal's first open that outlives its session opens once; the
+  menu bar is redrawn only when what it shows changes; images are read with
+  no lock on the history; the side chat's width counts in the window's least
+- [x] The file browser splits a file into lines away from the main thread
+- [x] A cancelled read on the daemon's connection ends at once, and writes
+  to it go out one at a time, in order
+- [x] Settings › GitHub says where the host's token comes from; an agent
+  session's children count only those it lists; `humata host add` says how
+  to fix a host it can't reach
+- [x] `humata mcp` serves without a daemon running, reading events with
+  `read_event`; a port forward's stop waits for it to end
+- [x] A reply's text is selectable once the pointer rests on it, and code
+  blocks', rows' and Show Earlier Messages' buttons are drawn by SwiftUI:
+  each of those was an AppKit view measured as a long chat was laid out
+- Deferred: closing a session deleted elsewhere, earlier rows kept across
+  tabs
 
 ### Milestone AC: agent access
 

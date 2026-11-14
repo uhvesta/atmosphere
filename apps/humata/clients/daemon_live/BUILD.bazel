@@ -1,3 +1,4 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # The daemon client over humatad's Unix socket. Only the app and end-to-end
@@ -17,6 +18,27 @@ swift_library(
         "//apps/humata/clients/daemon",
         "//apps/humata/proto:humata_swift",
     ],
+)
+
+# The socket client against a stand-in daemon on a Unix socket in /tmp.
+swift_library(
+    name = "tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":daemon_live",
+        "//apps/humata/clients/daemon",
+        "//apps/humata/proto:humata_swift",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
 )
 
 filegroup(

@@ -15,7 +15,7 @@ use crate::error::DaemonError;
 /// A forward the daemon listens for, until it's stopped.
 pub(super) struct Forwarding {
     forward: pb::Forward,
-    listening: tokio::task::AbortHandle,
+    listening: tokio::task::JoinHandle<()>,
 }
 
 /// How much of the browser's side is read at a time.
@@ -76,8 +76,7 @@ impl Daemon {
                 let host = host.clone();
                 tokio::spawn(async move { daemon.carry(&host, port, socket).await });
             }
-        })
-        .abort_handle();
+        });
         self.forwards
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -105,7 +104,9 @@ impl Daemon {
     }
 
     /// Stops listening; connections already open run until they close.
-    pub(super) fn stop_forward(&self, id: &str) -> Result<(), DaemonError> {
+    /// The port here is closed by the time this returns, so nothing
+    /// connects to it after the stop is answered.
+    pub(super) async fn stop_forward(&self, id: &str) -> Result<(), DaemonError> {
         let forwarding = self
             .forwards
             .lock()
@@ -113,6 +114,8 @@ impl Daemon {
             .remove(id)
             .ok_or_else(|| DaemonError::UnknownForward { id: id.to_owned() })?;
         forwarding.listening.abort();
+        // Ends once the task, and the listener it holds, is dropped.
+        let _ = forwarding.listening.await;
         Ok(())
     }
 

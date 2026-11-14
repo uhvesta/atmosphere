@@ -78,6 +78,47 @@ final class TerminalsFeatureTests: XCTestCase {
         XCTAssertEqual(running.map(\.id), Array(store.state.tabs.ids))
     }
 
+    func testAFirstShellStillOpeningWhenItsSessionIsLeftAndOpenedAgainOpensOnce() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
+        // The host is slow to open the shell: its answer waits to be let go.
+        let asked = LockIsolated(0)
+        let (held, release) = AsyncStream<Void>.makeStream()
+        let opens = FirstOpens()
+        let place = HostPlace(sessionID: session.id)
+        let slow: (inout DependencyValues) -> Void = {
+            $0[FirstOpens.self] = opens
+            let open = $0.daemon.openTerminal
+            $0.daemon.openTerminal = { place, profile in
+                asked.withValue { $0 += 1 }
+                for await _ in held { break }
+                return try await open(place, profile)
+            }
+        }
+
+        let left = store(daemon, TerminalsFeature.State(place: place, opensFirst: true), dependencies: slow)
+        let shown = await left.send(.task)
+        await left.receive(\.listed)
+        await left.receive(\.newTapped)
+        XCTAssertTrue(left.state.opening)
+        // The session is left: what its tabs were doing is ended.
+        await shown.cancel()
+
+        // Opened again before the host has answered, with new tabs.
+        let back = store(daemon, TerminalsFeature.State(place: place, opensFirst: true), dependencies: slow)
+        await back.send(.task)
+        release.finish()
+        await back.receive(\.listed)
+        await back.finish()
+
+        XCTAssertEqual(asked.value, 1)
+        XCTAssertEqual(back.state.tabs.count, 1)
+        XCTAssertEqual(back.state.selected, back.state.tabs.first?.id)
+        XCTAssertFalse(back.state.opening)
+        let running = try await daemon.client.terminals(nil)
+        XCTAssertEqual(running.map(\.id), Array(back.state.tabs.ids))
+    }
+
     func testAShellAskedForStillOpensAfterTheTabIsShownAgain() async throws {
         let daemon = InMemoryDaemon()
         let (held, release) = AsyncStream<Void>.makeStream()

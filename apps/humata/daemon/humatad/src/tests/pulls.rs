@@ -714,6 +714,7 @@ async fn set_refresh(
             settings: Some(pb::PullRefresh {
                 manual,
                 every_minutes,
+                ..Default::default()
             }),
         }))
         .await
@@ -729,32 +730,50 @@ async fn refresh_of(client: &Client) -> pb::PullRefresh {
     refresh
 }
 
+/// Whether `refresh` is read only when asked, and its minutes; where the
+/// token comes from is the machine's own.
+fn followed(refresh: &pb::PullRefresh) -> (bool, u32) {
+    (refresh.manual, refresh.every_minutes)
+}
+
+#[tokio::test]
+async fn the_settings_say_a_token_comes_from_this_macs_variable() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let hosts = Hosts {
+        coordinator_env: BTreeMap::from([("GH_TOKEN".to_owned(), "test-token".to_owned())]),
+        ..Hosts::default()
+    };
+    let client = daemon(state.path(), hosts).await;
+    let read = refresh_of(&client).await;
+    assert_eq!(read.token_source(), pb::GithubTokenSource::GhToken);
+    // Changing how they are followed says it too.
+    let set = set_refresh(&client, true, 30).await;
+    assert!(
+        matches!(
+            &set,
+            Ok(pb::response::Kind::PullRefresh(set))
+                if set.token_source() == pb::GithubTokenSource::GhToken
+        ),
+        "{set:?}"
+    );
+}
+
 #[tokio::test]
 async fn how_pull_requests_are_followed_is_kept_across_a_restart() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let client = daemon(state.path(), Hosts::default()).await;
     // Until set, they are read on their own every two minutes.
-    assert_eq!(
-        refresh_of(&client).await,
-        pb::PullRefresh {
-            manual: false,
-            every_minutes: 2,
-        }
-    );
+    assert_eq!(followed(&refresh_of(&client).await), (false, 2));
 
     let set = set_refresh(&client, true, 30).await;
-    let kept = pb::PullRefresh {
-        manual: true,
-        every_minutes: 30,
-    };
     assert!(
-        matches!(&set, Ok(pb::response::Kind::PullRefresh(set)) if *set == kept),
+        matches!(&set, Ok(pb::response::Kind::PullRefresh(set)) if followed(set) == (true, 30)),
         "{set:?}"
     );
     drop(client);
 
     let again = daemon(state.path(), Hosts::default()).await;
-    assert_eq!(refresh_of(&again).await, kept);
+    assert_eq!(followed(&refresh_of(&again).await), (true, 30));
     // No minutes is the default.
     let set = set_refresh(&again, false, 0).await;
     assert!(set.is_ok(), "{set:?}");

@@ -1780,6 +1780,54 @@ final class SessionFeatureTests: XCTestCase {
         }
     }
 
+    /// Show goes to the waiting proposal that comes first in the chat,
+    /// however they're listed, and goes there again each time it's pressed.
+    func testShowingProposalsGoesToTheEarliestInTheChatEachTime() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        // Listed newest first; the call `again` was also made in an
+        // earlier turn, where it proposed nothing.
+        state.proposals.proposals = [
+            Proposal(id: "late", title: "Log out"),
+            Proposal(id: "again", title: "Log in"),
+        ]
+        let now = Date(timeIntervalSince1970: 0)
+        state.events = IdentifiedArray(
+            uniqueElements: ["again", "again", "late"].enumerated().map { index, call in
+                SessionEvent(
+                    id: "e\(index)", time: now,
+                    kind: .toolStarted(callID: call, tool: "humata__propose_task", argumentsJSON: "{}"))
+            })
+        let store = store(state)
+        for _ in 0..<2 {
+            await store.send(.showProposalsTapped) {
+                $0.scrollTarget = "e1"
+            }
+            await store.send(.scrolled) {
+                $0.scrollTarget = nil
+            }
+        }
+    }
+
+    /// Waiting proposals with no row in the chat aren't gone to: they're
+    /// listed again, so the strip says what waits now.
+    func testShowingProposalsWithNoRowInTheChatListsThemAgain() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.proposals.proposals = [Proposal(id: "gone", title: "Log in")]
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, _ in }
+            $0.daemon.proposals = { _ in [] }
+        }
+        store.exhaustivity = .off
+        await store.send(.showProposalsTapped)
+        await store.receive(\.proposals.listed)
+        XCTAssertNil(store.state.scrollTarget)
+        XCTAssertEqual(store.state.pendingProposals, [])
+    }
+
     func testTryingAgainAfterAFailedTurnSendsTheLastMessageAgain() async {
         let sent = LockIsolated<[String]>([])
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
@@ -1897,6 +1945,7 @@ final class SessionFeatureTests: XCTestCase {
         var events: [SessionEvent] = []
         for (index, call) in calls.enumerated() {
             let data = try JSONSerialization.data(withJSONObject: call.arguments)
+            // swiftlint:disable:next optional_data_string_conversion
             let json = String(decoding: data, as: UTF8.self)
             events.append(
                 event("e\(index)", .toolStarted(callID: "c\(index)", tool: call.tool, argumentsJSON: json)))

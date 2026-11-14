@@ -1080,10 +1080,17 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
     } else {
         Wait::UntilDecided
     };
-    // `humata mcp` outlives the daemon it first reached, so it keeps where
-    // to find the next one.
-    let socket = arguments.socket.clone();
-    let client = connect(arguments.socket, wait, !mcp).await?;
+    if mcp {
+        // `humata mcp` runs before the daemon does and outlives each one it
+        // reaches, so it connects when a tool is called, and again when a
+        // call finds the connection ended. A call no daemon answers is
+        // told how to start one.
+        let socket = arguments.socket;
+        let connection =
+            control::Connection::new(None, move || connect(socket.clone(), wait, false));
+        return control::serve(connection, tokio::io::stdin(), tokio::io::stdout()).await;
+    }
+    let client = connect(arguments.socket, wait, true).await?;
     match arguments.command {
         Command::Project(ProjectCommand::Add {
             name,
@@ -1846,12 +1853,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
             other => return Err(unexpected("the sessions", &other)),
         },
-        Command::Mcp => {
-            let connection = control::Connection::new(std::sync::Arc::new(client), move || {
-                connect(socket.clone(), wait, false)
-            });
-            control::serve(connection, tokio::io::stdin(), tokio::io::stdout()).await?;
-        }
+        // Served above, before anything is connected.
+        Command::Mcp => {}
     }
     Ok(())
 }
@@ -2290,12 +2293,16 @@ async fn host(client: &Client, command: HostCommand) -> Result<(), CliError> {
                 None => String::new(),
             };
             let request = Request::AddHost(pb::AddHost {
-                name,
+                name: name.clone(),
                 ssh_destination: destination,
                 ssh_config,
                 folder,
             });
             saved(client.call(request).await?)?;
+            // On stderr, so what's printed stays the host alone.
+            eprintln!(
+                "humata: {name} is added but has no humatad yet. Run `humata host install {name}` next to put it there."
+            );
         }
         HostCommand::List => match client.call(Request::ListHosts(pb::ListHosts {})).await? {
             Response::Hosts(hosts) => {

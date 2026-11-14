@@ -1100,7 +1100,10 @@ private actor LiveDaemon {
     }
 
     func call(_ request: Humata_V1_Request.OneOf_Kind) async throws -> Humata_V1_Response.OneOf_Kind {
-        try await connected().call(request)
+        let response = try await connected().call(request)
+        // Only another client's actions wait for approval; the app's run.
+        if case .needsApproval = response { throw DaemonError.notTakenForTheApp }
+        return response
     }
 
     func stream(_ request: Humata_V1_Request.OneOf_Kind) async throws -> Items {

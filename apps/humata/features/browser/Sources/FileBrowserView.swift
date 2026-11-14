@@ -137,7 +137,7 @@ package struct FileBrowserView: View {
     @ViewBuilder private var content: some View {
         if let path = store.selected {
             if let contents = store.contents, contents.path == path {
-                FileContentsView(contents: contents, rendered: rendered && isMarkdown)
+                FileContentsView(contents: contents, lines: store.lines, rendered: rendered && isMarkdown)
             } else if let failure = store.unread {
                 ContentUnavailableView {
                     Label("Can't Read the File", systemImage: "doc")
@@ -190,6 +190,8 @@ private struct TreeRow: View {
 /// a note when it's none of those.
 private struct FileContentsView: View {
     let contents: FileContents
+    /// The file's text by line, as it was split when read.
+    let lines: [String]
     let rendered: Bool
 
     var body: some View {
@@ -217,7 +219,7 @@ private struct FileContentsView: View {
                         .padding()
                     }
                 } else {
-                    SourceText(path: contents.path, lines: text.components(separatedBy: "\n"))
+                    SourceText(path: contents.path, lines: lines)
                 }
             }
         } else if let data = contents.data, let image = NSImage(data: data) {

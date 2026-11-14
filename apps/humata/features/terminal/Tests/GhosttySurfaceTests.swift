@@ -31,7 +31,7 @@ final class GhosttySurfaceTests: XCTestCase {
 
     func testARunningCommandShowsWhatItPrintsAndKeepsRunning() throws {
         let (view, window) = try surface(running: "printf 'hello from ghostty'; exec cat")
-        var exited: Int32?? = nil
+        var exited: Int32??
         view.exited = { exited = .some($0) }
 
         spin(for: 5) { text(view).contains("hello from ghostty") || exited != nil }
@@ -89,7 +89,7 @@ final class GhosttySurfaceTests: XCTestCase {
 
     func testACommandThatEndsIsToldWithItsCode() throws {
         let (view, window) = try surface(running: "exit 3")
-        var exited: Int32?? = nil
+        var exited: Int32??
         view.exited = { exited = .some($0) }
 
         spin(for: 5) { exited != nil }

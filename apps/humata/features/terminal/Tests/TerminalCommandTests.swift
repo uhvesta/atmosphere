@@ -18,6 +18,7 @@ final class TerminalCommandTests: XCTestCase {
         try shell.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
         shell.waitUntilExit()
+        // swiftlint:disable:next optional_data_string_conversion
         return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
     }
 

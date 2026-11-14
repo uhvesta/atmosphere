@@ -150,7 +150,11 @@ package struct ToolCall: Hashable, Sendable {
 
     private static func change(in arguments: [String: Any]) -> Change? {
         func lines(_ text: String?) -> [Substring] {
-            guard let text, !text.isEmpty else { return [] }
+            guard var text, !text.isEmpty else { return [] }
+            // JSONSerialization's strings are bridged, and walking one a
+            // character at a time costs many times what a native one does:
+            // it is copied once, here, before it is split.
+            text.makeContiguousUTF8()
             return text.split(separator: "\n", omittingEmptySubsequences: false)
         }
         func replacement(_ edit: [String: Any]) -> (removed: [Substring], added: [Substring])? {

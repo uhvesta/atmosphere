@@ -145,6 +145,7 @@ final class GhosttySurfaceView: NSView {
         alert.alertStyle = .warning
         if read.paste {
             let text =
+                // swiftlint:disable:next optional_data_string_conversion
                 read.contents.first { $0.mime == "text/plain" }.map { String(decoding: $0.data, as: UTF8.self) } ?? ""
             let characters = text.count
             let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
@@ -460,11 +461,11 @@ final class GhosttySurfaceView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        var (x, y) = (event.scrollingDeltaX, event.scrollingDeltaY)
+        var (across, down) = (event.scrollingDeltaX, event.scrollingDeltaY)
         let precise = event.hasPreciseScrollingDeltas
         // A trackpad's deltas feel slow as they are; Ghostty's app doubles
         // them too.
-        if precise { (x, y) = (x * 2, y * 2) }
+        if precise { (across, down) = (across * 2, down * 2) }
         let momentum: Int32 =
             switch event.momentumPhase {
             case .began: 1
@@ -476,7 +477,7 @@ final class GhosttySurfaceView: NSView {
             default: 0
             }
         // The scroll mods' bits: precision, then the momentum phase.
-        ghostty_surface_mouse_scroll(surface, x, y, (precise ? 1 : 0) | momentum << 1)
+        ghostty_surface_mouse_scroll(surface, across, down, (precise ? 1 : 0) | momentum << 1)
     }
 
     // MARK: - Keys
@@ -769,6 +770,7 @@ final class GhosttySurfaceView: NSView {
 
     private static func string(_ text: ghostty_text_s) -> String {
         guard let start = text.text else { return "" }
+        // swiftlint:disable:next optional_data_string_conversion
         return String(decoding: UnsafeRawBufferPointer(start: start, count: Int(text.text_len)), as: UTF8.self)
     }
 }
@@ -813,9 +815,9 @@ extension GhosttySurfaceView: NSTextInputClient {
     /// Where the cursor is on screen, for the input method's window.
     func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         guard let surface, let window else { return .zero }
-        var (x, y, width, height) = (0.0, 0.0, 0.0, 0.0)
-        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = NSRect(x: x, y: bounds.height - y, width: width, height: height)
+        var (left, top, width, height) = (0.0, 0.0, 0.0, 0.0)
+        ghostty_surface_ime_point(surface, &left, &top, &width, &height)
+        let rect = NSRect(x: left, y: bounds.height - top, width: width, height: height)
         return window.convertToScreen(convert(rect, to: nil))
     }
 

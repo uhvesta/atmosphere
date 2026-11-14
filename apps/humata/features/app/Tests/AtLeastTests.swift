@@ -21,4 +21,24 @@ final class AtLeastTests: XCTestCase {
             rootView: AtLeast(width: 360, height: 300, fits: true) { Color.clear.frame(width: 200) })
         XCTAssertEqual(narrow.sizeThatFits(in: offered).width, 400, accuracy: 0.5)
     }
+
+    func testTheWindowsLeastWidthMakesRoomForAnOpenSideChat() {
+        let alone = WindowLeast(sideChat: nil)
+        let beside = WindowLeast(sideChat: 440)
+        let wider = WindowLeast(sideChat: 700)
+
+        // The session keeps what it had alone, or more, and the window and
+        // its column grow by at least the side chat's width.
+        XCTAssertGreaterThanOrEqual(beside.session, alone.session)
+        XCTAssertGreaterThanOrEqual(beside.detail, beside.session + 440)
+        XCTAssertGreaterThan(beside.window, beside.detail)
+        XCTAssertGreaterThan(beside.window, alone.window)
+        XCTAssertEqual(wider.window - beside.window, 260, accuracy: 0.5)
+        XCTAssertEqual(wider.session, beside.session)
+
+        // A kept width outside what the side chat can be dragged to is held
+        // to it, as the side chat holds it.
+        XCTAssertEqual(WindowLeast(sideChat: 10_000).window, WindowLeast(sideChat: 900).window)
+        XCTAssertEqual(WindowLeast(sideChat: 0).window, WindowLeast(sideChat: 360).window)
+    }
 }

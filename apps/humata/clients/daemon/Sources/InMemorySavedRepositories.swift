@@ -26,7 +26,7 @@ extension InMemoryDaemon {
     func savedRepositories() -> [SavedRepository] {
         state.value.savedRepositories.sorted { left, right in
             switch (left.lastUsed, right.lastUsed) {
-            case (let l?, let r?) where l != r: l > r
+            case (let leftUsed?, let rightUsed?) where leftUsed != rightUsed: leftUsed > rightUsed
             case (.some, nil): true
             case (nil, .some): false
             default: left.name.localizedStandardCompare(right.name) == .orderedAscending

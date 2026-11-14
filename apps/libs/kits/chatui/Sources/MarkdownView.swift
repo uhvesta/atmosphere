@@ -382,7 +382,7 @@ struct CodeBlock: View {
                         Label("Quote", systemImage: "text.quote")
                     }
                     .font(.caption)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(CodeBlockButtonStyle())
                     .help("Put this code in the message box as a quote")
                     .accessibilityLabel(Text("Quote Code in Message"))
                 }
@@ -397,7 +397,7 @@ struct CodeBlock: View {
                     }
                 }
                 .font(.caption)
-                .buttonStyle(.borderless)
+                .buttonStyle(CodeBlockButtonStyle())
                 .accessibilityLabel(copied ? Text("Copied") : Text("Copy Code"))
                 .sensoryFeedback(.success, trigger: copied) { _, copied in copied }
             }
@@ -447,6 +447,31 @@ struct CodeBlock: View {
     static func isWide(_ code: String) -> Bool {
         code.utf8.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false).contains {
             $0.count > 80
+        }
+    }
+}
+
+/// Copy and Quote above code, drawn by SwiftUI: a borderless button on
+/// the Mac is an AppKit button, and measuring one for each block of code
+/// held up a reply's first frame.
+private struct CodeBlockButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Hover { hovering in
+            configuration.label
+                .foregroundStyle(hovering || configuration.isPressed ? .primary : .secondary)
+                .opacity(configuration.isPressed ? 0.6 : 1)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .contentShape(.rect)
+        }
+    }
+
+    private struct Hover<Label: View>: View {
+        @ViewBuilder let label: (Bool) -> Label
+        @State private var hovering = false
+
+        var body: some View {
+            label(hovering).onHover { hovering = $0 }
         }
     }
 }

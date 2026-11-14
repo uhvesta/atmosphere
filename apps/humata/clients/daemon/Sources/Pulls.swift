@@ -51,6 +51,18 @@ package struct Landed: Hashable, Sendable {
     }
 }
 
+/// Where this Mac's GitHub token comes from; never the token itself.
+package enum GitHubTokenSource: Equatable, Sendable {
+    /// Not said, as by a daemon from before it was.
+    case unknown
+    /// No variable holds one and the GitHub command line isn't signed in.
+    case missing
+    /// The GitHub command line's sign-in, `gh auth login`.
+    case commandLine
+    /// A variable of This Mac's, `GH_TOKEN` or `GITHUB_TOKEN`.
+    case variable(String)
+}
+
 /// How this Mac follows open pull requests on GitHub. Refreshing a task's
 /// reads them either way.
 package struct PullRefresh: Equatable, Sendable {
@@ -62,10 +74,13 @@ package struct PullRefresh: Equatable, Sendable {
     /// Read on their own every `everyMinutes`, or only when refreshed.
     package var automatic: Bool
     package var everyMinutes: Int
+    /// Only read: saving the settings doesn't change it.
+    package var tokenSource: GitHubTokenSource
 
-    package init(automatic: Bool, everyMinutes: Int) {
+    package init(automatic: Bool, everyMinutes: Int, tokenSource: GitHubTokenSource = .unknown) {
         self.automatic = automatic
         self.everyMinutes = everyMinutes
+        self.tokenSource = tokenSource
     }
 }
 

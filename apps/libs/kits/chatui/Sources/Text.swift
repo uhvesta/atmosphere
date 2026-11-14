@@ -209,11 +209,69 @@ public struct TextPreview: Hashable, Sendable {
 extension View {
     /// Lets the Mac select any part of the text by dragging. On iOS a long
     /// press opens the message's menu instead, whose Select Text does.
+    ///
+    /// On the Mac the text becomes selectable once the pointer rests on
+    /// it: selectable text costs AppKit views for each run of text, and
+    /// made for every row as a chat opens or scrolls, they held up its
+    /// first frames. A pointer passing over while the chat scrolls doesn't
+    /// rest, so it costs nothing.
     @ViewBuilder public func selectableOnMac() -> some View {
         #if os(macOS)
-            textSelection(.enabled)
+            modifier(SelectableWhenPointedAt())
         #else
             self
         #endif
+    }
+}
+
+#if os(macOS)
+    private struct SelectableWhenPointedAt: ViewModifier {
+        @State private var pointedAt = false
+        @State private var selectable = false
+
+        func body(content: Content) -> some View {
+            Group {
+                if selectable {
+                    content.textSelection(.enabled)
+                } else {
+                    content
+                        .onHover { pointedAt = $0 }
+                        .task(id: pointedAt) {
+                            guard pointedAt else { return }
+                            // Long enough that a pointer carried past by a
+                            // scroll doesn't count, short enough to be
+                            // ready before a drag starts.
+                            try? await Task.sleep(for: .milliseconds(120))
+                            guard !Task.isCancelled else { return }
+                            selectable = true
+                        }
+                }
+            }
+        }
+    }
+#endif
+
+/// A text button in a chat row, accent-coloured as a borderless one is but
+/// drawn by SwiftUI: a borderless button on the Mac is an AppKit button,
+/// and measuring those as rows were laid out held up a long chat's frames.
+public struct ChatRowButtonStyle: ButtonStyle {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
+        RowButton(configuration: configuration)
+    }
+
+    private struct RowButton: View {
+        let configuration: Configuration
+        @Environment(\.isEnabled) private var enabled
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .opacity(configuration.isPressed ? 0.6 : hovering ? 0.85 : 1)
+                .contentShape(.rect)
+                .onHover { hovering = $0 }
+        }
     }
 }

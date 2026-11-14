@@ -305,12 +305,18 @@ struct ProjectSettingsView: View {
         case .ask:
             String(
                 localized:
-                    "An agent can ask to start a session of its own, or to write to one. Each waits in the Inbox for you to allow, and a session it starts shows under it in the sidebar."
+                    """
+                    An agent can ask to start a session of its own, or to write to one. Each waits in the \
+                    Inbox for you to allow, and a session it starts shows under it in the sidebar.
+                    """
             )
         case .allow:
             String(
                 localized:
-                    "Agents start sessions of their own and write to them without asking, within the limits here. Each started session shows under its parent in the sidebar."
+                    """
+                    Agents start sessions of their own and write to them without asking, within the \
+                    limits here. Each started session shows under its parent in the sidebar.
+                    """
             )
         }
     }

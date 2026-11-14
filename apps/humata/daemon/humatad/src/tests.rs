@@ -3297,7 +3297,8 @@ async fn a_forwarded_port_answers_here_until_it_is_stopped() {
         }))
         .await;
     assert!(matches!(stopped, Ok(pb::response::Kind::ForwardStopped(_))));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Closed by the time the stop is answered, so there is nothing to wait
+    // for.
     let local = u16::try_from(forward.local_port).unwrap_or_else(|error| panic!("{error}"));
     assert!(
         tokio::net::TcpStream::connect(("127.0.0.1", local))
@@ -3319,14 +3320,16 @@ async fn a_forwarded_port_answers_here_until_it_is_stopped() {
 async fn forwarding_a_port_nothing_answers_on_is_refused() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let client = daemon(state.path(), Hosts::default()).await;
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
+    // Bound but not listening, so the port stays taken while it refuses: a
+    // port freed instead can be another test's by the time it's tried.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap_or_else(|error| panic!("{error}"));
+    socket
+        .bind(([127, 0, 0, 1], 0).into())
         .unwrap_or_else(|error| panic!("{error}"));
-    let port = listener
+    let port = socket
         .local_addr()
         .unwrap_or_else(|error| panic!("{error}"))
         .port();
-    drop(listener);
     let forwarded = client
         .call(pb::request::Kind::ForwardPort(pb::ForwardPort {
             host: String::new(),

@@ -17,6 +17,7 @@ package struct ProjectsView: View {
     // work the whole tree out again, and a read of the list draws only
     // what it changed.
     package var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SidebarBodyRuns.ran(.sidebar)
         List(selection: selection) {
             SidebarItems(store: store)
@@ -86,6 +87,7 @@ private struct InboxLabel: View {
     let store: StoreOf<ProjectsFeature>
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SidebarBodyRuns.ran(.inbox)
         // Everything in the inbox: sessions and admin actions.
         let waiting = store.inbox.count + store.approvals.count
@@ -106,6 +108,7 @@ private struct SidebarItems: View {
     let store: StoreOf<ProjectsFeature>
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SidebarBodyRuns.ran(.list)
         InboxLabel(store: store)
             .tag(SidebarItem.inbox)
@@ -295,6 +298,7 @@ private struct SidebarSessionRow: View, Equatable {
     }
 
     var body: some View {
+        // swiftlint:disable:next redundant_discardable_let
         let _ = SidebarBodyRuns.ran(.sessionRow)
         SessionRow(session: session, now: now, busy: hold == .busy)
             .contextMenu { menu }

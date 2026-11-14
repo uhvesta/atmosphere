@@ -890,9 +890,18 @@ extension PullRequest {
 
 extension PullRefresh {
     init(_ refresh: Humata_V1_PullRefresh) {
+        let source: GitHubTokenSource =
+            switch refresh.tokenSource {
+            case .noToken: .missing
+            case .commandLine: .commandLine
+            case .ghToken: .variable("GH_TOKEN")
+            case .githubToken: .variable("GITHUB_TOKEN")
+            case .unspecified, .UNRECOGNIZED: .unknown
+            }
         self.init(
             automatic: !refresh.manual,
-            everyMinutes: refresh.everyMinutes == 0 ? PullRefresh.standard.everyMinutes : Int(refresh.everyMinutes))
+            everyMinutes: refresh.everyMinutes == 0 ? PullRefresh.standard.everyMinutes : Int(refresh.everyMinutes),
+            tokenSource: source)
     }
 
     var proto: Humata_V1_PullRefresh {

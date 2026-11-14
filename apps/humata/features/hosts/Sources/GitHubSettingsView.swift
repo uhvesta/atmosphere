@@ -21,6 +21,9 @@ package struct GitHubSettingsView: View {
                     """
                 )
                 .foregroundStyle(.secondary)
+                if let source = store.refresh?.tokenSource {
+                    Self.token(source)
+                }
             } header: {
                 Text("Sign-In")
             }
@@ -100,6 +103,26 @@ package struct GitHubSettingsView: View {
             .foregroundStyle(.secondary)
         }
         .disabled(store.saving)
+    }
+
+    /// One line saying where the token comes from, or that there is none;
+    /// nothing when the daemon didn't say.
+    @ViewBuilder
+    private static func token(_ source: GitHubTokenSource) -> some View {
+        switch source {
+        case .unknown:
+            EmptyView()
+        case .commandLine:
+            Label("Using the GitHub command line's sign-in", systemImage: "checkmark.circle")
+        case .variable(let name):
+            Label("Using \(name) from This Mac's variables", systemImage: "checkmark.circle")
+        case .missing:
+            Label(
+                "No token: run `gh auth login` on this Mac, or add GH_TOKEN in Hosts › This Mac",
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.orange)
+        }
     }
 
     private static func minutes(_ minutes: Int) -> String {

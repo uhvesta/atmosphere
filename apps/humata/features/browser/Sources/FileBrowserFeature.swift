@@ -23,6 +23,9 @@ package struct FileBrowserFeature {
         package var selected: String?
         /// The selected file, once read.
         package var contents: FileContents?
+        /// The selected file's text by line, split where it was read; empty
+        /// when it isn't text.
+        package var lines: [String] = []
         /// Why a folder couldn't be read, or the file shown read again, and
         /// what to do about it. While `root` is nil it's why nothing lists.
         package var failure: String?
@@ -70,7 +73,8 @@ package struct FileBrowserFeature {
         /// Opens a folder, reading it the first time, or closes it.
         case folderToggled(String)
         case fileSelected(String)
-        case fileRead(FileContents)
+        /// The file, and its text by line when it is text.
+        case fileRead(FileContents, lines: [String])
         /// The folder at this path from the root couldn't be read.
         case failed(String, String)
         /// The file at this path couldn't be read.
@@ -136,14 +140,16 @@ package struct FileBrowserFeature {
                 guard state.selected != path else { return .none }
                 state.selected = path
                 state.contents = nil
+                state.lines = []
                 state.unread = nil
                 return readFile(path, at: state.place)
 
-            case .fileRead(let contents):
+            case .fileRead(let contents, let lines):
                 guard contents.path == state.selected else { return .none }
                 state.failure = nil
                 state.unread = nil
                 state.contents = contents
+                state.lines = lines
                 return .none
 
             case .failed(let directory, let message):
@@ -178,7 +184,9 @@ package struct FileBrowserFeature {
             let contents = try await daemon.readFileAt(place, path)
             // Parsed here, off the main thread, so the view finds its blocks made.
             if Self.isMarkdown(path), let text = contents.text { _ = MarkdownBlock.cached(text) }
-            await send(.fileRead(contents))
+            // Split here too: a large file's lines aren't worked out each
+            // time the view is drawn.
+            await send(.fileRead(contents, lines: contents.text?.components(separatedBy: "\n") ?? []))
         } catch: { error, send in
             await send(.fileFailed(path, error.localizedDescription))
         }

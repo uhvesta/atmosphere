@@ -9,10 +9,10 @@ struct SplitMix {
 
     mutating func next() -> UInt64 {
         state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
+        var mixed = state
+        mixed = (mixed ^ (mixed >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        mixed = (mixed ^ (mixed >> 27)) &* 0x94D0_49BB_1331_11EB
+        return mixed ^ (mixed >> 31)
     }
 
     mutating func below(_ bound: Int) -> Int { Int(next() % UInt64(bound)) }
@@ -135,10 +135,10 @@ struct ChatMaker {
 
     /// Markdown of `sections` sections, each with a heading, a list, code
     /// and a table.
-    private static func markdown(_ n: Int, sections: Int) -> String {
+    private static func markdown(_ fixture: Int, sections: Int) -> String {
         (0..<sections).map { section in
             """
-            ## Step \(section + 1) of fixture \(n)
+            ## Step \(section + 1) of fixture \(fixture)
 
             The parser now reads each row once, and a malformed row says *which* column failed, with its line. \
             That makes the failures in `Tests.swift` point at the cause instead of the symptom.

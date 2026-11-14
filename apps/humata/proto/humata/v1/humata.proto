@@ -3005,6 +3005,24 @@ message PullRefresh {
   // While automatic, minutes between reads, 1 to 1440; 0 is the default
   // of 2.
   uint32 every_minutes = 2;
+  // Where the Mac's GitHub token comes from, never the token. Only read:
+  // SetPullRefresh ignores it.
+  GithubTokenSource token_source = 3;
+}
+
+// Where the Mac's GitHub token comes from.
+enum GithubTokenSource {
+  // Not said, as by a daemon from before it was.
+  GITHUB_TOKEN_SOURCE_UNSPECIFIED = 0;
+  // There is none: no variable holds one and the GitHub command line
+  // isn't signed in, or isn't there.
+  GITHUB_TOKEN_SOURCE_NO_TOKEN = 1;
+  // The GitHub command line's sign-in, `gh auth login`.
+  GITHUB_TOKEN_SOURCE_COMMAND_LINE = 2;
+  // GH_TOKEN among This Mac's variables.
+  GITHUB_TOKEN_SOURCE_GH_TOKEN = 3;
+  // GITHUB_TOKEN among This Mac's variables.
+  GITHUB_TOKEN_SOURCE_GITHUB_TOKEN = 4;
 }
 
 // Where a saved repository came from.

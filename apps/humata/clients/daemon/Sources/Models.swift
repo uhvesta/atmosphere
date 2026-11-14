@@ -1878,6 +1878,9 @@ package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {
     case versionMismatch(daemon: String)
     /// The daemon sent something this app doesn't expect.
     case unexpected(String)
+    /// The daemon took this app for another program, and held the action
+    /// for approval rather than run it.
+    case notTakenForTheApp
 
     package var errorDescription: String? { description }
 
@@ -1896,6 +1899,11 @@ package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {
                 + "same version."
         case .unexpected(let what):
             "Humata's daemon sent \(what), which this app doesn't expect. Update Humata so both are the same version."
+        case .notTakenForTheApp:
+            "Humata's daemon didn't take this window for Humata, so it held the action for approval instead of "
+                + "carrying it out. That happens when the daemon running belongs to another copy of Humata. Quit "
+                + "Humata, quit humatad in Activity Monitor (this ends turns in progress), then open Humata again; "
+                + "keeping one copy, in Applications, avoids it."
         }
     }
 }
