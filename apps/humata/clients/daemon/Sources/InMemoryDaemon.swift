@@ -332,6 +332,14 @@ package final class InMemoryDaemon: Sendable {
         return HostRestore(restored: restored, failed: failed)
     }
 
+    /// Sets the skills and plugins the hosts have.
+    package func setSkills(_ skills: SkillList, plugins: PluginList = PluginList()) {
+        state.withValue {
+            $0.skills = skills
+            $0.plugins = plugins
+        }
+    }
+
     /// Sets what `backend` offers; nil makes listing them fail, as on a
     /// Copilot account without the feature.
     package func setModels(_ models: [ModelChoice]?, for backend: Backend) {

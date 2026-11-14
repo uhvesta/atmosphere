@@ -67,16 +67,28 @@ public struct SlashSuggestion: Identifiable, Hashable, Sendable {
 /// message's; picking a command runs it.
 public struct SlashSuggestions: View {
     let suggestions: [SlashSuggestion]
+    /// The one Return picks, as the arrows move it; nil for none.
+    let selected: String?
     let pick: (String) -> Void
     /// About one row with a line of summary, at the person's text size.
     @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 60
 
-    public init(_ suggestions: [SlashSuggestion], pick: @escaping (String) -> Void) {
+    public init(_ suggestions: [SlashSuggestion], selected: String? = nil, pick: @escaping (String) -> Void) {
         self.suggestions = suggestions
+        self.selected = selected
         self.pick = pick
     }
 
     public var body: some View {
+        ScrollViewReader { reader in
+            list
+                .onChange(of: selected) { _, selected in
+                    if let selected { reader.scrollTo(selected) }
+                }
+        }
+    }
+
+    private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(suggestions) { suggestion in
@@ -97,9 +109,14 @@ public struct SlashSuggestions: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
+                        .background(
+                            suggestion.id == selected ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(.clear)
+                        )
                         .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
+                    .id(suggestion.id)
+                    .accessibilityAddTraits(suggestion.id == selected ? .isSelected : [])
                     if suggestion.id != suggestions.last?.id {
                         Divider().padding(.leading, 14)
                     }

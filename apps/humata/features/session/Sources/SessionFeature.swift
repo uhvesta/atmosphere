@@ -90,6 +90,27 @@ package struct SessionFeature {
         package var thumbnails: [String: Data] = [:]
         /// Sent images being read for their thumbnails.
         var loadingThumbnails: Set<String> = []
+        /// The skills and plugin commands the agent has, for the / list;
+        /// nil until first looked for.
+        package var slashOffered: [SlashChoice]?
+        /// Those matching what's typed after a /, best first; empty when
+        /// the list isn't showing.
+        package var slashChoices: [SlashChoice] = []
+        /// The one Return or Tab picks, as arrows move it.
+        package var slashSelected = 0
+        package var slashLoading = false
+        /// Why the skills couldn't be read, while the list shows.
+        package var slashFailure: String?
+        /// When they were last looked for; they're looked for again when
+        /// the list opens after a while, as skills come and go.
+        var slashLoadedAt: Date?
+        /// The draft the list was closed on with Escape; it stays closed
+        /// until the draft changes.
+        var slashClosedOn: String?
+
+        /// Whether a / and a name are being typed, with the list not
+        /// closed: the list, or why it's empty, shows.
+        package var slashOpen: Bool { SlashChoice.query(in: draft) != nil && slashClosedOn != draft }
         /// The thinking the person opened, by item id.
         package var expandedThinking: Set<String> = []
         /// The tool calls the person opened, by call id.
@@ -486,6 +507,12 @@ package struct SessionFeature {
         case historyLoading(read: UInt64, total: UInt64)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
+        case slashLoaded(Result<[SlashChoice], SlashLoadFailure>)
+        /// An arrow moved the / list's pick by `by` rows.
+        case slashMoved(by: Int)
+        case slashPicked(String)
+        /// Escape closed the / list.
+        case slashClosed
         /// A message sent from the box reached the daemon.
         case sent
         /// The message wasn't sent; what was typed, pasted and added goes
@@ -630,7 +657,53 @@ package struct SessionFeature {
 
     @Dependency(\.appActivity) var activity
     @Dependency(\.uuid) var uuid
-    private enum CancelID { case watch, seen, activations }
+    @Dependency(\.date) var date
+    private enum CancelID { case watch, seen, activations, slash }
+
+    /// Why the / list couldn't be filled.
+    package struct SlashLoadFailure: Error, Equatable {
+        package var message: String
+    }
+
+    /// Shows the / list for what's typed, and looks for the skills when it
+    /// opens for the first time or after a while.
+    private func slashFollows(_ state: inout State) -> Effect<Action> {
+        guard let query = SlashChoice.query(in: state.draft), state.slashClosedOn != state.draft else {
+            state.slashChoices = []
+            state.slashSelected = 0
+            if state.slashClosedOn != state.draft { state.slashClosedOn = nil }
+            return .none
+        }
+        state.slashChoices = SlashChoice.matching(query, in: state.slashOffered ?? [])
+        state.slashSelected = min(state.slashSelected, max(state.slashChoices.count - 1, 0))
+        let stale = state.slashLoadedAt.map { date.now.timeIntervalSince($0) > Self.slashFresh } ?? true
+        guard stale, !state.slashLoading else { return .none }
+        state.slashLoading = true
+        let session = state.session
+        return .run { send in
+            do {
+                async let skills = daemon.skills()
+                async let plugins = daemon.plugins()
+                async let projects = daemon.projects()
+                let project = try await projects.first { $0.id == session.projectID }
+                let offered = SlashChoice.offered(
+                    to: session, skills: try await skills, plugins: try await plugins, project: project)
+                await send(.slashLoaded(.success(offered)))
+            } catch {
+                await send(
+                    .slashLoaded(
+                        .failure(
+                            SlashLoadFailure(
+                                message:
+                                    "Couldn't look for skills: \(error.localizedDescription) Check the daemon and hosts are reachable, then type / again."
+                            ))))
+            }
+        }
+        .cancellable(id: CancelID.slash, cancelInFlight: true)
+    }
+
+    /// How long skills found stay fresh before the list looks again.
+    static let slashFresh: TimeInterval = 30
 
     private func received(_ events: [SessionEvent], _ state: inout State) -> Effect<Action> {
         // A watch sends the history first. Only something new shows the
@@ -751,6 +824,37 @@ package struct SessionFeature {
                     state.$savedPastes.withLock { $0 = pastes }
                 }
                 state.$savedDraft.withLock { $0 = state.draft }
+                return slashFollows(&state)
+
+            case .slashLoaded(let result):
+                state.slashLoading = false
+                state.slashLoadedAt = date.now
+                switch result {
+                case .success(let offered):
+                    state.slashOffered = offered
+                    state.slashFailure = nil
+                case .failure(let failure):
+                    state.slashFailure = failure.message
+                }
+                return slashFollows(&state)
+
+            case .slashMoved(let by):
+                guard !state.slashChoices.isEmpty else { return .none }
+                let count = state.slashChoices.count
+                state.slashSelected = ((state.slashSelected + by) % count + count) % count
+                return .none
+
+            case .slashPicked(let name):
+                state.draft = "/\(name) "
+                state.$savedDraft.withLock { $0 = state.draft }
+                state.slashChoices = []
+                state.slashSelected = 0
+                return .none
+
+            case .slashClosed:
+                state.slashClosedOn = state.draft
+                state.slashChoices = []
+                state.slashSelected = 0
                 return .none
 
             case .quoted(let text):
@@ -925,6 +1029,10 @@ package struct SessionFeature {
                 .cancellable(id: CancelID.watch, cancelInFlight: true)
 
             case .sendTapped(let mode):
+                // Return with the / list showing picks from it.
+                if state.slashChoices.indices.contains(state.slashSelected) {
+                    return .send(.slashPicked(state.slashChoices[state.slashSelected].id))
+                }
                 guard state.canSend else { return .none }
                 let outgoing = Outgoing(
                     session: state.session.id, name: state.session.name, typed: state.draft, pastes: state.pastes,

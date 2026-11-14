@@ -1577,6 +1577,18 @@ private struct SessionComposer: View {
 
     var body: some View {
         composer
+            // The / list's arrows, Tab and Escape; Return picks through
+            // sending, which picks while the list shows.
+            .onKeyPress(keys: [.upArrow, .downArrow, .tab, .escape]) { press in
+                guard store.slashOpen, !store.slashChoices.isEmpty else { return .ignored }
+                switch press.key {
+                case .upArrow: store.send(.slashMoved(by: -1))
+                case .downArrow: store.send(.slashMoved(by: 1))
+                case .tab: store.send(.sendTapped(.enqueue))
+                default: store.send(.slashClosed)
+                }
+                return .handled
+            }
             .fileImporter(isPresented: $choosing, allowedContentTypes: [.image], allowsMultipleSelection: true) {
                 if case .success(let urls) = $0 { store.send(.imagesAdded(urls)) }
             }
@@ -1620,6 +1632,34 @@ private struct SessionComposer: View {
         return nil
     }
 
+    /// The skills and plugin commands matching what's typed after the /,
+    /// with a spinner while they're looked for and why, if they couldn't
+    /// be.
+    @ViewBuilder private var slash: some View {
+        if store.slashLoading, store.slashOffered == nil {
+            Label {
+                Text("Looking for skills…")
+            } icon: {
+                ProgressView().controlSize(.small)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+        } else if let failure = store.slashFailure, store.slashChoices.isEmpty {
+            Label(failure, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        if !store.slashChoices.isEmpty {
+            let selected =
+                store.slashChoices.indices.contains(store.slashSelected)
+                ? store.slashChoices[store.slashSelected].id : nil
+            SlashSuggestions(
+                store.slashChoices.map { SlashSuggestion($0.id, summary: $0.summary) }, selected: selected
+            ) { store.send(.slashPicked($0)) }
+            .accessibilityIdentifier("composer.slash")
+        }
+    }
+
     private var prompt: Text { Text(store.isWorking ? "Queue a message, or steer" : "Message the agent") }
 
     private var sendButton: SendButton {
@@ -1658,9 +1698,12 @@ private struct SessionComposer: View {
         }
     }
 
-    /// What sits over the field: the message's images and pastes, and the
-    /// messages queued.
+    /// What sits over the field: the / list, the message's images and
+    /// pastes, and the messages queued.
     @ViewBuilder private var top: some View {
+        if store.slashOpen {
+            slash
+        }
         if !store.images.isEmpty {
             ImageChips(images: store.images) { store.send(.removeImageTapped($0)) }
         }
