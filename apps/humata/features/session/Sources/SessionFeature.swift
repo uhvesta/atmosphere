@@ -623,6 +623,9 @@ package struct SessionFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
 
+    /// How often a reply being written is shown again.
+    package static let streamingFrame = Duration.milliseconds(33)
+
     @Dependency(\.appActivity) var activity
     @Dependency(\.uuid) var uuid
     private enum CancelID { case watch, seen, activations }
@@ -861,6 +864,13 @@ package struct SessionFeature {
                             case .events(let events, let replayed):
                                 await send(.receivedAll(events))
                                 if replayed { await send(.historyReplayed) }
+                                // A reply comes a few words at a time, and
+                                // each batch lays the chat out again: what
+                                // streams in is taken at most once a frame,
+                                // the words since in the next batch.
+                                if !replayed, events.contains(where: { !$0.kind.isLive }) {
+                                    try? await clock.sleep(for: Self.streamingFrame)
+                                }
                             case .ended(let failure):
                                 await send(.watchEnded(failure: failure))
                                 return

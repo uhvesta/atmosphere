@@ -51,6 +51,7 @@ final class SessionFeatureTests: XCTestCase {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
         }
         store.exhaustivity = .off
 
@@ -82,6 +83,7 @@ final class SessionFeatureTests: XCTestCase {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
         }
         store.exhaustivity = .off
 
@@ -112,6 +114,7 @@ final class SessionFeatureTests: XCTestCase {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
         }
         store.exhaustivity = .off
 
@@ -181,6 +184,7 @@ final class SessionFeatureTests: XCTestCase {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
         }
         store.exhaustivity = .off
 
@@ -381,6 +385,44 @@ final class SessionFeatureTests: XCTestCase {
 
         XCTAssertEqual(asked.value, [nil, "e2"])
         XCTAssertEqual(store.state.events.map(\.id), ["e1", "e2", "e3"])
+        await store.skipInFlightEffects()
+    }
+
+    func testAReplyBeingWrittenIsTakenInAtMostOnceAFrame() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let event = { (id: String, kind: SessionEvent.Kind) in
+            SessionEvent(id: id, time: Date(timeIntervalSince1970: 0), kind: kind)
+        }
+        let (stream, live) = AsyncThrowingStream<WatchItem, Error>.makeStream()
+        let clock = TestClock()
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.watch = { _, _ in stream }
+            $0.daemon.markSeen = { _, _ in }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        live.yield(.historyLoaded)
+        await store.receive(\.historyReplayed)
+        live.yield(.event(event("d1", .assistantDelta("Hel"))))
+        await store.receive(\.receivedAll)
+        XCTAssertEqual(store.state.streaming, "Hel")
+
+        // The words that come within the frame wait for its end, and go
+        // together.
+        live.yield(.event(event("d2", .assistantDelta("lo"))))
+        live.yield(.event(event("d3", .assistantDelta(" there"))))
+        await Task.megaYield()
+        await clock.advance(by: SessionFeature.streamingFrame / 2)
+        XCTAssertEqual(store.state.streaming, "Hel")
+        await clock.advance(by: SessionFeature.streamingFrame)
+        await store.receive(\.receivedAll)
+        XCTAssertEqual(store.state.streaming, "Hello there")
+
+        live.finish()
         await store.skipInFlightEffects()
     }
 
@@ -841,6 +883,7 @@ final class SessionFeatureTests: XCTestCase {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
         }
         store.exhaustivity = .off
         let task = await store.send(.task)
@@ -1337,6 +1380,7 @@ final class SessionFeatureTests: XCTestCase {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
         }
         store.exhaustivity = .off
 

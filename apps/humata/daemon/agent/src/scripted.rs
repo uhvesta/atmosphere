@@ -31,6 +31,10 @@ pub enum Step {
     /// Replies, streamed word by word.
     Say {
         text: String,
+        /// Milliseconds between words, to stream at a model's pace; none
+        /// streams as fast as watchers take it.
+        #[serde(default)]
+        word_ms: u64,
     },
     Think {
         text: String,
@@ -149,13 +153,17 @@ impl Runner for ScriptedRunner {
 async fn play(turn: &Turn, index: usize, step: &Step) -> Result<(), ScriptedError> {
     let call_id = format!("call-{index}");
     match step {
-        Step::Say { text } => {
+        Step::Say { text, word_ms } => {
             for word in text.split_inclusive(' ') {
                 turn.emit(EventKind::AssistantDelta {
                     text: word.to_owned(),
                 })?;
                 // Lets watchers see it stream, and an abort land mid-reply.
-                tokio::task::yield_now().await;
+                if *word_ms == 0 {
+                    tokio::task::yield_now().await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(*word_ms)).await;
+                }
             }
             turn.emit(EventKind::AssistantMessage { text: text.clone() })?;
         }
@@ -314,7 +322,10 @@ mod tests {
     }
 
     fn say(text: &str) -> Step {
-        Step::Say { text: text.into() }
+        Step::Say {
+            text: text.into(),
+            word_ms: 0,
+        }
     }
 
     fn write_file(path: &str, contents: &str) -> Step {

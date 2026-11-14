@@ -52,7 +52,7 @@ package struct SessionView: View {
             } else if store.tab == .terminal {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
-                ChatList(store: store)
+                Fills { ChatList(store: store) }
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
                     .environment(\.codeQuoter, store.session.archived ? nil : quoter)
             }
@@ -336,7 +336,7 @@ package struct SessionView: View {
             document
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
             VStack(spacing: 0) {
-                ChatList(store: store)
+                Fills { ChatList(store: store) }
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
                     .environment(\.codeQuoter, store.session.archived ? nil : quoter)
                 if !store.session.archived {
@@ -366,6 +366,30 @@ package struct SessionView: View {
     }
 }
 
+/// Takes all the space it's offered, whatever its view's size, and gives
+/// it to the view: a chat growing as a reply is written lays out only
+/// itself, not the header, composer and window around it.
+private struct Fills: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions(by: .zero)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for view in subviews {
+            view.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
+/// The end of the chat, kept in view as it grows.
+private enum ChatEnd {
+    static let id = "chat.end"
+
+    static func inView(_ geometry: ScrollGeometry) -> Bool {
+        geometry.visibleRect.maxY >= geometry.contentSize.height - 24
+    }
+}
+
 /// Draws `content` in a body of its own, so what it reads of the store
 /// redraws only it and not the view around it.
 private struct Separately<Content: View>: View {
@@ -382,6 +406,9 @@ private struct ChatList: View {
     @State private var selecting: TextToSelect?
     @State private var replyParts = ReplyParts()
     @State private var heights = RowHeights()
+    /// Whether the chat keeps to its end as it grows: on while the end is in
+    /// view, off once the person scrolls up to read.
+    @State private var following = true
 
     var body: some View {
         let highlighted = store.highlightedItem
@@ -403,10 +430,30 @@ private struct ChatList: View {
                         .id(line.id)
                     }
                     TurnInProgress(store: store)
+                    Color.clear.frame(height: 0).id(ChatEnd.id)
                 }
                 .padding()
             }
             .defaultScrollAnchor(.bottom)
+            .onScrollGeometryChange(for: CGFloat.self) {
+                $0.contentSize.height
+            } action: { _, _ in
+                if following { reader.scrollTo(ChatEnd.id, anchor: .bottom) }
+            }
+            // Only the person's scrolling stops or starts the following:
+            // rows measured as they come move what's in view by themselves.
+            .onScrollPhaseChange { _, phase, context in
+                switch phase {
+                case .tracking, .interacting:
+                    following = false
+                case .idle:
+                    following = ChatEnd.inView(context.geometry)
+                case .decelerating, .animating:
+                    break
+                @unknown default:
+                    break
+                }
+            }
             .overlay {
                 if !store.historyLoaded, store.items.isEmpty {
                     if let fraction = store.historyLoading?.fraction {
@@ -422,10 +469,12 @@ private struct ChatList: View {
             }
             .onChange(of: highlighted, initial: true) { _, item in
                 guard let item else { return }
+                following = false
                 reader.scrollTo(item, anchor: .center)
             }
             .onChange(of: store.scrollTarget) { _, item in
                 guard let item else { return }
+                following = false
                 withAnimation { reader.scrollTo(item, anchor: .top) }
                 store.send(.scrolled)
             }
@@ -546,6 +595,56 @@ private struct ChatLine: Identifiable {
     /// It's a part of a reply after its first.
     var continues = false
     let id: String
+}
+
+/// A finished part of the reply being written.
+private struct StreamedPart: View, Equatable {
+    let text: String
+
+    var body: some View {
+        MarkdownText(text)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The reply being written cut into parts as `ReplyParts` cuts a finished
+/// one, so its parts are rows of the lazy list. A part, once followed by
+/// another, stays as it is, so each call reads only what came after the
+/// last of them.
+@MainActor private final class StreamedParts {
+    private var done: [String] = []
+    /// Bytes of the reply the finished parts hold.
+    private var length = 0
+
+    /// The finished parts of `text`, and the part being written.
+    func split(_ text: String) -> (done: [String], writing: String) {
+        let utf8 = text.utf8
+        if utf8.count < length || !done.isEmpty && !Self.continues(text, after: done[done.count - 1], at: length) {
+            done.removeAll()
+            length = 0
+        }
+        let start = utf8.index(utf8.startIndex, offsetBy: length)
+        let parts = MarkdownText.parts(of: String(text[start...]), size: Self.size)
+        for part in parts.dropLast() {
+            done.append(String(part))
+            length += part.utf8.count
+        }
+        return (done, parts.last.map(String.init) ?? "")
+    }
+
+    /// Whether `text` holds `last` just before `length`: it goes on from
+    /// the same reply, not a new one as long.
+    private static func continues(_ text: String, after last: String, at length: Int) -> Bool {
+        let tail = last.utf8.suffix(64)
+        let utf8 = text.utf8
+        let end = utf8.index(utf8.startIndex, offsetBy: length)
+        let start = utf8.index(end, offsetBy: -tail.count)
+        return utf8[start..<end].elementsEqual(tail)
+    }
+
+    /// Bytes of Markdown in a part, as `ReplyParts` cuts them.
+    private static let size = 500
 }
 
 /// A long reply cut into parts, each a row of the chat, so scrolling lays
@@ -1357,21 +1456,35 @@ private struct WaitingStrip: View {
 /// this and not every row of the chat.
 private struct TurnInProgress: View {
     let store: StoreOf<SessionFeature>
+    @State private var parts = StreamedParts()
 
     var body: some View {
         if store.stopping {
             // What's written so far stays until the turn has stopped.
             if !store.streaming.isEmpty {
-                ReplyInProgress(text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
+                reply(store.streaming)
             }
             status("Stopping…")
         } else if store.isWorking, let reason = store.waitReason {
             status(reason)
         } else if store.isWorking, !store.isWaiting {
-            ReplyInProgress(text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
+            reply(store.streaming)
         } else if store.sending > 0, !store.isWorking {
             status("Sending…")
         }
+    }
+
+    /// The reply being written: its finished parts as rows of their own,
+    /// drawn once, and only the part being written drawn again as it grows.
+    @ViewBuilder
+    private func reply(_ text: String) -> some View {
+        let (done, writing) = parts.split(text)
+        ForEach(done.indices, id: \.self) { index in
+            StreamedPart(text: done[index]).equatable()
+                .padding(.top, index > 0 ? -4 : 0)
+        }
+        ReplyInProgress(text: writing, thinking: nil, showsThinking: false, toggleThinking: {})
+            .padding(.top, done.isEmpty ? 0 : -4)
     }
 
     private func status(_ text: String) -> some View {
