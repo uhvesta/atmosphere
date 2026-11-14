@@ -104,15 +104,21 @@ impl Subagents {
     /// started it, and news of the subagents started or finished.
     pub(super) fn take(&mut self, event: &Value) -> Vec<Tagged> {
         let data = &event["data"];
-        if let (Some(agent), Some(call)) =
-            (event["agentId"].as_str(), data["parentToolCallId"].as_str())
-        {
+        let event_type = event["type"].as_str().unwrap_or_default();
+        // A subagent's steps name the call that started it, as its start
+        // does.
+        let starter = data["parentToolCallId"].as_str().or_else(|| {
+            data["toolCallId"]
+                .as_str()
+                .filter(|_| event_type == "subagent.started")
+        });
+        if let (Some(agent), Some(call)) = (event["agentId"].as_str(), starter) {
             self.calls.insert(agent.to_owned(), call.to_owned());
         }
         let mut tagged = Vec::new();
         if owns(event)
             && !matches!(
-                event["type"].as_str().unwrap_or_default(),
+                event_type,
                 // Its replies as they stream are left out, as is its prompt.
                 "assistant.message_delta" | "user.message"
             )
@@ -122,10 +128,14 @@ impl Subagents {
         }
         let field = |name: &str| data[name].as_str().unwrap_or_default().to_owned();
         let count = |name: &str| data[name].as_u64();
+        if event_type == "system.notification" {
+            self.notified(&data["kind"], &mut tagged);
+            return tagged;
+        }
         let Some(call) = data["toolCallId"].as_str().map(str::to_owned) else {
             return tagged;
         };
-        match event["type"].as_str().unwrap_or_default() {
+        match event_type {
             "tool.execution_start" if data["toolName"] == STARTER => {
                 let arguments = &data["arguments"];
                 let argument = |name: &str| arguments[name].as_str().unwrap_or_default();
@@ -141,6 +151,7 @@ impl Subagents {
                 self.known.insert(call, known);
             }
             "subagent.started" => {
+                let call = self.subject(call);
                 self.update(&call, &mut tagged, |known| {
                     if known.agent_type.is_empty() {
                         known.agent_type = field("agentName");
@@ -153,26 +164,88 @@ impl Subagents {
             }
             "subagent.completed" => {
                 let cancelled = data["cancelled"].as_bool() == Some(true);
+                let call = self.subject(call);
                 self.update(&call, &mut tagged, |known| {
-                    known.status = if cancelled {
-                        SubagentStatus::Stopped
-                    } else {
-                        SubagentStatus::Completed
-                    };
+                    // One torn down after it had finished did finish.
+                    if !cancelled {
+                        known.status = SubagentStatus::Completed;
+                    } else if known.status == SubagentStatus::Running {
+                        known.status = SubagentStatus::Stopped;
+                    }
                     known.total_tokens = count("totalTokens").unwrap_or(known.total_tokens);
                     known.tool_uses = count("totalToolCalls").unwrap_or(known.tool_uses);
                     known.duration_ms = count("durationMs").unwrap_or(known.duration_ms);
                 });
             }
             "subagent.failed" => {
+                let call = self.subject(call);
                 self.update(&call, &mut tagged, |known| {
                     known.status = SubagentStatus::Failed;
+                    known.total_tokens = count("totalTokens").unwrap_or(known.total_tokens);
+                    known.tool_uses = count("totalToolCalls").unwrap_or(known.tool_uses);
                     known.duration_ms = count("durationMs").unwrap_or(known.duration_ms);
                 });
             }
             _ => {}
         }
         tagged
+    }
+
+    /// At the turn's end, however it ends: every subagent still running as
+    /// stopped. Copilot ends a turn only once none of them is working, and
+    /// stops them with a turn that's stopped, but nothing of that is heard
+    /// once the turn is no longer listened to.
+    pub(super) fn finish(&mut self) -> Vec<Tagged> {
+        let mut running: Vec<String> = self
+            .known
+            .iter()
+            .filter(|(_, known)| known.status == SubagentStatus::Running)
+            .map(|(call, _)| call.clone())
+            .collect();
+        running.sort();
+        let mut tagged = Vec::new();
+        for call in running {
+            self.update(&call, &mut tagged, |known| {
+                known.status = SubagentStatus::Stopped;
+            });
+        }
+        tagged
+    }
+
+    /// Copilot telling the main agent that a subagent left in the
+    /// background is done: it finished or failed, or did what it was asked
+    /// and waits to be asked more. It names the subagent, not its call.
+    fn notified(&mut self, notice: &Value, tagged: &mut Vec<Tagged>) {
+        let status = match notice["type"].as_str().unwrap_or_default() {
+            "agent_completed" if notice["status"] == "failed" => SubagentStatus::Failed,
+            "agent_completed" | "agent_idle" => SubagentStatus::Completed,
+            _ => return,
+        };
+        let Some(agent) = notice["agentId"].as_str() else {
+            return;
+        };
+        let call = self.call_of(agent);
+        // What its own end said, if that came first, stands.
+        let running = self
+            .known
+            .get(&call)
+            .is_some_and(|known| known.status == SubagentStatus::Running);
+        if running {
+            self.update(&call, tagged, |known| known.status = status);
+        }
+    }
+
+    /// The call that started the subagent whose start or end names
+    /// `named`: `named` itself, unless it's the id of a subagent whose
+    /// call is known instead.
+    fn subject(&self, named: String) -> String {
+        if self.known.contains_key(&named) {
+            return named;
+        }
+        match self.calls.get(&named) {
+            Some(call) if self.known.contains_key(call) => call.clone(),
+            _ => named,
+        }
     }
 
     /// The call that started the subagent `agent`, or its id while that's
@@ -340,6 +413,178 @@ mod tests {
             statuses(&failed),
             [("call-1".to_owned(), SubagentStatus::Failed)]
         );
+    }
+
+    /// A task call that leaves its subagent in the background: the call
+    /// returns at once, and the subagent, `sub-1`, works on.
+    fn left_in_the_background(subagents: &mut Subagents) -> Vec<Tagged> {
+        let events = [
+            json!({"type": "tool.execution_start", "data": {"toolCallId": "call-1", "toolName": "task",
+                "arguments": {"agent_type": "explore", "description": "Find the parser", "mode": "background"}}}),
+            json!({"type": "subagent.started", "agentId": "sub-1", "data": {"toolCallId": "call-1",
+                "agentName": "explore", "agentDisplayName": "Find the parser"}}),
+            json!({"type": "tool.execution_complete", "data": {"toolCallId": "call-1", "success": true,
+                "result": {"content": "Agent started in background with agent_id: sub-1"}}}),
+        ];
+        events
+            .iter()
+            .flat_map(|event| subagents.take(event))
+            .collect()
+    }
+
+    #[test]
+    fn a_subagent_left_in_the_background_runs_on_after_its_call_returns() {
+        let mut subagents = Subagents::default();
+        let tagged = left_in_the_background(&mut subagents);
+        assert_eq!(
+            statuses(&tagged),
+            [("call-1".to_owned(), SubagentStatus::Running)]
+        );
+    }
+
+    #[test]
+    fn a_background_subagent_ends_when_copilot_says_it_completed() {
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        let ended = subagents.take(&json!({"type": "subagent.completed", "agentId": "sub-1",
+            "data": {"toolCallId": "call-1", "agentName": "explore", "totalTokens": 110,
+                "totalToolCalls": 1, "durationMs": 800}}));
+        assert_eq!(
+            ended,
+            [(
+                "call-1".to_owned(),
+                EventKind::Subagent {
+                    agent_type: "explore".into(),
+                    description: "Find the parser".into(),
+                    status: SubagentStatus::Completed,
+                    total_tokens: 110,
+                    tool_uses: 1,
+                    duration_ms: 800,
+                }
+            )]
+        );
+        assert!(subagents.finish().is_empty());
+    }
+
+    #[test]
+    fn an_end_that_names_the_subagent_ends_the_one_its_call_started() {
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        let ended = subagents.take(&json!({"type": "subagent.failed", "agentId": "sub-1",
+            "data": {"toolCallId": "sub-1", "agentName": "explore", "error": "boom"}}));
+        assert_eq!(
+            statuses(&ended),
+            [("call-1".to_owned(), SubagentStatus::Failed)]
+        );
+    }
+
+    #[test]
+    fn a_background_subagent_ends_when_the_main_agent_is_told_its_done() {
+        for (notice, status) in [
+            (
+                json!({"type": "agent_completed", "agentId": "sub-1", "status": "completed"}),
+                SubagentStatus::Completed,
+            ),
+            (
+                json!({"type": "agent_completed", "agentId": "sub-1", "status": "failed"}),
+                SubagentStatus::Failed,
+            ),
+            (
+                json!({"type": "agent_idle", "agentId": "sub-1"}),
+                SubagentStatus::Completed,
+            ),
+        ] {
+            let mut subagents = Subagents::default();
+            left_in_the_background(&mut subagents);
+            let ended = subagents.take(&json!({"type": "system.notification",
+                "data": {"content": "<system_notification>...</system_notification>", "kind": notice}}));
+            assert_eq!(statuses(&ended), [("call-1".to_owned(), status)]);
+            assert!(subagents.finish().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_notice_doesnt_change_how_a_subagent_already_ended() {
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        subagents.take(&json!({"type": "subagent.failed", "agentId": "sub-1",
+            "data": {"toolCallId": "call-1", "error": "boom"}}));
+        let notices = [
+            json!({"type": "agent_idle", "agentId": "sub-1"}),
+            json!({"type": "agent_completed", "agentId": "sub-1", "status": "completed"}),
+            // Not about a subagent, or about one never heard of.
+            json!({"type": "shell_completed", "shellId": "sub-1"}),
+            json!({"type": "agent_completed", "agentId": "sub-9", "status": "completed"}),
+        ];
+        for notice in notices {
+            let tagged =
+                subagents.take(&json!({"type": "system.notification", "data": {"kind": notice}}));
+            assert!(tagged.is_empty());
+        }
+    }
+
+    #[test]
+    fn subagents_still_running_at_the_turns_end_are_stopped_once() {
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        let events = [
+            json!({"type": "tool.execution_start", "data": {"toolCallId": "call-2", "toolName": "task",
+                "arguments": {"agent_type": "task", "description": "Run the tests"}}}),
+            json!({"type": "subagent.completed", "data": {"toolCallId": "call-2", "agentName": "task"}}),
+            json!({"type": "tool.execution_start", "data": {"toolCallId": "call-0", "toolName": "task",
+                "arguments": {"agent_type": "explore", "description": "Read the docs", "mode": "background"}}}),
+        ];
+        for event in &events {
+            subagents.take(event);
+        }
+        let stopped = subagents.finish();
+        assert_eq!(
+            stopped,
+            [
+                (
+                    "call-0".to_owned(),
+                    EventKind::Subagent {
+                        agent_type: "explore".into(),
+                        description: "Read the docs".into(),
+                        status: SubagentStatus::Stopped,
+                        total_tokens: 0,
+                        tool_uses: 0,
+                        duration_ms: 0,
+                    }
+                ),
+                (
+                    "call-1".to_owned(),
+                    EventKind::Subagent {
+                        agent_type: "explore".into(),
+                        description: "Find the parser".into(),
+                        status: SubagentStatus::Stopped,
+                        total_tokens: 0,
+                        tool_uses: 0,
+                        duration_ms: 0,
+                    }
+                ),
+            ]
+        );
+        assert!(subagents.finish().is_empty());
+    }
+
+    #[test]
+    fn a_subagent_torn_down_is_stopped_unless_it_had_finished() {
+        let cancelled = json!({"type": "subagent.completed", "agentId": "sub-1",
+            "data": {"toolCallId": "call-1", "cancelled": true}});
+
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        assert_eq!(
+            statuses(&subagents.take(&cancelled)),
+            [("call-1".to_owned(), SubagentStatus::Stopped)]
+        );
+
+        let mut subagents = Subagents::default();
+        left_in_the_background(&mut subagents);
+        subagents.take(&json!({"type": "system.notification",
+            "data": {"kind": {"type": "agent_idle", "agentId": "sub-1"}}}));
+        assert!(statuses(&subagents.take(&cancelled)).is_empty());
     }
 
     #[test]

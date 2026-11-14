@@ -229,14 +229,22 @@ pub trait Agent: Send + Sync {
     -> impl Future<Output = Result<Watch, Self::Error>> + Send;
 
     /// As [`Agent::watch`], telling `progress` the bytes read of the total
-    /// while a history kept on disk is read first.
+    /// while a history kept on disk is read first, and with only the part
+    /// of the history after the event with the id `after`: all of it when
+    /// `after` is empty or the history no longer holds it.
     fn watch_reporting(
         &self,
         session: &SessionId,
+        after: &str,
         progress: Progress,
     ) -> impl Future<Output = Result<Watch, Self::Error>> + Send {
         drop(progress);
-        self.watch(session)
+        async move {
+            let mut watch = self.watch(session).await?;
+            let unsent = log::unsent(&watch.history, after);
+            watch.history.drain(..unsent);
+            Ok(watch)
+        }
     }
 
     /// Drops the histories of idle sessions no one watches from memory,

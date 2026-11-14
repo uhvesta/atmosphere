@@ -85,9 +85,12 @@ trait Backend: Send + Sync {
     ) -> BoxFuture<'a, SessionRecord>;
     fn history<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<Event>>;
     fn summary<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Summary>;
+    /// The session's history after the event `after`, all of it when
+    /// `after` is empty or no longer in it, and every event that follows.
     fn watch_reporting<'a>(
         &'a self,
         session: &'a SessionId,
+        after: &'a str,
         progress: humata_agent::Progress,
     ) -> BoxFuture<'a, Watch>;
     fn rest(
@@ -272,10 +275,11 @@ where
     fn watch_reporting<'a>(
         &'a self,
         session: &'a SessionId,
+        after: &'a str,
         progress: humata_agent::Progress,
     ) -> BoxFuture<'a, Watch> {
         Box::pin(async move {
-            Agent::watch_reporting(self, session, progress)
+            Agent::watch_reporting(self, session, after, progress)
                 .await
                 .map_err(Into::into)
         })
@@ -1537,19 +1541,6 @@ impl Host {
     }
 }
 
-/// Where the part of `history` a watcher that has it up to `after` lacks
-/// starts: just past `after`, or at the start when `after` is empty or no
-/// longer in it.
-fn unsent(history: &[Event], after: &str) -> usize {
-    if after.is_empty() {
-        return 0;
-    }
-    history
-        .iter()
-        .rposition(|event| event.id.as_str() == after)
-        .map_or(0, |index| index + 1)
-}
-
 /// How much of the history is read while it's read from disk, the history
 /// (after the event `after`, when it holds it), a marker that the history is
 /// all sent, then each new event, until the watcher goes away.
@@ -1566,7 +1557,7 @@ fn stream(backend: Arc<dyn Backend>, session: SessionId, after: String) -> Reply
                 })),
             }));
         });
-        let watch = match backend.watch_reporting(&session, progress).await {
+        let watch = match backend.watch_reporting(&session, &after, progress).await {
             Ok(watch) => watch,
             Err(error) => {
                 let _ = items
@@ -1582,7 +1573,7 @@ fn stream(backend: Arc<dyn Backend>, session: SessionId, after: String) -> Reply
         let item = |event: &Event| pb::StreamItem {
             kind: Some(pb::stream_item::Kind::SessionEvent(convert::event(event))),
         };
-        for event in &history[unsent(&history, &after)..] {
+        for event in &history {
             if items.send(Ok(item(event))).await.is_err() {
                 return;
             }

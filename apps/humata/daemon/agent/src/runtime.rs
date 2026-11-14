@@ -1536,22 +1536,24 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn watch(&self, id: &SessionId) -> Result<Watch, AgentError> {
-        self.watch_reporting(id, Box::new(|_, _| {})).await
+        self.watch_reporting(id, "", Box::new(|_, _| {})).await
     }
 
     async fn watch_reporting(
         &self,
         id: &SessionId,
+        after: &str,
         mut progress: crate::Progress,
     ) -> Result<Watch, AgentError> {
         let session = self.session(id)?;
         if session.log.is_loaded() {
-            let (history, live) = session.log.watch(&mut *progress)?;
+            let (history, live) = session.log.watch(after, &mut *progress)?;
             return Ok(Watch { history, live });
         }
         // A history at rest is read from disk, off the executor.
+        let after = after.to_owned();
         let (history, live) =
-            tokio::task::spawn_blocking(move || session.log.watch(&mut *progress))
+            tokio::task::spawn_blocking(move || session.log.watch(&after, &mut *progress))
                 .await
                 .map_err(|source| AgentError::ReadStopped {
                     session: id.clone(),

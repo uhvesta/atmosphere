@@ -52,7 +52,7 @@ package struct SubagentRun: Identifiable, Hashable, Sendable {
 
 /// The session's subagents, worked out an event at a time as the chat is.
 /// Each has a chat of its own, made of the events that name its call.
-struct SubagentLog: Equatable {
+struct SubagentLog: Equatable, Sendable {
     /// In the order they started.
     private(set) var runs: IdentifiedArrayOf<SubagentRun> = []
     private var chats: [String: Chat] = [:]

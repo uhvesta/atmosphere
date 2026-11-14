@@ -154,7 +154,10 @@ original spec; lettered ones were added since.
 | Q5 Models: defaults, Copilot experimental and Fusion, models on the Mac | Done |
 | Q6 Auto approvals: the agent's own safety judge | Done |
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
-| Q8 Chat commands: /rewind and /compact | In progress |
+| Q8 Chat commands: /rewind and /compact | Done (9fb981d3) |
+| R2 Saved repositories | Done |
+| SA Subagents | Done |
+| AC Agent access: switches for the CLI and MCP | Planned |
 | T1 Tokens and agent tools | Done |
 | U1 App jank | Done |
 | D1 Mermaid diagrams | Done |
@@ -1533,9 +1536,8 @@ Copilot sessions spend.
   the chat's own message, thinking, tool call and permission views. A
   subagent started by a subagent opens from its row there. Main closes it
 - [ ] Usage: a subagent's own usage is kept apart from the session's. The
-  header's total adds it for Copilot, which counts each subagent apart
-  from its main agent; Claude Code's count for a turn is the CLI's own
-  result, taken to cover its subagents, so theirs isn't added again. A
+  header's total adds it for every backend: each counts a turn's main
+  agent apart from its subagents, Claude Code's result.usage included. A
   subagent that reports no totals shows what its steps add up to
 - [ ] Copilot sessions show their tokens and premium requests in the
   header and under each turn, from the usage the daemon now records
@@ -1545,6 +1547,35 @@ session's chat, the list holding each subagent as last reported, one
 running at its turn's end reading as stopped, and opening one showing its
 own messages; and a flow shows two subagents under their calls and one
 open.
+
+### Milestone AC: agent access
+
+The owner, 2026-11-13: gate what the `humata` command line and its MCP
+tools may do behind a setting: turn it all off, all on, or action by
+action. Signed off: reads and changes on by default, destructive
+actions off; separate switches for agents (`humata mcp`) and for the
+person's own terminal; built after the queued work.
+
+- [ ] Settings › Agent Access: a master switch for each of Agents and
+  Terminal, then the actions grouped as Read, Change and Destroy, each
+  group with a switch and each action with its own
+- [ ] Enforced by the daemon, not the command line, so a copied or older
+  `humata` can't skip it; the app is never gated. Kept in the daemon's
+  settings file
+- [ ] A connection says whether it's the app, the terminal or an agent's
+  MCP server; a refused request says which switch is off and where to
+  turn it on
+- [ ] An action that's off isn't listed among the MCP tools, so an agent
+  isn't offered what would fail
+- [ ] Every milestone that adds an action to the command line or the MCP
+  tools adds its switch, in the group its effect puts it in
+- [ ] The setting stops agents and scripts going through `humata`; it
+  isn't a lock against a program running as the person, which could
+  claim to be the app. Settings says so
+
+Tests: the daemon refuses an action that's off for the client asking and
+allows it for the app; turning a group off turns its actions off; the
+MCP tool list leaves out what's off; defaults on a fresh settings file.
 
 ## Later
 

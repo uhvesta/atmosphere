@@ -292,15 +292,20 @@ impl EventLog {
         self.lock_summary().clone()
     }
 
-    /// The events so far and a receiver for the rest, with none missed or
-    /// repeated between them. A log at rest is read first, telling
-    /// `progress` the bytes read of the total.
+    /// The events after the one with the id `after` and a receiver for the
+    /// rest, with none missed or repeated between them: every event so far
+    /// when `after` is empty or the log no longer holds it, as after a
+    /// rewind. Only those are copied, so a watcher that has the history
+    /// already doesn't hold the log for a copy of all of it. A log at rest
+    /// is read first, telling `progress` the bytes read of the total.
     pub(crate) fn watch(
         &self,
+        after: &str,
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<(Vec<Event>, broadcast::Receiver<Event>), AgentError> {
         let mut inner = self.lock();
-        let events = self.loaded(&mut inner, progress)?.events.clone();
+        let events = &self.loaded(&mut inner, progress)?.events;
+        let events = events[unsent(events, after)..].to_vec();
         Ok((events, self.live.subscribe()))
     }
 
@@ -413,6 +418,19 @@ impl EventLog {
 }
 
 /// Where the sealed part of the history at `plain` is.
+/// Where the part of `events` a watcher that has them up to `after` lacks
+/// starts: just past `after`, or at the start when `after` is empty or no
+/// longer among them.
+pub(crate) fn unsent(events: &[Event], after: &str) -> usize {
+    if after.is_empty() {
+        return 0;
+    }
+    events
+        .iter()
+        .rposition(|event| event.id.as_str() == after)
+        .map_or(0, |index| index + 1)
+}
+
 fn sealed_path(plain: &Path) -> PathBuf {
     plain.with_extension("sealed.zst")
 }
@@ -724,7 +742,7 @@ mod tests {
         let log = EventLog::create(path.clone(), vec![said("hi")])
             .unwrap_or_else(|error| panic!("{error}"));
         let (_, mut live) = log
-            .watch(&mut |_, _| {})
+            .watch("", &mut |_, _| {})
             .unwrap_or_else(|error| panic!("{error}"));
         let append = |kind| {
             log.append(Event::now(kind))
@@ -765,6 +783,27 @@ mod tests {
             kinds(reopened.events().unwrap_or_else(|error| panic!("{error}"))),
             whole
         );
+    }
+
+    #[test]
+    fn a_watcher_is_sent_only_what_follows_the_event_it_has() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let first = said("one");
+        let last = said("three");
+        let log = ok(EventLog::create(
+            folder.path().join("events.jsonl"),
+            vec![first.clone(), said("two"), last.clone()],
+        ));
+        let sent = |after: &str| -> Vec<Event> { ok(log.watch(after, &mut |_, _| {})).0 };
+        // Nothing follows the last event.
+        assert_eq!(sent(last.id.as_str()), Vec::new());
+        assert_eq!(sent(first.id.as_str()).len(), 2);
+        assert_eq!(sent("").len(), 3);
+        // A rewind takes the watcher's last event out of the history: it
+        // is sent all of what replaced it.
+        let rewound = vec![first.clone(), said("after the rewind")];
+        ok(log.replace(rewound.clone()));
+        assert_eq!(sent(last.id.as_str()), rewound);
     }
 
     fn ok<T>(result: Result<T, AgentError>) -> T {
@@ -820,7 +859,9 @@ mod tests {
         assert!(!log.is_loaded());
         assert_eq!(log.summary(), summary);
         let mut told = Vec::new();
-        drop(ok(log.watch(&mut |read, total| told.push((read, total)))));
+        drop(ok(
+            log.watch("", &mut |read, total| told.push((read, total)))
+        ));
         assert!(log.is_loaded());
         assert_eq!(told.last().map(|(read, total)| read == total), Some(true));
         assert_eq!(texts(&log), ["one"]);
@@ -889,7 +930,7 @@ mod tests {
         let path = folder.path().join("events.jsonl");
         let log = ok(EventLog::create(path, vec![said("one")]));
         assert_eq!(ok(log.rest(true, |_| false)), Rested::Busy);
-        let watching = ok(log.watch(&mut |_, _| {}));
+        let watching = ok(log.watch("", &mut |_, _| {}));
         assert_eq!(ok(log.rest(true, |_| true)), Rested::Busy);
         drop(watching);
         assert_eq!(

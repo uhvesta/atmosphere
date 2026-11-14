@@ -126,16 +126,13 @@ final class SubagentTests: XCTestCase {
     }
 
     func testASubagentsUsageCountsOnceInTheSessionsTotal() {
-        // Copilot counts a subagent apart from its main agent.
-        var copilot = state(.copilot)
-        copilot.receive(history)
-        XCTAssertEqual(copilot.usage, Usage(model: "big", inputTokens: 110, outputTokens: 22))
-        XCTAssertEqual(copilot.subagentUsage, Usage(model: "small", inputTokens: 100, outputTokens: 20))
-        // Claude Code's own count for the turn already holds its subagents'.
-        var claude = state(.claude)
-        claude.receive(history)
-        XCTAssertEqual(claude.usage, Usage(model: "big", inputTokens: 10, outputTokens: 2))
-        XCTAssertEqual(claude.subagentUsage, Usage(model: "small", inputTokens: 100, outputTokens: 20))
+        // Every backend counts a subagent apart from its main agent.
+        for backend in [Backend.copilot, .claude] {
+            var state = state(backend)
+            state.receive(history)
+            XCTAssertEqual(state.usage, Usage(model: "big", inputTokens: 110, outputTokens: 22), "\(backend)")
+            XCTAssertEqual(state.subagentUsage, Usage(model: "small", inputTokens: 100, outputTokens: 20), "\(backend)")
+        }
     }
 
     func testOpeningASubagentShowsItsOwnChat() async {

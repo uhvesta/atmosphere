@@ -769,7 +769,8 @@ impl Runner for CopilotRunner {
         {
             playing.unreported(&before, &after)?;
         }
-        playing.failure.map_or(Ok(()), Err)
+        playing.finish()?;
+        playing.failure.take().map_or(Ok(()), Err)
     }
 
     async fn compaction(&self, record: &SessionRecord) -> Compaction {
@@ -950,7 +951,24 @@ async fn usage_metrics(cli: &Cli, session: &str) -> Option<Value> {
     tokio::time::timeout(METRICS_WAIT, asked).await.ok()?.ok()
 }
 
+/// A turn that's stopped, or fails, leaves no subagent recorded as running
+/// either: Copilot stops them with it.
+impl Drop for Playing<'_> {
+    fn drop(&mut self) {
+        // The turn is ending as it is; what can't be recorded is left.
+        let _ = self.finish();
+    }
+}
+
 impl Playing<'_> {
+    /// Records every subagent still running as stopped, as the turn ends.
+    fn finish(&mut self) -> Result<(), AgentError> {
+        for (parent, kind) in self.subagents.finish() {
+            self.turn.emit_under(Some(parent), kind)?;
+        }
+        Ok(())
+    }
+
     /// Records one of Copilot's events. True once the turn has ended.
     async fn handle(&mut self, event: &Value) -> Result<bool, CopilotError> {
         // A subagent's own steps are kept under the call that started it,

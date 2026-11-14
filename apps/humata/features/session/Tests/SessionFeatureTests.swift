@@ -1666,13 +1666,14 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.events.isEmpty)
 
         continuation.yield(.historyLoaded)
-        await store.receive(\.receivedAll, history)
+        await store.receive(\.receivedAll)
         XCTAssertTrue(store.state.historyLoaded)
         XCTAssertEqual(store.state.events.map(\.id), ["e1", "e2", "e3"])
 
         // What comes after is new, and shows as it comes.
         continuation.yield(.event(event("e4", .turnEnded(aborted: false))))
-        await store.receive(\.receivedAll, [event("e4", .turnEnded(aborted: false))])
+        await store.receive(\.receivedAll)
+        XCTAssertEqual(store.state.events.map(\.id), ["e1", "e2", "e3", "e4"])
         await store.skipInFlightEffects()
     }
 
@@ -1694,7 +1695,7 @@ final class SessionFeatureTests: XCTestCase {
         store.exhaustivity = .off
 
         await store.send(.task)
-        await store.receive(\.receivedAll, kept)
+        await store.receive(\.receivedAll)
         await store.receive(\.watchEnded)
         XCTAssertTrue(store.state.historyLoaded)
         XCTAssertEqual(store.state.events.map(\.id), ["e1", "e2"])

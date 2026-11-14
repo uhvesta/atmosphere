@@ -1240,6 +1240,43 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
     }
 }
 
+extension SessionEvent.Kind {
+    /// How many bytes of text it holds, to add up what a history kept in
+    /// memory takes.
+    package var bytes: Int {
+        func names(_ images: [String]) -> Int { images.reduce(0) { $0 + $1.utf8.count } }
+        switch self {
+        case .userMessage(let text, let images):
+            return text.utf8.count + names(images)
+        case .assistantDelta(let text), .assistantMessage(let text), .reasoning(let text), .failed(let text),
+            .waiting(let text), .notice(let text):
+            return text.utf8.count
+        case .toolStarted(let callID, let tool, let arguments):
+            return callID.utf8.count + tool.utf8.count + arguments.utf8.count
+        case .toolCompleted(let callID, _, let output):
+            return callID.utf8.count + output.utf8.count
+        case .permissionRequested(let requestID, _, let summary):
+            return requestID.utf8.count + summary.utf8.count
+        case .permissionCompleted(let requestID, _, _, _):
+            return requestID.utf8.count
+        case .usage(let model, _, _, _):
+            return model.utf8.count
+        case .messageQueued(let queueID, let text, let images):
+            return queueID.utf8.count + text.utf8.count + names(images)
+        case .dequeued(let queueID, _):
+            return queueID.utf8.count
+        case .rewound(let text, let images, _):
+            return text.utf8.count + names(images)
+        case .compacting(let focus):
+            return focus.utf8.count
+        case .subagent(let subagent):
+            return subagent.agentType.utf8.count + subagent.description.utf8.count
+        case .turnStarted, .turnEnded, .idle, .checkpoint, .rewindUndone, .compacted:
+            return 0
+        }
+    }
+}
+
 /// The chat commands a session's agent takes beyond its skills.
 package struct ChatCommands: Equatable, Sendable {
     /// Whether it sums up the conversation on request.

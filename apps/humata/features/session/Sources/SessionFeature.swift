@@ -76,7 +76,7 @@ package struct SessionFeature {
 
         /// Adds `event` to the chat, or, as a subagent's, to that
         /// subagent's own.
-        private static func fold(_ event: SessionEvent, into chat: inout Chat, _ subagents: inout SubagentLog) {
+        fileprivate static func fold(_ event: SessionEvent, into chat: inout Chat, _ subagents: inout SubagentLog) {
             if let call = event.parentCallID {
                 subagents.add(event, under: call)
                 return
@@ -87,6 +87,58 @@ package struct SessionFeature {
 
         /// What the chat shows, oldest first.
         package var items: [ChatItem] { chat.items }
+
+        /// A chat's history as it was when the chat was looked away from:
+        /// its events and what they were worked out to show, so it shows
+        /// again at once and is watched on from its last event.
+        package struct History: Equatable, Sendable {
+            /// Counted for each event besides its text: its id, its time
+            /// and its row.
+            private static let eventBytes = 128
+
+            fileprivate var log: IdentifiedArrayOf<SessionEvent>
+            fileprivate var chat: Chat
+            fileprivate var subagents: SubagentLog
+            /// The reply being written, and its parts taken in, so one
+            /// still being written goes on from where it was.
+            fileprivate var streaming: String
+            fileprivate var streamed: Set<String>
+            /// About how much memory it holds: the text of its events.
+            package let bytes: Int
+
+            fileprivate init(
+                log: IdentifiedArrayOf<SessionEvent>, chat: Chat, subagents: SubagentLog, streaming: String,
+                streamed: Set<String>
+            ) {
+                self.log = log
+                self.chat = chat
+                self.subagents = subagents
+                self.streaming = streaming
+                self.streamed = streamed
+                bytes = log.reduce(streaming.utf8.count) { $0 + $1.kind.bytes + Self.eventBytes }
+            }
+        }
+
+        /// The history to keep when the chat is looked away from; nil
+        /// while it hasn't all come or a rewind is replacing it, when what
+        /// is here isn't the whole of it.
+        package var history: History? {
+            guard historyLoaded, !replaying, !rewinding, !log.isEmpty else { return nil }
+            return History(log: log, chat: chat, subagents: subagentLog, streaming: streaming, streamed: streamed)
+        }
+
+        /// Shows `history`, kept when the chat was last looked away from,
+        /// without reading it again: watching goes on from its last event.
+        package mutating func restore(_ history: History) {
+            log = history.log
+            chat = history.chat
+            subagentLog = history.subagents
+            streaming = history.streaming
+            streamed = history.streamed
+            derive()
+            review.turns = max(review.turns, chat.turnsStarted)
+            historyLoaded = true
+        }
         /// Whether the history has come since the session opened, so the
         /// chat shows it's loading until then.
         package var historyLoaded = false
@@ -373,13 +425,11 @@ package struct SessionFeature {
             if retryableFailure != retryable { retryableFailure = retryable }
         }
 
-        /// What the session used, its subagents too. Claude Code's count
-        /// for a turn comes from the CLI's own result, taken to cover the
-        /// subagents the turn ran, so theirs is shown apart and not added
-        /// again. Copilot counts each subagent apart from its main agent,
-        /// as the scripted and local backends would, so theirs is added.
+        /// What the session used, its subagents too. Every backend counts
+        /// a turn's main agent apart from its subagents (Claude Code's
+        /// result.usage covers its main loop only), so theirs is added.
         private var totalUsage: Usage? {
-            guard session.backend != .claude, let subagents = subagentLog.usage else { return chat.usage }
+            guard let subagents = subagentLog.usage else { return chat.usage }
             return chat.usage?.adding(subagents) ?? subagents
         }
 
@@ -474,7 +524,11 @@ package struct SessionFeature {
 
         /// Takes in `batch` and works out the chat once, so a history of
         /// thousands of events shows at once instead of one at a time.
-        mutating func receive(_ batch: [SessionEvent]) {
+        /// `folded` is the chat already worked out for the batch, off the
+        /// main thread: it's taken as it is when the batch is the whole
+        /// history of a chat that had none, each event once.
+        mutating func receive(_ batch: [SessionEvent], folded: FoldedHistory? = nil) {
+            let opensEmpty = log.isEmpty
             // A reply's words alone, as most batches are while it streams,
             // change only the reply being written: the log stays where it
             // is, so nothing that reads it is drawn again for them.
@@ -549,6 +603,17 @@ package struct SessionFeature {
                 // Live events go on the end of the chat; only a changed
                 // event means working it out again. Taken out to change, as
                 // the log is.
+                if let folded, opensEmpty, folded.count == added.count {
+                    // Every event of the batch was new to an empty chat, so
+                    // what was worked out for the batch ahead is the chat.
+                    self.chat = folded.chat
+                    self.subagentLog = folded.subagents
+                    derive()
+                    if batch.contains(where: { $0.kind == .turnStarted }) {
+                        review.turns = max(review.turns, self.chat.turnsStarted)
+                    }
+                    return
+                }
                 // The chat is set only for an event of its own, so a
                 // subagent's steps leave its rows as they are.
                 var chat = self.chat
@@ -613,8 +678,9 @@ package struct SessionFeature {
         case becameActive
         case received(SessionEvent)
         /// Events that came together, such as the history when watching
-        /// starts.
-        case receivedAll([SessionEvent])
+        /// starts; `folded` is the chat worked out for them ahead, when
+        /// they are the history of a chat that opened empty.
+        case receivedAll([SessionEvent], folded: FoldedHistory? = nil)
         /// The history a watch starts with has all come; what comes after
         /// is new.
         case historyReplayed
@@ -912,7 +978,9 @@ package struct SessionFeature {
         }
     }
 
-    private func received(_ events: [SessionEvent], _ state: inout State) -> Effect<Action> {
+    private func received(
+        _ events: [SessionEvent], folded: FoldedHistory? = nil, _ state: inout State
+    ) -> Effect<Action> {
         // A watch sends the history first. Only something new shows the
         // session is live: an offline host's cached history ends its watch
         // at once, and must not be fetched every second.
@@ -936,7 +1004,7 @@ package struct SessionFeature {
                 return .send(.task)
             }
         }
-        state.receive(events)
+        state.receive(events, folded: folded)
         var effects: [Effect<Action>] = []
         if new.contains(where: { event in
             if case .toolCompleted(let call, true, _) = event.kind { state.proposes(call) } else { false }
@@ -1221,7 +1289,9 @@ package struct SessionFeature {
                         // The history goes as one batch once it has all
                         // come; after it, what comes while a batch is shown
                         // goes as the next one.
-                        let batches = EventBatches()
+                        // A chat that opens empty has its history worked
+                        // out there, off the main thread.
+                        let batches = EventBatches(folds: after == nil)
                         let reader = Task {
                             do {
                                 for try await item in await daemon.watch(session, after) {
@@ -1244,8 +1314,8 @@ package struct SessionFeature {
                         defer { reader.cancel() }
                         while let batch = await batches.next() {
                             switch batch {
-                            case .events(let events, let replayed):
-                                await send(.receivedAll(events))
+                            case .events(let events, let folded, let replayed):
+                                await send(.receivedAll(events, folded: folded))
                                 if replayed { await send(.historyReplayed) }
                                 // A reply comes a few words at a time, and
                                 // each batch lays the chat out again: what
@@ -1273,12 +1343,12 @@ package struct SessionFeature {
             case .received(let event):
                 return received([event], &state)
 
-            case .receivedAll(let events):
+            case .receivedAll(let events, let folded):
                 state.historyLoaded = true
                 state.historyLoading = nil
                 // An empty history's end, or one said again: nothing to show.
                 guard !events.isEmpty else { return .none }
-                return received(events, &state)
+                return received(events, folded: folded, &state)
 
             case .historyReplayed:
                 state.replaying = false
@@ -1865,10 +1935,15 @@ extension SessionEvent.Kind {
 
 /// A watch's events, handed on in batches: the history it starts with as
 /// one, then everything that came since the last batch was taken.
+///
+/// With `folds`, the history's chat is worked out here as it's handed on:
+/// on this actor, so off the main thread, which would otherwise stand
+/// still for as long as a long history takes to work out.
 private actor EventBatches {
-    enum Batch {
-        /// `replayed` when they end the history the watch starts with.
-        case events([SessionEvent], replayed: Bool)
+    enum Batch: Sendable {
+        /// `replayed` when they end the history the watch starts with,
+        /// and `folded` then holds its chat, if it was to be worked out.
+        case events([SessionEvent], folded: FoldedHistory?, replayed: Bool)
         /// The watch ended, with why if it failed.
         case ended(failure: String?)
     }
@@ -1884,6 +1959,11 @@ private actor EventBatches {
     private var ended: Batch?
     private var cancelled = false
     private var waiter: CheckedContinuation<Void, Never>?
+    private let folds: Bool
+
+    init(folds: Bool) {
+        self.folds = folds
+    }
 
     func add(_ event: SessionEvent) {
         pending.append(event)
@@ -1919,11 +1999,12 @@ private actor EventBatches {
             pending.removeFirst(min(end, pending.count))
             historyEnd = nil
             historyDone = true
-            return .events(history, replayed: true)
+            let folded = folds && !history.isEmpty ? FoldedHistory(history) : nil
+            return .events(history, folded: folded, replayed: true)
         }
         if !pending.isEmpty {
             defer { pending = [] }
-            return .events(pending, replayed: false)
+            return .events(pending, folded: nil, replayed: false)
         }
         return ended
     }
@@ -1936,6 +2017,30 @@ private actor EventBatches {
     private func wake() {
         waiter?.resume()
         waiter = nil
+    }
+}
+
+/// The chat a history shows, worked out before the history reaches the
+/// chat it's for, so that isn't done on the main thread.
+package struct FoldedHistory: Sendable {
+    let chat: Chat
+    let subagents: SubagentLog
+    /// How many events it was worked out from: all but a reply's parts as
+    /// it streamed, which the chat doesn't keep.
+    let count: Int
+
+    init(_ events: [SessionEvent]) {
+        var chat = Chat()
+        var subagents = SubagentLog()
+        var count = 0
+        for event in events {
+            if case .assistantDelta = event.kind { continue }
+            SessionFeature.State.fold(event, into: &chat, &subagents)
+            count += 1
+        }
+        self.chat = chat
+        self.subagents = subagents
+        self.count = count
     }
 }
 

@@ -213,8 +213,10 @@ extension ChatItem {
 }
 
 /// The chat worked out an event at a time, so a live event is added to it
-/// instead of the chat being worked out again from the start.
-struct Chat: Equatable {
+/// instead of the chat being worked out again from the start. A value of
+/// values, so a history's chat can be worked out off the main thread and
+/// handed to it.
+struct Chat: Equatable, Sendable {
     private(set) var items: [ChatItem] = []
     private var calls: [String: Int] = [:]
     private var running: String?

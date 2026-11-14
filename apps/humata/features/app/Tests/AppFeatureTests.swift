@@ -708,6 +708,162 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(SessionFeature.State(session: session).pastes, [])
     }
 
+    private func event(_ id: String, _ kind: SessionEvent.Kind) -> SessionEvent {
+        SessionEvent(id: id, time: Date(timeIntervalSince1970: 0), kind: kind)
+    }
+
+    /// A store over `sessions` whose daemon holds `histories`, read as they
+    /// are when a watch starts, and sends a watcher what follows the event
+    /// it has, or all of it when it holds that event no longer. `asked`
+    /// takes the event each watch said it has.
+    private func store(
+        _ sessions: [Session], _ histories: LockIsolated<[Session.ID: [SessionEvent]]>,
+        asked: LockIsolated<[String?]>
+    ) -> TestStoreOf<AppFeature> {
+        var state = AppFeature.State()
+        state.sidebar.sessions = IdentifiedArray(uniqueElements: sessions)
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon.watch = { session, after in
+                asked.withValue { $0.append(after) }
+                let history = histories.value[session] ?? []
+                let has = history.firstIndex { $0.id == after }.map { $0 + 1 } ?? 0
+                return AsyncThrowingStream { continuation in
+                    for event in history[has...] { continuation.yield(.event(event)) }
+                    continuation.yield(.historyLoaded)
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAChatOpenedAgainShowsAtOnceAndIsWatchedFromItsLastEvent() async throws {
+        let first = Session(id: "kept-first", name: "first", backend: .scripted, workingDirectory: "/work")
+        let second = Session(id: "kept-second", name: "second", backend: .scripted, workingDirectory: "/work")
+        let history = [
+            event("e1", .userMessage("hi")), event("e2", .turnStarted), event("e3", .assistantMessage("hello")),
+        ]
+        let asked = LockIsolated<[String?]>([])
+        let store = store([first, second], LockIsolated([first.id: history]), asked: asked)
+
+        await store.send(\.sidebar.selected, .session(first.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        XCTAssertEqual(store.state.session?.items.map(\.id), ["e1", "e3"])
+
+        await store.send(\.sidebar.selected, .session(second.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.items, [])
+
+        // Back to the first: its rows are there before anything is read.
+        await store.send(\.sidebar.selected, .session(first.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.historyLoaded, true)
+        XCTAssertEqual(store.state.session?.items.map(\.id), ["e1", "e3"])
+        XCTAssertEqual(store.state.session?.isWorking, true)
+
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        XCTAssertEqual(asked.value, [nil, "e3"])
+        XCTAssertEqual(store.state.session?.events.map(\.id), ["e1", "e2", "e3"])
+        await store.skipInFlightEffects()
+    }
+
+    func testAChatTooLargeToKeepIsReadAgainWhenItOpensAgain() async throws {
+        let large = Session(id: "kept-large", name: "large", backend: .scripted, workingDirectory: "/work")
+        let other = Session(id: "kept-other", name: "other", backend: .scripted, workingDirectory: "/work")
+        // More text than is kept of every chat together.
+        let history = [event("b1", .assistantMessage(String(repeating: "x", count: 49 * 1_048_576)))]
+        let asked = LockIsolated<[String?]>([])
+        let store = store([large, other], LockIsolated([large.id: history]), asked: asked)
+
+        await store.send(\.sidebar.selected, .session(large.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(5))
+        XCTAssertEqual(store.state.session?.items.map(\.id), ["b1"])
+
+        await store.send(\.sidebar.selected, .session(other.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        await store.send(\.sidebar.selected, .session(large.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.historyLoaded, false)
+        XCTAssertEqual(store.state.session?.items, [])
+
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(5))
+        XCTAssertEqual(asked.value, [nil, nil])
+        XCTAssertEqual(store.state.session?.items.map(\.id), ["b1"])
+        await store.skipInFlightEffects()
+    }
+
+    func testOnlyTheChatsLastLookedAwayFromAreKept() async throws {
+        let sessions = (1...6).map {
+            Session(id: "kept-\($0)", name: "chat \($0)", backend: .scripted, workingDirectory: "/work")
+        }
+        let histories = Dictionary(
+            uniqueKeysWithValues: sessions.map { ($0.id, [event("\($0.id)-e1", .userMessage("hi"))]) })
+        let store = store(sessions, LockIsolated(histories), asked: LockIsolated([]))
+
+        // Each is opened and read, the last still open.
+        for session in sessions {
+            await store.send(\.sidebar.selected, .session(session.id))
+            await store.receive(\.sidebar.delegate.openSession)
+            await store.send(\.session.task)
+            await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        }
+
+        // The one before it shows at once; the first, left longest ago,
+        // is read again.
+        await store.send(\.sidebar.selected, .session(sessions[4].id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.items.map(\.id), ["kept-5-e1"])
+        await store.send(\.sidebar.selected, .session(sessions[0].id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.historyLoaded, false)
+        XCTAssertEqual(store.state.session?.items, [])
+        await store.skipInFlightEffects()
+    }
+
+    func testAChatRewoundWhileItWasAwayIsReadAgainFromTheStart() async throws {
+        let first = Session(id: "kept-rewound", name: "first", backend: .scripted, workingDirectory: "/work")
+        let second = Session(id: "kept-beside", name: "second", backend: .scripted, workingDirectory: "/work")
+        let history = [
+            event("e1", .userMessage("one")), event("e2", .assistantMessage("two")), event("e3", .userMessage("three")),
+        ]
+        let histories = LockIsolated([first.id: history])
+        let asked = LockIsolated<[String?]>([])
+        let store = store([first, second], histories, asked: asked)
+
+        await store.send(\.sidebar.selected, .session(first.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        await store.send(\.sidebar.selected, .session(second.id))
+        await store.receive(\.sidebar.delegate.openSession)
+
+        // Rewound from elsewhere meanwhile: the history no longer holds
+        // the last event the chat has.
+        let rewound = [history[0], history[1], event("r1", .rewound(text: "three", files: false))]
+        histories.withValue { $0[first.id] = rewound }
+
+        await store.send(\.sidebar.selected, .session(first.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.events.map(\.id), ["e1", "e2", "e3"])
+        await store.send(\.session.task)
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        // It starts over, and reads what the rewind left.
+        await store.receive(\.session.task, timeout: .seconds(1))
+        await store.receive(\.session.receivedAll, timeout: .seconds(1))
+        XCTAssertEqual(asked.value, [nil, "e3", nil])
+        XCTAssertEqual(store.state.session?.events.map(\.id), ["e1", "e2", "r1"])
+        await store.skipInFlightEffects()
+    }
+
     func testLinksThatNameNothingAreIgnored() throws {
         for text in ["humata://session", "humata://elsewhere/x", "https://session/x", "humata://task/only-a-project"] {
             XCTAssertNil(HumataLink(try XCTUnwrap(URL(string: text))), text)

@@ -39,6 +39,9 @@ package struct AppFeature {
         /// What each session looked away from was showing, put back when
         /// it opens again while Humata runs.
         var left: [Session.ID: SessionFeature.State.Left] = [:]
+        /// The histories of the chats last looked away from, so going
+        /// back to one shows it at once instead of reading it all again.
+        var histories = Histories()
         /// Search, each board and the hosts as they were left, put back
         /// when they open again while Humata runs.
         var keptSearch: SearchFeature.State?
@@ -81,8 +84,11 @@ package struct AppFeature {
         /// Opens `next` in place of the open session, keeping what the one
         /// closed was showing; nil closes it.
         mutating func show(_ next: SessionFeature.State?) {
-            if let open = session, open.session.id != next?.session.id {
-                left[open.session.id] = open.left
+            if let open = session {
+                if open.session.id != next?.session.id { left[open.session.id] = open.left }
+                // Kept for the session opened again in its own place too,
+                // as a search hit in the open chat does.
+                histories.keep(open.history, of: open.session.id)
             }
             var next = next
             if let id = next?.session.id, var kept = left.removeValue(forKey: id) {
@@ -91,8 +97,48 @@ package struct AppFeature {
                 if next?.highlighted != nil, let tab = next?.tab { kept.tab = tab }
                 next?.left = kept
             }
+            if let id = next?.session.id, let history = histories.take(id) { next?.restore(history) }
             session = next
         }
+    }
+
+    /// The histories of the chats last looked away from, the one left
+    /// longest ago dropped first: a few chats, and no more memory than
+    /// `bytes` between them, since a history is held whole.
+    struct Histories: Equatable {
+        /// How many chats' histories are kept.
+        private static let chats = 4
+        /// How much they hold between them at most.
+        private static let bytes = 48 * 1_048_576
+
+        private var kept: [Session.ID: SessionFeature.State.History] = [:]
+        /// The sessions kept, the one left longest ago first.
+        private var order: [Session.ID] = []
+
+        /// Keeps `history` as `session`'s, in place of what was kept for
+        /// it; nil, or one too large to keep at all, keeps nothing.
+        mutating func keep(_ history: SessionFeature.State.History?, of session: Session.ID) {
+            forget(session)
+            guard let history, history.bytes <= Self.bytes else { return }
+            kept[session] = history
+            order.append(session)
+            while let oldest = order.first, order.count > Self.chats || held > Self.bytes {
+                forget(oldest)
+            }
+        }
+
+        /// Hands over what's kept for `session`, keeping it no longer.
+        mutating func take(_ session: Session.ID) -> SessionFeature.State.History? {
+            order.removeAll { $0 == session }
+            return kept.removeValue(forKey: session)
+        }
+
+        mutating func forget(_ session: Session.ID) {
+            guard kept.removeValue(forKey: session) != nil else { return }
+            order.removeAll { $0 == session }
+        }
+
+        private var held: Int { kept.values.reduce(0) { $0 + $1.bytes } }
     }
 
     package enum DaemonStatus: Equatable {
@@ -242,12 +288,19 @@ package struct AppFeature {
                     state.session?.session = session
                     state.keepTab()
                 }
+                // A session moved to another host is read from there.
+                switch action {
+                case .sidebar(.sessionMoved), .sidebar(.destination(.presented(.move(.delegate(.moved))))):
+                    state.histories.forget(session.id)
+                default: break
+                }
                 return .none
 
             case .sidebar(.sessionDeleted(let id)):
                 // Closed without keeping what it showed or what was being
                 // written to it: it won't open again.
                 state.left[id] = nil
+                state.histories.forget(id)
                 if state.session?.session.id == id { state.session = nil }
                 SessionFeature.State.forgetDraft(of: id)
                 return .none
