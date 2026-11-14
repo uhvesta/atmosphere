@@ -104,6 +104,7 @@ package struct DocsView: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
+            .accessibilityLabel("Refresh")
             .help("Read the folder again")
             if store.selected != nil {
                 Toggle(isOn: Binding(get: { store.versions != nil }, set: { _ in store.send(.versionsToggled) })) {

@@ -101,13 +101,18 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run(arguments.role)) {
+    let code = match runtime.block_on(run(arguments.role)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("humatad: {}", humata_wire::describe(&error));
             ExitCode::FAILURE
         }
-    }
+    };
+    // Dropping the runtime waits for every blocking task, and a terminal's
+    // reader, or a read of stdin, never ends by itself while its shell or
+    // the other side lives. They get a moment to finish, then humatad goes.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    code
 }
 
 async fn run(role: Role) -> Result<(), humatad::StartError> {

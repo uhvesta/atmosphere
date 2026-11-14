@@ -234,8 +234,16 @@ impl Workspaces {
         }
         let directory = &checkout.path;
         let path = edit.file.path.as_str();
+        // Every action takes a path made of plain names only: `..` or a
+        // leading `/` would name a file outside the copy.
+        if !inside(path) {
+            return Err(WorkspaceError::OutsideCopy {
+                path: path.to_owned(),
+                repository: checkout.name.clone(),
+            });
+        }
         let Some(hunk) = edit.hunk else {
-            return edit_file(directory, path, edit.action).await;
+            return edit_file(directory, &checkout.name, path, edit.action).await;
         };
         // The diff the hunk is in, as the person saw it.
         let (from, to) = match edit.action {
@@ -426,7 +434,20 @@ async fn unchanged(
     })
 }
 
-async fn edit_file(directory: &Path, path: &str, action: Action) -> Result<(), WorkspaceError> {
+/// Whether a path is made of plain names only, so that joined to a copy's
+/// folder it stays under it (links aside).
+fn inside(path: &str) -> bool {
+    let mut components = Path::new(path).components().peekable();
+    components.peek().is_some()
+        && components.all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+async fn edit_file(
+    directory: &Path,
+    repository: &str,
+    path: &str,
+    action: Action,
+) -> Result<(), WorkspaceError> {
     match action {
         Action::Stage => {
             git(directory, &["add", "--all", "--", path]).await?;
@@ -441,7 +462,33 @@ async fn edit_file(directory: &Path, path: &str, action: Action) -> Result<(), W
             if known {
                 git(directory, &["checkout", "--", path]).await?;
             } else {
+                // Git also calls a path through a linked folder unknown, so
+                // the file is removed only when it is one, or a link, in a
+                // folder that is really inside the copy.
                 let file = directory.join(path);
+                let outside = || WorkspaceError::OutsideCopy {
+                    path: path.to_owned(),
+                    repository: repository.to_owned(),
+                };
+                let metadata = tokio::fs::symlink_metadata(&file).await.map_err(|source| {
+                    WorkspaceError::Write {
+                        path: file.clone(),
+                        source,
+                    }
+                })?;
+                if !(metadata.is_file() || metadata.file_type().is_symlink()) {
+                    return Err(outside());
+                }
+                let parent = file.parent().ok_or_else(outside)?;
+                let parent = tokio::fs::canonicalize(parent)
+                    .await
+                    .map_err(|_| outside())?;
+                let root = tokio::fs::canonicalize(directory)
+                    .await
+                    .map_err(|_| outside())?;
+                if !parent.starts_with(&root) {
+                    return Err(outside());
+                }
                 tokio::fs::remove_file(&file)
                     .await
                     .map_err(|source| WorkspaceError::Write { path: file, source })?;

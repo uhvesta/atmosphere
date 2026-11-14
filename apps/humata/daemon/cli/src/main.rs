@@ -361,8 +361,8 @@ enum BoardCommand {
 
 #[derive(Subcommand)]
 enum HostCommand {
-    /// Add a host by what `ssh` connects to; Humata installs humatad there
-    /// and keeps it up to date.
+    /// Add a host by what `ssh` connects to. Then run `humata host install
+    /// NAME` to copy humatad there; Humata keeps it up to date after that.
     Add {
         name: String,
         /// A Host in your SSH config, or user@machine.
@@ -505,6 +505,7 @@ enum ProposalCommand {
         #[arg(long)]
         spec: Option<PathBuf>,
     },
+    /// Turn a proposal down; nothing on the board changes.
     Decline {
         /// The session that proposed it, or "" for an outside agent.
         session: String,
@@ -809,7 +810,7 @@ enum Command {
     Rewind {
         session: String,
         /// The id of your message, or of the compaction, to cut from, as
-        /// `events` prints it.
+        /// `humata history` prints it.
         before: String,
         /// Put the session's code back as it was then too.
         #[arg(long)]
@@ -1842,7 +1843,10 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
             other => return Err(unexpected("the sessions", &other)),
         },
-        Command::Mcp => control::serve(&client, tokio::io::stdin(), tokio::io::stdout()).await?,
+        Command::Mcp => {
+            let client = std::sync::Arc::new(client);
+            control::serve(client, tokio::io::stdin(), tokio::io::stdout()).await?;
+        }
     }
     Ok(())
 }
@@ -2363,7 +2367,10 @@ async fn host(client: &Client, command: HostCommand) -> Result<(), CliError> {
             saved(client.call(request).await?)?;
         }
         HostCommand::Setup { name, script } => {
-            let script = read_spec(&script)?;
+            let script = read_text(&script).map_err(|source| CliError::ReadScript {
+                path: script.clone(),
+                source,
+            })?;
             let request = Request::UpdateHost(pb::UpdateHost {
                 name,
                 setup_script: Some(script),
@@ -2388,13 +2395,17 @@ async fn host(client: &Client, command: HostCommand) -> Result<(), CliError> {
     Ok(())
 }
 
-fn read_spec(path: &std::path::Path) -> Result<String, CliError> {
-    let read = if path == std::path::Path::new("-") {
+/// A file's text, or stdin's for `-`.
+fn read_text(path: &std::path::Path) -> std::io::Result<String> {
+    if path == std::path::Path::new("-") {
         std::io::read_to_string(std::io::stdin())
     } else {
         std::fs::read_to_string(path)
-    };
-    read.map_err(|source| CliError::ReadSpec {
+    }
+}
+
+fn read_spec(path: &std::path::Path) -> Result<String, CliError> {
+    read_text(path).map_err(|source| CliError::ReadSpec {
         path: path.to_owned(),
         source,
     })
@@ -2570,6 +2581,38 @@ async fn history(client: &Client, session: &str) -> Result<Vec<pb::SessionEvent>
     }
 }
 
+/// How long a permission request is held before the history is read to see
+/// whether it waits for a person: one the approval mode allows is followed
+/// at once by its completion, and then nothing is read.
+const REQUEST_QUIET: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// The permission requests a wait saw that no completion has followed yet.
+#[derive(Default)]
+struct Unanswered {
+    requests: HashSet<String>,
+    /// When to ask the history about them: a while after the first.
+    check_at: Option<tokio::time::Instant>,
+}
+
+impl Unanswered {
+    fn see(&mut self, event: &pb::SessionEvent) {
+        match &event.kind {
+            Some(pb::session_event::Kind::PermissionRequested(asked)) => {
+                self.requests.insert(asked.request_id.clone());
+                self.check_at
+                    .get_or_insert_with(|| tokio::time::Instant::now() + REQUEST_QUIET);
+            }
+            Some(pb::session_event::Kind::PermissionCompleted(completed)) => {
+                self.requests.remove(&completed.request_id);
+                if self.requests.is_empty() {
+                    self.check_at = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Makes `request`, then hands each of the session's new events to
 /// `on_event` until it is idle again or waits for a person to answer a
 /// permission request.
@@ -2595,7 +2638,28 @@ async fn call_and_wait(
     });
     let (_, mut stream) = client.stream(watch).await?;
     expect_ok(client.call(request).await?, answered, expected)?;
-    while let Some(item) = stream.next().await {
+    let mut held = Unanswered::default();
+    loop {
+        let item = match held.check_at {
+            // A stream's next item is a channel's, so giving up on it loses
+            // nothing.
+            Some(check_at) => match tokio::time::timeout_at(check_at, stream.next()).await {
+                Ok(item) => item,
+                Err(_) => {
+                    if waits_for_a_person(client, session, &held.requests).await? {
+                        return Ok(());
+                    }
+                    // Every one was answered; their completions are on
+                    // their way here.
+                    held = Unanswered::default();
+                    continue;
+                }
+            },
+            None => stream.next().await,
+        };
+        let Some(item) = item else {
+            return Err(CliError::WatchEnded);
+        };
         let Some(event) = session_event(item)? else {
             continue;
         };
@@ -2603,35 +2667,33 @@ async fn call_and_wait(
             continue;
         }
         on_event(&event);
-        match &event.kind {
-            Some(pb::session_event::Kind::Idle(_)) => return Ok(()),
-            Some(pb::session_event::Kind::PermissionRequested(asked))
-                if waits_for_a_person(client, session, &asked.request_id).await? =>
-            {
-                return Ok(());
-            }
-            _ => {}
+        if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
+            return Ok(());
         }
+        held.see(&event);
     }
-    Err(CliError::WatchEnded)
 }
 
-/// Whether `request` is still unanswered. A request the approval mode
-/// allows is answered in the same write that records it, so the history
-/// already holds its answer.
+/// Whether any of `requests` is still unanswered in the session's history,
+/// read once for them all.
 async fn waits_for_a_person(
     client: &Client,
     session: &str,
-    request: &str,
+    requests: &HashSet<String>,
 ) -> Result<bool, CliError> {
-    let answered = history(client, session).await?.iter().any(|event| {
-        matches!(
-            &event.kind,
-            Some(pb::session_event::Kind::PermissionCompleted(completed))
-                if completed.request_id == request
-        )
-    });
-    Ok(!answered)
+    let history = history(client, session).await?;
+    let answered: HashSet<&str> = history
+        .iter()
+        .filter_map(|event| match &event.kind {
+            Some(pb::session_event::Kind::PermissionCompleted(completed)) => {
+                Some(completed.request_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    Ok(requests
+        .iter()
+        .any(|request| !answered.contains(request.as_str())))
 }
 
 /// The event a watch's item carries; None for its notes on how far the

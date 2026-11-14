@@ -5,7 +5,8 @@ import HumataDaemonClient
 /// Settings > Environments: the machines sessions can run on, as the person
 /// names them in ~/.ssh/config. Adding one installs humatad there and checks
 /// it; one that runs an older build than this app's offers Update; the
-/// selected one's agents' variables and setup script are edited beside it.
+/// selected one's agents' variables and setup script are edited beside it,
+/// and it can be removed, after asking.
 @Reducer
 package struct EnvironmentsFeature {
     @ObservableState
@@ -62,7 +63,11 @@ package struct EnvironmentsFeature {
     @Reducer
     package enum Destination {
         case addOther(AddHostFeature)
-        case alert(AlertState<Never>)
+        case alert(AlertState<Alert>)
+
+        package enum Alert: Equatable {
+            case confirmRemove(RemoteHost.ID)
+        }
     }
 
     package enum Action {
@@ -84,6 +89,11 @@ package struct EnvironmentsFeature {
         case installed(RemoteHost.ID, HostHealth)
         case selected(RemoteHost.ID?)
         case addOtherTapped
+        /// Asks before Humata forgets the host and its sessions.
+        case removeTapped(RemoteHost.ID)
+        /// The daemon forgot the host.
+        case removed(RemoteHost.ID)
+        case removeFailed(RemoteHost.ID, String)
         case editor(HostEditorFeature.Action)
         case destination(PresentationAction<Destination.Action>)
     }
@@ -164,6 +174,46 @@ package struct EnvironmentsFeature {
 
             case .addOtherTapped:
                 state.destination = .addOther(AddHostFeature.State())
+                return .none
+
+            case .removeTapped(let id):
+                guard state.hosts[id: id] != nil else { return .none }
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Remove \(id)?")
+                    } actions: {
+                        ButtonState(role: .destructive, action: .confirmRemove(id)) { TextState("Remove") }
+                        ButtonState(role: .cancel) { TextState("Cancel") }
+                    } message: {
+                        TextState(
+                            "Humata forgets the host and its sessions. Their code and Humata's program stay on the "
+                                + "host; remove its Humata folder there to free the space.")
+                    })
+                return .none
+
+            case .destination(.presented(.alert(.confirmRemove(let id)))):
+                return .run { send in
+                    try await daemon.removeHost(id)
+                    await send(.removed(id))
+                } catch: { error, send in
+                    await send(.removeFailed(id, error.localizedDescription))
+                }
+
+            case .removed(let id):
+                state.hosts.remove(id: id)
+                state.health[id] = nil
+                if state.selection == id { select(nil, in: &state) }
+                // Selecting another kept what was being changed on it.
+                state.unsaved[id] = nil
+                return .none
+
+            case .removeFailed(let id, let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't remove \(id)")
+                    } message: {
+                        TextState(message)
+                    })
                 return .none
 
             case .destination(.presented(.addOther(.delegate(.added(let host))))):

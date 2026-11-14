@@ -22,6 +22,21 @@ use crate::error::{HostError, RelayError};
 /// How long a call waits for the daemon's answer.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The most questions and move requests of one session that wait for a
+/// daemon. The file is written whole for each, and an agent that keeps
+/// asking while the Mac is away would otherwise fill it without end.
+const MOST_QUEUED_OF_A_SESSION: usize = 8;
+
+/// The session whose question or move request `request` is; None for any
+/// other call.
+fn asking_session(request: &pb::request::Kind) -> Option<&str> {
+    match request {
+        pb::request::Kind::AskPerson(ask) => Some(&ask.session_id),
+        pb::request::Kind::RequestMove(asked) => Some(&asked.session_id),
+        _ => None,
+    }
+}
+
 pub struct Relay {
     state: Mutex<State>,
     /// Where the calls made while no daemon watched wait for the next one.
@@ -161,9 +176,21 @@ impl Relay {
         }
     }
 
-    /// Adds `request` to the end of the queue, kept in the file.
+    /// Adds `request` to the end of the queue, kept in the file, unless its
+    /// session already has the most that may wait.
     fn enqueue(&self, request: pb::request::Kind) -> Result<(), RelayError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(session) = asking_session(&request) {
+            let waiting = state
+                .queued
+                .iter()
+                .filter_map(|(_, queued)| queued.kind.as_ref().and_then(asking_session))
+                .filter(|queued| *queued == session)
+                .count();
+            if waiting >= MOST_QUEUED_OF_A_SESSION {
+                return Err(RelayError::QueueFull { waiting });
+            }
+        }
         state.next += 1;
         let key = state.next;
         state.queued.push((
@@ -212,9 +239,17 @@ impl Relay {
             pb::request::Kind::ReadSpec(read) => {
                 let asked = self.send(pb::request::Kind::ReadSpec(read.clone())).await;
                 match (asked, self.copied_spec(&read)) {
-                    (Err(RelayError::NotWatched | RelayError::TimedOut { .. }), Some(spec)) => {
-                        Ok(pb::response::Kind::Spec(spec))
-                    }
+                    (
+                        Err(
+                            RelayError::NotWatched
+                            | RelayError::AnswerLost
+                            | RelayError::TimedOut { .. },
+                        ),
+                        Some(spec),
+                    ) => Ok(pb::response::Kind::Spec(spec)),
+                    // Nothing was changed by a read, so it is simply not
+                    // connected.
+                    (Err(RelayError::AnswerLost), None) => Err(RelayError::NotWatched),
                     (asked, _) => asked,
                 }
             }
@@ -230,7 +265,13 @@ impl Relay {
                     _ => {}
                 }
                 match self.send(request.clone()).await {
-                    Err(RelayError::NotWatched | RelayError::TimedOut { .. }) => {
+                    // One whose answer was lost may be in the inbox already;
+                    // its id keeps it there once when it's handed over again.
+                    Err(
+                        RelayError::NotWatched
+                        | RelayError::AnswerLost
+                        | RelayError::TimedOut { .. },
+                    ) => {
                         self.enqueue(request)?;
                         Ok(pb::response::Kind::RequestMade(pb::RequestMade {
                             request: None,
@@ -241,17 +282,25 @@ impl Relay {
             }
             // A start or a message the daemon didn't answer may have been
             // made all the same, so the agent is told to look before it
-            // asks again.
+            // asks again. One whose answer was lost with the connection
+            // says so by itself.
             request @ (pb::request::Kind::AgentStartSession(_)
             | pb::request::Kind::AgentSendMessage(_)) => match self.send(request).await {
                 Err(RelayError::TimedOut { seconds }) => Err(RelayError::Unanswered { seconds }),
                 asked => asked,
             },
-            request => self.send(request).await,
+            // A read whose answer was lost changed nothing: the Mac isn't
+            // connected, and asking again later is right.
+            request => match self.send(request).await {
+                Err(RelayError::AnswerLost) => Err(RelayError::NotWatched),
+                asked => asked,
+            },
         }
     }
 
     /// Hands `request` to the daemon watching and waits for its answer.
+    /// `NotWatched` is a call that was never handed over; `AnswerLost` is
+    /// one the daemon got and may have acted on before its watch ended.
     async fn send(&self, request: pb::request::Kind) -> Result<pb::response::Kind, RelayError> {
         let (id, watcher, answered) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -278,7 +327,7 @@ impl Relay {
         }
         match tokio::time::timeout(ANSWER_TIMEOUT, answered).await {
             Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(RelayError::NotWatched),
+            Ok(Err(_)) => Err(RelayError::AnswerLost),
             Err(_) => {
                 self.forget(id);
                 Err(RelayError::TimedOut {
@@ -487,6 +536,135 @@ mod tests {
             pb::response::Kind::RequestMade(pb::RequestMade::default()),
         );
         until_empty(&file).await;
+    }
+
+    /// `request` called on its own task, and the daemon's stream once the
+    /// call has reached it.
+    async fn handed_over(
+        relay: &Arc<Relay>,
+        request: pb::request::Kind,
+    ) -> (
+        tokio::task::JoinHandle<Result<pb::response::Kind, RelayError>>,
+        mpsc::Receiver<Result<pb::StreamItem, pb::Error>>,
+        pb::request::Kind,
+    ) {
+        let mut daemon = calls(relay.watch());
+        let calling = tokio::spawn({
+            let relay = relay.clone();
+            async move { relay.call(request).await }
+        });
+        let (_, call) = next_call(&mut daemon).await;
+        (calling, daemon, call)
+    }
+
+    #[tokio::test]
+    async fn a_start_whose_answer_is_lost_with_the_watch_says_it_may_have_acted() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let relay = Arc::new(Relay::open(state.path().join("queued")));
+        let start = pb::request::Kind::AgentStartSession(pb::AgentStartSession {
+            session_id: "s1".to_owned(),
+            name: "child".to_owned(),
+            text: "go".to_owned(),
+        });
+
+        let (starting, daemon, _) = handed_over(&relay, start.clone()).await;
+        drop(daemon);
+        let lost = starting.await.unwrap_or_else(|error| panic!("{error}"));
+        // With no one watching it was never handed over.
+        let never = relay.call(start).await;
+
+        assert!(matches!(lost, Err(RelayError::AnswerLost)), "{lost:?}");
+        assert!(matches!(never, Err(RelayError::NotWatched)), "{never:?}");
+    }
+
+    #[tokio::test]
+    async fn a_question_whose_answer_is_lost_with_the_watch_waits_for_the_next_watcher() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let file = state.path().join("queued");
+        let relay = Arc::new(Relay::open(file.clone()));
+
+        let (asking, daemon, tried) = handed_over(&relay, ask("one")).await;
+        drop(daemon);
+        let made = asking.await.unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            matches!(
+                &made,
+                Ok(pb::response::Kind::RequestMade(pb::RequestMade {
+                    request: None
+                }))
+            ),
+            "{made:?}"
+        );
+        // Handed over again under the same id, so the inbox keeps it once.
+        let mut daemon = calls(relay.watch());
+        let (id, call) = next_call(&mut daemon).await;
+        assert_eq!(asked(&call), asked(&tried));
+        answer(
+            &relay,
+            id,
+            pb::response::Kind::RequestMade(pb::RequestMade::default()),
+        );
+        until_empty(&file).await;
+    }
+
+    #[tokio::test]
+    async fn a_read_whose_answer_is_lost_is_told_the_mac_isnt_connected() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let relay = Arc::new(Relay::open(state.path().join("queued")));
+        let list = pb::request::Kind::ListItems(pb::ListItems {
+            project_id: "p1".to_owned(),
+        });
+        let read = pb::request::Kind::ReadSpec(pb::ReadSpec {
+            session_id: "s1".to_owned(),
+            item_id: "i1".to_owned(),
+        });
+
+        let (listing, daemon, _) = handed_over(&relay, list).await;
+        drop(daemon);
+        let listed = listing.await.unwrap_or_else(|error| panic!("{error}"));
+        // A spec the host has no copy of.
+        let (reading, daemon, _) = handed_over(&relay, read).await;
+        drop(daemon);
+        let spec = reading.await.unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(matches!(listed, Err(RelayError::NotWatched)), "{listed:?}");
+        assert!(matches!(spec, Err(RelayError::NotWatched)), "{spec:?}");
+    }
+
+    #[tokio::test]
+    async fn a_ninth_question_of_one_session_isnt_kept_and_another_sessions_is() {
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let file = state.path().join("queued");
+        let relay = Relay::open(file.clone());
+        let move_of = |session: &str| {
+            pb::request::Kind::RequestMove(pb::RequestMove {
+                session_id: session.to_owned(),
+                ..Default::default()
+            })
+        };
+        for number in 0..4 {
+            let made = relay.call(ask(&format!("question {number}"))).await;
+            assert!(made.is_ok(), "{made:?}");
+            let made = relay.call(move_of("s1")).await;
+            assert!(made.is_ok(), "{made:?}");
+        }
+
+        let ninth = relay.call(ask("one too many")).await;
+        let ninth_move = relay.call(move_of("s1")).await;
+        let other = relay.call(move_of("s2")).await;
+
+        assert!(
+            matches!(ninth, Err(RelayError::QueueFull { .. })),
+            "{ninth:?}"
+        );
+        assert!(
+            matches!(ninth_move, Err(RelayError::QueueFull { .. })),
+            "{ninth_move:?}"
+        );
+        assert!(other.is_ok(), "{other:?}");
+        let kept = read_queue(&file).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(kept.len(), 9);
     }
 
     #[tokio::test]

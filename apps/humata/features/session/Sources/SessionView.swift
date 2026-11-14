@@ -223,7 +223,6 @@ package struct SessionView: View {
             "The chat, the session's changes to review, the files in its folder, the specs it reads, "
                 + "or a terminal there (⌘1 to ⌘5)"
         )
-        .background { tabShortcuts }
         if inAMenu {
             picker.pickerStyle(.menu)
         } else {
@@ -347,23 +346,6 @@ package struct SessionView: View {
             }
         }
         .modifier(IconsOnly(enabled: !names))
-    }
-
-    /// ⌘1, ⌘2 and so on for the views, in the order the picker shows them,
-    /// and ⌘T for another terminal.
-    private var tabShortcuts: some View {
-        ZStack {
-            if store.tabs.contains(.terminal) {
-                Button("New Terminal") { store.send(.newTerminalTapped) }
-                    .keyboardShortcut("t", modifiers: .command)
-            }
-            ForEach(Array(store.tabs.enumerated()), id: \.element) { index, tab in
-                Button(title(tab)) { store.send(.tabPicked(tab)) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
-            }
-        }
-        .opacity(0)
-        .accessibilityHidden(true)
     }
 
     private var folder: URL { URL(filePath: store.session.workingDirectory, directoryHint: .isDirectory) }
@@ -1108,7 +1090,9 @@ private struct MessageEditor: View {
                 .accessibilityLabel("Edited message")
                 .focused($focused)
                 // On the editor, not window-wide: Escape and ⌘Return mean
-                // this only while the caret is here.
+                // this only while the caret is here. Steer Now gives up
+                // its window-wide ⌘Return while a message is edited, so
+                // the key reaches this.
                 .onKeyPress(keys: [.escape, .return]) { press in
                     if press.key == .escape {
                         store.send(.editCancelled)
@@ -1146,13 +1130,19 @@ private struct MessageEditor: View {
 
     /// What sending does, which for a read-only chat isn't what it does
     /// elsewhere.
-    private var caption: LocalizedStringKey {
-        if store.beside {
-            "Sending starts a read-only fork from before this message, which opens in this side chat’s place."
-        } else if store.session.readOnly {
-            "Sending starts a read-only fork from before this message; this chat stays as it is."
-        } else {
-            "Sending starts a fork from before this message; this session stays as it is."
+    private var caption: String {
+        let fork =
+            if store.beside {
+                "Sending starts a read-only fork from before this message, which opens in this side chat’s place."
+            } else if store.session.readOnly {
+                "Sending starts a read-only fork from before this message; this chat stays as it is."
+            } else {
+                "Sending starts a fork from before this message; this session stays as it is."
+            }
+        return switch store.editedImages.count {
+        case 0: fork
+        case 1: fork + " Its image goes with it."
+        case let count: fork + " Its \(count) images go with it."
         }
     }
 }
@@ -2171,7 +2161,7 @@ private struct SessionComposer: View {
                 .foregroundStyle(.secondary)
                 Spacer()
                 if store.images.isEmpty {
-                    let shortcuts = store.takesShortcuts
+                    let shortcuts = store.steerTakesShortcut
                     Button("Steer Now") { store.send(.sendTapped(.steer)) }
                         .font(.caption.weight(.semibold))
                         .keyboardShortcut(shortcuts ? KeyboardShortcut(.return, modifiers: .command) : nil)

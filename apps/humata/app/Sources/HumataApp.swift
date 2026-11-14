@@ -74,6 +74,9 @@ struct HumataApp: App {
                     .keyboardShortcut("n", modifiers: .command)
                 Button("Add Project…") { store.send(.sidebar(.addProjectTapped)) }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                Divider()
+                projectCommands
+                Button("Import Session…") { store.send(.sidebar(.importTapped)) }
             }
             CommandMenu("Go") {
                 Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
@@ -89,6 +92,25 @@ struct HumataApp: App {
                 sessionCommands
             }
         }
+    }
+
+    /// What the sidebar offers for a project, for the project of the board
+    /// that's open or of the session that is; greyed out with neither.
+    @ViewBuilder private var projectCommands: some View {
+        let id = store.sidebar.commandProject
+        let name = id.flatMap { store.sidebar.projects[id: $0]?.name } ?? ""
+        Button(name.isEmpty ? "New Session…" : "New Session in \(name)…") {
+            if let id { store.send(.sidebar(.newSessionTapped(projectID: id))) }
+        }
+        .disabled(id == nil)
+        Button("Plan With an Agent…") {
+            if let id { store.send(.sidebar(.planTapped(projectID: id))) }
+        }
+        .disabled(id == nil)
+        Button("Project Settings…") {
+            if let id { store.send(.sidebar(.projectSettingsTapped(id))) }
+        }
+        .disabled(id == nil)
     }
 
     /// What can be done to the session of the column the person is in, so
@@ -168,6 +190,54 @@ struct HumataApp: App {
         Button("Update from the Base Branch") { send(.updateFromBaseTapped) }
             .keyboardShortcut("u", modifiers: [.command, .option])
             .disabled(session?.ships != true || session?.updating == true || session?.isWorking == true)
+        Divider()
+        // The session's views, in the picker's order, and another
+        // terminal. Here rather than in the view, so a side chat beside a
+        // session doesn't put each key in the window twice.
+        let tabs = session?.tabs ?? [.chat, .review, .files, .spec, .terminal]
+        ForEach(Array(tabs.enumerated()), id: \.element) { index, tab in
+            Button(tab.menuTitle) { send(.tabPicked(tab)) }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                .disabled(session == nil)
+        }
+        if tabs.contains(.terminal) {
+            Button("New Terminal") { send(.newTerminalTapped) }
+                .keyboardShortcut("t", modifiers: .command)
+                .disabled(session == nil)
+        }
+        Divider()
+        sidebarCommands(for: session?.id)
+    }
+
+    /// What the sidebar's row offers for the session, as the sidebar has
+    /// it; greyed out for one the sidebar doesn't list, and while it's
+    /// being moved, archived or deleted.
+    @ViewBuilder
+    private func sidebarCommands(for id: Session.ID?) -> some View {
+        let menu = id.flatMap { store.sidebar.menuState(of: $0) }
+        Button("Rename…") {
+            if let id { store.send(.sidebar(.renameTapped(id))) }
+        }
+        .disabled(menu == nil)
+        if menu?.archived == true {
+            Button("Unarchive") {
+                if let id { store.send(.sidebar(.archiveTapped(id, archived: false))) }
+            }
+            .disabled(menu?.busy != false)
+            Button("Delete…") {
+                if let id { store.send(.sidebar(.deleteSessionTapped(id))) }
+            }
+            .disabled(menu?.busy != false)
+        } else {
+            Button("Move to Host…") {
+                if let id { store.send(.sidebar(.moveToHostTapped(id))) }
+            }
+            .disabled(menu?.held != false)
+            Button("Archive") {
+                if let id { store.send(.sidebar(.archiveTapped(id, archived: true))) }
+            }
+            .disabled(menu?.held != false)
+        }
     }
 
     private func send(_ action: SessionFeature.Action) {

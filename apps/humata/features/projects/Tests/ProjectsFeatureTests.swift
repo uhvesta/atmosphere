@@ -2180,6 +2180,87 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(archived, false)
     }
 
+    func testTheMenusProjectIsTheSelectedBoardsOrTheSelectedSessions() async {
+        func session(_ id: String, in project: String?) -> Session {
+            Session(id: id, name: id, backend: .scripted, workingDirectory: "/", projectID: project)
+        }
+        var state = ProjectsFeature.State()
+        state.projects = [
+            Project(id: "p1", name: "Humata", repositories: [], created: Date(timeIntervalSince1970: 0)),
+            Project(id: "p2", name: "Site", repositories: [], created: Date(timeIntervalSince1970: 0)),
+        ]
+        state.sessions = [session("a", in: "p2"), session("chat", in: nil)]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+        XCTAssertNil(store.state.commandProject)
+
+        await store.send(.selected(.board("p1")))
+        XCTAssertEqual(store.state.commandProject, "p1")
+        await store.send(.selected(.session("a")))
+        XCTAssertEqual(store.state.commandProject, "p2")
+        // A chat is in no project, and the inbox is no project's.
+        await store.send(.selected(.session("chat")))
+        XCTAssertNil(store.state.commandProject)
+        await store.send(.selected(.inbox))
+        XCTAssertNil(store.state.commandProject)
+    }
+
+    func testASessionInATurnIsHeldInTheMenusAndAnArchivedOneIsnt() async {
+        var state = ProjectsFeature.State()
+        state.sessions = [
+            Session(id: "turn", name: "turn", backend: .scripted, workingDirectory: "/", state: .working),
+            Session(id: "asks", name: "asks", backend: .scripted, workingDirectory: "/", state: .waitingForApproval),
+            Session(id: "idle", name: "idle", backend: .scripted, workingDirectory: "/"),
+            Session(id: "away", name: "away", backend: .scripted, workingDirectory: "/", archived: true),
+        ]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            // The archive asked for below is still going while it's looked at.
+            $0.daemon.update = { _, _ in try await Task.never() }
+        }
+        store.exhaustivity = .off
+
+        /// What the menus are told of `id`: archived, held, busy.
+        func menu(_ id: String) -> [Bool]? {
+            store.state.menuState(of: id).map { [$0.archived, $0.held, $0.busy] }
+        }
+        XCTAssertEqual(menu("turn"), [false, true, false])
+        XCTAssertEqual(menu("asks"), [false, true, false])
+        XCTAssertEqual(menu("idle"), [false, false, false])
+        XCTAssertEqual(menu("away"), [true, false, false])
+
+        let archiving = await store.send(.archiveTapped("idle", archived: true))
+        XCTAssertEqual(menu("idle"), [false, true, true])
+        await archiving.cancel()
+    }
+
+    func testASessionTheSidebarDoesntListHasNoMenuState() async {
+        var state = ProjectsFeature.State()
+        state.sessions = [Session(id: "a", name: "a", backend: .scripted, workingDirectory: "/")]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        XCTAssertNotNil(store.state.menuState(of: "a"))
+        XCTAssertNil(store.state.menuState(of: "elsewhere"))
+        // Selected from a link, say, before the sidebar has read it.
+        await store.send(.selected(.session("elsewhere")))
+        XCTAssertNil(store.state.menuState(of: "elsewhere"))
+        XCTAssertNil(store.state.commandProject)
+    }
+
     func testARepositoryRowSaysWhenItNeedsAFullPath() {
         XCTAssertFalse(RepositoryRow(id: 0).needsFullPath)
         XCTAssertFalse(RepositoryRow(id: 0, path: "  ").needsFullPath)

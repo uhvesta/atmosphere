@@ -15,6 +15,9 @@ package struct AppFeature {
     @ObservableState
     package struct State: Equatable {
         package var daemon = DaemonStatus.starting
+        /// Whether the daemon was looked for, and started again if gone,
+        /// since the sidebar last read: once for each run of failed reads.
+        var daemonRetried = false
         package var sidebar = ProjectsFeature.State()
         /// The open session; nil until one is picked.
         @Presents package var session: SessionFeature.State?
@@ -270,6 +273,8 @@ package struct AppFeature {
         /// Replaces the daemon now, ending the turns in progress.
         case restartTapped
         case restarted
+        /// Nothing answers where the daemon was: it's started again.
+        case daemonGone
         case openLoginItemsTapped
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
@@ -361,12 +366,40 @@ package struct AppFeature {
 
             case .restarted:
                 state.daemon = .running
+                // Hosts shows what the new daemon read of this Mac's shell.
+                let hosts: Effect<Action> = state.hosts == nil ? .none : .send(.hosts(.presented(.daemonRestarted)))
                 // Its watch ended with the old daemon; watch the new one.
-                guard state.session != nil else { return .merge(.send(.sidebar(.refresh)), serveModels()) }
+                guard state.session != nil else {
+                    return .merge(.send(.sidebar(.refresh)), hosts, serveModels())
+                }
                 state.session?.alert = nil
                 state.side?.alert = nil
                 let side: Effect<Action> = state.side == nil ? .none : .send(.side(.presented(.task)))
-                return .merge(.send(.sidebar(.refresh)), .send(.session(.presented(.task))), side, serveModels())
+                return .merge(
+                    .send(.sidebar(.refresh)), .send(.session(.presented(.task))), side, hosts, serveModels())
+
+            case .sidebar(.loadFailed):
+                // A read can fail while the daemon answers; only one that
+                // is gone is started again, once until the sidebar reads.
+                guard state.daemon == .running, !state.daemonRetried else { return .none }
+                state.daemonRetried = true
+                return .run { send in
+                    do {
+                        _ = try await service.isCurrent()
+                    } catch {
+                        await send(.daemonGone)
+                    }
+                }
+
+            case .daemonGone:
+                guard state.daemon == .running else { return .none }
+                state.daemon = .restarting
+                return .run { send in
+                    try await service.start()
+                    await send(.restarted)
+                } catch: { error, send in
+                    await send(Self.failed(error))
+                }
 
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
@@ -374,6 +407,7 @@ package struct AppFeature {
             case .sidebar(.loaded(_, let sessions, _, _)):
                 // Every two seconds: set only what changed, so the open
                 // session isn't drawn again for nothing.
+                if state.daemonRetried { state.daemonRetried = false }
                 if let open = state.session {
                     if let listed = sessions.first(where: { $0.id == open.session.id }) {
                         // What changes outside its chat: its host is lost or
@@ -539,6 +573,16 @@ package struct AppFeature {
             case .hosts(.presented(.removed)):
                 // Its sessions went with it.
                 return .send(.sidebar(.refresh))
+
+            case .settings(.removed):
+                // Its sessions went with it, and Hosts lists it no more.
+                guard state.hosts != nil else { return .send(.sidebar(.refresh)) }
+                return .merge(.send(.sidebar(.refresh)), .send(.hosts(.presented(.task))))
+
+            case .hosts(.presented(.delegate(.restartDaemon))):
+                // Asked for and confirmed in Hosts.
+                guard state.daemon != .restarting else { return .none }
+                return restart(&state)
 
             case .session(.presented(.delegate(.openSide(let session)))),
                 .side(.presented(.delegate(.openSide(let session)))):

@@ -44,7 +44,42 @@ final class StorageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.storage?.autoDelete, true)
         await store.receive(\.settingsFailed)
         XCTAssertEqual(store.state.storage?.autoDelete, false)
-        XCTAssertNotNil(store.state.failure)
+        XCTAssertNotNil(store.state.actionFailure)
+    }
+
+    func testAFailedSettingDuringACleanupStaysShownThroughProgressReads() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.startCleanup(Storage.Job(step: "Packing repositories", done: 2, total: 5))
+        let clock = TestClock()
+        let store = TestStore(initialState: StorageFeature.State()) {
+            StorageFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.setStorageSettings = { _, _ in throw DaemonError.disconnected }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.storage?.job)
+
+        await store.send(.autoDeleteToggled(true))
+        await store.receive(\.settingsFailed)
+        XCTAssertNotNil(store.state.actionFailure)
+
+        // The cleanup's progress is read again, and again.
+        await clock.advance(by: .milliseconds(500))
+        await store.receive(\.loaded)
+        await clock.advance(by: .milliseconds(500))
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.storage?.job)
+        XCTAssertNotNil(store.state.actionFailure, "what wasn't saved is still said while the cleanup runs")
+        XCTAssertNil(store.state.failure)
+
+        // The next thing the person changes takes it away.
+        await store.send(.daysPicked(90))
+        XCTAssertNil(store.state.actionFailure)
+        await store.skipInFlightEffects()
     }
 
     func testACleanupInProgressIsReadAgainUntilItsDone() async throws {

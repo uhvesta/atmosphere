@@ -52,7 +52,9 @@ package struct TerminalsView: View {
             }
         }
         .alert($store.scope(state: \.confirm, action: \.confirm))
-        .task { await store.send(.task).finish() }
+        // Not awaited: leaving the tab stops neither the read nor the first
+        // open, which lands in the tabs whenever it comes.
+        .task { store.send(.task) }
     }
 
     private var tabBar: some View {

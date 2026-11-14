@@ -372,9 +372,10 @@ impl Runner for LocalModelRunner {
                 .reply(&turn, &request, &offered, budget, apps, None)
                 .await?;
             if reply.calls.is_empty() {
-                // A message sent to steer the turn while this reply was on
-                // its way is in the history, and nothing has answered it:
-                // the model gets another go, with it.
+                // A request takes the steers it holds as it is built, so
+                // one left now was sent after that, while this reply was on
+                // its way. It is in the history and nothing has answered
+                // it: the model gets another go, with it.
                 if turn.take_steering().is_empty() {
                     return Ok(());
                 }
@@ -579,12 +580,14 @@ impl LocalModelRunner {
     ) -> Result<Reply, LocalModelError> {
         let mut waiting = false;
         loop {
-            // Built afresh each time, so steering sent while it waited is in.
+            // Built afresh each time, so steering sent while it waited is
+            // in, and taken with the history it is read from: the reply to
+            // this request is its answer, and it isn't answered again.
             let instructions = turn.record().instructions;
             let images = turn.images_folder();
             // A summary is of what was said: the images aren't sent again.
             let images = asked.is_none().then_some(images.as_path());
-            let mut messages = turn.with_history(|history| {
+            let mut messages = turn.with_history_taking_steering(|history| {
                 messages(instructions.as_deref(), history, images, budget)
             })?;
             if let Some(asked) = asked {
@@ -1064,9 +1067,11 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 /// A message sent to steer a turn while a reply was on its way, the
 /// turn's first or the one after a step's calls all had their results,
 /// comes after that reply, which was asked for without it. The history
-/// can't tell one logged between a step's last result and the next request
-/// being built from one logged just after: it was in that request, and is
-/// shown one reply late in later ones.
+/// can't tell a message logged before a request was built from one logged
+/// just after: one sent while the turn starts up or waits for the model
+/// server, or between a step's last result and the next request, was in
+/// that request, which answered it once, and is shown one reply late in
+/// later ones.
 /// The images of the latest message that has any, read from `images`, go
 /// with it as data URLs; an earlier message's are only noted, since
 /// sending every image again each turn costs tokens and can make the
@@ -3059,6 +3064,58 @@ mod tests {
                 .any(|event| matches!(event.kind, EventKind::Failed { .. }))
         );
         assert_eq!(app.requests()[0]["model"], "apple");
+    }
+
+    #[tokio::test]
+    async fn a_steer_sent_while_the_turn_waits_for_the_model_server_is_answered_once() {
+        let port = free_port();
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let work = tempfile::tempdir().expect("a temporary folder");
+        let server = ModelServer::open(state.path().join("model-server"));
+        server.set_port(port).expect("the port is kept");
+        let runner = LocalModelRunner::new(LocalModelConfig::default())
+            .with_server(server)
+            .with_retry(Duration::from_millis(20));
+        let fixture = Fixture {
+            agent: LocalAgent::open(state.path().join("local"), runner).expect("the agent opens"),
+            work,
+            _state: state,
+        };
+        let id = fixture.start(Some("apple")).await;
+        fixture.send(&id, "hi").await;
+        wait_for(&fixture.agent, &id, |events: &[Event]| {
+            events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Waiting { .. }))
+        })
+        .await;
+
+        fixture
+            .agent
+            .send(&id, "and this".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("listens");
+        // A second reply, so a steer answered twice shows as two.
+        let app = serve_on(
+            listener,
+            vec![(200, sse(&[text("Both.")])), (200, sse(&[text("Again.")]))],
+        );
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let count = |found: fn(&EventKind) -> bool| {
+            events.iter().filter(|event| found(&event.kind)).count()
+        };
+        assert_eq!(count(|kind| matches!(kind, EventKind::TurnStarted)), 1);
+        assert_eq!(
+            count(|kind| matches!(kind, EventKind::AssistantMessage { .. })),
+            1
+        );
+        let requests = app.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(said(&requests[0]), ["user: hi", "user: and this"]);
     }
 
     #[tokio::test]

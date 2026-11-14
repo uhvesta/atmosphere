@@ -1886,7 +1886,8 @@ package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {
         case .refused(_, let message):
             message
         case .notRunning(let socket, let reason):
-            "Humata's daemon isn't running at \(socket) (\(reason)). Start it with `humatad daemon`, then try again."
+            "Humata's daemon isn't running at \(socket) (\(reason)). Humata starts it again by itself; if this "
+                + "stays, quit Humata and open it again."
         case .disconnected:
             "The connection to Humata's daemon closed before it answered. Check that it is still running, then "
                 + "retry; the request may or may not have been carried out."

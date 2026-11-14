@@ -12,6 +12,18 @@ package struct GitHubSettingsView: View {
 
     package var body: some View {
         Form {
+            Section {
+                Text(
+                    """
+                    Humata uses the GitHub command line's sign-in (`gh auth login`), or `GH_TOKEN` in \
+                    Hosts › This Mac's variables, to open and follow pull requests and to list saved owners' \
+                    repositories.
+                    """
+                )
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("Sign-In")
+            }
             if let refresh = store.refresh {
                 pullRequests(refresh)
             } else if store.failure == nil {

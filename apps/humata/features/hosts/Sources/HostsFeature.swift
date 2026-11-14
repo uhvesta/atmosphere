@@ -27,8 +27,13 @@ package struct HostsFeature {
         var unsaved: [RemoteHost.ID: HostEditorFeature.State] = [:]
         /// The selected host's sessions whose files couldn't be read.
         package var skipped: IdentifiedArrayOf<SkippedSession> = []
+        /// Why they couldn't be read, on This Mac or a host that answers;
+        /// nil once they are. An unreachable host's page says that already.
+        package var skippedFailure: String?
         /// The Mac's copies of the selected host's sessions.
         package var recoveries: IdentifiedArrayOf<Recovery> = []
+        /// Why the copies couldn't be read; nil once they are.
+        package var recoveriesFailure: String?
         /// The sessions being restored or moved.
         package var restoring: Set<Recovery.ID> = []
         /// Why the hosts couldn't be read, and what to do about it.
@@ -50,6 +55,14 @@ package struct HostsFeature {
 
         package var selected: RemoteHost? {
             selection.flatMap { $0 == coordinator.id ? coordinator : hosts[id: $0] }
+        }
+
+        /// Whether `id` is This Mac or a host whose last check reached it,
+        /// so a read of it that fails is worth saying.
+        fileprivate func answers(_ id: RemoteHost.ID) -> Bool {
+            if id == coordinator.id { return true }
+            if case .known(.reachable) = health[id] { return true }
+            return false
         }
 
         /// The hosts to keep while something else shows in their place. What
@@ -94,6 +107,7 @@ package struct HostsFeature {
         package enum Alert: Equatable {
             case confirmRemove(RemoteHost.ID)
             case confirmRemoveSkipped(SkippedSession.ID)
+            case confirmRestartDaemon
         }
     }
 
@@ -113,9 +127,17 @@ package struct HostsFeature {
         case removeTapped(RemoteHost.ID)
         case removed(RemoteHost.ID)
         case skippedLoaded(RemoteHost.ID, [SkippedSession])
+        /// They couldn't be read, and this is why; the list stays as it was.
+        case skippedFailed(RemoteHost.ID, String)
+        /// Reads the selected host's skipped sessions again.
+        case skippedRetryTapped
         case removeSkippedTapped(SkippedSession.ID)
         case skippedRemoved(RemoteHost.ID, SkippedSession.ID)
         case recoveriesLoaded(RemoteHost.ID, [Recovery])
+        /// They couldn't be read, and this is why; the list stays as it was.
+        case recoveriesFailed(RemoteHost.ID, String)
+        /// Reads the selected host's copies again.
+        case recoveriesRetryTapped
         /// Restores the session on the selected host, if that lost it.
         case restoreTapped(Recovery.ID)
         /// Restores every session the selected host lost.
@@ -130,10 +152,22 @@ package struct HostsFeature {
         case commandLinksLoaded(CommandLinks)
         case linkCommandsTapped
         case linkFailed(String)
+        /// Asks before restarting this Mac's daemon, which stops its turns.
+        case restartDaemonTapped
+        /// This Mac's daemon was started anew: reads its commands again,
+        /// with what it read of the login shell this time.
+        case daemonRestarted
         case terminals(TerminalsFeature.Action)
         case files(FileBrowserFeature.Action)
         case ports(PortsFeature.Action)
         case destination(PresentationAction<Destination.Action>)
+        case delegate(Delegate)
+
+        @CasePathable
+        package enum Delegate: Equatable {
+            /// The person confirmed restarting this Mac's daemon.
+            case restartDaemon
+        }
     }
 
     @Dependency(\.daemon) var daemon
@@ -189,9 +223,19 @@ package struct HostsFeature {
 
             case .recoveriesLoaded(let id, let recoveries):
                 guard id == state.selection else { return .none }
+                state.recoveriesFailure = nil
                 state.recoveries = IdentifiedArray(
                     recoveries.filter { $0.host == id }, uniquingIDsWith: { _, last in last })
                 return .none
+
+            case .recoveriesFailed(let id, let message):
+                guard id == state.selection else { return .none }
+                state.recoveriesFailure = message
+                return .none
+
+            case .recoveriesRetryTapped:
+                guard let id = state.selection, !id.isEmpty else { return .none }
+                return loadRecoveries(id)
 
             case .restoreTapped(let id):
                 guard let host = state.selection, !state.restoring.contains(id) else { return .none }
@@ -257,8 +301,19 @@ package struct HostsFeature {
 
             case .skippedLoaded(let id, let skipped):
                 guard id == state.selection else { return .none }
+                state.skippedFailure = nil
                 state.skipped = IdentifiedArray(skipped, uniquingIDsWith: { _, last in last })
                 return .none
+
+            case .skippedFailed(let id, let message):
+                // An unreachable host's page says why nothing of it is read.
+                guard id == state.selection, state.answers(id) else { return .none }
+                state.skippedFailure = message
+                return .none
+
+            case .skippedRetryTapped:
+                guard let id = state.selection else { return .none }
+                return loadSkipped(id)
 
             case .removeSkippedTapped(let id):
                 guard let session = state.skipped[id: id] else { return .none }
@@ -344,7 +399,13 @@ package struct HostsFeature {
             case .destination(.presented(.add(.delegate(.added(let host))))):
                 state.destination = nil
                 state.hosts.append(host)
-                return .merge(select(host.id, in: &state), check(host.id, in: &state, again: true))
+                let selecting = select(host.id, in: &state)
+                // Humata's program is copied over SSH; one reached by its
+                // own command has it already, so it's only checked.
+                guard host.sshDestination != nil else {
+                    return .merge(selecting, check(host.id, in: &state, again: true))
+                }
+                return .merge(selecting, .send(.installTapped(host.id)))
 
             case .editor(.delegate(.saved(let host))) where host.isCoordinator:
                 state.coordinator = host
@@ -389,7 +450,28 @@ package struct HostsFeature {
                     })
                 return .none
 
-            case .editor, .destination, .terminals, .files, .ports:
+            case .restartDaemonTapped:
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Restart Humata's daemon?")
+                    } actions: {
+                        ButtonState(action: .confirmRestartDaemon) { TextState("Restart") }
+                        ButtonState(role: .cancel) { TextState("Cancel") }
+                    } message: {
+                        TextState(
+                            "Turns in progress on this Mac stop; send to those sessions again once it's back. "
+                                + "Sessions on hosts go on.")
+                    })
+                return .none
+
+            case .destination(.presented(.alert(.confirmRestartDaemon))):
+                return .send(.delegate(.restartDaemon))
+
+            case .daemonRestarted:
+                guard state.selection == state.coordinator.id else { return .none }
+                return loadCommandLinks()
+
+            case .editor, .destination, .terminals, .files, .ports, .delegate:
                 return .none
             }
         }
@@ -415,7 +497,9 @@ package struct HostsFeature {
         state.files = id.map { FileBrowserFeature.State(place: HostPlace(host: $0.isEmpty ? nil : $0)) }
         state.ports = id.map { PortsFeature.State(host: $0.isEmpty ? nil : $0) }
         state.skipped = []
+        state.skippedFailure = nil
         state.recoveries = []
+        state.recoveriesFailure = nil
         state.commandLinks = nil
         guard let id else { return .none }
         guard !id.isEmpty else { return .merge(loadSkipped(id), loadCommandLinks()) }
@@ -426,7 +510,10 @@ package struct HostsFeature {
     /// unreachable.
     private func loadRecoveries(_ id: RemoteHost.ID) -> Effect<Action> {
         .run { send in
-            await send(.recoveriesLoaded(id, (try? await daemon.recoveries()) ?? []))
+            await send(.recoveriesLoaded(id, try await daemon.recoveries()))
+        } catch: { error, send in
+            guard !(error is CancellationError) else { return }
+            await send(.recoveriesFailed(id, error.localizedDescription))
         }
         .cancellable(id: RecoveriesLoad.host(id), cancelInFlight: true)
     }
@@ -443,7 +530,10 @@ package struct HostsFeature {
     /// One that can't be reached has none to list until it can be.
     private func loadSkipped(_ id: RemoteHost.ID) -> Effect<Action> {
         .run { send in
-            await send(.skippedLoaded(id, (try? await daemon.skipped(id.isEmpty ? nil : id)) ?? []))
+            await send(.skippedLoaded(id, try await daemon.skipped(id.isEmpty ? nil : id)))
+        } catch: { error, send in
+            guard !(error is CancellationError) else { return }
+            await send(.skippedFailed(id, error.localizedDescription))
         }
         .cancellable(id: SkippedLoad.host(id), cancelInFlight: true)
     }
@@ -451,7 +541,12 @@ package struct HostsFeature {
     /// Notes how the host is, and reads what it skipped once it can say.
     private func known(_ health: HostHealth, of id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
         state.health[id] = .known(health)
-        guard id == state.selection, case .reachable = health else { return .none }
+        guard id == state.selection else { return .none }
+        guard case .reachable = health else {
+            // Its page says it can't be reached, which is why.
+            state.skippedFailure = nil
+            return .none
+        }
         return loadSkipped(id)
     }
 

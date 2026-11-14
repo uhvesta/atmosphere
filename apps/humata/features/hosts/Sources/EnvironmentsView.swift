@@ -71,6 +71,9 @@ package struct EnvironmentsView: View {
                 if let editor = store.scope(state: \.editor, action: \.editor) {
                     HostEditorSections(store: editor)
                 }
+                Section {
+                    Button("Remove Host…", role: .destructive) { store.send(.removeTapped(id)) }
+                }
             }
             .formStyle(.grouped)
         } else {

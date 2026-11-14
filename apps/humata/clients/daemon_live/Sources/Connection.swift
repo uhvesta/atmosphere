@@ -132,7 +132,10 @@ final class Connection: Sendable {
         return items
     }
 
-    /// Stops the stream `id`.
+    /// Stops the stream `id`. Its entry goes at once, so nothing more is
+    /// delivered to it; telling the daemon is handed to a queue, since the
+    /// write waits for whichever frame is being written, and the thread that
+    /// cancels is often the main one.
     private func cancel(_ id: UInt64) {
         let removed = state.withLock { $0.pending.removeValue(forKey: id) != nil }
         guard removed else { return }
@@ -140,7 +143,11 @@ final class Connection: Sendable {
         envelope.id = id
         envelope.cancel = Humata_V1_Cancel()
         let cancel = envelope
-        _ = writing.withLock { Self.write(cancel, to: descriptor) }
+        // Holds the connection until the write is over, so its descriptor
+        // is still open then.
+        DispatchQueue.global().async { [self] in
+            _ = writing.withLock { Self.write(cancel, to: descriptor) }
+        }
     }
 
     /// Ends the connection; everything waiting on it fails as disconnected.

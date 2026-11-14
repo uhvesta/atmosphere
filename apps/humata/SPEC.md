@@ -627,7 +627,8 @@ owner thinks of them:
   `~/.ssh/config`. Each shows whether it has been added, the version
   installed there and whether it's reachable; Add takes one in, and a
   destination that isn't in the config can still be typed.
-- **On the remote machine:** adding a host installs humatad there, and
+- **On the remote machine:** adding a host in the app installs humatad
+  there (`humata host add` is followed by `humata host install`), and
   Settings offers Update when the bundled version is newer. Its variables,
   GitHub token and setup script are edited from the same pane. The token is
   still held only in memory.
@@ -1783,6 +1784,47 @@ Fable found and judged: 24 kept, 1 deferred.
   Again; search says when the index hadn't caught up; Files shows a failed
   listing in place; Viewed, Keep, renames and imports recover from failures
 - Deferred: `read_session`'s wait lists every session to check one
+
+### Review after v0.10.0
+
+Fable found and judged, with two items from a live run on Alpine hosts:
+31 kept, 4 deferred.
+
+- [x] Stage, Unstage and Revert refuse a path outside the session's copy;
+  Revert removes an untracked file only inside it, through links too
+- [x] What a setup script or git printed is kept and shown without the
+  host's variables' values; `setup.json` is 0600 and the state folder 0700
+- [x] The file browser reads and lists a link to a file inside the folder
+  and writes through no link that leads nowhere; humatad exits within two
+  seconds of being told to
+- [x] A relayed start or send whose answer is lost with the connection says
+  it may have acted; a session's questions waiting on a host are at most 8
+- [x] A start being allowed can't be declined until the Allow ends; a start
+  that finishes while another is counted is counted once
+- [x] A local model answers a steer sent before its request was built once
+- [x] `humata mcp` answers while a call waits and stops one the client
+  cancels; `read_history` and `send_message` cut each event and cap the
+  answer, and `read_history` reads on with `before_event_id`; waiting on a
+  session reads its history once
+- [x] The app starts a daemon that is gone again by itself; Hosts › This
+  Mac can restart the daemon
+- [x] Add Host in Hosts installs humatad, as in Settings; a host can be
+  removed in Settings › Environments; Copilot missing on a host is a row,
+  not a warning
+- [x] File and Session menus: New Session, Plan With an Agent, Project
+  Settings, Import Session, Rename, Move to Host, Archive, Delete, the
+  session's views (⌘1–⌘5) and New Terminal (⌘T); a project's header has a
+  "…" menu
+- [x] ⌘Return in the earlier-message editor is the editor's; an edited
+  message's images go to the fork
+- [x] A Terminal tab left while its first shell opens shows that shell on
+  return and opens no second
+- [x] Lost and skipped sessions that can't be read say so; a failure during
+  a clean-up stays shown
+- Deferred: cancelling a daemon call, the file browser's line split, a
+  keyboard model for the board, agent health for This Mac, a This Mac row
+  in Settings › Environments, the GitHub token's status, a steer's exact
+  place in later requests
 
 ### Milestone AC: agent access
 

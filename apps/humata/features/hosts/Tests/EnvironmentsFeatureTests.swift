@@ -75,6 +75,58 @@ final class EnvironmentsFeatureTests: XCTestCase {
         XCTAssertFalse(current.needsUpdate("gpu"))
     }
 
+    func testRemovingAHostInSettingsAsksFirstAndForgetsIt() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.addHost("near", "me@near")
+        let store = TestStore(initialState: EnvironmentsFeature.State()) {
+            EnvironmentsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected("far"))
+        await store.send(.removeTapped("far"))
+        XCTAssertNotNil(store.state.destination?.alert)
+        let hosts = try await daemon.client.hosts()
+        XCTAssertEqual(Set(hosts.map(\.name)), ["far", "near"])
+
+        await store.send(.destination(.presented(.alert(.confirmRemove("far")))))
+        await store.receive(\.removed)
+        XCTAssertEqual(store.state.hosts.ids, ["near"])
+        XCTAssertNil(store.state.selection)
+        XCTAssertNil(store.state.editor)
+        let left = try await daemon.client.hosts()
+        XCTAssertEqual(left.map(\.name), ["near"])
+        await store.skipReceivedActions(strict: false)
+    }
+
+    func testAHostThatCouldntBeRemovedInSettingsStaysAndSaysWhy() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        let store = TestStore(initialState: EnvironmentsFeature.State()) {
+            EnvironmentsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.removeHost = { _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected("far"))
+        await store.send(.removeTapped("far"))
+        await store.send(.destination(.presented(.alert(.confirmRemove("far")))))
+        await store.receive(\.removeFailed)
+        XCTAssertNotNil(store.state.destination?.alert)
+        XCTAssertEqual(store.state.hosts.ids, ["far"])
+        XCTAssertEqual(store.state.selection, "far")
+        await store.skipReceivedActions(strict: false)
+    }
+
     func testAHostTypedInIsAddedAndInstalled() async throws {
         let daemon = InMemoryDaemon()
         let store = TestStore(initialState: EnvironmentsFeature.State()) {

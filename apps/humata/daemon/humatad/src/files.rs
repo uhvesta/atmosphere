@@ -52,9 +52,13 @@ pub async fn folder_apart(root: PathBuf, directory: String) -> Result<pb::Folder
 }
 
 /// Every file under `root` but hidden ones and those in hidden folders,
-/// such as `.git`, by path. It stops at the most it lists, rather than
-/// walking the rest of a tree such as `node_modules`.
+/// such as `.git`, by path. A link to a file inside `root` is listed as
+/// that file; a link to a folder, or one that leads out, isn't. It stops
+/// at the most it lists, rather than walking the rest of a tree such as
+/// `node_modules`.
 pub fn list(root: &Path) -> Result<pb::Files, HostError> {
+    // None if it can't be resolved, and then no link is listed.
+    let resolved_root = root.canonicalize().ok();
     let mut files = Vec::new();
     let mut folders = vec![PathBuf::new()];
     let mut truncated = false;
@@ -74,24 +78,45 @@ pub fn list(root: &Path) -> Result<pb::Files, HostError> {
                 continue;
             }
             let relative = folder.join(&name);
-            // Not followed: a link could lead out of the folder.
             let Ok(kind) = entry.file_type() else {
                 continue;
             };
+            // A linked folder is never walked: it could lead out of the
+            // folder, or back into it for ever.
             if kind.is_dir() {
                 folders.push(relative);
-            } else if kind.is_file() {
-                if files.len() == MOST_FILES {
-                    truncated = true;
-                    break 'walk;
-                }
-                let metadata = entry.metadata().ok();
-                files.push(pb::ChatFile {
-                    path: slashed(&relative),
-                    size: metadata.as_ref().map_or(0, std::fs::Metadata::len),
-                    modified_unix_ms: metadata.as_ref().map_or(0, unix_ms),
-                });
+                continue;
             }
+            // The file's own size and time, or those of the file a link
+            // leads to when that is inside the folder.
+            let metadata = if kind.is_file() {
+                entry.metadata().ok()
+            } else if kind.is_symlink() {
+                let target = entry.path().canonicalize().ok();
+                let inside = match (&target, &resolved_root) {
+                    (Some(target), Some(root)) => target.starts_with(root),
+                    _ => false,
+                };
+                let Some(metadata) = target
+                    .filter(|_| inside)
+                    .and_then(|target| std::fs::metadata(target).ok())
+                    .filter(std::fs::Metadata::is_file)
+                else {
+                    continue;
+                };
+                Some(metadata)
+            } else {
+                continue;
+            };
+            if files.len() == MOST_FILES {
+                truncated = true;
+                break 'walk;
+            }
+            files.push(pb::ChatFile {
+                path: slashed(&relative),
+                size: metadata.as_ref().map_or(0, std::fs::Metadata::len),
+                modified_unix_ms: metadata.as_ref().map_or(0, unix_ms),
+            });
         }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -184,11 +209,12 @@ pub fn read(root: &Path, path: &str) -> Result<pb::FileContents, HostError> {
         });
     }
     let full = root.join(relative);
-    let metadata = std::fs::symlink_metadata(&full).map_err(|source| HostError::ReadFile {
+    // What a link leads to, so a link to a file is read as that file.
+    let metadata = std::fs::metadata(&full).map_err(|source| HostError::ReadFile {
         path: full.clone(),
         source,
     })?;
-    // A linked folder on the way could still lead out.
+    // A link, or a linked folder on the way, could still lead out.
     let inside = match (full.canonicalize(), root.canonicalize()) {
         (Ok(file), Ok(root)) => file.starts_with(root),
         _ => false,
@@ -295,6 +321,13 @@ pub fn write(root: &Path, path: &str, text: &str) -> Result<(), HostError> {
         });
     }
     let full = root.join(relative);
+    // A link whose target doesn't exist: writing through it would make the
+    // target wherever the link points.
+    if !full.exists() && std::fs::symlink_metadata(&full).is_ok() {
+        return Err(HostError::NotInFolder {
+            path: path.to_owned(),
+        });
+    }
     // What's there, or the folder it goes in, must be inside the root, so a
     // linked file or folder can't lead out.
     let there = if full.exists() {
@@ -399,6 +432,91 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    fn link(target: impl AsRef<Path>, at: impl AsRef<Path>) {
+        std::os::unix::fs::symlink(target, at).expect("a link");
+    }
+
+    fn listed(root: &Path) -> Vec<String> {
+        let files = list(root).expect("listed");
+        files.files.into_iter().map(|file| file.path).collect()
+    }
+
+    #[test]
+    fn a_link_to_a_file_inside_the_folder_is_read_and_listed() {
+        let dir = folder();
+        link("docs/notes/a.md", dir.path().join("current.md"));
+
+        let contents = read(dir.path(), "current.md").expect("read");
+        let files = list(dir.path()).expect("listed");
+
+        assert_eq!(contents.text, "a");
+        assert_eq!(contents.size, 1);
+        let entry = files.files.iter().find(|file| file.path == "current.md");
+        assert_eq!(entry.map(|file| file.size), Some(1));
+    }
+
+    #[test]
+    fn a_link_that_leads_out_is_neither_read_nor_listed() {
+        let outside = tempfile::tempdir().expect("a temporary folder");
+        std::fs::write(outside.path().join("secret.txt"), "secret").expect("a file");
+        let dir = folder();
+        link(
+            outside.path().join("secret.txt"),
+            dir.path().join("out.txt"),
+        );
+        link(
+            outside.path().join("gone.txt"),
+            dir.path().join("nowhere.txt"),
+        );
+
+        assert!(matches!(
+            read(dir.path(), "out.txt"),
+            Err(HostError::NotInFolder { .. })
+        ));
+        assert!(read(dir.path(), "nowhere.txt").is_err());
+        assert_eq!(listed(dir.path()), ["docs/notes/a.md", "plan.md"]);
+    }
+
+    #[test]
+    fn a_link_to_a_folder_isnt_walked() {
+        let outside = tempfile::tempdir().expect("a temporary folder");
+        std::fs::write(outside.path().join("secret.txt"), "secret").expect("a file");
+        let dir = folder();
+        link(outside.path(), dir.path().join("elsewhere"));
+        link("docs", dir.path().join("same"));
+        link("..", dir.path().join("docs/up"));
+
+        assert_eq!(listed(dir.path()), ["docs/notes/a.md", "plan.md"]);
+        assert!(matches!(
+            read(dir.path(), "same"),
+            Err(HostError::NotInFolder { .. })
+        ));
+        assert!(matches!(
+            read(dir.path(), "elsewhere/secret.txt"),
+            Err(HostError::NotInFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn writing_through_a_link_that_leads_nowhere_is_refused() {
+        let outside = tempfile::tempdir().expect("a temporary folder");
+        let dir = folder();
+        link(outside.path().join("made.txt"), dir.path().join("out.txt"));
+        link("docs/later.md", dir.path().join("inside.md"));
+
+        for path in ["out.txt", "inside.md"] {
+            assert!(
+                matches!(
+                    write(dir.path(), path, "x"),
+                    Err(HostError::NotInFolder { .. })
+                ),
+                "{path}"
+            );
+        }
+        assert!(!outside.path().join("made.txt").exists());
+        assert!(!dir.path().join("docs/later.md").exists());
     }
 
     #[test]

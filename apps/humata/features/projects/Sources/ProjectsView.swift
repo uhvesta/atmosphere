@@ -31,7 +31,7 @@ package struct ProjectsView: View {
                 } label: {
                     Label("Add Project", systemImage: "folder.badge.plus")
                 }
-                .help("Add a project for a repository on this Mac (⇧⌘N)")
+                .help("Add a project for a repository, from a folder on this Mac or a URL to clone (⇧⌘N)")
             }
         }
         .modifier(Sheets(store: store))
@@ -70,7 +70,9 @@ private struct SidebarNotice: View {
             ContentUnavailableView {
                 Label("No Projects", systemImage: "folder")
             } description: {
-                Text("Add a repository on this Mac to start working with an agent in it.")
+                Text(
+                    "Add a repository, from a folder on this Mac or a URL to clone, "
+                        + "to start working with an agent in it.")
             } actions: {
                 Button("Add Project…") { store.send(.addProjectTapped) }
             }
@@ -155,6 +157,19 @@ private struct SidebarItems: View {
         }
     }
 
+    /// What can be done with a project, for its header's "…" menu and its
+    /// right-click.
+    @ViewBuilder
+    private func projectActions(_ project: Project) -> some View {
+        Button("New Session…") { store.send(.newSessionTapped(projectID: project.id)) }
+        Button("Plan With an Agent…") { store.send(.planTapped(projectID: project.id)) }
+        Button("Project Settings…") { store.send(.projectSettingsTapped(project.id)) }
+        Divider()
+        Button("Delete Project…", role: .destructive) {
+            store.send(.deleteProjectTapped(project.id))
+        }
+    }
+
     /// Every project, then the chats, then what's archived.
     @ViewBuilder
     private var everything: some View {
@@ -176,16 +191,18 @@ private struct SidebarItems: View {
                         }
                         .buttonStyle(.borderless)
                         .help("Start a session in \(project.name)")
-                    }
-                    .contextMenu {
-                        Button("New Session…") { store.send(.newSessionTapped(projectID: project.id)) }
-                        Button("Plan With an Agent…") { store.send(.planTapped(projectID: project.id)) }
-                        Button("Project Settings…") { store.send(.projectSettingsTapped(project.id)) }
-                        Divider()
-                        Button("Delete Project…", role: .destructive) {
-                            store.send(.deleteProjectTapped(project.id))
+                        Menu {
+                            projectActions(project)
+                        } label: {
+                            Label("Project Actions", systemImage: "ellipsis")
+                                .labelStyle(.iconOnly)
                         }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("New session, plan, settings or delete for \(project.name)")
                     }
+                    .contextMenu { projectActions(project) }
                 }
             }
             Section {

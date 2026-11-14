@@ -313,6 +313,89 @@ async fn reverting_a_hunk_or_a_new_file_throws_only_that_away() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn reverting_a_path_outside_the_copy_is_refused_and_deletes_nothing() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (workspaces, _, checkouts, _) = session(dir.path()).await;
+    let work = &checkouts[0].path;
+    let beside = work.parent().expect("a folder above").join("beside.txt");
+    std::fs::write(&beside, "kept\n").expect("wrote");
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("made");
+    let linked = elsewhere.join("linked.txt");
+    std::fs::write(&linked, "kept\n").expect("wrote");
+    std::os::unix::fs::symlink(&elsewhere, work.join("link")).expect("linked");
+
+    for (path, file) in [
+        ("../beside.txt".to_owned(), &beside),
+        (beside.to_string_lossy().into_owned(), &beside),
+        ("link/linked.txt".to_owned(), &linked),
+    ] {
+        let refused = workspaces
+            .edit(
+                &checkouts,
+                &Edit {
+                    file: FileRef {
+                        repository: "app".to_owned(),
+                        path: path.clone(),
+                    },
+                    action: Action::Revert,
+                    hunk: None,
+                },
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(WorkspaceError::OutsideCopy { .. })),
+            "{path}: {refused:?}"
+        );
+        assert_eq!(read(file).as_deref(), Some("kept\n"), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn staging_a_path_outside_the_copy_is_refused() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (workspaces, repositories, checkouts, checkpoints) = session(dir.path()).await;
+    let work = &checkouts[0].path;
+    std::fs::write(work.join("NEW.md"), "new\n").expect("wrote");
+    let beside = work.parent().expect("a folder above").join("beside.txt");
+    std::fs::write(&beside, "kept\n").expect("wrote");
+
+    for action in [Action::Stage, Action::Unstage] {
+        for path in ["../beside.txt", "", "./../beside.txt"] {
+            let refused = workspaces
+                .edit(
+                    &checkouts,
+                    &Edit {
+                        file: FileRef {
+                            repository: "app".to_owned(),
+                            path: path.to_owned(),
+                        },
+                        action,
+                        hunk: None,
+                    },
+                )
+                .await;
+            assert!(
+                matches!(refused, Err(WorkspaceError::OutsideCopy { .. })),
+                "{path:?}: {refused:?}"
+            );
+        }
+    }
+    let staged = workspaces
+        .changes(
+            "s",
+            &repositories,
+            &checkpoints,
+            &checkouts,
+            &query(Range::Staged),
+        )
+        .await
+        .expect("compared");
+    assert!(changed(&staged).is_empty());
+}
+
 #[tokio::test]
 async fn a_turn_is_what_changed_between_its_checkpoints() {
     let dir = tempfile::tempdir().expect("a temporary folder");

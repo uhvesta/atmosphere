@@ -20,10 +20,6 @@ package struct TerminalsFeature {
         /// Opens one when the host runs none there yet.
         package var opensFirst: Bool
         package var opening = false
-        /// Whether the open under way is the first one, made unasked when
-        /// the host ran none here. It belongs to the view that read the
-        /// list, and stops with it; one asked for with + does not.
-        package var openingFirst = false
         /// Why the terminals couldn't be read, opened or closed, and what to
         /// do about it.
         package var failure: String?
@@ -56,7 +52,9 @@ package struct TerminalsFeature {
     }
 
     package enum Action {
-        /// The tabs appeared: reads the terminals running here.
+        /// The tabs appeared: reads the terminals running here. The read,
+        /// and the first open it may lead to, go on when the tabs are left,
+        /// so the shell that opens is the one shown on return.
         case task
         case listed([Terminal])
         case newTapped
@@ -84,13 +82,6 @@ package struct TerminalsFeature {
         Reduce { state, action in
             switch action {
             case .task:
-                // The view that was opening the first shell is gone and took
-                // the open with it: this one reads the list and opens it again.
-                if state.openingFirst {
-                    state.openingFirst = false
-                    state.opening = false
-                    state.listed = false
-                }
                 // Asked again after a list that failed, it shows it's reading.
                 if !state.listed { state.failure = nil }
                 let host = state.place.host
@@ -109,7 +100,6 @@ package struct TerminalsFeature {
                 }
                 if state.selected == nil { state.selected = state.tabs.last?.id }
                 guard first, state.tabs.isEmpty, state.opensFirst, !state.opening else { return .none }
-                state.openingFirst = true
                 return .send(.newTapped)
 
             case .newTapped:
@@ -124,7 +114,6 @@ package struct TerminalsFeature {
 
             case .opened(let terminal):
                 state.opening = false
-                state.openingFirst = false
                 state.failure = nil
                 state.tabs.append(TerminalFeature.State(terminal: terminal))
                 state.selected = terminal.id
@@ -177,7 +166,6 @@ package struct TerminalsFeature {
 
             case .failed(let message):
                 state.opening = false
-                state.openingFirst = false
                 state.failure = message
                 return .none
 

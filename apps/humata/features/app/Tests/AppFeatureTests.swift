@@ -1359,6 +1359,191 @@ final class AppFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    /// A daemon service whose daemon answers or not as `gone` says, and
+    /// counts how often it was started.
+    private func service(
+        gone: LockIsolated<Bool>, starts: LockIsolated<Int>, start: @escaping @Sendable () throws -> Void = {}
+    ) -> DaemonService {
+        DaemonService(
+            start: {
+                starts.withValue { $0 += 1 }
+                try start()
+            },
+            isCurrent: {
+                if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
+                return true
+            },
+            restart: {}, openLoginItems: {})
+    }
+
+    func testASidebarReadThatFailsWithTheDaemonGoneStartsItAgain() async throws {
+        let gone = LockIsolated(true)
+        let starts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            let projects = $0.daemon.projects
+            $0.daemon.projects = {
+                if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
+                return try await projects()
+            }
+            $0.daemonService = service(gone: gone, starts: starts) { gone.setValue(false) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loadFailed)
+        await store.receive(\.daemonGone)
+        XCTAssertEqual(store.state.daemon, .restarting)
+        await store.receive(\.restarted)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 1)
+        // Started again, it's read again.
+        await store.receive(\.sidebar.loaded)
+    }
+
+    func testAReadThatFailsWhileTheDaemonAnswersStartsNothing() async throws {
+        let starts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.daemon.projects = { throw DaemonError.unexpected("a list it couldn't make") }
+            $0.daemonService = service(gone: LockIsolated(false), starts: starts)
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loadFailed)
+        await store.finish()
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 0)
+    }
+
+    func testTheDaemonIsStartedAgainOnceUntilTheSidebarReadsAgain() async throws {
+        let gone = LockIsolated(true)
+        let starts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            let projects = $0.daemon.projects
+            $0.daemon.projects = {
+                if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
+                return try await projects()
+            }
+            // Starting it doesn't bring it back.
+            $0.daemonService = service(gone: gone, starts: starts)
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.restarted)
+        // The read after the start fails too, and so does one more.
+        await store.finish()
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loadFailed)
+        await store.finish()
+        XCTAssertEqual(starts.value, 1)
+
+        // Once the sidebar has read, a daemon that goes is started again.
+        gone.setValue(false)
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        gone.setValue(true)
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.restarted)
+        await store.finish()
+        XCTAssertEqual(starts.value, 2)
+    }
+
+    func testADaemonThatCantBeStartedAgainShowsWhy() async throws {
+        let gone = LockIsolated(true)
+        let starts = LockIsolated(0)
+        let missing = LockIsolated(true)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            let projects = $0.daemon.projects
+            $0.daemon.projects = {
+                if gone.value { throw DaemonError.notRunning(socket: "/tmp/h.sock", reason: "refused") }
+                return try await projects()
+            }
+            $0.daemonService = service(gone: gone, starts: starts) {
+                if missing.value { throw DaemonServiceError.missingExecutable(path: "/Applications/humatad") }
+                gone.setValue(false)
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.daemonFailed)
+        guard case .failed(_, needsLoginItems: false) = store.state.daemon else {
+            return XCTFail("expected it to say why it couldn't be started, got \(store.state.daemon)")
+        }
+
+        // Its Try Again starts it, once what kept it from starting is fixed.
+        missing.setValue(false)
+        await store.send(.task)
+        await store.receive(\.daemonChecked)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(starts.value, 2)
+    }
+
+    func testHostsAskingForARestartRestartsTheDaemon() async throws {
+        let restarts = LockIsolated(0)
+        var state = AppFeature.State()
+        state.daemon = .running
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            // The shell is read when the daemon starts, so only a new one
+            // finds it fixed.
+            $0.daemon.linkCommands = { _ in
+                CommandLinks(
+                    folder: "/Users/me/.local/bin", links: [], onPath: true,
+                    environmentProblem: restarts.value == 0 ? "the shell didn't answer" : nil)
+            }
+            $0.daemonService = DaemonService(
+                start: {}, isCurrent: { true }, restart: { restarts.withValue { $0 += 1 } }, openLoginItems: {})
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .hosts)
+        await store.receive(\.sidebar.delegate.openHosts)
+        await store.send(\.hosts.task)
+        await store.receive(\.hosts.commandLinksLoaded)
+        XCTAssertNotNil(store.state.hosts?.commandLinks?.environmentProblem)
+
+        await store.send(\.hosts.restartDaemonTapped)
+        XCTAssertEqual(restarts.value, 0)
+        await store.send(.hosts(.presented(.destination(.presented(.alert(.confirmRestartDaemon))))))
+        await store.receive(\.hosts.delegate.restartDaemon)
+        XCTAssertEqual(store.state.daemon, .restarting)
+        await store.receive(\.restarted)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(restarts.value, 1)
+        // Hosts reads what the new daemon found of the shell.
+        await store.receive(\.hosts.commandLinksLoaded)
+        XCTAssertNil(store.state.hosts?.commandLinks?.environmentProblem)
+    }
+
     func testLinksThatNameNothingAreIgnored() throws {
         for text in ["humata://session", "humata://elsewhere/x", "https://session/x", "humata://task/only-a-project"] {
             XCTAssertNil(HumataLink(try XCTUnwrap(URL(string: text))), text)

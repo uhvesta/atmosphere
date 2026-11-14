@@ -102,6 +102,7 @@ private struct DecideButtons: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("More Answers")
             .help("Approve, and stop asking for a while; revoke it in Settings › Approvals")
         }
     }

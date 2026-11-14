@@ -101,10 +101,16 @@ package struct HostsView: View {
         {
             Form {
                 if let links = store.commandLinks {
-                    CommandsSection(links: links, linking: store.linking) { store.send(.linkCommandsTapped) }
+                    CommandsSection(
+                        links: links, linking: store.linking,
+                        link: { store.send(.linkCommandsTapped) },
+                        restart: { store.send(.restartDaemonTapped) })
                 }
                 HostEditorSections(store: editor)
-                SkippedSection(skipped: store.skipped) { store.send(.removeSkippedTapped($0)) }
+                SkippedSection(
+                    skipped: store.skipped, failure: store.skippedFailure,
+                    remove: { store.send(.removeSkippedTapped($0)) },
+                    retry: { store.send(.skippedRetryTapped) })
             }
             .formStyle(.grouped)
             .id(host.id)
@@ -115,13 +121,17 @@ package struct HostsView: View {
                     check: { store.send(.checkTapped(host.id)) },
                     install: { store.send(.installTapped(host.id)) })
                 RecoverySection(
-                    recoveries: store.recoveries, restoring: store.restoring,
+                    recoveries: store.recoveries, failure: store.recoveriesFailure, restoring: store.restoring,
                     others: store.hosts.ids.filter { $0 != host.id },
                     restore: { store.send(.restoreTapped($0)) },
                     restoreAll: { store.send(.restoreAllTapped) },
-                    move: { store.send(.moveTapped($0, to: $1)) })
+                    move: { store.send(.moveTapped($0, to: $1)) },
+                    retry: { store.send(.recoveriesRetryTapped) })
                 HostEditorSections(store: editor)
-                SkippedSection(skipped: store.skipped) { store.send(.removeSkippedTapped($0)) }
+                SkippedSection(
+                    skipped: store.skipped, failure: store.skippedFailure,
+                    remove: { store.send(.removeSkippedTapped($0)) },
+                    retry: { store.send(.skippedRetryTapped) })
                 Section {
                     Button("Remove Host…", role: .destructive) { store.send(.removeTapped(host.id)) }
                 }
@@ -140,12 +150,16 @@ private struct CommandsSection: View {
     let links: CommandLinks
     let linking: Bool
     let link: () -> Void
+    /// Asks before restarting the daemon, which reads the shell again.
+    let restart: () -> Void
 
     var body: some View {
         Section {
             if let problem = links.environmentProblem {
-                Label(HostStatus.environment(problem), systemImage: "exclamationmark.triangle.fill")
+                Label(HostStatus.environment(problem, thisMac: true), systemImage: "exclamationmark.triangle.fill")
                     .symbolRenderingMode(.multicolor)
+                Button("Restart Humata's Daemon…", action: restart)
+                    .help("Start the daemon anew so it reads your login shell again; turns in progress stop")
             }
             ForEach(links.links, id: \.name) { command in
                 LabeledContent {
@@ -191,19 +205,27 @@ private struct CommandsSection: View {
 
 /// The Mac's copies of the host's sessions: how far each is backed up, and
 /// for those the host lost, a Restore button; any can move to another host
-/// or this Mac. None shows nothing.
+/// or this Mac. None shows nothing, unless they couldn't be read, which
+/// it says with a way to read them again.
 private struct RecoverySection: View {
     let recoveries: IdentifiedArrayOf<Recovery>
+    /// Why they couldn't be read; nil when they were.
+    let failure: String?
     let restoring: Set<Recovery.ID>
     /// The other hosts, to move a session to.
     let others: [RemoteHost.ID]
     let restore: (Recovery.ID) -> Void
     let restoreAll: () -> Void
     let move: (Recovery.ID, RemoteHost.ID?) -> Void
+    let retry: () -> Void
 
     var body: some View {
-        if !recoveries.isEmpty {
+        if !recoveries.isEmpty || failure != nil {
             Section {
+                if let failure {
+                    UnreadRow(
+                        what: "Couldn't read this Mac's copies of the host's sessions", why: failure, retry: retry)
+                }
                 ForEach(recoveries) { recovery in
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -263,14 +285,21 @@ private struct RecoverySection: View {
 }
 
 /// The host's sessions whose files couldn't be read, with why; none shows
-/// nothing.
+/// nothing, unless the list itself couldn't be read, which it says with a
+/// way to read it again.
 private struct SkippedSection: View {
     let skipped: IdentifiedArrayOf<SkippedSession>
+    /// Why the list couldn't be read; nil when it was.
+    let failure: String?
     let remove: (SkippedSession.ID) -> Void
+    let retry: () -> Void
 
     var body: some View {
-        if !skipped.isEmpty {
+        if !skipped.isEmpty || failure != nil {
             Section {
+                if let failure {
+                    UnreadRow(what: "Couldn't read which sessions couldn't be opened", why: failure, retry: retry)
+                }
                 ForEach(skipped) { session in
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -293,6 +322,28 @@ private struct SkippedSection: View {
                     "Humata left these as they are. Fix what's damaged and restart Humata to open one again, "
                         + "or remove it to delete its folder and history.")
             }
+        }
+    }
+}
+
+/// A list that couldn't be read: what, why, and a way to read it again.
+private struct UnreadRow: View {
+    let what: String
+    let why: String
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(what, systemImage: "exclamationmark.triangle.fill")
+                    .symbolRenderingMode(.multicolor)
+                Text(why)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button("Try Again", action: retry)
         }
     }
 }
@@ -327,7 +378,7 @@ private struct HostRow: View {
             case .checking, .installing:
                 ProgressView().controlSize(.small)
                     .accessibilityLabel("Checking")
-            case .known(.reachable(let status)) where status.problems.isEmpty:
+            case .known(.reachable(let status)) where !status.needsAttention:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .accessibilityLabel("Reachable")
@@ -347,24 +398,29 @@ private struct HostRow: View {
 }
 
 extension HostStatus {
+    /// Whether something keeps its sessions from working whichever agent
+    /// they use: its shell's variables weren't read, or its setup script
+    /// failed. An agent that isn't installed or signed in is a row, not this.
+    package var needsAttention: Bool { !problems.isEmpty }
+
     /// What keeps its sessions from working, for the person to fix.
     var problems: [String] {
         var problems: [String] = []
-        if let environmentProblem { problems.append(Self.environment(environmentProblem)) }
-        if case .failure(let problem) = copilot {
-            problems.append("Copilot can't run there: \(problem.message)")
-        } else if !githubToken {
-            problems.append(
-                "Copilot has no GitHub token there. Add GH_TOKEN below, or run “copilot login” on the host.")
-        }
+        if let environmentProblem { problems.append(Self.environment(environmentProblem, thisMac: false)) }
         if let setup, !setup.succeeded { problems.append("Its setup script failed; it runs again on the next check.") }
         return problems
     }
 
-    /// What it means that the login shell's variables weren't read.
-    static func environment(_ problem: String) -> String {
-        "Agents run without your shell's PATH and exports, so they may not find programs or keys: \(problem). "
-            + "Fix it, then update or restart the daemon."
+    /// What it means that the login shell's variables weren't read, and
+    /// what reads them again: they're read once, when the daemon starts.
+    static func environment(_ problem: String, thisMac: Bool) -> String {
+        let found =
+            "Agents run without your shell's PATH and exports, so they may not find programs or keys: "
+            + "\(problem). "
+        if thisMac { return found + "Fix it, then restart Humata's daemon with the button below." }
+        return found
+            + "Fix it there, then stop humatad on the host (for example `pkill -x humatad`; turns in progress "
+            + "there stop) and press Check Again, which starts it anew."
     }
 }
 
@@ -392,6 +448,11 @@ struct HealthSection: View {
                 Text(problem)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                if host.sshDestination != nil {
+                    Text("If Humata isn't installed on \(host.name) yet, Install Humata above copies it there.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             case .known(.reachable(let status)):
                 ForEach(status.problems, id: \.self) { problem in
                     Label(problem, systemImage: "exclamationmark.triangle.fill")
@@ -405,10 +466,13 @@ struct HealthSection: View {
                 switch status.copilot {
                 case .success(let version):
                     LabeledContent("Copilot", value: version)
-                case .failure:
-                    LabeledContent("Copilot", value: "Not working")
+                case .failure(let problem):
+                    // Not a problem unless its sessions use Copilot.
+                    LabeledContent("Copilot", value: "Not installed")
+                        .help(problem.message)
                 }
-                LabeledContent("GitHub Token", value: status.githubToken ? "Set" : "None")
+                LabeledContent(
+                    "GitHub Token", value: status.githubToken ? "Set" : "None, unless Copilot is signed in there")
                 switch status.claude {
                 case .success(let version):
                     LabeledContent("Claude Code", value: version)

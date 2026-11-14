@@ -871,6 +871,41 @@ async fn a_start_allowed_twice_together_starts_one_session() {
 }
 
 #[tokio::test]
+async fn a_start_declined_while_it_is_being_allowed_is_refused_and_started_once() {
+    let Setup {
+        client, session, ..
+    } = &setup().await;
+    let acted = start_child(client, &session.id, "Tests")
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let request = acted.request.unwrap_or_else(|| panic!("nothing waits"));
+
+    // The Allow is sent first and takes as long as making the session's
+    // copy, so the decline finds it under way. Should the decline get in
+    // first all the same, it is the Allow that finds nothing to allow.
+    let (allowed, declined) = tokio::join!(
+        client.call(answer(
+            &request.id,
+            pb::answer_request::Answer::Approve(true),
+        )),
+        client.call(answer(
+            &request.id,
+            pb::answer_request::Answer::Dismiss(true),
+        )),
+    );
+
+    assert!(
+        allowed.is_ok() != declined.is_ok(),
+        "one of them is refused: {allowed:?} {declined:?}"
+    );
+    // A session is there exactly when the Allow went through, never one
+    // that was both started and declined.
+    let expected = if allowed.is_ok() { 2 } else { 1 };
+    assert_eq!(sessions(client).await.len(), expected);
+    assert!(requests(client).await.is_empty());
+}
+
+#[tokio::test]
 async fn messages_sent_together_wait_for_the_person_only_up_to_the_limit() {
     let setup = setup().await;
     let (client, session) = (Arc::new(setup.client), setup.session);

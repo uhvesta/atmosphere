@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class HostsFeatureTests: XCTestCase {
-    func testAddingAHostFromTheSshConfigThenInstallingMakesItReachable() async throws {
+    func testAHostAddedFromHostsIsInstalledThenChecked() async throws {
         let daemon = InMemoryDaemon(sshHosts: ["build-box", "gpu"])
         let store = TestStore(initialState: HostsFeature.State()) {
             HostsFeature()
@@ -25,18 +25,166 @@ final class HostsFeatureTests: XCTestCase {
         await store.receive(\.destination.add.delegate.added)
         XCTAssertNil(store.state.destination)
         XCTAssertEqual(store.state.selection, "gpu")
-        await store.receive(\.checked)
-        guard case .known(.unreachable) = store.state.health["gpu"] else {
-            return XCTFail("a host without Humata's program answered: \(String(describing: store.state.health["gpu"]))")
-        }
-
-        await store.send(.installTapped("gpu"))
+        await store.receive(\.installTapped)
         XCTAssertEqual(store.state.health["gpu"], .installing)
         await store.receive(\.installed)
         guard case .known(.reachable(let status)) = store.state.health["gpu"] else {
-            return XCTFail("installed, gpu still isn't reachable")
+            return XCTFail("added from Hosts, gpu isn't reachable: \(String(describing: store.state.health["gpu"]))")
         }
         XCTAssertFalse(status.githubToken)
+    }
+
+    func testAHostReachedByItsOwnCommandIsOnlyChecked() async throws {
+        let installs = LockIsolated(0)
+        let own = RemoteHost(name: "box", sshDestination: nil)
+        var state = HostsFeature.State()
+        state.destination = .add(AddHostFeature.State())
+        let store = TestStore(initialState: state) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+            $0.daemon.installHost = { _ in
+                installs.withValue { $0 += 1 }
+                return "0.0.0"
+            }
+            $0.daemon.checkHost = { _ in .unreachable("its command didn't answer") }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.destination(.presented(.add(.delegate(.added(own))))))
+        XCTAssertEqual(store.state.selection, "box")
+        await store.receive(\.checked)
+        await store.finish()
+        XCTAssertEqual(installs.value, 0)
+    }
+
+    func testRestartingTheDaemonFromHostsAsksFirst() async throws {
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+        }
+        store.exhaustivity = .off
+
+        // Asked, it only asks: the window is told once the person confirms.
+        await store.send(.restartDaemonTapped)
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.finish()
+
+        await store.send(.destination(.presented(.alert(.confirmRestartDaemon))))
+        await store.receive(\.delegate.restartDaemon)
+        XCTAssertNil(store.state.destination)
+    }
+
+    func testOnlyAnEnvironmentProblemOrAFailedSetupMarksAHost() {
+        let start = Date(timeIntervalSince1970: 1_794_000_600)
+        // A host for Claude Code alone: no Copilot, no GitHub token.
+        var status = HostStatus(
+            programVersion: "0.0.0", platform: "Linux x86_64", freeDiskBytes: 120_000_000_000,
+            copilot: .failure(ProgramProblem("copilot isn't on the PATH")), githubToken: false,
+            claude: .success("2.1.322 (Claude Code)"))
+        XCTAssertFalse(status.needsAttention)
+        status.claude = .failure(ProgramProblem("claude isn't on the PATH"))
+        XCTAssertFalse(status.needsAttention)
+        status.setup = SetupResult(succeeded: true, output: "", time: start)
+        XCTAssertFalse(status.needsAttention)
+
+        status.setup = SetupResult(succeeded: false, output: "apt-get: not found", time: start)
+        XCTAssertTrue(status.needsAttention)
+        status.setup = nil
+        status.environmentProblem = "the login shell didn't answer"
+        XCTAssertTrue(status.needsAttention)
+    }
+
+    func testLostSessionsThatCantBeReadSayWhyAndCanBeReadAgain() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", host: "far"))
+        let fails = LockIsolated(false)
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            let read = $0.daemon.recoveries
+            $0.daemon.recoveries = {
+                if fails.value { throw DaemonError.disconnected }
+                return try await read()
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertEqual(store.state.recoveries.ids, [session.id])
+        XCTAssertNil(store.state.recoveriesFailure)
+
+        fails.setValue(true)
+        await store.send(.recoveriesRetryTapped)
+        await store.receive(\.recoveriesFailed)
+        XCTAssertNotNil(store.state.recoveriesFailure)
+        XCTAssertEqual(store.state.recoveries.ids, [session.id], "the list is left as it was")
+
+        fails.setValue(false)
+        await store.send(.recoveriesRetryTapped)
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertNil(store.state.recoveriesFailure)
+        XCTAssertEqual(store.state.recoveries.ids, [session.id])
+    }
+
+    func testSkippedSessionsThatCantBeReadOnThisMacSayWhy() async throws {
+        let fails = LockIsolated(true)
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = InMemoryDaemon().client
+            let read = $0.daemon.skipped
+            $0.daemon.skipped = { host in
+                if fails.value { throw DaemonError.disconnected }
+                return try await read(host)
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.selected(""))
+        await store.receive(\.skippedFailed)
+        XCTAssertNotNil(store.state.skippedFailure)
+
+        fails.setValue(false)
+        await store.send(.skippedRetryTapped)
+        await store.receive(\.skippedLoaded)
+        XCTAssertNil(store.state.skippedFailure)
+    }
+
+    func testAnUnreachableHostsSkippedSessionsSayNothing() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        daemon.setOffline("far", true)
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.skipped = { _ in
+                throw DaemonError.refused(.hostUnavailable, message: "ssh couldn't connect to far.")
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.checked)
+        guard case .known(.unreachable) = store.state.health["far"] else {
+            return XCTFail("far answered: \(String(describing: store.state.health["far"]))")
+        }
+        await store.finish()
+        XCTAssertNil(store.state.skippedFailure)
+
+        // Reachable again, a read that still fails is worth saying.
+        daemon.setOffline("far", false)
+        await store.send(.checkTapped("far"))
+        await store.receive(\.skippedFailed)
+        XCTAssertNotNil(store.state.skippedFailure)
     }
 
     func testThisMacShowsItsCommandsUnlinkedUntilLinked() async throws {

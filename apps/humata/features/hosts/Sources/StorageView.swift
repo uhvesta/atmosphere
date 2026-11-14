@@ -38,6 +38,13 @@ package struct StorageView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // What the person asked for and wasn't done, kept through a
+            // cleanup's progress reads.
+            if let failure = store.actionFailure {
+                Text(failure)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
             if let failure = store.failure {
                 Text(failure)
                     .foregroundStyle(.red)

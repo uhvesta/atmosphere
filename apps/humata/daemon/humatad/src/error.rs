@@ -277,7 +277,8 @@ impl HostError {
                     | WorkspaceError::BadBranch { .. }
                     | WorkspaceError::BranchTaken { .. }
                     | WorkspaceError::NoBase { .. }
-                    | WorkspaceError::NoIdentity { .. },
+                    | WorkspaceError::NoIdentity { .. }
+                    | WorkspaceError::OutsideCopy { .. },
                 ..
             }) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
@@ -1268,6 +1269,15 @@ pub enum StartError {
         source: std::io::Error,
     },
 
+    #[error(
+        "couldn't make the folder {path} private to you, so other users of this machine may read the sessions kept in it; run `chmod 700` on it, or check that you own it"
+    )]
+    ProtectState {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("couldn't accept a connection on the socket")]
     Accept {
         #[source]
@@ -1348,6 +1358,16 @@ pub enum RelayError {
     Unanswered { seconds: u64 },
 
     #[error(
+        "Humata on the Mac lost its connection to this host before it answered, and it may have started the session or sent the message all the same. Check with read_session or board before asking again: asking again without looking can do it twice"
+    )]
+    AnswerLost,
+
+    #[error(
+        "Humata on the Mac isn't connected to this host, and {waiting} of this session's questions and move requests already wait for it, so this one wasn't kept and no one will see it. Don't ask again now; go on with what you have, and ask once the Mac has answered the ones waiting"
+    )]
+    QueueFull { waiting: usize },
+
+    #[error(
         "couldn't read the questions and move requests agents made while the Mac was away, from {path}"
     )]
     ReadQueue {
@@ -1379,9 +1399,11 @@ impl RelayError {
     pub fn code(&self) -> pb::ErrorCode {
         match self {
             Self::NotATool => pb::ErrorCode::InvalidRequest,
-            Self::NotWatched | Self::TimedOut { .. } | Self::Unanswered { .. } => {
-                pb::ErrorCode::HostUnavailable
-            }
+            Self::NotWatched
+            | Self::TimedOut { .. }
+            | Self::Unanswered { .. }
+            | Self::AnswerLost
+            | Self::QueueFull { .. } => pb::ErrorCode::HostUnavailable,
             Self::ReadQueue { .. } | Self::BadQueue { .. } | Self::WriteQueue { .. } => {
                 pb::ErrorCode::StorageFailed
             }

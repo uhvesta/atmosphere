@@ -18,6 +18,17 @@ package struct SessionFeature {
         /// The specs it reads, for a session in a project.
         case spec
         case terminal
+
+        /// Its name in the Session menu.
+        package var menuTitle: String {
+            switch self {
+            case .chat: "Chat"
+            case .review: "Review"
+            case .files: "Files"
+            case .spec: "Spec"
+            case .terminal: "Terminal"
+            }
+        }
     }
 
     /// Identified by its session, so opening another in its place stops
@@ -266,6 +277,9 @@ package struct SessionFeature {
         package var editCaret = false
         /// The edited message's text.
         package var edited = ""
+        /// The names of the edited message's images, which go to the fork
+        /// with it.
+        package var editedImages: [String] = []
         /// The queued message being edited in place, by queue id.
         package var editingQueued: String?
         /// Its text as edited so far.
@@ -302,6 +316,9 @@ package struct SessionFeature {
         /// shortcuts: only the column in use does, when two sessions show
         /// side by side. Whoever shows the session sets it.
         package var takesShortcuts = true
+        /// Whether Steer Now takes ⌘Return: not while an earlier message
+        /// is edited, when the key is its editor's.
+        package var steerTakesShortcut: Bool { takesShortcuts && editing == nil }
         /// Shown beside another session, as a side chat is: its chat
         /// alone, under whatever bar its column gives it.
         package var beside = false
@@ -572,6 +589,7 @@ package struct SessionFeature {
             var spec: SpecsFeature.Draft?
             var editing: String?
             var edited: String
+            var editedImages: [String]
             var editingQueued: String?
             var queuedEdit: String
             /// The images in the box that are ready to send. One still
@@ -587,7 +605,7 @@ package struct SessionFeature {
                 return Left(
                     tab: tab, drafts: docs.drafts, file: docs.selected, picked: docs.picked, comment: docs.comment,
                     review: review.kept, spec: spec, editing: editing, edited: edited,
-                    editingQueued: editingQueued, queuedEdit: queuedEdit,
+                    editedImages: editedImages, editingQueued: editingQueued, queuedEdit: queuedEdit,
                     images: IdentifiedArray(uniqueElements: images.filter { !$0.isPreparing }))
             }
             set {
@@ -600,6 +618,7 @@ package struct SessionFeature {
                 specs.draft = newValue.spec
                 editing = newValue.editing
                 edited = newValue.edited
+                editedImages = newValue.editedImages
                 editingQueued = newValue.editingQueued
                 queuedEdit = newValue.queuedEdit
                 images = newValue.images
@@ -961,7 +980,7 @@ package struct SessionFeature {
         case editCaretTaken
         case editCancelled
         /// Forks before the edited message, with the code as it was, and
-        /// sends the fork the edited text.
+        /// sends the fork the edited text with the message's images.
         case editSent
         case forked(Session)
         /// The fork for an edited message was made, but the message
@@ -2346,11 +2365,13 @@ package struct SessionFeature {
                 return .none
 
             case .editTapped(let id):
-                guard case .userMessage(let text, _)? = state.events[id: id]?.kind, Chat.isPersons(text) else {
+                guard case .userMessage(let text, let images)? = state.events[id: id]?.kind, Chat.isPersons(text)
+                else {
                     return .none
                 }
                 state.editing = id
                 state.edited = text
+                state.editedImages = images
                 state.editCaret = true
                 return .none
 
@@ -2361,6 +2382,7 @@ package struct SessionFeature {
             case .editCancelled:
                 state.editing = nil
                 state.edited = ""
+                state.editedImages = []
                 state.editCaret = false
                 // Its editor had the caret, and is gone.
                 state.boxFocus += 1
@@ -2373,11 +2395,21 @@ package struct SessionFeature {
                 // doesn't lose it.
                 state.forking = true
                 let session = state.session
+                let images = state.editedImages
                 return .run { send in
+                    // Its images are read before the fork is made: the
+                    // message isn't whole without one, so one that can't
+                    // be read makes no fork.
+                    var attachments: [ImageAttachment] = []
+                    for name in images { attachments.append(try await daemon.readImage(session.id, name)) }
                     // Chat only for a read-only session, as any fork of it.
                     let fork = try await daemon.fork(session.id, before, "\(session.name) edit", session.readOnly)
                     do {
-                        try await daemon.send(fork.id, text, .enqueue)
+                        if attachments.isEmpty {
+                            try await daemon.send(fork.id, text, .enqueue)
+                        } else {
+                            try await daemon.sendImages(fork.id, text, attachments, .enqueue)
+                        }
                     } catch {
                         await send(.forkSendFailed(fork: fork, text: text))
                         return
@@ -2392,6 +2424,7 @@ package struct SessionFeature {
                 state.makingChild = nil
                 state.editing = nil
                 state.edited = ""
+                state.editedImages = []
                 state.editCaret = false
                 return .send(.delegate(.openSession(fork)))
 

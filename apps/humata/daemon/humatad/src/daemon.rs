@@ -853,6 +853,19 @@ impl Daemon {
     async fn answer_request(&self, answer: pb::AnswerRequest) -> Result<(), DaemonError> {
         use pb::answer_request::Answer;
         let request = self.store.open_request(&answer.request_id)?;
+        // A start being allowed may have made its session already, so it
+        // can't be declined or replied to until the Allow ends; the Allow
+        // itself, pressed again, is refused where it is carried out.
+        if matches!(
+            answer.answer,
+            Some(Answer::Reply(_) | Answer::Dismiss(_)) | None
+        ) && self.allow_under_way(&request.id)
+        {
+            return Err(AgentSessionsError::AllowUnderWay {
+                name: request.name.clone(),
+            }
+            .into());
+        }
         let move_to = |status: pb::ItemStatus| {
             pb::request::Kind::UpdateItem(pb::UpdateItem {
                 item_id: request.item_id.clone(),

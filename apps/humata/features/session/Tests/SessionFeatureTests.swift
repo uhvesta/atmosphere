@@ -2294,7 +2294,9 @@ extension ChatItem {
     fileprivate func isPerson(_ text: String) -> Bool {
         if case .person(_, text, _) = self { true } else { false }
     }
+}
 
+extension SessionFeatureTests {
     func testAClaudeSessionTakesImagesBeforeItsChatOpens() {
         let claude = Session(id: "images-claude", name: "first", backend: .claude, workingDirectory: "/work")
         XCTAssertTrue(SessionFeature.State(session: claude).takesImages)
@@ -2318,5 +2320,76 @@ extension ChatItem {
         var other = session
         other.model = "small"
         XCTAssertFalse(SessionFeature.State(session: other).takesImages)
+    }
+
+    /// A session whose first message, `e1`, has `images`, over a daemon
+    /// that notes each fork and each message sent in `calls`.
+    private func editStore(
+        images: [String], calls: LockIsolated<[String]>,
+        _ dependencies: @escaping (inout DependencyValues) -> Void = { _ in }
+    ) -> TestStoreOf<SessionFeature> {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let fork = Session(id: "s2", name: "first edit", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.events = [event("e1", .userMessage("what is this", images: images))]
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, _ in }
+            $0.daemon.chatCommands = { _ in ChatCommands() }
+            $0.daemon.fork = { _, _, _, _ in
+                calls.withValue { $0.append("fork") }
+                return fork
+            }
+            $0.daemon.send = { session, text, _ in calls.withValue { $0.append("\(session) text: \(text)") } }
+            $0.daemon.sendImages = { session, text, images, _ in
+                calls.withValue { $0.append("\(session) \(text) with \(images.map(\.mediaType))") }
+            }
+            dependencies(&$0)
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAnEditedMessagesImagesGoToTheFork() async {
+        let calls = LockIsolated<[String]>([])
+        let store = editStore(images: ["a.png", "b.jpg"], calls: calls) {
+            $0.daemon.readImage = { _, name in
+                ImageAttachment(mediaType: name == "a.png" ? "image/png" : "image/jpeg", data: Data([1]))
+            }
+        }
+        await store.send(.editTapped("e1"))
+        await store.send(.binding(.set(\.edited, "and this?")))
+        await store.send(.editSent)
+        await store.receive(\.delegate.openSession)
+        XCTAssertEqual(calls.value, ["fork", #"s2 and this? with ["image/png", "image/jpeg"]"#])
+        XCTAssertNil(store.state.editing)
+        XCTAssertEqual(store.state.editedImages, [])
+    }
+
+    func testAnImageThatCantBeReadLeavesTheEditOpenAndMakesNoFork() async {
+        let calls = LockIsolated<[String]>([])
+        let store = editStore(images: ["a.png"], calls: calls) {
+            $0.daemon.readImage = { _, _ in throw DaemonError.disconnected }
+        }
+        await store.send(.editTapped("e1"))
+        await store.send(.binding(.set(\.edited, "and this?")))
+        await store.send(.editSent)
+        await store.receive(\.failed)
+        XCTAssertEqual(calls.value, [])
+        XCTAssertEqual(store.state.editing, "e1")
+        XCTAssertEqual(store.state.edited, "and this?")
+        XCTAssertEqual(store.state.editedImages, ["a.png"])
+        XCTAssertFalse(store.state.forking)
+    }
+
+    func testAnEditedMessageWithNoImagesIsSentAsText() async {
+        let calls = LockIsolated<[String]>([])
+        let store = editStore(images: [], calls: calls)
+        await store.send(.editTapped("e1"))
+        await store.send(.binding(.set(\.edited, "and this?")))
+        await store.send(.editSent)
+        await store.receive(\.delegate.openSession)
+        XCTAssertEqual(calls.value, ["fork", "s2 text: and this?"])
     }
 }

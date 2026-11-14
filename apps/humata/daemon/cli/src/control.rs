@@ -5,11 +5,14 @@
 //!
 //! This is not `humatad mcp`, which serves one session's agent its board.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use humata_wire::pb;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::task::{AbortHandle, JoinSet};
 
 use crate::approved::Client;
 use crate::error::CliError;
@@ -24,39 +27,118 @@ const WAIT_SECONDS: u64 = 120;
 /// The most search hits a tool gives, so they fit the agent's context.
 const SEARCH_HITS: u32 = 20;
 
-/// Answers each JSON-RPC message, one per line, until the input ends.
+/// The most bytes of one event's line an agent is given: of a message or a
+/// reply, of the last reply shown, and of any other event.
+const MESSAGE_BYTES: usize = 4 * 1024;
+const LAST_REPLY_BYTES: usize = 16 * 1024;
+const EVENT_BYTES: usize = 600;
+
+/// The most bytes of events one answer holds, kept from its end.
+const ANSWER_BYTES: usize = 32 * 1024;
+
+/// How long calls under way when the input ends still have to be answered.
+const ENDED_GRACE: Duration = Duration::from_secs(5);
+
+/// Answers each JSON-RPC message, one per line, until the input ends. Each
+/// request is answered as its own task, so one that waits, as send_message
+/// does, holds up no other; answers go out as they're ready, each naming
+/// its request, and a request the client cancels stops. When the input
+/// ends, calls already under way still have [`ENDED_GRACE`] to be answered,
+/// since a client may close its input as soon as it has written.
 pub async fn serve(
-    client: &Client,
+    client: Arc<Client>,
     input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
 ) -> Result<(), CliError> {
     let mut lines = BufReader::new(input).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|source| CliError::Pipe { source })?
-    {
-        if line.trim().is_empty() {
-            continue;
+    let mut answering: JoinSet<Option<Value>> = JoinSet::new();
+    // The requests being answered, by their ids as JSON, to cancel one.
+    let mut asked: HashMap<String, AbortHandle> = HashMap::new();
+    let mut ended: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    loop {
+        if ended.is_some() && answering.is_empty() {
+            break;
         }
-        let answer = match serde_json::from_str::<Value>(&line) {
-            Ok(message) => handle(client, &message).await,
-            Err(_) => Some(failure(&Value::Null, -32700, "that isn't JSON")),
+        let answer = tokio::select! {
+            () = async {
+                match ended.as_mut() {
+                    Some(grace) => grace.as_mut().await,
+                    None => std::future::pending().await,
+                }
+            } => break,
+            line = lines.next_line(), if ended.is_none() => {
+                let Some(line) = line.map_err(|source| CliError::Pipe { source })? else {
+                    ended = Some(Box::pin(tokio::time::sleep(ENDED_GRACE)));
+                    continue;
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                    write(&mut output, &failure(&Value::Null, -32700, "that isn't JSON")).await?;
+                    continue;
+                };
+                let Some(id) = message.get("id") else {
+                    // A notification is answered with nothing; this one
+                    // stops the request it names. A send_message stopped
+                    // has sent its message or hasn't: only its wait ends.
+                    if message["method"] == json!("notifications/cancelled")
+                        && let Some(cancelled) =
+                            asked.remove(&message["params"]["requestId"].to_string())
+                    {
+                        cancelled.abort();
+                    }
+                    continue;
+                };
+                let id = id.to_string();
+                let client = Arc::clone(&client);
+                let handle = answering.spawn(async move { handle(&client, &message).await });
+                asked.insert(id, handle);
+                continue;
+            }
+            Some(done) = answering.join_next_with_id() => {
+                let task = match &done {
+                    Ok((task, _)) => *task,
+                    Err(stopped) => stopped.id(),
+                };
+                let id = asked
+                    .iter()
+                    .find(|(_, handle)| handle.id() == task)
+                    .map(|(id, _)| id.clone());
+                if let Some(id) = &id {
+                    asked.remove(id);
+                }
+                match done {
+                    Ok((_, answer)) => answer,
+                    // Cancelled: the agent no longer waits for it.
+                    Err(stopped) if stopped.is_cancelled() => None,
+                    Err(_) => id
+                        .and_then(|id| serde_json::from_str::<Value>(&id).ok())
+                        .map(|id| {
+                            failure(&id, -32603, "humata mcp failed on this call; call it again")
+                        }),
+                }
+            }
         };
         if let Some(answer) = answer {
-            let mut text = answer.to_string();
-            text.push('\n');
-            output
-                .write_all(text.as_bytes())
-                .await
-                .map_err(|source| CliError::Pipe { source })?;
-            output
-                .flush()
-                .await
-                .map_err(|source| CliError::Pipe { source })?;
+            write(&mut output, &answer).await?;
         }
     }
     Ok(())
+}
+
+/// Writes one answer on its line.
+async fn write(output: &mut (impl AsyncWrite + Unpin), answer: &Value) -> Result<(), CliError> {
+    let mut text = answer.to_string();
+    text.push('\n');
+    output
+        .write_all(text.as_bytes())
+        .await
+        .map_err(|source| CliError::Pipe { source })?;
+    output
+        .flush()
+        .await
+        .map_err(|source| CliError::Pipe { source })
 }
 
 fn failure(id: &Value, code: i64, message: &str) -> Value {
@@ -209,7 +291,7 @@ fn tool_list() -> Vec<Tool> {
         },
         Tool {
             name: "send_message",
-            description: "Sends a session a message, then waits until it is idle or asks for something, and answers what it did: one event per line, `id<TAB>kind<TAB>detail`. A permission_requested line's detail starts with the request's id, for approve.",
+            description: "Sends a session a message, then waits until it is idle or asks for something, and answers what it did: one event per line, `id<TAB>kind<TAB>detail`. A permission_requested line's detail starts with the request's id, for approve. Long events are cut, each saying how many bytes were left out, and when there are too many the earliest are left out, with a first line naming the before_event_id that read_history takes to show them.",
             properties: json!({
                 "session_id": session(),
                 "text": string("The message"),
@@ -282,10 +364,11 @@ fn tool_list() -> Vec<Tool> {
         },
         Tool {
             name: "read_history",
-            description: "A session's events, one per line, as send_message prints them.",
+            description: "A session's events, one per line, as send_message prints them. Long events are cut, each saying how many bytes were left out. When they don't all fit, the latest are shown and a first line says how many earlier ones aren't: call again with before_event_id set to the id it names to read those.",
             properties: json!({
                 "session_id": session(),
                 "last": {"type": "integer", "description": "Only the last this many"},
+                "before_event_id": string("Only events before the one with this id; with last, the last that many before it"),
             }),
             required: &["session_id"],
             effect: Effect::Reads,
@@ -418,9 +501,118 @@ impl Arguments<'_> {
         self.0[field].as_bool().unwrap_or_default()
     }
 
+    /// A whole number of 0 or more, written as an integer, as a float with
+    /// no fraction or as either in a string; not given otherwise.
     pub(crate) fn number(&self, field: &str) -> Option<u64> {
-        self.0[field].as_u64()
+        // A float is turned through its digits, which fails where a cast
+        // would quietly give another number.
+        let whole = |number: f64| {
+            (number >= 0.0 && number.fract() == 0.0)
+                .then(|| format!("{number:.0}").parse::<u64>().ok())
+                .flatten()
+        };
+        match &self.0[field] {
+            Value::Number(number) => number.as_u64().or_else(|| number.as_f64().and_then(whole)),
+            Value::String(text) => {
+                let text = text.trim();
+                text.parse::<u64>()
+                    .ok()
+                    .or_else(|| text.parse::<f64>().ok().and_then(whole))
+            }
+            _ => None,
+        }
     }
+}
+
+/// `line` cut to `limit` bytes, at a character's end, saying how many bytes
+/// were left out.
+fn cut(mut line: String, limit: usize) -> String {
+    if line.len() <= limit {
+        return line;
+    }
+    let mut end = limit;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    let left_out = line.len() - end;
+    line.truncate(end);
+    line.push_str(&format!(" [cut here: {left_out} more bytes left out]"));
+    line
+}
+
+/// An event's line as [`print::event`] gives it, cut for an agent's
+/// context; `last_reply` for the last reply of what is shown, which gets
+/// more room.
+fn event_line(event: &pb::SessionEvent, last_reply: bool) -> String {
+    use humata_wire::pb::session_event::Kind;
+    let limit = match &event.kind {
+        Some(Kind::AssistantMessage(_)) if last_reply => LAST_REPLY_BYTES,
+        Some(Kind::UserMessage(_) | Kind::AssistantMessage(_)) => MESSAGE_BYTES,
+        _ => EVENT_BYTES,
+    };
+    cut(print::event(event), limit)
+}
+
+/// The events as an answer for an agent: a line each, cut, the latest that
+/// fit [`ANSWER_BYTES`]. When earlier ones didn't fit, a first line says how
+/// many and names the `before_event_id` that reads them.
+fn shown(events: &[&pb::SessionEvent]) -> String {
+    use humata_wire::pb::session_event::Kind;
+    let last_reply = events.iter().rposition(|event| {
+        event.parent_call_id.is_empty() && matches!(event.kind, Some(Kind::AssistantMessage(_)))
+    });
+    let mut kept = Vec::new();
+    let mut size = 0;
+    let mut first = events.len();
+    for (index, event) in events.iter().enumerate().rev() {
+        let line = event_line(event, Some(index) == last_reply);
+        if !kept.is_empty() && size + line.len() + 1 > ANSWER_BYTES {
+            break;
+        }
+        size += line.len() + 1;
+        kept.push(line);
+        first = index;
+    }
+    if first > 0
+        && let Some(event) = events.get(first)
+    {
+        kept.push(format!(
+            "[{first} earlier events aren't shown; read_history with before_event_id {} shows them]",
+            event.id
+        ));
+    }
+    kept.reverse();
+    kept.join("\n")
+}
+
+/// The events of a history to show: those before the event `before` names,
+/// when it names one, and of them the last `last`, when given. Parts of a
+/// reply as it streamed are never shown.
+fn before<'a>(
+    events: &'a [pb::SessionEvent],
+    before: &str,
+    last: Option<u64>,
+) -> Result<Vec<&'a pb::SessionEvent>, String> {
+    let end = if before.is_empty() {
+        events.len()
+    } else {
+        events
+            .iter()
+            .position(|event| event.id == before)
+            .ok_or_else(|| {
+                format!(
+                    "the session's history has no event {before}; it may have been rewound since. Call read_history without before_event_id to see the ids it has now"
+                )
+            })?
+    };
+    let shown: Vec<_> = events[..end]
+        .iter()
+        .filter(|event| !is_delta(event))
+        .collect();
+    let skip = last
+        .and_then(|last| usize::try_from(last).ok())
+        .map_or(0, |last| shown.len().saturating_sub(last));
+    Ok(shown[skip..].to_vec())
 }
 
 /// Proposes `propose`, which waits for the person on the board.
@@ -634,16 +826,15 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
             let events = crate::history(client, &session)
                 .await
                 .map_err(|error| humata_wire::describe(&error))?;
-            let shown: Vec<_> = events.iter().filter(|event| !is_delta(event)).collect();
-            let skip = arguments
-                .number("last")
-                .and_then(|last| usize::try_from(last).ok())
-                .map_or(0, |last| shown.len().saturating_sub(last));
-            Ok(lines(
-                &shown[skip..],
-                |event| print::event(event),
-                "It has no events yet.",
-            ))
+            let from = arguments.text("before_event_id");
+            let events = before(&events, &from, arguments.number("last"))?;
+            Ok(if !events.is_empty() {
+                shown(&events)
+            } else if from.is_empty() {
+                "It has no events yet.".to_owned()
+            } else {
+                "It has no events before that one.".to_owned()
+            })
         }
         "list_inbox" => match ask(client, Request::ListInbox(pb::ListInbox {})).await? {
             Response::Inbox(inbox) => Ok(lines(
@@ -818,12 +1009,12 @@ async fn wait(
         Duration::from_secs(seconds),
         crate::call_and_wait(client, session, request, answered, expected, |event| {
             if !is_delta(event) {
-                events.push(print::event(event));
+                events.push(event.clone());
             }
         }),
     )
     .await;
-    let mut text = events.join("\n");
+    let mut text = shown(&events.iter().collect::<Vec<_>>());
     match waited {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
@@ -892,7 +1083,389 @@ async fn show(arguments: &Arguments<'_>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use humata_wire::pb::session_event::Kind;
+    use humata_wire::{Reply, Service, ServiceFuture};
+    use tokio::io::{duplex, split};
+    use tokio::sync::mpsc;
+
     use super::*;
+
+    fn event(id: &str, kind: Kind) -> pb::SessionEvent {
+        pb::SessionEvent {
+            id: id.to_owned(),
+            kind: Some(kind),
+            ..Default::default()
+        }
+    }
+
+    fn user(text: impl Into<String>) -> Kind {
+        Kind::UserMessage(pb::UserMessage {
+            text: text.into(),
+            ..Default::default()
+        })
+    }
+
+    fn reply(text: impl Into<String>) -> Kind {
+        Kind::AssistantMessage(pb::AssistantMessage { text: text.into() })
+    }
+
+    fn ids<'a>(events: &[&'a pb::SessionEvent]) -> Vec<&'a str> {
+        events.iter().map(|event| event.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_number_is_read_however_it_is_written() {
+        let number = |value: Value| {
+            let arguments = json!({ "n": value });
+            Arguments(&arguments).number("n")
+        };
+        assert_eq!(number(json!(20)), Some(20));
+        assert_eq!(number(json!(20.0)), Some(20));
+        assert_eq!(number(json!("20")), Some(20));
+        assert_eq!(number(json!(" 20.0 ")), Some(20));
+        assert_eq!(number(json!(0)), Some(0));
+        assert_eq!(number(json!(20.5)), None);
+        assert_eq!(number(json!(-1)), None);
+        assert_eq!(number(json!("-3")), None);
+        assert_eq!(number(json!("many")), None);
+        assert_eq!(number(json!(true)), None);
+        assert_eq!(number(Value::Null), None);
+    }
+
+    /// How many bytes of `whole` the `cut` line starts with.
+    fn kept(cut: &str, whole: &str) -> usize {
+        cut.bytes()
+            .zip(whole.bytes())
+            .take_while(|(cut, whole)| cut == whole)
+            .count()
+    }
+
+    #[test]
+    fn a_long_event_is_cut_and_says_how_much_is_left_out() {
+        // Two bytes a character, so a cut has boundaries to respect.
+        let long = "\u{e9}".repeat(5_000);
+        let message = event("e1", user(long.clone()));
+        let whole = print::event(&message);
+        let line = event_line(&message, false);
+        let start = kept(&line, &whole);
+        assert!(
+            start <= MESSAGE_BYTES && start + 4 > MESSAGE_BYTES,
+            "{start}"
+        );
+        assert!(line.len() < whole.len());
+        assert!(
+            line[start..].contains(&(whole.len() - start).to_string()),
+            "{}",
+            &line[start..]
+        );
+
+        let output = event(
+            "e2",
+            Kind::ToolCompleted(pb::ToolCompleted {
+                call_id: "c1".to_owned(),
+                success: true,
+                output: long.clone(),
+            }),
+        );
+        assert!(kept(&event_line(&output, false), &print::event(&output)) <= EVENT_BYTES);
+
+        // The last reply shown has more room, and a short event is whole.
+        let answer = event("e3", reply(long));
+        assert_eq!(event_line(&answer, true), print::event(&answer));
+        assert!(event_line(&answer, false).len() < print::event(&answer).len());
+        let short = event("e4", user("hi"));
+        assert_eq!(event_line(&short, false), print::event(&short));
+    }
+
+    #[test]
+    fn a_history_too_long_keeps_its_end_and_names_where_the_rest_starts() {
+        let events: Vec<pb::SessionEvent> = (0..40)
+            .map(|number| event(&format!("e{number}"), user("x".repeat(3_000))))
+            .collect();
+        let all: Vec<&pb::SessionEvent> = events.iter().collect();
+
+        let text = shown(&all);
+        let rows: Vec<&str> = text.lines().collect();
+        let listed: Vec<&str> = rows[1..]
+            .iter()
+            .map(|row| row.split('\t').next().unwrap_or_default())
+            .collect();
+        let first = events.len() - listed.len();
+        assert!(first > 0 && listed.len() > 1, "{first}");
+        assert_eq!(listed, ids(&all[first..]));
+        assert!(text.len() <= ANSWER_BYTES + 200, "{}", text.len());
+        // The first line names the event to read on from, which gives
+        // exactly the events left out.
+        assert!(rows[0].contains(&events[first].id), "{}", rows[0]);
+        let rest = before(&events, &events[first].id, None).expect("it holds the event");
+        assert_eq!(ids(&rest), ids(&all[..first]));
+
+        // A history that fits is its events and nothing else.
+        assert_eq!(shown(&all[..3]).lines().count(), 3);
+    }
+
+    #[test]
+    fn events_before_an_id_are_the_ones_shown() {
+        let events = [
+            event("e1", user("one")),
+            event(
+                "e2",
+                Kind::AssistantDelta(pb::AssistantDelta {
+                    text: "tw".to_owned(),
+                }),
+            ),
+            event("e3", reply("two")),
+            event("e4", user("three")),
+            event("e5", reply("four")),
+        ];
+        let shown = |from: &str, last| before(&events, from, last).map(|events| ids(&events));
+        assert_eq!(shown("e4", None), Ok(vec!["e1", "e3"]));
+        assert_eq!(shown("e4", Some(1)), Ok(vec!["e3"]));
+        assert_eq!(shown("", Some(2)), Ok(vec!["e4", "e5"]));
+        assert_eq!(shown("e1", None), Ok(Vec::new()));
+        assert!(shown("e9", None).is_err());
+    }
+
+    type Items = mpsc::Sender<Result<pb::StreamItem, pb::Error>>;
+
+    /// A daemon with one session: a read answers `history`, each watch
+    /// hands the test the sender of its events, and a message is taken.
+    struct Daemon {
+        history: Mutex<Vec<pb::SessionEvent>>,
+        /// How many times the history was read.
+        reads: AtomicUsize,
+        watched: mpsc::UnboundedSender<Items>,
+    }
+
+    impl Service for Daemon {
+        fn handle(self: Arc<Self>, request: pb::request::Kind) -> ServiceFuture {
+            Box::pin(async move {
+                match request {
+                    pb::request::Kind::ReadHistory(_) => {
+                        self.reads.fetch_add(1, Ordering::Relaxed);
+                        let events = self.history.lock().expect("not poisoned").clone();
+                        Reply::Response(pb::response::Kind::History(pb::History { events }))
+                    }
+                    pb::request::Kind::WatchSession(_) => {
+                        let (items, receiver) = mpsc::channel(8);
+                        let _ = self.watched.send(items);
+                        Reply::Stream {
+                            response: pb::response::Kind::Watching(pb::Watching {}),
+                            items: receiver,
+                        }
+                    }
+                    pb::request::Kind::SendMessage(_) => {
+                        Reply::Response(pb::response::Kind::MessageSent(pb::MessageSent {}))
+                    }
+                    _ => Reply::Response(humata_wire::error(
+                        pb::ErrorCode::InvalidRequest,
+                        "not in this test",
+                    )),
+                }
+            })
+        }
+    }
+
+    async fn connected() -> (Arc<Client>, Arc<Daemon>, mpsc::UnboundedReceiver<Items>) {
+        let (watched, watches) = mpsc::unbounded_channel();
+        let daemon = Arc::new(Daemon {
+            history: Mutex::default(),
+            reads: AtomicUsize::new(0),
+            watched,
+        });
+        let (ours, theirs) = duplex(64 * 1024);
+        let (reader, writer) = split(theirs);
+        let serving = daemon.clone();
+        tokio::spawn(async move {
+            humata_wire::serve(reader, writer, pb::Role::Daemon, "test", serving).await
+        });
+        let (reader, writer) = split(ours);
+        let wire = humata_wire::Client::connect(reader, writer, pb::Role::Client, "test")
+            .await
+            .expect("connects");
+        let wait = crate::approved::Wait::For(Duration::ZERO);
+        (Arc::new(Client::new(wire, wait, false)), daemon, watches)
+    }
+
+    fn item(event: pb::SessionEvent) -> Result<pb::StreamItem, pb::Error> {
+        Ok(pb::StreamItem {
+            kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+        })
+    }
+
+    fn requested(id: &str, request: &str) -> pb::SessionEvent {
+        event(
+            id,
+            Kind::PermissionRequested(pb::PermissionRequested {
+                request_id: request.to_owned(),
+                ..Default::default()
+            }),
+        )
+    }
+
+    fn message() -> pb::request::Kind {
+        pb::request::Kind::SendMessage(pb::SendMessage {
+            session_id: "s".to_owned(),
+            text: "hi".to_owned(),
+            ..Default::default()
+        })
+    }
+
+    fn sent(response: &pb::response::Kind) -> bool {
+        matches!(response, pb::response::Kind::MessageSent(_))
+    }
+
+    #[tokio::test]
+    async fn a_wait_goes_on_past_a_request_the_mode_allowed() {
+        let (client, daemon, mut watches) = connected().await;
+        let mut seen = Vec::new();
+        let waiting = crate::call_and_wait(&client, "s", message(), sent, "MessageSent", |event| {
+            seen.push(event.id.clone());
+        });
+        let drive = async {
+            let items = watches.recv().await.expect("the wait watches");
+            let allowed = event(
+                "e2",
+                Kind::PermissionCompleted(pb::PermissionCompleted {
+                    request_id: "r1".to_owned(),
+                    approved: true,
+                    automatic: true,
+                    judged: false,
+                }),
+            );
+            for event in [requested("e1", "r1"), allowed] {
+                items.send(item(event)).await.expect("sent");
+            }
+            // Longer than a request is held before the history is asked.
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            for event in [
+                event("e3", reply("done")),
+                event("e4", Kind::Idle(pb::SessionIdle {})),
+            ] {
+                items.send(item(event)).await.expect("sent");
+            }
+            items
+        };
+        let (waited, _items) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(waiting, drive)
+        })
+        .await
+        .expect("the wait ends");
+
+        waited.expect("waited");
+        assert_eq!(seen, ["e1", "e2", "e3", "e4"]);
+        // Once, for what was there before the message; not again for the
+        // request.
+        assert_eq!(daemon.reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_wait_ends_at_a_request_no_one_answered() {
+        let (client, daemon, mut watches) = connected().await;
+        let mut seen = Vec::new();
+        let waiting = crate::call_and_wait(&client, "s", message(), sent, "MessageSent", |event| {
+            seen.push(event.id.clone());
+        });
+        let drive = async {
+            let items = watches.recv().await.expect("the wait watches");
+            let asked = requested("e1", "r1");
+            daemon
+                .history
+                .lock()
+                .expect("not poisoned")
+                .push(asked.clone());
+            items.send(item(asked)).await.expect("sent");
+            items
+        };
+        let (waited, _items) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(waiting, drive)
+        })
+        .await
+        .expect("the wait ends");
+
+        waited.expect("waited");
+        assert_eq!(seen, ["e1"]);
+    }
+
+    fn line(message: Value) -> Vec<u8> {
+        format!("{message}\n").into_bytes()
+    }
+
+    fn send_message(id: u64) -> Vec<u8> {
+        line(json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": {"name": "send_message", "arguments": {"session_id": "s", "text": "hi"}},
+        }))
+    }
+
+    fn ping(id: u64) -> Vec<u8> {
+        line(json!({"jsonrpc": "2.0", "id": id, "method": "ping"}))
+    }
+
+    #[tokio::test]
+    async fn a_ping_is_answered_while_a_call_waits() {
+        let (client, _daemon, mut watches) = connected().await;
+        let (mut requests, input) = duplex(4096);
+        let (output, answers) = duplex(64 * 1024);
+        let mut answers = BufReader::new(answers).lines();
+        let drive = async {
+            requests.write_all(&send_message(1)).await.expect("written");
+            // The session never goes idle, so the call waits from here on.
+            let items = watches.recv().await.expect("the call watches");
+            requests.write_all(&ping(2)).await.expect("written");
+            let answer = answers.next_line().await.expect("read").expect("an answer");
+            (answer, items)
+        };
+
+        let answered = tokio::select! {
+            ended = serve(client, input, output) => panic!("it stopped serving: {ended:?}"),
+            answered = tokio::time::timeout(Duration::from_secs(10), drive) => answered,
+        };
+
+        let (answer, _items) = answered.expect("the ping is answered");
+        let answer: Value = serde_json::from_str(&answer).expect("JSON");
+        assert_eq!(answer["id"], json!(2));
+        assert!(answer.get("error").is_none(), "{answer}");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_call_is_answered_with_nothing_and_the_next_is_answered() {
+        let (client, _daemon, mut watches) = connected().await;
+        let (mut requests, input) = duplex(4096);
+        let (output, answers) = duplex(64 * 1024);
+        let mut answers = BufReader::new(answers).lines();
+        let drive = async move {
+            requests.write_all(&send_message(1)).await.expect("written");
+            let items = watches.recv().await.expect("the call watches");
+            let cancel = line(json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled",
+                "params": {"requestId": 1},
+            }));
+            requests.write_all(&cancel).await.expect("written");
+            requests.write_all(&ping(2)).await.expect("written");
+            // The input ends: a call still waiting would hold the server
+            // open for its grace.
+            drop(requests);
+            let mut answered = Vec::new();
+            while let Some(answer) = answers.next_line().await.expect("read") {
+                let answer: Value = serde_json::from_str(&answer).expect("JSON");
+                answered.push(answer["id"].clone());
+            }
+            (answered, items)
+        };
+
+        let (ended, (answered, _items)) = tokio::time::timeout(ENDED_GRACE / 2, async {
+            tokio::join!(serve(client, input, output), drive)
+        })
+        .await
+        .expect("it ends once the input does, with no call left waiting");
+
+        ended.expect("served");
+        assert_eq!(answered, [json!(2)]);
+    }
 
     fn link_to(arguments: Value) -> Result<String, String> {
         link(&Arguments(&arguments))

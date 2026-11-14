@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use humata_wire::{Client, Reply, Service, ServiceFuture, WireError, pb, serve};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex, split};
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::{AttachError, Ended, RESET, Size, Target, attach};

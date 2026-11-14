@@ -96,6 +96,7 @@ package struct ReviewView: View {
                 } label: {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
                 }
+                .accessibilityLabel("Fewer Lines of Context")
                 .help("Show fewer unchanged lines around each change")
                 .disabled(store.context == 0)
                 Text("\(store.context) lines")
@@ -107,6 +108,7 @@ package struct ReviewView: View {
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                 }
+                .accessibilityLabel("More Lines of Context")
                 .help("Show more unchanged lines around each change")
             }
             .disabled(store.wholeFile || store.rendered)

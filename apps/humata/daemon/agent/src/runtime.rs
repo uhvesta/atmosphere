@@ -232,6 +232,22 @@ impl Turn {
         self.session.log.with_events(read)
     }
 
+    /// [`Self::with_history`], taking in the same hold every message sent
+    /// to steer this turn so far: a steer is logged and kept for the turn
+    /// under the session's lock, so each is in what `read` sees and taken,
+    /// or in neither. For a runner that builds its request from the
+    /// history, which then holds the steers.
+    pub(crate) fn with_history_taking_steering<T>(
+        &self,
+        read: impl FnOnce(&[Event]) -> T,
+    ) -> Result<T, AgentError> {
+        // The session's lock, then the log's, as a send takes them.
+        let mut control = self.session.lock();
+        let read = self.session.log.with_events(read)?;
+        control.steering.clear();
+        Ok(read)
+    }
+
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
         self.emit_under(None, kind)
     }
@@ -2734,6 +2750,83 @@ pub(crate) mod tests {
             |kind| matches!(kind, EventKind::UserMessage { text, .. } if text == "steer"),
         );
         assert!(ended < steer, "{events:#?}");
+    }
+
+    /// Once `release` is told, replies with the messages it reads in the
+    /// history, taking the steers with them, then with how many steers
+    /// were left to take.
+    #[derive(Default)]
+    struct ReadsAndTakes {
+        release: tokio::sync::Notify,
+    }
+
+    impl Runner for ReadsAndTakes {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            self.release.notified().await;
+            let read = turn.with_history_taking_steering(|history| {
+                history
+                    .iter()
+                    .filter_map(|event| match &event.kind {
+                        EventKind::UserMessage { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })?;
+            turn.emit(EventKind::AssistantMessage { text: read })?;
+            let left = turn.take_steering().len();
+            turn.emit(EventKind::AssistantMessage {
+                text: format!("{left} left"),
+            })?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_steer_taken_with_the_history_isnt_taken_again() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let agent = LocalAgent::open(dir.path().join("state"), ReadsAndTakes::default())
+            .expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "hello".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, |events| {
+            events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::TurnStarted))
+        })
+        .await;
+
+        agent
+            .send(&id, "steer".into(), SendMode::Immediate)
+            .await
+            .expect("sent");
+        agent.runner.release.notify_one();
+        let events = wait_for(&agent, &id, idle_turns(1)).await;
+
+        let replies: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::AssistantMessage { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(replies, ["hello, steer", "0 left"]);
+        // Taken, so it gets no turn of its own after this one.
+        let turns = events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::TurnStarted))
+            .count();
+        assert_eq!(turns, 1);
     }
 
     #[tokio::test]

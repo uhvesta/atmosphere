@@ -18,7 +18,7 @@ pub enum CliError {
     NoSocket,
 
     #[error(
-        "couldn't reach humatad at {path}; start it with `humatad daemon`, or pass the socket it listens on with --socket"
+        "couldn't reach humatad at {path}. Open the Humata app, which starts it; on a machine without the app, run `humatad daemon`; or pass the socket it listens on with --socket"
     )]
     Connect {
         path: PathBuf,
@@ -58,6 +58,15 @@ pub enum CliError {
 
     #[error("couldn't read the spec {path}; check the path, or pass - to read it from stdin")]
     ReadSpec {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't read the setup script {path}; check the path and that the file is readable, or pass - to read it from stdin"
+    )]
+    ReadScript {
         path: PathBuf,
         #[source]
         source: std::io::Error,

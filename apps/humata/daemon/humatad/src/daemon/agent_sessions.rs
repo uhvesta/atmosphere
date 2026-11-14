@@ -177,6 +177,14 @@ impl<'a> Allowing<'a> {
     }
 }
 
+/// Whether `request` is being allowed right now.
+fn allowing(requests: &Mutex<HashSet<String>>, request: &str) -> bool {
+    requests
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(request)
+}
+
 impl Drop for Allowing<'_> {
     fn drop(&mut self) {
         self.requests
@@ -210,6 +218,29 @@ impl Daemon {
         }
     }
 
+    /// Whether the person's Allow of the request `id`, to start a
+    /// session, is being carried out right now. Until it ends the request
+    /// can't be declined or replied to: the session may be made already.
+    pub(super) fn allow_under_way(&self, id: &str) -> bool {
+        allowing(&self.agent_allowing, id)
+    }
+
+    /// What `session` has started and how many starts are under way for
+    /// it, read together: the starts under way are the same before and
+    /// after the started are read, so one that ended meanwhile isn't
+    /// under way in one and started in the other. Read before the sessions
+    /// are listed, a start that ends during the listing stays under way
+    /// here and isn't among the started, so it counts once.
+    fn starts_of(&self, session: &str) -> Result<(Vec<String>, u32), DaemonError> {
+        loop {
+            let under_way = starting(&self.agent_starting, session);
+            let started = self.store.started_by(session)?;
+            if starting(&self.agent_starting, session) == under_way {
+                return Ok((started, under_way));
+            }
+        }
+    }
+
     /// The session `id`, whose agent asks, with what its project lets it
     /// do; refused when that is nothing, and for a side chat, which only
     /// reads, whatever its project allows.
@@ -237,10 +268,16 @@ impl Daemon {
 
     /// Fails when `caller` may not start one more session: it is as deep
     /// as its project lets agents' sessions nest, or has as many as it may.
-    /// `waiting` is how many starts not yet among its sessions count: those
-    /// it asked for that wait for the person, all but the one being
-    /// allowed, and those being made right now.
-    fn room_for_child(&self, caller: &Caller, waiting: u32) -> Result<(), DaemonError> {
+    /// `started` is what it had started when the starts under way were
+    /// read, from [`Self::starts_of`]. `waiting` is how many starts not
+    /// among those count: those it asked for that wait for the person, all
+    /// but the one being allowed, and those being made right now.
+    fn room_for_child(
+        &self,
+        caller: &Caller,
+        started: &[String],
+        waiting: u32,
+    ) -> Result<(), DaemonError> {
         let depth = self.store.started_depth(&caller.session.id)?;
         if depth >= caller.allowed.max_depth {
             return Err(AgentSessionsError::TooDeep {
@@ -250,7 +287,6 @@ impl Daemon {
             .into());
         }
         // Those archived or deleted since make room.
-        let started = self.store.started_by(&caller.session.id)?;
         let kept = caller
             .sessions
             .iter()
@@ -291,14 +327,15 @@ impl Daemon {
             // Counted one at a time, so each sees those before it, as a
             // request that waits or a start under way.
             let _counted = self.agent_asks.lock().await;
-            // Read before the sessions are listed: a start that finishes
-            // in between is counted twice for a moment, never missed.
-            let under_way = starting(&self.agent_starting, &start.session_id);
+            // Read together and before the sessions are listed: a start
+            // that finishes during the listing is still counted as under
+            // way and not as started, so once, never twice or missed.
+            let (started, under_way) = self.starts_of(&start.session_id)?;
             let caller = self.agent_caller(&start.session_id).await?;
             let waiting = self
                 .store
                 .open_of_kind(&caller.session.id, pb::AgentRequestKind::StartSession)?;
-            self.room_for_child(&caller, waiting.saturating_add(under_way))?;
+            self.room_for_child(&caller, &started, waiting.saturating_add(under_way))?;
             if caller.allowed.mode() != pb::AgentSessionsMode::Allow {
                 let request = self.store.add_request(
                     pb::AgentRequest {
@@ -573,8 +610,9 @@ impl Daemon {
                 .into());
             };
             self.store.open_request(&request.id)?;
-            // Read before the sessions are listed, as for an agent's start.
-            let under_way = starting(&self.agent_starting, &request.session_id);
+            // Read together and before the sessions are listed, as for an
+            // agent's start.
+            let (started, under_way) = self.starts_of(&request.session_id)?;
             let sessions = self.list("").await?.sessions;
             let session = sessions
                 .iter()
@@ -597,7 +635,7 @@ impl Daemon {
                 .saturating_add(under_way);
             // Said to the person, who is the one allowing it, not to the
             // agent.
-            self.room_for_child(&caller, waiting)
+            self.room_for_child(&caller, &started, waiting)
                 .map_err(|refused| match refused {
                     DaemonError::AgentSessions(AgentSessionsError::TooManyChildren { limit }) => {
                         DaemonError::from(AgentSessionsError::AllowTooManyChildren {

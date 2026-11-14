@@ -32,13 +32,22 @@ fn events(output: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The request the output stopped at, and its permission kind.
+/// The request the output stopped at, and its permission kind: the last
+/// one asked, with no answer and no idle after it. Other events, such as a
+/// save of the copy, may still follow it.
 fn waiting_on(events: &[(String, String)]) -> (String, String) {
-    let (kind, detail) = events.last().unwrap_or_else(|| panic!("no events"));
-    assert_eq!(kind, "permission_requested", "{events:?}");
-    let mut fields = detail.split(' ');
+    let at = events
+        .iter()
+        .rposition(|(kind, _)| kind == "permission_requested")
+        .unwrap_or_else(|| panic!("no request: {events:?}"));
+    let mut fields = events[at].1.split(' ');
     let request = fields.next().unwrap_or_default().to_owned();
     let permission = fields.next().unwrap_or_default().to_owned();
+    assert!(
+        !events[at..].iter().any(|(kind, detail)| kind == "idle"
+            || (kind == "permission_completed" && detail.starts_with(&request))),
+        "{events:?}"
+    );
     (request, permission)
 }
 

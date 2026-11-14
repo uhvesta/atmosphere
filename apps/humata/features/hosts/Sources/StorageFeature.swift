@@ -20,8 +20,14 @@ package struct StorageFeature {
         package var modelsFolder = ""
         /// The model being deleted, shown with a spinner.
         package var deletingModel: String?
-        /// Why it couldn't be read or changed, and what to do about it.
+        /// Why it couldn't be read, and what to do about it; gone with the
+        /// next read that works.
         package var failure: String?
+        /// Why what the person asked for wasn't done: a setting not saved,
+        /// a model not deleted, a cleanup not started. It stays through a
+        /// cleanup's progress reads, until they next change or confirm
+        /// something.
+        package var actionFailure: String?
         @Presents package var alert: AlertState<Action.Alert>?
 
         package init(storage: Storage? = nil) {
@@ -134,7 +140,7 @@ package struct StorageFeature {
                 return .none
 
             case .cleanupFailed(let message):
-                state.failure = message
+                state.actionFailure = message
                 state.storage?.job = nil
                 return .none
 
@@ -144,23 +150,25 @@ package struct StorageFeature {
                 return .none
 
             case .modelDeleteFailed(let message):
-                state.failure = message
+                state.actionFailure = message
                 state.deletingModel = nil
                 return .none
 
             case .settingsFailed(let autoDelete, let days, let message):
-                state.failure = message
+                state.actionFailure = message
                 state.storage?.autoDelete = autoDelete
                 state.storage?.days = days
                 return .none
 
             case .autoDeleteToggled(let on):
                 guard let storage = state.storage else { return .none }
+                state.actionFailure = nil
                 state.storage?.autoDelete = on
                 return set(autoDelete: on, days: storage.days, was: storage)
 
             case .daysPicked(let days):
                 guard let storage = state.storage else { return .none }
+                state.actionFailure = nil
                 state.storage?.days = days
                 return set(autoDelete: storage.autoDelete, days: days, was: storage)
 
@@ -218,6 +226,7 @@ package struct StorageFeature {
 
             case .alert(.presented(.deleteModel(let id))):
                 guard state.deletingModel == nil else { return .none }
+                state.actionFailure = nil
                 state.deletingModel = id
                 return .run { send in
                     try await modelFiles.delete(id)
@@ -271,6 +280,7 @@ package struct StorageFeature {
 
     private func cleanUp(_ state: inout State, _ cleanup: Storage.Cleanup) -> Effect<Action> {
         guard state.storage?.job == nil else { return .none }
+        state.actionFailure = nil
         // Shown at once, before the daemon's first word on it.
         state.storage?.job = Storage.Job(step: "Starting")
         return .run { send in

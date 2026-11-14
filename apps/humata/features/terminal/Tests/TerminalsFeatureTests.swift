@@ -39,46 +39,43 @@ final class TerminalsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.current?.command, TerminalCommand(line: "show \(id)"))
     }
 
-    func testAFirstShellWhoseOpeningWasCutOffOpensAgain() async throws {
+    func testAFirstShellStillOpeningWhenTheTabIsShownAgainOpensOnce() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
-        // The host's first answer never comes, as on a slow host.
+        // The host is slow to open the shell: its answer waits to be let go.
         let asked = LockIsolated(0)
         let (held, release) = AsyncStream<Void>.makeStream()
         let store = store(daemon, TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)) {
             let open = $0.daemon.openTerminal
             $0.daemon.openTerminal = { place, profile in
-                let first = asked.withValue { count in
-                    count += 1
-                    return count == 1
-                }
-                if first {
-                    for await _ in held { break }
-                    try Task.checkCancellation()
-                }
+                asked.withValue { $0 += 1 }
+                for await _ in held { break }
                 return try await open(place, profile)
             }
         }
 
-        let shown = await store.send(.task)
+        await store.send(.task)
         await store.receive(\.listed)
         await store.receive(\.newTapped)
         XCTAssertTrue(store.state.opening)
+        XCTAssertTrue(store.state.tabs.isEmpty)
 
-        // The tab is left before the shell opens, and shown again.
-        await shown.cancel()
+        // The tab is left and shown again before the shell opens: the host
+        // still lists none.
         await store.send(.task)
-        XCTAssertFalse(store.state.opening)
-        XCTAssertFalse(store.state.listed)
         await store.receive(\.listed)
-        await store.receive(\.newTapped)
+        XCTAssertTrue(store.state.opening)
+        XCTAssertTrue(store.state.tabs.isEmpty)
+
+        release.finish()
         await store.receive(\.opened)
+        await store.finish()
         XCTAssertFalse(store.state.opening)
         XCTAssertEqual(store.state.tabs.count, 1)
         XCTAssertEqual(store.state.selected, store.state.tabs.first?.id)
+        XCTAssertEqual(asked.value, 1)
         let running = try await daemon.client.terminals(nil)
-        XCTAssertEqual(running.map(\.id), Array(store.state.tabs.ids), "the open that was cut off made no shell")
-        release.finish()
+        XCTAssertEqual(running.map(\.id), Array(store.state.tabs.ids))
     }
 
     func testAShellAskedForStillOpensAfterTheTabIsShownAgain() async throws {

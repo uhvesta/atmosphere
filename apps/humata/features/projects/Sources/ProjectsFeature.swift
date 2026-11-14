@@ -1059,7 +1059,41 @@ enum SessionHold: Equatable, Sendable {
     case inTurn
 }
 
+/// What the menu bar needs of a session to offer its commands: Archive or
+/// Unarchive by `archived`, and nothing that archives or moves it while
+/// it's `held`.
+package struct SessionMenuState: Equatable, Sendable {
+    package var archived: Bool
+    /// Whether something keeps it from being archived or moved now: its
+    /// turn runs, or it's being moved, archived or deleted.
+    package var held: Bool
+    /// Whether it's being moved, archived or deleted already, so it takes
+    /// no rename or delete either.
+    package var busy: Bool
+}
+
 extension ProjectsFeature.State {
+    /// The project the menu bar's commands act on: the selected board's,
+    /// else the selected session's; nil when neither is in a project the
+    /// sidebar lists.
+    package var commandProject: Project.ID? {
+        let id: Project.ID?
+        switch selection {
+        case .board(let project): id = project
+        case .session(let session): id = sessions[id: session]?.projectID
+        case .inbox, .hosts, .search, nil: id = nil
+        }
+        return id.flatMap { projects[id: $0]?.id }
+    }
+
+    /// What the menu bar needs of session `id`; nil when the sidebar
+    /// doesn't list it.
+    package func menuState(of id: Session.ID) -> SessionMenuState? {
+        guard let session = sessions[id: id] else { return nil }
+        let hold = hold(on: session)
+        return SessionMenuState(archived: session.archived, held: hold != nil, busy: hold == .busy)
+    }
+
     /// What keeps `session` from being archived or moved now; nil when
     /// nothing does.
     func hold(on session: Session) -> SessionHold? {

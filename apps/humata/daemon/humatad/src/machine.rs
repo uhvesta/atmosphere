@@ -105,9 +105,78 @@ impl Machine {
         self.state.join("setup.json")
     }
 
-    fn last_setup(&self) -> Option<SetupRun> {
+    /// The last run as it was kept, which an older humatad may have
+    /// written with the host's values in its output.
+    fn kept_setup(&self) -> Option<SetupRun> {
         let bytes = std::fs::read(self.setup_file()).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The last run, its output without the host's values.
+    fn last_setup(&self) -> Option<SetupRun> {
+        let mut run = self.kept_setup()?;
+        run.output = redacted(&run.output, &self.secrets());
+        Some(run)
+    }
+
+    /// Writes the last run where only this user can read it, replacing the
+    /// file whole so a crash leaves the old one.
+    fn save_setup(&self, run: &SetupRun) -> Result<(), HostError> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let path = self.setup_file();
+        let json = serde_json::to_vec(run).unwrap_or_default();
+        let temporary = path.with_extension("json.new");
+        let written = std::fs::create_dir_all(&self.state)
+            .and_then(|()| {
+                // One left by a crash may have other modes.
+                let _ = std::fs::remove_file(&temporary);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&temporary)
+            })
+            .and_then(|mut file| file.write_all(&json).and_then(|()| file.sync_all()))
+            .and_then(|()| std::fs::rename(&temporary, &path));
+        written.map_err(|source| HostError::SaveSetup { path, source })
+    }
+
+    /// Every value that must not be shown in what a program printed: the
+    /// variables' values, and humatad's own values of the names that sign
+    /// agents in. Humata can't tell which variables are secrets, so all are.
+    fn secrets(&self) -> Vec<String> {
+        let mut secrets: Vec<String> = self
+            .env
+            .vars()
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect();
+        secrets.extend(
+            TOKENS
+                .iter()
+                .chain(&ANTHROPIC_KEYS)
+                .filter_map(|name| std::env::var(name).ok()),
+        );
+        secrets
+    }
+
+    /// What a program printed, both streams, without the host's values and
+    /// cut to its last [`OUTPUT_KEPT`] bytes. The values are taken out
+    /// before the cut, so the cut can't leave half of one.
+    fn printed(&self, output: &std::process::Output) -> String {
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        let text = redacted(&text, &self.secrets());
+        let text = text.trim();
+        if text.len() <= OUTPUT_KEPT {
+            return text.to_owned();
+        }
+        let mut start = text.len() - OUTPUT_KEPT;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("…{}", &text[start..])
     }
 
     /// Sets the agents' variables, and runs `script` if it changed since it
@@ -122,23 +191,33 @@ impl Machine {
             .map(|var| (var.name, var.value))
             .collect();
         self.env.replace(env);
+        let _running = self.setup.lock().await;
         if configure.setup_script.trim().is_empty() {
-            return Ok(pb::SetupResult::default());
+            // The host has no script now, so its status shows no run of one.
+            let path = self.setup_file();
+            return match std::fs::remove_file(&path) {
+                Ok(()) => Ok(pb::SetupResult::default()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(pb::SetupResult::default())
+                }
+                Err(source) => Err(HostError::SaveSetup { path, source }),
+            };
         }
         let digest = hex(&Sha256::digest(configure.setup_script.as_bytes()));
-        let _running = self.setup.lock().await;
-        if let Some(last) = self.last_setup()
-            && last.script == digest
-            && last.succeeded
+        if let Some(kept) = self.kept_setup()
+            && kept.script == digest
+            && kept.succeeded
         {
+            let mut last = kept.clone();
+            last.output = redacted(&kept.output, &self.secrets());
+            if last.output != kept.output {
+                // Kept by an older humatad with a value in it.
+                self.save_setup(&last)?;
+            }
             return Ok(last.wire());
         }
         let run = self.run_setup(&configure.setup_script, digest).await;
-        let path = self.setup_file();
-        let json = serde_json::to_vec(&run).unwrap_or_default();
-        std::fs::create_dir_all(&self.state)
-            .and_then(|()| std::fs::write(&path, json))
-            .map_err(|source| HostError::SaveSetup { path, source })?;
+        self.save_setup(&run)?;
         Ok(run.wire())
     }
 
@@ -161,7 +240,7 @@ impl Machine {
                 ),
             ),
             Ok(Err(error)) => (false, format!("Couldn't run /bin/sh: {error}")),
-            Ok(Ok(output)) => (output.status.success(), printed(&output)),
+            Ok(Ok(output)) => (output.status.success(), self.printed(&output)),
         };
         SetupRun {
             script: digest,
@@ -235,7 +314,7 @@ impl Machine {
                     .to_owned(),
                 String::new(),
             ),
-            Ok(Ok(output)) => (String::new(), printed(&output)),
+            Ok(Ok(output)) => (String::new(), self.printed(&output)),
         }
     }
 
@@ -312,7 +391,7 @@ impl Machine {
                 return Err(HostError::Clone {
                     url: repository.url,
                     path,
-                    output: printed(&output),
+                    output: self.printed(&output),
                 });
             }
             cloned.push(pb::Repository {
@@ -408,7 +487,7 @@ impl Machine {
         Err(HostError::Push {
             repository: repository.to_owned(),
             branch: branch.to_owned(),
-            output: printed(&output),
+            output: self.printed(&output),
         })
     }
 
@@ -440,7 +519,7 @@ impl Machine {
         }
         Err(HostError::Fetch {
             repository: repository.to_owned(),
-            output: printed(&output),
+            output: self.printed(&output),
         })
     }
 
@@ -536,20 +615,27 @@ async fn run(command: &mut Command) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// What a program printed, both streams, cut to its last [`OUTPUT_KEPT`]
-/// bytes.
-fn printed(output: &std::process::Output) -> String {
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    let text = text.trim();
-    if text.len() <= OUTPUT_KEPT {
-        return text.to_owned();
+/// The shortest value taken out of what a program printed. A shorter one,
+/// such as `1` or `true`, is in too much ordinary text to be told apart.
+const SECRET_LEAST: usize = 8;
+
+/// `text` with each of `secrets` of [`SECRET_LEAST`] bytes or more replaced
+/// by `***`, the longest first, so one that holds another leaves no tail.
+fn redacted(text: &str, secrets: &[String]) -> String {
+    let mut secrets: Vec<&str> = secrets
+        .iter()
+        .map(String::as_str)
+        .filter(|secret| secret.len() >= SECRET_LEAST)
+        .collect();
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets.dedup();
+    let mut text = text.to_owned();
+    for secret in secrets {
+        if text.contains(secret) {
+            text = text.replace(secret, "***");
+        }
     }
-    let mut start = text.len() - OUTPUT_KEPT;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    format!("…{}", &text[start..])
+    text
 }
 
 fn now() -> i64 {
@@ -630,6 +716,113 @@ mod tests {
         assert!(first.ran && !first.succeeded);
         assert!(first.output.contains("missing tool"));
         assert_eq!(status.setup, Some(first));
+    }
+
+    #[tokio::test]
+    async fn a_setup_scripts_output_keeps_no_variables_value() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let state = scratch();
+        let machine = machine(state.path());
+        let script = "echo \"token is $DEPLOY_TOKEN\"; exit 3";
+
+        let result = machine
+            .configure(configure(script, &[("DEPLOY_TOKEN", "hunter2-hunter2")]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let status = machine.status("test".to_owned()).await;
+
+        let file = state.path().join("setup.json");
+        let kept = std::fs::read_to_string(&file).unwrap_or_else(|error| panic!("{error}"));
+        let mode = std::fs::metadata(&file)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .permissions()
+            .mode();
+        assert!(result.ran && !result.succeeded);
+        assert!(result.output.contains("token is"));
+        assert!(!result.output.contains("hunter2-hunter2"));
+        assert!(!kept.contains("hunter2-hunter2"));
+        assert!(
+            status
+                .setup
+                .is_some_and(|setup| !setup.output.contains("hunter2-hunter2"))
+        );
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_value_is_left_out_wherever_it_is_printed_and_a_short_one_is_kept() {
+        let secrets = [
+            "abcdefgh".to_owned(),
+            "abcdefgh-and-more".to_owned(),
+            "short".to_owned(),
+        ];
+
+        let shown = redacted(
+            "first abcdefgh-and-more then abcdefgh, short, and abcdefgh again",
+            &secrets,
+        );
+
+        assert!(!shown.contains("abcdefgh"));
+        assert!(!shown.contains("and-more"));
+        assert!(shown.contains("short"));
+        assert!(shown.starts_with("first ") && shown.ends_with(" again"));
+    }
+
+    #[tokio::test]
+    async fn a_setup_result_kept_with_a_value_is_shown_without_it() {
+        let state = scratch();
+        let machine = machine(state.path());
+        let script = "true";
+        let old = SetupRun {
+            script: hex(&Sha256::digest(script.as_bytes())),
+            succeeded: true,
+            output: "+ echo hunter2-hunter2".to_owned(),
+            ran_unix_ms: 7,
+        };
+        let file = state.path().join("setup.json");
+        std::fs::write(&file, serde_json::to_vec(&old).unwrap_or_default())
+            .unwrap_or_else(|error| panic!("{error}"));
+        machine.set_env(BTreeMap::from([(
+            "DEPLOY_TOKEN".to_owned(),
+            "hunter2-hunter2".to_owned(),
+        )]));
+
+        let status = machine.status("test".to_owned()).await;
+        let reused = machine
+            .configure(configure(script, &[("DEPLOY_TOKEN", "hunter2-hunter2")]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let kept = std::fs::read_to_string(&file).unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            status
+                .setup
+                .is_some_and(|setup| !setup.output.contains("hunter2-hunter2"))
+        );
+        // The kept run was reused, not run again.
+        assert_eq!(reused.ran_unix_ms, 7);
+        assert!(!reused.output.contains("hunter2-hunter2"));
+        assert!(!kept.contains("hunter2-hunter2"));
+    }
+
+    #[tokio::test]
+    async fn a_host_with_no_setup_script_shows_no_setup() {
+        let state = scratch();
+        let machine = machine(state.path());
+        let _ = machine
+            .configure(configure("echo ready", &[]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let with_script = machine.status("test".to_owned()).await;
+
+        let _ = machine
+            .configure(configure("", &[]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let without = machine.status("test".to_owned()).await;
+
+        assert!(with_script.setup.is_some());
+        assert_eq!(without.setup, None);
     }
 
     #[tokio::test]

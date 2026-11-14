@@ -71,6 +71,11 @@ pub enum WorkspaceError {
     )]
     ChangeGone { path: String },
 
+    #[error(
+        "{path:?} isn't a file in the session's copy of {repository}, so nothing was changed. Name the file by its path from the repository's folder, with no `..` and no leading `/`, as the session's changes list it"
+    )]
+    OutsideCopy { path: String, repository: String },
+
     #[error("{repository} has no file {path} at the end of these changes")]
     NoSuchFile { path: String, repository: String },
 

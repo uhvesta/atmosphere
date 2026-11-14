@@ -119,4 +119,18 @@ final class ComposerTests: XCTestCase {
         XCTAssertTrue(store.state.canStop)
         await store.finish()
     }
+
+    func testSteerNowGivesUpItsKeyWhileAnEarlierMessageIsEdited() async {
+        let store = store("composer-steer-key")
+        await store.send(.received(event("e1", .userMessage("write the notes"))))
+        await store.send(.received(event("e2", .turnStarted)))
+        XCTAssertTrue(store.state.steerTakesShortcut)
+
+        await store.send(.editTapped("e1"))
+        XCTAssertFalse(store.state.steerTakesShortcut, "⌘Return is the editor's")
+
+        await store.send(.editCancelled)
+        XCTAssertTrue(store.state.steerTakesShortcut)
+        await store.finish()
+    }
 }
