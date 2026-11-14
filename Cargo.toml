@@ -11,6 +11,8 @@ members = [
     "apps/humata/daemon/humatad",
     "apps/humata/daemon/cli",
     "apps/humata/e2e/sshd",
+    "apps/humata2/core",
+    "apps/humata2/bindgen",
     "libs/tca-rust",
 ]
 resolver = "3"
@@ -36,6 +38,11 @@ rayon = "1.12.0"
 regex = "1.13.1"
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 ruzstd = "0.9.1"
+# Humata 2's Rust core, called from Swift. The generator is built without
+# cargo-metadata: Bazel runs it on the library, outside any cargo project.
+uniffi = "0.32.2"
+uniffi_bindgen = { version = "0.32.2", default-features = false }
+camino = "1.2"
 # Pseudo-terminals for Humata's terminals.
 rustix = { version = "1.1.6", features = ["fs", "process", "pty", "termios"] }
 # ring, not aws-lc-rs, which needs CMake to build.

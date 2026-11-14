@@ -84,6 +84,7 @@ def _lifr_identity_impl(repository_ctx):
         "# {}, or the prefix and .langreadr.".format(_LANGREADR),
         "LANGREADR_BUNDLE_ID = {}".format(repr(langreadr)),
         "HUMATA_BUNDLE_ID = {}".format(repr(prefix + ".humata")),
+        "HUMATA2_BUNDLE_ID = {}".format(repr(prefix + ".humata2")),
         "",
     ]))
 

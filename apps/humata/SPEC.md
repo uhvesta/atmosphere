@@ -166,8 +166,9 @@ original spec; lettered ones were added since.
 | X Admin mode, gated by approvals | Done |
 | F2 Fresh clones | Done |
 | TR tca-rust, a Rust take on TCA | Done (ff6ee013) |
-| H2-0 Humata 2 skeleton | Next |
-| H2-1 to H2-5 Humata 2 screens, then the swap | Planned |
+| H2-0 Humata 2 skeleton | Done |
+| H2-1 Humata 2 chat | Next |
+| H2-2 to H2-5 Humata 2 screens, then the swap | Planned |
 | TR2 tca-rust speed | Planned, after Humata 2 runs |
 
 ## Done milestones

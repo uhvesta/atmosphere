@@ -1,0 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# Writes the Swift and C header for Humata 2's core from its built library.
+rust_binary(
+    name = "bindgen",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata2/core:__pkg__"],
+    deps = [
+        "@crates//:camino",
+        "@crates//:thiserror",
+        "@crates//:uniffi_bindgen",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

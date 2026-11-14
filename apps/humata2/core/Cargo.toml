@@ -1,0 +1,27 @@
+[package]
+name = "humata2-core"
+description = "Humata 2's features on tca-rust, and, with the ffi feature, what Swift calls."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Also depends on tca-rust, Humata's wire crate and the protocol's Rust
+# types, which Bazel generates, so this crate builds with Bazel only.
+[lib]
+name = "humata_core"
+path = "src/lib.rs"
+
+[features]
+# The UniFFI exports Swift calls. Off, it's plain Rust, for tests. uniffi
+# is listed as a plain dependency so it's pinned; Bazel adds it with the
+# feature.
+ffi = []
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+uniffi.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

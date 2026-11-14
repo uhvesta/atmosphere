@@ -1,0 +1,30 @@
+load("@lifr_identity//:defs.bzl", "HUMATA2_BUNDLE_ID")
+load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Humata 2 for the Mac: SwiftUI lays out what the Rust core holds and sends
+# it what the person does. Reaches the humatad that Humata runs, and doesn't
+# bundle one yet. Needs Xcode: build with `--config=xcode`.
+swift_library(
+    name = "app_lib",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "Humata2App",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = ["//apps/humata2/core:swift"],
+)
+
+macos_application(
+    name = "macos",
+    bundle_id = HUMATA2_BUNDLE_ID,
+    bundle_name = "Humata 2",
+    infoplists = ["Info.plist"],
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":app_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

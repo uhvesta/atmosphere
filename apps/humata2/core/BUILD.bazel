@@ -1,0 +1,90 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library", "rust_test")
+load("@rules_swift//swift:swift_interop_hint.bzl", "swift_interop_hint")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Humata 2's features on tca-rust, as plain Rust: what the tests use.
+rust_library(
+    name = "core",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata_core",
+    deps = [
+        "//apps/humata/daemon/wire",
+        "//libs/tca-rust:tca",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":core",
+            "//apps/humata/daemon/wire",
+            "//libs/tca-rust:tca",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+# The same crate with what Swift calls, as the library the app links.
+rust_static_library(
+    name = "ffi",
+    srcs = glob(["src/*.rs"]),
+    # UniFFI's macros read the crate's name from it.
+    compile_data = ["Cargo.toml"],
+    crate_features = ["ffi"],
+    crate_name = "humata_core",
+    crate_root = "src/lib.rs",
+    deps = [
+        "//apps/humata/daemon/wire",
+        "//libs/tca-rust:tca",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:uniffi",
+    ],
+)
+
+# The Swift that calls it, and the C header under that, read from the
+# library's own description of what it exports.
+genrule(
+    name = "bindings",
+    srcs = [":ffi"],
+    outs = [
+        "humata2.swift",
+        "humata2FFI.h",
+    ],
+    cmd = "$(execpath //apps/humata2/bindgen) $(execpath :ffi) $(RULEDIR)",
+    tools = ["//apps/humata2/bindgen"],
+)
+
+cc_library(
+    name = "ffi_c",
+    hdrs = ["humata2FFI.h"],
+    aspect_hints = [":ffi_module"],
+    deps = [":ffi"],
+)
+
+# The generated Swift imports the header as humata2FFI.
+swift_interop_hint(
+    name = "ffi_module",
+    module_name = "humata2FFI",
+)
+
+swift_library(
+    name = "swift",
+    srcs = ["humata2.swift"],
+    module_name = "Humata2Core",
+    visibility = ["//apps/humata2/app:__pkg__"],
+    deps = [":ffi_c"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
