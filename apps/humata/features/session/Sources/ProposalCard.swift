@@ -36,13 +36,13 @@ package struct ProposalCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Label(kind, systemImage: proposal.kind == .task ? "checklist" : "doc.text")
-                    .font(.caption.weight(.medium))
+                    .scaledFont(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                 Spacer()
                 status
             }
             Text(proposal.title)
-                .font(.headline)
+                .scaledFont(.headline)
                 .textSelection(.enabled)
             if proposal.currentSpec != nil, !proposal.spec.isEmpty {
                 // The change comes with the proposals' list, worked out off
@@ -56,7 +56,7 @@ package struct ProposalCard: View {
                 }
             } else if !proposal.spec.isEmpty {
                 Text(proposal.spec)
-                    .font(.callout)
+                    .scaledFont(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(showsAll ? nil : Self.shownLines)
                     .textSelection(.enabled)
@@ -66,12 +66,12 @@ package struct ProposalCard: View {
                         showsAll.toggle()
                     }
                     .buttonStyle(.link)
-                    .font(.caption)
+                    .scaledFont(.caption)
                 }
             }
             if !proposal.note.isEmpty {
                 Text(proposal.note)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.tertiary)
             }
             actions
@@ -97,15 +97,15 @@ package struct ProposalCard: View {
         switch proposal.state {
         case .pending:
             Text("Not on the board yet")
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.secondary)
         case .applied:
             Label("Applied", systemImage: "checkmark")
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.green)
         case .declined:
             Label("Declined", systemImage: "xmark")
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.secondary)
         }
     }
@@ -154,13 +154,13 @@ package struct ProposalEditor: View {
         if let editing = store.editing {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Edit the Proposal")
-                    .font(.headline)
+                    .scaledFont(.headline)
                 TextField("Title", text: binding(\.title))
                 Text("Spec")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: binding(\.spec))
-                    .font(.body.monospaced())
+                    .scaledFont(.body.monospaced())
                     .frame(minHeight: 200)
                 HStack {
                     Spacer()

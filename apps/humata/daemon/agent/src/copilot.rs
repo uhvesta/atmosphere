@@ -265,8 +265,7 @@ impl CopilotRunner {
         path: &std::path::Path,
     ) -> Result<String, CopilotError> {
         let record = turn.record();
-        // What the session was opened with; opened again when it changes.
-        let opened_with = format!("{:?}|{:?}", record.model, record.effort);
+        let opened_with = opened_with(&record);
         // Copilot reads them as it opens the session.
         if !links
             .session
@@ -460,6 +459,13 @@ async fn fork_at(cli: &Cli, source: &str, links: &Links) -> Result<Option<String
     };
     let forked = cli.call("sessions.fork", params).await?;
     string(&forked, "sessions.fork", "sessionId").map(Some)
+}
+
+/// What a session is opened with that Copilot takes only as it opens one:
+/// its model and effort. A session live on the CLI is opened again when
+/// this changes, so the next turn runs on them.
+fn opened_with(record: &SessionRecord) -> String {
+    format!("{:?}|{:?}", record.model, record.effort)
 }
 
 /// The tier a Fusion session runs at, if it's one.
@@ -1195,7 +1201,10 @@ impl Playing<'_> {
 mod tests {
     use serde_json::json;
 
-    use super::copilot_models;
+    use super::*;
+    use crate::event::{SendMode, SessionUpdate, StartOptions};
+    use crate::runtime::tests::{idle_turns, wait_for};
+    use crate::{Agent, LocalAgent};
 
     #[test]
     fn copilot_lists_the_models_the_account_may_use_with_their_cost() {
@@ -1229,5 +1238,66 @@ mod tests {
     #[test]
     fn an_answer_without_models_lists_none() {
         assert!(copilot_models(&json!({"error": "nope"})).is_empty());
+    }
+
+    /// Says, as each of its turns starts, what Copilot would be given to
+    /// open its session again with, and what tells that it must be.
+    struct Opens {
+        opened: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl Runner for Opens {
+        type Error = CopilotError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), CopilotError> {
+            let params = session_params(&turn, None, None, Some("theirs"));
+            self.opened
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((opened_with(&turn.record()), params));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_changed_model_opens_the_session_again_on_it_for_the_next_turn() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let runner = Opens {
+            opened: Arc::clone(&opened),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            model: Some("gpt-5".into()),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "one".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+
+        let update = SessionUpdate {
+            model: Some(Some("claude-sonnet-4.5".into())),
+            ..SessionUpdate::default()
+        };
+        agent.update(&id, update).await.expect("changed");
+        agent
+            .send(&id, "two".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(2)).await;
+
+        let opened = opened.lock().unwrap_or_else(PoisonError::into_inner);
+        let (before, first) = &opened[0];
+        let (after, second) = &opened[1];
+        assert_eq!(first["model"], "gpt-5");
+        assert_eq!(second["model"], "claude-sonnet-4.5");
+        assert_eq!(second["sessionId"], "theirs");
+        // A session live on the CLI is opened again only when this differs.
+        assert_ne!(before, after);
     }
 }

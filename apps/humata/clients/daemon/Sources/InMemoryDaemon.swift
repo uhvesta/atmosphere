@@ -105,6 +105,7 @@ package final class InMemoryDaemon: Sendable {
         var threads: [Thread] = []
         var pullRequests: [PullRequest] = []
         var pullRefresh = PullRefresh.standard
+        var agentAccess = AgentAccess.standard
         var savedRepositories: [SavedRepository] = []
         var nextSavedRepository: Int64 = 0
         var repositoryOwners: [RepositoryOwner] = []
@@ -691,6 +692,21 @@ package final class InMemoryDaemon: Sendable {
             pullRequests: { of, _ in self.pullRequests(of) },
             pullRefresh: { self.state.value.pullRefresh },
             setPullRefresh: { refresh in try self.setPullRefresh(refresh) },
+            agentAccess: { self.state.value.agentAccess },
+            setAgentAccess: { access in
+                self.state.withValue { state in
+                    state.agentAccess = access
+                    return access
+                }
+            },
+            sessionModels: { session in
+                try self.reachable(session.host)
+                guard let models = self.state.value.models[session.backend] else {
+                    throw DaemonError.refused(
+                        .backendFailed, message: "Couldn't list the models. Try again in a moment.")
+                }
+                return models
+            },
             savedRepositories: { self.savedRepositories() },
             renameSavedRepository: { id, name in try self.renameSavedRepository(id, name) },
             removeSavedRepository: { id in try self.removeSavedRepository(id) },
@@ -1402,10 +1418,11 @@ package final class InMemoryDaemon: Sendable {
 
     private func update(_ session: String, _ update: SessionUpdate) throws -> Session {
         try known(session)
-        return try state.withValue { state in
+        let (updated, model) = try state.withValue { state -> (Session, String??) in
             guard let index = state.sessions.firstIndex(where: { $0.id == session }) else {
                 throw Self.unknown(session)
             }
+            let modelBefore = state.sessions[index].model
             if update.archived == true, state.paused[session] != nil {
                 throw DaemonError.refused(
                     .busy, message: "Session \(session) is working; stop its turn, then archive it.")
@@ -1415,6 +1432,7 @@ package final class InMemoryDaemon: Sendable {
             if let keeper = update.keeper { state.sessions[index].keeper = keeper }
             if let experimental = update.experimental { state.sessions[index].experimental = experimental }
             if let effort = update.effort { state.sessions[index].effort = effort.isEmpty ? nil : effort }
+            if let model = update.model { state.sessions[index].model = model.isEmpty ? nil : model }
             switch update.placement {
             case .item(let itemID):
                 guard let item = state.items.first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
@@ -1426,8 +1444,19 @@ package final class InMemoryDaemon: Sendable {
             case .project: state.sessions[index].itemID = nil
             case nil: break
             }
-            return state.sessions[index]
+            let model = state.sessions[index].model
+            return (state.sessions[index], model == modelBefore ? nil : .some(model))
         }
+        // As the daemon does: the history says so, and the session is no
+        // busier for it.
+        if let model {
+            append(.notice("Model changed to \(model ?? "the agent’s default")"), to: session)
+            state.withValue { state in
+                guard let index = state.sessions.firstIndex(where: { $0.id == session }) else { return }
+                state.sessions[index].state = updated.state
+            }
+        }
+        return updated
     }
 
     private func watch(_ session: String, after: String?) -> AsyncThrowingStream<WatchItem, any Error> {

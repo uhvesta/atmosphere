@@ -140,21 +140,29 @@ public struct SelectTextSheet: View {
         func updateNSView(_ scroll: NSScrollView, context: Context) {
             // Set again only for other text: setting a long one lays it out
             // again.
-            guard context.coordinator.text != text, let view = scroll.documentView as? NSTextView else { return }
+            // Or for another size of text.
+            let scale = context.environment.textScale
+            guard context.coordinator.text != text || context.coordinator.scale != scale,
+                let view = scroll.documentView as? NSTextView
+            else { return }
             context.coordinator.text = text
+            context.coordinator.scale = scale
+            let body = NSFont.preferredFont(forTextStyle: .body)
             view.textStorage?.setAttributedString(
                 NSAttributedString(
                     string: text,
                     attributes: [
-                        .font: NSFont.preferredFont(forTextStyle: .body), .foregroundColor: NSColor.labelColor,
+                        .font: scale == .actual ? body : NSFont.systemFont(ofSize: body.pointSize * scale.factor),
+                        .foregroundColor: NSColor.labelColor,
                     ]))
         }
 
         func makeCoordinator() -> Shown { Shown() }
 
-        /// The text last put in the view.
+        /// The text last put in the view, and the scale it was drawn at.
         final class Shown {
             var text: String?
+            var scale = TextScale.actual
         }
     }
 #endif
@@ -206,15 +214,24 @@ public struct TextPreview: Hashable, Sendable {
     }
 }
 
+extension EnvironmentValues {
+    /// Whether the pointer rests on the chat row this is in, where the
+    /// row's list watches the pointer for all its rows; nil where none
+    /// does, and each text watches for itself. One watcher for a list costs
+    /// a row nothing as it's made, where one for each text and button was
+    /// paid for every row a chat opened with or scrolled past.
+    @Entry public var pointerRestsOnRow: Bool?
+}
+
 extension View {
     /// Lets the Mac select any part of the text by dragging. On iOS a long
     /// press opens the message's menu instead, whose Select Text does.
     ///
     /// On the Mac the text becomes selectable once the pointer rests on
-    /// it: selectable text costs AppKit views for each run of text, and
-    /// made for every row as a chat opens or scrolls, they held up its
-    /// first frames. A pointer passing over while the chat scrolls doesn't
-    /// rest, so it costs nothing.
+    /// its row: selectable text costs AppKit views for each run of text,
+    /// and made for every row as a chat opens or scrolls, they held up its
+    /// first frames. A pointer the chat scrolls under doesn't rest, so it
+    /// costs nothing.
     @ViewBuilder public func selectableOnMac() -> some View {
         #if os(macOS)
             modifier(SelectableWhenPointedAt())
@@ -226,26 +243,43 @@ extension View {
 
 #if os(macOS)
     private struct SelectableWhenPointedAt: ViewModifier {
-        @State private var pointedAt = false
-        @State private var selectable = false
+        @Environment(\.pointerRestsOnRow) private var restsOnRow
 
+        @ViewBuilder
         func body(content: Content) -> some View {
-            Group {
-                if selectable {
+            if let restsOnRow {
+                if restsOnRow {
                     content.textSelection(.enabled)
                 } else {
                     content
-                        .onHover { pointedAt = $0 }
-                        .task(id: pointedAt) {
-                            guard pointedAt else { return }
-                            // Long enough that a pointer carried past by a
-                            // scroll doesn't count, short enough to be
-                            // ready before a drag starts.
-                            try? await Task.sleep(for: .milliseconds(120))
-                            guard !Task.isCancelled else { return }
-                            selectable = true
-                        }
                 }
+            } else {
+                content.modifier(SelectableOnRest())
+            }
+        }
+    }
+
+    /// Text outside a list that watches the pointer: it watches for itself.
+    private struct SelectableOnRest: ViewModifier {
+        @State private var pointedAt = false
+        @State private var selectable = false
+
+        @ViewBuilder
+        func body(content: Content) -> some View {
+            if selectable {
+                content.textSelection(.enabled)
+            } else {
+                content
+                    .onHover { pointedAt = $0 }
+                    .task(id: pointedAt) {
+                        guard pointedAt else { return }
+                        // Long enough that a pointer carried past by a
+                        // scroll doesn't count, short enough to be
+                        // ready before a drag starts.
+                        try? await Task.sleep(for: .milliseconds(120))
+                        guard !Task.isCancelled else { return }
+                        selectable = true
+                    }
             }
         }
     }
@@ -254,6 +288,8 @@ extension View {
 /// A text button in a chat row, accent-coloured as a borderless one is but
 /// drawn by SwiftUI: a borderless button on the Mac is an AppKit button,
 /// and measuring those as rows were laid out held up a long chat's frames.
+/// It dims under the pointer; in a list that watches the pointer for its
+/// rows, only while the pointer rests on its row.
 public struct ChatRowButtonStyle: ButtonStyle {
     public init() {}
 
@@ -264,14 +300,19 @@ public struct ChatRowButtonStyle: ButtonStyle {
     private struct RowButton: View {
         let configuration: Configuration
         @Environment(\.isEnabled) private var enabled
+        @Environment(\.pointerRestsOnRow) private var restsOnRow
         @State private var hovering = false
 
         var body: some View {
-            configuration.label
+            let label = configuration.label
                 .foregroundStyle(enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
-                .opacity(configuration.isPressed ? 0.6 : hovering ? 0.85 : 1)
+                .opacity(configuration.isPressed ? 0.6 : hovering && restsOnRow != false ? 0.85 : 1)
                 .contentShape(.rect)
-                .onHover { hovering = $0 }
+            if restsOnRow == false {
+                label
+            } else {
+                label.onHover { hovering = $0 }
+            }
         }
     }
 }

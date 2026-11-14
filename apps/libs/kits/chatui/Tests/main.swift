@@ -8,4 +8,5 @@ await runSuites([
     ("Time marks", timeMarkTests()),
     ("Math", mathTests()),
     ("Text previews", textPreviewTests()),
+    ("Text scale", textScaleTests()),
 ])

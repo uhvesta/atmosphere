@@ -25,7 +25,7 @@ struct SubagentCard: View {
                     SubagentTitle(run: run)
                     if run.status == .running, let step = run.latestStep {
                         Text(step)
-                            .font(.caption.monospaced())
+                            .scaledFont(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -34,7 +34,7 @@ struct SubagentCard: View {
                 Spacer(minLength: 8)
                 SubagentStats(run: run)
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .scaledFont(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
             .contentShape(.rect)
@@ -87,12 +87,12 @@ private struct SubagentTitle: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(run.agentType.isEmpty ? "Agent" : run.agentType)
-                .font(.callout.weight(.semibold))
+                .scaledFont(.callout.weight(.semibold))
                 .lineLimit(1)
                 .layoutPriority(1)
             if !run.description.isEmpty {
                 Text(run.description)
-                    .font(.callout)
+                    .scaledFont(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -125,7 +125,7 @@ private struct SubagentStats: View {
                 Text("· failed")
             }
         }
-        .font(.caption.monospacedDigit())
+        .scaledFont(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .fixedSize()
@@ -242,15 +242,15 @@ private struct MainAgentRow: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text("Main")
-                    .font(.callout.weight(.semibold))
+                    .scaledFont(.callout.weight(.semibold))
                 if store.isWaiting {
                     Text("Waiting for you: answer in the chat")
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                 }
                 if let usage = store.usage {
                     Text(SessionView.describe(usage))
-                        .font(.caption.monospacedDigit())
+                        .scaledFont(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -271,11 +271,11 @@ private struct SubagentListRow: View {
             SubagentStatusIcon(status: run.status)
             VStack(alignment: .leading, spacing: 3) {
                 Text(run.agentType.isEmpty ? "Agent" : run.agentType)
-                    .font(.callout.weight(.semibold))
+                    .scaledFont(.callout.weight(.semibold))
                     .lineLimit(1)
                 if !run.description.isEmpty {
                     Text(run.description)
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -407,16 +407,16 @@ private struct SubagentChatRow: View, Equatable {
                 "Context compacted: the agent summed up what came before to make room",
                 systemImage: "rectangle.compress.vertical"
             )
-            .font(.footnote)
+            .scaledFont(.footnote)
             .foregroundStyle(.secondary)
         case .notice(_, let text):
             Label(text, systemImage: "info.circle")
-                .font(.footnote)
+                .scaledFont(.footnote)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
         case .failure(_, let message):
             Label(message, systemImage: "exclamationmark.triangle")
-                .font(.footnote)
+                .scaledFont(.footnote)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         // Turns end, stop and are rewound for the session, not a subagent.

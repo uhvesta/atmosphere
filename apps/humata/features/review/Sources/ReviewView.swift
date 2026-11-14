@@ -1,4 +1,5 @@
 import AppKit
+import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataDiagram
@@ -100,7 +101,7 @@ package struct ReviewView: View {
                 .help("Show fewer unchanged lines around each change")
                 .disabled(store.context == 0)
                 Text("\(store.context) lines")
-                    .font(.caption.monospacedDigit())
+                    .scaledFont(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 52)
                 Button {
@@ -193,9 +194,9 @@ package struct ReviewView: View {
     private func fileRow(_ file: FileDiff, _ ref: FileRef) -> some View {
         HStack(spacing: 6) {
             Text(Self.letter(file.status))
-                .font(.caption.monospaced().bold())
+                .scaledFont(.caption.monospaced().bold())
                 .foregroundStyle(Self.color(file.status))
-                .frame(width: 12)
+                .scaledFrame(width: 12)
             Text(file.path)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -204,7 +205,7 @@ package struct ReviewView: View {
             let threads = store.state.shownThreads(on: ref).count
             if threads > 0 {
                 Label("\(threads)", systemImage: "text.bubble")
-                    .font(.caption2)
+                    .scaledFont(.caption2)
                     .foregroundStyle(.secondary)
                     .labelStyle(.titleAndIcon)
             }
@@ -284,7 +285,7 @@ package struct ReviewView: View {
     private func fileHeader(_ file: FileDiff, _ ref: FileRef) -> some View {
         HStack(spacing: 8) {
             Text(file.oldPath.map { "\($0) → \(file.path)" } ?? file.path)
-                .font(.callout.monospaced())
+                .scaledFont(.callout.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
@@ -332,7 +333,7 @@ private struct DiffLines: View {
                 if !elsewhere.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(store.canComment ? "On lines not shown here" : "Threads on this file")
-                            .font(.caption.bold())
+                            .scaledFont(.caption.bold())
                             .foregroundStyle(.secondary)
                         ForEach(elsewhere) { thread in
                             ThreadView(store: store, thread: thread, showsCode: true)
@@ -405,7 +406,7 @@ private struct DiffLines: View {
     private func hunkHeader(_ hunk: Hunk) -> some View {
         HStack {
             Text("@@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@ \(hunk.header)")
-                .font(.caption.monospaced())
+                .scaledFont(.caption.monospaced())
                 .foregroundStyle(.secondary)
             Spacer()
             let at = HunkAt(oldStart: hunk.oldStart, newStart: hunk.newStart, context: store.context)
@@ -441,19 +442,19 @@ private struct LineRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Text(line.old.map(String.init) ?? "")
-                .frame(width: 44, alignment: .trailing)
+                .scaledFrame(width: 44, alignment: .trailing)
                 .foregroundStyle(.tertiary)
             Text(line.new.map(String.init) ?? "")
-                .frame(width: 44, alignment: .trailing)
+                .scaledFrame(width: 44, alignment: .trailing)
                 .foregroundStyle(.tertiary)
             Text(marker)
-                .frame(width: 22)
+                .scaledFrame(width: 22)
                 .foregroundStyle(.secondary)
             Text(highlighted)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
-        .font(.system(size: 12, design: .monospaced))
+        .scaledFont(.system(size: 12, design: .monospaced))
         .padding(.vertical, 1)
         .background(background)
         .contentShape(Rectangle())
@@ -526,7 +527,7 @@ private struct CommentsGoElsewhere: View {
     var body: some View {
         HStack {
             Text("Comments go on Everything, Unstaged or Against a Branch.")
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.secondary)
             Button("Show Everything") { store.send(.rangePicked(.session)) }
                 .buttonStyle(.link)
@@ -613,7 +614,7 @@ package struct MarkdownBlockView: View {
         switch block.kind {
         case .heading(let level):
             Text(block.inline)
-                .font(level == 1 ? .title : level == 2 ? .title2 : .title3)
+                .scaledFont(level == 1 ? .title : level == 2 ? .title2 : .title3)
                 .bold()
         case .paragraph:
             Text(block.inline)
@@ -622,7 +623,7 @@ package struct MarkdownBlockView: View {
             MermaidDiagram(source: block.text)
         case .code:
             Text(block.text)
-                .font(.system(size: 12, design: .monospaced))
+                .scaledFont(.system(size: 12, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
                 .background(.fill.quaternary, in: .rect(cornerRadius: 6))
@@ -646,18 +647,18 @@ private struct ThreadView: View {
                         ? "\(thread.file.path):\(thread.startLine)"
                         : "\(thread.file.path):\(thread.startLine)–\(thread.endLine)"
                 )
-                .font(.caption.monospaced())
+                .scaledFont(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 if thread.outdated {
                     Text("Outdated")
-                        .font(.caption2.bold())
+                        .scaledFont(.caption2.bold())
                         .padding(.horizontal, 5)
                         .background(.orange.opacity(0.2), in: .capsule)
                         .help("The lines it was left on have changed")
                 }
                 if thread.resolved {
                     Text("Resolved")
-                        .font(.caption2.bold())
+                        .scaledFont(.caption2.bold())
                         .padding(.horizontal, 5)
                         .background(.green.opacity(0.2), in: .capsule)
                 }
@@ -672,7 +673,7 @@ private struct ThreadView: View {
             .controlSize(.small)
             if showsCode, !thread.code.isEmpty {
                 Text(thread.code.joined(separator: "\n"))
-                    .font(.system(size: 11, design: .monospaced))
+                    .scaledFont(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
@@ -680,7 +681,7 @@ private struct ThreadView: View {
             }
             if !thread.quote.isEmpty {
                 Text("“\(thread.quote)”")
-                    .font(.callout.italic())
+                    .scaledFont(.callout.italic())
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }
@@ -708,7 +709,7 @@ private struct ThreadView: View {
         .frame(maxWidth: 640, alignment: .leading)
         .background(.background, in: .rect(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
-        .font(.system(size: 13))
+        .scaledFont(.system(size: 13))
     }
 }
 
@@ -728,15 +729,15 @@ private struct CommentRow: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Label(author.name, systemImage: author.symbol)
-                    .font(.caption.bold())
+                    .scaledFont(.caption.bold())
                 if let turn = comment.turn {
                     Text("turn \(turn)")
-                        .font(.caption2)
+                        .scaledFont(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 if comment.author != .agent, !comment.sent {
                     Text("Not sent")
-                        .font(.caption2)
+                        .scaledFont(.caption2)
                         .foregroundStyle(.orange)
                 }
                 if comment.author == .you, !comment.sent {
@@ -763,14 +764,14 @@ private struct CommentEditor: View {
                     ? "Comment on line \(commenting.startLine)"
                     : "Comment on lines \(commenting.startLine)–\(commenting.endLine)"
             )
-            .font(.caption.bold())
+            .scaledFont(.caption.bold())
             TextField("What should change here?", text: $store.comment, axis: .vertical)
                 .lineLimit(3...8)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Comment")
             HStack {
                 Text("It's sent with the review, with your other comments.")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { store.send(.commentCancelled) }

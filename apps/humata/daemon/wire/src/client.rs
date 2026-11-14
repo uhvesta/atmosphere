@@ -54,8 +54,8 @@ enum Pending {
 impl Client {
     /// Says hello on the connection and starts reading answers.
     pub async fn connect<R, W>(
-        mut reader: R,
-        mut writer: W,
+        reader: R,
+        writer: W,
         role: pb::Role,
         program_version: &str,
     ) -> Result<Self, WireError>
@@ -63,7 +63,30 @@ impl Client {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        let peer = handshake(&mut reader, &mut writer, role, program_version).await?;
+        Self::connect_as(
+            reader,
+            writer,
+            role,
+            program_version,
+            pb::ClientKind::Unspecified,
+        )
+        .await
+    }
+
+    /// As [`Client::connect`], saying in the hello which client of the
+    /// daemon this is: the command line or an agent's MCP server.
+    pub async fn connect_as<R, W>(
+        mut reader: R,
+        mut writer: W,
+        role: pb::Role,
+        program_version: &str,
+        client_kind: pb::ClientKind,
+    ) -> Result<Self, WireError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let peer = handshake(&mut reader, &mut writer, role, program_version, client_kind).await?;
         let compress = peer.accepts_zstd;
         let (outgoing, mut queue) = mpsc::channel::<pb::Envelope>(STREAM_BUFFER);
         let waiting: Arc<Mutex<Waiting>> = Arc::default();

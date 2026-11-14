@@ -1921,10 +1921,19 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 });
             }
             let from = control.record.clone();
+            let model = match update.model {
+                Some(model) => model.filter(|model| !model.is_empty()),
+                None => from.model.clone(),
+            };
+            // A turn under way keeps the model it started with: each
+            // backend reads the record's as its turn starts.
+            let switched =
+                (model != from.model).then(|| model_changed(model.as_deref(), control.turn_open));
             let record = SessionRecord {
                 name: update.name.unwrap_or(from.name.clone()),
                 archived: update.archived.unwrap_or(from.archived),
                 keeper: update.keeper.unwrap_or(from.keeper),
+                model,
                 effort: match update.effort {
                     Some(effort) => effort.filter(|effort| !effort.is_empty()),
                     None => from.effort.clone(),
@@ -1934,6 +1943,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
             };
             save(&session.dir, &record)?;
             control.record = record;
+            // Under the lock, so it's in the history before the turn that
+            // first runs on the model starts.
+            if let Some(text) = switched {
+                session.note(EventKind::Notice { text });
+            }
             archiving
         };
         if archiving {
@@ -2550,6 +2564,17 @@ fn save(dir: &Path, record: &SessionRecord) -> Result<(), AgentError> {
         source,
     })?;
     std::fs::rename(&partial, &path).map_err(|source| AgentError::Write { path, source })
+}
+
+/// What the history says when a session's model changes to `model`, None
+/// for its backend's default; `working` while a turn runs on the one before.
+fn model_changed(model: Option<&str>, working: bool) -> String {
+    let model = model.unwrap_or("the agent's default");
+    if working {
+        format!("Model changed to {model}, from the next turn")
+    } else {
+        format!("Model changed to {model}")
+    }
 }
 
 /// The error and its causes, on one line.
@@ -3179,5 +3204,178 @@ pub(crate) mod tests {
         assert!(changes[0].patch.contains("+one"), "{changes:?}");
         assert_eq!(file, "one");
         assert!(!session.log.is_loaded());
+    }
+
+    /// Says which model each of its turns ran on, then waits to be let go.
+    struct SaysModel {
+        ran: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl Runner for SaysModel {
+        type Error = AgentError;
+
+        async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), AgentError> {
+            // As the backends do: the record is read as the turn starts.
+            let model = turn.record().model;
+            self.ran
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(model);
+            turn.emit(EventKind::AssistantMessage {
+                text: "started".into(),
+            })?;
+            if let Ok(permit) = self.release.acquire().await {
+                permit.forget();
+            }
+            Ok(())
+        }
+    }
+
+    /// An agent whose turns say their model, with a session on `first`.
+    struct SayingModels {
+        dir: tempfile::TempDir,
+        agent: LocalAgent<SaysModel>,
+        id: SessionId,
+        /// The model each turn ran on.
+        ran: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        /// Lets a turn end for each permit added.
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    /// With `turns` of its turns let go already.
+    async fn saying_models(turns: usize) -> SayingModels {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let ran: Arc<std::sync::Mutex<Vec<Option<String>>>> = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(turns));
+        let runner = SaysModel {
+            ran: Arc::clone(&ran),
+            release: Arc::clone(&release),
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens");
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: dir.path().to_owned(),
+            model: Some("first".into()),
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        SayingModels {
+            dir,
+            agent,
+            id,
+            ran,
+            release,
+        }
+    }
+
+    fn model(model: Option<&str>) -> SessionUpdate {
+        SessionUpdate {
+            model: Some(model.map(str::to_owned)),
+            ..SessionUpdate::default()
+        }
+    }
+
+    fn notices(events: &[Event]) -> usize {
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::Notice { .. }))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_changed_model_runs_the_next_turn_is_noted_once_and_is_kept_when_reopened() {
+        let SayingModels {
+            dir,
+            agent,
+            id,
+            ran,
+            release: _release,
+        } = saying_models(2).await;
+        agent
+            .send(&id, "one".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+
+        let record = agent
+            .update(&id, model(Some("second")))
+            .await
+            .expect("changed");
+        // The same again changes nothing, so it says nothing.
+        agent
+            .update(&id, model(Some("second")))
+            .await
+            .expect("unchanged");
+        agent
+            .send(&id, "two".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&agent, &id, idle_turns(2)).await;
+
+        assert_eq!(record.model.as_deref(), Some("second"));
+        assert_eq!(
+            *ran.lock().unwrap_or_else(PoisonError::into_inner),
+            [Some("first".to_owned()), Some("second".to_owned())]
+        );
+        assert_eq!(notices(&events), 1, "{events:#?}");
+
+        drop(agent);
+        let runner = SaysModel {
+            ran: Arc::default(),
+            release: Arc::new(tokio::sync::Semaphore::new(0)),
+        };
+        let reopened =
+            LocalAgent::open(dir.path().join("state"), runner).expect("the agent opens again");
+        let kept = reopened.sessions().await.expect("listed");
+        assert_eq!(kept[0].model.as_deref(), Some("second"));
+
+        let record = reopened.update(&id, model(None)).await.expect("changed");
+        assert_eq!(record.model, None);
+    }
+
+    #[tokio::test]
+    async fn a_model_changed_while_a_turn_runs_is_the_queued_turns_and_not_the_running_ones() {
+        let SayingModels {
+            dir: _dir,
+            agent,
+            id,
+            ran,
+            release,
+        } = saying_models(0).await;
+        agent
+            .send(&id, "one".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, |events| {
+            events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::AssistantMessage { .. }))
+        })
+        .await;
+        agent
+            .send(&id, "two".into(), SendMode::Enqueue)
+            .await
+            .expect("queued");
+
+        agent
+            .update(&id, model(Some("second")))
+            .await
+            .expect("changed");
+        release.add_permits(2);
+        let events = wait_for(&agent, &id, idle_turns(1)).await;
+
+        assert_eq!(
+            *ran.lock().unwrap_or_else(PoisonError::into_inner),
+            [Some("first".to_owned()), Some("second".to_owned())]
+        );
+        // The history says so before the turn that runs on it.
+        let noted = position(&events, |kind| matches!(kind, EventKind::Notice { .. }));
+        let second = events
+            .iter()
+            .rposition(|event| matches!(event.kind, EventKind::TurnStarted))
+            .expect("the queued turn started");
+        assert!(noted < second, "{events:#?}");
+        assert_eq!(notices(&events), 1, "{events:#?}");
     }
 }

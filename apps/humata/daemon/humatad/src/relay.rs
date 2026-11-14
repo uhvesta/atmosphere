@@ -281,6 +281,7 @@ impl Relay {
                 | pb::request::Kind::ReadSkill(_)
                 | pb::request::Kind::ReadHistory(_)
                 | pb::request::Kind::Search(_)
+                | pb::request::Kind::GetAgentAccess(_)
         ) {
             return Err(RelayError::NotATool);
         }

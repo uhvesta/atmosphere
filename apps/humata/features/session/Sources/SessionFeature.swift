@@ -303,6 +303,8 @@ package struct SessionFeature {
         /// opens once the alert that says so is dismissed.
         package var unsentFork: Session?
         @Presents package var alert: AlertState<Never>?
+        /// Changing the chat's model from the composer's pill.
+        package var modelSwitch = ModelSwitch()
         /// Asks how far to rewind: the chat, or the chat and its files.
         @Presents package var rewindDialog: ConfirmationDialogState<Action.RewindChoice>?
         /// A rewind or its undo is under way.
@@ -1027,6 +1029,9 @@ package struct SessionFeature {
         /// Copilot's experimental features on or off, from the next turn.
         case experimentalToggled(Bool)
         case experimentalRefused(previous: Bool, message: String)
+        /// The composer's model pill and its list: the model changes from
+        /// the next turn.
+        case model(ModelSwitchAction)
         case thinkingToggled(id: String)
         case toolToggled(id: String)
         /// Opens the chat of the subagent the tool call `callID` started,
@@ -2419,6 +2424,9 @@ package struct SessionFeature {
                 state.session.experimental = previous
                 state.alert = Self.alert("Couldn’t change Copilot’s experimental features", message)
                 return .none
+
+            case .model(let action):
+                return modelSwitch(&state, action)
 
             case .thinkingToggled(let id):
                 state.expandedThinking.formSymmetricDifference([id])

@@ -32,6 +32,10 @@ package struct TerminalStyle: Equatable, Sendable {
     package var fontFamily: String
     package var fontSize: Double
     package var theme: TerminalTheme
+    /// The window's text scale, as a percentage: Bigger Text and Smaller
+    /// Text in the View menu scale the terminals' font with the chat's.
+    /// Settings neither shows nor keeps it.
+    package var textPercent = 100
 
     /// Menlo at 12 points, which every Mac has, in Humata's own colors.
     package init(fontFamily: String = "Menlo", fontSize: Double = 12, theme: TerminalTheme = .humata) {
@@ -50,7 +54,7 @@ package struct TerminalStyle: Equatable, Sendable {
             // only one.
             "font-family = \"\"",
             "font-family = \"\(Self.value(fontFamily))\"",
-            "font-size = \(fontSize)",
+            "font-size = \(fontSize * Double(textPercent) / 100)",
             "background = \(Self.value(palette.background))",
             "foreground = \(Self.value(palette.foreground))",
         ]
@@ -92,6 +96,12 @@ package struct TerminalStyle: Equatable, Sendable {
 // MARK: - Kept in UserDefaults
 
 extension TerminalStyle {
+    /// Where the window's text scale is kept, as a whole percentage. The
+    /// View menu's commands write it; nothing here does.
+    package static let textPercentKey = "textScalePercent"
+    /// The scales the font follows; one kept outside them is held to them.
+    private static let textPercents = 50...300
+
     private enum Key {
         static let fontFamily = "terminalFontFamily"
         static let fontSize = "terminalFontSize"
@@ -108,6 +118,11 @@ extension TerminalStyle {
         }
         if let id = defaults.string(forKey: Key.theme), let saved = TerminalTheme.all.first(where: { $0.id == id }) {
             theme = saved
+        }
+        // None kept reads as 0, which is the usual size.
+        let percent = defaults.integer(forKey: Self.textPercentKey)
+        if percent > 0 {
+            textPercent = min(max(percent, Self.textPercents.lowerBound), Self.textPercents.upperBound)
         }
     }
 

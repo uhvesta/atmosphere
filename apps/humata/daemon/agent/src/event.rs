@@ -459,6 +459,10 @@ pub struct SessionUpdate {
     pub effort: Option<Option<String>>,
     /// Copilot's experimental features, from the next turn.
     pub experimental: Option<bool>,
+    /// The model, from the next turn: a turn that is running finishes on
+    /// the one it started with. `Some(None)` goes back to the backend's
+    /// default. A change is recorded in the history as a notice.
+    pub model: Option<Option<String>>,
 }
 
 /// Where a fork came from.

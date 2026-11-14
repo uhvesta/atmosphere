@@ -187,8 +187,7 @@ final class LongChatScrollTests: XCTestCase {
         }
         let before = (height: height(), aboveEnd: aboveEnd(scroll))
 
-        // The button is the first thing in the list, above its first row.
-        try pressFirstControl(in: scroll)
+        try press("chat.earlier", in: window)
         await settle(window)
         await settle(window)
 
@@ -248,6 +247,52 @@ final class LongChatScrollTests: XCTestCase {
         XCTAssertEqual(asEdit.spinners, 0, "the spec edit is still on its spinner")
         // Sixteen lines taken out and put in, against the task's eight.
         XCTAssertGreaterThan(asEdit.height, asTask.height + 40, "the chat made no room for what the edit changes")
+    }
+
+    /// A chat of every kind of row, read once from its end to its top and
+    /// back, is as long as its rows were found to be: read again the same
+    /// way, its length doesn't change by more than a few rows at any step,
+    /// so the scroll bar doesn't find more chat or less as it goes, and it
+    /// ends as long as it was.
+    func testAMixedChatReadOnceKeepsItsLengthWhenReadAgain() async throws {
+        var maker = ChatMaker(seed: 7)
+        let (_, window, task) = try await opened(maker.history(turns: 30))
+        defer {
+            task.cancel()
+            window.close()
+            window.contentViewController = nil
+        }
+        let scroll = try XCTUnwrap(chatScroll(in: window.contentView), "no scroll view holds the chat")
+        func height() -> CGFloat { scroll.documentView?.frame.height ?? 0 }
+
+        /// Reads from where the chat is to its top, then to its end, 300
+        /// points at a time: the most its length changed in one step.
+        func read() async -> CGFloat {
+            var most: CGFloat = 0
+            for towardEnd in [false, true] {
+                for _ in 0..<4_000 {
+                    if towardEnd ? belowView(scroll) <= 0.5 : aboveView(scroll) <= 0.5 { break }
+                    let before = height()
+                    move(scroll, by: towardEnd ? 300 : -300)
+                    await drawn(window)
+                    most = max(most, abs(height() - before))
+                }
+            }
+            return most
+        }
+
+        let first = await read()
+        await settle(window)
+        let seen = height()
+        let second = await read()
+        await settle(window)
+        print(
+            "chat length: \(Int(seen)) pt once read; most a step changed it: \(Int(first)) pt, "
+                + "then \(Int(second)) pt")
+
+        XCTAssertGreaterThan(seen, 5_000, "the chat is too short to read through")
+        XCTAssertLessThan(second, 150, "the chat's length changed as rows already seen were read again")
+        XCTAssertEqual(height(), seen, accuracy: 150, "the chat read again isn't as long as it was")
     }
 
     /// A chat of `turns` short turns, each a message and a reply: by
@@ -351,6 +396,26 @@ final class LongChatScrollTests: XCTestCase {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
+    /// Scrolls the chat `points` towards its end, or away from it for
+    /// fewer than none, no further than either.
+    private func move(_ scroll: NSScrollView, by points: CGFloat) {
+        guard let document = scroll.documentView else { return }
+        let furthest = max(0, document.frame.height - scroll.contentView.bounds.height)
+        let from = scroll.contentView.bounds.origin.y
+        let to = min(max(from + (document.isFlipped ? points : -points), 0), furthest)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: to))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    /// Lays out and draws what a step of scrolling brought into view.
+    private func drawn(_ window: NSWindow) async {
+        for _ in 0..<2 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
     /// How far above the chat's end the top of what's in view is.
     private func aboveEnd(_ scroll: NSScrollView) -> CGFloat {
         guard let document = scroll.documentView else { return 0 }
@@ -366,31 +431,19 @@ final class LongChatScrollTests: XCTestCase {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
-    /// Clicks the middle of the top line of the chat's list, where the
-    /// first control sits, with events sent to its window alone: the
-    /// pointer doesn't move.
-    private func pressFirstControl(in scroll: NSScrollView) throws {
-        let document = try XCTUnwrap(scroll.documentView, "the chat has no list")
-        let window = try XCTUnwrap(scroll.window, "the chat isn't in a window")
-        // Below the list's padding, inside the button's line.
-        let fromTop: CGFloat = 26
-        let point = NSPoint(
-            x: document.bounds.midX,
-            y: document.isFlipped ? fromTop : document.bounds.height - fromTop)
-        let location = document.convert(point, to: nil)
-        func event(_ type: NSEvent.EventType) throws -> NSEvent {
-            try XCTUnwrap(
-                NSEvent.mouseEvent(
-                    with: type, location: location, modifierFlags: [],
-                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1),
-                "a click couldn't be made")
+    /// Presses the control with accessibility identifier `identifier`, as
+    /// VoiceOver would: the pointer doesn't move.
+    private func press(_ identifier: String, in window: NSWindow) throws {
+        func find(_ element: Any) -> NSAccessibilityProtocol? {
+            guard let element = element as? NSAccessibilityProtocol else { return nil }
+            if element.accessibilityIdentifier() == identifier { return element }
+            for child in element.accessibilityChildren() ?? [] {
+                if let found = find(child) { return found }
+            }
+            return nil
         }
-        window.makeKey()
-        // The button follows the press until the button comes up, reading
-        // the queue: the release waits there first.
-        NSApp.postEvent(try event(.leftMouseUp), atStart: false)
-        window.sendEvent(try event(.leftMouseDown))
+        let control = try XCTUnwrap(window.contentView.flatMap(find), "nothing is named \(identifier)")
+        XCTAssertTrue(control.accessibilityPerformPress(), "\(identifier) couldn't be pressed")
     }
 
     /// How many spinners or progress bars are drawn in the chat.

@@ -14,7 +14,7 @@ public struct SkillToken: View {
 
     public var body: some View {
         Text(verbatim: "/\(name)")
-            .font(.body.monospaced())
+            .scaledFont(.body.monospaced())
             .foregroundStyle(.tint)
             .lineLimit(1)
             .fixedSize()
@@ -42,7 +42,7 @@ public struct SkillToggle<Tool: SkillTool>: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(skill.title)
                 Text(skill.autoPicks ? "\(skill.summary) Automatic." : skill.summary)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -98,10 +98,10 @@ public struct SlashSuggestions: View {
                         VStack(alignment: .leading, spacing: 2) {
                             // What's typed to pick it: "/query".
                             Text(verbatim: "/\(suggestion.id)")
-                                .font(.body.monospaced())
+                                .scaledFont(.body.monospaced())
                             if !suggestion.summary.isEmpty {
                                 Text(suggestion.summary)
-                                    .font(.caption)
+                                    .scaledFont(.caption)
                                     .foregroundStyle(Color.secondary)
                                     .lineLimit(2)
                             }

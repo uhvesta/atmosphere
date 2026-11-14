@@ -902,12 +902,37 @@ pub enum DaemonError {
     #[error(transparent)]
     AgentSessions(#[from] AgentSessionsError),
 
+    #[error(transparent)]
+    Access(#[from] AccessError),
+
     #[error("host {host:?} didn't answer")]
     Host {
         host: String,
         #[source]
         source: ClientError,
     },
+}
+
+/// Why the daemon won't do what the `humata` command line or `humata mcp`
+/// asked, by the person's Agent Access settings.
+#[derive(Debug, thiserror::Error)]
+pub enum AccessError {
+    /// `switch`, in `section` of the settings, is off, so `action` isn't
+    /// done for `client`.
+    #[error(
+        "\"{action}\" is turned off for {client}: {switch} under {section} is off in Humata's Settings › Agent Access. The person can turn it on there, in the Humata app; an agent that needs it should ask them rather than try another way"
+    )]
+    Off {
+        action: &'static str,
+        client: &'static str,
+        switch: String,
+        section: &'static str,
+    },
+
+    #[error(
+        "only the Humata app can change what agents and the command line may do; open Humata and change it in Settings › Agent Access"
+    )]
+    AppOnly,
 }
 
 /// Why a session's agent may not start or write to another session, for
@@ -1069,6 +1094,8 @@ impl DaemonError {
             Self::GitHub(_) => pb::ErrorCode::Github,
             Self::AppOnly => pb::ErrorCode::AppOnly,
             Self::AgentSessions(AgentSessionsError::AppOnly) => pb::ErrorCode::AppOnly,
+            Self::Access(AccessError::Off { .. }) => pb::ErrorCode::AccessOff,
+            Self::Access(AccessError::AppOnly) => pb::ErrorCode::AppOnly,
             Self::AgentSessions(AgentSessionsError::AllowUnderWay { .. }) => pb::ErrorCode::Busy,
             Self::AgentSessions(_) => pb::ErrorCode::InvalidRequest,
             Self::UnknownApproval { .. } | Self::UnknownGrant { .. } => {

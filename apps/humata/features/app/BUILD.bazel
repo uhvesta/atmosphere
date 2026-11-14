@@ -43,6 +43,7 @@ swift_library(
         "//apps/humata/features/review",
         "//apps/humata/features/search",
         "//apps/humata/features/session",
+        "//apps/libs/kits/chatui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

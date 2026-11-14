@@ -80,6 +80,7 @@ final class Connection: Sendable {
         hello.protocolVersion = .current
         hello.role = .client
         hello.programVersion = programVersion
+        hello.clientKind = .app
         var envelope = Humata_V1_Envelope()
         envelope.hello = hello
         guard write(envelope, to: descriptor) else {
@@ -162,7 +163,7 @@ final class Connection: Sendable {
             .listItems, .readBoardLog, .listInbox, .listApprovals,
             .getStorage, .listSkills, .listPlugins, .getSessionDefaults,
             .listHosts, .listSshHosts, .listRecoveries, .listTerminals, .listForwards,
-            .search, .listPullRequests, .getPullRefresh,
+            .search, .listPullRequests, .getPullRefresh, .getAgentAccess,
             .listSavedRepositories, .listRepositoryOwners:
             true
         default:

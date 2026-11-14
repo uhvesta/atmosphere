@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataReview
@@ -11,7 +12,7 @@ struct LandView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Land the Session")
-                .font(.headline)
+                .scaledFont(.headline)
             if let landed = store.landed {
                 LandedList(landed: landed)
             } else {
@@ -19,12 +20,12 @@ struct LandView: View {
             }
             if store.landed == nil, !store.landing, let why = store.cantLand {
                 Text(why)
-                    .font(.callout)
+                    .scaledFont(.callout)
                     .foregroundStyle(.secondary)
             }
             if let error = store.error {
                 Text(error)
-                    .font(.callout)
+                    .scaledFont(.callout)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
             }
@@ -64,7 +65,7 @@ struct LandView: View {
             LabeledContent("Message") {
                 // Framed like the branch field, so it reads as one to type in.
                 TextEditor(text: $store.message)
-                    .font(.body)
+                    .scaledFont(.body)
                     .scrollContentBackground(.hidden)
                     .padding(4)
                     .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))

@@ -2,14 +2,15 @@
 //! actions, which `humata` or `humata mcp` may ask for but which run only
 //! once the person approves them in the app, or under a grant.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 
 use super::Daemon;
+use super::access;
 use crate::board::{RUNNING_UNDER, Via};
-use crate::error::DaemonError;
+use crate::error::{AccessError, DaemonError};
 use crate::peer::Peer;
 use crate::store::now_unix_ms;
 
@@ -64,16 +65,40 @@ fn set_surface(request: &mut pb::request::Kind, surface: pb::ChangeSurface) {
     }
 }
 
-/// One client's connection to the daemon: its admin actions wait for the
-/// person unless it is the app.
+/// One client's connection to the daemon: unless it is the app, its
+/// requests go by the Agent Access settings and its admin actions wait
+/// for the person.
 pub struct Connection {
     daemon: Arc<Daemon>,
     peer: Peer,
+    /// The kind of client its hello said it is, once it has said hello.
+    declared: OnceLock<pb::ClientKind>,
 }
 
 impl Connection {
     pub fn new(daemon: Arc<Daemon>, peer: Peer) -> Arc<Self> {
-        Arc::new(Self { daemon, peer })
+        Arc::new(Self {
+            daemon,
+            peer,
+            declared: OnceLock::new(),
+        })
+    }
+
+    /// Whose switches a client the daemon doesn't know for the app goes
+    /// by, as its hello says: an agent's MCP server or the command line;
+    /// None for one that says it is the app, which the settings don't
+    /// gate. A hello that doesn't say, as an older `humata`'s, goes by how
+    /// the program was run.
+    fn gated_as(&self, surface: pb::ChangeSurface) -> Option<access::Client> {
+        match self.declared.get().copied().unwrap_or_default() {
+            pb::ClientKind::App => None,
+            pb::ClientKind::Agent => Some(access::Client::Agent),
+            pb::ClientKind::Terminal => Some(access::Client::Terminal),
+            pb::ClientKind::Unspecified if surface == pb::ChangeSurface::Mcp => {
+                Some(access::Client::Agent)
+            }
+            pb::ClientKind::Unspecified => Some(access::Client::Terminal),
+        }
     }
 
     async fn answer(&self, request: pb::request::Kind) -> Result<Reply, DaemonError> {
@@ -85,11 +110,22 @@ impl Connection {
         else {
             return self.daemon.answer(request).await;
         };
+        if matches!(request, pb::request::Kind::SetAgentAccess(_)) {
+            return Err(AccessError::AppOnly.into());
+        }
         if app_only(&request) {
             return Err(DaemonError::AppOnly);
         }
         if self.daemon.decides_agent_sessions(&request)? {
             return Err(crate::error::AgentSessionsError::AppOnly.into());
+        }
+        if let Some(client) = self.gated_as(*surface) {
+            self.daemon.allows(client, &request)?;
+            if matches!(request, pb::request::Kind::GetAgentAccess(_)) {
+                let mut access = self.daemon.agent_access()?;
+                access.refused = self.daemon.refused(client)?;
+                return Ok(Reply::Response(pb::response::Kind::AgentAccess(access)));
+            }
         }
         let Some(scope) = scope_of(&request) else {
             return self.daemon.answer(request).await;
@@ -117,6 +153,11 @@ impl Connection {
 }
 
 impl Service for Connection {
+    fn greeted(&self, peer: &pb::Hello) {
+        // The first hello is the one that counts.
+        let _ = self.declared.set(peer.client_kind());
+    }
+
     fn handle(self: Arc<Self>, request: pb::request::Kind) -> ServiceFuture {
         Box::pin(async move {
             match self.answer(request).await {

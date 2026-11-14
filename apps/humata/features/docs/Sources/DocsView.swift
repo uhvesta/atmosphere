@@ -1,4 +1,5 @@
 import AppKit
+import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataReview
@@ -166,7 +167,7 @@ package struct DocsView: View {
                 }
                 if store.truncated {
                     Text("Only the first \(store.files.count) files are listed.")
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -190,7 +191,7 @@ package struct DocsView: View {
                         + (versions.comparing ? ", compared with now" : ""),
                     systemImage: "clock.arrow.circlepath"
                 )
-                .font(.callout)
+                .scaledFont(.callout)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
@@ -304,11 +305,11 @@ private struct SourceFile: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("\(number)")
                                 .foregroundStyle(.secondary)
-                                .frame(width: 40, alignment: .trailing)
+                                .scaledFrame(width: 40, alignment: .trailing)
                             Text(highlighter?.attributed(line) ?? AttributedString(line))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .font(.system(size: 12, design: .monospaced))
+                        .scaledFont(.system(size: 12, design: .monospaced))
                         .padding(.vertical, 1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
@@ -368,11 +369,11 @@ private struct VersionFile: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text("\(index + 1)")
                                 .foregroundStyle(.secondary)
-                                .frame(width: 40, alignment: .trailing)
+                                .scaledFrame(width: 40, alignment: .trailing)
                             Text(line)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .font(.system(size: 12, design: .monospaced))
+                        .scaledFont(.system(size: 12, design: .monospaced))
                         .padding(.vertical, 1)
                     }
                 }
@@ -404,7 +405,7 @@ private struct VersionsList: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(version.turn == 0 ? "Before the first turn" : "After turn \(version.turn)")
                             Text(version.time, format: .dateTime.month().day().hour().minute())
-                                .font(.caption)
+                                .scaledFont(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         .tag(version.turn)
@@ -414,14 +415,14 @@ private struct VersionsList: View {
                             "No versions yet. Turns are snapshotted in a project's repositories, once each turn "
                                 + "ends; a file outside them, or in a chat with no repository, has none."
                         )
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                     }
                 } else {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Reading the versions…")
-                            .font(.caption)
+                            .scaledFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -444,7 +445,7 @@ private struct CommentEditor: View {
                         ? "Comment on line \(picked.startLine)"
                         : "Comment on lines \(picked.startLine)–\(picked.endLine)"
                 )
-                .font(.caption.bold())
+                .scaledFont(.caption.bold())
             }
             TextField(
                 "The words you mean",
@@ -453,7 +454,7 @@ private struct CommentEditor: View {
             )
             .lineLimit(1...4)
             .textFieldStyle(.roundedBorder)
-            .font(.callout.italic())
+            .scaledFont(.callout.italic())
             .accessibilityLabel("Quote")
             .help("What's quoted with the comment; cut it down to the words the comment is about")
             TextField("What should change here?", text: $store.comment, axis: .vertical)
@@ -462,7 +463,7 @@ private struct CommentEditor: View {
                 .accessibilityLabel("Comment")
             HStack {
                 Text("It waits with your other comments until you send them.")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { store.send(.commentCancelled) }
@@ -491,14 +492,14 @@ private struct DraftNote: View {
             VStack(alignment: .leading, spacing: 4) {
                 if !draft.picked.quote.isEmpty {
                     Text(draft.picked.quote)
-                        .font(.caption.italic())
+                        .scaledFont(.caption.italic())
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
                 Text(draft.text)
-                    .font(.callout)
+                    .scaledFont(.callout)
                 Text("Not sent")
-                    .font(.caption2)
+                    .scaledFont(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -526,7 +527,7 @@ private struct DraftRow: View {
                 Text(draft.text)
                     .lineLimit(1)
                 Text("\(draft.picked.path):\(draft.picked.startLine)")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

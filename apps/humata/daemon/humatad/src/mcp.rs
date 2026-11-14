@@ -218,7 +218,16 @@ impl Server {
                 })
             }
             "ping" => json!({}),
-            "tools/list" => json!({"tools": tools(self.offered().await)}),
+            "tools/list" => {
+                let offered = self.offered().await;
+                // Asked only where a tool it could turn off is offered.
+                let off = if offered.sessions {
+                    self.switched_off().await
+                } else {
+                    Vec::new()
+                };
+                json!({"tools": without(tools(offered), &off)})
+            }
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or_default();
                 let empty = json!({});
@@ -547,6 +556,17 @@ impl Server {
     /// Session `id`'s recent conversation, once it stops working or `wait`
     /// seconds pass.
     async fn read_session(&self, id: &str, wait: u64) -> Result<String, String> {
+        if self
+            .switched_off()
+            .await
+            .iter()
+            .any(|off| off == "agent_read_session")
+        {
+            return Err(
+                "reading other sessions is turned off for sessions' own agents in Humata's Settings › Agent Access; only the person can turn it on, in the Humata app"
+                    .to_owned(),
+            );
+        }
         // Asked anew: the person may have changed the setting mid-turn.
         if self.listed_now().await?.agent_sessions() == pb::AgentSessionsMode::Off {
             return Err(
@@ -608,6 +628,17 @@ impl Server {
                 "the board has no task or subtask {id}; take the id from board"
             )),
             _ => Ok(None),
+        }
+    }
+
+    /// The ids of the Agent Access switches that are off for agents; none
+    /// while the Mac can't say, when what starts or writes to a session
+    /// can't reach it either.
+    async fn switched_off(&self) -> Vec<String> {
+        let request = pb::request::Kind::GetAgentAccess(pb::GetAgentAccess {});
+        match self.client.call(request).await {
+            Ok(pb::response::Kind::AgentAccess(access)) => access.refused,
+            _ => Vec::new(),
         }
     }
 
@@ -1314,6 +1345,26 @@ fn tools(offered: Offered) -> Value {
     Value::Array(every.into_iter().filter(|tool| wanted(tool)).collect())
 }
 
+/// `tools` without those for other sessions whose Agent Access switch is
+/// among `off`.
+fn without(tools: Value, off: &[String]) -> Value {
+    let switch = |tool: &Value| match tool["name"].as_str().unwrap_or_default() {
+        "start_session" => "agent_start_session",
+        "send_message" => "agent_send_message",
+        "read_session" => "agent_read_session",
+        _ => "",
+    };
+    match tools {
+        Value::Array(tools) => Value::Array(
+            tools
+                .into_iter()
+                .filter(|tool| !off.iter().any(|off| off == switch(tool)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 fn every_tool() -> Value {
     let object = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required});
     let string = |description: &str| json!({"type": "string", "description": description});
@@ -1604,6 +1655,31 @@ mod tests {
         for tool in ["start_session", "send_message", "read_session"] {
             assert!(with.iter().any(|name| name == tool), "{tool}: {with:?}");
             assert!(!names(Place::Task).iter().any(|name| name == tool));
+        }
+    }
+
+    #[test]
+    fn a_tool_for_other_sessions_that_agent_access_has_off_is_left_out() {
+        let offered = Offered {
+            place: Place::Alone,
+            sessions: true,
+            read_only: false,
+        };
+        let off = ["agent_start_session".to_owned(), "search".to_owned()];
+        let left: Vec<String> = without(tools(offered), &off)
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect();
+        assert!(!left.iter().any(|name| name == "start_session"), "{left:?}");
+        for tool in [
+            "send_message",
+            "read_session",
+            "ask_person",
+            "search_sessions",
+        ] {
+            assert!(left.iter().any(|name| name == tool), "{tool}: {left:?}");
         }
     }
 

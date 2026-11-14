@@ -451,10 +451,13 @@ package struct SessionUpdate: Hashable, Sendable {
     package var experimental: Bool?
     /// How hard the model thinks, from the next turn; "" for its default.
     package var effort: String?
+    /// The model, from the next turn; "" for the backend's default. A turn
+    /// that is running finishes on the one it started with.
+    package var model: String?
 
     package init(
         name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil, placement: Placement? = nil,
-        experimental: Bool? = nil, effort: String? = nil
+        experimental: Bool? = nil, effort: String? = nil, model: String? = nil
     ) {
         self.name = name
         self.archived = archived
@@ -462,6 +465,7 @@ package struct SessionUpdate: Hashable, Sendable {
         self.placement = placement
         self.experimental = experimental
         self.effort = effort
+        self.model = model
     }
 }
 
@@ -1733,6 +1737,8 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownApproval
     /// Two skills one session would get share a name, and none is picked.
     case skillClash
+    /// Settings › Agent Access has the action off for the client asking.
+    case accessOff
     case unknown
 }
 

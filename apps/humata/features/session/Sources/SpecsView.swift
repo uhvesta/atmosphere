@@ -43,9 +43,9 @@ struct SpecsView: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(Self.kind(page.kind))
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
-                    Text(page.title).font(.title3.bold())
+                    Text(page.title).scaledFont(.title3.bold())
                 }
                 Spacer()
                 if !editing {
@@ -94,7 +94,7 @@ struct SpecsView: View {
             .frame(maxWidth: .infinity, minHeight: 200, alignment: .topLeading)
         } else {
             TextEditor(text: Binding(get: { draft.text }, set: { store.send(.draftChanged($0)) }))
-                .font(.body.monospaced())
+                .scaledFont(.body.monospaced())
                 .frame(minHeight: 200)
                 .scrollContentBackground(.hidden)
                 .padding(6)
@@ -107,7 +107,7 @@ struct SpecsView: View {
                     ? "Saved to the project; sessions started from now on read it."
                     : "Saved to the board; the session is told, as for any spec edit."
             )
-            .font(.caption)
+            .scaledFont(.caption)
             .foregroundStyle(.secondary)
             Spacer()
             if draft.saving { ProgressView().controlSize(.small) }
@@ -249,7 +249,7 @@ struct SpecsView: View {
             } icon: {
                 Image(systemName: "clock.arrow.circlepath")
             }
-            .font(.callout)
+            .scaledFont(.callout)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal)
@@ -297,7 +297,7 @@ struct SpecsView: View {
                             Text(version.time, format: .dateTime.month().day().hour().minute())
                             if let author = Self.author(version.author) {
                                 Text(author)
-                                    .font(.caption)
+                                    .scaledFont(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -309,14 +309,14 @@ struct SpecsView: View {
                                 ? "Project instructions aren't kept on the board, so they have no versions."
                                 : "No versions yet: each save of this spec to the board is one."
                         )
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                     }
                 } else {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text("Reading the versions…")
-                            .font(.caption)
+                            .scaledFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }

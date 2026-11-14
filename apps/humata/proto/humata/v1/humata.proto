@@ -52,6 +52,21 @@ message Hello {
   // Whether this side reads envelopes compressed with zstd. A side
   // compresses only what it sends to a peer that does.
   bool accepts_zstd = 4;
+  // Which client of the daemon this is, for its Agent Access settings.
+  ClientKind client_kind = 5;
+}
+
+// A client of the daemon, as it says it is. The daemon knows the app it
+// came with itself; what a client says decides whose Agent Access
+// switches it goes by.
+enum ClientKind {
+  // Not said, as by a humata from before it was.
+  CLIENT_KIND_UNSPECIFIED = 0;
+  CLIENT_KIND_APP = 1;
+  // The person's `humata` at the command line.
+  CLIENT_KIND_TERMINAL = 2;
+  // An agent's MCP server, `humata mcp`.
+  CLIENT_KIND_AGENT = 3;
 }
 
 message Request {
@@ -248,6 +263,10 @@ message Request {
     // AgentSessions: refused, kept in the inbox for the person, or done.
     AgentStartSession agent_start_session = 130;
     AgentSendMessage agent_send_message = 131;
+    // For the Mac only: what the humata command line and agents may do,
+    // from Settings › Agent Access. Changing it is the app's only.
+    GetAgentAccess get_agent_access = 132;
+    SetAgentAccess set_agent_access = 133;
   }
 }
 
@@ -364,6 +383,7 @@ message Response {
     CompactStarted compact_started = 105;
     ChatCommands chat_commands = 106;
     AgentActed agent_acted = 110;
+    AgentAccess agent_access = 111;
   }
 }
 
@@ -419,6 +439,9 @@ enum ErrorCode {
   // Two skills a new session would get share a name, and nobody has picked
   // which wins; pick in Settings › Skills, or with `humata pick-skill`.
   ERROR_CODE_SKILL_CLASH = 29;
+  // Agent Access has the action off for this client; the person turns it
+  // on in Settings › Agent Access.
+  ERROR_CODE_ACCESS_OFF = 30;
 }
 
 enum Backend {
@@ -676,6 +699,11 @@ message ListModels {
   // As in `StartSession`: a local model server or a Copilot provider, whose
   // models are listed instead.
   string backend_config = 3;
+  // A session on the host: its backend's models, from the model server or
+  // provider it was started with, to change its model to. `backend` and
+  // `backend_config` are then ignored; a host that doesn't know the field
+  // goes by them, so the app sends the session's backend too.
+  string session_id = 4;
 }
 
 message ListSkipped {
@@ -1117,6 +1145,11 @@ message UpdateSession {
   optional bool experimental = 6;
   // How hard the model thinks, from the next turn; empty for its default.
   optional string effort = 7;
+  // The model, from the next turn; empty for the backend's default. A turn
+  // that is running finishes on the model it started with. A change is
+  // recorded in the history as a Notice. A host that doesn't know the
+  // field answers with the session's model as it was.
+  optional string model = 8;
 }
 
 message SessionUpdated {
@@ -3301,4 +3334,56 @@ message SetProjectPlugin {
   string id = 3;
   // Unset to go back to how its CLI has it.
   optional bool enabled = 4;
+}
+
+// The group an action's Agent Access switch is in, by what it does.
+enum AccessGroup {
+  ACCESS_GROUP_UNSPECIFIED = 0;
+  ACCESS_GROUP_READ = 1;
+  ACCESS_GROUP_CHANGE = 2;
+  ACCESS_GROUP_DESTROY = 3;
+}
+
+// One action's switch.
+message ActionAccess {
+  // What the switch is kept under: its MCP tool's name where it has one.
+  string id = 1;
+  // Its switch's title.
+  string title = 2;
+  AccessGroup group = 3;
+  // Its own switch. The action runs only while its group's switch and the
+  // master switch are on too.
+  bool enabled = 4;
+}
+
+// The switches of the agents, or of the command line.
+message ClientAccess {
+  // The master switch.
+  bool enabled = 1;
+  bool read = 2;
+  bool change = 3;
+  bool destroy = 4;
+  // Every action, in the order to list them.
+  repeated ActionAccess actions = 5;
+}
+
+// What agents and the humata command line may do. The app is never
+// gated. It stops agents and scripts going through humata, not a program
+// running as the person.
+message AgentAccess {
+  // Agents: `humata mcp`, and the humata tools of sessions' own agents.
+  ClientAccess agents = 1;
+  // The person's `humata` at the command line.
+  ClientAccess terminal = 2;
+  // Only in answers: the ids of the actions that are off for the
+  // connection asking; empty for the app.
+  repeated string refused = 3;
+}
+
+message GetAgentAccess {}
+
+// The app only. A client left unset keeps its switches, and an action not
+// named keeps its own.
+message SetAgentAccess {
+  AgentAccess access = 1;
 }

@@ -2729,6 +2729,63 @@ async fn a_host_lists_the_models_its_backends_offer() {
 }
 
 #[tokio::test]
+async fn a_sessions_model_changes_and_its_backends_models_are_listed_for_it() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(&dir.path().join("state")).await;
+    let session = started(
+        &client,
+        pb::request::Kind::StartSession(pb::StartSession {
+            backend: pb::Backend::Claude.into(),
+            working_directory: dir.path().display().to_string(),
+            name: "test".to_owned(),
+            model: "opus".to_owned(),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let list = |session: &str| {
+        pb::request::Kind::ListModels(pb::ListModels {
+            session_id: session.to_owned(),
+            ..Default::default()
+        })
+    };
+
+    let changed = update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            model: Some("sonnet".to_owned()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(changed.model, "sonnet");
+
+    // Its backend's, though the request names none.
+    match client.call(list(&session.id)).await {
+        Ok(pb::response::Kind::Models(models)) => {
+            assert!(models.models.iter().any(|model| model.id == "sonnet"));
+        }
+        other => panic!("not listed: {other:?}"),
+    }
+    let unknown = client.call(list("no-such-session")).await;
+    assert!(unknown.is_err(), "listed for no session: {unknown:?}");
+
+    let default = update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            model: Some(String::new()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(default.model, "");
+}
+
+#[tokio::test]
 async fn the_coordinators_variables_are_kept_and_only_their_names_come_back() {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -3512,6 +3569,7 @@ async fn a_search_after_a_rewind_and_a_new_turn_finds_the_new_turn_and_not_the_o
     );
 }
 
+mod access;
 mod agent_sessions;
 mod approvals;
 mod pulls;

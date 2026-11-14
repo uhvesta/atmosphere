@@ -266,6 +266,16 @@ package struct DaemonClient: Sendable {
     /// Changes how open pull requests are followed, from now on; returns it
     /// as kept.
     package var setPullRefresh: @Sendable (_ refresh: PullRefresh) async throws -> PullRefresh
+    /// What agents and the `humata` command line may do: each one's main
+    /// switch, group switches and every action's own.
+    package var agentAccess: @Sendable () async throws -> AgentAccess
+    /// Changes what agents and the command line may do, from now on;
+    /// returns it as kept.
+    package var setAgentAccess: @Sendable (_ access: AgentAccess) async throws -> AgentAccess
+    /// The models `session` can change to: its backend's on its host, from
+    /// the model server or provider it was started with. Throws when they
+    /// can't be listed.
+    package var sessionModels: @Sendable (_ session: Session) async throws -> [ModelChoice]
     /// The repositories to pick from when making or changing a project,
     /// last used first, then by name.
     package var savedRepositories: @Sendable () async throws -> [SavedRepository]

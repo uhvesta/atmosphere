@@ -1,4 +1,5 @@
 import AppKit
+import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataReview
@@ -30,12 +31,14 @@ package struct FileBrowserView: View {
             // Until the root is read, the tree's place says why it wasn't.
             if let failure = store.failure, store.root != nil {
                 Label(failure, systemImage: "exclamationmark.triangle")
-                    .font(.callout)
+                    .scaledFont(.callout)
                     .padding(8)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                     .padding()
             }
         }
+        // The files' names and what's read of them follow the text scale.
+        .scaledBody()
         .task { store.send(.task) }
     }
 
@@ -46,7 +49,7 @@ package struct FileBrowserView: View {
     private var toolbar: some View {
         HStack(spacing: 10) {
             Text(store.absolutePath ?? store.root ?? "")
-                .font(.callout.monospaced())
+                .scaledFont(.callout.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.head)
@@ -112,7 +115,7 @@ package struct FileBrowserView: View {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.small)
                                 Text("Reading…")
-                                    .font(.caption)
+                                    .scaledFont(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.leading, CGFloat(row.depth + 1) * 14 + 20)
@@ -129,7 +132,7 @@ package struct FileBrowserView: View {
 
     private func cutNote(depth: Int) -> some View {
         Text("More files than can be listed; open it in a terminal to see them all.")
-            .font(.caption)
+            .scaledFont(.caption)
             .foregroundStyle(.secondary)
             .padding(.leading, CGFloat(depth) * 14 + 20)
     }
@@ -171,8 +174,8 @@ private struct TreeRow: View {
                     Color.clear
                 }
             }
-            .font(.caption2)
-            .frame(width: 12)
+            .scaledFont(.caption2)
+            .scaledFrame(width: 12)
             .foregroundStyle(.secondary)
             Label(row.entry.name, systemImage: row.entry.isDirectory ? "folder" : "doc")
                 .lineLimit(1)
@@ -202,7 +205,7 @@ private struct FileContentsView: View {
                         "Only the start of this \(sizeText) file is shown; open it in a terminal to read the rest.",
                         systemImage: "scissors"
                     )
-                    .font(.callout)
+                    .scaledFont(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -252,11 +255,11 @@ private struct SourceText: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(index + 1)")
                             .foregroundStyle(.secondary)
-                            .frame(width: 48, alignment: .trailing)
+                            .scaledFrame(width: 48, alignment: .trailing)
                         Text(highlighter?.attributed(line) ?? AttributedString(line))
                             .fixedSize()
                     }
-                    .font(.system(size: 12, design: .monospaced))
+                    .scaledFont(.system(size: 12, design: .monospaced))
                     .padding(.vertical, 1)
                 }
             }

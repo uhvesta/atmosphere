@@ -195,7 +195,7 @@ private struct MarkdownBlockView: View, Equatable {
             InlineText(text)
         case .heading(let level, let text):
             InlineText(text)
-                .font(Self.font(level: level))
+                .scaledFont(Self.font(level: level))
                 .padding(.top, level <= 2 ? 4 : 2)
                 .accessibilityAddTraits(.isHeader)
         case .code(let language, let code):
@@ -221,7 +221,7 @@ private struct MarkdownBlockView: View, Equatable {
             TableBlock(table: table)
         case .math(let latex):
             Text(Math.styled(latex))
-                .font(.system(.title3, design: .serif))
+                .scaledFont(.system(.title3, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
@@ -230,7 +230,7 @@ private struct MarkdownBlockView: View, Equatable {
     }
 
     /// Sized for a message rather than a page.
-    private static func font(level: Int) -> Font {
+    private static func font(level: Int) -> ScaledFont {
         switch level {
         case 1: .title2.weight(.semibold)
         case 2: .title3.weight(.semibold)
@@ -370,7 +370,7 @@ struct CodeBlock: View {
             HStack {
                 if let language {
                     Text(verbatim: CodeSyntax.name(of: language))
-                        .font(.caption.weight(.medium))
+                        .scaledFont(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
@@ -381,7 +381,7 @@ struct CodeBlock: View {
                     } label: {
                         Label("Quote", systemImage: "text.quote")
                     }
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .buttonStyle(CodeBlockButtonStyle())
                     .help("Put this code in the message box as a quote")
                     .accessibilityLabel(Text("Quote Code in Message"))
@@ -396,7 +396,7 @@ struct CodeBlock: View {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
                 }
-                .font(.caption)
+                .scaledFont(.caption)
                 .buttonStyle(CodeBlockButtonStyle())
                 .accessibilityLabel(copied ? Text("Copied") : Text("Copy Code"))
                 .sensoryFeedback(.success, trigger: copied) { _, copied in copied }
@@ -405,7 +405,7 @@ struct CodeBlock: View {
             .padding(.top, 6)
             let preview = TextPreview(code, lines: Self.boxedLines, tallBytes: .max)
             let text = Text(CodeSyntax.cachedColored(preview.shown, language: language))
-                .font(.system(.callout, design: .monospaced))
+                .scaledFont(.system(.callout, design: .monospaced))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 10)
                 .padding(.top, 4)
@@ -428,7 +428,7 @@ struct CodeBlock: View {
             }
             if preview.isCut {
                 Text("Only the first 20,000 characters show here; Copy takes all of it.")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 8)
@@ -453,25 +453,32 @@ struct CodeBlock: View {
 
 /// Copy and Quote above code, drawn by SwiftUI: a borderless button on
 /// the Mac is an AppKit button, and measuring one for each block of code
-/// held up a reply's first frame.
+/// held up a reply's first frame. It darkens under the pointer; in a list
+/// that watches the pointer for its rows, only while the pointer rests on
+/// its row, so a row costs no watching as it's made.
 private struct CodeBlockButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        Hover { hovering in
-            configuration.label
-                .foregroundStyle(hovering || configuration.isPressed ? .primary : .secondary)
+        CodeButton(configuration: configuration)
+    }
+
+    private struct CodeButton: View {
+        let configuration: Configuration
+        @Environment(\.pointerRestsOnRow) private var restsOnRow
+        @State private var hovering = false
+
+        var body: some View {
+            let dark = configuration.isPressed || hovering && restsOnRow != false
+            let label = configuration.label
+                .foregroundStyle(dark ? .primary : .secondary)
                 .opacity(configuration.isPressed ? 0.6 : 1)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .contentShape(.rect)
-        }
-    }
-
-    private struct Hover<Label: View>: View {
-        @ViewBuilder let label: (Bool) -> Label
-        @State private var hovering = false
-
-        var body: some View {
-            label(hovering).onHover { hovering = $0 }
+            if restsOnRow == false {
+                label
+            } else {
+                label.onHover { hovering = $0 }
+            }
         }
     }
 }

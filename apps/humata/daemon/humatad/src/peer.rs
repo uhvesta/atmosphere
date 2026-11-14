@@ -1,6 +1,8 @@
 //! Who is on the other end of a connection to the daemon: the Humata app,
 //! whose admin actions run at once, or another client, as `humata` or
-//! `humata mcp`, whose admin actions wait for the person's approval.
+//! `humata mcp`, whose admin actions wait for the person's approval and
+//! whose requests go by the Agent Access settings, under the kind of
+//! client its hello says it is.
 //!
 //! This keeps well-meaning agents from acting as the person; it is no wall
 //! against a program set on getting round it, which, running as the same

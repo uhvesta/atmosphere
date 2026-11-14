@@ -352,6 +352,7 @@ extension DaemonClient {
                 if let keeper = update.keeper { request.keeper = keeper }
                 if let experimental = update.experimental { request.experimental = experimental }
                 if let effort = update.effort { request.effort = effort }
+                if let model = update.model { request.model = model }
                 switch update.placement {
                 case .item(let item): request.itemID = item
                 case .project: request.itemID = ""
@@ -962,6 +963,37 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than how pull requests are read")
                 }
                 return PullRefresh(kept)
+            },
+            agentAccess: {
+                let request = Humata_V1_GetAgentAccess()
+                guard case .agentAccess(let access) = try await daemon.call(.getAgentAccess(request)) else {
+                    throw DaemonError.unexpected("something other than what agents may do")
+                }
+                return AgentAccess(access)
+            },
+            setAgentAccess: { access in
+                var set = Humata_V1_SetAgentAccess()
+                set.access = access.proto
+                guard case .agentAccess(let kept) = try await daemon.call(.setAgentAccess(set)) else {
+                    throw DaemonError.unexpected("something other than what agents may do")
+                }
+                return AgentAccess(kept)
+            },
+            sessionModels: { session in
+                var list = Humata_V1_ListModels()
+                list.host = session.host ?? ""
+                // For a host that doesn't know `sessionID` yet.
+                list.backend = session.backend.proto
+                list.sessionID = session.id
+                guard case .models(let found) = try await daemon.call(.listModels(list)) else {
+                    throw DaemonError.unexpected("something other than the models")
+                }
+                return found.models.map {
+                    ModelChoice(
+                        id: $0.id, name: $0.name.isEmpty ? $0.id : $0.name, detail: $0.detail.isEmpty ? nil : $0.detail,
+                        readsImages: $0.readsImages, efforts: $0.efforts,
+                        defaultEffort: $0.defaultEffort.isEmpty ? nil : $0.defaultEffort)
+                }
             },
             savedRepositories: {
                 let request = Humata_V1_ListSavedRepositories()

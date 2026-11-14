@@ -1,3 +1,4 @@
+import ChatUI
 import HumataDaemonClient
 import SwiftUI
 
@@ -16,17 +17,17 @@ package struct PullRequestRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 if let url = URL(string: pull.url) {
                     Link("\(pull.githubRepository)#\(pull.number)", destination: url)
-                        .font(.callout.bold())
+                        .scaledFont(.callout.bold())
                 } else {
-                    Text("\(pull.githubRepository)#\(pull.number)").font(.callout.bold())
+                    Text("\(pull.githubRepository)#\(pull.number)").scaledFont(.callout.bold())
                 }
                 Text(pull.title)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if let problem = pull.problem {
                     Label(problem, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.orange)
                         .lineLimit(3)
                         .textSelection(.enabled)
@@ -35,7 +36,7 @@ package struct PullRequestRow: View {
             }
             Spacer()
             Text(standing)
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.secondary)
         }
     }

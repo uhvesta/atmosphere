@@ -281,6 +281,7 @@ async fn a_call_fails_when_the_other_side_goes_away() {
             role: pb::Role::Host.into(),
             program_version: "test".to_owned(),
             accepts_zstd: false,
+            ..Default::default()
         };
         let envelope = pb::Envelope {
             id: 0,
@@ -313,6 +314,7 @@ async fn a_call_made_after_the_other_side_went_away_fails_rather_than_waits() {
             role: pb::Role::Host.into(),
             program_version: "test".to_owned(),
             accepts_zstd: false,
+            ..Default::default()
         };
         let envelope = pb::Envelope {
             id: 0,
@@ -390,6 +392,7 @@ async fn a_peer_on_another_protocol_version_is_refused() {
                 role: pb::Role::Host.into(),
                 program_version: "9.0".to_owned(),
                 accepts_zstd: false,
+                ..Default::default()
             };
             let envelope = pb::Envelope {
                 id: 0,

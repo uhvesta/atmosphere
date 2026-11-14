@@ -44,7 +44,7 @@ public struct MessageView<Attachments: View>: View {
             }
             if let skill, role == .assistant {
                 Label(skill, systemImage: "sparkles")
-                    .font(.caption.weight(.medium))
+                    .scaledFont(.caption.weight(.medium))
                     .foregroundStyle(.tint)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Text("Skill: \(skill)"))
@@ -70,7 +70,7 @@ public struct MessageView<Attachments: View>: View {
             }
             if canUndo {
                 Button("Undo", action: undo)
-                    .font(.caption)
+                    .scaledFont(.caption)
             }
         }
         .frame(maxWidth: .infinity, alignment: role == .person ? .trailing : .leading)
@@ -133,11 +133,11 @@ struct PersonText: View {
                         resizing?()
                         expanded.toggle()
                     }
-                    .font(.callout.weight(.semibold))
+                    .scaledFont(.callout.weight(.semibold))
                     .buttonStyle(ChatRowButtonStyle())
                     if expanded, preview.isCut, let select {
                         Button("Select All of It") { select(text) }
-                            .font(.callout)
+                            .scaledFont(.callout)
                             .buttonStyle(ChatRowButtonStyle())
                             .help("Only its first 20,000 characters show here; open all of it to read and select")
                     }
@@ -195,7 +195,7 @@ public struct ThinkingDisclosure: View {
             Button(action: toggle) {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
+                        .scaledFont(.caption.weight(.semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         // Only the chevron turns: the thoughts open at once,
                         // as animating a tall change stalls the chat.
@@ -203,7 +203,7 @@ public struct ThinkingDisclosure: View {
                     Text(summary)
                     if isThinking { ProgressView().controlSize(.mini) }
                 }
-                .font(.footnote)
+                .scaledFont(.footnote)
                 .foregroundStyle(.secondary)
                 .contentShape(.rect)
             }
@@ -223,7 +223,7 @@ public struct ThinkingDisclosure: View {
         let all = Self.trimmed(thinking.text)
         let preview = TextPreview(all)
         let text = Text(preview.shown)
-            .font(.footnote)
+            .scaledFont(.footnote)
             .foregroundStyle(.secondary)
             .selectableOnMac()
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,7 +244,7 @@ public struct ThinkingDisclosure: View {
                 Button("Show All") { select(all) }
                     .help("Only the first 20,000 characters show here; open all of them to read and select")
                     .buttonStyle(ChatRowButtonStyle())
-                    .font(.caption)
+                    .scaledFont(.caption)
             }
         }
         .padding(.leading, 10)
@@ -353,7 +353,7 @@ public struct BranchSwitcher: View {
         .labelStyle(.iconOnly)
         .buttonStyle(ChatRowButtonStyle())
         .tint(.secondary)
-        .font(.caption)
+        .scaledFont(.caption)
         .foregroundStyle(.secondary)
     }
 }
@@ -408,7 +408,7 @@ public struct AttachmentChip: View {
                     .accessibilityLabel(Text("Remove ") + title)
             }
         }
-        .font(.callout)
+        .scaledFont(.callout)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color.secondary.opacity(0.15), in: .capsule)

@@ -1699,7 +1699,9 @@ write to them and read them, when its project lets it.
 - [x] `read_session` gives how the session stands and the end of its
   conversation, up to 16 KiB, and can wait for it to stop working
 - [x] Children nest under their parent in the sidebar, as forks do
-- [ ] Milestone AC adds a switch for each of the three tools
+- [x] Milestone AC adds a switch for each of the three tools, under
+  Agents in Settings › Agent Access: the daemon refuses a start or a
+  message that is off, and a tool that is off isn't listed
 
 Tests: the daemon starts, asks, refuses at each limit and for another's
 session, and lets only the app allow; TestStore tests allow one from the
@@ -1919,6 +1921,36 @@ profile of opening a long chat found.
 - Deferred: closing a session deleted elsewhere, earlier rows kept across
   tabs
 
+### Requests after v0.11.0
+
+- [x] View › Bigger Text (⌘+, ⌘=), Smaller Text (⌘-) and Actual Size
+  (⌥⌘0, as ⌘0 is the Inbox) scale the text of the chat, the message box,
+  the review, the files, the spec and the terminals' font, a tenth a step
+  from 80% to 200%, kept between runs. Fonts are taken with `scaledFont`,
+  which reads the scale from the environment: on the Mac nothing in
+  SwiftUI scales a text style. The sidebar and Settings stay as they are
+- [x] Scrolling a chat doesn't stagger: one watcher for the whole chat
+  finds the row the pointer rests on, in place of one for each text and
+  button, and a row's text turns selectable only once the pointer has
+  stayed on it with the chat still, not as the chat scrolls under it; a
+  row measured, or a word written, as the person sets off up the chat
+  doesn't take it back to its end under their hand
+- [ ] The list still guesses the heights of rows it hasn't shown, so the
+  scroll bar can move as they're measured; `LongChatScrollTests` measures
+  by how much once a chat has been read through
+- [x] The model of an open chat changes from the pill in the message
+  box: Select Model lists the session's backend's models as its host has
+  them (`ListModels.session_id`, so a session on its own model server or
+  provider lists that one's), with Default for Claude Code and Copilot.
+  The change is `UpdateSession.model`; the host keeps it in the session's
+  record, so it survives a restart, and the history gets a notice, "Model
+  changed to X". It counts from the next turn: Claude Code is resumed
+  with `--model`, Copilot's session is opened again with it, a model
+  server gets it in the next request. A turn that is running finishes on
+  its own model and queued messages run on the new one. An effort the new
+  model doesn't take goes back to its default. No pill for a scripted or
+  archived session, or one whose host is away
+
 ### Milestone AC: agent access
 
 The owner, 2026-11-13: gate what the `humata` command line and its MCP
@@ -1927,22 +1959,29 @@ action. Signed off: reads and changes on by default, destructive
 actions off; separate switches for agents (`humata mcp`) and for the
 person's own terminal; built after the queued work.
 
-- [ ] Settings › Agent Access: a master switch for each of Agents and
+- [x] Settings › Agent Access: a master switch for each of Agents and
   Terminal, then the actions grouped as Read, Change and Destroy, each
   group with a switch and each action with its own
-- [ ] Enforced by the daemon, not the command line, so a copied or older
+- [x] Enforced by the daemon, not the command line, so a copied or older
   `humata` can't skip it; the app is never gated. Kept in the daemon's
   settings file
-- [ ] A connection says whether it's the app, the terminal or an agent's
+- [x] A connection says whether it's the app, the terminal or an agent's
   MCP server; a refused request says which switch is off and where to
   turn it on
-- [ ] An action that's off isn't listed among the MCP tools, so an agent
+- [x] An action that's off isn't listed among the MCP tools, so an agent
   isn't offered what would fail
-- [ ] Every milestone that adds an action to the command line or the MCP
+- [x] Every milestone that adds an action to the command line or the MCP
   tools adds its switch, in the group its effect puts it in
-- [ ] The setting stops agents and scripts going through `humata`; it
+- [x] The setting stops agents and scripts going through `humata`; it
   isn't a lock against a program running as the person, which could
   claim to be the app. Settings says so
+
+How it's built: the daemon puts every request under one of some forty
+actions (`daemon/access.rs`, with no catch-all, so a new request doesn't
+build until it has a switch); archiving a session and reverting changes
+count as Destroy. `humata` says in its hello whether it is the terminal
+or an agent's MCP server; one that doesn't say goes by how it was run.
+With no daemon to ask, `humata mcp` lists no tool that destroys.
 
 Tests: the daemon refuses an action that's off for the client asking and
 allows it for the app; turning a group off turns its actions off; the

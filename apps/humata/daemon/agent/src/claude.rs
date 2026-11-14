@@ -1051,6 +1051,54 @@ mod tests {
             .collect()
     }
 
+    /// The arguments the CLI is started with for a turn of a session it
+    /// has played in before, whose record now has `model`.
+    fn resumed_on(model: Option<&str>) -> Vec<String> {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let runner = ClaudeRunner::new(ClaudeOptions {
+            program: "claude".into(),
+            state: dir.path().join("state"),
+            env: Env::new(Vec::new()),
+            mcp: None,
+        });
+        let record: SessionRecord = serde_json::from_value(json!({
+            "id": "s",
+            "name": "test",
+            "working_directory": dir.path(),
+            "model": model,
+            "instructions": null,
+            "parent": null,
+        }))
+        .expect("a session's record");
+        let mut links = Links {
+            session: Some("theirs".into()),
+            ..Links::default()
+        };
+        let (command, _) = runner.command(&record, &mut links);
+        command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_in_a_conversation_under_way_is_started_on_the_model_the_session_has_now() {
+        let changed = resumed_on(Some("sonnet"));
+        let default = resumed_on(None);
+
+        let on = |arguments: &[String], flag: &str| {
+            arguments
+                .windows(2)
+                .find(|pair| pair[0] == flag)
+                .map(|pair| pair[1].clone())
+        };
+        assert_eq!(on(&changed, "--resume").as_deref(), Some("theirs"));
+        assert_eq!(on(&changed, "--model").as_deref(), Some("sonnet"));
+        assert_eq!(on(&default, "--resume").as_deref(), Some("theirs"));
+        assert_eq!(on(&default, "--model"), None);
+    }
+
     #[test]
     fn only_a_read_only_session_is_started_with_humatas_mcp_server_alone() {
         let strict = "--strict-mcp-config".to_owned();

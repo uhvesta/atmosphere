@@ -212,7 +212,7 @@ async fn handle(connection: &Connection, message: &Value) -> Option<Value> {
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tools()}),
+        "tools/list" => json!({"tools": tools(refused(connection).await.as_deref())}),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or_default();
             let empty = json!({});
@@ -518,13 +518,57 @@ fn tool_list() -> Vec<Tool> {
     ]
 }
 
-fn tools() -> Vec<Value> {
+/// The ids of the Agent Access switches the person has off for this
+/// connection, as the daemon says; None when no daemon says, as before it
+/// runs.
+async fn refused(connection: &Connection) -> Option<Vec<String>> {
+    let client = connection.client().await.ok()?;
+    refused_for(&client).await
+}
+
+async fn refused_for(client: &Client) -> Option<Vec<String>> {
+    let request = pb::request::Kind::GetAgentAccess(pb::GetAgentAccess {});
+    match client.call(request).await {
+        Ok(pb::response::Kind::AgentAccess(access)) => Some(access.refused),
+        _ => None,
+    }
+}
+
+/// The ids of the Agent Access switches tool `name` goes by: those of the
+/// requests it makes of the daemon. Most tools make one, whose switch has
+/// the tool's name.
+fn switches(name: &'static str) -> Vec<&'static str> {
+    match name {
+        // They wait on the session by following its chat.
+        "send_message" | "approve" => vec![name, "read_history"],
+        "read_event" => vec!["read_history"],
+        "read_spec" | "list_proposals" => vec!["board"],
+        "propose_task" | "propose_spec_edit" => vec!["propose"],
+        "decline_proposal" => vec!["apply_proposal"],
+        "update_item" => vec!["create_item"],
+        // Following an approval is never off.
+        "approval_status" => Vec::new(),
+        _ => vec![name],
+    }
+}
+
+/// The tools to offer: all but those a switch in `refused` turns off, so
+/// an agent isn't offered what the daemon would refuse. With None, when no
+/// daemon has said what is off, those that destroy are left out, as they
+/// are until the person turns them on.
+fn tools(refused: Option<&[String]>) -> Vec<Value> {
     #[allow(unused_mut)]
     let mut listed = tool_list();
     #[cfg(feature = "admin")]
     listed.extend(crate::admin::tools());
     listed
         .into_iter()
+        .filter(|tool| match refused {
+            Some(refused) => !switches(tool.name)
+                .iter()
+                .any(|switch| refused.iter().any(|off| off == switch)),
+            None => tool.effect != Effect::Destroys,
+        })
         .map(|tool| {
             json!({
                 "name": tool.name,
@@ -1022,7 +1066,17 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 other => Err(unexpected(&other)),
             }
         }
-        "show" => show(arguments).await,
+        "show" => {
+            // It asks nothing of the daemon, which so can't refuse it.
+            let off = refused_for(client).await.unwrap_or_default();
+            if off.iter().any(|off| off == "show") {
+                return Err(
+                    "show is turned off for agents in Humata's Settings › Agent Access. The person can turn it on there, in the Humata app; tell them what you'd have shown instead"
+                        .to_owned(),
+                );
+            }
+            show(arguments).await
+        }
         _ => {
             #[cfg(feature = "admin")]
             if let Some(answer) = crate::admin::call(client, name, arguments).await {
@@ -1373,6 +1427,8 @@ mod tests {
         /// How many times the history was read.
         reads: AtomicUsize,
         watched: mpsc::UnboundedSender<Items>,
+        /// The Agent Access switches that are off for the client.
+        refused: Mutex<Vec<String>>,
     }
 
     impl Service for Daemon {
@@ -1395,6 +1451,12 @@ mod tests {
                     pb::request::Kind::SendMessage(_) => {
                         Reply::Response(pb::response::Kind::MessageSent(pb::MessageSent {}))
                     }
+                    pb::request::Kind::GetAgentAccess(_) => {
+                        Reply::Response(pb::response::Kind::AgentAccess(pb::AgentAccess {
+                            refused: self.refused.lock().expect("not poisoned").clone(),
+                            ..Default::default()
+                        }))
+                    }
                     _ => Reply::Response(humata_wire::error(
                         pb::ErrorCode::InvalidRequest,
                         "not in this test",
@@ -1410,6 +1472,7 @@ mod tests {
             history: Mutex::default(),
             reads: AtomicUsize::new(0),
             watched,
+            refused: Mutex::default(),
         });
         (daemon, watches)
     }
@@ -1843,7 +1906,7 @@ mod tests {
 
     #[tokio::test]
     async fn it_serves_before_a_daemon_runs_and_reaches_one_that_starts_later() {
-        let (tries, connect) = connector(1);
+        let (tries, connect) = connector(2);
         let connection = Connection::new(None, connect);
         let (mut requests, input) = duplex(4096);
         let (output, answers) = duplex(64 * 1024);
@@ -1882,7 +1945,8 @@ mod tests {
             "{}",
             answered[1]
         );
-        // Neither of those looked for the daemon.
+        // The tool list asked for Agent Access and, with no daemon, listed
+        // what is on by default.
         assert_eq!(answered[2]["id"], json!(3));
         assert_eq!(
             answered[2]["result"]["isError"],
@@ -1897,7 +1961,7 @@ mod tests {
             "{}",
             answered[3]
         );
-        assert_eq!(tries.load(Ordering::Relaxed), 2);
+        assert_eq!(tries.load(Ordering::Relaxed), 3);
     }
 
     fn link_to(arguments: Value) -> Result<String, String> {
@@ -1923,9 +1987,74 @@ mod tests {
         assert!(link_to(json!({"session_id": "../etc"})).is_err());
     }
 
+    /// The names of the tools `connection` lists.
+    async fn listed(connection: &Connection) -> Vec<String> {
+        let ask = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let answer = handle(connection, &ask).await.expect("an answer");
+        answer["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_tool_list_leaves_out_what_agent_access_has_off() {
+        let (client, daemon, _watches) = connected().await;
+        let connection = only(client);
+        let has = |tools: &[String], name: &str| tools.iter().any(|tool| tool == name);
+
+        // Nothing off: every tool, those that destroy too.
+        let all = listed(&connection).await;
+        for name in ["list_projects", "send_message", "delete_project", "show"] {
+            assert!(has(&all, name), "{name} in {all:?}");
+        }
+
+        *daemon.refused.lock().expect("not poisoned") = vec![
+            "delete_project".to_owned(),
+            "read_history".to_owned(),
+            "show".to_owned(),
+        ];
+        let some = listed(&connection).await;
+        // What is off, and what couldn't work without it.
+        for name in [
+            "delete_project",
+            "read_history",
+            "read_event",
+            "send_message",
+            "show",
+        ] {
+            assert!(!has(&some, name), "{name} in {some:?}");
+        }
+        for name in ["list_projects", "archive_session", "start_session"] {
+            assert!(has(&some, name), "{name} in {some:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_no_daemon_to_ask_the_tool_list_leaves_out_what_destroys() {
+        let connection = only(gone().await);
+        let tools = listed(&connection).await;
+        assert!(
+            tools.iter().any(|tool| tool == "list_projects"),
+            "{tools:?}"
+        );
+        assert!(tools.iter().any(|tool| tool == "send_message"), "{tools:?}");
+        assert!(
+            !tools.iter().any(|tool| tool == "delete_project"),
+            "{tools:?}"
+        );
+        assert!(
+            !tools.iter().any(|tool| tool == "archive_session"),
+            "{tools:?}"
+        );
+    }
+
     #[test]
     fn only_destructive_tools_say_so_and_readers_change_nothing() {
-        let tools = tools();
+        let nothing_off: &[String] = &[];
+        let tools = tools(Some(nothing_off));
         let flagged = |hint: &str| -> Vec<String> {
             tools
                 .iter()

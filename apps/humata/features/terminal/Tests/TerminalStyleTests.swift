@@ -110,6 +110,27 @@ final class TerminalStyleTests: XCTestCase {
         XCTAssertEqual(TerminalStyle(defaults: defaults), saved)
     }
 
+    func testTheFontIsScaledWithTheWindowsText() throws {
+        var bigger = style
+        bigger.textPercent = 150
+
+        let config = settings(bigger.config(dark: false))
+        XCTAssertEqual(config["font-size"]?.last.flatMap { Double($0) }, 21)
+    }
+
+    func testTheKeptTextScaleIsReadWithTheStyleAndSavingTheStyleLeavesIt() throws {
+        let defaults = try emptyDefaults()
+        XCTAssertEqual(TerminalStyle(defaults: defaults).textPercent, 100)
+
+        defaults.set(130, forKey: TerminalStyle.textPercentKey)
+        XCTAssertEqual(TerminalStyle(defaults: defaults).textPercent, 130)
+
+        TerminalStyle(fontFamily: "Monaco", fontSize: 16, theme: .highContrast).save(to: defaults)
+        let read = TerminalStyle(defaults: defaults)
+        XCTAssertEqual(read.textPercent, 130)
+        XCTAssertEqual(read.fontSize, 16)
+    }
+
     func testWhatWasSavedWrongFallsBackToTheDefault() throws {
         let defaults = try emptyDefaults()
         TerminalStyle(

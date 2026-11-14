@@ -1023,6 +1023,8 @@ impl Host {
             | Request::CleanUpStorage(_)
             | Request::GetPullRefresh(_)
             | Request::SetPullRefresh(_)
+            | Request::GetAgentAccess(_)
+            | Request::SetAgentAccess(_)
             | Request::ListSavedRepositories(_)
             | Request::RenameSavedRepository(_)
             | Request::RemoveSavedRepository(_)
@@ -1187,10 +1189,18 @@ impl Host {
                 Response::SkippedRemoved(pb::SkippedRemoved {})
             }
             Request::ListModels(list) => {
-                let models = self
-                    .backend(list.backend())?
-                    .models(convert::optional(list.backend_config))
-                    .await?;
+                let models = if list.session_id.is_empty() {
+                    self.backend(list.backend())?
+                        .models(convert::optional(list.backend_config))
+                        .await?
+                } else {
+                    // A session's own: its backend's, from the model server
+                    // or provider it was started with.
+                    let session = SessionId::new(list.session_id);
+                    let agent = self.owner(&session)?.1;
+                    let config = record(agent.as_ref(), &session).await?.backend_config;
+                    agent.models(config).await?
+                };
                 Response::Models(pb::Models {
                     models: models
                         .into_iter()
@@ -1257,6 +1267,7 @@ impl Host {
                     keeper: update.keeper,
                     effort: update.effort.map(convert::optional),
                     experimental: update.experimental,
+                    model: update.model.map(convert::optional),
                 };
                 let record = agent.update(&session, changes).await?;
                 Response::SessionUpdated(pb::SessionUpdated {

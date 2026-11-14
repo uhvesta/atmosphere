@@ -18,6 +18,7 @@ swift_library(
     deps = [
         "//apps/humata/clients/daemon",
         "//apps/humata/features/diagram",
+        "//apps/libs/kits/chatui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import Foundation
 import HumataAppFeature
@@ -44,6 +45,8 @@ struct HumataApp: App {
         var state = AppFeature.State()
         // The build of humatad this app installs on hosts.
         state.settings.bundledVersion = version
+        // The text size kept from the last run, before the window shows.
+        state.textSize.scale = TextScaleKeeper.liveValue.load()
         return state
     }
 
@@ -89,6 +92,10 @@ struct HumataApp: App {
             CommandGroup(replacing: .newItem) {
                 NewCommands(store: store)
             }
+            // In the View menu, over what the system puts there.
+            CommandGroup(before: .toolbar) {
+                TextSizeCommands(store: store)
+            }
             CommandMenu("Go") {
                 Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
                     .keyboardShortcut("0", modifiers: .command)
@@ -124,6 +131,28 @@ private struct NewCommands: View {
         ProjectCommands(store: store)
         Button("Import Session…") { store.send(.sidebar(.importTapped)) }
             .disabled(presenting)
+    }
+}
+
+/// Bigger Text, Smaller Text and Actual Size: the text of the chat, the
+/// message box, the review, the files, the spec and the terminals. Each is
+/// greyed out when it would change nothing. Actual Size is ⌥⌘0, as ⌘0 is
+/// the Inbox.
+private struct TextSizeCommands: View {
+    let store: StoreOf<AppFeature>
+
+    var body: some View {
+        let scale = store.textSize.scale
+        Button("Bigger Text") { store.send(.textSize(.biggerTapped)) }
+            .keyboardShortcut("+", modifiers: .command)
+            .disabled(!scale.canGrow)
+        Button("Smaller Text") { store.send(.textSize(.smallerTapped)) }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(!scale.canShrink)
+        Button("Actual Size") { store.send(.textSize(.actualSizeTapped)) }
+            .keyboardShortcut("0", modifiers: [.command, .option])
+            .disabled(scale == .actual)
+        Divider()
     }
 }
 

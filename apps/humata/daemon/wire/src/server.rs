@@ -26,6 +26,10 @@ pub type ServiceFuture = Pin<Box<dyn Future<Output = Reply> + Send>>;
 /// Answers requests. Each request is handled on its own task.
 pub trait Service: Send + Sync + 'static {
     fn handle(self: Arc<Self>, request: pb::request::Kind) -> ServiceFuture;
+
+    /// Told the other side's hello, once, before any of its requests is
+    /// handled. Does nothing unless a service wants what it says.
+    fn greeted(&self, _peer: &pb::Hello) {}
 }
 
 /// Envelopes waiting for the writer.
@@ -46,7 +50,15 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     S: Service + ?Sized,
 {
-    let peer = handshake(&mut reader, &mut writer, role, program_version).await?;
+    let peer = handshake(
+        &mut reader,
+        &mut writer,
+        role,
+        program_version,
+        pb::ClientKind::Unspecified,
+    )
+    .await?;
+    service.greeted(&peer);
     let compress = peer.accepts_zstd;
     let (outgoing, mut queue) = mpsc::channel::<pb::Envelope>(OUTGOING);
     let writing = tokio::spawn(async move {

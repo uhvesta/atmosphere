@@ -70,6 +70,17 @@ package struct AppView: View {
         .alert($store.scope(state: \.sendFailure, action: \.sendFailure))
         // Mermaid blocks in chats drawn as diagrams.
         .environment(\.codeBlockRenderer, MermaidRenderer.codeBlocks)
+        // The View menu's text size, for the views that follow it.
+        .environment(\.textScale, store.textSize.scale)
+        // ⌘= is Bigger Text too, as ⌘+ is ⇧⌘= on most keyboards.
+        .background {
+            Button("Bigger Text") { store.send(.textSize(.biggerTapped)) }
+                .keyboardShortcut("=", modifiers: .command)
+                .disabled(!store.textSize.scale.canGrow)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
         // The Session menu and the chat's shortcuts follow the column.
         .onChange(of: column) { store.send(.columnFocused(column)) }
         .task {

@@ -40,6 +40,9 @@ package struct SettingsView: View {
             ModelDefaultsView(store: store.scope(state: \.models, action: \.models))
                 .tabItem { Label("Models", systemImage: "cpu") }
                 .tag(SettingsTab.models)
+            AgentAccessView(store: store.scope(state: \.agentAccess, action: \.agentAccess))
+                .tabItem { Label("Agent Access", systemImage: "hand.raised") }
+                .tag(SettingsTab.agentAccess)
             TerminalSettingsView()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
                 .tag(SettingsTab.terminal)

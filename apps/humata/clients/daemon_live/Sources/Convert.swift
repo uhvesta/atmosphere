@@ -35,6 +35,7 @@ extension ErrorCode {
             case .appOnly: .appOnly
             case .unknownApproval: .unknownApproval
             case .skillClash: .skillClash
+            case .accessOff: .accessOff
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -885,6 +886,60 @@ extension PullRequest {
             githubRepository: pull.githubRepository, number: pull.number, url: pull.url, title: pull.title,
             branch: pull.branch, base: pull.base, state: state, review: review, checks: checks,
             read: date(pull.readUnixMs), problem: pull.problem.isEmpty ? nil : pull.problem)
+    }
+}
+
+extension AccessGroup {
+    /// Nil for a group this app doesn't know, whose actions it leaves out.
+    init?(_ group: Humata_V1_AccessGroup) {
+        switch group {
+        case .read: self = .read
+        case .change: self = .change
+        case .destroy: self = .destroy
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+    }
+}
+
+extension ClientAccess {
+    init(_ access: Humata_V1_ClientAccess) {
+        self.init(
+            enabled: access.enabled, read: access.read, change: access.change, destroy: access.destroy,
+            actions: access.actions.compactMap { action in
+                AccessGroup(action.group).map { group in
+                    ActionAccess(id: action.id, title: action.title, group: group, enabled: action.enabled)
+                }
+            })
+    }
+
+    /// The switches to keep. An action left out, as one of a group this
+    /// app doesn't know, keeps its own.
+    var proto: Humata_V1_ClientAccess {
+        var access = Humata_V1_ClientAccess()
+        access.enabled = enabled
+        access.read = read
+        access.change = change
+        access.destroy = destroy
+        access.actions = actions.map { action in
+            var kept = Humata_V1_ActionAccess()
+            kept.id = action.id
+            kept.enabled = action.enabled
+            return kept
+        }
+        return access
+    }
+}
+
+extension AgentAccess {
+    init(_ access: Humata_V1_AgentAccess) {
+        self.init(agents: ClientAccess(access.agents), terminal: ClientAccess(access.terminal))
+    }
+
+    var proto: Humata_V1_AgentAccess {
+        var access = Humata_V1_AgentAccess()
+        access.agents = agents.proto
+        access.terminal = terminal.proto
+        return access
     }
 }
 

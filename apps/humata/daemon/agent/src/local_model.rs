@@ -2442,6 +2442,35 @@ mod tests {
         assert_eq!(said(&requests[0]), ["user: hi"]);
     }
 
+    #[tokio::test]
+    async fn a_changed_model_is_asked_from_the_next_turn_and_isnt_told_of_the_change() {
+        let server = serve(vec![
+            (200, sse(&[text("One.")])),
+            (200, sse(&[text("Two.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "one").await;
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let update = crate::event::SessionUpdate {
+            model: Some(Some("apple".into())),
+            ..crate::event::SessionUpdate::default()
+        };
+        fixture.agent.update(&id, update).await.expect("changed");
+        fixture.send(&id, "two").await;
+        wait_for(&fixture.agent, &id, idle_turns(2)).await;
+
+        let requests = server.requests();
+        assert_eq!(requests[0]["model"], "qwen3");
+        assert_eq!(requests[1]["model"], "apple");
+        assert_eq!(
+            said(&requests[1]),
+            ["user: one", "assistant: One.", "user: two"]
+        );
+    }
+
     /// Waits until the server has been asked for `count` replies.
     async fn asked(server: &FakeServer, count: usize) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

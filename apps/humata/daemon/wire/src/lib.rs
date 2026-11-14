@@ -43,6 +43,7 @@ pub(crate) async fn handshake<R, W>(
     writer: &mut W,
     role: pb::Role,
     program_version: &str,
+    client_kind: pb::ClientKind,
 ) -> Result<pb::Hello, WireError>
 where
     R: AsyncRead + Unpin,
@@ -53,6 +54,7 @@ where
         role: role.into(),
         program_version: program_version.to_owned(),
         accepts_zstd: true,
+        client_kind: client_kind.into(),
     };
     let hello = pb::Envelope {
         id: 0,

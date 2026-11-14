@@ -50,6 +50,7 @@ const SAVE_BACKUP_EVERY: std::time::Duration = std::time::Duration::from_secs(60
 /// one made while the Mac is away isn't kept and then refused.
 pub(crate) const REQUEST_LIMIT: usize = 32 * 1024;
 
+mod access;
 mod agent_sessions;
 mod approvals;
 pub use approvals::Connection;
@@ -1791,6 +1792,13 @@ impl Daemon {
                 refresh.set_token_source(self.github_token_source().await);
                 return Ok(Reply::Response(Response::PullRefresh(refresh)));
             }
+            Request::GetAgentAccess(_) => {
+                return Ok(Reply::Response(Response::AgentAccess(self.agent_access()?)));
+            }
+            Request::SetAgentAccess(set) => {
+                self.set_agent_access(&set.access.clone().unwrap_or_default())?;
+                return Ok(Reply::Response(Response::AgentAccess(self.agent_access()?)));
+            }
             Request::DeclineProposal(decline) => {
                 let proposal = self.decline_proposal(decline).await?;
                 return Ok(Reply::Response(Response::ProposalDeclined(
@@ -2328,11 +2336,19 @@ impl Daemon {
         // Only what the tool asks about is looked up: the daemon's record
         // of where a session is, and the host's own list when that has
         // nothing, as for a session started there since it was last listed.
+        if let Some(request) = &request {
+            self.allows_tool(request)?;
+        }
         let allowed = match &request {
             Some(Request::ListSessions(_)) => {
                 return Ok(pb::response::Kind::Sessions(
                     self.list_on("", Some(host)).await?,
                 ));
+            }
+            // What Agent Access has off for agents, for the tools to leave
+            // out.
+            Some(Request::GetAgentAccess(_)) => {
+                return Ok(pb::response::Kind::AgentAccess(self.agents_access()?));
             }
             Some(Request::ListItems(list)) => self.has_project(host, &list.project_id).await?,
             Some(Request::ListThreads(list)) => self.is_on(host, &list.session_id).await?,

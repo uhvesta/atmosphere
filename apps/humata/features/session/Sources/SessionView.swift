@@ -43,24 +43,33 @@ package struct SessionView: View {
                     .frame(minWidth: 560)
                 Divider()
             }
+            // What's read in each view, and the message box, follow the
+            // text scale; the header's controls and the terminal's tabs stay as they
+            // are, and the terminal's font follows it by its own config.
             if store.tab == .review {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
+                    .scaledBody()
             } else if store.tab == .files {
                 if store.docs.focused {
                     focus(DocsView(store: store.scope(state: \.docs, action: \.docs)))
+                        .scaledBody()
                 } else {
                     DocsView(store: store.scope(state: \.docs, action: \.docs))
+                        .scaledBody()
                 }
             } else if store.tab == .spec {
                 if store.specs.focused != nil {
                     focus(SpecsView(store: store.scope(state: \.specs, action: \.specs)))
+                        .scaledBody()
                 } else {
                     SpecsView(store: store.scope(state: \.specs, action: \.specs))
+                        .scaledBody()
                 }
             } else if store.tab == .terminal {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
                 Fills { ChatList(store: store) }
+                    .scaledBody()
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
                     .environment(\.codeQuoter, store.session.archived ? nil : quoter)
             }
@@ -84,11 +93,12 @@ package struct SessionView: View {
                     "This session is archived. Unarchive it from the sidebar to work in it again; its code comes "
                         + "back as it was.", systemImage: "archivebox"
                 )
-                .font(.callout)
+                .scaledFont(.callout)
                 .foregroundStyle(.secondary)
                 .padding()
             } else if store.tab == .chat {
                 SessionComposer(store: store)
+                    .scaledBody()
                     .padding([.horizontal, .bottom])
             }
         }
@@ -105,7 +115,7 @@ package struct SessionView: View {
                 } icon: {
                     ProgressView().controlSize(.small)
                 }
-                .font(.callout)
+                .scaledFont(.callout)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(.regularMaterial, in: .capsule)
@@ -175,10 +185,10 @@ package struct SessionView: View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(store.session.name.isEmpty ? "Session" : store.session.name)
-                    .font(.headline)
+                    .scaledFont(.headline)
                     .lineLimit(1)
                 Text(engine)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if let task = store.session.itemTitle {
@@ -186,7 +196,7 @@ package struct SessionView: View {
                         store.send(.itemTapped)
                     } label: {
                         Label(task, systemImage: "checklist")
-                            .font(.caption)
+                            .scaledFont(.caption)
                             .lineLimit(1)
                     }
                     .buttonStyle(.link)
@@ -200,7 +210,7 @@ package struct SessionView: View {
             Spacer(minLength: 0)
             if showsUsage, let usage = store.usage {
                 Text(Self.describe(usage))
-                    .font(.caption.monospacedDigit())
+                    .scaledFont(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help("What this session has used")
@@ -495,6 +505,12 @@ private struct ChatList: View {
     /// chat's end being in view is where the jump left from, not a reason
     /// to keep to it.
     @State private var jumping = false
+    /// The person's hand is on the scrolling, or it's coasting from it:
+    /// until it stops, a row measured near the chat's end doesn't take the
+    /// chat back there.
+    @State private var byHand = false
+    /// Which rows the pointer rests on, for all the rows.
+    @State private var pointed = PointedRows()
 
     var body: some View {
         ScrollViewReader { reader in chat(reader) }
@@ -504,7 +520,7 @@ private struct ChatList: View {
     private func chat(_ reader: ScrollViewProxy) -> some View {
         let highlighted = store.highlightedItem
         ScrollView {
-            ChatRows(store: store, earlier: earlier) { more in
+            ChatRows(store: store, earlier: earlier, pointed: pointed) { more in
                 keepsPlace = true
                 earlier += more
             }
@@ -521,6 +537,8 @@ private struct ChatList: View {
         } action: { old, new in
             // A change that starts away from the end: the jump landed.
             if jumping, !old.endInView { jumping = false }
+            // A pointer the chat moves under isn't resting on a row.
+            if new.offset != old.offset { pointed.moved() }
             if new.height > old.height, keepsPlace {
                 // Earlier rows came above what's in view: it moves down
                 // by their height, and the chat with it.
@@ -529,8 +547,11 @@ private struct ChatList: View {
             } else if new.height != old.height {
                 // Grown or shrunk with its end in view: keep to the end,
                 // unless a jump is leaving it. The rows a jump brings
-                // above come as a growth with the end still in view.
-                if old.endInView, !jumping { following = true }
+                // above come as a growth with the end still in view. Nor
+                // while the person scrolls: a row measured, or a word
+                // written, just as they set off up the chat took it back
+                // to its end under their hand.
+                if old.endInView, !jumping, !byHand { following = true }
                 if following { position.scrollTo(edge: .bottom) }
             } else if new.shown != old.shown {
                 // The pane showed more or less of it, as a strip came
@@ -553,8 +574,10 @@ private struct ChatList: View {
             case .tracking, .interacting:
                 following = false
                 jumping = false
+                byHand = true
             case .idle:
                 jumping = false
+                byHand = false
                 // Only on: the stop after the chat's own scroll to its
                 // end can come while rows are still being measured.
                 if ChatEnd.inView(context.geometry) { following = true }
@@ -672,16 +695,22 @@ private struct ChatRows: View, Equatable {
     /// How many rows above the chat's last the person has asked to see.
     let earlier: Int
     /// Asks for that many more.
+    /// Which rows the pointer rests on: the same for the chat's life.
+    let pointed: PointedRows
     let showEarlier: (Int) -> Void
     @State private var selecting: TextToSelect?
     @State private var tail = ChatTail()
     @State private var heights = RowHeights()
+    /// Text at another size makes every row another height.
+    @Environment(\.textScale) private var textScale
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store && lhs.earlier == rhs.earlier }
 
     var body: some View {
         // swiftlint:disable:next redundant_discardable_let
         let _ = SessionBodyRuns.ran(.chatList)
+        // swiftlint:disable:next redundant_discardable_let
+        let _ = heights.measured(at: textScale)
         let highlighted = store.highlightedItem
         let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
         let items = store.items
@@ -711,11 +740,13 @@ private struct ChatRows: View, Equatable {
                     store: store, select: select
                 )
                 KeptHeight(id: line.id, row: row, heights: heights) {
-                    row
-                        .equatable()
-                        // A reply's parts sit as close as its blocks do.
-                        .padding(.top, line.continues ? -4 : 0)
-                        .environment(\.rowResizing, heights.resizing(line.id))
+                    PointedRow(id: line.id, rows: pointed) {
+                        row
+                            .equatable()
+                            // A reply's parts sit as close as its blocks do.
+                            .padding(.top, line.continues ? -4 : 0)
+                            .environment(\.rowResizing, heights.resizing(line.id))
+                    }
                 }
                 .id(line.id)
             }
@@ -781,6 +812,74 @@ private struct ChatRows: View, Equatable {
     }
 }
 
+/// Which of a chat's rows the pointer rests on, watched once for all of
+/// them: a row's text can be selected, and its buttons answer the pointer,
+/// once the pointer has stayed on the row with the chat still. Watched by
+/// each text and button, it cost every row made as the chat opened or
+/// scrolled; and a pointer the chat scrolled under slowly counted as
+/// resting, so rows were made again, selectable, in the middle of a scroll.
+@MainActor @Observable
+private final class PointedRows {
+    /// The rows rested on, the latest last. The few before it stay, so
+    /// text selected in one isn't lost as the pointer leaves for another.
+    private(set) var rested: [String] = []
+    @ObservationIgnored private var over: String?
+    /// When the pointer or the chat last moved.
+    @ObservationIgnored private var last = ContinuousClock.now
+    @ObservationIgnored private var waiting: Task<Void, Never>?
+
+    /// Long enough that a pointer carried past by a scroll doesn't count,
+    /// short enough to be ready before a drag starts.
+    private static let rest = Duration.milliseconds(120)
+    private static let kept = 3
+
+    /// The pointer came over the row `id`, or left it.
+    func pointer(over id: String, _ inside: Bool) {
+        if inside {
+            over = id
+        } else if over == id {
+            over = nil
+        } else {
+            return
+        }
+        moved()
+    }
+
+    /// The pointer or the chat moved: the rest starts over. Called for
+    /// each step of a scroll, so it only notes the time while a rest is
+    /// waited for.
+    func moved() {
+        last = ContinuousClock.now
+        guard waiting == nil, let over, !rested.contains(over) else { return }
+        waiting = Task { [weak self] in
+            while let rows = self, let over = rows.over, !rows.rested.contains(over) {
+                let left = PointedRows.rest - (ContinuousClock.now - rows.last)
+                if left <= .zero {
+                    rows.rested = Array((rows.rested + [over]).suffix(PointedRows.kept))
+                    break
+                }
+                try? await Task.sleep(for: left)
+            }
+            self?.waiting = nil
+        }
+    }
+}
+
+/// A chat row that tells `rows` when the pointer is over it, and tells
+/// what it holds whether the pointer rests on it. Its own view, so a rest
+/// draws only this again, not the row.
+private struct PointedRow<Content: View>: View {
+    let id: String
+    let rows: PointedRows
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .environment(\.pointerRestsOnRow, rows.rested.contains(id))
+            .onHover { rows.pointer(over: id, $0) }
+    }
+}
+
 /// The heights chat rows had, each with what the row showed and the width
 /// it had: a row scrolled back to, unchanged, isn't measured again. Without
 /// them the stack measured each row it passed, and its guesses at heights
@@ -789,6 +888,16 @@ private final class RowHeights: @unchecked Sendable {
     // Only read and changed on the main thread, by the chat's layout and
     // its rows; `@unchecked` so a row can hold it in its `RowResizing`.
     private var kept: [String: (row: ChatRow, width: CGFloat, height: CGFloat)] = [:]
+    /// The text scale the kept heights were measured at.
+    private var scale = TextScale.actual
+
+    /// Forgets the heights measured at another text scale than `scale`,
+    /// which made each row another height.
+    func measured(at scale: TextScale) {
+        guard self.scale != scale else { return }
+        self.scale = scale
+        kept.removeAll(keepingCapacity: true)
+    }
 
     func height(of id: String, row: ChatRow, width: CGFloat) -> CGFloat? {
         guard let kept = kept[id], kept.width == width, kept.row == row else { return nil }
@@ -1065,7 +1174,7 @@ private struct ChatRow: View, Equatable {
                     select: select)
                 if let failure = shows.proposalFailure {
                     Label("Couldn’t read this proposal: \(failure)", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1073,13 +1182,13 @@ private struct ChatRow: View, Equatable {
             PermissionCard(permission: permission, select: select)
         case .cost(_, let usage):
             Label(SessionView.describe(usage), systemImage: "gauge.with.dots.needle.33percent")
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .help("What this turn used")
         case .stopped:
             Label("Stopped", systemImage: "stop.circle")
-                .font(.footnote)
+                .scaledFont(.footnote)
                 .foregroundStyle(.secondary)
         case .rewound(_, let files, let undoable):
             HStack(alignment: .firstTextBaseline) {
@@ -1087,7 +1196,7 @@ private struct ChatRow: View, Equatable {
                     files ? "Rewound the chat and files to here" : "Rewound the chat to here",
                     systemImage: "arrow.uturn.backward.circle"
                 )
-                .font(.footnote)
+                .scaledFont(.footnote)
                 .foregroundStyle(.secondary)
                 if undoable {
                     Spacer()
@@ -1101,7 +1210,7 @@ private struct ChatRow: View, Equatable {
                 "Context compacted: the agent summed up what came before to make room",
                 systemImage: "rectangle.compress.vertical"
             )
-            .font(.footnote)
+            .scaledFont(.footnote)
             .foregroundStyle(.secondary)
             .contextMenu {
                 Button("Rewind to Before This…") { store.send(.rewindTapped(id)) }
@@ -1110,13 +1219,13 @@ private struct ChatRow: View, Equatable {
             .help("Rewinding to before it gives the agent back everything it summed up")
         case .notice(_, let text):
             Label(text, systemImage: "info.circle")
-                .font(.footnote)
+                .scaledFont(.footnote)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
         case .failure(_, let message):
             HStack(alignment: .firstTextBaseline) {
                 Label(message, systemImage: "exclamationmark.triangle")
-                    .font(.footnote)
+                    .scaledFont(.footnote)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
                 if shows.retryable {
@@ -1164,7 +1273,7 @@ struct SentBySession: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
             Label("From \(sender.name.isEmpty ? sender.sessionID : sender.name)", systemImage: "arrow.left.arrow.right")
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.secondary)
                 .help("Sent by that session’s agent, not by you")
             MessageView(role: .person, text: sender.text, select: select)
@@ -1184,7 +1293,7 @@ private struct MessageEditor: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
             TextEditor(text: $store.edited)
-                .font(.body)
+                .scaledFont(.body)
                 .frame(minHeight: 60)
                 .scrollContentBackground(.hidden)
                 .padding(6)
@@ -1206,7 +1315,7 @@ private struct MessageEditor: View {
                 }
             HStack {
                 Text(caption)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { store.send(.editCancelled) }
@@ -1268,7 +1377,7 @@ struct ToolCallView: View {
                     Image(systemName: icon)
                         .foregroundStyle(tint)
                     Text(call.subject ?? call.tool)
-                        .font(.callout.monospaced())
+                        .scaledFont(.callout.monospaced())
                         .lineLimit(1)
                         .truncationMode(.middle)
                     if call.output == nil, call.permission?.answer != nil || call.permission == nil {
@@ -1277,7 +1386,7 @@ struct ToolCallView: View {
                     Spacer()
                     if call.output != nil || call.change != nil {
                         Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
+                            .scaledFont(.caption.weight(.semibold))
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                             .foregroundStyle(.secondary)
                     }
@@ -1315,7 +1424,7 @@ struct ToolCallView: View {
     @ViewBuilder
     private func outputView(_ output: String, _ preview: TextPreview) -> some View {
         let text = Text(preview.shown)
-            .font(.caption.monospaced())
+            .scaledFont(.caption.monospaced())
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1331,12 +1440,12 @@ struct ToolCallView: View {
             if let length = preview.length {
                 HStack {
                     Text("The first \(Self.size(preview.shown.utf8.count)) of \(Self.size(length))")
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                     Button("Show All") { select(output) }
                         .help("Open all of it to read and select; double-click the output to close it")
                         .buttonStyle(.link)
-                        .font(.caption)
+                        .scaledFont(.caption)
                 }
             }
         }
@@ -1386,7 +1495,7 @@ struct ChangeView: View {
             }
             if more > 0 {
                 Text("\(more) more lines")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .padding(6)
             }
@@ -1404,7 +1513,7 @@ struct ChangeView: View {
             let removed = index < change.removed.count
             let line = removed ? change.removed[index] : change.added[index - change.removed.count]
             Text(verbatim: "\(removed ? "-" : "+") \(line)")
-                .font(.caption.monospaced())
+                .scaledFont(.caption.monospaced())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 6)
                 .background(removed ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
@@ -1432,7 +1541,7 @@ struct PermissionCard: View {
                     FullCommand(text: permission.summary, select: select)
                 }
                 Text("Waiting for you: Approve or Deny over the message box (⇧⌘A, ⇧⌘D).")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding(8)
@@ -1452,7 +1561,7 @@ struct PermissionCard: View {
 
     private func answered(_ text: LocalizedStringKey, systemImage: String) -> some View {
         Label(text, systemImage: systemImage)
-            .font(.caption)
+            .scaledFont(.caption)
             .foregroundStyle(.secondary)
     }
 }
@@ -1496,7 +1605,7 @@ private struct QueuedRow: View {
                 .foregroundStyle(.secondary)
                 .help("Take it out before its turn starts")
         }
-        .font(.caption)
+        .scaledFont(.caption)
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(.fill.quaternary, in: .rect(cornerRadius: 6))
@@ -1632,7 +1741,7 @@ private struct PasteChips: View {
                             .foregroundStyle(.secondary)
                             .help("Take it out of the message")
                     }
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(.fill.quaternary, in: .capsule)
@@ -1683,9 +1792,9 @@ private struct PasteEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Pasted Text")
-                .font(.headline)
+                .scaledFont(.headline)
             TextEditor(text: $text)
-                .font(.body.monospaced())
+                .scaledFont(.body.monospaced())
                 .frame(minWidth: 560, minHeight: 320)
                 .accessibilityLabel("Pasted text")
             HStack {
@@ -1740,7 +1849,7 @@ private struct QueuedEditor: View {
                 .buttonStyle(.borderless)
                 .fontWeight(.semibold)
         }
-        .font(.caption)
+        .scaledFont(.caption)
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(.fill.tertiary, in: .rect(cornerRadius: 6))
@@ -1766,7 +1875,7 @@ private struct DroppedRow: View {
                 .buttonStyle(.borderless)
                 .help("Humata stopped before this queued message's turn, so it didn't run")
         }
-        .font(.caption)
+        .scaledFont(.caption)
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(.fill.quaternary, in: .rect(cornerRadius: 6))
@@ -1788,7 +1897,7 @@ struct FullCommand: View {
         VStack(alignment: .leading, spacing: 4) {
             ScrollView {
                 Text(preview.shown)
-                    .font(.callout.monospaced())
+                    .scaledFont(.callout.monospaced())
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1798,7 +1907,7 @@ struct FullCommand: View {
                 Button("Show All") { select(text) }
                     .help("Only the first 20,000 characters show here; open all of them to read before you answer")
                     .buttonStyle(.link)
-                    .font(.caption)
+                    .scaledFont(.caption)
             }
         }
     }
@@ -1834,7 +1943,7 @@ private struct WaitingStrip: View {
                     }
                 }
             }
-            .font(.callout)
+            .scaledFont(.callout)
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.orange.opacity(0.1), in: .rect(cornerRadius: 10))
@@ -1855,7 +1964,7 @@ private struct WaitingStrip: View {
                 Label(LocalizedStringKey(request.text), systemImage: "questionmark.bubble")
                     .textSelection(.enabled)
                 Text("Your next message answers it.")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             }
         case .move(_, let status):
@@ -1867,7 +1976,7 @@ private struct WaitingStrip: View {
                         "Not Yet takes this off your list; write to the agent to say what’s left. Feedback "
                             + "and other columns are in the Inbox."
                     )
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1901,7 +2010,7 @@ private struct WaitingStrip: View {
                 // A few lines only, as for a permission: the Inbox shows
                 // it whole.
                 Text(verbatim: text)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
                     .textSelection(.enabled)
@@ -1924,7 +2033,7 @@ private struct WaitingStrip: View {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text(answeringText)
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
@@ -1950,7 +2059,7 @@ private struct WaitingStrip: View {
                 // scroll view here, under a chat kept at its bottom, makes
                 // the two lay each other out without end.
                 Text(summary)
-                    .font(.callout.monospaced())
+                    .scaledFont(.callout.monospaced())
                     .lineLimit(3)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1990,7 +2099,7 @@ private struct WaitingStrip: View {
             }
             if more > 0 {
                 Text("and \(more) more")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -2142,11 +2251,11 @@ private struct SessionComposer: View {
             } icon: {
                 ProgressView().controlSize(.small)
             }
-            .font(.callout)
+            .scaledFont(.callout)
             .foregroundStyle(.secondary)
         } else if let failure = store.slashFailure, !store.slashChoices.contains(where: { $0.builtIn == nil }) {
             Label(failure, systemImage: "exclamationmark.triangle")
-                .font(.callout)
+                .scaledFont(.callout)
                 .foregroundStyle(.secondary)
         }
         if !store.slashChoices.isEmpty {
@@ -2178,7 +2287,7 @@ private struct SessionComposer: View {
     /// either way, so learning that it can doesn't make the field anew,
     /// which would drop the caret and lay the box out again.
     private var composer: some View {
-        ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {
+        ChatComposer(text: $store.draft, prompt: prompt, model: ModelSwitch.pill(store), send: sendButton) {
             store.send(.sendTapped(.enqueue))
         } top: {
             top
@@ -2196,6 +2305,7 @@ private struct SessionComposer: View {
         }
         .showingPlus(store.takesImages)
         .focusing(store.boxFocus)
+        .modifier(ModelSwitchSheet(store: store))
     }
 
     /// What sits over the field: the / list, the message's images and
@@ -2210,7 +2320,7 @@ private struct SessionComposer: View {
             } icon: {
                 ProgressView().controlSize(.small)
             }
-            .font(.callout)
+            .scaledFont(.callout)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
         }
@@ -2251,7 +2361,7 @@ private struct SessionComposer: View {
             HStack {
                 Spacer()
                 Button("Stop and Edit") { store.send(.stopAndEditTapped) }
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .buttonStyle(.borderless)
                     .disabled(store.stopping)
                     .help("Stop this turn and put your message back in the box")
@@ -2265,13 +2375,13 @@ private struct SessionComposer: View {
                         ? "Return queues it for after this turn."
                         : "Return adds it to what’s queued."
                 )
-                .font(.caption)
+                .scaledFont(.caption)
                 .foregroundStyle(.secondary)
                 Spacer()
                 if store.images.isEmpty {
                     let shortcuts = store.steerTakesShortcut
                     Button("Steer Now") { store.send(.sendTapped(.steer)) }
-                        .font(.caption.weight(.semibold))
+                        .scaledFont(.caption.weight(.semibold))
                         .keyboardShortcut(shortcuts ? KeyboardShortcut(.return, modifiers: .command) : nil)
                         .help(shortcuts ? "Send it to the running turn (⌘↩)" : "Send it to the running turn")
                 }
@@ -2301,7 +2411,7 @@ extension SessionComposer {
                 Button("Try Again") { store.send(.readsImagesAsked) }
                     .buttonStyle(.borderless)
             }
-            .font(.callout)
+            .scaledFont(.callout)
             .padding(.horizontal, 4)
         } else {
             Label {
@@ -2309,7 +2419,7 @@ extension SessionComposer {
             } icon: {
                 ProgressView().controlSize(.small)
             }
-            .font(.callout)
+            .scaledFont(.callout)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4)
         }
@@ -2356,13 +2466,13 @@ private struct RewindPoints: View {
             }
             if picker.points.isEmpty {
                 Text("No message or compaction has that. Type less of it, or clear the field to see them all.")
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 rows
                 if picker.query.isEmpty, picker.points.count < picker.all.count {
                     Text("These are the newest \(picker.points.count). Type to find an older one.")
-                        .font(.caption)
+                        .scaledFont(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -2441,7 +2551,7 @@ private struct RewindPoints: View {
                 }
                 Spacer(minLength: 8)
                 Text(point.time.formatted(.relative(presentation: .named)))
-                    .font(.caption)
+                    .scaledFont(.caption)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)

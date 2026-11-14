@@ -1014,16 +1014,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// Connects as `kind`, which the daemon's Agent Access settings go by.
 async fn connect(
     socket: Option<PathBuf>,
     wait: Wait,
     say_waiting: bool,
+    kind: pb::ClientKind,
 ) -> Result<Client, CliError> {
-    let client = connect_wire(socket).await?;
+    let client = connect_wire(socket, kind).await?;
     Ok(Client::new(client, wait, say_waiting))
 }
 
-async fn connect_wire(socket: Option<PathBuf>) -> Result<humata_wire::Client, CliError> {
+async fn connect_wire(
+    socket: Option<PathBuf>,
+    kind: pb::ClientKind,
+) -> Result<humata_wire::Client, CliError> {
     let path = socket
         .or_else(humata_wire::default_socket)
         .ok_or(CliError::NoSocket)?;
@@ -1031,7 +1036,7 @@ async fn connect_wire(socket: Option<PathBuf>) -> Result<humata_wire::Client, Cl
         .await
         .map_err(|source| CliError::Connect { path, source })?;
     let (reader, writer) = stream.into_split();
-    Ok(humata_wire::Client::connect(reader, writer, pb::Role::Client, VERSION).await?)
+    Ok(humata_wire::Client::connect_as(reader, writer, pb::Role::Client, VERSION, kind).await?)
 }
 
 /// How long `humata terminal attach` waits before its first try to
@@ -1051,7 +1056,7 @@ async fn attach_terminal(socket: Option<PathBuf>, target: attach::Target) -> Exi
     let raw = attach::pty::Raw::enter();
     let ended = attach::attach(
         &target,
-        || connect_wire(socket.clone()),
+        || connect_wire(socket.clone(), pb::ClientKind::Terminal),
         tokio::io::stdin(),
         tokio::io::stdout(),
         sizes,
@@ -1086,11 +1091,12 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         // call finds the connection ended. A call no daemon answers is
         // told how to start one.
         let socket = arguments.socket;
-        let connection =
-            control::Connection::new(None, move || connect(socket.clone(), wait, false));
+        let connection = control::Connection::new(None, move || {
+            connect(socket.clone(), wait, false, pb::ClientKind::Agent)
+        });
         return control::serve(connection, tokio::io::stdin(), tokio::io::stdout()).await;
     }
-    let client = connect(arguments.socket, wait, true).await?;
+    let client = connect(arguments.socket, wait, true, pb::ClientKind::Terminal).await?;
     match arguments.command {
         Command::Project(ProjectCommand::Add {
             name,

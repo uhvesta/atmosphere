@@ -34,7 +34,7 @@ public struct FindBar: View {
                 .onAppear { focused = true }
             if !query.isEmpty {
                 Text(matches == 0 ? "No matches" : "\(position + 1) of \(matches)")
-                    .font(.footnote.monospacedDigit())
+                    .scaledFont(.footnote.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Button("Previous Match", systemImage: "chevron.up") { move(-1) }
                     .disabled(matches < 2)
@@ -42,7 +42,7 @@ public struct FindBar: View {
                     .disabled(matches < 2)
             }
             Button("Done", action: close)
-                .font(.body.weight(.semibold))
+                .scaledFont(.body.weight(.semibold))
                 .keyboardShortcut(.cancelAction)
         }
         .labelStyle(.iconOnly)
@@ -77,17 +77,17 @@ public struct ChatNotice: View {
             if isBusy {
                 ProgressView().controlSize(.small)
                 Text(text)
-                    .font(.footnote)
+                    .scaledFont(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 Label(text, systemImage: systemImage)
-                    .font(.footnote)
+                    .scaledFont(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let action {
                     Button(action, action: perform)
-                        .font(.footnote.weight(.semibold))
+                        .scaledFont(.footnote.weight(.semibold))
                         .disabled(!isEnabled)
                 }
             }
@@ -147,7 +147,7 @@ public struct SummaryMarker: View {
                 .fontWeight(.semibold)
             }
         }
-        .font(.footnote)
+        .scaledFont(.footnote)
         .padding(10)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -210,7 +210,7 @@ public struct RoundButtonStyle: ButtonStyle {
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .labelStyle(.iconOnly)
-            .font(.body.weight(.semibold))
+            .scaledFont(.body.weight(.semibold))
             .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
             .frame(width: max(size, 34), height: max(size, 34))
             .background {
@@ -367,7 +367,7 @@ public struct ModelPill: View {
                         .foregroundStyle(Color.secondary)
                 }
             }
-            .font(.callout.weight(.medium))
+            .scaledFont(.callout.weight(.medium))
             .lineLimit(1)
             .padding(.horizontal, 12)
             .frame(minHeight: max(height, 34))

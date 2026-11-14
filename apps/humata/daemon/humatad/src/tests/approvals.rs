@@ -34,6 +34,26 @@ async fn clients() -> Clients {
     ))
     .await;
     let project = project(&app, repository.path()).await.id;
+    // The person lets agents ask for what destroys, which is off until
+    // they do.
+    let allowed = app
+        .call(pb::request::Kind::SetAgentAccess(pb::SetAgentAccess {
+            access: Some(pb::AgentAccess {
+                agents: Some(pb::ClientAccess {
+                    enabled: true,
+                    read: true,
+                    change: true,
+                    destroy: true,
+                    actions: Vec::new(),
+                }),
+                ..Default::default()
+            }),
+        }))
+        .await;
+    assert!(
+        matches!(allowed, Ok(pb::response::Kind::AgentAccess(_))),
+        "{allowed:?}"
+    );
     Clients {
         app,
         agent,
