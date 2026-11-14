@@ -22,6 +22,16 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    /// A [`LocalStore`](crate::LocalStore) was made outside a tokio
+    /// runtime, so its effects have nowhere to run. Make it inside one,
+    /// or give it a runtime with [`LocalStore::on`](crate::LocalStore::on).
+    #[error(
+        "couldn't make the store: there's no tokio runtime here for its effects to run on. Make it inside a runtime, or give it one with LocalStore::on."
+    )]
+    NoRuntime {
+        #[source]
+        source: tokio::runtime::TryCurrentError,
+    },
 }
 
 /// Holds a state and changes it only through its reducer, one action at a
@@ -51,6 +61,10 @@ pub struct Observation {
 }
 
 impl Observation {
+    pub(crate) fn new(stopped: Arc<AtomicBool>) -> Self {
+        Self { stopped }
+    }
+
     /// Keeps the observer for as long as the store lives.
     pub fn forever(self) {
         std::mem::forget(self);

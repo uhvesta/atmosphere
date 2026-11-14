@@ -47,6 +47,11 @@ store.receive(Action::Added, |_| {});
 - **`IdentifiedVec`:** rows found by id in constant time, and `changes` lists
   the removals, insertions and updates from one version to the next, moving
   as few rows as it can, for a list view to apply.
+- **Two stores:** a `Store` takes actions from any thread and reduces them
+  on its own task. A `LocalStore` stays on the thread that made it, such as a
+  UI thread: `send` reduces the action and tells observers before it returns,
+  with no channel or lock, and its state needn't be `Send`. What its effects
+  send later is reduced by its `run` future, on that same thread.
 - **An exhaustive `TestStore`:** each step must change the state as the test
   says, with a line diff when it doesn't. Every action effects send must be
   received, and no effect may still run at the end. `non_exhaustive` checks

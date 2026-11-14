@@ -45,10 +45,15 @@ impl Reducer for Counting {
                 tokio::time::sleep(Duration::from_millis(5)).await;
                 Action::Add(by)
             }),
-            Action::Forever(dropped) => Effect::run(move |_| async move {
-                let _dropped = Dropped(dropped);
-                std::future::pending::<()>().await;
-            }),
+            Action::Forever(dropped) => {
+                // Made now, so it's dropped even if the effect stops
+                // before it first runs.
+                let dropped = Dropped(dropped);
+                Effect::run(move |_| async move {
+                    let _dropped = dropped;
+                    std::future::pending::<()>().await;
+                })
+            }
         }
     }
 }
@@ -140,4 +145,22 @@ fn a_store_runs_on_a_runtime_it_is_given() {
     let _observing = store.observe(|c| *c, move |count| tell.send(*count).unwrap());
     store.send(4);
     assert_eq!(wait_for(&told, 4).last(), Some(&4));
+}
+
+#[test]
+fn dropping_a_store_on_a_runtime_it_was_given_stops_its_effects() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let store = Store::on(runtime.handle(), Counter::default(), Counting);
+    let dropped = Arc::new(AtomicBool::new(false));
+    store.send(Action::Forever(dropped.clone()));
+    let (tell, told) = mpsc::channel();
+    let observing = store.observe(|s| s.actions, move |n| tell.send(*n as i64).unwrap());
+    let _ = wait_for(&told, 1);
+    drop(observing);
+    drop(store);
+    let start = std::time::Instant::now();
+    while !dropped.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(dropped.load(Ordering::SeqCst));
 }

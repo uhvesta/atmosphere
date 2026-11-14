@@ -1,7 +1,9 @@
 //! A Rust take on [The Composable Architecture]: a feature's state, the
 //! actions that change it, and a reducer that changes the state for each
 //! action and returns the work, or [`Effect`], that follows. A [`Store`]
-//! runs the reducer on its own thread and tells observers what changed; a
+//! runs the reducer on its own thread and tells observers what changed,
+//! taking actions from any thread; a [`LocalStore`] stays on the thread
+//! that made it and reduces each action before `send` returns; a
 //! [`TestStore`] runs it in tests, checking every change.
 //!
 //! It borrows the ideas, not the Swift: no macros or key paths. A parent
@@ -55,6 +57,7 @@ mod clock;
 mod diff;
 mod effect;
 mod identified;
+mod local_store;
 mod reducer;
 mod runner;
 mod store;
@@ -63,6 +66,7 @@ mod test_store;
 pub use clock::{Clock, SystemClock, TestClock};
 pub use effect::{BoxFuture, CancelId, Effect, Sender};
 pub use identified::{Change, Identified, IdentifiedVec};
+pub use local_store::LocalStore;
 pub use reducer::{FnReducer, Reducer, for_each, if_let, reducer};
 pub use store::{Observation, Store, StoreError};
 pub use test_store::TestStore;

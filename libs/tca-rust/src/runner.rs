@@ -21,6 +21,9 @@ pub(crate) struct Runner {
     handle: Handle,
     cancels: Cancels,
     running: Arc<AtomicUsize>,
+    /// Moved on by [`Runner::cancel_all`]; an effect stops once it moves
+    /// past the one it started in, named or not.
+    stops: Arc<watch::Sender<u64>>,
 }
 
 /// An effect made ready to run: what it does at once is done, and the
@@ -43,6 +46,7 @@ impl Runner {
             handle,
             cancels: Arc::default(),
             running: Arc::default(),
+            stops: Arc::new(watch::channel(0).0),
         }
     }
 
@@ -60,14 +64,21 @@ impl Runner {
         let running = Running::start(self.running.clone());
         let send = send.clone();
         let cancels = self.cancels.clone();
+        let mut stops = self.stops.subscribe();
+        let started = *stops.borrow_and_update();
         self.handle.spawn(async move {
             let _running = running;
-            drive(ready, send, cancels).await;
+            tokio::select! {
+                () = drive(ready, send, cancels) => {}
+                _ = stops.wait_for(|now| *now != started) => {}
+            }
         });
     }
 
     /// Stops every effect.
     pub(crate) fn cancel_all(&self) {
+        self.stops
+            .send_modify(|stops| *stops = stops.wrapping_add(1));
         let all = std::mem::take(&mut *lock(&self.cancels));
         for token in all.into_values().flatten() {
             token.send_replace(true);
