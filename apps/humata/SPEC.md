@@ -165,6 +165,10 @@ original spec; lettered ones were added since.
 | G1 Ghostty terminal | In progress |
 | X Admin mode, gated by approvals | Done |
 | F2 Fresh clones | Done |
+| TR tca-rust, a Rust take on TCA | Done (ff6ee013) |
+| H2-0 Humata 2 skeleton | Next |
+| H2-1 to H2-5 Humata 2 screens, then the swap | Planned |
+| TR2 tca-rust speed | Planned, after Humata 2 runs |
 
 ## Done milestones
 
@@ -1339,6 +1343,32 @@ not an OAuth app.
 
 **Done when:** a release is on GitHub whose download Gatekeeper accepts
 and whose daemon and command line run.
+
+### Humata 2: the app's logic in Rust
+
+The owner, 2026-11-13: most of Humata in Rust, with Swift laying out
+screens and sending events to Rust. Humata 1 keeps shipping until Humata 2
+is ready to replace it; code duplicated between them meanwhile is fine.
+
+- **TR tca-rust.** `libs/tca-rust` (the `tca-rust` crate, library `tca`)
+  takes the ideas of The Composable Architecture, not its Swift: reducers
+  that return effects, cancelling by id, `for_each` and `if_let` for
+  children, `IdentifiedVec` with the changes between two versions, a
+  `Store` that reduces in batches and tells observers once per batch, and
+  an exhaustive `TestStore` on a `TestClock`. It's not tied to Humata, so
+  it can be published; publishing waits on the owner.
+- **H2-0 Skeleton.** `apps/humata2/core`, the features' state and reducers
+  on tca-rust, talks to `humatad` with the daemon's `wire` crate. UniFFI
+  bindings built in Bazel; `apps/humata2/app` is a Swift app with its own
+  bundle id that lists sessions from the core's store.
+- **H2-1 Chat.** A session's chat in Humata 2, with the cost of crossing
+  from Rust to Swift measured while a long reply streams.
+- **H2-2** projects and the board; **H2-3** review, docs and specs;
+  **H2-4** hosts, the terminal and the browser; **H2-5** the rest. Then the
+  swap: Humata 2 ships as Humata.
+- **TR2 tca-rust speed.** Once Humata 2 runs: benchmarks first, then make
+  the store, effects and `IdentifiedVec` as fast as Rust allows, past big O:
+  allocations, copies, locks and wakeups.
 
 ## Later
 
