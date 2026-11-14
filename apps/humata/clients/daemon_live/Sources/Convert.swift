@@ -462,8 +462,26 @@ extension SessionEvent {
         case .dequeued(let dequeued): kind = .dequeued(queueID: dequeued.queueID, dropped: dequeued.dropped)
         // A save part way through a turn only matters to forks and restores.
         case .saved, nil: return nil
+        case .subagent(let subagent):
+            let status: Subagent.Status
+            switch subagent.status {
+            case .running: status = .running
+            case .completed: status = .completed
+            case .failed: status = .failed
+            case .stopped: status = .stopped
+            // A status from a newer daemon: it isn't known to be running,
+            // so nothing waits on it.
+            case .unspecified, .UNRECOGNIZED: status = .stopped
+            }
+            kind = .subagent(
+                Subagent(
+                    agentType: subagent.agentType, description: subagent.description_p, status: status,
+                    totalTokens: subagent.totalTokens, toolUses: subagent.toolUses,
+                    duration: .milliseconds(Int64(clamping: subagent.durationMs))))
         }
-        self.init(id: event.id, time: Date(timeIntervalSince1970: Double(event.timeUnixMs) / 1000), kind: kind)
+        self.init(
+            id: event.id, time: Date(timeIntervalSince1970: Double(event.timeUnixMs) / 1000), kind: kind,
+            parentCallID: optional(event.parentCallID))
     }
 }
 
@@ -933,5 +951,24 @@ extension PluginChoice {
     init?(_ choice: Humata_V1_PluginChoice) {
         guard let agent = Plugin.Agent(choice.agent) else { return nil }
         self.init(agent: agent, id: choice.id, enabled: choice.enabled)
+    }
+}
+
+extension SavedRepository {
+    init(_ repository: Humata_V1_SavedRepository) {
+        self.init(
+            id: repository.id, name: repository.name, location: repository.location,
+            source: repository.source == .github ? .github : .used, owner: repository.owner,
+            added: date(repository.addedUnixMs),
+            lastUsed: repository.lastUsedUnixMs == 0 ? nil : date(repository.lastUsedUnixMs))
+    }
+}
+
+extension RepositoryOwner {
+    init(_ owner: Humata_V1_RepositoryOwner) {
+        self.init(
+            login: owner.login, added: date(owner.addedUnixMs),
+            refreshed: owner.refreshedUnixMs == 0 ? nil : date(owner.refreshedUnixMs),
+            error: owner.error.isEmpty ? nil : owner.error, repositories: Int(owner.repositories))
     }
 }

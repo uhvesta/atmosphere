@@ -165,8 +165,9 @@ public struct SelectTextSheet: View {
 public struct TextPreview: Hashable, Sendable {
     /// What shows: the text, or its start, ending at a whole character.
     public let shown: String
-    /// The whole text's length in characters when `shown` is only its
-    /// start; nil when it's all of it.
+    /// The whole text's size in bytes of UTF-8 when `shown` is only its
+    /// start; nil when it's all of it. Bytes, not characters: counting the
+    /// characters of a text of megabytes reads all of it.
     public let length: Int?
     /// Whether `shown` has more lines, or more text, than reads well in the
     /// chat's flow, so it goes in a box that scrolls.
@@ -187,7 +188,7 @@ public struct TextPreview: Hashable, Sendable {
             // Back to the start of a character, not into the middle of one.
             while end > utf8.startIndex, UTF8.isContinuation(utf8[end]) { end = utf8.index(before: end) }
             shown = String(text[..<end])
-            length = text.count
+            length = utf8.count
         }
         isTall = shown.utf8.count > tallBytes || Self.lines(in: shown, atMost: lines + 1) > lines
     }

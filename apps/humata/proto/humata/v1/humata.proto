@@ -228,6 +228,16 @@ message Request {
     // GitHub, or only when asked. Changing it is the app's only.
     GetPullRefresh get_pull_refresh = 111;
     SetPullRefresh set_pull_refresh = 112;
+    // For the Mac only: the saved repositories to pick from when making
+    // or changing a project, and the GitHub owners whose repositories are
+    // among them. None of these changes a project.
+    ListSavedRepositories list_saved_repositories = 113;
+    RenameSavedRepository rename_saved_repository = 114;
+    RemoveSavedRepository remove_saved_repository = 115;
+    ListRepositoryOwners list_repository_owners = 116;
+    AddRepositoryOwner add_repository_owner = 117;
+    RemoveRepositoryOwner remove_repository_owner = 118;
+    RefreshRepositoryOwners refresh_repository_owners = 119;
   }
 }
 
@@ -339,6 +349,8 @@ message Response {
     FileVersions file_versions = 100;
     FileVersionRestored file_version_restored = 101;
     PullRefresh pull_refresh = 102;
+    SavedRepositories saved_repositories = 103;
+    RepositoryOwners repository_owners = 104;
   }
 }
 
@@ -1745,7 +1757,15 @@ message SessionEvent {
     Rewound rewound = 22;
     RewindUndoneEvent rewind_undone = 23;
     Compacted compacted = 24;
+    Subagent subagent = 26;
   }
+
+  // For a subagent's step: the tool call that started it, such as Claude
+  // Code's Agent call or Copilot's task call. Empty for the session's own
+  // agent, whose steps are the chat; the chat shows only those, and a
+  // subagent's are shown apart, under its call. Events stored before
+  // subagents were recorded have it empty.
+  string parent_call_id = 25;
 }
 
 // The chat was cut back to before the message here, which the app offers
@@ -1766,6 +1786,32 @@ message RewindUndoneEvent {}
 // The agent summed up its earlier context to make room; it keeps the gist,
 // not every word. The code is saved here.
 message Compacted {}
+
+// A subagent the agent started with the tool call the event's
+// parent_call_id names, as last reported: a later one for the same call
+// replaces it. Its steps, and its usage where the backend splits it out,
+// are the events with the same parent_call_id.
+message Subagent {
+  // Such as general-purpose or Explore; empty when the backend doesn't say.
+  string agent_type = 1;
+  // What it was asked to do, in a few words.
+  string description = 2;
+  SubagentStatus status = 3;
+  // So far: tokens in and out, tool calls, and time since it started; 0
+  // when the backend hasn't said.
+  uint64 total_tokens = 4;
+  uint64 tool_uses = 5;
+  uint64 duration_ms = 6;
+}
+
+enum SubagentStatus {
+  SUBAGENT_STATUS_UNSPECIFIED = 0;
+  SUBAGENT_STATUS_RUNNING = 1;
+  SUBAGENT_STATUS_COMPLETED = 2;
+  SUBAGENT_STATUS_FAILED = 3;
+  // Stopped before it finished, as when its turn was.
+  SUBAGENT_STATUS_STOPPED = 4;
+}
 
 // Something the person should know about the session that isn't from the
 // agent, such as that it started over without its earlier conversation.
@@ -2789,6 +2835,89 @@ message PullRefresh {
   // While automatic, minutes between reads, 1 to 1440; 0 is the default
   // of 2.
   uint32 every_minutes = 2;
+}
+
+// Where a saved repository came from.
+enum RepositorySource {
+  REPOSITORY_SOURCE_UNSPECIFIED = 0;
+  // A project was made or changed with it.
+  REPOSITORY_SOURCE_USED = 1;
+  // It was listed on GitHub for one of the owners.
+  REPOSITORY_SOURCE_GITHUB = 2;
+}
+
+// A repository to pick when making or changing a project.
+message SavedRepository {
+  int64 id = 1;
+  // What it's called in the list; renaming it changes no project.
+  string name = 2;
+  // A folder on the Mac, or a URL to clone.
+  string location = 3;
+  RepositorySource source = 4;
+  // The owner it was listed for, for one from GitHub; empty otherwise.
+  string owner = 5;
+  int64 added_unix_ms = 6;
+  // When a project was last made or changed with it; 0 if never.
+  int64 last_used_unix_ms = 7;
+}
+
+// Answered with SavedRepositories, last used first, then by name.
+message ListSavedRepositories {}
+
+message SavedRepositories {
+  repeated SavedRepository repositories = 1;
+}
+
+// Answered with SavedRepositories, as they are after.
+message RenameSavedRepository {
+  int64 id = 1;
+  string name = 2;
+}
+
+// Takes it out of the list; projects that have it keep it. One from GitHub
+// stays out when its owner is listed again. Answered with
+// SavedRepositories, as they are after.
+message RemoveSavedRepository {
+  int64 id = 1;
+}
+
+// A GitHub user or organization whose repositories are saved.
+message RepositoryOwner {
+  string login = 1;
+  int64 added_unix_ms = 2;
+  // When its repositories were last listed; 0 if never.
+  int64 refreshed_unix_ms = 3;
+  // Why the last listing failed, for the person; empty if it didn't.
+  string error = 4;
+  // How many of its repositories are saved and shown.
+  uint32 repositories = 5;
+}
+
+// Answered with RepositoryOwners, by login.
+message ListRepositoryOwners {}
+
+// Saves an owner, given as `octo-org`, `@octo-org` or
+// `https://github.com/octo-org`; its repositories are listed in the
+// background. Answered with RepositoryOwners.
+message AddRepositoryOwner {
+  string login = 1;
+}
+
+// Removes the owner and the repositories listed for it; those a project
+// used stay. Answered with RepositoryOwners.
+message RemoveRepositoryOwner {
+  string login = 1;
+}
+
+// Lists the owner's repositories on GitHub now, or every owner's when
+// `login` is empty, and answers once done with RepositoryOwners; a failure
+// is kept on its owner.
+message RefreshRepositoryOwners {
+  string login = 1;
+}
+
+message RepositoryOwners {
+  repeated RepositoryOwner owners = 1;
 }
 
 message UpdateFromBase {

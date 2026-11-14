@@ -63,6 +63,11 @@ pub struct Event {
     /// Milliseconds since 1970 in UTC.
     pub time_unix_ms: i64,
     pub kind: EventKind,
+    /// For a step of a subagent: the tool call that started it, such as
+    /// Claude Code's Agent call or Copilot's task call. None for the
+    /// session's own agent, whose steps are its chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
 }
 
 impl Event {
@@ -76,7 +81,13 @@ impl Event {
             id: EventId::random(),
             time_unix_ms,
             kind,
+            parent_call_id: None,
         }
+    }
+
+    /// Whether it's the session's own agent's, not a subagent's.
+    pub fn is_main(&self) -> bool {
+        self.parent_call_id.is_none()
     }
 }
 
@@ -236,6 +247,36 @@ pub enum EventKind {
     /// code was saved as it was then; rewinding to a message before this
     /// gives the agent back everything from before the summary.
     Compacted,
+    /// A subagent the agent started with the tool call the event's
+    /// `parent_call_id` names, as last reported; a later one for the same
+    /// call replaces it.
+    Subagent {
+        /// Such as general-purpose or Explore; empty when it isn't said.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        agent_type: String,
+        /// What it was asked to do, in a few words.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        status: SubagentStatus,
+        /// So far: tokens in and out, tool calls, and time since it started;
+        /// 0 when the backend hasn't said.
+        #[serde(default)]
+        total_tokens: u64,
+        #[serde(default)]
+        tool_uses: u64,
+        #[serde(default)]
+        duration_ms: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    Running,
+    Completed,
+    Failed,
+    /// Stopped before it finished, as when the turn was.
+    Stopped,
 }
 
 impl EventKind {

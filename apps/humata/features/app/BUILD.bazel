@@ -53,29 +53,48 @@ macos_unit_test(
     deps = [":tests_lib"],
 )
 
+# Histories both window tests open.
+_SEEDS = ["TestSupport/ChatMaker.swift"]
+
+_WINDOW_TEST_DEPS = [
+    ":app",
+    "//apps/humata/clients/daemon",
+    "//apps/humata/features/board",
+    "//apps/humata/features/diagram",
+    "//apps/humata/features/docs",
+    "//apps/humata/features/hosts",
+    "//apps/humata/features/projects",
+    "//apps/humata/features/review",
+    "//apps/humata/features/search",
+    "//apps/humata/features/session",
+    "//apps/humata/features/terminal",
+    "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+]
+
 # The window step by step on the Mac, over the in-memory daemon: references
 # in SnapshotTests/__Snapshots__. Manual, since `bazel test` can't read
 # other windows: run it with //apps/libs/kits/flow:run_mac.sh.
 flow_snapshot_test(
     name = "mac_flow_snapshot_test",
     package_name = "humata",
-    srcs = glob(["MacFlowSnapshotTests/*.swift"]),
+    srcs = glob(["MacFlowSnapshotTests/*.swift"]) + _SEEDS,
     mac = True,
     tags = ["manual"],
-    deps = [
-        ":app",
-        "//apps/humata/clients/daemon",
-        "//apps/humata/features/board",
-        "//apps/humata/features/diagram",
-        "//apps/humata/features/docs",
-        "//apps/humata/features/hosts",
-        "//apps/humata/features/projects",
-        "//apps/humata/features/review",
-        "//apps/humata/features/search",
-        "//apps/humata/features/session",
-        "//apps/humata/features/terminal",
-        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-    ],
+    deps = _WINDOW_TEST_DEPS,
+)
+
+# What the window costs as a person uses it: opening a long chat, scrolling
+# it, following a turn at work. A target of its own, so measuring doesn't run
+# the flows above, nor they it. Manual, and run the same way; times mean most
+# optimized and are checked only when asked:
+# `FLOWKIT_OPT=1 HUMATA_PERF=1 apps/libs/kits/flow/run_mac.sh <this target>`.
+flow_snapshot_test(
+    name = "mac_perf_test",
+    package_name = "humata",
+    srcs = glob(["PerfTests/*.swift"]) + _SEEDS,
+    mac = True,
+    tags = ["manual"],
+    deps = _WINDOW_TEST_DEPS,
 )
 
 filegroup(

@@ -32,6 +32,8 @@ use crate::import::{self, Importable, Imported};
 use crate::links::Links;
 use crate::runtime::{Runner, Turn};
 
+mod subagents;
+
 /// The Claude Code version this backend is written against, pinned in
 /// `//apps/humata/claude`.
 pub const CLAUDE_VERSION: &str = "2.1.322";
@@ -396,6 +398,7 @@ impl Runner for ClaudeRunner {
             replayed: 0,
             failure: None,
             mode: permission_mode(record.approval),
+            subagents: subagents::Subagents::default(),
         };
         let images = read_images(turn.images())?;
         playing.send_with(turn.text(), &images).await?;
@@ -504,6 +507,7 @@ struct Playing<'a> {
     failure: Option<ClaudeError>,
     /// The CLI's permission mode, as last set.
     mode: &'static str,
+    subagents: subagents::Subagents,
 }
 
 /// The CLI's permission mode for `approval`. In auto its classifier lets
@@ -602,8 +606,11 @@ impl Playing<'_> {
 
     /// Records one of the CLI's events. True once the turn has ended.
     async fn handle(&mut self, event: &Value) -> Result<bool, ClaudeError> {
-        // A subagent's own steps show as the tool call that started it.
-        if !event["parent_tool_use_id"].is_null() {
+        // A subagent's own steps are kept under the tool call that started
+        // it, apart from the chat.
+        let tagged = self.subagents.take(event);
+        if !event["parent_tool_use_id"].is_null() && event["type"] != "control_request" {
+            self.record(tagged)?;
             return Ok(false);
         }
         match event["type"].as_str().unwrap_or_default() {
@@ -643,10 +650,23 @@ impl Playing<'_> {
             "user" if event["isReplay"].as_bool() == Some(true) => self.replayed += 1,
             "user" => self.tool_results(event)?,
             "control_request" => self.control(event).await?,
-            "result" => return self.result(event),
+            "result" => {
+                let finished = self.subagents.finish();
+                self.record(finished)?;
+                return self.result(event);
+            }
             _ => {}
         }
+        self.record(tagged)?;
         Ok(false)
+    }
+
+    /// Records subagents' steps and news, each under its call.
+    fn record(&self, tagged: Vec<subagents::Tagged>) -> Result<(), AgentError> {
+        for (parent, kind) in tagged {
+            self.turn.emit_under(Some(parent), kind)?;
+        }
+        Ok(())
     }
 
     /// Links the session once the CLI has it, so the next turn resumes it.

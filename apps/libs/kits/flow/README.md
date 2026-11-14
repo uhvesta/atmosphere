@@ -49,6 +49,8 @@ References live next to the tests in `SnapshotTests/__Snapshots__/`.
   new references with `git diff`.
 - Mac: `apps/libs/kits/flow/run_mac.sh //pkg:mac_flow_snapshot_test [record]`.
   The terminal needs Accessibility and Screen Recording access.
+  Add `-XCTest SomeTests/testOpening` to run one class or test, and set
+  `FLOWKIT_OPT=1` to build optimized, for tests that time what they run.
   Mac tests share the one screen, so they run one at a time: a second run
   builds, then waits for the first to finish.
 

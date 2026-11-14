@@ -30,6 +30,8 @@ package struct ProjectSettingsFeature {
         /// Each a folder on this Mac or the URL it was added by.
         package var repositories: IdentifiedArrayOf<RepositoryRow>
         var nextRepository: Int
+        /// The saved repositories and folders offered under the row typed in.
+        package var search = RepositorySearchFeature.State()
         package var saving = false
         @Presents package var alert: AlertState<Never>?
 
@@ -70,6 +72,7 @@ package struct ProjectSettingsFeature {
         case removeRepositoryTapped(RepositoryRow.ID)
         case saveTapped
         case failed(String)
+        case search(RepositorySearchFeature.Action)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -85,9 +88,15 @@ package struct ProjectSettingsFeature {
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.search, action: \.search) { RepositorySearchFeature() }
         Reduce { state, action in
             switch action {
-            case .binding, .alert, .delegate:
+            case .search(.delegate(.picked(let row, let suggestion))):
+                // The project keeps its own copy of what was picked.
+                state.repositories[id: row]?.path = suggestion.location
+                return .none
+
+            case .binding, .alert, .delegate, .search:
                 return .none
 
             case .addSkillTapped:
@@ -163,11 +172,8 @@ struct ProjectSettingsView: View {
                             TextField("Folder", text: $row.name, prompt: Text("Named after it"))
                                 .labelsHidden()
                                 .frame(maxWidth: 120)
-                            TextField(
-                                "Repository", text: $row.path,
-                                prompt: Text("/path/to/repository or https://github.com/owner/name")
-                            )
-                            .labelsHidden()
+                            RepositoryField(
+                                path: $row.path, row: row.id, search: store.scope(state: \.search, action: \.search))
                             Button {
                                 store.send(.removeRepositoryTapped(row.id))
                             } label: {
@@ -178,6 +184,7 @@ struct ProjectSettingsView: View {
                             .disabled(store.repositories.count == 1)
                             .help("Leave this repository out of sessions started after")
                         }
+                        RepositorySuggestionList(row: row.id, search: store.scope(state: \.search, action: \.search))
                         if row.needsFullPath { FullPathNote() }
                     }
                 }

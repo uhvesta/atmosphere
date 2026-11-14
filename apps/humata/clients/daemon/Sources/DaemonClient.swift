@@ -253,6 +253,27 @@ package struct DaemonClient: Sendable {
     /// Changes how open pull requests are followed, from now on; returns it
     /// as kept.
     package var setPullRefresh: @Sendable (_ refresh: PullRefresh) async throws -> PullRefresh
+    /// The repositories to pick from when making or changing a project,
+    /// last used first, then by name.
+    package var savedRepositories: @Sendable () async throws -> [SavedRepository]
+    /// Renames a saved repository in the list; no project changes. Returns
+    /// the list as it is after.
+    package var renameSavedRepository: @Sendable (_ id: Int64, _ name: String) async throws -> [SavedRepository]
+    /// Takes one out of the list; projects that have it keep it. Returns
+    /// the list as it is after.
+    package var removeSavedRepository: @Sendable (_ id: Int64) async throws -> [SavedRepository]
+    /// The GitHub users and organizations whose repositories are saved, by
+    /// login.
+    package var repositoryOwners: @Sendable () async throws -> [RepositoryOwner]
+    /// Saves an owner, as `octo-org`, `@octo-org` or its page; its
+    /// repositories are listed in the background.
+    package var addRepositoryOwner: @Sendable (_ login: String) async throws -> [RepositoryOwner]
+    /// Removes the owner and the repositories listed for it; those a
+    /// project used stay.
+    package var removeRepositoryOwner: @Sendable (_ login: String) async throws -> [RepositoryOwner]
+    /// Lists the owner's repositories on GitHub now, or every owner's with
+    /// nil, and returns once done; a failure is kept on its owner.
+    package var refreshRepositoryOwners: @Sendable (_ login: String?) async throws -> [RepositoryOwner]
     /// Merges each repository's base into the session's copy; on conflicts,
     /// the agent is asked to resolve them.
     package var updateFromBase: @Sendable (_ session: String) async throws -> BaseUpdate

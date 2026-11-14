@@ -15,19 +15,22 @@ import UniformTypeIdentifiers
 /// with the field to send, steer or queue.
 package struct SessionView: View {
     @Bindable var store: StoreOf<SessionFeature>
+    /// A reply's code into the message box, as a quote. Kept, so it's the
+    /// same one each time this is drawn: a new one in the environment
+    /// would draw every code block in the chat again.
+    @State private var quoter: CodeQuoter
 
     package init(store: StoreOf<SessionFeature>) {
         self.store = store
-    }
-
-    /// A reply's code into the message box, as a quote.
-    private var quoter: CodeQuoter {
-        CodeQuoter { [store] language, code in
-            store.send(.quoted(CodeQuote.text(path: nil, start: nil, end: nil, language: language ?? "", code: code)))
-        }
+        _quoter = State(
+            initialValue: CodeQuoter { [store] language, code in
+                store.send(
+                    .quoted(CodeQuote.text(path: nil, start: nil, end: nil, language: language ?? "", code: code)))
+            })
     }
 
     package var body: some View {
+        let _ = SessionBodyRuns.ran(.session)
         VStack(spacing: 0) {
             // In a view of its own, so what it reads, such as the usage,
             // redraws only it.
@@ -106,6 +109,13 @@ package struct SessionView: View {
         .sheet(isPresented: editingProposal) {
             ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
         }
+        .sheet(isPresented: readingSubagent) { SubagentsSheet(store: store) }
+    }
+
+    private var readingSubagent: Binding<Bool> {
+        Binding(
+            get: { store.shownSubagent != nil },
+            set: { if !$0 { store.send(.subagentClosed) } })
     }
 
     /// What's under way that the person waits on, shown over the view.
@@ -136,7 +146,8 @@ package struct SessionView: View {
     /// actions' names, then the tabs' row as the window narrows, so nothing
     /// is cut off.
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
+        SessionBodyRuns.ran(.header)
+        return ViewThatFits(in: .horizontal) {
             headerRow(usage: true, names: true, tabsInAMenu: false)
             headerRow(usage: false, names: true, tabsInAMenu: false)
             headerRow(usage: false, names: false, tabsInAMenu: false)
@@ -180,6 +191,8 @@ package struct SessionView: View {
                     .lineLimit(1)
                     .help("What this session has used")
             }
+            // Shows only once the agent has started a subagent.
+            AgentsButton(store: store, names: names)
             actions(names: names)
         }
     }
@@ -421,14 +434,12 @@ private struct Separately<Content: View>: View {
     var body: some View { content() }
 }
 
-/// The chat's rows, with the turn under way at the end. Its own view, so
-/// a change to the chat redraws only this; and each row is drawn again only
-/// when what it shows changes.
+/// The chat, scrolling, kept at its end as it grows. Where it's scrolled
+/// changes as a reply streams, and each change draws this again, so it
+/// holds only the scrolling: the rows are a view of their own, `ChatRows`,
+/// the same each time and so left as they are.
 private struct ChatList: View {
     let store: StoreOf<SessionFeature>
-    @State private var selecting: TextToSelect?
-    @State private var replyParts = ReplyParts()
-    @State private var heights = RowHeights()
     /// Whether the chat keeps to its end as it grows: on while the end is in
     /// view, off once the person scrolls up to read.
     @State private var following = true
@@ -438,27 +449,9 @@ private struct ChatList: View {
 
     var body: some View {
         let highlighted = store.highlightedItem
-        let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
         ScrollViewReader { reader in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(replyParts.lines(of: store.items, highlighted: highlighted)) { line in
-                        let row = ChatRow(
-                            item: line.item, part: line.part, shows: shows(line.item, highlighted: highlighted),
-                            store: store, select: select
-                        )
-                        KeptHeight(id: line.id, row: row, heights: heights) {
-                            row
-                                .equatable()
-                                // A reply's parts sit as close as its blocks do.
-                                .padding(.top, line.continues ? -4 : 0)
-                                .environment(\.rowResizing, heights.resizing(line.id))
-                        }
-                        .id(line.id)
-                    }
-                    TurnInProgress(store: store)
-                }
-                .padding()
+                ChatRows(store: store).equatable()
             }
             .scrollPosition($position)
             // At its end when it opens; as it grows, what's in view stays.
@@ -495,19 +488,7 @@ private struct ChatList: View {
                     break
                 }
             }
-            .overlay {
-                if !store.historyLoaded, store.items.isEmpty {
-                    if let fraction = store.historyLoading?.fraction {
-                        ProgressView("Opening the chat…", value: fraction)
-                            .frame(maxWidth: 240)
-                            .accessibilityIdentifier("chat.loading")
-                    } else {
-                        ProgressView("Loading the chat…")
-                            .controlSize(.small)
-                            .accessibilityIdentifier("chat.loading")
-                    }
-                }
-            }
+            .overlay { ChatLoading(store: store) }
             .onChange(of: highlighted, initial: true) { _, item in
                 guard let item else { return }
                 following = false
@@ -538,38 +519,6 @@ private struct ChatList: View {
         .safeAreaInset(edge: .bottom) {
             WaitingStrip(store: store)
         }
-        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
-    }
-
-    /// What `item`'s row shows of the session besides the item, reading
-    /// only what that kind of row needs.
-    private func shows(_ item: ChatItem, highlighted: String?) -> ChatRow.Shows {
-        var shows = ChatRow.Shows(highlighted: item.id == highlighted)
-        switch item {
-        case .person(let id, _, let images):
-            shows.editing = store.editing == id
-            shows.rewinding = store.rewinding
-            shows.archived = store.session.archived
-            for name in images { shows.thumbnails[name] = store.thumbnails[name] }
-        case .thinking(let id, _):
-            shows.thinkingOpen = store.expandedThinking.contains(id)
-        case .tool(let call):
-            shows.toolOpen = store.expandedTools.contains(call.id)
-            if let proposal = store.proposals.proposals[id: call.callID] {
-                shows.proposal = proposal
-                shows.deciding = store.proposals.deciding.contains(call.callID)
-                shows.canStartWork = store.session.planning
-            } else if let failure = store.proposals.listFailure, store.proposingCalls.contains(call.callID) {
-                shows.proposalFailure = failure
-            }
-        case .rewound:
-            shows.rewinding = store.rewinding
-        case .failure(let id, _):
-            shows.retryable = id == store.retryableFailure && !store.isWorking
-        case .reply, .permission, .stopped, .notice, .cost, .compacted:
-            break
-        }
-        return shows
     }
 
     /// Over the chat while a search hit is highlighted: forks from it, or
@@ -588,6 +537,97 @@ private struct ChatList: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+}
+
+/// Over an empty chat until its history comes: that it's loading, and how
+/// far along. Its own view, so the chat's events draw only it.
+private struct ChatLoading: View {
+    let store: StoreOf<SessionFeature>
+
+    var body: some View {
+        if !store.historyLoaded, store.items.isEmpty {
+            if let fraction = store.historyLoading?.fraction {
+                ProgressView("Opening the chat…", value: fraction)
+                    .frame(maxWidth: 240)
+                    .accessibilityIdentifier("chat.loading")
+            } else {
+                ProgressView("Loading the chat…")
+                    .controlSize(.small)
+                    .accessibilityIdentifier("chat.loading")
+            }
+        }
+    }
+}
+
+/// The chat's rows, with the turn under way at the end. Its own view, so
+/// a change to the chat redraws only this; and each row is drawn again only
+/// when what it shows changes. Equal for the same session, so the
+/// scrolling around it drawn again leaves it as it is: what it shows it
+/// reads from the store itself.
+private struct ChatRows: View, Equatable {
+    let store: StoreOf<SessionFeature>
+    @State private var selecting: TextToSelect?
+    @State private var replyParts = ReplyParts()
+    @State private var heights = RowHeights()
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.store === rhs.store }
+
+    var body: some View {
+        let _ = SessionBodyRuns.ran(.chatList)
+        let highlighted = store.highlightedItem
+        let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
+        LazyVStack(alignment: .leading, spacing: 14) {
+            ForEach(replyParts.lines(of: store.items, highlighted: highlighted)) { line in
+                let row = ChatRow(
+                    item: line.item, part: line.part, shows: shows(line.item, highlighted: highlighted),
+                    store: store, select: select
+                )
+                KeptHeight(id: line.id, row: row, heights: heights) {
+                    row
+                        .equatable()
+                        // A reply's parts sit as close as its blocks do.
+                        .padding(.top, line.continues ? -4 : 0)
+                        .environment(\.rowResizing, heights.resizing(line.id))
+                }
+                .id(line.id)
+            }
+            TurnInProgress(store: store)
+        }
+        .padding()
+        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+    }
+
+    /// What `item`'s row shows of the session besides the item, reading
+    /// only what that kind of row needs.
+    private func shows(_ item: ChatItem, highlighted: String?) -> ChatRow.Shows {
+        var shows = ChatRow.Shows(highlighted: item.id == highlighted)
+        switch item {
+        case .person(let id, _, let images):
+            shows.editing = store.editing == id
+            shows.rewinding = store.rewinding
+            shows.archived = store.session.archived
+            for name in images { shows.thumbnails[name] = store.thumbnails[name] }
+        case .thinking(let id, _):
+            shows.thinkingOpen = store.expandedThinking.contains(id)
+        case .tool(let call):
+            shows.toolOpen = store.expandedTools.contains(call.id)
+            shows.subagent = store.subagents[id: call.callID]
+            if let proposal = store.proposals.proposals[id: call.callID] {
+                shows.proposal = proposal
+                shows.deciding = store.proposals.deciding.contains(call.callID)
+                shows.canStartWork = store.session.planning
+            } else if let failure = store.proposals.listFailure, store.proposingCalls.contains(call.callID) {
+                shows.proposalFailure = failure
+            }
+        case .rewound:
+            shows.rewinding = store.rewinding
+        case .failure(let id, _):
+            shows.retryable = id == store.retryableFailure && !store.isWorking
+        case .reply, .permission, .stopped, .notice, .cost, .compacted:
+            break
+        }
+        return shows
     }
 }
 
@@ -775,6 +815,8 @@ private struct ChatRow: View, Equatable {
         var archived = false
         /// The failure offers Try Again.
         var retryable = false
+        /// The subagent the tool call started.
+        var subagent: SubagentRun?
     }
 
     let item: ChatItem
@@ -789,6 +831,7 @@ private struct ChatRow: View, Equatable {
     }
 
     var body: some View {
+        let _ = SessionBodyRuns.ran(.chatRow)
         content
             .padding(shows.highlighted ? 6 : 0)
             .background {
@@ -846,6 +889,12 @@ private struct ChatRow: View, Equatable {
             if let proposal = shows.proposal {
                 ProposalCard(proposal: proposal, deciding: shows.deciding, canStartWork: shows.canStartWork) {
                     store.send(.proposals($0))
+                }
+            } else if let subagent = shows.subagent {
+                SubagentCard(run: subagent) { store.send(.subagentTapped(callID: call.callID)) }
+                // The call may itself wait on the person to be allowed.
+                if let permission = call.permission {
+                    PermissionCard(permission: permission, select: select)
                 }
             } else {
                 ToolCallView(
@@ -947,7 +996,7 @@ private struct MessageEditor: View {
 /// A tool call, opened to show its output or change. Whether it's open is
 /// the session's, not the view's: the chat keeps each row's height by what
 /// it shows, so a row that opened by itself kept the height it had closed.
-private struct ToolCallView: View {
+struct ToolCallView: View {
     let call: ToolCall
     let expanded: Bool
     let toggle: () -> Void
@@ -1003,8 +1052,8 @@ private struct ToolCallView: View {
     }
 
     /// The output as the chat shows it, worked out when it came: its first
-    /// 20,000 characters, scrolling in a box of its own when long, so
-    /// opening and closing it doesn't lay the whole chat out again.
+    /// 20 KB, scrolling in a box of its own when long, so opening and
+    /// closing it doesn't lay the whole chat out again.
     @ViewBuilder
     private func outputView(_ output: String, _ preview: TextPreview) -> some View {
         let text = Text(preview.shown)
@@ -1023,7 +1072,7 @@ private struct ToolCallView: View {
             }
             if let length = preview.length {
                 HStack {
-                    Text("The first \(preview.shown.count.formatted()) of \(length.formatted()) characters")
+                    Text("The first \(Self.size(preview.shown.utf8.count)) of \(Self.size(length))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Show All") { select(output) }
@@ -1033,6 +1082,11 @@ private struct ToolCallView: View {
                 }
             }
         }
+    }
+
+    /// `bytes` as a size reads, such as 380 KB.
+    private static func size(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
     }
 
     private var icon: String {
@@ -1533,6 +1587,7 @@ private struct TurnInProgress: View {
     @State private var parts = StreamedParts()
 
     var body: some View {
+        let _ = SessionBodyRuns.ran(.turnInProgress)
         if store.stopping {
             // What's written so far stays until the turn has stopped.
             if !store.streaming.isEmpty {
@@ -1576,11 +1631,14 @@ private struct SessionComposer: View {
     @State private var choosing = false
 
     var body: some View {
+        let _ = SessionBodyRuns.ran(.composer)
         composer
             // The / list's arrows, Tab and Escape; Return picks through
             // sending, which picks while the list shows.
             .onKeyPress(keys: [.upArrow, .downArrow, .tab, .escape]) { press in
-                guard store.slashOpen, !store.slashChoices.isEmpty else { return .ignored }
+                // Escape also closes a spinner or failure; the rest need a
+                // choice, or go to the field as usual.
+                guard store.slashOpen, press.key == .escape || !store.slashChoices.isEmpty else { return .ignored }
                 switch press.key {
                 case .upArrow: store.send(.slashMoved(by: -1))
                 case .downArrow: store.send(.slashMoved(by: 1))

@@ -13,6 +13,8 @@
 //! [`LocalAgent`]: crate::LocalAgent
 
 mod rpc;
+mod subagents;
+mod usage;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -43,6 +45,9 @@ const STEER_EVERY: Duration = Duration::from_millis(100);
 
 /// Persisted events read at a time when forking.
 const PAGE: u64 = 500;
+
+/// How long Copilot gets to say the session's usage so far.
+const METRICS_WAIT: Duration = Duration::from_secs(5);
 
 pub struct CopilotOptions {
     /// The `copilot` program.
@@ -422,6 +427,8 @@ fn session_params(
         "workingDirectory": record.working_directory,
         "requestPermission": true,
         "streaming": true,
+        // A subagent's replies are kept whole, not as they stream.
+        "includeSubAgentStreamingEvents": false,
         "permissionMode": permission_mode(record.approval),
     });
     if let Some(id) = id {
@@ -622,6 +629,7 @@ impl Runner for CopilotRunner {
         if !attachments.is_empty() {
             send["attachments"] = Value::Array(attachments);
         }
+        let before = usage_metrics(&cli, &session).await;
         cli.call("session.send", send).await?;
         let mut playing = Playing {
             turn: &turn,
@@ -632,6 +640,7 @@ impl Runner for CopilotRunner {
             failure: None,
             // The aborted turn's end can come after the abort answered.
             started: !after_abort,
+            subagents: subagents::Subagents::default(),
         };
         let mut mode = permission_mode(turn.approval());
         let mut steer = tokio::time::interval(STEER_EVERY);
@@ -660,6 +669,11 @@ impl Runner for CopilotRunner {
             }
         }
         stop.cli = None;
+        if let Some(before) = before
+            && let Some(after) = usage_metrics(&cli, &session).await
+        {
+            playing.unreported(&before, &after)?;
+        }
         playing.failure.map_or(Ok(()), Err)
     }
 
@@ -735,11 +749,48 @@ struct Playing<'a> {
     /// Whether Copilot has taken this turn's prompt; until then, an idle is
     /// another turn's.
     started: bool,
+    subagents: subagents::Subagents,
+}
+
+/// Copilot's usage totals for `session` so far; None if it doesn't say, as
+/// a version without them wouldn't.
+async fn usage_metrics(cli: &Cli, session: &str) -> Option<Value> {
+    let asked = cli.call("session.usage.getMetrics", json!({"sessionId": session}));
+    tokio::time::timeout(METRICS_WAIT, asked).await.ok()?.ok()
 }
 
 impl Playing<'_> {
     /// Records one of Copilot's events. True once the turn has ended.
     async fn handle(&mut self, event: &Value) -> Result<bool, CopilotError> {
+        // A subagent's own steps are kept under the call that started it,
+        // apart from the chat; what it asks is asked all the same.
+        let tagged = self.subagents.take(event);
+        let ended = if event["type"] != "permission.requested" && subagents::owns(event) {
+            false
+        } else {
+            self.handle_main(event).await?
+        };
+        for (parent, kind) in tagged {
+            self.turn.emit_under(Some(parent), kind)?;
+        }
+        Ok(ended)
+    }
+
+    /// Records the usage Copilot counted between `before` and `after` that
+    /// it didn't report call by call.
+    fn unreported(&self, before: &Value, after: &Value) -> Result<(), AgentError> {
+        let call_of = |agent: &str| self.subagents.call_of(agent);
+        let (before, _) = usage::metrics(before, call_of);
+        let (after, by_agent) = usage::metrics(after, call_of);
+        let recorded = self.turn.with_history(usage::recorded)?;
+        for ((parent, model), tally) in usage::missing(&before, &after, by_agent, &recorded) {
+            self.turn.emit_under(parent, tally.kind(model))?;
+        }
+        Ok(())
+    }
+
+    /// Records one of the main agent's events. True once the turn has ended.
+    async fn handle_main(&mut self, event: &Value) -> Result<bool, CopilotError> {
         let data = &event["data"];
         let text = |field: &str| data[field].as_str().unwrap_or_default().to_owned();
         let kind = match event["type"].as_str().unwrap_or_default() {
@@ -762,51 +813,11 @@ impl Playing<'_> {
                 return Ok(false);
             }
             "session.compaction_complete" => EventKind::Compacted,
-            "assistant.message_delta" => EventKind::AssistantDelta {
-                text: text("deltaContent"),
+            _ => match subagents::step(event) {
+                Some(kind) => kind,
+                None => return Ok(false),
             },
-            "assistant.message" => EventKind::AssistantMessage {
-                text: text("content"),
-            },
-            "assistant.reasoning" => EventKind::Reasoning {
-                text: text("content"),
-            },
-            "tool.execution_start" => EventKind::ToolStarted {
-                call_id: text("toolCallId"),
-                tool: text("toolName"),
-                arguments_json: data["arguments"].to_string(),
-            },
-            "tool.execution_complete" => {
-                let output = data["result"]["content"]
-                    .as_str()
-                    .or_else(|| data["error"]["message"].as_str())
-                    .or_else(|| data["error"].as_str())
-                    .unwrap_or_default();
-                EventKind::ToolCompleted {
-                    call_id: text("toolCallId"),
-                    success: data["success"].as_bool().unwrap_or(false),
-                    output: output.to_owned(),
-                }
-            }
-            "assistant.usage" => EventKind::Usage {
-                model: text("model"),
-                input_tokens: data["inputTokens"].as_u64().unwrap_or(0),
-                output_tokens: data["outputTokens"].as_u64().unwrap_or(0),
-                premium_requests: data["cost"].as_f64().unwrap_or(0.0),
-                cache_read_tokens: data["cacheReadTokens"].as_u64().unwrap_or(0),
-                cache_write_tokens: data["cacheWriteTokens"].as_u64().unwrap_or(0),
-            },
-            _ => return Ok(false),
         };
-        let empty = matches!(
-            &kind,
-            EventKind::AssistantDelta { text }
-                | EventKind::AssistantMessage { text }
-                | EventKind::Reasoning { text } if text.is_empty()
-        );
-        if empty {
-            return Ok(false);
-        }
         let ours = self.turn.emit(kind)?;
         self.link(event, ours.id)?;
         Ok(false)

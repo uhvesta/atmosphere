@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use humata_agent::{
     Action, ApprovalMode, Changes, Edit, Event, EventKind, FileDiff, FileRef, FileStatus, Hunk,
     HunkAt, Image, Line, LineKind, PermissionKind, Query, Range, Repository, SendMode,
-    SessionRecord, SessionState, Summary,
+    SessionRecord, SessionState, SubagentStatus, Summary,
 };
 use humata_wire::pb;
 
@@ -120,11 +120,36 @@ pub fn event(event: &Event) -> pb::SessionEvent {
         EventKind::Saved { snapshots } => Kind::Saved(pb::Saved {
             snapshots: wire_snapshots(snapshots),
         }),
+        EventKind::Subagent {
+            agent_type,
+            description,
+            status,
+            total_tokens,
+            tool_uses,
+            duration_ms,
+        } => Kind::Subagent(pb::Subagent {
+            agent_type: agent_type.clone(),
+            description: description.clone(),
+            status: subagent_status(*status).into(),
+            total_tokens: *total_tokens,
+            tool_uses: *tool_uses,
+            duration_ms: *duration_ms,
+        }),
     };
     pb::SessionEvent {
         id: event.id.to_string(),
         time_unix_ms: event.time_unix_ms,
         kind: Some(kind),
+        parent_call_id: event.parent_call_id.clone().unwrap_or_default(),
+    }
+}
+
+fn subagent_status(status: SubagentStatus) -> pb::SubagentStatus {
+    match status {
+        SubagentStatus::Running => pb::SubagentStatus::Running,
+        SubagentStatus::Completed => pb::SubagentStatus::Completed,
+        SubagentStatus::Failed => pb::SubagentStatus::Failed,
+        SubagentStatus::Stopped => pb::SubagentStatus::Stopped,
     }
 }
 

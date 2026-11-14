@@ -188,10 +188,13 @@ impl EventLog {
                     path: self.path.clone(),
                     source,
                 })?;
+            // A subagent's reply never streams, so it leaves the main
+            // agent's parts alone.
             if matches!(
                 event.kind,
                 EventKind::AssistantMessage { .. } | EventKind::TurnEnded { .. }
-            ) && let Some(from) = loaded.streaming.take()
+            ) && event.is_main()
+                && let Some(from) = loaded.streaming.take()
             {
                 let tail = loaded.events.split_off(from);
                 loaded
@@ -638,6 +641,45 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn events_stored_before_subagents_were_recorded_load_as_the_main_agents() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        std::fs::write(
+            &path,
+            "{\"id\":\"a\",\"time_unix_ms\":1,\"kind\":{\"type\":\"assistant_message\",\"text\":\"hi\"}}\n",
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+
+        let log = EventLog::open(path).unwrap_or_else(|error| panic!("{error}"));
+        let events = log.events().unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(events.len(), 1);
+        assert!(events[0].is_main());
+        assert_eq!(
+            events[0].kind,
+            EventKind::AssistantMessage { text: "hi".into() }
+        );
+    }
+
+    #[test]
+    fn a_subagents_steps_are_kept_apart_from_the_main_agents() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log =
+            EventLog::create(path.clone(), Vec::new()).unwrap_or_else(|error| panic!("{error}"));
+        let mut step = Event::now(EventKind::AssistantMessage {
+            text: "found it".into(),
+        });
+        step.parent_call_id = Some("call-1".into());
+        log.append(step).unwrap_or_else(|error| panic!("{error}"));
+        drop(log);
+
+        let log = EventLog::open(path).unwrap_or_else(|error| panic!("{error}"));
+        let events = log.events().unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].parent_call_id.as_deref(), Some("call-1"));
     }
 
     #[test]

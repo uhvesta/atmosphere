@@ -18,7 +18,10 @@ public struct MarkdownText: View {
     /// begins, each part at least `size` bytes but the last, so a long
     /// reply can be rows of a lazy list and only those on screen are laid
     /// out. Each part reads as the same blocks as it did in the whole. Text
-    /// under `size` is one part; finding the cuts reads each line once.
+    /// under `size` is one part; finding the cuts reads each line once, and
+    /// finds its end by byte, as a reply can be megabytes. A line ends at a
+    /// line feed, but not at one after a carriage return, which is one
+    /// character with it.
     public static func parts(of text: String, size: Int = 2_000) -> [Substring] {
         guard text.utf8.count > size else { return [text[...]] }
         var parts: [Substring] = []
@@ -26,8 +29,18 @@ public struct MarkdownText: View {
         var fence: Substring?
         var blank = false
         var index = text.startIndex
+        let utf8 = text.utf8
+        let lineFeed = UInt8(ascii: "\n")
+        let carriageReturn = UInt8(ascii: "\r")
         while index < text.endIndex {
-            let end = text[index...].firstIndex(of: "\n") ?? text.endIndex
+            var end = index
+            var last: UInt8 = 0
+            while end < utf8.endIndex {
+                let byte = utf8[end]
+                if byte == lineFeed, last != carriageReturn { break }
+                last = byte
+                utf8.formIndex(after: &end)
+            }
             let line = text[index..<end]
             let trimmed = line.drop { $0 == " " }
             if let open = fence {
@@ -40,14 +53,14 @@ public struct MarkdownText: View {
                 fence = trimmed.prefix(3)
             } else if line.allSatisfy(\.isWhitespace) {
                 blank = true
-                index = end < text.endIndex ? text.index(after: end) : end
+                index = end < utf8.endIndex ? utf8.index(after: end) : end
                 continue
             } else if blank, Self.startsBlock(line), text.utf8.distance(from: start, to: index) >= size {
                 parts.append(text[start..<index])
                 start = index
             }
             blank = false
-            index = end < text.endIndex ? text.index(after: end) : end
+            index = end < utf8.endIndex ? utf8.index(after: end) : end
         }
         parts.append(text[start...])
         return parts

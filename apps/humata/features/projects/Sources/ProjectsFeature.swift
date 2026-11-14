@@ -350,11 +350,16 @@ package struct ProjectsFeature {
                 let answered = state.answered
                 let permissions = state.answeredPermissions
                 let inbox = inbox.compactMap { entry -> InboxEntry? in
+                    var entry = entry
+                    // How long it has waited shows to the minute, and a
+                    // session at work again is active at every read: with
+                    // the seconds dropped the read leaves the inbox equal,
+                    // and nothing showing it is drawn again.
+                    entry.session.lastActive = entry.session.lastActive?.toTheMinute
                     if let request = entry.request { return answered.contains(request.id) ? nil : entry }
                     guard !permissions.isEmpty,
                         entry.session.pending.contains(where: { permissions.contains($0.requestID) })
                     else { return entry }
-                    var entry = entry
                     entry.session.pending.removeAll { permissions.contains($0.requestID) }
                     return entry.reason == .approval && entry.session.pending.isEmpty ? nil : entry
                 }
@@ -389,9 +394,13 @@ package struct ProjectsFeature {
                 // A working session is active again at every read. The rows
                 // show when to the minute and sort by `order`, so the
                 // seconds are dropped and the read leaves them equal.
+                // What a session last said changes with every reply, and
+                // only the inbox shows it, from its own entries: here it's
+                // left out, so a reply doesn't draw the sidebar again.
                 let listed = sessions.map { session -> Session in
                     var session = session
                     session.lastActive = session.lastActive?.toTheMinute
+                    session.lastMessage = nil
                     return session
                 }
                 let sessions = IdentifiedArray(listed, uniquingIDsWith: { _, last in last })
@@ -1033,6 +1042,8 @@ package struct NewProjectFeature {
         var nextRow = 1
         package var instructions = ""
         package var creating = false
+        /// The saved repositories and folders offered under the row typed in.
+        package var search = RepositorySearchFeature.State()
         @Presents package var alert: AlertState<Never>?
 
         package init() {}
@@ -1057,6 +1068,7 @@ package struct NewProjectFeature {
         case removeRepositoryTapped(RepositoryRow.ID)
         case createTapped
         case failed(String)
+        case search(RepositorySearchFeature.Action)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -1072,9 +1084,16 @@ package struct NewProjectFeature {
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.search, action: \.search) { RepositorySearchFeature() }
         Reduce { state, action in
             switch action {
-            case .binding, .alert, .delegate:
+            case .search(.delegate(.picked(let row, let suggestion))):
+                // The project keeps its own copy of what was picked.
+                state.repositories[id: row]?.path = suggestion.location
+                if state.name.trimmed.isEmpty { state.name = suggestion.name }
+                return .none
+
+            case .binding, .alert, .delegate, .search:
                 return .none
 
             case .folderPicked(let url):

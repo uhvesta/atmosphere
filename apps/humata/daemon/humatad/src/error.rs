@@ -388,6 +388,16 @@ pub enum StoreError {
     #[error("a task or subtask needs a title; give it one")]
     NoTitle,
 
+    #[error(
+        "there is no saved repository {id}; it may have been removed already, so list them with `humata repository list` to find its id"
+    )]
+    UnknownRepository { id: i64 },
+
+    #[error(
+        "no GitHub owner {login:?} is saved; list them with `humata repository owner list` to see how each is spelled"
+    )]
+    UnknownOwner { login: String },
+
     #[error("there is no review thread {id:?}; list the session's threads to find its id")]
     UnknownThread { id: String },
 
@@ -516,6 +526,14 @@ pub enum DaemonError {
 
     #[error("say what to ask the person, or for a move, what you did")]
     NoRequestText,
+
+    #[error("a saved repository needs a name; give it one")]
+    NoRepositoryName,
+
+    #[error(
+        "{login:?} isn't a GitHub user or organization name; give one as on github.com, of letters, digits and single hyphens, up to 39 long, such as `octo-org`, `@octo-org` or `https://github.com/octo-org`"
+    )]
+    BadOwnerName { login: String },
 
     #[error(
         "an agent asks to move its task only to in_review, done or wont_do, which the person approves; set other statuses with update_item"
@@ -902,6 +920,8 @@ impl DaemonError {
             Self::Store(StoreError::UnknownRequest { .. }) => pb::ErrorCode::UnknownRequest,
             Self::Store(
                 StoreError::NoTitle
+                | StoreError::UnknownRepository { .. }
+                | StoreError::UnknownOwner { .. }
                 | StoreError::UnknownComment { .. }
                 | StoreError::CommentSent { .. }
                 | StoreError::NestedSubtask { .. }
@@ -939,6 +959,8 @@ impl DaemonError {
             | Self::LinesOutside { .. }
             | Self::NothingToReview
             | Self::NoRequestText
+            | Self::NoRepositoryName
+            | Self::BadOwnerName { .. }
             | Self::NotAMove
             | Self::NoTaskToMove
             | Self::NothingToApprove
@@ -989,6 +1011,22 @@ impl DaemonError {
             Self::Host { .. } => pb::ErrorCode::HostUnavailable,
         }
     }
+}
+
+/// Why an owner's repositories couldn't be listed, kept for the person.
+#[derive(Debug, thiserror::Error)]
+pub enum OwnerError {
+    #[error(
+        "GitHub has no user or organization named {login:?} that this Mac's token can see; check how it's spelled on github.com, then remove it and add it again. If it's an organization with single sign-on, authorize the token for it first"
+    )]
+    NotFound { login: String },
+
+    #[error("couldn't list {login}'s repositories on GitHub, so those listed before are kept")]
+    List {
+        login: String,
+        #[source]
+        source: crate::github::GitHubError,
+    },
 }
 
 /// What stops humatad from starting.

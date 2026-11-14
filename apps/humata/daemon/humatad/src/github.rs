@@ -306,6 +306,14 @@ pub struct Issue {
     pub pull_request: Option<Value>,
 }
 
+/// A repository a user or organization owns, as GitHub lists it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct OwnedRepo {
+    pub name: String,
+    /// Its page, which `git clone` takes.
+    pub html_url: String,
+}
+
 /// GitHub's API, as one token.
 #[derive(Clone)]
 pub struct GitHub {
@@ -444,6 +452,33 @@ impl GitHub {
             .into_iter()
             .filter(|issue| issue.pull_request.is_none())
             .collect())
+    }
+
+    /// The repositories `login` owns that the token can see: an
+    /// organization's, private ones included; else a user's, and the
+    /// token's own user's private ones too. [`GitHubError::NotFound`] if
+    /// GitHub has neither by that name.
+    pub async fn owned_repos(&self, login: &str) -> Result<Vec<OwnedRepo>, GitHubError> {
+        // An organization's own list has its private repositories, which
+        // the users list of one leaves out, so it's asked first.
+        match self
+            .all(&format!("/orgs/{login}/repos?type=all&per_page=100"))
+            .await
+        {
+            Err(GitHubError::NotFound { .. }) => {}
+            listed => return listed,
+        }
+        // A token that can't say whose it is still lists the public ones.
+        let own = self
+            .get::<User>("/user")
+            .await
+            .is_ok_and(|viewer| viewer.login.eq_ignore_ascii_case(login));
+        if own {
+            self.all("/user/repos?affiliation=owner&per_page=100").await
+        } else {
+            self.all(&format!("/users/{login}/repos?type=owner&per_page=100"))
+                .await
+        }
     }
 
     async fn get<T: DeserializeOwned + Send + 'static>(

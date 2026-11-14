@@ -44,14 +44,47 @@ package struct SessionFeature {
             set {
                 log = newValue
                 var chat = Chat()
-                for event in newValue { chat.add(event) }
+                var subagents = SubagentLog()
+                for event in newValue { Self.fold(event, into: &chat, &subagents) }
                 self.chat = chat
+                subagentLog = subagents
                 derive()
             }
         }
         private var log: IdentifiedArrayOf<SessionEvent> = []
-        /// The chat, worked out an event at a time.
+        /// The chat, worked out an event at a time: the session's own
+        /// agent's events only.
         private var chat = Chat()
+        /// The subagents and their chats, worked out from the events that
+        /// name the call that started one. Only a subagent's open chat
+        /// reads it, so a subagent's step draws nothing else again.
+        private var subagentLog = SubagentLog()
+        /// The subagents the agent started, in the order they started; a
+        /// tool call's row and the Agents list show them.
+        package private(set) var subagents: IdentifiedArrayOf<SubagentRun> = []
+        /// What the subagents' own steps report used, apart from the
+        /// session's `usage`, which holds it only where the backend's own
+        /// count leaves it out.
+        package private(set) var subagentUsage: Usage?
+        /// The subagent whose chat is open to read, by the call that
+        /// started it.
+        package var shownSubagent: String?
+        /// The open subagent's chat, oldest first.
+        package var subagentItems: [ChatItem] {
+            shownSubagent.map { subagentLog.items(of: $0) } ?? []
+        }
+
+        /// Adds `event` to the chat, or, as a subagent's, to that
+        /// subagent's own.
+        private static func fold(_ event: SessionEvent, into chat: inout Chat, _ subagents: inout SubagentLog) {
+            if let call = event.parentCallID {
+                subagents.add(event, under: call)
+                return
+            }
+            chat.add(event)
+            if case .turnEnded = event.kind { subagents.turnEnded() }
+        }
+
         /// What the chat shows, oldest first.
         package var items: [ChatItem] { chat.items }
         /// Whether the history has come since the session opened, so the
@@ -107,10 +140,14 @@ package struct SessionFeature {
         /// The draft the list was closed on with Escape; it stays closed
         /// until the draft changes.
         var slashClosedOn: String?
+        /// The name the list shows choices for; nil while it's closed.
+        var slashQuery: String?
 
         /// Whether a / and a name are being typed, with the list not
-        /// closed: the list, or why it's empty, shows.
-        package var slashOpen: Bool { SlashChoice.query(in: draft) != nil && slashClosedOn != draft }
+        /// closed: the list, or why it's empty, shows. Only for the draft
+        /// the list was made for, so text put in the box another way
+        /// doesn't show an old list.
+        package var slashOpen: Bool { slashQuery != nil && slashQuery == SlashChoice.query(in: draft) }
         /// The thinking the person opened, by item id.
         package var expandedThinking: Set<String> = []
         /// The tool calls the person opened, by call id.
@@ -296,7 +333,12 @@ package struct SessionFeature {
             if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
             if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
             if !lastTurnFailed, retrying { retrying = false }
-            if usage != chat.usage { usage = chat.usage }
+            if subagents != subagentLog.runs { subagents = subagentLog.runs }
+            if subagentUsage != subagentLog.usage { subagentUsage = subagentLog.usage }
+            // A rewind can take the open subagent out of the history.
+            if let shown = shownSubagent, subagents[id: shown] == nil { shownSubagent = nil }
+            let usage = totalUsage
+            if self.usage != usage { self.usage = usage }
             if pendingPermissions != chat.pendingPermissions { pendingPermissions = chat.pendingPermissions }
             if !answering.isEmpty {
                 let ids = Set(
@@ -312,6 +354,16 @@ package struct SessionFeature {
             if self.dropped != dropped { self.dropped = dropped }
             let retryable = lastTurnFailed && lastMessage != nil ? chat.lastFailure : nil
             if retryableFailure != retryable { retryableFailure = retryable }
+        }
+
+        /// What the session used, its subagents too. Claude Code's count
+        /// for a turn comes from the CLI's own result, taken to cover the
+        /// subagents the turn ran, so theirs is shown apart and not added
+        /// again. Copilot counts each subagent apart from its main agent,
+        /// as the scripted and local backends would, so theirs is added.
+        private var totalUsage: Usage? {
+            guard session.backend != .claude, let subagents = subagentLog.usage else { return chat.usage }
+            return chat.usage?.adding(subagents) ?? subagents
         }
 
         /// Whether the agent is waiting on the person to answer a request.
@@ -406,6 +458,22 @@ package struct SessionFeature {
         /// Takes in `batch` and works out the chat once, so a history of
         /// thousands of events shows at once instead of one at a time.
         mutating func receive(_ batch: [SessionEvent]) {
+            // A reply's words alone, as most batches are while it streams,
+            // change only the reply being written: the log stays where it
+            // is, so nothing that reads it is drawn again for them.
+            let wordsOnly = batch.allSatisfy { if case .assistantDelta = $0.kind { true } else { false } }
+            if wordsOnly {
+                var streaming = self.streaming
+                // A subagent's words aren't the reply's: its whole message
+                // comes after them, into its own chat.
+                for event in batch where event.parentCallID == nil {
+                    if case .assistantDelta(let text) = event.kind, streamed.insert(event.id).inserted {
+                        streaming += text
+                    }
+                }
+                if streaming != self.streaming { self.streaming = streaming }
+                return
+            }
             // The log is taken out while it's changed and put back once: the
             // state is observed, and changing it where it is copies it whole
             // for each event, which for a long history is seconds.
@@ -419,7 +487,7 @@ package struct SessionFeature {
             for event in batch {
                 switch event.kind {
                 case .assistantDelta(let text):
-                    if self.streamed.insert(event.id).inserted { streaming += text }
+                    if event.parentCallID == nil, self.streamed.insert(event.id).inserted { streaming += text }
                     continue
                 default: break
                 }
@@ -432,8 +500,9 @@ package struct SessionFeature {
                     added.append(event)
                     // Only a reply that's new ends the one being written: a
                     // history sent again holds the replies before it.
+                    // A subagent's message leaves the agent's own as it is.
                     switch event.kind {
-                    case .assistantMessage, .turnEnded:
+                    case .assistantMessage where event.parentCallID == nil, .turnEnded:
                         streaming = ""
                         self.streamed = []
                     default: break
@@ -463,10 +532,21 @@ package struct SessionFeature {
                 // Live events go on the end of the chat; only a changed
                 // event means working it out again. Taken out to change, as
                 // the log is.
+                // The chat is set only for an event of its own, so a
+                // subagent's steps leave its rows as they are.
                 var chat = self.chat
-                self.chat = Chat()
-                for event in added { chat.add(event) }
-                self.chat = chat
+                var subagents = self.subagentLog
+                let ownEvents = added.contains { $0.parentCallID == nil }
+                let subagentEvents = added.contains { event in
+                    if event.parentCallID != nil { return true }
+                    if case .turnEnded = event.kind { return !subagents.runs.isEmpty }
+                    return false
+                }
+                if ownEvents { self.chat = Chat() }
+                if subagentEvents { self.subagentLog = SubagentLog() }
+                for event in added { Self.fold(event, into: &chat, &subagents) }
+                if ownEvents { self.chat = chat }
+                if subagentEvents { self.subagentLog = subagents }
                 derive()
             }
             if batch.contains(where: { $0.kind == .turnStarted }) {
@@ -578,6 +658,10 @@ package struct SessionFeature {
         case experimentalRefused(previous: Bool, message: String)
         case thinkingToggled(id: String)
         case toolToggled(id: String)
+        /// Opens the chat of the subagent the tool call `callID` started,
+        /// to read.
+        case subagentTapped(callID: String)
+        case subagentClosed
         /// Forks the session before `event`, or with all of it if nil. A
         /// chat-only fork keeps working in this session's copy of the code.
         case forkTapped(before: String?, chatOnly: Bool)
@@ -666,18 +750,25 @@ package struct SessionFeature {
     }
 
     /// Shows the / list for what's typed, and looks for the skills when it
-    /// opens for the first time or after a while.
+    /// opens for the first time, after a while, or again after looking
+    /// failed.
     private func slashFollows(_ state: inout State) -> Effect<Action> {
-        guard let query = SlashChoice.query(in: state.draft), state.slashClosedOn != state.draft else {
-            state.slashChoices = []
-            state.slashSelected = 0
-            if state.slashClosedOn != state.draft { state.slashClosedOn = nil }
+        // Escape holds only for the draft it was pressed on.
+        if state.slashClosedOn != state.draft { state.slashClosedOn = nil }
+        guard let query = SlashChoice.query(in: state.draft), state.slashClosedOn == nil else {
+            slashHidden(&state)
             return .none
         }
-        state.slashChoices = SlashChoice.matching(query, in: state.slashOffered ?? [])
-        state.slashSelected = min(state.slashSelected, max(state.slashChoices.count - 1, 0))
+        let opening = state.slashQuery == nil
+        let choices = SlashChoice.matching(query, in: state.slashOffered ?? [])
+        // The highlight stays only on the same list; a new one starts at
+        // its best match.
+        if opening || choices != state.slashChoices { state.slashSelected = 0 }
+        state.slashQuery = query
+        state.slashChoices = choices
         let stale = state.slashLoadedAt.map { date.now.timeIntervalSince($0) > Self.slashFresh } ?? true
-        guard stale, !state.slashLoading else { return .none }
+        let retry = opening && state.slashFailure != nil
+        guard stale || retry, !state.slashLoading else { return .none }
         state.slashLoading = true
         let session = state.session
         return .run { send in
@@ -704,6 +795,14 @@ package struct SessionFeature {
 
     /// How long skills found stay fresh before the list looks again.
     static let slashFresh: TimeInterval = 30
+
+    /// Takes the / list away, as when the draft is changed other than by
+    /// typing; typing again shows it if the draft still asks for it.
+    private func slashHidden(_ state: inout State) {
+        state.slashQuery = nil
+        state.slashChoices = []
+        state.slashSelected = 0
+    }
 
     private func received(_ events: [SessionEvent], _ state: inout State) -> Effect<Action> {
         // A watch sends the history first. Only something new shows the
@@ -836,6 +935,8 @@ package struct SessionFeature {
                 case .failure(let failure):
                     state.slashFailure = failure.message
                 }
+                // Refreshes a list showing; one closed since stays closed.
+                guard state.slashOpen else { return .none }
                 return slashFollows(&state)
 
             case .slashMoved(let by):
@@ -847,20 +948,19 @@ package struct SessionFeature {
             case .slashPicked(let name):
                 state.draft = "/\(name) "
                 state.$savedDraft.withLock { $0 = state.draft }
-                state.slashChoices = []
-                state.slashSelected = 0
+                slashHidden(&state)
                 return .none
 
             case .slashClosed:
                 state.slashClosedOn = state.draft
-                state.slashChoices = []
-                state.slashSelected = 0
+                slashHidden(&state)
                 return .none
 
             case .quoted(let text):
                 let draft = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.draft = draft.isEmpty ? text + "\n\n" : state.draft + "\n\n" + text + "\n\n"
                 state.$savedDraft.withLock { $0 = state.draft }
+                slashHidden(&state)
                 return .none
 
             case .review(.delegate(.quote(let text))):
@@ -1030,7 +1130,7 @@ package struct SessionFeature {
 
             case .sendTapped(let mode):
                 // Return with the / list showing picks from it.
-                if state.slashChoices.indices.contains(state.slashSelected) {
+                if state.slashOpen, state.slashChoices.indices.contains(state.slashSelected) {
                     return .send(.slashPicked(state.slashChoices[state.slashSelected].id))
                 }
                 guard state.canSend else { return .none }
@@ -1040,6 +1140,7 @@ package struct SessionFeature {
                     text: Paste.message(draft: state.draft, pastes: state.pastes))
                 state.draft = ""
                 state.$savedDraft.withLock { $0 = "" }
+                slashHidden(&state)
                 state.pastes = []
                 state.$savedPastes.withLock { $0 = "" }
                 state.images = []
@@ -1057,6 +1158,7 @@ package struct SessionFeature {
                 if !text.isEmpty {
                     state.draft = state.draft.isEmpty ? text : text + "\n\n" + state.draft
                     state.$savedDraft.withLock { $0 = state.draft }
+                    slashHidden(&state)
                 }
                 let failedPastes = pastes.filter { paste in !state.pastes.contains { $0.id == paste.id } }
                 if !failedPastes.isEmpty {
@@ -1321,6 +1423,7 @@ package struct SessionFeature {
                 } else if let text = state.rewoundText, state.draft == text {
                     state.draft = ""
                     state.$savedDraft.withLock { $0 = "" }
+                    slashHidden(&state)
                 }
                 state.rewoundText = nil
                 state.rewoundPaste = nil
@@ -1383,6 +1486,15 @@ package struct SessionFeature {
 
             case .toolToggled(let id):
                 state.expandedTools.formSymmetricDifference([id])
+                return .none
+
+            case .subagentTapped(let callID):
+                guard state.subagents[id: callID] != nil else { return .none }
+                state.shownSubagent = callID
+                return .none
+
+            case .subagentClosed:
+                state.shownSubagent = nil
                 return .none
 
             case .forkTapped(let before, let chatOnly):
@@ -1504,6 +1616,7 @@ package struct SessionFeature {
             state.draft = ahead ? text + "\n\n" + state.draft : state.draft + "\n\n" + text
         }
         state.$savedDraft.withLock { $0 = state.draft }
+        slashHidden(&state)
         return nil
     }
 

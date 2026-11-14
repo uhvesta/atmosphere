@@ -162,6 +162,7 @@ impl History {
             id,
             time_unix_ms: self.last,
             kind,
+            parent_call_id: None,
         });
     }
 
@@ -622,6 +623,10 @@ pub(crate) fn copilot_read(dir: &Path) -> Result<Imported, AgentError> {
     let mut history = History::new(modified_unix_ms(&events));
     for line in &lines {
         let data = &line["data"];
+        // A subagent's steps showed as the call that started it.
+        if line["agentId"].is_string() || data["parentToolCallId"].is_string() {
+            continue;
+        }
         let text = |field: &str| data[field].as_str().unwrap_or_default().to_owned();
         let time = line["timestamp"].as_str().and_then(unix_ms);
         let theirs = line["id"].as_str();

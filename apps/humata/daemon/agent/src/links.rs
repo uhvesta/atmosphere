@@ -350,6 +350,7 @@ mod tests {
             id: EventId::new(id),
             time_unix_ms: 0,
             kind: EventKind::Idle,
+            parent_call_id: None,
         }
     }
 

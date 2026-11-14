@@ -415,7 +415,11 @@ fn agent_replies(events: &[pb::SessionEvent], reviews: &[Review]) -> Vec<AgentRe
     let mut next = reviews.iter().peekable();
     let mut checkpoints = 0_u32;
     let mut answering: Option<Answering<'_>> = None;
-    for event in events {
+    // A subagent's steps are its own, not the agent's answer.
+    for event in events
+        .iter()
+        .filter(|event| event.parent_call_id.is_empty())
+    {
         match &event.kind {
             Some(Kind::Checkpoint(_)) => checkpoints += 1,
             Some(Kind::UserMessage(message)) => {
@@ -664,6 +668,7 @@ mod tests {
             id: time.to_string(),
             time_unix_ms: time,
             kind: Some(kind),
+            parent_call_id: String::new(),
         }
     }
 

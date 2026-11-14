@@ -23,7 +23,7 @@ func textPreviewTests() -> [TestCase] {
             try expect(preview.isTall)
             try expect(!TextPreview(String(repeating: "x", count: 2_000)).isTall)
         },
-        TestCase("given a text past the limit, then its start shows with the whole length") {
+        TestCase("given a text past the limit, then its start shows with the whole size in bytes") {
             let preview = TextPreview(String(repeating: "ab", count: 50), limit: 10)
             try expectEqual(preview.shown, "ababababab")
             try expectEqual(preview.length, 100)
@@ -33,12 +33,13 @@ func textPreviewTests() -> [TestCase] {
             // Each é takes two bytes, so ten bytes and one more cuts into the sixth.
             let preview = TextPreview(String(repeating: "é", count: 8), limit: 11)
             try expectEqual(preview.shown, String(repeating: "é", count: 5))
-            try expectEqual(preview.length, 8)
+            try expectEqual(preview.length, 16)
         },
         TestCase("given a cut through an emoji, then no part of it shows") {
             let preview = TextPreview("ab👍🏽cd", limit: 4)
             try expectEqual(preview.shown, "ab")
-            try expectEqual(preview.length, 5)
+            // Two letters, eight bytes of thumb and skin tone, two letters.
+            try expectEqual(preview.length, 12)
         },
         TestCase("given text, then its lines count up to the limit") {
             try expectEqual(TextPreview.lines(in: "", atMost: 10), 1)

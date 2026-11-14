@@ -21,6 +21,7 @@ mod pulls;
 mod recoveries;
 mod requests;
 mod review;
+mod saved;
 mod search;
 mod settings;
 
@@ -28,6 +29,7 @@ pub use planning::{Decision, Skill};
 pub use pulls::{Checks, PullRequest, PullState, Standing};
 pub use recoveries::NewEvents;
 pub use review::{Comment, NewThread, Review, Thread};
+pub use saved::{OwnedRepository, Owner, SavedRepository, Source};
 pub use search::{Entry, EntryKind, Found, Indexed, MARK_END, MARK_START, Query, Whereabouts};
 
 /// Each step takes the schema from its index to the next version; the
@@ -432,6 +434,43 @@ const MIGRATIONS: &[&str] = &["
     CREATE INDEX search_rows_kind ON search_rows (kind);
     INSERT INTO search_rows (id, session, kind)
         SELECT rowid, session, kind FROM search_entries;
+", "
+    -- Repositories to pick from when making or changing a project: those
+    -- projects were made or changed with, and those listed on GitHub for
+    -- the owners below. `hidden` keeps one from GitHub the person removed
+    -- out of the list when its owner is listed again.
+    CREATE TABLE repositories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        location TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL CHECK (source IN ('used', 'github')),
+        -- The repository_owners login it was listed for; null when used.
+        owner TEXT,
+        added_unix_ms INTEGER NOT NULL,
+        -- Null while no project was made or changed with it.
+        last_used_unix_ms INTEGER,
+        hidden INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX repositories_by_owner ON repositories (owner) WHERE owner IS NOT NULL;
+    -- Every repository the projects have, saved as used when its project
+    -- was made.
+    INSERT INTO repositories (name, location, source, added_unix_ms, last_used_unix_ms)
+        SELECT name, location, 'used', min(created), max(created) FROM (
+            SELECT kept.name AS name,
+                CASE WHEN kept.url != '' THEN kept.url ELSE kept.path END AS location,
+                projects.created_unix_ms AS created
+            FROM project_repositories AS kept
+            JOIN projects ON projects.id = kept.project_id
+        )
+        GROUP BY location;
+    -- GitHub users and organizations whose repositories are saved. `error`
+    -- is why the last listing failed, for the person, null if it didn't.
+    CREATE TABLE repository_owners (
+        login TEXT PRIMARY KEY COLLATE NOCASE,
+        added_unix_ms INTEGER NOT NULL,
+        refreshed_unix_ms INTEGER,
+        error TEXT
+    );
 "];
 
 /// What reverting a board change did.
@@ -594,6 +633,7 @@ impl Store {
                 &project.id,
                 &project.repositories,
                 &project.urls,
+                project.created_unix_ms,
             )?;
             planning::insert_skills(&transaction, &project.id, &project.skills)?;
             transaction.commit()
@@ -617,6 +657,13 @@ impl Store {
                     params![from, to],
                 )?;
             }
+            // A saved folder moves too, unless one is saved there already.
+            transaction.execute(
+                "UPDATE OR IGNORE repositories SET location = ?2 || substr(location, length(?1) + 1)
+                 WHERE source = 'used'
+                     AND (location = ?1 OR substr(location, 1, length(?1) + 1) = ?1 || '/')",
+                params![from, to],
+            )?;
             transaction.commit()
         })();
         moved.map_err(self.failed())
@@ -726,7 +773,7 @@ impl Store {
                 "DELETE FROM project_repositories WHERE project_id = ?1",
                 [project],
             )?;
-            insert_repositories(&transaction, project, repositories, urls)?;
+            insert_repositories(&transaction, project, repositories, urls, now_unix_ms())?;
             // The first also goes in the column the first schema had.
             let first = repositories
                 .first()
@@ -1774,12 +1821,15 @@ fn log(
     Ok(())
 }
 
+/// Gives `project` these repositories, and saves each as used `now`.
 fn insert_repositories(
     transaction: &Transaction<'_>,
     project: &str,
     repositories: &[Repository],
     urls: &BTreeMap<String, String>,
+    now: i64,
 ) -> rusqlite::Result<()> {
+    saved::remember_used(transaction, repositories, urls, now)?;
     for (position, repository) in repositories.iter().enumerate() {
         transaction.execute(
             "INSERT INTO project_repositories (project_id, position, name, path, url)

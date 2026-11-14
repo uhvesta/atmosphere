@@ -1430,6 +1430,87 @@ only streamed.
 - [ ] Left each frame: copying the session's state for the streaming text,
   and comparing full rows for kept heights
 
+### Milestone R2: saved repositories
+
+The owner, 2026-11-13: picking a repository for a project shouldn't mean
+finding its folder or URL again each time. Humata keeps the repositories
+projects were made with, and those of GitHub users and organizations the
+person adds in Settings, to pick from with fuzzy search. Projects keep
+their own copies, so changing the list never changes a project.
+
+- [ ] The store keeps saved repositories (name, location, used or from
+  GitHub, its owner, when added and last used), filled from the projects'
+  repositories when it's brought up to date; a folder that moves is moved
+  in the list too
+- [ ] Making a project or changing its repositories saves each as used and
+  makes it the last used; a name the person gave it is kept, and the same
+  GitHub repository listed for an owner, as `.git` or over SSH, becomes it
+- [ ] The daemon lists them last used first, then by name, and renames or
+  removes one; removing one never touches a project, and one from GitHub
+  that was removed stays out when its owner is listed again
+- [ ] GitHub owners are saved by login (`octo-org`, `@octo-org` or its
+  page); their repositories are listed with This Mac's token, an
+  organization's with its private ones, a user's own with theirs, 100 a
+  page, once when added, every 6 hours while the daemon runs, and when
+  asked
+- [ ] A listing that fails keeps what was listed before and records why on
+  the owner, for the person: no such user or organization, the token
+  refused or not authorized for single sign-on, or the rate limit, to wait;
+  removing an owner removes only the repositories listed for it
+- [ ] `humata repository list|rename|remove` and `humata repository owner
+  list|add|remove|refresh`, as `humata host` is
+- [x] The repository picker in New Project and a project's settings, with
+  fuzzy search over name and location, the saved list first
+- [x] Settings › Repositories lists the owners with how many repositories
+  each has, when last listed and why it failed, and adds, removes and
+  refreshes them; and the saved repositories, to rename or remove
+
+**Done when:** store tests show the projects' repositories saved when the
+store is brought up to date, making or changing a project bumps them, and
+removing a saved repository or an owner leaves projects alone and drops
+only that owner's repositories; and a daemon test lists an organization
+over two pages, a user, the token's own user, and one GitHub doesn't have,
+from a stand-in for GitHub's API.
+
+### Milestone SA: subagents
+
+The owner, 2026-11-13: monitor the subagents an agent starts, and read
+each one's chat, as Claude Code's own list of agents allows; and see what
+Copilot sessions spend.
+
+- [x] The daemon records a subagent's steps under the tool call that
+  started it (`parent_call_id`: Claude Code's Agent call, Copilot's task
+  call), and what the backend last reported of it as a `Subagent` event:
+  its type, what it was asked, whether it runs, finished, failed or was
+  stopped, and its tokens, tool calls and time so far
+- [ ] The session's chat shows only its own agent's events; each
+  subagent's go to a chat of its own, worked out an event at a time. A
+  subagent's streamed words are dropped, as its whole message follows
+  them, so nothing is worked out per word for a chat nobody may be reading
+- [ ] The Agent or task call's row shows the subagent in place: type,
+  description, a spinner while it runs, time counting live, tokens, tool
+  calls, and its latest step while it runs; a permission the call itself
+  waits on still shows under it. One still running when its turn ends
+  reads as stopped
+- [ ] The header gains Agents once a session has a subagent, with how many
+  run. It and a subagent's row open a sheet: Main, then each subagent with
+  the same columns, beside the picked one's chat, read only, drawn with
+  the chat's own message, thinking, tool call and permission views. A
+  subagent started by a subagent opens from its row there. Main closes it
+- [ ] Usage: a subagent's own usage is kept apart from the session's. The
+  header's total adds it for Copilot, which counts each subagent apart
+  from its main agent; Claude Code's count for a turn is the CLI's own
+  result, taken to cover its subagents, so theirs isn't added again. A
+  subagent that reports no totals shows what its steps add up to
+- [ ] Copilot sessions show their tokens and premium requests in the
+  header and under each turn, from the usage the daemon now records
+
+**Done when:** TestStore tests show a subagent's events staying out of the
+session's chat, the list holding each subagent as last reported, one
+running at its turn's end reading as stopped, and opening one showing its
+own messages; and a flow shows two subagents under their calls and one
+open.
+
 ## Later
 
 - **Language servers** in the review view and the file view: go to definition,

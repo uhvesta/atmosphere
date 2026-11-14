@@ -57,6 +57,7 @@ pub use repositories::Clones;
 pub use storage::Places;
 mod plugins;
 mod review;
+mod saved_repositories;
 mod search;
 mod skills;
 mod storage;
@@ -114,6 +115,9 @@ pub struct Daemon {
     /// Told when how pull requests are followed changes, so the follower
     /// waits by the new setting at once.
     pull_refresh_changed: tokio::sync::watch::Sender<()>,
+    /// Held while GitHub owners' repositories are listed, so two listings
+    /// don't race.
+    owners_listing: tokio::sync::Mutex<()>,
 }
 
 impl Daemon {
@@ -170,6 +174,7 @@ impl Daemon {
             places,
             cleaning: std::sync::Mutex::default(),
             pull_refresh_changed,
+            owners_listing: tokio::sync::Mutex::new(()),
         });
         if let Err(error) = daemon.interrupt_unfinished_approvals() {
             eprintln!(
@@ -179,6 +184,7 @@ impl Daemon {
         }
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         tokio::spawn(pulls::follow(Arc::downgrade(&daemon), pull_refresh_told));
+        tokio::spawn(saved_repositories::follow(Arc::downgrade(&daemon)));
         daemon
     }
 
@@ -1369,10 +1375,11 @@ impl Daemon {
                         Some(pb::session_event::Kind::AssistantDelta(_)) => {
                             parts.push(event.id.clone());
                         }
+                        // A subagent's reply leaves the main agent's parts.
                         Some(
                             pb::session_event::Kind::AssistantMessage(_)
                             | pb::session_event::Kind::TurnEnded(_),
-                        ) => {
+                        ) if event.parent_call_id.is_empty() => {
                             // The host's history drops the parts of a whole
                             // reply, so a replay never sends them again.
                             for part in parts.drain(..) {
@@ -1619,6 +1626,46 @@ impl Daemon {
             Request::CleanUpStorage(clean) => {
                 self.start_cleanup(std::mem::take(clean))?;
                 return Ok(Reply::Response(Response::Storage(self.storage().await?)));
+            }
+            Request::ListSavedRepositories(_) => {
+                return Ok(Reply::Response(Response::SavedRepositories(
+                    self.saved_repositories()?,
+                )));
+            }
+            Request::RenameSavedRepository(rename) => {
+                self.rename_saved_repository(rename)?;
+                return Ok(Reply::Response(Response::SavedRepositories(
+                    self.saved_repositories()?,
+                )));
+            }
+            Request::RemoveSavedRepository(remove) => {
+                self.remove_saved_repository(remove.id)?;
+                return Ok(Reply::Response(Response::SavedRepositories(
+                    self.saved_repositories()?,
+                )));
+            }
+            Request::ListRepositoryOwners(_) => {
+                return Ok(Reply::Response(Response::RepositoryOwners(
+                    self.repository_owners()?,
+                )));
+            }
+            Request::AddRepositoryOwner(add) => {
+                self.add_repository_owner(&add.login)?;
+                return Ok(Reply::Response(Response::RepositoryOwners(
+                    self.repository_owners()?,
+                )));
+            }
+            Request::RemoveRepositoryOwner(remove) => {
+                self.remove_repository_owner(&remove.login)?;
+                return Ok(Reply::Response(Response::RepositoryOwners(
+                    self.repository_owners()?,
+                )));
+            }
+            Request::RefreshRepositoryOwners(refresh) => {
+                self.refresh_repository_owners_now(&refresh.login).await?;
+                return Ok(Reply::Response(Response::RepositoryOwners(
+                    self.repository_owners()?,
+                )));
             }
             Request::GetPullRefresh(_) => {
                 return Ok(Reply::Response(Response::PullRefresh(self.pull_refresh()?)));

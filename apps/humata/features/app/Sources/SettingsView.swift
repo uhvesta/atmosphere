@@ -28,6 +28,9 @@ package struct SettingsView: View {
             GitHubSettingsView(store: store.scope(state: \.github, action: \.github))
                 .tabItem { Label("GitHub", systemImage: "arrow.triangle.pull") }
                 .tag(SettingsTab.github)
+            SavedRepositoriesView(store: store.scope(state: \.repositories, action: \.repositories))
+                .tabItem { Label("Repositories", systemImage: "folder.badge.gearshape") }
+                .tag(SettingsTab.repositories)
             SkillsView(store: store.scope(state: \.skills, action: \.skills))
                 .tabItem { Label("Skills", systemImage: "books.vertical") }
                 .tag(SettingsTab.skills)

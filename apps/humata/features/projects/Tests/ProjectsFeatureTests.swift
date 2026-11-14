@@ -1447,6 +1447,38 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.tree(in: "p1").map(\.id), ["c", "a", "b"])
     }
 
+    func testAReadWhileASessionWorksLeavesWhatTheSidebarShowsAsItWas() async {
+        let project = Project(id: "p1", name: "Humata", repositories: [], created: Self.at(0))
+        // What a read brings `seconds` into the same minute: the session at
+        // work is active again and has said more, and its earlier reply
+        // still waits in the inbox.
+        func read(seconds: Double, said: String) -> (sessions: [Session], inbox: [InboxEntry]) {
+            var working = Session(
+                id: "a", name: "a", backend: .scripted, workingDirectory: "/", state: .working, projectID: "p1",
+                lastActive: Self.at(8).addingTimeInterval(seconds))
+            var waiting = working
+            working.lastMessage = said
+            waiting.lastMessage = "Done."
+            return ([working], [InboxEntry(session: waiting, reason: .reply)])
+        }
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Self.at(20))
+            $0.notifications = .previewValue
+        }
+        store.exhaustivity = .off
+        let first = read(seconds: 1, said: "One.")
+        await store.send(.loaded(projects: [project], sessions: first.sessions, inbox: first.inbox))
+        await store.finish()
+
+        // Nothing changes, so nothing showing the sidebar's state is drawn
+        // again.
+        store.exhaustivity = .on
+        let next = read(seconds: 3, said: "One. Two.")
+        await store.send(.loaded(projects: [project], sessions: next.sessions, inbox: next.inbox))
+    }
+
     func testSearchFindsProjectsAndSessionsByName() {
         var state = ProjectsFeature.State()
         state.projects = [

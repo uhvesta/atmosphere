@@ -39,7 +39,7 @@ pub use env::Env;
 pub use error::AgentError;
 pub use event::{
     ApprovalMode, Event, EventId, EventKind, ForkOptions, Image, Message, Parent, PermissionKind,
-    SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
+    SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions, SubagentStatus,
 };
 pub use humata_workspace::bundle;
 pub use humata_workspace::{

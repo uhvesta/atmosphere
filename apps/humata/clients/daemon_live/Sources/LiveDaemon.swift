@@ -907,6 +907,69 @@ extension DaemonClient {
                 }
                 return PullRefresh(kept)
             },
+            savedRepositories: {
+                let request = Humata_V1_ListSavedRepositories()
+                guard case .savedRepositories(let saved) = try await daemon.call(.listSavedRepositories(request))
+                else {
+                    throw DaemonError.unexpected("something other than the saved repositories")
+                }
+                return saved.repositories.map(SavedRepository.init)
+            },
+            renameSavedRepository: { id, name in
+                var request = Humata_V1_RenameSavedRepository()
+                request.id = id
+                request.name = name
+                guard case .savedRepositories(let saved) = try await daemon.call(.renameSavedRepository(request))
+                else {
+                    throw DaemonError.unexpected("something other than the saved repositories")
+                }
+                return saved.repositories.map(SavedRepository.init)
+            },
+            removeSavedRepository: { id in
+                var request = Humata_V1_RemoveSavedRepository()
+                request.id = id
+                guard case .savedRepositories(let saved) = try await daemon.call(.removeSavedRepository(request))
+                else {
+                    throw DaemonError.unexpected("something other than the saved repositories")
+                }
+                return saved.repositories.map(SavedRepository.init)
+            },
+            repositoryOwners: {
+                let request = Humata_V1_ListRepositoryOwners()
+                guard case .repositoryOwners(let owners) = try await daemon.call(.listRepositoryOwners(request))
+                else {
+                    throw DaemonError.unexpected("something other than the GitHub owners")
+                }
+                return owners.owners.map(RepositoryOwner.init)
+            },
+            addRepositoryOwner: { login in
+                var request = Humata_V1_AddRepositoryOwner()
+                request.login = login
+                guard case .repositoryOwners(let owners) = try await daemon.call(.addRepositoryOwner(request))
+                else {
+                    throw DaemonError.unexpected("something other than the GitHub owners")
+                }
+                return owners.owners.map(RepositoryOwner.init)
+            },
+            removeRepositoryOwner: { login in
+                var request = Humata_V1_RemoveRepositoryOwner()
+                request.login = login
+                guard case .repositoryOwners(let owners) = try await daemon.call(.removeRepositoryOwner(request))
+                else {
+                    throw DaemonError.unexpected("something other than the GitHub owners")
+                }
+                return owners.owners.map(RepositoryOwner.init)
+            },
+            refreshRepositoryOwners: { login in
+                var request = Humata_V1_RefreshRepositoryOwners()
+                request.login = login ?? ""
+                guard
+                    case .repositoryOwners(let owners) = try await daemon.call(.refreshRepositoryOwners(request))
+                else {
+                    throw DaemonError.unexpected("something other than the GitHub owners")
+                }
+                return owners.owners.map(RepositoryOwner.init)
+            },
             updateFromBase: { session in
                 var update = Humata_V1_UpdateFromBase()
                 update.sessionID = session

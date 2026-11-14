@@ -203,10 +203,11 @@ package struct Usage: Hashable, Sendable {
 
 extension ChatItem {
     /// The chat for `events`, oldest first. A permission request belongs to
-    /// the tool call running when it was made.
+    /// the tool call running when it was made. A subagent's steps aren't
+    /// the chat's.
     package static func items(_ events: some Sequence<SessionEvent>) -> [ChatItem] {
         var chat = Chat()
-        for event in events { chat.add(event) }
+        for event in events where event.parentCallID == nil { chat.add(event) }
         return chat.items
     }
 }
@@ -384,7 +385,7 @@ struct Chat: Equatable {
         case .compacted:
             items.append(.compacted(id: event.id))
         case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
-            .waiting:
+            .waiting, .subagent:
             return
         }
     }

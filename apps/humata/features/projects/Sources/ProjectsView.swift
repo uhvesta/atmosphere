@@ -7,85 +7,116 @@ import SwiftUI
 /// it is working or waiting on the person, and where it runs.
 package struct ProjectsView: View {
     @Bindable var store: StoreOf<ProjectsFeature>
-    /// Archived sessions stay folded away until opened, and as left.
-    @AppStorage("archivedShown") private var archivedShown = false
 
     package init(store: StoreOf<ProjectsFeature>) {
         self.store = store
     }
 
+    // Reads only what's picked and what's searched for. What the list
+    // holds is read by views of their own, so picking a session doesn't
+    // work the whole tree out again, and a read of the list draws only
+    // what it changed.
     package var body: some View {
-        list
-            .overlay {
-                if let failure = store.failure, store.projects.isEmpty, store.sessions.isEmpty {
-                    ContentUnavailableView {
-                        Label("Can't Reach Humata's Daemon", systemImage: "bolt.horizontal.circle")
-                    } description: {
-                        Text(failure)
-                    } actions: {
-                        Button("Try Again") { store.send(.refresh) }
-                    }
-                } else if !store.loadedOnce {
-                    ProgressView("Reading your projects…")
-                        .controlSize(.small)
-                } else if store.projects.isEmpty, store.sessions.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Projects", systemImage: "folder")
-                    } description: {
-                        Text("Add a repository on this Mac to start working with an agent in it.")
-                    } actions: {
-                        Button("Add Project…") { store.send(.addProjectTapped) }
-                    }
-                }
-            }
-            .toolbar {
-                ToolbarItem {
-                    Button {
-                        store.send(.addProjectTapped)
-                    } label: {
-                        Label("Add Project", systemImage: "folder.badge.plus")
-                    }
-                    .help("Add a project for a repository on this Mac (⇧⌘N)")
-                }
-            }
-            .modifier(Sheets(store: store))
-    }
-
-    /// Everything in the inbox: sessions and admin actions.
-    private var waiting: Int { store.inbox.count + store.approvals.count }
-
-    private var list: some View {
+        let _ = SidebarBodyRuns.ran(.sidebar)
         List(selection: $store.selection.sending(\.selected)) {
-            Label("Inbox", systemImage: "tray")
-                .badge(store.blockedCount)
-                .tag(SidebarItem.inbox)
-                .accessibilityLabel(
-                    Text("Inbox, \(store.blockedCount) blocked on you, \(waiting) in all"))
-            Label("Hosts", systemImage: "server.rack")
-                .tag(SidebarItem.hosts)
-            Label("Search Sessions", systemImage: "text.magnifyingglass")
-                .tag(SidebarItem.search)
-            // With nothing listed the overlay says it; with a list, the list
-            // is as it was last read.
-            if let failure = store.failure, !(store.projects.isEmpty && store.sessions.isEmpty) {
-                HStack {
-                    Label("Can't reach Humata's daemon", systemImage: "bolt.horizontal.circle")
-                        .foregroundStyle(.orange)
-                        .help(failure)
-                    Spacer()
-                    Button("Try Again") { store.send(.refresh) }
-                        .buttonStyle(.borderless)
-                }
-                .selectionDisabled()
-            }
-            if let matches = store.state.matches {
-                results(matches)
-            } else {
-                everything
-            }
+            SidebarItems(store: store)
         }
         .listStyle(.sidebar)
         .searchable(text: $store.search.sending(\.searchChanged), placement: .sidebar, prompt: "Search names")
+        .overlay { SidebarNotice(store: store) }
+        .toolbar {
+            ToolbarItem {
+                Button {
+                    store.send(.addProjectTapped)
+                } label: {
+                    Label("Add Project", systemImage: "folder.badge.plus")
+                }
+                .help("Add a project for a repository on this Mac (⇧⌘N)")
+            }
+        }
+        .modifier(Sheets(store: store))
+    }
+}
+
+/// Over an empty sidebar: why it's empty, and what to do about it.
+private struct SidebarNotice: View {
+    let store: StoreOf<ProjectsFeature>
+
+    var body: some View {
+        if let failure = store.failure, store.projects.isEmpty, store.sessions.isEmpty {
+            ContentUnavailableView {
+                Label("Can't Reach Humata's Daemon", systemImage: "bolt.horizontal.circle")
+            } description: {
+                Text(failure)
+            } actions: {
+                Button("Try Again") { store.send(.refresh) }
+            }
+        } else if !store.loadedOnce {
+            ProgressView("Reading your projects…")
+                .controlSize(.small)
+        } else if store.projects.isEmpty, store.sessions.isEmpty {
+            ContentUnavailableView {
+                Label("No Projects", systemImage: "folder")
+            } description: {
+                Text("Add a repository on this Mac to start working with an agent in it.")
+            } actions: {
+                Button("Add Project…") { store.send(.addProjectTapped) }
+            }
+        }
+    }
+}
+
+/// The inbox's row. Its own view, so a change to what waits on the person
+/// draws only its count again.
+private struct InboxLabel: View {
+    let store: StoreOf<ProjectsFeature>
+
+    var body: some View {
+        let _ = SidebarBodyRuns.ran(.inbox)
+        // Everything in the inbox: sessions and admin actions.
+        let waiting = store.inbox.count + store.approvals.count
+        Label("Inbox", systemImage: "tray")
+            .badge(store.blockedCount)
+            .accessibilityLabel(
+                Text("Inbox, \(store.blockedCount) blocked on you, \(waiting) in all"))
+    }
+}
+
+/// The sidebar's rows: the inbox, hosts and search, then what the name
+/// search found or every project with its sessions.
+///
+/// It holds the store and nothing else, so drawn again by the sidebar for
+/// another pick it's the same as it was and isn't worked out again; with
+/// the archived section's stored setting here it never was the same.
+private struct SidebarItems: View {
+    let store: StoreOf<ProjectsFeature>
+
+    var body: some View {
+        let _ = SidebarBodyRuns.ran(.list)
+        InboxLabel(store: store)
+            .tag(SidebarItem.inbox)
+        Label("Hosts", systemImage: "server.rack")
+            .tag(SidebarItem.hosts)
+        Label("Search Sessions", systemImage: "text.magnifyingglass")
+            .tag(SidebarItem.search)
+        // With nothing listed the notice over the list says it; with a
+        // list, the list is as it was last read.
+        if let failure = store.failure, !(store.projects.isEmpty && store.sessions.isEmpty) {
+            HStack {
+                Label("Can't reach Humata's daemon", systemImage: "bolt.horizontal.circle")
+                    .foregroundStyle(.orange)
+                    .help(failure)
+                Spacer()
+                Button("Try Again") { store.send(.refresh) }
+                    .buttonStyle(.borderless)
+            }
+            .selectionDisabled()
+        }
+        if let matches = store.state.matches {
+            results(matches)
+        } else {
+            everything
+        }
     }
 
     /// What the search found, or that it found nothing.
@@ -106,7 +137,7 @@ package struct ProjectsView: View {
         if !matches.sessions.isEmpty {
             Section("Sessions") {
                 ForEach(matches.sessions) { session in
-                    row(session)
+                    SidebarSessionRow.row(session, in: store)
                 }
             }
         }
@@ -169,13 +200,7 @@ package struct ProjectsView: View {
                     .help("Start a chat in no project, in a folder you pick or one of its own (⌘N)")
                 }
             }
-            if !store.state.archived.isEmpty {
-                Section("Archived (\(store.state.archived.count))", isExpanded: $archivedShown) {
-                    ForEach(store.state.sorted(store.state.archived)) { session in
-                        row(session)
-                    }
-                }
-            }
+            ArchivedSessions(store: store)
         }
     }
 
@@ -183,7 +208,7 @@ package struct ProjectsView: View {
     /// from, so the whole tree shows at once.
     private func tree(_ nodes: [SessionNode]) -> some View {
         ForEach(Self.flattened(nodes), id: \.session.id) { entry in
-            row(entry.session)
+            SidebarSessionRow.row(entry.session, in: store)
                 .padding(.leading, CGFloat(entry.depth) * 14)
         }
     }
@@ -193,75 +218,136 @@ package struct ProjectsView: View {
             [(node.session, depth)] + flattened(node.children ?? [], depth: depth + 1)
         }
     }
+}
 
-    private func row(_ session: Session) -> some View {
-        let busy = store.busy.contains(session.id)
-        let inTurn = session.state == .working || session.state == .waitingForApproval
-        let hold = store.state.hold(on: session)
-        // Says why Archive and Move to Host are greyed out: a menu item's
-        // help doesn't always show.
-        let held: LocalizedStringKey? =
-            switch hold {
-            case .busy: "A change to it is still being made: wait for it to finish"
-            case .inTurn: "Its turn is running: stop it to archive or move it"
-            case nil: nil
+/// The archived sessions, folded away until opened, and as left.
+private struct ArchivedSessions: View {
+    let store: StoreOf<ProjectsFeature>
+    @AppStorage("archivedShown") private var shown = false
+
+    var body: some View {
+        let archived = store.state.archived
+        if !archived.isEmpty {
+            Section("Archived (\(archived.count))", isExpanded: $shown) {
+                ForEach(store.state.sorted(archived)) { session in
+                    SidebarSessionRow.row(session, in: store)
+                }
             }
-        let moveHelp: LocalizedStringKey =
-            switch hold {
-            case .busy: "Wait for the change being made to it to finish, then move it"
-            case .inTurn: "Its turn is running; stop it or wait for it to end, then move it"
-            case nil: "Run it on this Mac or one of your hosts"
-            }
-        let archiveHelp: LocalizedStringKey =
-            switch hold {
-            case .busy: "Wait for the change being made to it to finish, then archive it"
-            case .inTurn: "Its turn is running; use Stop and Archive, or wait for it to end"
-            case nil: "Put it away under Archived; its copy of the code stays until it's deleted"
-            }
-        return SessionRow(session: session, now: store.now, busy: busy)
+        }
+    }
+}
+
+/// A session's row in the sidebar with its menu. Equal when the session,
+/// the time it's shown against and what holds it are, so the list drawn
+/// again for another session leaves this row as it is. It reads nothing
+/// from the store itself; the store only takes its actions.
+private struct SidebarSessionRow: View, Equatable {
+    let session: Session
+    /// When the list was read, for how long ago it was active.
+    let now: Date?
+    /// What keeps it from being archived or moved now.
+    let hold: SessionHold?
+    let store: StoreOf<ProjectsFeature>
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.session == rhs.session && lhs.now == rhs.now && lhs.hold == rhs.hold
+    }
+
+    /// The session's row in the list, drawn again only when what it shows
+    /// changes.
+    static func row(_ session: Session, in store: StoreOf<ProjectsFeature>) -> some View {
+        SidebarSessionRow(session: session, now: store.now, hold: store.state.hold(on: session), store: store)
+            .equatable()
             .tag(SidebarItem.session(session.id))
-            .contextMenu {
-                Button("Rename…") { store.send(.renameTapped(session.id)) }
-                if session.projectID != nil {
-                    Button("Move to Task…") { store.send(.moveTapped(session.id)) }
-                }
-                if !session.archived {
-                    Button("Move to Host…") { store.send(.moveToHostTapped(session.id)) }
-                        .disabled(hold != nil)
-                        .help(moveHelp)
-                }
-                Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
-                    store.send(.keeperTapped(session.id, keeper: !session.keeper))
-                }
-                let others = store.state.comparable(to: session)
-                if !others.isEmpty {
-                    Menu("Compare With") {
-                        ForEach(others) { other in
-                            Button(other.title) { store.send(.compareTapped(session.id, with: other.id)) }
-                        }
-                    }
-                }
-                Divider()
-                if session.archived {
-                    Button("Unarchive") { store.send(.archiveTapped(session.id, archived: false)) }
-                        .disabled(store.busy.contains(session.id))
-                    Button("Delete…", role: .destructive) { store.send(.deleteSessionTapped(session.id)) }
-                        .disabled(store.busy.contains(session.id))
-                } else {
-                    if let held { Text(held) }
-                    Button("Archive") { store.send(.archiveTapped(session.id, archived: true)) }
-                        .disabled(hold != nil)
-                        .help(archiveHelp)
-                    if inTurn {
-                        Button("Stop and Archive") { store.send(.stopAndArchiveTapped(session.id)) }
-                            .disabled(busy)
-                            .help(
-                                busy
-                                    ? "Wait for the change being made to it to finish"
-                                    : "End its turn now, then archive it")
-                    }
+    }
+
+    var body: some View {
+        let _ = SidebarBodyRuns.ran(.sessionRow)
+        SessionRow(session: session, now: now, busy: hold == .busy)
+            .contextMenu { menu }
+    }
+
+    /// Says why Archive and Move to Host are greyed out: a menu item's
+    /// help doesn't always show.
+    private var held: LocalizedStringKey? {
+        switch hold {
+        case .busy: "A change to it is still being made: wait for it to finish"
+        case .inTurn: "Its turn is running: stop it to archive or move it"
+        case nil: nil
+        }
+    }
+
+    private var moveHelp: LocalizedStringKey {
+        switch hold {
+        case .busy: "Wait for the change being made to it to finish, then move it"
+        case .inTurn: "Its turn is running; stop it or wait for it to end, then move it"
+        case nil: "Run it on this Mac or one of your hosts"
+        }
+    }
+
+    private var archiveHelp: LocalizedStringKey {
+        switch hold {
+        case .busy: "Wait for the change being made to it to finish, then archive it"
+        case .inTurn: "Its turn is running; use Stop and Archive, or wait for it to end"
+        case nil: "Put it away under Archived; its copy of the code stays until it's deleted"
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        let busy = hold == .busy
+        let inTurn = session.state == .working || session.state == .waitingForApproval
+        Button("Rename…") { store.send(.renameTapped(session.id)) }
+        if session.projectID != nil {
+            Button("Move to Task…") { store.send(.moveTapped(session.id)) }
+        }
+        if !session.archived {
+            Button("Move to Host…") { store.send(.moveToHostTapped(session.id)) }
+                .disabled(hold != nil)
+                .help(moveHelp)
+        }
+        Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
+            store.send(.keeperTapped(session.id, keeper: !session.keeper))
+        }
+        CompareMenu(session: session, store: store)
+        Divider()
+        if session.archived {
+            Button("Unarchive") { store.send(.archiveTapped(session.id, archived: false)) }
+                .disabled(busy)
+            Button("Delete…", role: .destructive) { store.send(.deleteSessionTapped(session.id)) }
+                .disabled(busy)
+        } else {
+            if let held { Text(held) }
+            Button("Archive") { store.send(.archiveTapped(session.id, archived: true)) }
+                .disabled(hold != nil)
+                .help(archiveHelp)
+            if inTurn {
+                Button("Stop and Archive") { store.send(.stopAndArchiveTapped(session.id)) }
+                    .disabled(busy)
+                    .help(
+                        busy
+                            ? "Wait for the change being made to it to finish"
+                            : "End its turn now, then archive it")
+            }
+        }
+    }
+}
+
+/// The sessions a session can be compared with, in its menu. Its own
+/// view: it reads the other sessions, which the row doesn't show, so a
+/// change to them doesn't draw the row again.
+private struct CompareMenu: View {
+    let session: Session
+    let store: StoreOf<ProjectsFeature>
+
+    var body: some View {
+        let others = store.state.comparable(to: session)
+        if !others.isEmpty {
+            Menu("Compare With") {
+                ForEach(others) { other in
+                    Button(other.title) { store.send(.compareTapped(session.id, with: other.id)) }
                 }
             }
+        }
     }
 }
 
@@ -375,11 +461,8 @@ struct NewProjectView: View {
                 ForEach($store.repositories) { $row in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            TextField(
-                                "Repository", text: $row.path,
-                                prompt: Text("/path/to/repository or https://github.com/owner/name")
-                            )
-                            .labelsHidden()
+                            RepositoryField(
+                                path: $row.path, row: row.id, search: store.scope(state: \.search, action: \.search))
                             if store.repositories.count > 1 {
                                 Button {
                                     store.send(.removeRepositoryTapped(row.id))
@@ -391,6 +474,7 @@ struct NewProjectView: View {
                                 .help("Leave this repository out of the project")
                             }
                         }
+                        RepositorySuggestionList(row: row.id, search: store.scope(state: \.search, action: \.search))
                         if row.needsFullPath { FullPathNote() }
                     }
                 }
@@ -402,7 +486,8 @@ struct NewProjectView: View {
                 Text("Repositories")
             } footer: {
                 Text(
-                    "Git repositories on this Mac, or URLs to clone, such as a GitHub repository's. Each "
+                    "Git repositories on this Mac, or URLs to clone, such as a GitHub repository's; type to "
+                        + "search those used before and those of the GitHub owners in Settings › Repositories. Each "
                         + "session works in its own copy of all of them, so the folders themselves are left as "
                         + "they are, and a URL's clone is fetched before each session starts."
                 )

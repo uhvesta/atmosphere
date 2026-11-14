@@ -94,7 +94,9 @@ impl Summary {
                 self.failed = true;
                 self.last_message = cut(message);
             }
-            EventKind::AssistantMessage { text } => self.last_message = cut(text),
+            EventKind::AssistantMessage { text } if event.is_main() => {
+                self.last_message = cut(text);
+            }
             EventKind::Checkpoint { snapshots } => {
                 self.checkpoints += 1;
                 self.code.clone_from(snapshots);

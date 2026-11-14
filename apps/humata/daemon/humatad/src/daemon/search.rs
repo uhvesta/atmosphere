@@ -345,6 +345,10 @@ fn entries(events: &[pb::SessionEvent], from: usize) -> Vec<Entry> {
     let mut turn = 1;
     let mut entries = Vec::new();
     for (index, event) in events.iter().enumerate() {
+        // A hit opens the chat at it, where a subagent's steps aren't.
+        if !event.parent_call_id.is_empty() {
+            continue;
+        }
         let found = match &event.kind {
             Some(Kind::UserMessage(message)) => Some((EntryKind::Message, message.text.clone())),
             Some(Kind::AssistantMessage(message)) => Some((EntryKind::Reply, message.text.clone())),

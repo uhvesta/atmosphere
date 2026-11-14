@@ -423,6 +423,65 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// The agent hands two jobs to subagents: each shows under its call
+    /// with what it used, the header lists them, and one opens to read.
+    func testSubagents() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .think("Two things to find; one agent each."),
+                .delegate(
+                    type: "Explore", description: "Find the parser",
+                    steps: [
+                        .run(command: "rg -l 'fn parse' src", output: "src/parser.rs\nsrc/lexer.rs"),
+                        .run(command: "sed -n 1,40p src/parser.rs", output: "pub fn parse(input: &str) -> Ast {"),
+                        .say("The parser is `parse` in `src/parser.rs`; the lexer it reads from is `src/lexer.rs`."),
+                    ],
+                    result: "src/parser.rs", tokens: 18_400),
+                .delegate(
+                    type: "general-purpose", description: "Run the parser's tests",
+                    steps: [
+                        .think("The tests are under tests/parser."),
+                        .run(command: "cargo test parser", output: "test result: ok. 42 passed; 0 failed"),
+                        .say("All 42 parser tests pass."),
+                    ],
+                    result: "42 passed", tokens: 9_700),
+                .say("The parser is in `src/parser.rs`, and its 42 tests pass."),
+            ]
+        }
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "Parser"))
+        try await daemon.client.send(session.id, "Where's the parser, and do its tests pass?", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("subagents", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.subagents.count == 2 && store.session?.isWorking == false }
+        await flow.step("session")
+
+        let first = try XCTUnwrap(store.session?.subagents.first)
+        store.send(.session(.presented(.subagentTapped(callID: first.id))))
+        try await until { store.session?.subagentItems.isEmpty == false }
+        await flow.step("the first agent")
+
+        let second = try XCTUnwrap(store.session?.subagents.last)
+        store.send(.session(.presented(.subagentTapped(callID: second.id))))
+        try await until { store.session?.shownSubagent == second.id }
+        await flow.step("the second agent")
+
+        store.send(.session(.presented(.subagentClosed)))
+        try await until { store.session?.shownSubagent == nil }
+        flow.finish()
+    }
+
     /// A session's changes reviewed: a comment on a changed line is sent as
     /// a review, the agent answers in the thread and edits the line, and its
     /// fix is shown. A Markdown file reads rendered, commented on by block.

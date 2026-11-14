@@ -409,6 +409,37 @@ enum HostCommand {
 }
 
 #[derive(Subcommand)]
+enum RepositoryCommand {
+    /// List the saved repositories to pick from for a project, last used
+    /// first.
+    List,
+    /// Rename a saved repository in the list; no project changes.
+    Rename { id: i64, name: String },
+    /// Take a saved repository out of the list; projects that have it
+    /// keep it.
+    Remove { id: i64 },
+    /// The GitHub users and organizations whose repositories are saved.
+    #[command(subcommand)]
+    Owner(OwnerCommand),
+}
+
+#[derive(Subcommand)]
+enum OwnerCommand {
+    /// List the owners, with how many repositories each has saved and why
+    /// the last listing failed, if it did.
+    List,
+    /// Save a user's or organization's repositories, as `octo-org`,
+    /// `@octo-org` or `https://github.com/octo-org`; they are listed on
+    /// GitHub in the background, with This Mac's token.
+    Add { login: String },
+    /// Remove an owner and its repositories from the list; those a project
+    /// used stay.
+    Remove { login: String },
+    /// List an owner's repositories on GitHub again now, or every owner's.
+    Refresh { login: Option<String> },
+}
+
+#[derive(Subcommand)]
 enum RecoverCommand {
     /// List the Mac's recovery copies of sessions on hosts, and which ones
     /// their host lost.
@@ -589,6 +620,10 @@ enum Command {
     /// Add, check, set up or list the machines sessions run on.
     #[command(subcommand)]
     Host(HostCommand),
+    /// List, rename or remove the saved repositories to pick from for a
+    /// project, and the GitHub owners whose repositories are among them.
+    #[command(subcommand)]
+    Repository(RepositoryCommand),
     /// Restore sessions a host lost, or move them to another, from the
     /// copies the Mac keeps.
     #[command(subcommand)]
@@ -896,8 +931,12 @@ enum Command {
     /// Comment on a session's changes and send the comments to its agent.
     #[command(subcommand)]
     Review(ReviewCommand),
-    /// Print a session's events.
+    /// Print a session's events; a subagent's are indented, and end with
+    /// the call that started it.
     History { session: String },
+    /// List the subagents a session's agent started: call id, status, type,
+    /// tokens, tool calls, milliseconds, and what it was asked to do.
+    Subagents { session: String },
     /// Print a session's events, then each new one, until interrupted.
     Watch { session: String },
     /// List every host's sessions.
@@ -1171,6 +1210,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
         }
         Command::Host(command) => host(&client, command).await?,
+        Command::Repository(command) => saved_repository(&client, command).await?,
         Command::Recover(command) => recover(&client, command).await?,
         Command::Terminal(command) => terminal(&client, command).await?,
         Command::Port(command) => port(&client, command).await?,
@@ -1714,6 +1754,11 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 println!("{}", print::event(&event));
             }
         }
+        Command::Subagents { session } => {
+            for line in print::subagents(&history(&client, &session).await?) {
+                println!("{line}");
+            }
+        }
         Command::Watch { session } => {
             let request = Request::WatchSession(pb::WatchSession {
                 session_id: session,
@@ -2098,6 +2143,58 @@ async fn recovery_host(client: &Client, session: &str) -> Result<String, CliErro
             .map(|recovery| recovery.host)
             .unwrap_or_default()),
         other => Err(unexpected("the recovery copies", &other)),
+    }
+}
+
+async fn saved_repository(client: &Client, command: RepositoryCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    let request = match command {
+        RepositoryCommand::List => Request::ListSavedRepositories(pb::ListSavedRepositories {}),
+        RepositoryCommand::Rename { id, name } => {
+            Request::RenameSavedRepository(pb::RenameSavedRepository { id, name })
+        }
+        RepositoryCommand::Remove { id } => {
+            Request::RemoveSavedRepository(pb::RemoveSavedRepository { id })
+        }
+        RepositoryCommand::Owner(command) => return repository_owner(client, command).await,
+    };
+    match client.call(request).await? {
+        Response::SavedRepositories(saved) => {
+            for repository in &saved.repositories {
+                println!("{}", print::saved_repository(repository));
+            }
+            Ok(())
+        }
+        other => Err(unexpected("the saved repositories", &other)),
+    }
+}
+
+async fn repository_owner(client: &Client, command: OwnerCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    let request = match command {
+        OwnerCommand::List => Request::ListRepositoryOwners(pb::ListRepositoryOwners {}),
+        OwnerCommand::Add { login } => {
+            Request::AddRepositoryOwner(pb::AddRepositoryOwner { login })
+        }
+        OwnerCommand::Remove { login } => {
+            Request::RemoveRepositoryOwner(pb::RemoveRepositoryOwner { login })
+        }
+        OwnerCommand::Refresh { login } => {
+            Request::RefreshRepositoryOwners(pb::RefreshRepositoryOwners {
+                login: login.unwrap_or_default(),
+            })
+        }
+    };
+    match client.call(request).await? {
+        Response::RepositoryOwners(owners) => {
+            for owner in &owners.owners {
+                println!("{}", print::repository_owner(owner));
+            }
+            Ok(())
+        }
+        other => Err(unexpected("the repository owners", &other)),
     }
 }
 

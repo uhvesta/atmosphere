@@ -208,6 +208,16 @@ impl Turn {
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
+        self.emit_under(None, kind)
+    }
+
+    /// Records `kind` as a step of the subagent the tool call
+    /// `parent_call_id` started, or of the session's own agent when None.
+    pub(crate) fn emit_under(
+        &self,
+        parent_call_id: Option<String>,
+        kind: EventKind,
+    ) -> Result<Event, AgentError> {
         // A checkpoint after each change, and where the agent's context
         // is cut, so a rewind to there has the files as they were.
         let saving = match &kind {
@@ -223,7 +233,9 @@ impl Turn {
             EventKind::Compacted => true,
             _ => false,
         };
-        let event = self.session.log.append(Event::now(kind))?;
+        let mut event = Event::now(kind);
+        event.parent_call_id = parent_call_id;
+        let event = self.session.log.append(event)?;
         if saving {
             save_soon(&self.session, self.workspaces.clone());
         }

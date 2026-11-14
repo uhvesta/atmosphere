@@ -23,6 +23,11 @@ package final class InMemoryDaemon: Sendable {
         case propose(title: String, spec: String, parentID: String? = nil)
         /// Proposes `spec` as `itemID`'s new spec.
         case proposeSpecEdit(itemID: String, spec: String)
+        /// Starts a subagent with an Agent tool call. The subagent takes
+        /// `steps`, of which it says, thinks and runs without asking, and
+        /// skips the rest; then it reports `tokens` used and the call
+        /// returns `result`.
+        case delegate(type: String, description: String, steps: [Step], result: String, tokens: UInt64 = 0)
     }
 
     /// A turn stopped at a permission request, with the steps after it.
@@ -56,6 +61,8 @@ package final class InMemoryDaemon: Sendable {
         /// Each session's histories before its rewinds, the last last.
         var rewinds: [String: [[SessionEvent]]] = [:]
         var skills = SkillList()
+        /// Whether listing skills fails, as with the daemon gone.
+        var skillsFail = false
         var plugins = PluginList()
         var sessionDefaults = SessionDefaults()
         var nextQueued = 1
@@ -93,6 +100,11 @@ package final class InMemoryDaemon: Sendable {
         var threads: [Thread] = []
         var pullRequests: [PullRequest] = []
         var pullRefresh = PullRefresh.standard
+        var savedRepositories: [SavedRepository] = []
+        var nextSavedRepository: Int64 = 0
+        var repositoryOwners: [RepositoryOwner] = []
+        /// What GitHub answers for each owner, by login in lower case.
+        var ownerListings: [String: OwnerListing] = [:]
         /// Each project's open issues on GitHub, by project.
         var issues: [String: [Issue]] = [:]
         /// The issues made tasks, as `project#number`.
@@ -338,6 +350,12 @@ package final class InMemoryDaemon: Sendable {
             $0.skills = skills
             $0.plugins = plugins
         }
+    }
+
+    /// Makes listing skills fail, as when the daemon can't be reached, or
+    /// answer again.
+    package func setSkillsFail(_ fail: Bool) {
+        state.withValue { $0.skillsFail = fail }
     }
 
     /// Sets what `backend` offers; nil makes listing them fail, as on a
@@ -598,7 +616,11 @@ package final class InMemoryDaemon: Sendable {
                 }
             },
             cleanUpStorage: { cleanup in self.cleanUp(cleanup) },
-            skills: { self.state.value.skills },
+            skills: {
+                let state = self.state.value
+                guard !state.skillsFail else { throw DaemonError.disconnected }
+                return state.skills
+            },
             pickSkill: { name, candidates, winner in try self.pickSkill(name, candidates, winner) },
             plugins: { self.state.value.plugins },
             setProjectPlugin: { project, agent, id, enabled in
@@ -638,6 +660,13 @@ package final class InMemoryDaemon: Sendable {
             pullRequests: { of, _ in self.pullRequests(of) },
             pullRefresh: { self.state.value.pullRefresh },
             setPullRefresh: { refresh in try self.setPullRefresh(refresh) },
+            savedRepositories: { self.savedRepositories() },
+            renameSavedRepository: { id, name in try self.renameSavedRepository(id, name) },
+            removeSavedRepository: { id in try self.removeSavedRepository(id) },
+            repositoryOwners: { self.repositoryOwners() },
+            addRepositoryOwner: { login in try self.addRepositoryOwner(login) },
+            removeRepositoryOwner: { login in try self.removeRepositoryOwner(login) },
+            refreshRepositoryOwners: { login in try self.refreshRepositoryOwners(login) },
             updateFromBase: { session in try self.updateFromBase(session) },
             importIssues: { project in try self.importIssues(project) },
             watch: { session, after in self.watch(session, after: after) }
@@ -922,6 +951,8 @@ package final class InMemoryDaemon: Sendable {
                 append(.reasoning(text), to: session)
             case .propose, .proposeSpecEdit:
                 propose(step, in: session)
+            case .delegate(let type, let description, let steps, let result, let tokens):
+                delegate(session, type: type, description: description, steps: steps, result: result, tokens: tokens)
             case .run(let command, _), .write(let command, _):
                 let (tool, kind) = step.isRun ? ("shell", PermissionKind.shell) : ("write_file", .write)
                 let summary = step.isRun ? "Run `\(command)`" : "Write \(command)"
@@ -951,13 +982,58 @@ package final class InMemoryDaemon: Sendable {
         return true
     }
 
+    /// Plays a subagent: its Agent call in the chat, and under that call
+    /// what it's reported to be and each step it takes.
+    private func delegate(
+        _ session: String, type: String, description: String, steps: [Step], result: String, tokens: UInt64
+    ) {
+        let callID = state.withValue { state in
+            defer { state.nextRequest += 1 }
+            return "c\(state.nextRequest)"
+        }
+        let arguments =
+            (try? JSONSerialization.data(withJSONObject: ["subagent_type": type, "description": description]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        append(.toolStarted(callID: callID, tool: "Agent", argumentsJSON: arguments), to: session)
+        var report = Subagent(agentType: type, description: description, status: .running)
+        append(.subagent(report), to: session, under: callID)
+        for step in steps {
+            switch step {
+            case .say(let text):
+                append(.assistantMessage(text), to: session, under: callID)
+            case .think(let text):
+                append(.reasoning(text), to: session, under: callID)
+            case .run(let command, let output):
+                let call = state.withValue { state in
+                    defer { state.nextRequest += 1 }
+                    return "c\(state.nextRequest)"
+                }
+                let arguments =
+                    (try? JSONSerialization.data(withJSONObject: ["command": command]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                append(.toolStarted(callID: call, tool: "shell", argumentsJSON: arguments), to: session, under: callID)
+                append(.toolCompleted(callID: call, success: true, output: output), to: session, under: callID)
+                report.toolUses += 1
+                // Each event is a second after the one before.
+                report.duration += .seconds(1)
+            case .write, .propose, .proposeSpecEdit, .delegate:
+                continue
+            }
+            report.duration += .seconds(1)
+        }
+        report.status = .completed
+        report.totalTokens = tokens
+        append(.subagent(report), to: session, under: callID)
+        append(.toolCompleted(callID: callID, success: true, output: result), to: session)
+    }
+
     private func complete(_ session: String, _ step: Step, callID: String, approved: Bool) {
         let output: String
         switch step {
         case .run(_, let ran): output = approved ? ran : "The person denied this."
         case .write(let path, _):
             output = approved ? "Wrote \(path)" : "The person denied this."
-        case .say, .think, .propose, .proposeSpecEdit: return
+        case .say, .think, .propose, .proposeSpecEdit, .delegate: return
         }
         let event = append(.toolCompleted(callID: callID, success: approved, output: output), to: session)
         if approved, case .write(let path, let contents) = step {
@@ -1063,14 +1139,16 @@ package final class InMemoryDaemon: Sendable {
     }
 
     /// Adds an event to the session's history and tells its watchers.
-    /// Returns its id.
+    /// Returns its id. One `under` a call is a step of the subagent that
+    /// call started, which what's said of the session leaves out.
     @discardableResult
-    func append(_ kind: SessionEvent.Kind, to session: String) -> String {
+    func append(_ kind: SessionEvent.Kind, to session: String, under parent: String? = nil) -> String {
         let (event, watchers) = state.withValue { state in
-            let event = SessionEvent(id: "e\(state.nextEvent)", time: start + Double(state.nextEvent), kind: kind)
+            let event = SessionEvent(
+                id: "e\(state.nextEvent)", time: start + Double(state.nextEvent), kind: kind, parentCallID: parent)
             state.nextEvent += 1
             state.histories[session, default: []].append(event)
-            if let index = state.sessions.firstIndex(where: { $0.id == session }) {
+            if parent == nil, let index = state.sessions.firstIndex(where: { $0.id == session }) {
                 state.sessions[index].state = Self.state(after: kind, waiting: state.paused[session] != nil)
                 state.sessions[index].lastActive = event.time
                 if kind.endsTurn { state.sessions[index].turns += 1 }
@@ -1635,7 +1713,7 @@ extension InMemoryDaemon.Step {
         switch self {
         case .run: .shell
         case .write: .write
-        case .say, .think, .propose, .proposeSpecEdit: nil
+        case .say, .think, .propose, .proposeSpecEdit, .delegate: nil
         }
     }
 }

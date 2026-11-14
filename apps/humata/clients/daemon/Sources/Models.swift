@@ -1214,16 +1214,60 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         case rewindUndone
         /// The agent summed up its earlier context to make room.
         case compacted
+        /// The subagent the call `parentCallID` names started, as last
+        /// reported: a later one for the same call replaces it.
+        case subagent(Subagent)
     }
 
     package var id: String
     package var time: Date
     package var kind: Kind
+    /// For a subagent's step, the tool call that started the subagent, such
+    /// as Claude Code's Agent call or Copilot's task call; nil for the
+    /// session's own agent, whose steps are the chat.
+    package var parentCallID: String?
 
-    package init(id: String, time: Date, kind: Kind) {
+    package init(id: String, time: Date, kind: Kind, parentCallID: String? = nil) {
         self.id = id
         self.time = time
         self.kind = kind
+        self.parentCallID = parentCallID
+    }
+}
+
+/// A subagent the agent started with a tool call, as its backend last
+/// reported it.
+package struct Subagent: Hashable, Sendable {
+    package enum Status: Hashable, Sendable {
+        case running
+        case completed
+        case failed
+        /// Stopped before it finished, as when its turn was.
+        case stopped
+    }
+
+    /// Such as general-purpose or Explore; empty when the backend doesn't
+    /// say.
+    package var agentType: String
+    /// What it was asked to do, in a few words.
+    package var description: String
+    package var status: Status
+    /// So far: tokens in and out, tool calls, and time since it started; 0
+    /// when the backend hasn't said.
+    package var totalTokens: UInt64
+    package var toolUses: UInt64
+    package var duration: Duration
+
+    package init(
+        agentType: String = "", description: String = "", status: Status, totalTokens: UInt64 = 0,
+        toolUses: UInt64 = 0, duration: Duration = .zero
+    ) {
+        self.agentType = agentType
+        self.description = description
+        self.status = status
+        self.totalTokens = totalTokens
+        self.toolUses = toolUses
+        self.duration = duration
     }
 }
 

@@ -2,7 +2,8 @@
 
 use humata_wire::pb;
 
-/// `<event id>\t<kind>\t<detail>`.
+/// `<event id>\t<kind>\t<detail>`. A subagent's step is indented two
+/// spaces and ends with `\t<call that started it>`.
 pub fn event(event: &pb::SessionEvent) -> String {
     use pb::session_event::Kind;
     let (kind, detail) = match &event.kind {
@@ -76,6 +77,18 @@ pub fn event(event: &pb::SessionEvent) -> String {
         ),
         Some(Kind::RewindUndone(_)) => ("rewind-undone", String::new()),
         Some(Kind::Compacted(_)) => ("compacted", String::new()),
+        Some(Kind::Subagent(subagent)) => (
+            "subagent",
+            format!(
+                "{} {} tokens={} tools={} ms={} {}",
+                or_dash(&subagent.agent_type),
+                subagent_status(subagent.status()),
+                subagent.total_tokens,
+                subagent.tool_uses,
+                subagent.duration_ms,
+                subagent.description
+            ),
+        ),
         Some(Kind::Usage(usage)) => (
             "usage",
             format!(
@@ -103,7 +116,54 @@ pub fn event(event: &pb::SessionEvent) -> String {
         ),
         None => ("unknown", String::new()),
     };
-    format!("{}\t{kind}\t{}", event.id, detail.replace('\n', "\\n"))
+    let line = format!("{}\t{kind}\t{}", event.id, detail.replace('\n', "\\n"));
+    if event.parent_call_id.is_empty() {
+        line
+    } else {
+        format!("  {line}\t{}", event.parent_call_id)
+    }
+}
+
+fn subagent_status(status: pb::SubagentStatus) -> &'static str {
+    match status {
+        pb::SubagentStatus::Unspecified => "unknown",
+        pb::SubagentStatus::Running => "running",
+        pb::SubagentStatus::Completed => "completed",
+        pb::SubagentStatus::Failed => "failed",
+        pb::SubagentStatus::Stopped => "stopped",
+    }
+}
+
+/// The subagents in `events`, each as last reported, in the order they
+/// started: `<call id>\t<status>\t<type>\t<tokens>\t<tool calls>\t<ms>`
+/// then `\t<description>`.
+pub fn subagents(events: &[pb::SessionEvent]) -> Vec<String> {
+    use pb::session_event::Kind;
+    let mut latest: Vec<(&str, &pb::Subagent)> = Vec::new();
+    for event in events {
+        let Some(Kind::Subagent(subagent)) = &event.kind else {
+            continue;
+        };
+        let call = event.parent_call_id.as_str();
+        match latest.iter_mut().find(|(at, _)| *at == call) {
+            Some(known) => known.1 = subagent,
+            None => latest.push((call, subagent)),
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(call, subagent)| {
+            format!(
+                "{call}\t{}\t{}\t{}\t{}\t{}\t{}",
+                subagent_status(subagent.status()),
+                or_dash(&subagent.agent_type),
+                subagent.total_tokens,
+                subagent.tool_uses,
+                subagent.duration_ms,
+                or_dash(&subagent.description).replace('\n', " ")
+            )
+        })
+        .collect()
 }
 
 fn or_dash(text: &str) -> String {
@@ -429,6 +489,38 @@ pub fn host(host: &pb::HostInfo) -> String {
         "{}\t{}\t{env}\t{setup}",
         host.name,
         or_dash(&host.ssh_destination)
+    )
+}
+
+/// `<id>\t<used or github>\t<owner>\t<name>\t<location>`, with `-` for
+/// one a project used, which has no owner.
+pub fn saved_repository(repository: &pb::SavedRepository) -> String {
+    let source = match repository.source() {
+        pb::RepositorySource::Github => "github",
+        pb::RepositorySource::Used | pb::RepositorySource::Unspecified => "used",
+    };
+    format!(
+        "{}\t{source}\t{}\t{}\t{}",
+        repository.id,
+        or_dash(&repository.owner),
+        repository.name,
+        repository.location
+    )
+}
+
+/// `<login>\t<repositories>\t<listed or never>\t<why the last listing
+/// failed>`, with `-` when it didn't.
+pub fn repository_owner(owner: &pb::RepositoryOwner) -> String {
+    let listed = if owner.refreshed_unix_ms == 0 {
+        "never listed"
+    } else {
+        "listed"
+    };
+    format!(
+        "{}\t{} repositories\t{listed}\t{}",
+        owner.login,
+        owner.repositories,
+        or_dash(&owner.error.replace('\n', " "))
     )
 }
 

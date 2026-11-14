@@ -34,7 +34,7 @@ const API_VARIABLE: &str = "HUMATA_GITHUB_API";
 impl Daemon {
     /// GitHub, with This Mac's token, and whether it is another server
     /// standing in for github.com.
-    async fn github(&self) -> Result<(GitHub, bool), GitHubError> {
+    pub(super) async fn github(&self) -> Result<(GitHub, bool), GitHubError> {
         let env = self
             .coordinator_env
             .lock()

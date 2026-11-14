@@ -626,7 +626,11 @@ fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<Stri
     use pb::session_event::Kind;
     let mut at = 1;
     let mut parts: Vec<(String, String)> = Vec::new();
-    for found in events {
+    // As the chat shows it, without subagents' steps.
+    for found in events
+        .iter()
+        .filter(|found| found.parent_call_id.is_empty())
+    {
         if at == turn {
             let part = match &found.kind {
                 Some(Kind::UserMessage(message)) => Some(format!("The person: {}", message.text)),

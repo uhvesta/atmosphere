@@ -32,6 +32,7 @@ package struct AppFeature {
         package var approvals = ApprovalsFeature.State()
         package var storage = StorageFeature.State()
         package var github = GitHubSettingsFeature.State()
+        package var repositories = SavedRepositoriesFeature.State()
         package var skills = SkillsFeature.State()
         package var plugins = PluginsFeature.State()
         package var models = ModelDefaultsFeature.State()
@@ -132,6 +133,7 @@ package struct AppFeature {
         case approvals(ApprovalsFeature.Action)
         case storage(StorageFeature.Action)
         case github(GitHubSettingsFeature.Action)
+        case repositories(SavedRepositoriesFeature.Action)
         case skills(SkillsFeature.Action)
         case plugins(PluginsFeature.Action)
         case models(ModelDefaultsFeature.Action)
@@ -154,6 +156,7 @@ package struct AppFeature {
         Scope(state: \.approvals, action: \.approvals) { ApprovalsFeature() }
         Scope(state: \.storage, action: \.storage) { StorageFeature() }
         Scope(state: \.github, action: \.github) { GitHubSettingsFeature() }
+        Scope(state: \.repositories, action: \.repositories) { SavedRepositoriesFeature() }
         Scope(state: \.skills, action: \.skills) { SkillsFeature() }
         Scope(state: \.plugins, action: \.plugins) { PluginsFeature() }
         Scope(state: \.models, action: \.models) { ModelDefaultsFeature() }
@@ -395,7 +398,7 @@ package struct AppFeature {
                 return .send(.sidebar(.selected(.session(id))))
 
             case .sidebar, .session, .sendFailure, .board, .hosts, .search, .settings, .approvals, .storage,
-                .github, .skills, .plugins, .models:
+                .github, .repositories, .skills, .plugins, .models:
                 return .none
             }
         }

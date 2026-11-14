@@ -46,6 +46,26 @@ private func partsTests() -> [TestCase] {
             try expectEqual(parts.joined(), reply)
             try expectEqual(parts.flatMap { Markdown.blocks(in: String($0)) }, Markdown.blocks(in: reply))
         },
+        TestCase("given emoji, accents, code with blank lines and Windows line ends, then it's cut between blocks") {
+            // Each at least 40 bytes, and the next starts a block after a blank line.
+            let accents = "Cafe\u{301} ☕️👍🏽 notes for the parser, long enough to cut after.\n\n"
+            // Blank lines in code don't cut it, nor does a list that goes on.
+            let code =
+                "```swift\nlet family = \"👩‍👩‍👧\"\n\nlet b = 2\n```\n\n"
+                + "- e\u{301}te\u{301}, item one\n\n  Its second paragraph.\n\n"
+            // A carriage return and line feed are one character and don't
+            // end a line, so the blank line between these isn't seen as one.
+            let windows =
+                "Windows line one, with a carriage return\r\nstill the same line to the cutter\r\n\r\n"
+                + "Not cut before this.\n\n"
+            let last = "The last paragraph ends without a line end 🎉"
+            let parts = MarkdownText.parts(of: accents + code + windows + last, size: 40)
+            try expectEqual(parts.map { String($0) }, [accents, code, windows, last])
+        },
+        TestCase("given a text of blank lines alone, then it's one part") {
+            let blank = String(repeating: "\n", count: 100)
+            try expectEqual(MarkdownText.parts(of: blank, size: 10).map { String($0) }, [blank])
+        },
     ]
 }
 

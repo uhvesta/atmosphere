@@ -576,7 +576,11 @@ fn proposed(
     use pb::session_event::Kind;
     let mut proposals: Vec<(pb::Proposal, bool)> = Vec::new();
     let mut turn = 0;
-    for event in events {
+    // The chat shows proposals among its own steps, not a subagent's.
+    for event in events
+        .iter()
+        .filter(|event| event.parent_call_id.is_empty())
+    {
         match &event.kind {
             Some(Kind::TurnStarted(_)) => turn += 1,
             Some(Kind::ToolStarted(call)) => {

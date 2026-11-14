@@ -68,8 +68,12 @@ final class SlashMenuTests: XCTestCase {
         XCTAssertEqual(offered.map(\.id), ["audit", "ship"])
     }
 
-    private func store(_ daemon: InMemoryDaemon, _ session: Session) -> TestStoreOf<SessionFeature> {
-        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+    private func store(_ daemon: InMemoryDaemon, _ session: Session, draft: String? = nil)
+        -> TestStoreOf<SessionFeature>
+    {
+        var state = SessionFeature.State(session: session)
+        if let draft { state.draft = draft }
+        let store = TestStore(initialState: state) {
             SessionFeature()
         } withDependencies: {
             $0.daemon = daemon.client
@@ -144,5 +148,215 @@ final class SlashMenuTests: XCTestCase {
         await store.send(\.binding.draft, "/rele")
         XCTAssertTrue(store.state.slashOpen)
         XCTAssertEqual(store.state.slashChoices.map(\.id), ["release"])
+    }
+
+    private func skilled(_ names: String...) -> InMemoryDaemon {
+        let daemon = InMemoryDaemon()
+        daemon.setSkills(
+            SkillList(skills: names.enumerated().map { FoundSkill(name: $1, origin: .claudeUser, hash: "\($0)") }))
+        return daemon
+    }
+
+    private func shown(_ store: TestStoreOf<SessionFeature>) -> [String] {
+        store.state.slashOpen ? store.state.slashChoices.map(\.id) : []
+    }
+
+    func testEscapeHoldsOnlyUntilTheNameIsTypedAgain() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/rel")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.slashClosed)
+        await store.send(\.binding.draft, "/re")
+        XCTAssertEqual(shown(store), ["release"])
+        await store.send(\.binding.draft, "/rel")
+        XCTAssertEqual(shown(store), ["release"], "the name it was closed on, typed again, shows the list")
+    }
+
+    func testEscapeThenClearingAndTypingASlashOpensTheList() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.slashClosed)
+        await store.send(\.binding.draft, "")
+        await store.send(\.binding.draft, "/")
+        XCTAssertEqual(shown(store), ["release"])
+    }
+
+    func testANewNameHighlightsItsBestMatchAndTheSameListKeepsTheHighlight() async throws {
+        let daemon = skilled("release", "review", "rename")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/re")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.slashMoved(by: 1))
+        let highlighted = store.state.slashChoices[store.state.slashSelected]
+        await store.send(\.binding.draft, "/r")
+        XCTAssertEqual(store.state.slashChoices[store.state.slashSelected], highlighted, "same list, same highlight")
+
+        await store.send(\.binding.draft, "/rel")
+        XCTAssertEqual(store.state.slashChoices.map(\.id), ["release"])
+        XCTAssertEqual(store.state.slashSelected, 0)
+
+        await store.send(\.binding.draft, "/re")
+        XCTAssertEqual(store.state.slashSelected, 0, "widening starts again at the best match")
+    }
+
+    func testDeletingTheSlashAndTypingItAgainShowsEveryChoiceWithNothingStale() async throws {
+        let daemon = skilled("release", "review")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(\.binding.draft, "/r")
+        await store.send(\.binding.draft, "/re")
+        await store.send(\.binding.draft, "/")
+        await store.send(\.binding.draft, "")
+        XCTAssertFalse(store.state.slashOpen)
+        await store.send(\.binding.draft, "/")
+        XCTAssertEqual(shown(store), ["release", "review"])
+        XCTAssertFalse(store.state.slashLoading)
+        XCTAssertNil(store.state.slashFailure)
+    }
+
+    func testClearingANameAndTypingAnotherShowsItsMatches() async throws {
+        let daemon = skilled("release", "review")
+        let store = store(daemon, try await started(daemon))
+
+        // The answer may come while typing goes on; a store that isn't
+        // exhaustive skips it then, so wait for the look to end instead.
+        for draft in ["/", "/r", "/re", "/rel"] { await store.send(\.binding.draft, draft) }
+        await store.finish(timeout: .seconds(1))
+        for draft in ["/re", "/r", "/", "", "/", "/r", "/re", "/rev"] { await store.send(\.binding.draft, draft) }
+        XCTAssertEqual(shown(store), ["review"])
+    }
+
+    func testDeletingBackIntoAPickedNameShowsTheListAgain() async throws {
+        let daemon = skilled("release", "review")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/rel")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.slashPicked("release"))
+        XCTAssertEqual(store.state.draft, "/release ")
+        XCTAssertFalse(store.state.slashOpen)
+
+        await store.send(\.binding.draft, "/release")
+        XCTAssertEqual(shown(store), ["release"])
+        await store.send(\.binding.draft, "/re")
+        XCTAssertEqual(Set(shown(store)), ["release", "review"])
+    }
+
+    func testArgumentsCloseTheListAndDeletingThemOpensIt() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/rel")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.slashPicked("release"))
+        await store.send(\.binding.draft, "/release foo")
+        XCTAssertFalse(store.state.slashOpen)
+        await store.send(\.binding.draft, "/release ")
+        XCTAssertFalse(store.state.slashOpen)
+        await store.send(\.binding.draft, "/release")
+        XCTAssertEqual(shown(store), ["release"])
+    }
+
+    func testOnlyASlashFirstAndANameOpensTheList() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        for draft in ["hello /x", "hello /", "/\n", "/ ", " /rel"] {
+            await store.send(\.binding.draft, draft)
+            XCTAssertFalse(store.state.slashOpen, draft)
+            XCTAssertEqual(store.state.slashChoices, [], draft)
+        }
+    }
+
+    func testAFailedLookIsShownAndTypingASlashAgainLooksAgain() async throws {
+        let daemon = skilled("release")
+        daemon.setSkillsFail(true)
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertTrue(store.state.slashOpen)
+        XCTAssertNotNil(store.state.slashFailure)
+        XCTAssertFalse(store.state.slashLoading)
+
+        daemon.setSkillsFail(false)
+        await store.send(\.binding.draft, "/r")
+        await store.finish(timeout: .seconds(1))
+        XCTAssertNotNil(store.state.slashFailure, "typing on in the list doesn't look again on every key")
+
+        await store.send(\.binding.draft, "")
+        await store.send(\.binding.draft, "/")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertNil(store.state.slashFailure)
+        XCTAssertFalse(store.state.slashLoading)
+        XCTAssertEqual(shown(store), ["release"])
+    }
+
+    func testAnAnswerArrivingAfterTheSlashIsDeletedDoesNotOpenTheList() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        // The answer comes before or after the delete; either way it
+        // mustn't open the list.
+        await store.send(\.binding.draft, "/")
+        await store.send(\.binding.draft, "")
+        await store.finish(timeout: .seconds(1))
+        XCTAssertFalse(store.state.slashOpen)
+        XCTAssertEqual(store.state.slashChoices, [])
+        XCTAssertFalse(store.state.slashLoading)
+
+        await store.send(\.binding.draft, "hi")
+        XCTAssertFalse(store.state.slashOpen)
+        await store.send(\.binding.draft, "/")
+        XCTAssertEqual(shown(store), ["release"], "what was found is kept for the next /")
+    }
+
+    func testReturnWithNoMatchesSendsTheMessage() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/zzz")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertEqual(store.state.slashChoices, [])
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.send)
+        XCTAssertEqual(store.state.draft, "")
+        XCTAssertFalse(store.state.slashOpen)
+
+        await store.send(\.binding.draft, "/")
+        XCTAssertEqual(shown(store), ["release"])
+    }
+
+    func testTextPutInTheBoxOtherThanByTypingHidesTheList() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon))
+
+        await store.send(\.binding.draft, "/rel")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        await store.send(.quoted("a line"))
+        XCTAssertFalse(store.state.slashOpen)
+        XCTAssertEqual(store.state.slashChoices, [])
+        await store.send(.sendTapped(.enqueue))
+        await store.receive(\.delegate.send)
+        XCTAssertEqual(store.state.draft, "", "Return sends what's there instead of picking from an old list")
+    }
+
+    func testADraftKeptFromBeforeShowsNoListUntilTyping() async throws {
+        let daemon = skilled("release")
+        let store = store(daemon, try await started(daemon), draft: "/rel")
+
+        XCTAssertEqual(store.state.draft, "/rel")
+        XCTAssertFalse(store.state.slashOpen)
+        await store.send(\.binding.draft, "/re")
+        await store.receive(\.slashLoaded, timeout: .seconds(1))
+        XCTAssertEqual(shown(store), ["release"])
     }
 }
