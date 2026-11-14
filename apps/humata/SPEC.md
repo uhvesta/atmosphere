@@ -1987,6 +1987,30 @@ Tests: the daemon refuses an action that's off for the client asking and
 allows it for the app; turning a group off turns its actions off; the
 MCP tool list leaves out what's off; defaults on a fresh settings file.
 
+### Milestone SW: the chat lays out its own rows
+
+The owner, 2026-11-14: scrolling a long chat is fast but staggers, and
+the scroll bar jumps as if it found more chat. Measured: a mixed chat
+read top to bottom grows by up to 33,582 pt in one step and 4,297 pt on
+a second read, because the lazy stack guesses the heights of rows it
+hasn't drawn.
+
+- [ ] The chat keeps every row's height once measured, and a row not
+  yet measured takes a height worked out from its text, off the main
+  thread; the scroll bar moves only when a row's height really changes
+- [ ] Only the rows in view, and a screen's worth either side, are drawn;
+  a row that changes height above what's in view moves the chat by as
+  much, so what's in view stays put
+- [ ] Opening a 1,000-turn chat holds the main thread under 100 ms in any
+  one pass; scrolling 40 or 200 turns costs a median under 16 ms a step
+- [ ] A turn of 300 tool calls keeps the main thread under 30% busy and the
+  chat at its end
+- [ ] Show Earlier Messages, search hits, Show Proposals and the chat's end
+  work as before
+
+Tests: `LongChatScrollTests` (a chat read twice keeps its length, now an
+expected failure), `ChatPerfTests` (open, scroll and tool-heavy limits).
+
 ## Later
 
 - **Language servers** in the review view and the file view: go to definition,

@@ -520,9 +520,16 @@ private struct ChatList: View {
     private func chat(_ reader: ScrollViewProxy) -> some View {
         let highlighted = store.highlightedItem
         ScrollView {
-            ChatRows(store: store, earlier: earlier, pointed: pointed) { more in
+            ChatRows(store: store, earlier: earlier, pointed: pointed) { more, first in
                 keepsPlace = true
                 earlier += more
+                // The rows above are measured as they're drawn, after the
+                // first growth: the row that was first goes back to the
+                // top once they are, so what was in view stays.
+                Task { @MainActor in
+                    await Task.yield()
+                    reader.scrollTo(first, anchor: .top)
+                }
             }
             .equatable()
         }
@@ -694,10 +701,10 @@ private struct ChatRows: View, Equatable {
     let store: StoreOf<SessionFeature>
     /// How many rows above the chat's last the person has asked to see.
     let earlier: Int
-    /// Asks for that many more.
     /// Which rows the pointer rests on: the same for the chat's life.
     let pointed: PointedRows
-    let showEarlier: (Int) -> Void
+    /// Asks for that many more rows, given the id of the row shown first now.
+    let showEarlier: (Int, String) -> Void
     @State private var selecting: TextToSelect?
     @State private var tail = ChatTail()
     @State private var heights = RowHeights()
@@ -725,7 +732,7 @@ private struct ChatRows: View, Equatable {
             if start > 0 {
                 // As many again as are shown, and no more than there are.
                 let more = min(max(ChatTail.rows, all.count - start), start)
-                Button("Show Earlier Messages") { showEarlier(more) }
+                Button("Show Earlier Messages") { showEarlier(more, all[start].id) }
                     .buttonStyle(ChatRowButtonStyle())
                     .frame(maxWidth: .infinity)
                     .help(more == 1 ? "Show the row before these" : "Show the \(more) rows before these")
