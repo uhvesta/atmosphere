@@ -153,8 +153,13 @@ macos_application(
     app_intents = ["//apps/lifr/features/shortcuts"],
     bundle_id = BUNDLE_ID,
     bundle_name = "Lifr",
-    # The hardened runtime: no injected libraries, no unsigned code.
-    codesignopts = ["--options=runtime"],
+    # The hardened runtime: no injected libraries, no unsigned code. Only
+    # when signed: signed ad hoc, its library validation turns away the
+    # app's own libraries, which have no team, and the app can't launch.
+    codesignopts = select({
+        "//apps/lifr:is_signed": ["--options=runtime"],
+        "//conditions:default": [],
+    }),
     # The App Group whose container holds the local API's socket, and the
     # microphone, for recordings sent to the assistant.
     entitlements = select({

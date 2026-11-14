@@ -57,6 +57,7 @@
 
     },
     "%@ and %lld more" : {
+      "comment" : "A change, then how many more",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -779,6 +780,9 @@
     "Add a label from a task’s Labels section." : {
 
     },
+    "Add a start date" : {
+
+    },
     "Add a task for each line copied" : {
 
     },
@@ -816,6 +820,9 @@
 
     },
     "Add to Lifr" : {
+
+    },
+    "Add to a Project" : {
 
     },
     "Added" : {
@@ -872,6 +879,9 @@
 
     },
     "Adds this task, then keeps Quick Add open for its Sub tasks." : {
+
+    },
+    "Adds to your %@" : {
 
     },
     "Adds “%@”" : {
@@ -1833,6 +1843,9 @@
     "Due" : {
 
     },
+    "Due %@" : {
+
+    },
     "Due By" : {
 
     },
@@ -1900,6 +1913,9 @@
 
     },
     "Edit description" : {
+
+    },
+    "Edit labels" : {
 
     },
     "Edited" : {
@@ -2484,6 +2500,9 @@
 
     },
     "Label" : {
+
+    },
+    "Label %@" : {
 
     },
     "Labels" : {
@@ -3135,6 +3154,9 @@
     "No" : {
 
     },
+    "No Avenue" : {
+
+    },
     "No Avenues" : {
 
     },
@@ -3468,6 +3490,9 @@
     "Opens the filters" : {
 
     },
+    "Opens the labels" : {
+
+    },
     "Optic ID" : {
 
     },
@@ -3560,6 +3585,12 @@
 
     },
     "Place" : {
+
+    },
+    "Plan" : {
+
+    },
+    "Plan Mode" : {
 
     },
     "Plan from Anytime" : {
@@ -3793,10 +3824,16 @@
     "Remove Photo" : {
 
     },
+    "Remove Reminder" : {
+
+    },
     "Remove due date" : {
 
     },
     "Remove model" : {
+
+    },
+    "Remove start date" : {
 
     },
     "Remove voice" : {
@@ -5276,6 +5313,9 @@
 
     },
     "^[%lld year](inflect: true) after closing" : {
+
+    },
+    "a task" : {
 
     },
     "an agent" : {

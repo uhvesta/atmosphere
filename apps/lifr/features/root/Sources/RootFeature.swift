@@ -1153,7 +1153,7 @@ package struct RootFeature {
                     state.tab = .today
                     return shown
                 }
-                return .concatenate(shown, .send(.selected(.today)))
+                return .concatenate(shown, .send(.selected(.today)), followPendingLink(&state))
 
             case .onboarding:
                 return .none
@@ -1161,7 +1161,7 @@ package struct RootFeature {
             case .whatsNewDismissed:
                 state.isWhatsNewShown = false
                 state.$seenRelease.withLock { $0 = WhatsNew.release }
-                return .none
+                return followPendingLink(&state)
 
             case .shortcutsTapped:
                 state.isShortcutsShown = true
@@ -2145,7 +2145,9 @@ package struct RootFeature {
             }
             return .send(picksStatus ? .reminderStatusRequested(id) : .reminderOpened(id))
         }
-        guard state.workspace != nil else {
+        // Before the records, or behind the welcome or What's New, which
+        // the link's page or Quick Add can't show over.
+        guard state.workspace != nil, state.onboarding == nil, !state.isWhatsNewShown else {
             state.pendingLink = link
             return .none
         }
@@ -2185,6 +2187,13 @@ package struct RootFeature {
         case .plan(let text):
             return .concatenate(.send(.goTo(.conversations)), .send(.conversations(.planReceived(text))))
         }
+    }
+
+    /// Follows the link that waited for the welcome or What's New to close.
+    private func followPendingLink(_ state: inout State) -> Effect<Action> {
+        guard !state.isLocked, let link = state.pendingLink else { return .none }
+        state.pendingLink = nil
+        return .send(.linkOpened(link))
     }
 
     /// Quick Add for `kind`, starting where `adds` says, or in the list on

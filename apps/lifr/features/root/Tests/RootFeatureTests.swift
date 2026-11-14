@@ -60,6 +60,9 @@ final class RootFeatureTests: XCTestCase {
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
         }
         store.exhaustivity = .off
+        // Past the welcome, which holds links until it's done; the tests of
+        // onboarding turn it back on.
+        store.state.$hasOnboarded.withLock { $0 = true }
         return store
     }
 
@@ -77,6 +80,39 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertNil(store.state.onboarding)
         XCTAssertTrue(store.state.hasOnboarded)
         XCTAssertEqual(store.state.tab, .today)
+        await task.cancel()
+    }
+
+    func testTextSentDuringOnboardingOpensQuickAddOnceItFinishes() async {
+        let store = makeStore(.mac, store: .inMemory(Workspace()))
+        store.state.$hasOnboarded.withLock { $0 = false }
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.textSent("https://example.com/article"))
+        await store.receive(\.linkOpened)
+        XCTAssertNil(store.state.quickAdd)
+
+        await store.send(.onboarding(.presented(.delegate(.finished(nil)))))
+        await store.receive(\.linkOpened)
+        XCTAssertEqual(store.state.quickAdd?.title, "https://example.com/article")
+        await task.cancel()
+    }
+
+    func testALinkOpenedBehindWhatsNewIsFollowedOnceItCloses() async {
+        _ = health
+        let store = makeStore(.mac)
+        store.state.$hasOnboarded.withLock { $0 = true }
+        store.state.$seenRelease.withLock { $0 = WhatsNew.release - 1 }
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.linkOpened(.add(title: "Call the bank")))
+        XCTAssertNil(store.state.quickAdd)
+
+        await store.send(.whatsNewDismissed)
+        await store.receive(\.linkOpened)
+        XCTAssertEqual(store.state.quickAdd?.title, "Call the bank")
         await task.cancel()
     }
 
