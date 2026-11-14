@@ -2290,6 +2290,9 @@
     "History" : {
 
     },
+    "Hold Control, Option or Command with the key." : {
+
+    },
     "Home" : {
 
     },
@@ -3474,6 +3477,9 @@
     "Other formats" : {
 
     },
+    "Other keys" : {
+
+    },
     "Overdue" : {
 
     },
@@ -3581,6 +3587,9 @@
 
     },
     "Plus" : {
+
+    },
+    "Press Keys…" : {
 
     },
     "Previous Match" : {
@@ -3714,6 +3723,9 @@
           }
         }
       }
+    },
+    "Record Keys…" : {
+
     },
     "Record Steps" : {
 
@@ -4248,6 +4260,9 @@
 
     },
     "Sound when a task is done" : {
+
+    },
+    "Space" : {
 
     },
     "Speak" : {
@@ -5241,6 +5256,9 @@
           }
         }
       }
+    },
+    "^[%lld task](inflect: true) in Today" : {
+
     },
     "^[%lld task](inflect: true) overdue" : {
 

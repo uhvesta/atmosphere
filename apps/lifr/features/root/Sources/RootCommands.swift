@@ -309,13 +309,23 @@ package struct MenuBarLabel: View {
     }
 
     package var body: some View {
-        Image(systemName: store.hasConnectedApp ? "checklist.checked" : "checklist")
-            .overlay(alignment: .topTrailing) {
-                if store.hasConnectedApp {
-                    Circle().frame(width: 5, height: 5)
+        // How many are in Today, beside the icon. None while locked, so the
+        // menu bar shows nothing of the tasks to whoever is at the Mac.
+        let count = store.isLocked ? 0 : store.today.list.rows.count
+        HStack(spacing: 3) {
+            Image(systemName: store.hasConnectedApp ? "checklist.checked" : "checklist")
+                .overlay(alignment: .topTrailing) {
+                    if store.hasConnectedApp {
+                        Circle().frame(width: 5, height: 5)
+                    }
                 }
+            if count > 0 {
+                Text(count, format: .number).monospacedDigit()
             }
-            .accessibilityLabel(store.hasConnectedApp ? "Lifr, an app is connected" : "Lifr")
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(store.hasConnectedApp ? "Lifr, an app is connected" : "Lifr")
+        .accessibilityValue(count > 0 ? Text("^[\(count) task](inflect: true) in Today") : Text(verbatim: ""))
     }
 }
 

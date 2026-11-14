@@ -124,7 +124,9 @@ package struct CLI {
           show TASK                              A task with its Sub tasks, comments and history.
 
         Changing:
-          add TITLE (--avenue KEY | --parent TASK) [--project ID] [--status STATUS] [FIELDS]
+          add TITLE (--avenue KEY | --parent TASK) [--project ID] [--status STATUS] [--read-dates] [FIELDS]
+                                                 --read-dates reads dates, times and !priority in TITLE as
+                                                 Quick Add does; options given still win.
           add --plan FILE                        Avenues, Projects, tasks and Sub tasks from a TOML plan, all or
                                                  nothing. FILE - reads standard input. lifr mcp describes the format.
           edit TASK [--title TITLE] [FIELDS] [--clear start|due|time]...

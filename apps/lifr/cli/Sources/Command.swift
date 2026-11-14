@@ -94,8 +94,17 @@ package struct Invocation: Hashable, Sendable {
             params["status"] = try words.option("--status").map { (word) throws(UsageError) in
                 .string(try status(word).rawValue)
             }
-            let title = words.rest().joined(separator: " ")
+            // Off unless asked, so a script's titles stay as written.
+            let readsDates = words.flag("--read-dates")
+            var title = words.rest().joined(separator: " ")
             guard !title.isEmpty else { throw UsageError("lifr add needs a title, such as lifr add Buy socks.") }
+            if readsDates {
+                let entry = QuickEntry(title, today: CalendarDate(Date(), in: .current), in: Workspace())
+                if !entry.title.isEmpty { title = entry.title }
+                if params["dueDate"] == nil { params["dueDate"] = entry.dueDate.map { .string($0.description) } }
+                if params["dueTime"] == nil { params["dueTime"] = entry.dueTime.map { .string($0.description) } }
+                if params["priority"] == nil { params["priority"] = entry.priority.map { .string($0.rawValue) } }
+            }
             params["title"] = .string(title)
             return .request(.createTask, .object(params))
         },

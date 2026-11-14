@@ -56,7 +56,12 @@ extension SyncClient {
                     task?.cancel()
                     task = Task {
                         let continuous = Shared(.syncsContinuously).wrappedValue
-                        try? await Task.sleep(for: settle ?? .seconds(continuous ? 1 : 5))
+                        // After a failed sync, such as while offline, the
+                        // next try comes as soon as it would syncing
+                        // continuously, so the changes waiting are counted
+                        // again within a second of an edit.
+                        let failed = if case .failed = await syncer.current().status { true } else { false }
+                        try? await Task.sleep(for: settle ?? .seconds(continuous || failed ? 1 : 5))
                         guard !Task.isCancelled else { return }
                         await syncer.sync()
                     }

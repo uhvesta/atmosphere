@@ -47,12 +47,13 @@
                 UnregisterEventHotKey(hotKey)
                 self.hotKey = nil
             }
-            guard let modifiers = keys.carbonModifiers else { return }
+            guard keys.isUsable, let keyCode = keys.keyCode else { return }
             // "LIFR", so the press is told apart from other apps' keys.
             let id = EventHotKeyID(signature: OSType(0x4C49_4652), id: 1)
             // Taken by the system or another app: nothing happens, and
             // Settings says to pick other keys.
-            RegisterEventHotKey(UInt32(kVK_Space), modifiers, id, GetApplicationEventTarget(), 0, &hotKey)
+            RegisterEventHotKey(
+                UInt32(keyCode), keys.carbonModifiers, id, GetApplicationEventTarget(), 0, &hotKey)
         }
 
         /// While locked, Lifr comes forward to be unlocked instead, so the
@@ -116,14 +117,13 @@
     }
 
     extension QuickAddHotKey {
-        fileprivate var carbonModifiers: UInt32? {
-            switch self {
-            case .off: nil
-            case .controlSpace: UInt32(controlKey)
-            case .optionSpace: UInt32(optionKey)
-            case .controlOptionSpace: UInt32(controlKey | optionKey)
-            case .shiftCommandSpace: UInt32(shiftKey | cmdKey)
-            }
+        fileprivate var carbonModifiers: UInt32 {
+            var carbon = 0
+            if modifiers.contains(.control) { carbon |= controlKey }
+            if modifiers.contains(.option) { carbon |= optionKey }
+            if modifiers.contains(.shift) { carbon |= shiftKey }
+            if modifiers.contains(.command) { carbon |= cmdKey }
+            return UInt32(carbon)
         }
     }
 #endif

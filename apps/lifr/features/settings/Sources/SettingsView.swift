@@ -146,8 +146,12 @@ package struct SettingsView: View {
                     selection: Binding(
                         get: { store.quickAddHotKey }, set: { store.send(.quickAddHotKeyPicked($0)) })
                 ) {
-                    ForEach(QuickAddHotKey.allCases, id: \.self) { Text($0.title) }
+                    ForEach(QuickAddHotKey.presets, id: \.self) { Text($0.title) }
+                    if !QuickAddHotKey.presets.contains(store.quickAddHotKey) {
+                        Text(store.quickAddHotKey.title).tag(store.quickAddHotKey)
+                    }
                 }
+                HotKeyRecorder { store.send(.quickAddHotKeyPicked($0)) }
             } footer: {
                 Text(
                     "Opens a small Quick Add over whatever you're working in, even with no Lifr window open. "
@@ -677,3 +681,83 @@ private struct AboutSection: View {
         #endif
     }
 }
+
+#if os(macOS)
+    /// Records the next keys pressed as the ones that open Quick Add. Keys
+    /// need Control, Option or Command, so typing in other apps never opens
+    /// it; Escape stops recording without a change.
+    private struct HotKeyRecorder: View {
+        let picked: (QuickAddHotKey) -> Void
+        @State private var monitor: Any?
+        @State private var refused = false
+
+        var body: some View {
+            LabeledContent {
+                Button(monitor == nil ? "Record Keys…" : "Press Keys…") {
+                    monitor == nil ? start() : stop()
+                }
+            } label: {
+                Text(refused ? "Hold Control, Option or Command with the key." : "Other keys")
+                    .foregroundStyle(refused ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            }
+            .onDisappear { stop() }
+        }
+
+        private func start() {
+            refused = false
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 53 {  // Escape
+                    stop()
+                    return nil
+                }
+                let keys = QuickAddHotKey(event)
+                guard keys.isUsable else {
+                    refused = true
+                    return nil
+                }
+                picked(keys)
+                stop()
+                return nil
+            }
+        }
+
+        private func stop() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+    }
+
+    extension QuickAddHotKey {
+        fileprivate init(_ event: NSEvent) {
+            var modifiers: Modifiers = []
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.contains(.control) { modifiers.insert(.control) }
+            if flags.contains(.option) { modifiers.insert(.option) }
+            if flags.contains(.shift) { modifiers.insert(.shift) }
+            if flags.contains(.command) { modifiers.insert(.command) }
+            self.init(keyCode: event.keyCode, modifiers: modifiers, keyName: Self.name(of: event))
+        }
+
+        /// What the key shows as, from the keyboard's own layout.
+        private static func name(of event: NSEvent) -> String {
+            switch event.keyCode {
+            case 36: return "↩"
+            case 48: return "⇥"
+            case 49: return "Space"
+            case 51: return "⌫"
+            case 123: return "←"
+            case 124: return "→"
+            case 125: return "↓"
+            case 126: return "↑"
+            default:
+                let functionKeys: [UInt16: Int] = [
+                    122: 1, 120: 2, 99: 3, 118: 4, 96: 5, 97: 6, 98: 7, 100: 8, 101: 9, 109: 10, 103: 11, 111: 12,
+                ]
+                if let number = functionKeys[event.keyCode] { return "F\(number)" }
+                let characters = event.charactersIgnoringModifiers?.uppercased() ?? ""
+                return characters.isEmpty || characters.unicodeScalars.contains { $0.value < 0x20 }
+                    ? "#\(event.keyCode)" : characters
+            }
+        }
+    }
+#endif
