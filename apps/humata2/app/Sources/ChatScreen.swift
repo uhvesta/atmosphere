@@ -7,6 +7,10 @@ import SwiftUI
 struct ChatScreen: View {
     let chat: ChatModel
     @State private var draft = ""
+    @State private var position = ScrollPosition(edge: .bottom)
+    /// The newest is in view, so what comes next is scrolled to; scrolling
+    /// up to read stops that until the bottom is reached again.
+    @State private var following = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,11 +50,23 @@ struct ChatScreen: View {
             }
             .padding()
         }
+        .scrollPosition($position)
         .defaultScrollAnchor(.bottom)
+        .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }, action: scrolled)
         .overlay {
             if chat.rows.isEmpty, chat.reply == nil, !chat.status.working {
                 ContentUnavailableView("No Messages Yet", systemImage: "bubble.left")
             }
+        }
+    }
+
+    /// Grown content is followed while the newest was in view; otherwise
+    /// the person scrolled, and following is whether they reached the end.
+    private func scrolled(from old: ScrollGeometry, to new: ScrollGeometry) {
+        if new.contentSize.height != old.contentSize.height {
+            if following { position.scrollTo(edge: .bottom) }
+        } else {
+            following = new.visibleRect.maxY >= new.contentSize.height - 24
         }
     }
 
