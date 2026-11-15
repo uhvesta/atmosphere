@@ -202,7 +202,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (63 tests pass). `undo_and_a_repeated_key_act_the_same_after_a_restart` fails when the history isn't saved.
 - Look at: the 256 limits; the WatchReviewChanges feed and Back are still memory only (D86).
 
-### (this commit): draft views kept through a restart, and their MCP tools (review_diff wiring) [minion F]
+### 75022d1b: draft views kept through a restart, and their MCP tools (review_diff wiring) [minion F]
 - An agent can now prepare a view for the user (a guided walkthrough, its channel's board, pull request drafts or a review plan), change it while it's a draft, and offer it; the user then answers it. Drafts are the agent's alone, and a restart keeps every view and its answer.
 - `daemon/store`: fifth migration adds `views`; `views.rs` has `put_view`, `view`, `views` (newest first), each a `View` blob (store.proto) with the PreparedView bytes and idempotency keys. `daemon/humatad/src/review/views.rs`: PrepareView, ReviseView, MarkReady, ListViews and SetViewState with their checks; `review.rs` routes non-chat PrepareView there and shares `checked_plan` with the chat path. `daemon/humatad/src/mcp.rs`: `view_prepare`, `view_revise`, `view_mark_ready`, `views_list` (board `"session"`/`"channel"`/`{session}`; `"global"` refused).
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
