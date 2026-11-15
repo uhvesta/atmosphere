@@ -478,6 +478,8 @@ pub struct MarkdownView {
     text: Entity<TextViewState>,
     /// The source as a code block, made the first time it is shown.
     source_text: Option<Entity<TextViewState>>,
+    /// The selection the toolbar was last drawn for.
+    toolbar_selection: Option<SourceSelection>,
     mode: ViewMode,
     extensions: MarkdownExtensions,
     shared: Arc<Shared>,
@@ -539,6 +541,7 @@ impl MarkdownView {
             document,
             text,
             source_text: None,
+            toolbar_selection: None,
             mode: ViewMode::Rendered,
             extensions,
             shared,
@@ -749,12 +752,19 @@ impl MarkdownView {
         cx.notify();
     }
 
-    fn toggle_mode(&mut self, cx: &mut Context<Self>) {
+    fn toggle_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = match self.mode {
             ViewMode::Rendered => ViewMode::Source,
             ViewMode::Source => ViewMode::Rendered,
         };
+        let had_focus = self.active_text().read(cx).focus_handle().contains_focused(window, cx);
         self.set_mode(next, cx);
+        // The text view that had focus is no longer drawn; keep the keyboard
+        // on the view so the shortcut can switch back.
+        if had_focus {
+            let handle = self.active_text().read(cx).focus_handle().clone();
+            window.focus(&handle, cx);
+        }
     }
 
     fn active_text(&self) -> &Entity<TextViewState> {
@@ -1222,11 +1232,16 @@ impl MarkdownView {
 
     /// Actions on the selection, at the top right of the text while there
     /// is one.
-    fn selection_toolbar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn selection_toolbar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let state = self.active_text().read(cx);
-        if state.is_selecting() || state.selected_source_range().is_none_or(|range| range.is_empty()) {
+        if state.is_selecting() {
+            self.toolbar_selection = None;
             return None;
         }
+        // Kept for the buttons: pressing one clears the text's selection
+        // before the button's handler runs.
+        self.toolbar_selection = self.selection(cx);
+        self.toolbar_selection.as_ref()?;
         let theme = &self.theme;
         let button = |id: &'static str, label: &'static str| {
             div()
@@ -1241,6 +1256,8 @@ impl MarkdownView {
                 .hover(|button| button.bg(theme.surface))
                 .child(label)
         };
+        // The buttons act on press: the selection below is cleared on
+        // release, before a click would arrive.
         let source_label = "Copy as Markdown";
         let plain_label = "Copy as text";
         Some(
@@ -1263,16 +1280,36 @@ impl MarkdownView {
                 .bg(theme.background)
                 .shadow_sm()
                 .when(self.options.comments, |bar| {
-                    bar.child(button("md-comment-selection", "Comment on selection").on_click(cx.listener(
-                        |view, _: &ClickEvent, _, cx| view.request_selection_comment(cx),
-                    )))
+                    bar.child(button("md-comment-selection", "Comment on selection").on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|view, _, _, cx| {
+                            cx.stop_propagation();
+                            if view.options.comments
+                                && let Some(selection) = view.toolbar_selection.take()
+                            {
+                                cx.emit(MarkdownEvent::CommentRequested(selection));
+                            }
+                        }),
+                    ))
                 })
-                .child(button("md-copy-source", source_label).on_click(cx.listener(
-                    |view, _: &ClickEvent, _, cx| view.copy(CopyFormat::Source, cx),
-                )))
-                .child(button("md-copy-plain", plain_label).on_click(cx.listener(
-                    |view, _: &ClickEvent, _, cx| view.copy(CopyFormat::Plain, cx),
-                )))
+                .child(button("md-copy-source", source_label).on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|view, _, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(selection) = &view.toolbar_selection {
+                            cx.write_to_clipboard(ClipboardItem::new_string(selection.source.clone()));
+                        }
+                    }),
+                ))
+                .child(button("md-copy-plain", plain_label).on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|view, _, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(selection) = &view.toolbar_selection {
+                            cx.write_to_clipboard(ClipboardItem::new_string(selection.quote.clone()));
+                        }
+                    }),
+                ))
                 .into_any_element(),
         )
     }
@@ -1395,7 +1432,7 @@ impl Render for MarkdownView {
             .key_context(KEY_CONTEXT)
             .on_action(cx.listener(|view, _: &CopyOther, _, cx| view.copy(view.options.copy.other(), cx)))
             .on_action(cx.listener(|view, _: &CommentOnSelection, _, cx| view.request_selection_comment(cx)))
-            .on_action(cx.listener(|view, _: &ToggleSource, _, cx| view.toggle_mode(cx)))
+            .on_action(cx.listener(|view, _: &ToggleSource, window, cx| view.toggle_mode(window, cx)))
             .flex()
             .flex_col()
             .when(self.options.layout == Layout::Scroll, |root| root.size_full())

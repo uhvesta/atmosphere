@@ -223,10 +223,11 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [x] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
 
 ### Markdown (`apps/humata2/markdown`)
-- [ ] Fix `headless:flows` (3 of 7 fail, all in `src/view.rs`):
-  - comment on selection needs a fallback source mapping when a selection end has none;
-  - Copy as Markdown leaves the clipboard empty: toolbar buttons need `on_mouse_down(Left, stop_propagation)`, and a drag started mid-heading begins past its text;
-  - after toggling Source, `set_mode` must focus the new text view.
+- [ ] Fix `headless:flows` (2 of 7 still fail, `bazel test //apps/humata2/markdown/headless:flows`):
+  - [x] Toggling Source and back with the keyboard: `toggle_mode` moves focus to the new text view.
+  - [x] The selection toolbar's buttons act on press, using the selection cached when the toolbar was drawn, because pressing clears the text's selection first. Copy now reaches the clipboard.
+  - [ ] Copy as Markdown: the drag from the middle of "Heading 1" starts past the heading's text, so the copy begins at paragraph 2 instead of `# Gallery`. Either the flow driver aims at the text's start, or the view snaps a drag that starts inside a heading to its start.
+  - [ ] Comment on selection: dragging paragraph 2 → heading 3 gives no toolbar, because gpui-base's `SourceRangeSelection::merge` turns the whole selection Unmapped when one block can't map (`text/node.rs` in gpui-base 0.9.1). Needs a gpui-base patch through `crate.annotation(patches = …)` (as `apps/humata2/diff/patches` does) that falls back to the block's whole source span.
 - [ ] Read the goldens, record `headless:timing` numbers, run buildifier, and give the markdown decision a number (it proposed D75).
 - [ ] Add syntect to the gpui-fast lock (code blocks are uncoloured on Fast), add a Flow scroll action, parse `secondary-` keystrokes, and add Fast-engine GUI tests.
 
