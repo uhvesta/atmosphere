@@ -244,6 +244,12 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: Ask verdicts still don't become Inbox requests, and the Inbox and grants still live in memory.
 
+### (this commit): minion F's pick up here, paused [minion F]
+- Minion F's hand-off notes now say what's done and what's left, which left items wait on the owner or a proto change, and which are next.
+- `OVERVIEW.md`: the "Pick up here (minion F)" On line is replaced with the paused list. No code changed.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
+- Look at: Ask→Inbox needs a way for any RPC to answer pending with a request id.
+
 ### 13396a5c: session lifecycle and full-screen presentation (Desktop UI; N1) [minion C1]
 - The session can now put its terminal or panel full screen and return to its saved columns; the choice survives a restart per session. Exited sessions keep their transcript and Resume; offline sessions retain output with a disconnected notice. Selected panel-strip choices close/reopen, and pending Inbox/unsent-comment badges are visible. Frames 03–06 and 09–13 now have real-app comparison images; they remain partial for the differences below.
 - `features/app/src/layout.rs`, `saved.rs` and `lib.rs` own presentation and navigation-overlay state. Narrow windows fold columns without overwriting saved widths. `ui/src/shell.rs`, `sidebar.rs`, `bridge.rs` and `pages.rs` use that state and shared column sizing; `panels.rs` gains actionable full-screen window controls and badges. `clients::fixture::design_session` supplies lifecycle tails and the approved PAY/INF board items. The transcript now contains the mock's literal command text; no cargo command was executed. Terminal output is isolated by selected tab. Panel contents were preserved.

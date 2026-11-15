@@ -258,7 +258,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - Done: views on the event feed (D89).
 - Done: Inbox requests on the event feed (D90), grants made and revoked (D91), and review chat notes (D92).
 - Done: MCP `inbox_request` (D93).
-- On: next open daemon/CLI/MCP items that need no UI, Linux batch, repin or owner call.
+- Paused (minion F, 2026-11-15). Waiting on an owner or proto call: Ask→Inbox (D38.6; no RPC can answer "pending" with a request id yet, and approval must run the held call, MCP.md TP-13); `last_start` push (no Event payload). Open with no blocker found, next to pick up: sessions, channels and operations on the feed and `by` on events; persisting the Inbox and grants (new store tables); the `humata views` CLI and include_forks.
 - Trap: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_...`) can fail under the full parallel run; it passes alone.
 - Traps: OVERVIEW, GAPS_REVIEW and DECISIONS may hold minion C1's uncommitted edits; stage only my hunks from `git show HEAD:<file>`.
 
