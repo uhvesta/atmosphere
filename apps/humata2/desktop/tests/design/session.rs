@@ -25,6 +25,8 @@ pub enum Term {
     NeedsYou,
     Exited,
     Offline,
+    /// After a restart, the agent's resume failed (PER-15).
+    CouldntResume,
 }
 
 /// What fills the window.
@@ -65,6 +67,7 @@ fn header(look: Look, screen: Screen) -> Div {
         Term::NeedsYou => (St::NeedsYou, Some(("Needs you", ORANGE))),
         Term::Exited => (St::Exited, Some(("Agent exited", RED))),
         Term::Offline => (St::Offline, Some(("devbox-1 is offline", GREY))),
+        Term::CouldntResume => (St::Exited, Some(("Couldn't resume", RED))),
     };
     div()
         .flex()
@@ -134,7 +137,7 @@ fn tabs(look: Look, screen: Screen) -> Div {
     let dot = match screen.term {
         Term::Working => St::Working,
         Term::NeedsYou => St::NeedsYou,
-        Term::Exited => St::Exited,
+        Term::Exited | Term::CouldntResume => St::Exited,
         Term::Offline => St::Offline,
     };
     div()
@@ -305,7 +308,64 @@ pub fn terminal(look: Look, term: Term) -> Div {
             ))
             .child(div().flex_1())
             .child(input_box(look, false).opacity(0.5)),
+        Term::CouldntResume => body.child(reboot_line(look)).child(couldnt_resume(look)).child(div().flex_1()),
     }
+}
+
+/// The line under the old scrollback that marks the reboot and how the
+/// agent was started again (PER-17).
+fn reboot_line(look: Look) -> Div {
+    div()
+        .mt(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .font_family(SYSTEM_FONT)
+        .text_size(px(11.5))
+        .text_color(c(look.secondary))
+        .child(div().flex_1().h(px(1.)).bg(c(look.line)))
+        .child("devbox-1 restarted at 09:12 · ran claude --resume 7f3a…")
+        .child(div().flex_1().h(px(1.)).bg(c(look.line)))
+}
+
+/// A failed resume is never a silent fresh start (PER-15): the reason, the
+/// two ways on, and the line to this restart's report (PER-29).
+fn couldnt_resume(look: Look) -> Div {
+    div()
+        .mt(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(7.))
+        .bg(c(look.fill))
+        .font_family(SYSTEM_FONT)
+        .text_size(px(12.))
+        .text_color(c(look.text))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(small_icon(IconName::CircleX, RED))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Couldn't resume")),
+        )
+        .child(div().child(
+            "claude started but opened a new conversation: 7f3a….jsonl is missing from ~/.claude/projects/ledger on devbox-1. Nothing was typed into it.",
+        ))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .pt(px(2.))
+                .child(button(look, Kind::Primary, "Try again"))
+                .child(button(look, Kind::Secondary, "Start fresh with a summary"))
+                .child(div().flex_1())
+                .child(small_icon(IconName::FileText, look.secondary))
+                .child(div().text_color(c(look.accent)).child("Restart report 09:12")),
+        )
 }
 
 pub fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<Div>) -> Div {
@@ -663,6 +723,12 @@ fn files_panel(look: Look, full: bool) -> Div {
 }
 
 fn info_panel(look: Look, full: bool) -> Div {
+    info_with(look, full, None)
+}
+
+/// The Info panel's body, with `extra` as a last section (frame 54 adds
+/// Archived).
+pub fn info_with(look: Look, full: bool, extra: Option<Div>) -> Div {
     let kv = |key: &'static str, value: Div| {
         div()
             .flex()
@@ -717,7 +783,8 @@ fn info_panel(look: Look, full: bool) -> Div {
                         .child(secondary(look, "Owns this session, its board (4 items), its clones and the 2 items it created. Everything else goes to the Inbox."))
                         .child(secondary(look, "Not contained: it can read and write anything you can on devbox-1."))
                         .child(link("Channel rules")),
-                ),
+                )
+                .children(extra),
         )
 }
 
@@ -794,16 +861,19 @@ fn journal_panel(look: Look, full: bool) -> Div {
         )
 }
 
-pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
-    let full = screen.fill == Fill::PanelFull;
-    let title = match which {
+fn title(which: Panel) -> &'static str {
+    match which {
         Panel::Diff => "Diff",
         Panel::Inbox => "Inbox",
         Panel::Files => "Files",
         Panel::Info => "Info",
         Panel::Board => "Board",
         Panel::Journal => "Journal",
-    };
+    }
+}
+
+pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
+    let full = screen.fill == Fill::PanelFull;
     let body = match which {
         Panel::Diff => diff_panel(look, full),
         Panel::Inbox => inbox_panel(look, full),
@@ -812,6 +882,12 @@ pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
         Panel::Board => board_panel(look, full),
         Panel::Journal => journal_panel(look, full),
     };
+    panel_shell(look, full, title(which), body)
+}
+
+/// The right panel's column around `body`; full screen, it carries the
+/// window's own title bar.
+fn panel_shell(look: Look, full: bool, title: &'static str, body: Div) -> Div {
     div()
         .when(full, |panel| panel.flex_1())
         .when(!full, |panel| panel.w(px(PANEL_WIDTH)).flex_shrink_0())
@@ -903,6 +979,22 @@ pub fn session(look: Look, screen: Screen) -> Div {
         .child(middle(look, screen))
         .when_some(screen.panel, |root, which| root.child(handle(look, true)).child(panel(look, screen, which)))
         .child(strip(look, screen.panel))
+}
+
+/// The session screen with `body` as its right panel, `on` lit in the
+/// strip and `title` over it when it fills the window (`Fill::PanelFull`).
+/// For the frames whose panel shows a state the stock panels don't.
+pub fn session_with(look: Look, screen: Screen, on: Panel, title: &'static str, body: Div) -> Div {
+    let root = div().size_full().flex();
+    if screen.fill == Fill::PanelFull {
+        return root.child(panel_shell(look, true, title, body));
+    }
+    root.child(sidebar::sidebar(look, screen.side))
+        .child(handle(look, true))
+        .child(middle(look, screen))
+        .child(handle(look, true))
+        .child(panel_shell(look, false, title, body))
+        .child(strip(look, Some(on)))
 }
 
 /// One tab group's row in a split: the same tabs as a lone terminal,

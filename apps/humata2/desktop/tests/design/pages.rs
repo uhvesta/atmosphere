@@ -34,7 +34,7 @@ pub fn page(look: Look, side: Side, bar: Div, body: Div) -> Div {
         .child(div().flex_1().min_w_0().flex().flex_col().bg(c(look.content)).child(bar).child(body.flex_1().min_h_0().overflow_hidden()))
 }
 
-fn session_row(look: Look, state: St, title: &'static str, channel: &'static str, what: &'static str, when: &'static str, action: Option<Div>) -> Div {
+pub fn session_row(look: Look, state: St, title: &'static str, channel: &'static str, what: &'static str, when: &'static str, action: Option<Div>) -> Div {
     div()
         .flex()
         .items_center()
@@ -57,7 +57,7 @@ fn session_row(look: Look, state: St, title: &'static str, channel: &'static str
         .children(action)
 }
 
-fn group(look: Look, title: &'static str, rows: Vec<Div>) -> Div {
+pub fn group(look: Look, title: &'static str, rows: Vec<Div>) -> Div {
     div()
         .flex()
         .flex_col()
@@ -107,7 +107,7 @@ pub fn home_list(look: Look) -> Div {
     )
 }
 
-fn inbox_row(look: Look, title: &'static str, from: &'static str, when: &'static str, on: bool, vip: bool) -> Div {
+pub fn inbox_row(look: Look, title: &'static str, from: &'static str, when: &'static str, on: bool, vip: bool) -> Div {
     div()
         .flex()
         .flex_col()

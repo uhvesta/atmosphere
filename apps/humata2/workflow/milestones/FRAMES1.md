@@ -92,4 +92,5 @@ Changing frames 01–43 (W1). The frames for machines, files, forks, PR reviews 
 - **Waiting on:** main agent's gate: build design_test, record 44–55, check 01–43 unchanged. Uncompiled until then.
 - **Extra guesses to confirm:** 45 marks in-progress clones with an arrow; 51 draws Before/After side by side; 53/51/52 footers show a dimmed "Send comments" at zero drafts (RV-5 says disabled).
 - **Build gates:** 2026-11-15 gate 1: design_test builds, 01–43 unchanged, 44–55 recorded. Fixes: 55 date/size collision (fixed widths, no wrap, dialog 700 wide); 51 dropped the duplicate "addressed" text (badge kept); 51 Before/After columns clip instead of overflowing. Waiting on re-record.
-- **Ready to commit:** no
+- **Owner sign-off 2026-11-15:** 44–55 approved with the drawn picks; 45 gains Cancel and a failed clone with Retry (drawn in 45 itself, no new frame).
+- **Ready to commit:** yes, after the re-record of 45: frames 44–55 drawn as code in desktop/tests/design/ (new files new_channel, resume, channel_tabs, comments, cleanup; additive hooks in session, channel, pages, overlays; design.rs FRAMES 44–55). Reviewer: run design_test, 01–43 unchanged, view 44–55 PNGs.

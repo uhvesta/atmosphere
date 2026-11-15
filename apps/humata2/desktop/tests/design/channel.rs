@@ -12,8 +12,10 @@ use crate::sidebar::Side;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Sessions,
+    Inbox,
     Activity,
     Repos,
+    Access,
 }
 
 fn header(look: Look, on: Tab) -> Div {
@@ -60,15 +62,16 @@ fn header(look: Look, on: Tab) -> Div {
                 .px(px(20.))
                 .text_size(px(12.5))
                 .child(tab("Sessions", Some("6"), on == Tab::Sessions))
-                .child(tab("Inbox", Some("2"), false))
+                .child(tab("Inbox", Some("2"), on == Tab::Inbox))
                 .child(tab("Board", None, false))
                 .child(tab("Repos and machines", None, on == Tab::Repos))
-                .child(tab("Agent access", None, false))
+                .child(tab("Agent access", None, on == Tab::Access))
                 .child(tab("Activity", None, on == Tab::Activity)),
         )
 }
 
-fn frame(look: Look, on: Tab, body: Div) -> Div {
+/// The channel page on tab `on`, with `body` under the tabs.
+pub fn frame(look: Look, on: Tab, body: Div) -> Div {
     page(
         look,
         Side::at("payments-rewrite"),

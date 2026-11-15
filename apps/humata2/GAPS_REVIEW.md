@@ -484,3 +484,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/{humatad,store,sessions,revive}:all //apps/humata2/cli:all`: 45/45 pass, incl. new `access_test` and `matrix_test` (TESTING §5.5 tiers over MCP and CLI; Board tier ignored until BoardService). rustfmt clean; clippy not run (`--config=lint` broken repo-wide).
 - Known gaps: approved Asks don't survive a restart (D127.2); deferred cards lack preview and Always allow; only ListChannels defers so far; SEC-15 not enforced; SE-29 not reachable end to end; channel delete leaves its rules row; mcp.rs hand-rolled base64.
 - Look at: `humatad/src/inbox/deferred.rs`, `access_service.rs`, `rules_kept.rs`, `tests/matrix.rs`.
+
+### (this commit): design frames 44–55 (minion FRAMES1, owner approved 2026-11-15)
+- New goldens: 44 new channel, 45 cloning (Cancel, a failed clone with Retry), 46 session couldn't resume, 47 Home restart report, 48 channel Inbox (flat, Allow all / Deny all), 49 channel Agent access (one rules list), 50 diff comment box, 51 comment addressed (Before/After), 52 comment resolved by the agent (Reopen on the header line), 53 comment archived toast, 54 info archived, 55 Desk clean up (unpushed sessions unticked).
+- Verified: `bazel run //apps/humata2/desktop:design_test_record` then `bazel test //apps/humata2/desktop:design_test` pass; frames 01–43 unchanged byte for byte.
+- Known gaps: 48 reuses frame 26's request card, so it changes if D113 redraws 26. The `desktop/tests/design/` folder is not rustfmt-formatted (pre-existing; left as is).
+- Look at: `desktop/tests/design/{new_channel,resume,channel_tabs,comments,cleanup}.rs`; the 12 PNGs.

@@ -20,12 +20,22 @@ mod desk;
 mod board;
 #[path = "design/channel.rs"]
 mod channel;
+#[path = "design/channel_tabs.rs"]
+mod channel_tabs;
+#[path = "design/cleanup.rs"]
+mod cleanup;
+#[path = "design/comments.rs"]
+mod comments;
 #[path = "design/kit.rs"]
 mod kit;
+#[path = "design/new_channel.rs"]
+mod new_channel;
 #[path = "design/overlays.rs"]
 mod overlays;
 #[path = "design/pages.rs"]
 mod pages;
+#[path = "design/resume.rs"]
+mod resume;
 #[path = "design/session.rs"]
 mod session;
 #[path = "design/sidebar.rs"]
@@ -44,6 +54,7 @@ gpui_kit::assets::icon_assets!(
     MockIcons,
     [
         Archive,
+        ArrowRight,
         Bell,
         BookOpenText,
         Bot,
@@ -62,6 +73,7 @@ gpui_kit::assets::icon_assets!(
         FolderGit2,
         FolderOpen,
         FolderTree,
+        GitBranch,
         GitFork,
         GitPullRequest,
         HardDrive,
@@ -183,6 +195,20 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("41-review-beside-terminal", DARK, desk::split_review),
     ("42-review-markdown-source", LIGHT, desk::source_review),
     ("43-review-terminal-source-page", DARK, desk::terminal_source_page),
+    // Drafts (minion FRAMES1, 2026-11-15): stay drafts until the owner
+    // signs them off (milestone FRAMES1).
+    ("44-new-channel", LIGHT, new_channel::create),
+    ("45-new-channel-cloning", DARK, new_channel::cloning),
+    ("46-session-couldnt-resume", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Info), Term::CouldntResume))),
+    ("47-home-restart-report", DARK, resume::home_after_restart),
+    ("48-channel-inbox", LIGHT, channel_tabs::inbox),
+    ("49-channel-agent-access", DARK, channel_tabs::access),
+    ("50-diff-comment-box", LIGHT, comments::comment_box),
+    ("51-comment-addressed", DARK, comments::addressed),
+    ("52-comment-resolved-by-agent", LIGHT, comments::resolved),
+    ("53-comment-archived-toast", DARK, comments::archived),
+    ("54-info-archived", LIGHT, comments::info_archived),
+    ("55-desk-clean-up", LIGHT, cleanup::clean_up),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.

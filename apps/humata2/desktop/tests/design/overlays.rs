@@ -6,7 +6,8 @@ use gpui_kit::{prelude::*, *};
 
 use crate::kit::*;
 
-fn scrim(look: Look) -> Div {
+/// The dimmed layer under a dialog.
+pub fn scrim(look: Look) -> Div {
     div()
         .absolute()
         .top_0()
