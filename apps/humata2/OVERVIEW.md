@@ -256,7 +256,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - Done: draft views in ViewService, the store and MCP (D87); open: their push to the app, include_forks and a CLI.
 - Done: a note going outdated or moving is a WatchReviewChanges change (D88).
 - Done: views on the event feed (D89).
-- Done: Inbox requests on the event feed (D90), and grants made and revoked (D91).
+- Done: Inbox requests on the event feed (D90), grants made and revoked (D91), and review chat notes (D92).
 - On: next open daemon/CLI/MCP items that need no UI, Linux batch, repin or owner call.
 - Trap: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_...`) can fail under the full parallel run; it passes alone.
 - Traps: OVERVIEW, GAPS_REVIEW and DECISIONS may hold minion C1's uncommitted edits; stage only my hunks from `git show HEAD:<file>`.
@@ -361,6 +361,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [x] EventService machine streaming (minion B): each change to a machine as ListMachines shows it (added, changed, removed) goes on an in-memory feed with resume and Resync (D82). Test: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_and_a_resume_starts_after_the_last_seen`).
 - [x] Inbox requests on the feed (minion F): each new request, answer and withdrawal is an Event with the InboxRequest, Created then Updated; the user sees every request, an agent its own session's; topics, channels and sessions narrow it (D90). Test: `//apps/humata2/daemon/humatad:inbox_test` (`the_feed_tells_of_each_request_and_its_answer`).
 - [x] Grants on the feed (minion F): the grant an approval makes is a Created Event before the answered request, and a revoked grant a Deleted one with its last state; seen and narrowed as ListGrants lists them, by TOPIC_ACCESS (D91). Test: `//apps/humata2/daemon/humatad:inbox_test` (`the_feed_tells_of_the_grant_an_approval_makes_and_its_revoking`).
+- [x] Review chat notes on the feed (minion F): each note made, changed (edited, gone outdated, moved, restored), dropped or taken away by an Undo is a Comment Event, Created, Updated or Deleted with its last state; a restart doesn't tell the kept notes again; TOPIC_COMMENTS narrows it (D92). Test: `//apps/humata2/daemon/humatad:review_test` (`the_feed_tells_of_each_note_made_changed_dropped_and_undone_but_not_again_after_a_restart`).
 - [ ] The rest of the feed: sessions, channels, operations and the other topics, `by` on each event, the machine socket's filtered relay, and a feed that outlives a restart (D82).
 - [ ] launchd for macOS remotes.
 - [x] A host-side peer-link client with keepalive (minion D): the host dials `humatad2 serve --stdio` through the machine's link command, proves the enrollment key both ways (Hello, ProveHost), opens the Uplink, pings after 30 s idle and ends the link after 20 s unanswered, and dials again after 5–30 s; each link up or down is the machine's reachability on the feed (D83). Test: `//apps/humata2/daemon/humatad:humatad2_unit_test` (`peer_client::tests`).

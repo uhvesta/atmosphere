@@ -32,7 +32,7 @@ use tokio::sync::watch;
 use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status};
 
-use crate::events::Feed;
+use crate::events::{Feed, Scope};
 use crate::guard::Guard;
 use crate::identity::{self, AgentCaller, Caller};
 use crate::status;
@@ -107,6 +107,8 @@ struct SessionReview {
     changed: watch::Sender<u64>,
     /// Held while the review is saved, so saves land in order.
     saving: tokio::sync::Mutex<()>,
+    /// The notes as the event feed was last told of them, by id.
+    told: Mutex<BTreeMap<String, pb::Comment>>,
 }
 
 #[derive(Default)]
@@ -169,6 +171,8 @@ impl Review {
             Some(record) => restored(&record),
             None => SessionReview::default(),
         });
+        // The feed hears of changes from here on, not of notes made before.
+        *lock(&review.told) = notes_now(&review, session);
         sessions.insert(session.to_owned(), review.clone());
         Ok(review)
     }
@@ -184,11 +188,40 @@ impl Review {
             .map_err(|error| status::store(error, &self.inner.machine, "save the session's review"))
     }
 
-    /// Saves the review, then tells the app's feed about change `seq`.
-    async fn publish(&self, session: &str, review: &SessionReview, seq: u64) -> Result<(), Status> {
-        let saved = self.save(session, review).await;
+    /// Saves the review, then tells WatchReviewChanges about change `seq`
+    /// and the event feed about each note it made, changed or took away.
+    async fn publish(&self, record: &SessionRecord, review: &SessionReview, seq: u64) -> Result<(), Status> {
+        let saved = self.save(&record.id, review).await;
         review.changed.send_replace(seq);
+        self.tell_notes(record, review);
         saved
+    }
+
+    /// Tells the feed how the notes differ from when it was last told:
+    /// Created, Updated, or Deleted with the note as it last stood.
+    fn tell_notes(&self, record: &SessionRecord, review: &SessionReview) {
+        let now = notes_now(review, &record.id);
+        // Held while publishing, so two calls tell in the order they saw.
+        let mut told = lock(&review.told);
+        let scope = || Scope {
+            channel: record.channel.clone(),
+            session: record.id.clone(),
+        };
+        let feed = &self.inner.feed;
+        for (id, comment) in &now {
+            let change = match told.get(id) {
+                None => pb::Change::Created,
+                Some(before) if before != comment => pb::Change::Updated,
+                Some(_) => continue,
+            };
+            feed.publish_in(change, pb::event::Payload::Comment(comment.clone()), scope());
+        }
+        for (id, comment) in told.iter() {
+            if !now.contains_key(id) {
+                feed.publish_in(pb::Change::Deleted, pb::event::Payload::Comment(comment.clone()), scope());
+            }
+        }
+        *told = now;
     }
 
     fn require(&self, caller: &Caller, call: &Call) -> Result<(), Status> {
@@ -337,7 +370,7 @@ impl pb::diff_service_server::DiffService for Review {
             moved
         };
         match self.refresh_notes(&clones, &review, &diffs).await? {
-            Some(seq) => self.publish(&record.id, &review, seq).await?,
+            Some(seq) => self.publish(&record, &review, seq).await?,
             None if moved => self.save(&record.id, &review).await?,
             None => {}
         }
@@ -535,7 +568,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             wire::change_to_pb(&change, at)
         };
         remember(&review, idempotency, Answer::Focused(change.clone()));
-        self.publish(&record.id, &review, change.seq).await?;
+        self.publish(&record, &review, change.seq).await?;
         Ok(Response::new(change))
     }
 
@@ -558,7 +591,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             chat.at.insert(change.seq, at);
             wire::change_to_pb(&change, at)
         };
-        self.publish(&record.id, &review, change.seq).await?;
+        self.publish(&record, &review, change.seq).await?;
         Ok(Response::new(change))
     }
 
@@ -717,7 +750,7 @@ impl pb::comment_service_server::CommentService for Review {
         if let Some(comment) = &comment {
             remember(&review, idempotency, Answer::Comment(comment.clone()));
         }
-        self.publish(&record.id, &review, seq).await?;
+        self.publish(&record, &review, seq).await?;
         let comment =
             comment.ok_or_else(|| status::internal("a new note made no note".to_owned(), ""))?;
         Ok(Response::new(comment))
@@ -745,7 +778,7 @@ impl pb::comment_service_server::CommentService for Review {
         if let Some(comment) = &comment {
             remember(&review, idempotency, Answer::Comment(comment.clone()));
         }
-        self.publish(&record.id, &review, seq).await?;
+        self.publish(&record, &review, seq).await?;
         let comment = comment
             .ok_or_else(|| status::internal("an edited note made no note".to_owned(), ""))?;
         Ok(Response::new(comment))
@@ -774,7 +807,7 @@ impl pb::comment_service_server::CommentService for Review {
             undo_id: change.undo_id.clone(),
         };
         remember(&review, idempotency, Answer::Dropped(answer.clone()));
-        self.publish(&record.id, &review, change.seq).await?;
+        self.publish(&record, &review, change.seq).await?;
         Ok(Response::new(answer))
     }
 
@@ -854,7 +887,7 @@ impl pb::view_service_server::ViewService for Review {
             ..pb::PreparedView::default()
         };
         remember(&review, idempotency, Answer::Prepared(answer.clone()));
-        self.publish(&record.id, &review, change.seq).await?;
+        self.publish(&record, &review, change.seq).await?;
         Ok(Response::new(answer))
     }
 
@@ -1057,6 +1090,19 @@ fn changed_note(change: &humata2_review_diff::Change, session: &str) -> Option<p
     let mut comment = note_comment(note, session);
     comment.undo_id.clone_from(&change.undo_id);
     Some(comment)
+}
+
+/// The review's notes as Comments, by id.
+fn notes_now(review: &SessionReview, session: &str) -> BTreeMap<String, pb::Comment> {
+    lock(&review.chat)
+        .chat
+        .notes()
+        .map(|note| {
+            let comment = note_comment(note, session);
+            let id = comment.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+            (id, comment)
+        })
+        .collect()
 }
 
 /// A note as a Comment, with its session and the agent that wrote it.

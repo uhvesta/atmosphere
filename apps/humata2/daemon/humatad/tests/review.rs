@@ -1293,3 +1293,108 @@ async fn the_feed_tells_the_agent_of_its_drafts_and_the_user_of_offers_only() {
         "a feed narrowed to another channel hears nothing"
     );
 }
+
+/// The next comment event's change, note id and text.
+async fn next_note(events: &mut tonic::Streaming<pb::Event>) -> (i32, String, String) {
+    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    match event.payload {
+        Some(pb::event::Payload::Comment(comment)) => (event.change, note_id(&comment), comment.text),
+        other => panic!("expected a comment, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_feed_tells_of_each_note_made_changed_dropped_and_undone_but_not_again_after_a_restart() {
+    let (mut daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=10).replace("line 3\n", "line three\n")).unwrap();
+    get_diff(&daemon, uncommitted()).await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut users = feed(&daemon, Request::new(pb::SubscribeRequest::default())).await;
+    let mut agents = feed(&daemon, as_agent(pb::SubscribeRequest::default(), &token)).await;
+    let mut views_only = feed(
+        &daemon,
+        Request::new(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Views as i32],
+            ..pb::SubscribeRequest::default()
+        }),
+    )
+    .await;
+    let mut notes = comments(&daemon).await;
+
+    let made = notes
+        .create_comment(as_agent(note("refund.rs", 3, 3, "renamed"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let id = note_id(&made);
+    notes
+        .edit_comment(as_agent(
+            pb::EditCommentRequest {
+                idempotency_key: None,
+                id: made.id.clone(),
+                text: "renamed for clarity".to_owned(),
+                expected_revision: None,
+            },
+            &token,
+        ))
+        .await
+        .unwrap();
+    let dropped = notes
+        .drop_comment(pb::DropCommentRequest {
+            idempotency_key: None,
+            id: Some(pb::CommentId {
+                value: format!("{SESSION}/{id}"),
+            }),
+            expected_revision: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    chat(&daemon)
+        .await
+        .undo_review_change(pb::UndoReviewChangeRequest {
+            session: Some(session()),
+            undo_id: dropped.undo_id,
+        })
+        .await
+        .unwrap();
+
+    let (created, updated, deleted) = (
+        pb::Change::Created as i32,
+        pb::Change::Updated as i32,
+        pb::Change::Deleted as i32,
+    );
+    let expected = vec![
+        (created, id.clone(), "renamed".to_owned()),
+        (updated, id.clone(), "renamed for clarity".to_owned()),
+        (deleted, id.clone(), "renamed for clarity".to_owned()),
+        (created, id.clone(), "renamed for clarity".to_owned()),
+    ];
+    for events in [&mut users, &mut agents] {
+        let mut told = Vec::new();
+        for _ in 0..expected.len() {
+            told.push(next_note(events).await);
+        }
+        assert_eq!(told, expected);
+    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), views_only.message()).await.is_err(),
+        "a feed of views only hears of no note"
+    );
+
+    daemon.restart().await;
+    get_diff(&daemon, uncommitted()).await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut users = feed(&daemon, Request::new(pb::SubscribeRequest::default())).await;
+    let later = comments(&daemon)
+        .await
+        .create_comment(as_agent(note("refund.rs", 5, 5, "after the restart"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        next_note(&mut users).await,
+        (created, note_id(&later), "after the restart".to_owned()),
+        "the note kept through the restart isn't told again"
+    );
+}

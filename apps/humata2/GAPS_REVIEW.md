@@ -232,6 +232,12 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: suspensions and grants ended with a session aren't told, since nothing makes them yet (D91).
 
+### (this commit): review chat notes on the event feed [minion F]
+- The app now hears at once when the review chat's agent leaves, edits or drops a note, when one goes outdated or moves, and when an Undo brings one back or takes it away, in any session, not only the review it's watching. A restart doesn't announce the kept notes again.
+- `daemon/humatad/src/review.rs`: SessionReview keeps `told`, the notes as the feed last heard them (set from the store on load); `publish` now takes the SessionRecord and calls `tell_notes`, which compares the notes with `told` and publishes Created, Updated or Deleted (last state) in the session's channel and session. `daemon/humatad/src/events.rs`: `Filter` passes comments by TOPIC_COMMENTS, the channels or sessions asked for, and `sees_session`.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
+- Look at: an agent hears only of its own session's notes, narrower than what ListComments lets it read (D92).
+
 ### 13396a5c: session lifecycle and full-screen presentation (Desktop UI; N1) [minion C1]
 - The session can now put its terminal or panel full screen and return to its saved columns; the choice survives a restart per session. Exited sessions keep their transcript and Resume; offline sessions retain output with a disconnected notice. Selected panel-strip choices close/reopen, and pending Inbox/unsent-comment badges are visible. Frames 03–06 and 09–13 now have real-app comparison images; they remain partial for the differences below.
 - `features/app/src/layout.rs`, `saved.rs` and `lib.rs` own presentation and navigation-overlay state. Narrow windows fold columns without overwriting saved widths. `ui/src/shell.rs`, `sidebar.rs`, `bridge.rs` and `pages.rs` use that state and shared column sizing; `panels.rs` gains actionable full-screen window controls and badges. `clients::fixture::design_session` supplies lifecycle tails and the approved PAY/INF board items. The transcript now contains the mock's literal command text; no cargo command was executed. Terminal output is isolated by selected tab. Panel contents were preserved.

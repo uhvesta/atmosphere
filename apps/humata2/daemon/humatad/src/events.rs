@@ -157,6 +157,7 @@ struct Filter {
     views: bool,
     inbox: bool,
     access: bool,
+    comments: bool,
     channels: Vec<String>,
     sessions: Vec<String>,
 }
@@ -176,6 +177,7 @@ impl Filter {
         let views = topics.is_empty() || topics.contains(&(pb::Topic::Views as i32));
         let inbox = topics.is_empty() || topics.contains(&(pb::Topic::Inbox as i32));
         let access = topics.is_empty() || topics.contains(&(pb::Topic::Access as i32));
+        let comments = topics.is_empty() || topics.contains(&(pb::Topic::Comments as i32));
         Ok(Self {
             user,
             own_session,
@@ -183,6 +185,7 @@ impl Filter {
             views,
             inbox,
             access,
+            comments,
             channels: request.channels.iter().map(|id| id.value.clone()).collect(),
             sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
         })
@@ -225,6 +228,8 @@ impl Filter {
             }
             // Grants likewise, as ListGrants lists them.
             Some(pb::event::Payload::Grant(_)) => self.access && self.sees_session(scope) && self.asked(scope),
+            // Review chat notes: the user's, and their session agent's.
+            Some(pb::event::Payload::Comment(_)) => self.comments && self.sees_session(scope) && self.asked(scope),
             _ => false,
         }
     }
