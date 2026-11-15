@@ -114,14 +114,26 @@ message ReadFileRequest {
   uint64 max_bytes = 3;
   // Shown on the Inbox card when reading another session's files asks.
   string reason = 4;
+  // The codecs the reader decodes, best first. Empty: raw chunks only.
+  repeated ChunkCodec accept_codecs = 5;
 }
 
+// At most 1 MiB of the file, before encoding (TR-11).
 message FileChunk {
+  // Where the chunk's decoded bytes start in the file.
   uint64 offset = 1;
+  // The chunk's bytes, encoded with `codec`.
   bytes data = 2;
   // On the last chunk: the whole file's SHA-256.
   string sha256 = 3;
   bool last = 4;
+  // Only a codec the receiver listed (accept_codecs, ServerInfo or Hello
+  // chunk_codecs); a chunk that doesn't shrink is sent as NONE.
+  ChunkCodec codec = 5;
+  // The decoded length; 0 with NONE means len(data).
+  uint32 raw_size = 6;
+  // CRC-32 (IEEE) of the decoded bytes. Always set on a compressed chunk.
+  optional uint32 crc32 = 7;
 }
 
 message WriteFileHeader {

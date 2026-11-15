@@ -1,5 +1,5 @@
 {
-  "checksum": "87c491637f8cf5fcd77b52e96da129dab2be9a9ef23df308a3106993b7218789",
+  "checksum": "25c82c2de3551e2bdb050f88fb01f2bd749824825fdbc47958d827b703c3e104",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -3770,6 +3770,40 @@
       ],
       "version": "0.11.0"
     },
+    "bincode 1.3.3": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2015"
+      },
+      "library_target_name": "bincode",
+      "license": "MIT",
+      "license_file": "LICENSE.md",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "bincode",
+      "package_url": "https://github.com/servo/bincode",
+      "repository": {
+        "Http": {
+          "sha256": "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad",
+          "url": "https://static.crates.io/crates/bincode/1.3.3/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "bincode",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "1.3.3"
+    },
     "bit-set 0.10.0": {
       "common_attrs": {
         "deps": [
@@ -3844,6 +3878,44 @@
       ],
       "version": "0.11.1"
     },
+    "bit-set 0.8.0": {
+      "common_attrs": {
+        "crate_features": [
+          "std"
+        ],
+        "deps": [
+          {
+            "id": "bit-vec 0.8.0",
+            "target": "bit_vec"
+          }
+        ],
+        "edition": "2015"
+      },
+      "library_target_name": "bit_set",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "bit-set",
+      "package_url": "https://github.com/contain-rs/bit-set",
+      "repository": {
+        "Http": {
+          "sha256": "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3",
+          "url": "https://static.crates.io/crates/bit-set/0.8.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "bit_set",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.8.0"
+    },
     "bit-vec 0.10.2": {
       "common_attrs": {
         "crate_features": [
@@ -3876,6 +3948,38 @@
         }
       ],
       "version": "0.10.2"
+    },
+    "bit-vec 0.8.0": {
+      "common_attrs": {
+        "crate_features": [
+          "std"
+        ],
+        "edition": "2015"
+      },
+      "library_target_name": "bit_vec",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "bit-vec",
+      "package_url": "https://github.com/contain-rs/bit-vec",
+      "repository": {
+        "Http": {
+          "sha256": "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7",
+          "url": "https://static.crates.io/crates/bit-vec/0.8.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "bit_vec",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.8.0"
     },
     "bit-vec 0.9.1": {
       "common_attrs": {
@@ -5410,10 +5514,21 @@
     },
     "cc 1.11.1": {
       "common_attrs": {
+        "crate_features": [
+          "parallel"
+        ],
         "deps": [
           {
             "id": "find-msvc-tools 0.1.15",
             "target": "find_msvc_tools"
+          },
+          {
+            "id": "jobserver 0.1.35",
+            "target": "jobserver"
+          },
+          {
+            "id": "libc 0.2.191",
+            "target": "libc"
           },
           {
             "id": "shlex 2.0.1",
@@ -10338,6 +10453,54 @@
       ],
       "version": "0.1.9"
     },
+    "fancy-regex 0.16.2": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "perf",
+          "std",
+          "unicode"
+        ],
+        "deps": [
+          {
+            "id": "bit-set 0.8.0",
+            "target": "bit_set"
+          },
+          {
+            "id": "regex-automata 0.4.18",
+            "target": "regex_automata"
+          },
+          {
+            "id": "regex-syntax 0.8.11",
+            "target": "regex_syntax"
+          }
+        ],
+        "edition": "2018"
+      },
+      "library_target_name": "fancy_regex",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "fancy-regex",
+      "package_url": "https://github.com/fancy-regex/fancy-regex",
+      "repository": {
+        "Http": {
+          "sha256": "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f",
+          "url": "https://static.crates.io/crates/fancy-regex/0.16.2/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "fancy_regex",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.16.2"
+    },
     "fastrand 2.5.0": {
       "common_attrs": {
         "crate_features": [
@@ -11087,6 +11250,7 @@
     "fontdb 0.23.0": {
       "common_attrs": {
         "crate_features": [
+          "default",
           "fontconfig",
           "fontconfig-parser",
           "fs",
@@ -13142,6 +13306,7 @@
       },
       "common_attrs": {
         "crate_features": [
+          "syntect",
           "test-support"
         ],
         "deps": {
@@ -13239,8 +13404,16 @@
               "target": "smallvec"
             },
             {
+              "id": "syntect 5.3.0",
+              "target": "syntect"
+            },
+            {
               "id": "tracing 0.1.44",
               "target": "tracing"
+            },
+            {
+              "id": "two-face 0.4.5",
+              "target": "two_face"
             },
             {
               "id": "unicode-segmentation 1.13.3",
@@ -13333,6 +13506,12 @@
       "package_url": "https://github.com/longbridge/gpui-kit",
       "repository": {
         "Http": {
+          "patch_args": [
+            "-p1"
+          ],
+          "patches": [
+            "@@//apps/humata2/diff/patches:gpui-component-diff-update.patch"
+          ],
           "sha256": "e155c4914bd809d966660610d596f7b57c5cd38979ca2c132215057a91f23f03",
           "url": "https://static.crates.io/crates/gpui-component/0.9.1/download"
         }
@@ -14137,6 +14316,9 @@
     },
     "gpui-fast-macros 0.1.14": {
       "common_attrs": {
+        "crate_features": [
+          "inspector"
+        ],
         "deps": [
           {
             "id": "heck 0.5.0",
@@ -14649,6 +14831,7 @@
           "assets",
           "component",
           "default",
+          "syntect",
           "test-support"
         ],
         "deps": {
@@ -18433,6 +18616,43 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-app 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_app",
+      "name": "humata2-app",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_app",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-bindgen 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -18454,6 +18674,82 @@
       "name": "humata2-bindgen",
       "repository": null,
       "targets": [],
+      "version": "0.0.0"
+    },
+    "humata2-board 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_board",
+      "name": "humata2-board",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_board",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-chunk 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "crc32fast 1.5.5",
+            "target": "crc32fast"
+          },
+          {
+            "id": "lz4_flex 0.14.0",
+            "target": "lz4_flex"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "toml 1.2.1+spec-1.1.0",
+            "target": "toml"
+          },
+          {
+            "id": "zstd 0.14.3",
+            "target": "zstd"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "ruzstd 0.9.1",
+            "target": "ruzstd"
+          },
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_chunk",
+      "name": "humata2-chunk",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_chunk",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
       "version": "0.0.0"
     },
     "humata2-cli 0.0.0": {
@@ -18533,6 +18829,37 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-clients 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_clients",
+      "name": "humata2-clients",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_clients",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-core 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -18564,6 +18891,194 @@
         {
           "Library": {
             "crate_name": "humata_core",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-desktop 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "name": "humata2-desktop",
+      "repository": null,
+      "targets": [],
+      "version": "0.0.0"
+    },
+    "humata2-diff-view 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "unicode-segmentation 1.13.3",
+            "target": "unicode_segmentation"
+          },
+          {
+            "id": "unicode-width 0.2.3",
+            "target": "unicode_width"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_diff_view",
+      "name": "humata2-diff-view",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_diff_view",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-durable 0.0.0": {
+      "common_attrs": {
+        "deps_dev": [
+          {
+            "id": "libsqlite3-sys 0.40.0",
+            "target": "libsqlite3_sys"
+          },
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_durable",
+      "name": "humata2-durable",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_durable",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-engine 0.0.0": {
+      "common_attrs": {
+        "crate_features": [
+          "test-support"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "gpui-kit 0.9.1",
+              "target": "gpui_kit"
+            },
+            {
+              "id": "thiserror 2.0.21",
+              "target": "thiserror"
+            }
+          ],
+          "selects": {
+            "cfg(target_os = \"macos\")": [
+              {
+                "alias": "pre_apple",
+                "id": "gpui-pre-apple 0.3.12",
+                "target": "gpui_apple"
+              }
+            ]
+          }
+        },
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_engine",
+      "name": "humata2-engine",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_engine",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-files 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_files",
+      "name": "humata2-files",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_files",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-gui-spike 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          },
+          {
+            "id": "libc 0.2.191",
+            "target": "libc"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_gui_spike",
+      "name": "humata2-gui-spike",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_gui_spike",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18605,6 +19120,75 @@
         {
           "Library": {
             "crate_name": "humata2_holder",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-hosts 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_hosts",
+      "name": "humata2-hosts",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_hosts",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-inbox 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_inbox",
+      "name": "humata2-inbox",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_inbox",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-layout 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_layout",
+      "name": "humata2-layout",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_layout",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18660,6 +19244,45 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-markdown 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          },
+          {
+            "id": "markdown 1.0.0",
+            "target": "markdown"
+          },
+          {
+            "id": "mermaid-rs-renderer 0.3.1",
+            "target": "mermaid_rs_renderer"
+          },
+          {
+            "id": "similar 3.2.1",
+            "target": "similar"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_markdown",
+      "name": "humata2-markdown",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_markdown",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-mcp 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -18689,6 +19312,29 @@
         {
           "Library": {
             "crate_name": "humata2_mcp",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-palette 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_palette",
+      "name": "humata2-palette",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_palette",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18751,45 +19397,213 @@
       ],
       "version": "0.0.0"
     },
-    "humata2-snapshot 0.0.0": {
+    "humata2-review 0.0.0": {
       "common_attrs": {
-        "deps": {
-          "common": [
-            {
-              "id": "gpui-kit 0.9.1",
-              "target": "gpui_kit"
-            },
-            {
-              "id": "image 0.25.10",
-              "target": "image"
-            },
-            {
-              "id": "thiserror 2.0.21",
-              "target": "thiserror"
-            }
-          ],
-          "selects": {
-            "cfg(target_os = \"macos\")": [
-              {
-                "id": "gpui-pre-apple 0.3.12",
-                "target": "gpui_apple"
-              }
-            ]
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
           }
-        },
+        ],
         "edition": "2024"
       },
-      "library_target_name": "humata2_snapshot",
-      "name": "humata2-snapshot",
-      "repository": {
-        "Path": {
-          "path": "/Users/avestabarzegar/oss/atmosphere-khodr/apps/humata2/testing/snapshot"
-        }
-      },
+      "library_target_name": "humata2_review",
+      "name": "humata2-review",
+      "repository": null,
       "targets": [
         {
           "Library": {
-            "crate_name": "humata2_snapshot",
+            "crate_name": "humata2_review",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-review-diff 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_review_diff",
+      "name": "humata2-review-diff",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_review_diff",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-review-view 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          },
+          {
+            "id": "image 0.25.10",
+            "target": "image"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_review_view",
+      "name": "humata2-review-view",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_review_view",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-revive 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "notify 8.2.2",
+            "target": "notify"
+          },
+          {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_revive",
+      "name": "humata2-revive",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_revive",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-session 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_session",
+      "name": "humata2-session",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_session",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-settings 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_settings",
+      "name": "humata2-settings",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_settings",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-sidebar 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_sidebar",
+      "name": "humata2-sidebar",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_sidebar",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18800,12 +19614,16 @@
       "common_attrs": {
         "deps": [
           {
-            "id": "serde 1.0.229",
-            "target": "serde"
+            "id": "prost 0.14.5",
+            "target": "prost"
           },
           {
-            "id": "serde_json 1.0.154",
-            "target": "serde_json"
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "sha2 0.11.1",
+            "target": "sha2"
           },
           {
             "id": "thiserror 2.0.21",
@@ -18833,6 +19651,33 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-ui 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_ui",
+      "name": "humata2-ui",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_ui",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-ui-prototype 0.0.0": {
       "common_attrs": {
         "deps": {
@@ -18840,6 +19685,14 @@
             {
               "id": "gpui-kit 0.9.1",
               "target": "gpui_kit"
+            },
+            {
+              "id": "markdown 1.0.0",
+              "target": "markdown"
+            },
+            {
+              "id": "mermaid-rs-renderer 0.3.1",
+              "target": "mermaid_rs_renderer"
             }
           ],
           "selects": {
@@ -18855,23 +19708,6 @@
             ]
           }
         },
-        "deps_dev": {
-          "common": [
-            {
-              "id": "humata2-snapshot 0.0.0",
-              "local_path": "/Users/avestabarzegar/oss/atmosphere-khodr/apps/humata2/testing/snapshot",
-              "target": "humata2_snapshot"
-            }
-          ],
-          "selects": {
-            "cfg(target_os = \"macos\")": [
-              {
-                "id": "gpui-pre-apple 0.3.12",
-                "target": "gpui_apple"
-              }
-            ]
-          }
-        },
         "edition": "2024"
       },
       "library_target_name": "humata2_ui_prototype",
@@ -18881,6 +19717,29 @@
         {
           "Library": {
             "crate_name": "humata2_ui_prototype",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-views 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_views",
+      "name": "humata2-views",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_views",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18968,8 +19827,16 @@
             "target": "clap"
           },
           {
+            "id": "hmac 0.13.0",
+            "target": "hmac"
+          },
+          {
             "id": "hyper-util 0.1.21",
             "target": "hyper_util"
+          },
+          {
+            "id": "notify 8.2.2",
+            "target": "notify"
           },
           {
             "id": "prost 0.14.5",
@@ -18986,6 +19853,10 @@
           {
             "id": "rand 0.10.3",
             "target": "rand"
+          },
+          {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
           },
           {
             "id": "serde_json 1.0.154",
@@ -19025,10 +19896,6 @@
           }
         ],
         "deps_dev": [
-          {
-            "id": "rustix 1.1.6",
-            "target": "rustix"
-          },
           {
             "id": "tempfile 3.27.0",
             "target": "tempfile"
@@ -21365,6 +22232,44 @@
       ],
       "version": "0.3.104"
     },
+    "json5 1.3.7": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "ucd-trie 0.1.7",
+            "target": "ucd_trie"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "json5",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "json5",
+      "package_url": "https://github.com/callum-oakley/json5-rs",
+      "repository": {
+        "Http": {
+          "sha256": "0348cde6df2b507ba3c3753beba226baba8567af588d6568cdb9877f02c75b60",
+          "url": "https://static.crates.io/crates/json5/1.3.7/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "json5",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "1.3.7"
+    },
     "keccak 0.2.2": {
       "common_attrs": {
         "deps": {
@@ -22681,6 +23586,40 @@
       ],
       "version": "1.0.23"
     },
+    "lz4_flex 0.14.0": {
+      "common_attrs": {
+        "crate_features": [
+          "alloc",
+          "checked-decode",
+          "safe-decode",
+          "std"
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "lz4_flex",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "lz4_flex",
+      "package_url": "https://github.com/pseitz/lz4_flex",
+      "repository": {
+        "Http": {
+          "sha256": "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226",
+          "url": "https://static.crates.io/crates/lz4_flex/0.14.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "lz4_flex",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.14.0"
+    },
     "mac 0.1.1": {
       "common_attrs": {
         "edition": "2015"
@@ -23259,6 +24198,74 @@
         }
       ],
       "version": "0.9.1"
+    },
+    "mermaid-rs-renderer 0.3.1": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "anyhow 1.0.104",
+            "target": "anyhow"
+          },
+          {
+            "id": "fontdb 0.23.0",
+            "target": "fontdb"
+          },
+          {
+            "id": "json5 1.3.7",
+            "target": "json5"
+          },
+          {
+            "id": "once_cell 1.21.4",
+            "target": "once_cell"
+          },
+          {
+            "id": "regex 1.13.1",
+            "target": "regex"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "ttf-parser 0.25.1",
+            "target": "ttf_parser"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "mermaid_rs_renderer",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "mermaid-rs-renderer",
+      "package_url": "https://github.com/1jehuang/mermaid-rs-renderer",
+      "repository": {
+        "Git": {
+          "commitish": {
+            "Rev": "2cdc01421a153bc33d010ddadddf5aefbbf1e38d"
+          },
+          "remote": "https://github.com/research-developer/mermaid-rs-renderer"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "mermaid_rs_renderer",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.3.1"
     },
     "mime 0.3.18": {
       "common_attrs": {
@@ -32887,7 +33894,10 @@
       "common_attrs": {
         "crate_features": [
           "alloc",
+          "dfa",
+          "dfa-build",
           "dfa-onepass",
+          "dfa-search",
           "hybrid",
           "meta",
           "nfa",
@@ -34419,6 +35429,7 @@
             "process",
             "pty",
             "std",
+            "stdio",
             "termios",
             "time"
           ],
@@ -36991,6 +38002,39 @@
       ],
       "version": "2.7.0"
     },
+    "similar 3.2.1": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "std",
+          "text"
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "similar",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "Apache-2.0"
+      ],
+      "name": "similar",
+      "package_url": "https://github.com/mitsuhiko/similar",
+      "repository": {
+        "Http": {
+          "sha256": "d2f8bec09ae8fae0f4f265a4559a9334be3929d8504e9b536df0a41302bd1733",
+          "url": "https://static.crates.io/crates/similar/3.2.1/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "similar",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "3.2.1"
+    },
     "simplecss 0.2.2": {
       "common_attrs": {
         "crate_features": [
@@ -38729,6 +39773,90 @@
       ],
       "version": "0.14.0"
     },
+    "syntect 5.3.0": {
+      "common_attrs": {
+        "crate_features": [
+          "bincode",
+          "default-syntaxes",
+          "dump-create",
+          "dump-load",
+          "fancy-regex",
+          "flate2",
+          "fnv",
+          "parsing",
+          "regex-fancy",
+          "regex-syntax"
+        ],
+        "deps": [
+          {
+            "id": "bincode 1.3.3",
+            "target": "bincode"
+          },
+          {
+            "id": "fancy-regex 0.16.2",
+            "target": "fancy_regex"
+          },
+          {
+            "id": "flate2 1.1.11",
+            "target": "flate2"
+          },
+          {
+            "id": "fnv 1.0.7",
+            "target": "fnv"
+          },
+          {
+            "id": "once_cell 1.21.4",
+            "target": "once_cell"
+          },
+          {
+            "id": "regex-syntax 0.8.11",
+            "target": "regex_syntax"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "walkdir 2.5.0",
+            "target": "walkdir"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "serde_derive 1.0.229",
+            "target": "serde_derive"
+          }
+        ]
+      },
+      "library_target_name": "syntect",
+      "license": "MIT",
+      "license_file": "LICENSE.txt",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "syntect",
+      "package_url": "https://github.com/trishume/syntect",
+      "repository": {
+        "Http": {
+          "sha256": "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925",
+          "url": "https://static.crates.io/crates/syntect/5.3.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "syntect",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "5.3.0"
+    },
     "sys-locale 0.3.2": {
       "common_attrs": {
         "deps": {
@@ -39309,6 +40437,49 @@
         }
       ],
       "version": "1.4.1"
+    },
+    "terminal_grid 0.0.0": {
+      "common_attrs": {
+        "crate_features": [
+          "fake"
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "terminal_grid",
+      "name": "terminal_grid",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "terminal_grid",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "terminal_view 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "gpui-kit 0.9.1",
+            "target": "gpui_kit"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "terminal_view",
+      "name": "terminal_view",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "terminal_view",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
     },
     "textwrap 0.16.4": {
       "common_attrs": {
@@ -40007,6 +41178,7 @@
           "signal-hook-registry",
           "socket2",
           "sync",
+          "test-util",
           "time",
           "tokio-macros"
         ],
@@ -41357,6 +42529,54 @@
       ],
       "version": "0.25.1"
     },
+    "two-face 0.4.5": {
+      "common_attrs": {
+        "crate_features": [
+          "syntect-fancy"
+        ],
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "syntect 5.3.0",
+            "target": "syntect"
+          }
+        ],
+        "edition": "2021",
+        "proc_macro_deps": [
+          {
+            "id": "serde_derive 1.0.229",
+            "target": "serde_derive"
+          }
+        ]
+      },
+      "library_target_name": "two_face",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "two-face",
+      "package_url": "https://github.com/CosmicHorrorDev/two-face",
+      "repository": {
+        "Http": {
+          "sha256": "39e51b6e60e545cfdae5a4639ff423818f52372211a8d9a3e892b4b0761f76b2",
+          "url": "https://static.crates.io/crates/two-face/0.4.5/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "two_face",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.4.5"
+    },
     "twox-hash 2.1.5": {
       "common_attrs": {
         "crate_features": [
@@ -41448,6 +42668,39 @@
         }
       ],
       "version": "1.20.1"
+    },
+    "ucd-trie 0.1.7": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "std"
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "ucd_trie",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "ucd-trie",
+      "package_url": "https://github.com/BurntSushi/ucd-generate",
+      "repository": {
+        "Http": {
+          "sha256": "2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971",
+          "url": "https://static.crates.io/crates/ucd-trie/0.1.7/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "ucd_trie",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.1.7"
     },
     "uds_windows 1.2.1": {
       "common_attrs": {
@@ -50726,6 +51979,147 @@
       ],
       "version": "0.2.2"
     },
+    "zstd 0.14.3": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "zstd-safe 8.2.0",
+            "target": "zstd_safe"
+          }
+        ],
+        "edition": "2018"
+      },
+      "library_target_name": "zstd",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "BSD-3-Clause"
+      ],
+      "name": "zstd",
+      "package_url": "https://github.com/gyscos/zstd-rs",
+      "repository": {
+        "Http": {
+          "sha256": "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70",
+          "url": "https://static.crates.io/crates/zstd/0.14.3/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "zstd",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.14.3"
+    },
+    "zstd-safe 8.2.0": {
+      "build_script_attrs": {
+        "link_deps": [
+          {
+            "id": "zstd-sys 2.1.2+zstd.1.5.7",
+            "target": "zstd_sys"
+          }
+        ]
+      },
+      "common_attrs": {
+        "crate_features": [
+          "std"
+        ],
+        "deps": [
+          {
+            "id": "zstd-sys 2.1.2+zstd.1.5.7",
+            "target": "zstd_sys"
+          }
+        ],
+        "edition": "2018",
+        "extra_deps": [
+          ":build_script_build"
+        ]
+      },
+      "library_target_name": "zstd_safe",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "BSD-3-Clause"
+      ],
+      "name": "zstd-safe",
+      "package_url": "https://github.com/gyscos/zstd-rs",
+      "repository": {
+        "Http": {
+          "sha256": "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b",
+          "url": "https://static.crates.io/crates/zstd-safe/8.2.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "zstd_safe",
+            "crate_root": "src/lib.rs"
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs"
+          }
+        }
+      ],
+      "version": "8.2.0"
+    },
+    "zstd-sys 2.1.2+zstd.1.5.7": {
+      "build_script_attrs": {
+        "deps": [
+          {
+            "id": "cc 1.11.1",
+            "target": "cc"
+          },
+          {
+            "id": "pkg-config 0.3.34",
+            "target": "pkg_config"
+          }
+        ],
+        "links": "zstd"
+      },
+      "common_attrs": {
+        "crate_features": [
+          "std"
+        ],
+        "edition": "2018",
+        "extra_deps": [
+          ":build_script_build"
+        ]
+      },
+      "library_target_name": "zstd_sys",
+      "license": "BSD-3-Clause",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "BSD-3-Clause"
+      ],
+      "name": "zstd-sys",
+      "package_url": "https://github.com/gyscos/zstd-rs",
+      "repository": {
+        "Http": {
+          "sha256": "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3",
+          "url": "https://static.crates.io/crates/zstd-sys/2.1.2+zstd.1.5.7/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "zstd_sys",
+            "crate_root": "src/lib.rs"
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs"
+          }
+        }
+      ],
+      "version": "2.1.2+zstd.1.5.7"
+    },
     "zune-core 0.4.12": {
       "common_attrs": {
         "edition": "2021"
@@ -51109,9 +52503,18 @@
     "camino 1.2.6",
     "clap 4.6.7",
     "console_error_panic_hook 0.1.7",
+    "crc32fast 1.5.5",
     "flate2 1.1.11",
     "gpui-kit 0.9.1",
+    "gpui-pre-apple 0.3.12",
+    "hmac 0.13.0",
     "hyper-util 0.1.21",
+    "image 0.25.10",
+    "libc 0.2.191",
+    "lz4_flex 0.14.0",
+    "markdown 1.0.0",
+    "mermaid-rs-renderer 0.3.1",
+    "notify 8.2.2",
     "plist 1.10.3",
     "prost 0.14.5",
     "prost-reflect 0.16.5",
@@ -51128,7 +52531,9 @@
     "serde 1.0.229",
     "serde_json 1.0.154",
     "sha2 0.11.1",
+    "similar 3.2.1",
     "tar 0.4.46",
+    "tempfile 3.27.0",
     "thiserror 2.0.21",
     "tokio 1.54.1",
     "tokio-stream 0.1.19",
@@ -51136,18 +52541,19 @@
     "tonic 0.14.9",
     "tonic-prost 0.14.9",
     "tower 0.5.3",
+    "unicode-segmentation 1.13.3",
+    "unicode-width 0.2.3",
     "uniffi 0.32.2",
     "uniffi_bindgen 0.32.2",
     "ureq 3.5.1",
     "uuid 1.29.2",
     "versions 8.0.1",
     "wasm-bindgen 0.2.127",
-    "zip 9.5.1"
+    "zip 9.5.1",
+    "zstd 0.14.3"
   ],
   "direct_dev_deps": [
-    "gpui-pre-apple 0.3.12",
-    "humata2-snapshot 0.0.0",
-    "tempfile 3.27.0"
+    "libsqlite3-sys 0.40.0"
   ],
   "workspace_members": {
     "bootstrap 0.0.0": "tools/bootstrap/lib",
@@ -51160,19 +52566,45 @@
     "humata-wire 0.0.0": "apps/humata/daemon/wire",
     "humata-workspace 0.0.0": "apps/humata/daemon/workspace",
     "humata2-access 0.0.0": "apps/humata2/daemon/access",
+    "humata2-app 0.0.0": "apps/humata2/features/app",
     "humata2-bindgen 0.0.0": "apps/humata2/bindgen",
+    "humata2-board 0.0.0": "apps/humata2/features/board",
+    "humata2-chunk 0.0.0": "apps/humata2/chunk",
     "humata2-cli 0.0.0": "apps/humata2/cli",
+    "humata2-clients 0.0.0": "apps/humata2/clients",
     "humata2-core 0.0.0": "apps/humata2/core",
+    "humata2-desktop 0.0.0": "apps/humata2/desktop",
+    "humata2-diff-view 0.0.0": "apps/humata2/diff",
+    "humata2-durable 0.0.0": "apps/humata2/daemon/durable",
+    "humata2-engine 0.0.0": "apps/humata2/engine",
+    "humata2-files 0.0.0": "apps/humata2/features/files",
+    "humata2-gui-spike 0.0.0": "apps/humata2/spike/gui",
     "humata2-holder 0.0.0": "apps/humata2/daemon/holder",
+    "humata2-hosts 0.0.0": "apps/humata2/features/hosts",
+    "humata2-inbox 0.0.0": "apps/humata2/features/inbox",
+    "humata2-layout 0.0.0": "apps/humata2/features/layout",
     "humata2-machines 0.0.0": "apps/humata2/daemon/machines",
+    "humata2-markdown 0.0.0": "apps/humata2/markdown",
     "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",
+    "humata2-palette 0.0.0": "apps/humata2/features/palette",
     "humata2-rehearsal 0.0.0": "apps/humata2/rehearsal",
     "humata2-report 0.0.0": "apps/humata2/report",
+    "humata2-review 0.0.0": "apps/humata2/features/review",
+    "humata2-review-diff 0.0.0": "apps/humata2/daemon/review_diff",
+    "humata2-review-view 0.0.0": "apps/humata2/review",
+    "humata2-revive 0.0.0": "apps/humata2/daemon/revive",
+    "humata2-session 0.0.0": "apps/humata2/features/session",
+    "humata2-settings 0.0.0": "apps/humata2/features/settings",
+    "humata2-sidebar 0.0.0": "apps/humata2/features/sidebar",
     "humata2-store 0.0.0": "apps/humata2/daemon/store",
+    "humata2-ui 0.0.0": "apps/humata2/ui",
     "humata2-ui-prototype 0.0.0": "apps/humata2/ui-prototype",
+    "humata2-views 0.0.0": "apps/humata2/features/views",
     "humatad 0.0.0": "apps/humata/daemon/humatad",
     "humatad2 0.0.0": "apps/humata2/daemon/humatad",
     "swift-catalog 0.0.0": "tools/swift_catalog",
-    "tca-rust 0.1.0": "libs/tca-rust"
+    "tca-rust 0.1.0": "libs/tca-rust",
+    "terminal_grid 0.0.0": "apps/humata2/terminal/grid",
+    "terminal_view 0.0.0": "apps/humata2/terminal/view"
   }
 }

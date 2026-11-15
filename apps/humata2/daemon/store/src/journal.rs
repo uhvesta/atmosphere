@@ -42,7 +42,7 @@ impl Journal {
                     row.get(0)
                 })
                 .map_err(&failed)?;
-            let placed = blob::place(&self.inner.blobs, blob::encode(blob::Type::JournalPayload, 1, payload))?;
+            let placed = blob::place(&self.inner.blobs, blob::encode(blob::Type::JournalPayload, 1, payload)?)?;
             transaction
                 .execute(
                     "INSERT INTO journal (seq, kind, written_unix_ms, payload, payload_file)

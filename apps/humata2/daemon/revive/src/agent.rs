@@ -11,7 +11,7 @@ use humata2_holder::{Event, HolderSpec, Spawned, Welcome};
 use humata2_store::fault::point;
 use humata2_store::{
     AgentLaunch, AgentRecord, AgentState, Interruption, ResumeFailure, SessionRecord, Store,
-    StoreError, TabKind, TabRecord,
+    StoreError, TabKind, TabRecord, Told,
 };
 use rustix::process::{Pid, Signal};
 use tokio::time::Instant;
@@ -100,8 +100,10 @@ pub(crate) async fn running(
 ///
 /// A daemon stopped part way through is done again when it starts (PER-27):
 /// the record says it was resuming, so the next reconcile stops whatever
-/// holder this one left and resumes once more. An agent told it was
-/// interrupted before the stop is then told again.
+/// holder this one left and resumes once more. The agent is told it was
+/// interrupted once: the record says when it was about to be told, and a
+/// redone resume whose conversation already holds the note since then
+/// doesn't tell it again.
 pub(crate) async fn resume(
     store: &Arc<Store>,
     config: &ReviveConfig,
@@ -111,13 +113,15 @@ pub(crate) async fn resume(
 ) -> Result<Revived, ReviveError> {
     let socket = record.launch.holder_socket.clone();
     let saved = read_saved(&socket, &record.session).await?;
-    let interruption = Interruption {
+    let already_told = already_told(&record).await?;
+    record.generation += 1;
+    let mut interruption = Interruption {
         at_unix_ms: unix_ms(),
         output_saved_through: saved.map_or(0, |saved| saved.saved_through),
         output_resumes_at: saved.map_or(0, |saved| saved.resumes_at),
         saved_tail_damaged: saved.is_some_and(|saved| saved.tail_damaged),
+        told: already_told,
     };
-    record.generation += 1;
     record.interruptions.push(interruption.clone());
     record.state = AgentState::Resuming;
     record.updated_unix_ms = unix_ms();
@@ -140,13 +144,18 @@ pub(crate) async fn resume(
     let spawned = start_holder(config, &record, &argv, variables, Some(&line)).await?;
     point("revive.resume.spawned");
 
-    match verify(config, &record.launch, interruption.output_resumes_at, before).await {
-        Ok(()) => {
+    let tell = already_told.is_none();
+    match verify(store, config, &mut record, interruption.output_resumes_at, before, tell).await {
+        Ok(Ok(())) => {
             point("revive.resume.verified");
+            // With what verify added: when it was told.
+            if let Some(last) = record.interruptions.last() {
+                interruption = last.clone();
+            }
             running(store, record, spawned, created).await?;
             Ok(Revived::Resumed { interruption })
         }
-        Err((reason, exit_code)) => {
+        Ok(Err((reason, exit_code))) => {
             // Stopped by a signal, so its output stays saved for the next
             // try.
             stop_holder(&socket, Some(spawned.pid)).await;
@@ -155,7 +164,39 @@ pub(crate) async fn resume(
             point("revive.resume.failing");
             failed(store, record, reason, exit_code).await
         }
+        Err(error) => {
+            stop_holder(&socket, Some(spawned.pid)).await;
+            Err(error)
+        }
     }
+}
+
+/// When a resume a crash cut short is being done again and its agent was
+/// already told it was interrupted, as its conversation shows since it was
+/// about to be told: the note isn't told again. None otherwise, including
+/// when the note never reached the conversation (the agent stopped before
+/// it wrote it down), so it's told.
+async fn already_told(record: &AgentRecord) -> Result<Option<Told>, ReviveError> {
+    if record.state != AgentState::Resuming {
+        return Ok(None);
+    }
+    let Some(told) = record.interruptions.last().and_then(|last| last.told) else {
+        return Ok(None);
+    };
+    let file = record.launch.conversation_file.clone();
+    let holds = blocking(move || holds_note(&file, told.conversation_len)).await?;
+    Ok(holds.then_some(told))
+}
+
+/// Whether `file` holds the note after `from`, or anywhere if it's now
+/// shorter than that (the agent rewrote it).
+fn holds_note(file: &Path, from: u64) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return false;
+    };
+    let start = usize::try_from(from).ok().filter(|start| *start <= bytes.len()).unwrap_or(0);
+    let note = INTERRUPTED.as_bytes();
+    bytes[start..].windows(note.len()).any(|window| window == note)
 }
 
 /// Starts the agent of a launch that never got as far as running, with
@@ -274,21 +315,28 @@ fn siblings(file: &Path) -> HashMap<OsString, (u64, SystemTime)> {
 /// interrupted, and checks its own conversation file is written while no
 /// other is. Looks when its conversation file changes, the only file
 /// watched (TR-12), and once more when `resume_timeout` is up.
+///
+/// Just before telling it, saves in `record` that it's about to be told.
+/// Without `tell` (its conversation already holds the note), it isn't told,
+/// and so writes nothing: the check is then only that it came up, stayed
+/// up and started no other conversation.
 async fn verify(
+    store: &Arc<Store>,
     config: &ReviveConfig,
-    launch: &AgentLaunch,
+    record: &mut AgentRecord,
     from: u64,
     before: Conversation,
-) -> Result<(), (ResumeFailure, Option<i32>)> {
+    tell: bool,
+) -> Result<Result<(), (ResumeFailure, Option<i32>)>, ReviveError> {
     let deadline = Instant::now() + config.resume_timeout;
-    let Ok(attached) = humata2_holder::attach(&launch.holder_socket, from).await else {
-        return Err((ResumeFailure::AgentExited, None));
+    let Ok(attached) = humata2_holder::attach(&record.launch.holder_socket, from).await else {
+        return Ok(Err((ResumeFailure::AgentExited, None)));
     };
     if let Welcome {
         exited: Some(code), ..
     } = attached.welcome
     {
-        return Err((ResumeFailure::AgentExited, Some(code)));
+        return Ok(Err((ResumeFailure::AgentExited, Some(code))));
     }
     let (mut control, mut events) = (attached.control, attached.events);
     let before = Arc::new(before);
@@ -303,20 +351,33 @@ async fn verify(
                 match event {
                     Ok(Some(Event::Output { .. })) => last_output = Some(Instant::now()),
                     Ok(Some(Event::Exited { code })) => {
-                        return Err((ResumeFailure::AgentExited, Some(code)));
+                        return Ok(Err((ResumeFailure::AgentExited, Some(code))));
                     }
                     Ok(Some(_)) => {}
-                    Ok(None) | Err(_) => return Err((ResumeFailure::AgentExited, None)),
+                    Ok(None) | Err(_) => return Ok(Err((ResumeFailure::AgentExited, None))),
                 }
                 continue;
             }
             () = until(settled) => {
-                // Its conversation is only written once it's told
-                // something, so telling it is also the check.
-                let typed = control.input(1, INTERRUPTED.as_bytes()).await;
-                tokio::time::sleep(TYPE_PAUSE).await;
-                if typed.is_err() || control.input(2, b"\r").await.is_err() {
-                    return Err((ResumeFailure::AgentExited, None));
+                if tell {
+                    let conversation_len = stamp(&before.file).map_or(0, |(len, _)| len);
+                    if let Some(last) = record.interruptions.last_mut() {
+                        last.told = Some(Told {
+                            at_unix_ms: unix_ms(),
+                            conversation_len,
+                        });
+                    }
+                    record.updated_unix_ms = unix_ms();
+                    save(store, record, "save that the agent is being told it was interrupted").await?;
+                    point("revive.resume.telling");
+                    // Its conversation is only written once it's told
+                    // something, so telling it is also the check.
+                    let typed = control.input(1, INTERRUPTED.as_bytes()).await;
+                    tokio::time::sleep(TYPE_PAUSE).await;
+                    if typed.is_err() || control.input(2, b"\r").await.is_err() {
+                        return Ok(Err((ResumeFailure::AgentExited, None)));
+                    }
+                    point("revive.resume.told");
                 }
                 told = true;
                 false
@@ -329,15 +390,19 @@ async fn verify(
             .await
             .unwrap_or((false, false));
         if another_grew && !grew {
-            return Err((ResumeFailure::AgentStartedAnotherConversation, None));
+            return Ok(Err((ResumeFailure::AgentStartedAnotherConversation, None)));
         }
-        if told && grew {
-            return Ok(());
+        if told && (grew || !tell) {
+            return Ok(Ok(()));
         }
         if timed_out {
+            if !tell {
+                // Up all along, but it never printed anything to settle.
+                return Ok(Ok(()));
+            }
             // Up, but it never wrote the conversation it was resumed
             // with: it isn't that conversation.
-            return Err((ResumeFailure::AgentStartedAnotherConversation, None));
+            return Ok(Err((ResumeFailure::AgentStartedAnotherConversation, None)));
         }
     }
 }

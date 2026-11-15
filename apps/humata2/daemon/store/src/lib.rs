@@ -29,7 +29,7 @@ pub use journal::{Journal, JournalEntry};
 pub use last_good::{Change, LastGood, Restored, RowChange};
 pub use records::{
     AgentLaunch, AgentRecord, AgentState, Interruption, Pointers, RepoPointer, ResumeFailure,
-    SessionRecord, TabKind, TabRecord,
+    SessionRecord, TabKind, TabRecord, Told,
 };
 pub use schema::SCHEMA_VERSION;
 pub use store::Store;

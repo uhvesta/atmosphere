@@ -1,0 +1,63 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The diff view, once per engine (D49): `diff_view` on ordinary GPUI from
+# @crates, `diff_view_fast` on GPUI Fast from @crates_gpui_fast. The source
+# names no engine; only its gpui-kit differs.
+GPUI_KIT = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+[
+    rust_library(
+        name = "diff_view" + engine,
+        srcs = glob(["src/*.rs"]),
+        # GPUI's macros find gpui-kit through it.
+        compile_data = ["Cargo.toml"],
+        crate_name = "humata2_diff_view",
+        visibility = [
+            "//apps/humata2/desktop:__subpackages__",
+            "//apps/humata2/review:__subpackages__",
+            "//apps/humata2/ui:__subpackages__",
+        ],
+        deps = [
+            "@crates//:thiserror",
+            "@crates//:unicode-segmentation",
+            "@crates//:unicode-width",
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+# The model, order, patch and fixture tests, on each engine.
+[
+    rust_test(
+        name = "diff_view" + engine + "_test",
+        crate = ":diff_view" + engine,
+    )
+    for engine in GPUI_KIT
+]
+
+# The gate for D67: frame times on the 20,000-line fixture, wrapped, in a
+# hidden window. `bazel run -c opt :gate` and `:gate_fast`.
+[
+    rust_binary(
+        name = "gate" + engine,
+        testonly = True,
+        srcs = ["benches/gate.rs"],
+        tags = ["manual"],
+        deps = [
+            ":diff_view" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

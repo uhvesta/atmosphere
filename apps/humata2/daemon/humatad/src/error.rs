@@ -185,4 +185,17 @@ pub(crate) enum DaemonError {
         #[source]
         source: humata2_mcp::ServeError,
     },
+
+    #[error(
+        "couldn't read the tools bundle machines are set up from; reinstall Humata, or pass --tools with a folder that has a manifest.json"
+    )]
+    Tools {
+        #[source]
+        source: humata2_machines::BuildsError,
+    },
+
+    #[error(
+        "this host isn't macOS or Linux on arm64 or x86_64, so humatad2 has no tools of its own to give machines; pass --tools with a bundle"
+    )]
+    UnknownHostPlatform,
 }

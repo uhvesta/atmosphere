@@ -1,0 +1,14 @@
+# gpui-component's diff, patched for the diff view (D67): DiffState can
+# replace or add files without starting over, keeping the scroll position,
+# selection, opened context and highlighting. Applied to gpui-component in
+# @crates and @crates_gpui_fast by a crate annotation in MODULE.bazel.
+exports_files(
+    ["gpui-component-diff-update.patch"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

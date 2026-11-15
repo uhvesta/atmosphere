@@ -26,6 +26,21 @@ rust_prost_library(
     visibility = ["//apps/humata2:__subpackages__"],
 )
 
+# What humatad2's store keeps whole on disk (humata/store/v1). Storage
+# only: never part of the API, so its fields can change with the store's
+# own format versions.
+proto_library(
+    name = "humata2_store_proto",
+    srcs = ["humata/store/v1/store.proto"],
+    strip_import_prefix = "",
+)
+
+rust_prost_library(
+    name = "humata2_store_rust",
+    proto = ":humata2_store_proto",
+    visibility = ["//apps/humata2/daemon/store:__pkg__"],
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],

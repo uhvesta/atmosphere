@@ -6,12 +6,17 @@
 //! still keeps, at most its last `SNAPSHOT_MAX` bytes: replaying it redraws
 //! the screen for line-based output, but a full-screen program's screen
 //! may start mid-sequence.
+//!
+//! Snapshots and output are chunks (TR-11, D65): encoded with the codec
+//! picked from the client's `accept_codecs`, and a snapshot over
+//! `CHUNK_MAX` goes as several pieces to a client that lists any.
 
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use humata2_chunk::{CHUNK_MAX, Chunk, ChunkError, Codec, Encoder};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_holder::{Control, Event, Events, HolderError, Welcome};
@@ -40,6 +45,11 @@ const DEFAULT_WINDOW: u64 = 1 << 20;
 /// Messages waiting for the client before the attach stops reading output.
 const OUT_QUEUE: usize = 64;
 
+/// The most output already waiting from the holder that is sent as one
+/// message: a burst becomes a few big messages, not one per chunk the
+/// holder read.
+const COALESCE_MAX: usize = 64 << 10;
+
 /// Starts the attach `open` asks for. Errors that come before the first
 /// message are returned; later ones end the stream.
 pub(crate) async fn start(
@@ -47,6 +57,7 @@ pub(crate) async fn start(
     open: &pb::AttachOpen,
     incoming: Streaming<pb::AttachClientMessage>,
     writers: &Arc<Writers>,
+    codec: Codec,
 ) -> Result<AttachStream, Status> {
     let from = open.from_offset;
     let (welcome, mut events, mut control) = connect(tab, from).await?;
@@ -70,11 +81,12 @@ pub(crate) async fn start(
     }
 
     let (out, queued) = mpsc::channel(OUT_QUEUE);
+    let pieces = !open.accept_codecs.is_empty();
     let mut first = Vec::new();
     let (cursor, pending) = if from == 0 || from < welcome.earliest {
         let (snapshot, after) = snapshot(tab, &welcome, &mut events).await?;
         let cursor = snapshot.offset;
-        first.push(ServerMessage::Snapshot(snapshot));
+        first.extend(snapshot_messages(snapshot, codec, pieces).await?);
         (cursor, after)
     } else {
         (from, Vec::new())
@@ -98,6 +110,8 @@ pub(crate) async fn start(
         exited: welcome.exited,
         pending: pending.into(),
         out,
+        encoder: Encoder::new(codec),
+        pieces,
     };
     first.push(ServerMessage::State(attached.state()));
     tokio::spawn(async move {
@@ -133,6 +147,10 @@ struct Attached {
     /// Holder events read ahead while taking a snapshot, sent next.
     pending: VecDeque<Event>,
     out: mpsc::Sender<Result<pb::AttachServerMessage, Status>>,
+    /// Encodes output: at most `COALESCE_MAX` at a time, so on the runtime.
+    encoder: Encoder,
+    /// Whether the client takes snapshots in pieces.
+    pieces: bool,
 }
 
 impl Attached {
@@ -148,7 +166,22 @@ impl Attached {
             tokio::select! {
                 () = self.out.closed() => return Err(Ended::Client),
                 event = self.link.events.recv(), if room => match event {
-                    Some(Ok(event)) => self.event(event).await?,
+                    Some(Ok(event)) => {
+                        let in_flight = self.cursor.saturating_sub(self.acked);
+                        let room = usize::try_from(self.window.saturating_sub(in_flight))
+                            .unwrap_or(usize::MAX)
+                            .min(COALESCE_MAX);
+                        let (event, held) =
+                            coalesce(event, room, || self.link.events.try_recv().ok());
+                        self.event(event).await?;
+                        match held {
+                            Some(Ok(event)) => self.pending.push_back(event),
+                            Some(Err(error)) => {
+                                return Err(Ended::Failed(holder_status(&self.tab, &error)));
+                            }
+                            None => {}
+                        }
+                    }
                     Some(Err(error)) => return Err(Ended::Failed(holder_status(&self.tab, &error))),
                     None => return Err(Ended::Failed(crate::terminal::no_tab(&self.tab.id))),
                 },
@@ -172,12 +205,20 @@ impl Attached {
                     return Ok(());
                 }
                 let skip = usize::try_from(self.cursor.saturating_sub(offset)).unwrap_or(0);
-                let data = data.get(skip..).map(<[u8]>::to_vec).unwrap_or_default();
-                self.send(ServerMessage::Output(pb::TerminalOutput {
-                    offset: offset.max(self.cursor),
-                    data,
-                }))
-                .await?;
+                let data = data.get(skip..).unwrap_or_default();
+                let mut at = offset.max(self.cursor);
+                for raw in data.chunks(CHUNK_MAX) {
+                    let chunk = self.encoder.encode(raw.to_vec()).map_err(|error| Ended::Failed(encode_failed(&error)))?;
+                    self.send(ServerMessage::Output(pb::TerminalOutput {
+                        offset: at,
+                        codec: chunk.header.codec.wire(),
+                        raw_size: chunk.header.raw_len,
+                        crc32: chunk.header.crc32,
+                        data: chunk.data,
+                    }))
+                    .await?;
+                    at += raw.len() as u64;
+                }
                 self.cursor = end;
             }
             // Output this client hadn't been sent is gone: start it over
@@ -260,7 +301,12 @@ impl Attached {
         self.cursor = snapshot.offset;
         self.acked = self.cursor;
         self.exited = welcome.exited;
-        self.send(ServerMessage::Snapshot(snapshot)).await?;
+        for message in snapshot_messages(snapshot, self.encoder.codec(), self.pieces)
+            .await
+            .map_err(Ended::Failed)?
+        {
+            self.send(message).await?;
+        }
         self.pending = pending.into();
         self.send(ServerMessage::State(self.state())).await?;
         Ok(())
@@ -364,6 +410,32 @@ impl Drop for Client {
     }
 }
 
+/// Joins to `first` the output that continues it among what `next` has
+/// ready, up to `limit` bytes in all (but never less than `first`). Returns
+/// the joined event and the first one that couldn't join, if any was taken.
+fn coalesce<E>(
+    first: Event,
+    limit: usize,
+    mut next: impl FnMut() -> Option<Result<Event, E>>,
+) -> (Event, Option<Result<Event, E>>) {
+    let Event::Output { offset, mut data } = first else {
+        return (first, None);
+    };
+    while data.len() < limit {
+        match next() {
+            Some(Ok(Event::Output {
+                offset: more_at,
+                data: more,
+            })) if more_at == offset + data.len() as u64 && data.len() + more.len() <= limit => {
+                data.extend_from_slice(&more);
+            }
+            None => break,
+            held => return (Event::Output { offset, data }, held),
+        }
+    }
+    (Event::Output { offset, data }, None)
+}
+
 async fn connect(tab: &TabRecord, from: u64) -> Result<(Welcome, Events, Control), Status> {
     let attachment = humata2_holder::attach(&tab.holder_socket, from)
         .await
@@ -416,9 +488,62 @@ async fn snapshot(
             vt: kept,
             cols: u32::from(welcome.cols),
             rows: u32::from(welcome.rows),
+            ..Default::default()
         },
         after,
     ))
+}
+
+/// The messages that carry `snapshot`: as it is to a client that lists no
+/// codecs, else in pieces of at most `CHUNK_MAX`, each encoded on a
+/// blocking thread.
+async fn snapshot_messages(
+    snapshot: pb::TerminalSnapshot,
+    codec: Codec,
+    pieces: bool,
+) -> Result<Vec<ServerMessage>, Status> {
+    if !pieces {
+        return Ok(vec![ServerMessage::Snapshot(snapshot)]);
+    }
+    let chunks = tokio::task::spawn_blocking(move || {
+        let mut encoder = Encoder::new(codec);
+        let mut chunks = Vec::new();
+        if snapshot.vt.is_empty() {
+            chunks.push(encoder.encode(Vec::new())?);
+        }
+        for raw in snapshot.vt.chunks(CHUNK_MAX) {
+            chunks.push(encoder.encode(raw.to_vec())?);
+        }
+        Ok::<_, ChunkError>((snapshot, chunks))
+    })
+    .await
+    .map_err(|error| status::internal(format!("a snapshot encoder stopped: {error}"), ""))?;
+    let (snapshot, chunks) = chunks.map_err(|error| encode_failed(&error))?;
+    let last = chunks.len().saturating_sub(1);
+    Ok(chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, Chunk { header, data })| {
+            ServerMessage::Snapshot(pb::TerminalSnapshot {
+                offset: snapshot.offset,
+                vt: data,
+                cols: snapshot.cols,
+                rows: snapshot.rows,
+                codec: header.codec.wire(),
+                raw_size: header.raw_len,
+                crc32: header.crc32,
+                more: index < last,
+            })
+        })
+        .collect())
+}
+
+/// Encoding fails only when the codec can't start (zstd out of memory).
+fn encode_failed(error: &ChunkError) -> Status {
+    status::internal(
+        format!("humatad2 couldn't compress a terminal's output: {}", status::chain(error)),
+        "",
+    )
 }
 
 fn holder_status(tab: &TabRecord, error: &HolderError) -> Status {
@@ -447,5 +572,89 @@ pub(crate) fn now() -> Timestamp {
     Timestamp {
         seconds: i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX),
         nanos: i32::try_from(elapsed.subsec_nanos()).unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(offset: u64, data: &[u8]) -> Event {
+        Event::Output {
+            offset,
+            data: data.to_vec(),
+        }
+    }
+
+    fn ready(events: Vec<Event>) -> impl FnMut() -> Option<Result<Event, ()>> {
+        let mut events = events.into_iter();
+        move || events.next().map(Ok)
+    }
+
+    #[test]
+    fn output_waiting_behind_output_goes_as_one_message() {
+        let (joined, held) = coalesce(
+            output(10, b"ab"),
+            100,
+            ready(vec![output(12, b"cd"), output(14, b"ef")]),
+        );
+
+        assert_eq!(joined, output(10, b"abcdef"));
+        assert!(held.is_none());
+    }
+
+    #[test]
+    fn what_cannot_join_is_handed_back_in_order() {
+        let mut ready = ready(vec![
+            output(12, b"cd"),
+            Event::Exited { code: 0 },
+            output(14, b"ef"),
+        ]);
+        let (joined, held) = coalesce(output(10, b"ab"), 100, &mut ready);
+
+        assert_eq!(joined, output(10, b"abcd"));
+        assert_eq!(held, Some(Ok(Event::Exited { code: 0 })));
+        assert_eq!(ready(), Some(Ok(output(14, b"ef"))));
+    }
+
+    #[test]
+    fn output_after_a_gap_is_not_joined() {
+        let (joined, held) = coalesce(output(10, b"ab"), 100, ready(vec![output(20, b"cd")]));
+
+        assert_eq!(joined, output(10, b"ab"));
+        assert_eq!(held, Some(Ok(output(20, b"cd"))));
+    }
+
+    #[test]
+    fn joining_stops_at_the_limit() {
+        let (joined, held) = coalesce(
+            output(0, b"abc"),
+            5,
+            ready(vec![output(3, b"de"), output(5, b"f")]),
+        );
+
+        assert_eq!(joined, output(0, b"abcde"));
+        assert!(held.is_none());
+    }
+
+    #[test]
+    fn a_chunk_bigger_than_the_room_left_is_held() {
+        let (joined, held) = coalesce(output(0, b"abc"), 4, ready(vec![output(3, b"de")]));
+
+        assert_eq!(joined, output(0, b"abc"));
+        assert_eq!(held, Some(Ok(output(3, b"de"))));
+    }
+
+    #[test]
+    fn anything_but_output_is_passed_through() {
+        let mut taken = false;
+        let (event, held) = coalesce(Event::Exited { code: 1 }, 100, || {
+            taken = true;
+            None::<Result<Event, ()>>
+        });
+
+        assert_eq!(event, Event::Exited { code: 1 });
+        assert!(held.is_none());
+        assert!(!taken);
     }
 }

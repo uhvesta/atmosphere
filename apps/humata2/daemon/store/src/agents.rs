@@ -12,7 +12,7 @@ use crate::proto::AgentLaunch as LaunchProto;
 use crate::store::{Inner, bytes_path, check_id, from_sql, path_bytes, put_tab, to_sql};
 use crate::{
     AgentLaunch, AgentRecord, AgentState, Interruption, ResumeFailure, Store, StoreError,
-    TabRecord, blob,
+    TabRecord, Told, blob,
 };
 
 /// The blob type an agent's launch is kept as.
@@ -36,7 +36,7 @@ impl Store {
         check_id(&agent.tab)?;
         let inner = self.inner();
         let doing = "save a session's agent";
-        let encoded = blob::encode(blob::Type::AgentLaunch, LAUNCH_VERSION, &to_proto(&agent.launch).encode_to_vec());
+        let encoded = blob::encode(blob::Type::AgentLaunch, LAUNCH_VERSION, &to_proto(&agent.launch).encode_to_vec())?;
         let op = if tab.is_some() { "agent_and_tab.put" } else { "agent.put" };
         inner.write_for_session(op, doing, Some(&agent.session), |transaction| {
             let placed = blob::place(&inner.blobs, encoded)?;
@@ -112,8 +112,9 @@ fn put_row(
     for (n, interruption) in agent.interruptions.iter().enumerate() {
         transaction.execute(
             "INSERT INTO interruptions (session, n, at_unix_ms, output_saved_through,
-                                        output_resumes_at, saved_tail_damaged)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                        output_resumes_at, saved_tail_damaged, told_unix_ms,
+                                        told_conversation_len)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 agent.session,
                 n as i64,
@@ -121,6 +122,8 @@ fn put_row(
                 to_sql(interruption.output_saved_through),
                 to_sql(interruption.output_resumes_at),
                 interruption.saved_tail_damaged,
+                interruption.told.map(|told| told.at_unix_ms),
+                interruption.told.map(|told| to_sql(told.conversation_len)),
             ],
         )?;
     }
@@ -168,7 +171,8 @@ fn rows(connection: &Connection, session: Option<&str>) -> rusqlite::Result<Vec<
         })?
         .collect::<rusqlite::Result<Vec<Row>>>()?;
     let mut interruptions = connection.prepare(
-        "SELECT at_unix_ms, output_saved_through, output_resumes_at, saved_tail_damaged
+        "SELECT at_unix_ms, output_saved_through, output_resumes_at, saved_tail_damaged, told_unix_ms,
+                told_conversation_len
          FROM interruptions WHERE session = ?1 ORDER BY n",
     )?;
     for row in &mut found {
@@ -179,6 +183,13 @@ fn rows(connection: &Connection, session: Option<&str>) -> rusqlite::Result<Vec<
                     output_saved_through: from_sql(row.get(1)?),
                     output_resumes_at: from_sql(row.get(2)?),
                     saved_tail_damaged: row.get(3)?,
+                    told: match (row.get::<_, Option<i64>>(4)?, row.get::<_, Option<i64>>(5)?) {
+                        (Some(at_unix_ms), Some(len)) => Some(Told {
+                            at_unix_ms,
+                            conversation_len: from_sql(len),
+                        }),
+                        _ => None,
+                    },
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;

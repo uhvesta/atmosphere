@@ -3,16 +3,15 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # Humata 2's state on disk: session records, terminal tabs, agents and how
 # to resume them, pointers and the journal of writes made while the host is
 # away, in one SQLite database (WAL, synchronous = FULL) under a schema
-# version. Data kept whole is a proto blob behind a numbered header (codec,
-# type, version; TR-13), zstd when that pays; big ones live in
-# files named by their hash, written before the row that names them. Knows
-# nothing about the network.
+# version. Data kept whole is a proto blob in the frame every file at rest
+# uses (humata2_chunk; codec, type, version, checksum; TR-13, D65), zstd
+# when that pays; big ones live in files named by their hash, written
+# before the row that names them. Knows nothing about the network.
 STORE_DEPS = [
     "//apps/humata2/api/proto:humata2_store_rust",
-    "@crates//:lz4_flex",
+    "//apps/humata2/chunk:humata2_chunk",
     "@crates//:prost",
     "@crates//:rusqlite",
-    "@crates//:ruzstd",
     "@crates//:sha2",
     "@crates//:thiserror",
 ]

@@ -1,7 +1,8 @@
 //! Writing a file so that a crash at any moment leaves either the old copy
 //! or the new one, never a mix.
 
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
+use std::io::ErrorKind;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -43,6 +44,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
         file.append(bytes)?;
         file.sync_all()?;
         drop(file);
+        crate::fault::point("store.file.temp_written");
         rename(&temp, path)?;
         sync_dir(folder)
     })();
@@ -79,4 +81,34 @@ pub(crate) fn create_dir(path: &Path) -> Result<(), StoreError> {
 /// Whether a folder entry is a write in progress or left by a crash.
 pub(crate) fn is_partial(name: &str) -> bool {
     name.starts_with('.') && name.ends_with(PARTIAL)
+}
+
+/// Removes the writes a crash cut short in `folder` (not its subfolders),
+/// and returns how many went. A missing folder has none. Only for when the
+/// store is opened: a write in progress then is one no process finished,
+/// since one humatad owns the state folder at a time.
+pub(crate) fn sweep_partials(folder: &Path) -> Result<usize, StoreError> {
+    let read_failed = |source| StoreError::Read {
+        path: folder.to_owned(),
+        source,
+    };
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(source) => return Err(read_failed(source)),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry.map_err(read_failed)?;
+        if !is_partial(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let path = entry.path();
+        match remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(source) if source.kind() == ErrorKind::NotFound => {}
+            Err(source) => return Err(StoreError::Remove { path, source }),
+        }
+    }
+    Ok(removed)
 }

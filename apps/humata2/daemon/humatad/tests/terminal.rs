@@ -3,8 +3,9 @@
 
 mod common;
 
-use common::{Attach, Daemon, invalid_field, not_found, open};
+use common::{Attach, Daemon, folder, invalid_field, not_found, open, state_folder};
 use humata2_grpc::humata::v1 as pb;
+use humata2_store::{SessionRecord, Store};
 use pb::attach_client_message::Message as ClientMessage;
 use pb::terminal_state::Writable;
 
@@ -86,6 +87,66 @@ async fn attaching_from_zero_again_replays_what_was_kept() {
     assert!(again.shows("hello"));
 }
 
+/// Prints about 2 MiB of repetitive lines, then "done".
+const SAY_A_LOT: &str = "yes humata-compresses-this-line | head -n 90000; echo do''ne\n";
+
+/// An attach that decodes every codec and holds all the output it's sent.
+fn decoding(tab: &pb::TabId, from_offset: u64) -> pb::AttachOpen {
+    pb::AttachOpen {
+        accept_codecs: vec![pb::ChunkCodec::Lz4 as i32, pb::ChunkCodec::Zstd as i32],
+        window_bytes: 64 << 20,
+        ..open(tab, from_offset)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_comes_compressed_to_a_client_that_decodes_it() {
+    let daemon = Daemon::start().await;
+    let tab = machine_shell(&daemon).await;
+    let mut attach = Attach::start(&daemon, decoding(&tab, 0)).await;
+    attach.type_text(SAY_A_LOT).await;
+    attach.wait_for("done").await;
+
+    assert!(attach.compressed > 0);
+    assert!(attach.shows("humata-compresses-this-line"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_big_snapshot_comes_in_pieces_to_a_client_that_decodes() {
+    let daemon = Daemon::start().await;
+    let tab = machine_shell(&daemon).await;
+    let mut first = Attach::start(&daemon, decoding(&tab, 0)).await;
+    first.type_text(SAY_A_LOT).await;
+    first.wait_for("done").await;
+    let end = first.cursor;
+    drop(first);
+
+    let mut again = Attach::start(&daemon, decoding(&tab, 0)).await;
+    again.wait_until(|again| again.snapshots == 1).await;
+
+    assert!(again.snapshot_pieces > 1);
+    assert!(again.compressed > 0);
+    assert!(again.cursor >= end);
+    assert!(again.shows("done"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_lists_no_codecs_gets_its_snapshot_whole_and_raw() {
+    let daemon = Daemon::start().await;
+    let tab = machine_shell(&daemon).await;
+    let mut first = Attach::start(&daemon, decoding(&tab, 0)).await;
+    first.type_text(SAY_A_LOT).await;
+    first.wait_for("done").await;
+    drop(first);
+
+    let mut again = Attach::start(&daemon, open(&tab, 0)).await;
+    again.wait_until(|again| again.snapshots == 1).await;
+
+    assert_eq!(again.snapshot_pieces, 1);
+    assert_eq!(again.compressed, 0);
+    assert!(again.shows("done"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_size_a_writer_attaches_with_reaches_the_shell() {
     let daemon = Daemon::start().await;
@@ -117,13 +178,22 @@ async fn machine_shells_are_listed_with_their_offsets() {
     attach.type_text(SAY_HELLO).await;
     attach.wait_for("hello").await;
 
-    let tabs = list(&daemon).await;
+    // The listing gives what the daemon's link to the holder has heard,
+    // which can trail output still in flight; it catches up.
+    let mut tabs = list(&daemon).await;
+    for _ in 0..50 {
+        if tabs[0].end_offset >= attach.cursor {
+            break;
+        }
+        tabs = list(&daemon).await;
+    }
 
     assert_eq!(tabs.len(), 1);
     assert_eq!(tabs[0].id.as_ref(), Some(&tab));
     assert_eq!(tabs[0].kind(), pb::tab::Kind::Shell);
     assert!(tabs[0].machine.is_some());
     assert!(tabs[0].end_offset >= attach.cursor);
+    assert!(tabs[0].earliest_offset <= tabs[0].end_offset);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -265,4 +335,91 @@ async fn an_unknown_tab_is_not_found() {
     .unwrap();
 
     assert_eq!(not_found(&refused), pb::EntityKind::Tab);
+}
+
+const TYPING_SESSION: &str = "se_typing";
+
+/// A daemon with one session and a shell tab open in it.
+async fn session_shell() -> (Daemon, pb::TabId) {
+    let dir = folder();
+    let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: TYPING_SESSION.to_owned(),
+            channel: "ch_typing".to_owned(),
+            machine: String::new(),
+            title: "typing".to_owned(),
+            agent: "sh".to_owned(),
+            folder: dir.path().to_owned(),
+            created_unix_ms: 0,
+        })
+        .unwrap();
+    drop(store);
+    let daemon = Daemon::start_in(dir).await;
+    let tab = daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(typing_session()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    (daemon, tab)
+}
+
+fn typing_session() -> pb::SessionId {
+    pb::SessionId {
+        value: TYPING_SESSION.to_owned(),
+    }
+}
+
+async fn type_into_session(daemon: &Daemon, text: &str) -> Result<pb::TypeResponse, tonic::Status> {
+    daemon
+        .terminals()
+        .await
+        .r#type(pb::TypeRequest {
+            session: Some(typing_session()),
+            text: text.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_text_typed_into_a_session_reaches_its_shell() {
+    let (daemon, tab) = session_shell().await;
+    let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
+
+    let first = type_into_session(&daemon, SAY_HELLO).await.unwrap();
+    attach.wait_for("hello").await;
+    let second = type_into_session(&daemon, SAY_WORLD).await.unwrap();
+    attach.wait_for("world").await;
+
+    assert!(first.typed);
+    assert!(second.typed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_into_a_shell_that_exited_is_refused() {
+    let (daemon, tab) = session_shell().await;
+    let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
+    type_into_session(&daemon, "exit 3\n").await.unwrap();
+    attach
+        .wait_until(|attach| {
+            attach
+                .states
+                .last()
+                .is_some_and(|state| state.writable() == Writable::Exited)
+        })
+        .await;
+
+    let refused = type_into_session(&daemon, SAY_HELLO).await.unwrap_err();
+
+    assert_ne!(refused.code(), tonic::Code::Ok);
 }

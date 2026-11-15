@@ -105,13 +105,52 @@ crate.from_cargo(
         "x86_64-unknown-linux-gnu",
     ],
 )
-use_repo(crate, "crates")
+
+# GPUI Fast targets build from their own repository: crate_universe resolves
+# one feature set per crate in a repository, so gpui-kit's `gpui-fast` feature
+# in @crates would switch every GPUI target to Fast. @crates keeps ordinary
+# GPUI; @crates_gpui_fast holds gpui-kit with `gpui-fast` and the Fast text
+# system, and nothing else a GPUI target names. Its versions follow the root
+# Cargo.lock; see its Cargo.toml for how to update it.
+crate.from_cargo(
+    name = "crates_gpui_fast",
+    cargo_lockfile = "//apps/humata2/engine/gpui-fast-crates:Cargo.lock",
+    lockfile = "//apps/humata2/engine/gpui-fast-crates:cargo-bazel-lock.json",
+    manifests = ["//apps/humata2/engine/gpui-fast-crates:Cargo.toml"],
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates", "crates_gpui_fast")
+
+# Markdown source and fenced code blocks use the same portable highlighter
+# on the ordinary and Fast UI backends.
+crate.annotation(
+    crate = "gpui-kit",
+    crate_features = ["syntect"],
+)
+
+# Humata 2's diff view (D67) replaces and adds files in gpui-component's diff
+# without starting over; see apps/humata2/diff/patches. In both @crates and
+# @crates_gpui_fast.
+crate.annotation(
+    crate = "gpui-component",
+    patch_args = ["-p1"],
+    patches = ["//apps/humata2/diff/patches:gpui-component-diff-update.patch"],
+)
 
 # GPUI's dev build derives inspector reflection under debug_assertions.
 # Bazel compiles proc macros in the optimized exec configuration, so enable
 # the macro explicitly to keep that API available to the target crate.
 crate.annotation(
     crate = "gpui-pre-macros",
+    crate_features = ["inspector"],
+)
+crate.annotation(
+    crate = "gpui-fast-macros",
     crate_features = ["inspector"],
 )
 

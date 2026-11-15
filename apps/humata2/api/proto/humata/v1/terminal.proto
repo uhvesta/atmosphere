@@ -111,6 +111,9 @@ message AttachOpen {
   // stops sending at the limit and, if the client stays behind past the
   // kept scrollback, sends a new Snapshot rather than buffering.
   uint32 window_bytes = 7;
+  // The codecs the client decodes, best first (TR-11, D65). Empty: none,
+  // and each snapshot comes as one message.
+  repeated ChunkCodec accept_codecs = 8;
 }
 
 message TerminalInput {
@@ -145,15 +148,30 @@ message AttachServerMessage {
 // emulator gives the holder's screen.
 message TerminalSnapshot {
   uint64 offset = 1;
+  // One piece of the snapshot, encoded with `codec` (TR-11, D65). With
+  // accept_codecs set, a snapshot over 1 MiB comes as several messages
+  // with the same offset, in order, each a piece of at most 1 MiB decoded;
+  // all but the last have `more` set.
   bytes vt = 2;
   uint32 cols = 3;
   uint32 rows = 4;
+  ChunkCodec codec = 5;
+  // The piece's decoded length; 0 with CHUNK_CODEC_NONE means len(vt).
+  uint32 raw_size = 6;
+  // CRC-32 of the decoded piece; set whenever codec isn't NONE.
+  optional uint32 crc32 = 7;
+  bool more = 8;
 }
 
 message TerminalOutput {
-  // Offset of the first byte of data.
+  // Offset of the first byte of data, decoded. Offsets, windows and acks
+  // all count decoded bytes.
   uint64 offset = 1;
+  // Encoded with `codec`, as TerminalSnapshot.vt is.
   bytes data = 2;
+  ChunkCodec codec = 3;
+  uint32 raw_size = 4;
+  optional uint32 crc32 = 5;
 }
 
 message InputAccepted {

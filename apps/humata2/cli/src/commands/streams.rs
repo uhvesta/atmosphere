@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
+use humata2_chunk::{ChunkError, Codec, Decoder, Encoder, Header};
 use humata2_proto::humata::v1 as pb;
 use prost::Message;
 use serde_json::json;
@@ -21,8 +22,8 @@ use crate::as_json;
 /// (provisional: CLI.md doesn't name a key).
 const DETACH: u8 = 0x1d;
 
-/// The size of each chunk `files put` sends.
-const CHUNK_BYTES: usize = 1 << 20;
+/// The size of each chunk `files put` sends, before encoding (TR-11).
+const CHUNK_BYTES: usize = humata2_chunk::CHUNK_MAX;
 
 /// The daemon's attach window when `window_bytes` is 0 (terminal.proto).
 const DEFAULT_WINDOW: u64 = 1 << 20;
@@ -74,7 +75,13 @@ pub(super) async fn attach<D: Daemon, C: Console>(
         }
         .encode_to_vec()
     };
-    let _ = send.try_send(message(Client::Open(pb::AttachOpen { cols, rows, ..open })));
+    let _ = send.try_send(message(Client::Open(pb::AttachOpen {
+        cols,
+        rows,
+        accept_codecs: Codec::wire_list(&Codec::ALL),
+        ..open
+    })));
+    let mut decoder = Decoder::new();
     let mut replies = ctx.daemon.bidi_stream(rpc::terminal::ATTACH, requests).await?;
     ctx.note("Attached. Ctrl-] detaches.");
     let mut input_seq = 0;
@@ -85,13 +92,26 @@ pub(super) async fn attach<D: Daemon, C: Console>(
                 let reply: pb::AttachServerMessage = decode(rpc::terminal::ATTACH, &reply?)?;
                 match reply.message {
                     Some(Server::Snapshot(snapshot)) => {
-                        ctx.console.write(&snapshot.vt);
+                        let vt = terminal_bytes(
+                            &mut decoder,
+                            snapshot.offset,
+                            (snapshot.codec, snapshot.raw_size, snapshot.crc32),
+                            snapshot.vt,
+                        )?;
+                        ctx.console.write(&vt);
                         // The daemon counts a snapshot as drawn.
                         acked = snapshot.offset;
                     }
                     Some(Server::Output(output)) => {
-                        ctx.console.write(&output.data);
-                        let offset = output.offset + output.data.len() as u64;
+                        let data = terminal_bytes(
+                            &mut decoder,
+                            output.offset,
+                            (output.codec, output.raw_size, output.crc32),
+                            output.data,
+                        )?;
+                        ctx.console.write(&data);
+                        // Offsets count decoded bytes.
+                        let offset = output.offset + data.len() as u64;
                         if offset.saturating_sub(acked) >= ack_every {
                             acked = offset;
                             let _ = send.send(message(Client::Ack(pb::OutputAck { offset }))).await;
@@ -214,19 +234,25 @@ pub(super) async fn cat<D: Daemon, C: Console>(
 ) -> Result<Done, CliError> {
     let request = pb::ReadFileRequest {
         location: Some(location),
+        // Every codec this build decodes; the daemon picks by its setting.
+        accept_codecs: Codec::wire_list(&Codec::ALL),
         ..Default::default()
     };
     let rpc = rpc::files::READ_FILE;
     let mut replies = ctx.daemon.server_stream(rpc, request.encode_to_vec()).await?;
     let mut data = Vec::new();
+    let mut decoder = Decoder::new();
     while let Some(reply) = replies.recv().await {
         let chunk: pb::FileChunk = decode(rpc, &reply?)?;
+        let last = chunk.last;
+        let (raw, kept) = decode_chunk(decoder, chunk).await?;
+        decoder = kept;
         if ctx.flags.json {
-            data.extend_from_slice(&chunk.data);
+            data.extend_from_slice(&raw);
         } else {
-            ctx.console.write(&chunk.data);
+            ctx.console.write(&raw);
         }
-        if chunk.last {
+        if last {
             break;
         }
     }
@@ -271,7 +297,8 @@ pub(super) async fn put<D: Daemon, C: Console>(
     };
     let _ = send.try_send(header.encode_to_vec());
     let path = local.to_path_buf();
-    let reader = tokio::task::spawn_blocking(move || send_chunks(&path, size, &send));
+    let codec = upload_codec(ctx).await;
+    let reader = tokio::task::spawn_blocking(move || send_chunks(&path, size, codec, &send));
     let rpc = rpc::files::WRITE_FILE;
     let reply = ctx.daemon.client_stream(rpc, requests).await;
     // A local read failure explains a refused upload better than the
@@ -311,24 +338,102 @@ fn digest(path: &Path) -> io::Result<(u64, String)> {
     Ok((size, hex(&hasher.finalize())))
 }
 
-/// Sends the file as `CHUNK_BYTES` chunks, the one ending at `size`
-/// marked last. Stops early if the call ended.
-fn send_chunks(path: &Path, size: u64, send: &mpsc::Sender<Vec<u8>>) -> io::Result<()> {
+/// The codec to send a file with: the first of the daemon's that this
+/// build has. A daemon that names none, or doesn't answer, gets raw chunks.
+async fn upload_codec<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Codec {
+    let rpc = rpc::daemon::GET_SERVER_INFO;
+    let request = pb::GetServerInfoRequest::default().encode_to_vec();
+    let Ok(reply) = ctx.daemon.unary(rpc, request).await else {
+        return Codec::None;
+    };
+    let Ok(info) = pb::ServerInfo::decode(reply.as_slice()) else {
+        return Codec::None;
+    };
+    Codec::known(&info.chunk_codecs)
+        .into_iter()
+        .find(|codec| Codec::ALL.contains(codec))
+        .unwrap_or(Codec::None)
+}
+
+/// The decoded bytes of a snapshot piece or an output at `offset`, whose
+/// codec, raw size and CRC are `fields`. At most 1 MiB, so decoded here.
+fn terminal_bytes(
+    decoder: &mut Decoder,
+    offset: u64,
+    fields: (i32, u32, Option<u32>),
+    data: Vec<u8>,
+) -> Result<Vec<u8>, CliError> {
+    let (codec, raw_size, crc32) = fields;
+    let bad = |source| CliError::BadTerminalChunk { offset, source };
+    let codec = Codec::from_wire(codec).ok_or_else(|| bad(ChunkError::UnknownCodec { wire: codec }))?;
+    if codec == Codec::None && crc32.is_none() {
+        // A daemon that predates compression.
+        return Ok(data);
+    }
+    let header = Header {
+        codec,
+        raw_len: match (codec, raw_size) {
+            (Codec::None, 0) => u32::try_from(data.len()).unwrap_or(u32::MAX),
+            (_, raw_size) => raw_size,
+        },
+        crc32,
+    };
+    decoder.decode(header, data).map_err(bad)
+}
+
+/// Decodes one chunk off the runtime, handing the decoder back.
+async fn decode_chunk(mut decoder: Decoder, chunk: pb::FileChunk) -> Result<(Vec<u8>, Decoder), CliError> {
+    let offset = chunk.offset;
+    let bad = |source| CliError::BadChunk { offset, source };
+    let codec = Codec::from_wire(chunk.codec).ok_or_else(|| bad(ChunkError::UnknownCodec { wire: chunk.codec }))?;
+    if codec == Codec::None && chunk.crc32.is_none() {
+        // A daemon that predates compression: the bytes are the chunk.
+        return Ok((chunk.data, decoder));
+    }
+    let header = Header {
+        codec,
+        raw_len: match (codec, chunk.raw_size) {
+            (Codec::None, 0) => u32::try_from(chunk.data.len()).unwrap_or(u32::MAX),
+            (_, raw_size) => raw_size,
+        },
+        crc32: chunk.crc32,
+    };
+    let decoded = tokio::task::spawn_blocking(move || {
+        let raw = decoder.decode(header, chunk.data);
+        (raw, decoder)
+    })
+    .await;
+    match decoded {
+        Ok((Ok(raw), decoder)) => Ok((raw, decoder)),
+        Ok((Err(source), _)) => Err(bad(source)),
+        Err(_) => Err(CliError::DecoderStopped { offset }),
+    }
+}
+
+/// Sends the file as `CHUNK_BYTES` chunks encoded with `codec` (or raw,
+/// where that doesn't shrink them), the one ending at `size` marked last.
+/// Stops early if the call ended.
+fn send_chunks(path: &Path, size: u64, codec: Codec, send: &mpsc::Sender<Vec<u8>>) -> io::Result<()> {
     use pb::write_file_message::Message as Part;
 
     let mut file = File::open(path)?;
+    let mut encoder = Encoder::new(codec);
     let mut offset = 0u64;
     loop {
         let mut data = Vec::with_capacity(CHUNK_BYTES);
         (&mut file).take(CHUNK_BYTES as u64).read_to_end(&mut data)?;
         let read = data.len() as u64;
         let last = read == 0 || offset + read >= size;
+        let encoded = encoder.encode(data).map_err(io::Error::other)?;
         let chunk = pb::WriteFileMessage {
             message: Some(Part::Chunk(pb::FileChunk {
                 offset,
-                data,
+                data: encoded.data,
                 sha256: String::new(),
                 last,
+                codec: encoded.header.codec.wire(),
+                raw_size: encoded.header.raw_len,
+                crc32: encoded.header.crc32,
             })),
         };
         if send.blocking_send(chunk.encode_to_vec()).is_err() || last {

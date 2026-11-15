@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::StoreError;
 use crate::atomic::create_dir;
+use crate::{StoreError, fault};
 use crate::schema::SCHEMA_VERSION;
 
 /// The copy's name in the state folder.
@@ -127,6 +127,7 @@ fn save_to(connection: &Connection, temp: &Path, path: &Path, root: &Path) -> Re
         let mut options = OpenOptions::new();
         options.read(true).write(true).mode(0o600);
         humata2_durable::File::open(&options, temp)?.sync_all()?;
+        fault::point("store.last_good.copied");
         humata2_durable::rename(temp, path)?;
         humata2_durable::sync_dir(root)
     })();
@@ -210,14 +211,105 @@ pub(crate) fn is_damage(error: &StoreError) -> bool {
     )
 }
 
-/// Moves the damaged database at `database` (and its -wal and -shm) into
-/// a folder of its own under `root`, puts the last good copy in its
-/// place, and lists what differs. The caller opens the store again.
+/// Puts the last good copy in place of the damaged database at
+/// `database`, keeping the damaged one (with its -wal and -shm) in a
+/// folder of its own under `root`, and lists what differs. The caller
+/// opens the store again.
+///
+/// The copy of the copy is made first, so a crash before the damaged
+/// database moves leaves it where it was, to be found damaged again, and
+/// a crash after leaves the copy of the copy for [`finish_restore`].
 pub(crate) fn restore(root: &Path, database: &Path, damage: String) -> Result<Restored, StoreError> {
     let copy = root.join(LAST_GOOD);
-    let copy_taken_unix_ms = mtime_unix_ms(&copy).unwrap_or(0);
-    let kept = root.join(format!("damaged-{}", now_unix_ms()));
+    let name = file_name(database);
+    let temp = restore_temp(root, &name);
+    copy_of_copy(&copy, &temp, database)?;
+    fault::point("store.restore.copied");
+    let kept = root.join(format!("{DAMAGED}{}", now_unix_ms()));
     create_dir(&kept)?;
+    let damaged = kept.join(&name);
+    move_aside(root, database, &damaged)?;
+    fault::point("store.restore.moved");
+    place(&temp, database, root)?;
+    Ok(restored(&copy, damaged, damage))
+}
+
+/// Finishes a restore a crash cut short after the damaged database was
+/// moved aside: the database is missing and the copy of the copy is
+/// beside it. Anything the damaged one left behind (-wal, -shm) joins it
+/// first, since SQLite would otherwise apply it to the restored copy.
+/// None when there's no restore to finish.
+pub(crate) fn finish_restore(root: &Path, database: &Path) -> Result<Option<Restored>, StoreError> {
+    let name = file_name(database);
+    let temp = restore_temp(root, &name);
+    if database.exists() || !temp.exists() {
+        return Ok(None);
+    }
+    let copy = root.join(LAST_GOOD);
+    let kept = match newest_damaged(root) {
+        Some(kept) => kept,
+        None => {
+            let kept = root.join(format!("{DAMAGED}{}", now_unix_ms()));
+            create_dir(&kept)?;
+            kept
+        }
+    };
+    let damaged = kept.join(&name);
+    move_aside(root, database, &damaged)?;
+    // Made again: the one there was synced, but making it costs little and
+    // leaves no doubt.
+    copy_of_copy(&copy, &temp, database)?;
+    place(&temp, database, root)?;
+    let damage = "a crash cut short restoring the last good copy over a damaged database; the restore was finished"
+        .to_owned();
+    Ok(Some(restored(&copy, damaged, damage)))
+}
+
+/// Where the damaged databases restores moved aside are kept, by when.
+const DAMAGED: &str = "damaged-";
+
+fn file_name(database: &Path) -> std::ffi::OsString {
+    database.file_name().map_or_else(|| "state.sqlite".into(), ToOwned::to_owned)
+}
+
+fn restore_temp(root: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    root.join(format!(".{}.restore.partial", name.to_string_lossy()))
+}
+
+/// The newest folder a restore kept a damaged database in.
+fn newest_damaged(root: &Path) -> Option<PathBuf> {
+    fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let at: u64 = name.to_str()?.strip_prefix(DAMAGED)?.parse().ok()?;
+            Some((at, entry.path()))
+        })
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, path)| path)
+}
+
+/// Copies the last good copy to `temp`, synced, keeping the copy itself.
+fn copy_of_copy(copy: &Path, temp: &Path, database: &Path) -> Result<(), StoreError> {
+    let copied = (|| {
+        fs::copy(copy, temp)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        humata2_durable::File::open(&options, temp)?.sync_all()
+    })();
+    copied.map_err(|source| {
+        let _ = humata2_durable::remove_file(temp);
+        StoreError::Write {
+            path: database.to_owned(),
+            source,
+        }
+    })
+}
+
+/// Moves `database` and its -wal and -shm, those still there, to
+/// `damaged`, and syncs both folders.
+fn move_aside(root: &Path, database: &Path, damaged: &Path) -> Result<(), StoreError> {
     let moved = |from: &Path, to: &Path| {
         humata2_durable::rename(from, to).or_else(|error| match error.kind() {
             ErrorKind::NotFound => Ok(()),
@@ -227,9 +319,7 @@ pub(crate) fn restore(root: &Path, database: &Path, damage: String) -> Result<Re
             }),
         })
     };
-    let name = database.file_name().map_or_else(|| "state.sqlite".into(), ToOwned::to_owned);
-    let damaged = kept.join(&name);
-    moved(database, &damaged)?;
+    moved(database, damaged)?;
     for suffix in ["-wal", "-shm"] {
         let mut side = database.as_os_str().to_owned();
         side.push(suffix);
@@ -243,34 +333,33 @@ pub(crate) fn restore(root: &Path, database: &Path, damage: String) -> Result<Re
             source,
         })
     };
-    sync(&kept)?;
-    sync(root)?;
+    if let Some(kept) = damaged.parent() {
+        sync(kept)?;
+    }
+    sync(root)
+}
 
-    // A copy of the copy, so the copy stays for a database damaged again.
-    let temp = root.join(format!(".{}.restore.partial", name.to_string_lossy()));
-    let copied = (|| {
-        fs::copy(&copy, &temp)?;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true);
-        humata2_durable::File::open(&options, &temp)?.sync_all()?;
-        humata2_durable::rename(&temp, database)?;
-        humata2_durable::sync_dir(root)
-    })();
-    if let Err(source) = copied {
-        let _ = humata2_durable::remove_file(&temp);
-        return Err(StoreError::Write {
+/// Renames the copy of the copy over `database`, and syncs the folder.
+fn place(temp: &Path, database: &Path, root: &Path) -> Result<(), StoreError> {
+    let placed = humata2_durable::rename(temp, database).and_then(|()| humata2_durable::sync_dir(root));
+    placed.map_err(|source| {
+        let _ = humata2_durable::remove_file(temp);
+        StoreError::Write {
             path: database.to_owned(),
             source,
-        });
-    }
-    let (changes, unreadable_tables) = differences(&damaged, &copy);
-    Ok(Restored {
-        copy_taken_unix_ms,
+        }
+    })
+}
+
+fn restored(copy: &Path, damaged: PathBuf, damage: String) -> Restored {
+    let (changes, unreadable_tables) = differences(&damaged, copy);
+    Restored {
+        copy_taken_unix_ms: mtime_unix_ms(copy).unwrap_or(0),
         damaged_kept_at: damaged,
         damage,
         changes,
         unreadable_tables,
-    })
+    }
 }
 
 /// Each table's rows by primary key, each row as one text of SQL literals.

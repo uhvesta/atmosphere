@@ -237,6 +237,11 @@ message AddSshMachineRequest {
   string name = 3;
   // Default ~/Humata (FC-10).
   string root = 4;
+  // MP-9 on first contact: the fingerprint the user confirmed. Empty, the
+  // add fails at `connect` with Error.host_key_changed naming the key the
+  // machine presents (expected empty); add again with it to trust that key.
+  // Set and different from what the machine presents, nothing is sent.
+  string trust_host_key_fingerprint = 5;
 }
 
 message ReconnectMachineRequest { MachineId id = 1; }

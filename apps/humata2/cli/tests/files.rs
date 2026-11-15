@@ -2,6 +2,7 @@
 
 mod support;
 
+use humata2_chunk::{Codec, Decoder, Encoder, Header};
 use humata2_cli::{exit, rpc};
 use humata2_proto::humata::v1 as pb;
 use pb::file_location::Root;
@@ -17,6 +18,7 @@ fn chunk(data: &[u8], offset: u64, last: bool) -> pb::FileChunk {
         data: data.to_vec(),
         sha256: String::new(),
         last,
+        ..Default::default()
     }
 }
 
@@ -233,4 +235,141 @@ async fn cp_needs_a_source_and_a_destination() {
     let console = FakeConsole::pipe();
     let exit = run(&daemon, &console, &["--json", "cp", "ma_1:shared/a.txt"]).await;
     assert_eq!(exit, exit::USAGE);
+}
+
+/// The bytes a `files put` sent, decoded, and the codecs its chunks used.
+fn received(daemon: &FakeDaemon) -> (Vec<u8>, Vec<Codec>) {
+    let mut decoder = Decoder::new();
+    let mut bytes = Vec::new();
+    let mut codecs = Vec::new();
+    for message in daemon.sent::<pb::WriteFileMessage>(rpc::files::WRITE_FILE) {
+        let Some(Part::Chunk(chunk)) = message.message else { continue };
+        assert_eq!(chunk.offset, bytes.len() as u64, "chunks arrive in order");
+        let codec = Codec::from_wire(chunk.codec).expect("a known codec");
+        codecs.push(codec);
+        let header = Header {
+            codec,
+            raw_len: chunk.raw_size,
+            crc32: chunk.crc32,
+        };
+        bytes.extend(decoder.decode(header, chunk.data).expect("the chunk decodes"));
+    }
+    (bytes, codecs)
+}
+
+fn source_like(len: usize) -> Vec<u8> {
+    let line = b"pub fn put(local: &Path, location: FileLocation) -> Result<Done, CliError> {}\n";
+    line.iter().copied().cycle().take(len).collect()
+}
+
+async fn put(daemon: &FakeDaemon, bytes: &[u8]) {
+    let folder = tempfile::tempdir().expect("a temporary folder");
+    let local = folder.path().join("src.rs");
+    std::fs::write(&local, bytes).expect("the local file");
+    let console = FakeConsole::pipe();
+    let local = local.to_str().expect("a UTF-8 path");
+    let exit = run(
+        daemon,
+        &console,
+        &["--json", "--channel", "ch_1", "files", "put", local, "ma_1:channel/src.rs"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+}
+
+#[tokio::test]
+async fn put_compresses_with_the_first_codec_the_daemon_offers() {
+    let bytes = source_like((5 << 19) + 7);
+    for (offered, expected) in [
+        (vec![Codec::Lz4, Codec::Zstd, Codec::None], Codec::Lz4),
+        (vec![Codec::Zstd, Codec::Lz4, Codec::None], Codec::Zstd),
+        (vec![Codec::None], Codec::None),
+    ] {
+        let daemon = FakeDaemon::new();
+        daemon.reply(
+            rpc::daemon::GET_SERVER_INFO,
+            &pb::ServerInfo {
+                chunk_codecs: Codec::wire_list(&offered),
+                ..Default::default()
+            },
+        );
+        put(&daemon, &bytes).await;
+        let (sent, codecs) = received(&daemon);
+        assert_eq!(sent, bytes, "offered {offered:?}");
+        assert!(codecs.contains(&expected), "offered {offered:?}, sent {codecs:?}");
+        assert!(codecs.iter().all(|codec| [expected, Codec::None].contains(codec)));
+    }
+}
+
+#[tokio::test]
+async fn put_to_a_daemon_that_names_no_codec_sends_raw_chunks() {
+    let bytes = source_like(3 << 19);
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::daemon::GET_SERVER_INFO,
+        &pb::ServerInfo {
+            chunk_codecs: vec![9],
+            ..Default::default()
+        },
+    );
+    put(&daemon, &bytes).await;
+    let (sent, codecs) = received(&daemon);
+    assert_eq!(sent, bytes);
+    assert!(codecs.iter().all(|codec| *codec == Codec::None));
+}
+
+fn encoded(codec: Codec, raw: &[u8], offset: u64, last: bool) -> pb::FileChunk {
+    let encoded = Encoder::new(codec).encode(raw.to_vec()).expect("encodes");
+    pb::FileChunk {
+        offset,
+        data: encoded.data,
+        sha256: String::new(),
+        last,
+        codec: encoded.header.codec.wire(),
+        raw_size: encoded.header.raw_len,
+        crc32: encoded.header.crc32,
+    }
+}
+
+#[tokio::test]
+async fn cat_decodes_chunks_whatever_their_codec() {
+    let first = source_like(1 << 20);
+    let second = source_like(4000);
+    let daemon = FakeDaemon::new();
+    daemon.stream(
+        rpc::files::READ_FILE,
+        &[
+            &encoded(Codec::Zstd, &first, 0, false),
+            &encoded(Codec::Lz4, &second, 1 << 20, true),
+        ],
+    );
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--channel", "ch_1", "files", "cat", "ma_1:shared/src.rs"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    assert_eq!(console.written(), [first, second].concat());
+    let sent: pb::ReadFileRequest = daemon.only(rpc::files::READ_FILE);
+    assert!(Codec::known(&sent.accept_codecs).contains(&Codec::Lz4));
+}
+
+#[tokio::test]
+async fn cat_of_a_damaged_chunk_fails_rather_than_printing_it() {
+    let mut chunk = encoded(Codec::Lz4, &source_like(64 << 10), 0, true);
+    let middle = chunk.data.len() / 2;
+    chunk.data[middle] ^= 0x5a;
+    let daemon = FakeDaemon::new();
+    daemon.stream(rpc::files::READ_FILE, &[&chunk]);
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--channel", "ch_1", "files", "cat", "ma_1:shared/src.rs"],
+    )
+    .await;
+    assert_ne!(exit, exit::OK);
+    assert!(console.written().is_empty());
 }

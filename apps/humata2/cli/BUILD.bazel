@@ -24,6 +24,7 @@ rust_library(
     rustc_env = {"HUMATA2_DESCRIPTORS": "$(execpath :descriptors)"},
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
+        "//apps/humata2/chunk:humata2_chunk",
         "@crates//:clap",
         "@crates//:hyper-util",
         "@crates//:prost",
@@ -66,6 +67,7 @@ rust_test(
         deps = [
             ":cli",
             "//apps/humata2/api/proto:humata2_rust",
+            "//apps/humata2/chunk:humata2_chunk",
             "@crates//:prost",
             "@crates//:serde_json",
             "@crates//:tempfile",

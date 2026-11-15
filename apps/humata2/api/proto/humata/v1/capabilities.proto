@@ -110,6 +110,16 @@ enum Capability {
   CAPABILITY_TRASH_RESTORE = 37;
   // Create a channel.
   CAPABILITY_CHANNEL_CREATE = 38;
+  // The review chat's switches (PR-25), checked on the agent's own review.
+  // Default Allow; the user turns each off in the review ("Agent may:").
+  // A switch that's off is denied with Denied.SOURCE_REVIEW_SWITCH_OFF.
+  // "Focus": move the review's view to a file or lines (review_focus).
+  CAPABILITY_REVIEW_FOCUS = 39;
+  // "Notes": leave, edit or drop notes for the user (review_note*).
+  CAPABILITY_REVIEW_NOTE = 40;
+  // "Order": reorder and group the review's files (review_prepare in the
+  // review chat).
+  CAPABILITY_REVIEW_ORDER = 41;
 
   // ----- User-only: no rule, never granted, no MCP tool. -----
 

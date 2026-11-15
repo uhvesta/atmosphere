@@ -150,4 +150,17 @@ pub struct Interruption {
     pub output_resumes_at: u64,
     /// The end of the saved output was cut short and dropped.
     pub saved_tail_damaged: bool,
+    /// Set just before the resumed agent is told it was interrupted, so a
+    /// resume redone after a crash knows the note may already be in its
+    /// conversation.
+    pub told: Option<Told>,
+}
+
+/// The resumed agent being told it was interrupted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Told {
+    pub at_unix_ms: i64,
+    /// The conversation file's length just before: the note, if the agent
+    /// wrote it down, is after this.
+    pub conversation_len: u64,
 }

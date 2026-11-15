@@ -87,6 +87,20 @@ operations! {
     ReviewDraftDrop => "review_draft_drop", "review.draft_drop";
     /// `PullRequestReviewService.DraftSummary`.
     ReviewSummaryDraft => "review_summary_draft", "review.summary_draft";
+    /// `ReviewChatService.GetReviewContext` of the caller's review.
+    ReviewContext => "review_context", "review.context";
+    /// `ReviewChatService.FocusReview`.
+    ReviewFocus => "review_focus", "review.focus";
+    /// `CommentService.CreateComment` with a note for the user as
+    /// destination.
+    ReviewNote => "review_note", "review.note";
+    /// `CommentService.EditComment` of a note the caller wrote.
+    ReviewNoteEdit => "review_note_edit", "review.note_edit";
+    /// `CommentService.DropComment` of a note the caller wrote.
+    ReviewNoteDrop => "review_note_drop", "review.note_drop";
+    /// `ViewService.PrepareView` with a review plan; in the review chat it
+    /// applies at once (PR-24).
+    ReviewPrepare => "review_prepare", "review.prepare";
     /// `CommentService.ListComments` of the caller's session.
     CommentsList => "comments_list", "comment.list";
     /// `FileService.ListDirectory`.
@@ -284,6 +298,9 @@ pub(crate) fn capability_name(capability: Capability) -> &'static str {
         Capability::ViewsPrepare => "views_prepare",
         Capability::ReviewDraft => "review_draft",
         Capability::InboxAsk => "inbox_ask",
+        Capability::ReviewFocus => "review_focus",
+        Capability::ReviewNote => "review_note",
+        Capability::ReviewOrder => "review_order",
         Capability::ChannelBoardEditOthers => "channel_board_edit_others",
         Capability::GlobalRead => "global_read",
         Capability::FilesReadOtherSession => "files_read_other_session",
@@ -435,6 +452,69 @@ fn lines() -> Schema {
         req("first", integer().at_least(1)),
         req("last", integer().at_least(1)),
     ])
+}
+
+fn side() -> Schema {
+    one_of_strings(["old", "new"]).describe("Default: new")
+}
+
+fn file_ref() -> Schema {
+    object(vec![req("repo", repo()), req("path", relative_path())])
+}
+
+/// A diff spec (RV-31, `humata.v1.DiffSpec`).
+fn diff_spec() -> Schema {
+    object(vec![req(
+        "repos",
+        array(object(vec![
+            req("repo", repo()),
+            req(
+                "base",
+                object(vec![
+                    opt(
+                        "merge_base_with",
+                        string().describe("A branch, as GitHub shows a pull request: origin/main"),
+                    ),
+                    opt("rev", string().describe("A branch, tag or commit, as it is")),
+                    opt(
+                        "reviewed_snapshot",
+                        integer()
+                            .at_least(0)
+                            .describe("A review the user marked reviewed; 0 for the latest"),
+                    ),
+                    opt("fork_point", boolean().describe("Where this session was forked")),
+                    opt("index", boolean().describe("What is staged")),
+                ])
+                .exactly_one_of(&[
+                    "merge_base_with",
+                    "rev",
+                    "reviewed_snapshot",
+                    "fork_point",
+                    "index",
+                ]),
+            ),
+            opt(
+                "upto",
+                one_of_strings(["commits", "staged", "unstaged"]).describe("Default: unstaged"),
+            ),
+            opt(
+                "untracked",
+                one_of_strings(["none", "all", "paths"]).describe("Default: all"),
+            ),
+            opt(
+                "untracked_paths",
+                array(relative_path()).describe("With untracked: paths, the folders or files"),
+            ),
+            opt("include_paths", array(string().describe("A git pathspec"))),
+            opt("exclude_paths", array(string().describe("A git pathspec"))),
+            opt(
+                "whitespace",
+                one_of_strings(["counts", "ignore_changes", "ignore_all"])
+                    .describe("Default: counts"),
+            ),
+            opt("renames", boolean().describe("Default: true")),
+        ])),
+    )])
 }
 
 fn when() -> Schema {
@@ -714,6 +794,92 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![
                 req("pr", string().describe("owner/repo#number")),
                 req("summary", string()),
+            ]),
+        ),
+        Op::ReviewContext => define(
+            "What the user is looking at in this review: the diff spec, the open file, the visible lines and selection, the order and groups, Viewed files and your notes.",
+            Effect::Read,
+            object(Vec::new()),
+        ),
+        Op::ReviewFocus => define(
+            "Show the user a place in the review: open a file, scroll to and select lines, and highlight ranges with a short label. It applies once the user stops scrolling or typing; they can Undo it or go Back.",
+            Effect::Change,
+            object(vec![
+                req("repo", repo()),
+                req("path", relative_path()),
+                opt("lines", lines()),
+                opt("side", side()),
+                opt(
+                    "highlights",
+                    array(object(vec![
+                        req("repo", repo()),
+                        req("path", relative_path()),
+                        req("lines", lines()),
+                        opt("side", side()),
+                        opt("label", string().max_length(80)),
+                    ]))
+                    .max_items(20)
+                    .describe("Replaces your earlier highlights"),
+                ),
+            ]),
+        ),
+        Op::ReviewNote => define(
+            "Leave the user a note on a file, a hunk or lines, to help them understand the change. Notes are never posted; the user can make one a draft.",
+            Effect::Create,
+            object(vec![
+                req("repo", repo()),
+                req("path", relative_path()),
+                opt("lines", lines().describe("The lines; leave out for a note on the file")),
+                opt(
+                    "hunk_at",
+                    integer()
+                        .at_least(1)
+                        .describe("Instead of lines: a line inside the hunk the note is on"),
+                ),
+                opt("side", side()),
+                opt("quoted", string().describe("The lines, as you read them")),
+                req("text", string().max_length(4000)),
+            ]),
+        ),
+        Op::ReviewNoteEdit => define(
+            "Change the text of a note you left the user.",
+            Effect::Change,
+            object(vec![
+                req("note_id", string()),
+                req("text", string().max_length(4000)),
+            ]),
+        ),
+        Op::ReviewNoteDrop => define(
+            "Remove a note you left the user.",
+            Effect::Remove,
+            object(vec![req("note_id", string())]),
+        ),
+        Op::ReviewPrepare => define(
+            "Arrange a review for the user: what it compares (a diff spec), the order to read the files in, groups with titles, and notes on files, hunks and lines. In a review chat it applies at once; elsewhere it is a draft view the user opens.",
+            Effect::Create,
+            asks(vec![
+                req("title", title()),
+                req("spec", diff_spec()),
+                opt("order", array(file_ref()).describe("Files in reading order; the rest follow")),
+                opt(
+                    "groups",
+                    array(object(vec![
+                        req("title", title()),
+                        opt("note", string()),
+                        req("first", file_ref().describe("The ordered file the group starts at")),
+                    ])),
+                ),
+                opt(
+                    "notes",
+                    array(object(vec![
+                        req("repo", repo()),
+                        req("path", relative_path()),
+                        opt("lines", lines()),
+                        opt("hunk_at", integer().at_least(1)),
+                        opt("side", side()),
+                        req("text", string().max_length(4000)),
+                    ])),
+                ),
             ]),
         ),
         Op::CommentsList => define(

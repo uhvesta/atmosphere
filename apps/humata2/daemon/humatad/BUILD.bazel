@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load(":tonic.bzl", "rust_tonic_services")
+load(":tools.bzl", "tools_bundle")
 
 # humatad2, Humata 2's daemon: serves the gRPC API (../../api/GRPC.md) on a
 # Unix socket, or the peer link on stdio with `serve --stdio`; `humatad2
@@ -47,13 +48,18 @@ rust_library(
 
 DAEMON_DEPS = [
     ":grpc",
+    "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/holder",
+    "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/mcp",
+    "//apps/humata2/daemon/review_diff",
+    "//apps/humata2/daemon/revive",
     "//apps/humata2/daemon/store",
     "@crates//:clap",
     "@crates//:hmac",
     "@crates//:hyper-util",
+    "@crates//:notify",
     "@crates//:prost",
     "@crates//:rand",
     "@crates//:rustix",
@@ -73,6 +79,23 @@ rust_binary(
     srcs = glob(["src/*.rs"]),
     visibility = ["//apps/humata2:__subpackages__"],
     deps = DAEMON_DEPS,
+)
+
+# TS-2: humatad2, the holder and the humata CLI for every platform a
+# machine may be, with a manifest of their SHA-256s, as one folder for the
+# app to carry and `humatad2 serve --tools` to read.
+tools_bundle(
+    name = "tools",
+    holder = "//apps/humata2/daemon/holder:humata2_holder",
+    humata = "//apps/humata2/cli:humata",
+    humatad2 = ":humatad2",
+    platforms = {
+        "//bazel/platforms:linux_arm64": "linux-aarch64",
+        "//bazel/platforms:linux_x86_64": "linux-x86_64",
+        "//bazel/platforms:macos_arm64": "darwin-arm64",
+        "//bazel/platforms:macos_x86_64": "darwin-x86_64",
+    },
+    visibility = ["//apps/humata2:__subpackages__"],
 )
 
 # A test daemon: with `serve --admin`, a call with no credential acts as
@@ -128,6 +151,8 @@ rust_binary(
         },
         deps = [
             ":grpc",
+            "//apps/humata2/chunk:humata2_chunk",
+            "//apps/humata2/daemon/machines:fake_machine",
             "//apps/humata2/daemon/store",
             "@crates//:hmac",
             "@crates//:hyper-util",
@@ -145,11 +170,33 @@ rust_binary(
     for src in glob(["tests/*.rs"])
 ]
 
+# TR-10: the round trip over a real `serve --stdio` link, printed as
+# percentiles. Manual: run it on a release build, with
+# `bazel test -c opt :peer_link_latency_bench --test_output=streamed
+# --test_arg=--nocapture`.
+rust_test(
+    name = "peer_link_latency_bench",
+    srcs = ["benches/peer_link_latency.rs"],
+    crate_root = "benches/peer_link_latency.rs",
+    data = [":humatad2"],
+    env = {"HUMATAD2": "$(rootpath :humatad2)"},
+    tags = ["manual"],
+    deps = [
+        ":grpc",
+        "@crates//:hyper-util",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
+
 filegroup(
     name = "starlark",
     srcs = [
         "BUILD.bazel",
         "tonic.bzl",
+        "tools.bzl",
     ],
     tags = ["starlark"],
 )

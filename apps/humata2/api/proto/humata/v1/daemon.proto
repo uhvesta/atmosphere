@@ -43,6 +43,37 @@ message ServerInfo {
   DaemonRole role = 4;
   MachineId machine = 5;
   repeated Feature features = 6;
+  // The codecs this daemon takes in chunks sent to it, best first by its
+  // compression setting; senders use the first they support. Empty (an
+  // older daemon) or only NONE (compression Off): send raw chunks.
+  repeated ChunkCodec chunk_codecs = 7;
+  // What this daemon found and brought back when it started (PER-29,
+  // PER-31). Only the user gets it; unset for anyone else, and unset
+  // while the daemon is still bringing sessions back, which it does while
+  // it already serves (an agent may take 30 s to resume).
+  LastStart last_start = 8;
+}
+
+message LastStart {
+  // The restart report's folder (a bug report folder with restart.json
+  // beside it). Empty when it couldn't be written.
+  string report = 1;
+  // Each agent or shell that wasn't brought back, one line each.
+  repeated NotBroughtBack not_brought_back = 2;
+  // Set when the state was damaged and restored from its last good copy:
+  // when that copy was taken. Zero otherwise.
+  int64 restored_copy_taken_unix_ms = 3;
+  // Rows lost or rolled back by that restore, over all tables.
+  uint32 restored_rows_changed = 4;
+}
+
+message NotBroughtBack {
+  // The session whose agent it was; empty for a shell.
+  string session = 1;
+  // The shell's tab; empty for an agent.
+  string tab = 2;
+  // What went wrong and what to do, as one line.
+  string problem = 3;
 }
 
 message WhoAmIRequest {}

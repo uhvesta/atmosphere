@@ -1,7 +1,12 @@
 //! DaemonService: versions, role and who a connection is.
 
+use std::sync::{Arc, OnceLock};
+
+use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
 use tonic::{Request, Response, Status};
+
+use crate::compression::Compression;
 
 use crate::identity::{self, Caller, UserVia};
 
@@ -13,11 +18,36 @@ pub(crate) const API_MINOR: u32 = 0;
 pub(crate) struct Daemon {
     machine: String,
     role: pb::DaemonRole,
+    /// Says which codecs chunks sent here may use; none means raw only.
+    compression: Option<Arc<Compression>>,
+    /// What this start brought back, once it's done (PER-31).
+    last_start: Option<Arc<OnceLock<pb::LastStart>>>,
 }
 
 impl Daemon {
     pub(crate) fn new(machine: String, role: pb::DaemonRole) -> Self {
-        Self { machine, role }
+        Self {
+            machine,
+            role,
+            compression: None,
+            last_start: None,
+        }
+    }
+
+    /// Tells the user what this start brought back, once `last_start` is set.
+    pub(crate) fn started(self, last_start: Arc<OnceLock<pb::LastStart>>) -> Self {
+        Self {
+            last_start: Some(last_start),
+            ..self
+        }
+    }
+
+    /// Offers callers the codecs `compression`'s setting ranks (TR-11).
+    pub(crate) fn offering(self, compression: Arc<Compression>) -> Self {
+        Self {
+            compression: Some(compression),
+            ..self
+        }
     }
 
     fn machine(&self) -> pb::MachineId {
@@ -31,8 +61,13 @@ impl Daemon {
 impl pb::daemon_service_server::DaemonService for Daemon {
     async fn get_server_info(
         &self,
-        _request: Request<pb::GetServerInfoRequest>,
+        request: Request<pb::GetServerInfoRequest>,
     ) -> Result<Response<pb::ServerInfo>, Status> {
+        // Session and folder names are the user's to see.
+        let last_start = match identity::caller_if_any(&request)? {
+            Some(Caller::User(_)) => self.last_start.as_ref().and_then(|start| start.get().cloned()),
+            _ => None,
+        };
         Ok(Response::new(pb::ServerInfo {
             api_major: API_MAJOR,
             api_minor: API_MINOR,
@@ -40,6 +75,12 @@ impl pb::daemon_service_server::DaemonService for Daemon {
             role: self.role as i32,
             machine: Some(self.machine()),
             features: Vec::new(),
+            chunk_codecs: self
+                .compression
+                .as_ref()
+                .map(|compression| compression.offered(Link::Local))
+                .unwrap_or_default(),
+            last_start,
         }))
     }
 

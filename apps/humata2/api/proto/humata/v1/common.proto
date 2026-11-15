@@ -244,6 +244,15 @@ message SystemActor {
   Reason reason = 1;
 }
 
+// How a chunk's bytes are encoded (TR-11, TR-13, D60, D65). The values
+// are the codec ids frames use at rest too: one byte, never reused. NONE is
+// 0 so a peer that predates compression sends and expects raw bytes.
+enum ChunkCodec {
+  CHUNK_CODEC_NONE = 0;
+  CHUNK_CODEC_LZ4 = 1;  // LZ4 block format
+  CHUNK_CODEC_ZSTD = 2; // one Zstandard frame
+}
+
 message Timestamped {
   google.protobuf.Timestamp at = 1;
   Actor by = 2;

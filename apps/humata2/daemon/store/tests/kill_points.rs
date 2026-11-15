@@ -81,7 +81,12 @@ fn kill_child() {
     let Ok(mode) = std::env::var(CHILD) else {
         return;
     };
-    let store = Store::open(std::env::var(DIR).unwrap()).unwrap();
+    let dir = std::env::var(DIR).unwrap();
+    if mode == "restore" {
+        Store::open_or_restore(dir).unwrap();
+        return;
+    }
+    let store = Store::open(dir).unwrap();
     match mode.as_str() {
         "rename" => store.put_session(&session("se_a", "new")).unwrap(),
         "append_big" => {
@@ -95,6 +100,12 @@ fn kill_child() {
         "ack" => store.journal().ack_through(2).unwrap(),
         "launch" => store.put_agent_and_tab(&agent(), &tab("tb_agent")).unwrap(),
         "remove" => store.remove_session("se_a").unwrap(),
+        "paste" => {
+            store.save_paste("se_a", "png", &noise(4096, 3)).unwrap();
+        }
+        "last_good" => {
+            store.save_last_good().unwrap();
+        }
         other => panic!("no kill mode {other}"),
     }
 }
@@ -221,4 +232,77 @@ fn a_removal_killed_before_its_commit_leaves_the_session_to_remove_again() {
     store.remove_session("se_a").unwrap();
     assert!(store.session("se_a").unwrap().is_none());
     assert!(store.tabs().unwrap().is_empty());
+}
+
+/// Every file under `root` a write left part way.
+fn partials(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_owned()];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.to_string_lossy().ends_with(".partial") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_write_killed_before_it_was_renamed_into_place_leaves_nothing_once_reopened() {
+    for (mode, stop_at) in [
+        ("paste", "store.file.temp_written"),
+        ("append_big", "store.file.temp_written"),
+        ("last_good", "store.last_good.copied"),
+    ] {
+        let dir = base();
+        kill_at(dir.path(), mode, stop_at);
+        assert!(!partials(dir.path()).is_empty(), "{mode} left no write part way");
+
+        let store = Store::open(dir.path()).unwrap();
+
+        assert_eq!(partials(dir.path()), Vec::<PathBuf>::new(), "{mode}");
+        let pastes = dir.path().join("files/se_a/paste");
+        assert_eq!(fs::read_dir(&pastes).map_or(0, |entries| entries.count()), 0, "{mode}");
+        assert_eq!(blob_files(dir.path()), 0, "{mode}");
+        assert!(!dir.path().join("last-good.sqlite").exists(), "{mode}");
+        assert_eq!(store.journal().entries().unwrap().len(), 3, "{mode}");
+    }
+}
+
+/// Overwrites the database's header, as a disk fault might.
+fn damage(root: &Path) {
+    let path = root.join("state.sqlite");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[..16].copy_from_slice(b"not a database!!");
+    fs::write(&path, bytes).unwrap();
+}
+
+#[test]
+fn a_restore_killed_part_way_is_finished_when_the_store_opens_again() {
+    for stop_at in ["store.restore.copied", "store.restore.moved"] {
+        let dir = base();
+        {
+            let store = Store::open(dir.path()).unwrap();
+            store.save_last_good().unwrap();
+            store.put_session(&session("se_a", "since the copy")).unwrap();
+        }
+        damage(dir.path());
+        kill_at(dir.path(), "restore", stop_at);
+
+        let (store, restored) = Store::open_or_restore(dir.path()).unwrap();
+
+        let restored = restored.unwrap_or_else(|| panic!("{stop_at}: not restored"));
+        assert!(restored.damaged_kept_at.exists(), "{stop_at}: the damaged database wasn't kept");
+        assert_eq!(store.session("se_a").unwrap(), Some(session("se_a", "old")), "{stop_at}");
+        assert_eq!(store.journal().entries().unwrap().len(), 3, "{stop_at}");
+        assert_eq!(partials(dir.path()), Vec::<PathBuf>::new(), "{stop_at}");
+        drop(store);
+        // Restored once: opening again finds nothing to do.
+        let (_, again) = Store::open_or_restore(dir.path()).unwrap();
+        assert!(again.is_none(), "{stop_at}");
+    }
 }

@@ -89,6 +89,8 @@ message HelloRequest {
   bytes nonce = 4;
   // MP-15 interactive takeover marker, when the link came up that way.
   string sync_marker = 5;
+  // The codecs the host decodes, best first (TR-11).
+  repeated ChunkCodec chunk_codecs = 6;
 }
 
 message HelloResponse {
@@ -106,6 +108,8 @@ message HelloResponse {
   // The machine's nonce: exactly 32 random bytes, new for each link, which
   // the host's proof covers.
   bytes machine_nonce = 9;
+  // The codecs the machine decodes, best first (TR-11).
+  repeated ChunkCodec chunk_codecs = 10;
 }
 
 message ProveHostRequest {

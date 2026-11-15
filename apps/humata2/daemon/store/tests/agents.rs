@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use humata2_store::{
     AgentLaunch, AgentRecord, AgentState, Interruption, ResumeFailure, SessionRecord, Store,
-    StoreError, TabKind, TabRecord,
+    StoreError, TabKind, TabRecord, Told,
 };
 
 fn session(id: &str, created_unix_ms: i64) -> SessionRecord {
@@ -101,6 +101,10 @@ fn every_state_and_its_interruptions_survive_reopening() {
                     output_saved_through: 100 * at as u64,
                     output_resumes_at: 100 * at as u64 + 7,
                     saved_tail_damaged: at % 2 == 1,
+                    told: (at % 2 == 0).then_some(Told {
+                        at_unix_ms: at as i64 + 1,
+                        conversation_len: 40 * at as u64,
+                    }),
                 })
                 .collect();
             store.put_agent(&record).unwrap();
@@ -125,6 +129,7 @@ fn a_rewrite_replaces_state_and_interruptions() {
         output_saved_through: 5,
         output_resumes_at: 5,
         saved_tail_damaged: false,
+        told: None,
     });
     store.put_agent(&record).unwrap();
 

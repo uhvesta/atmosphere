@@ -9,20 +9,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{Call, Capability, Target};
+use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
-use humata2_holder::{Event, HolderError, HolderSpec};
+use humata2_holder::{HolderError, HolderSpec};
 use humata2_store::{SessionRecord, Store, StoreError, TabKind, TabRecord};
 use pb::invalid_field::Problem;
 use tokio::sync::watch;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::attach::{self, AttachStream};
+use crate::compression::Compression;
 use crate::guard::Guard;
+use crate::holders::{Holders, TypeFailed};
 use crate::identity::{self, Caller, Identities};
 use crate::{paste, status};
 
-/// How long a holder gets to say what it holds before a tab is listed
-/// without its offsets.
+/// How long a holder gets to answer a first connection before a tab is
+/// listed without its offsets.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Results kept for retries with the same idempotency key.
@@ -52,20 +55,24 @@ pub(crate) struct TerminalsConfig {
     pub(crate) guard: Arc<Guard>,
     /// Gives each session tab's shell its session token.
     pub(crate) identities: Arc<Identities>,
+    /// Picks the codec an attach's output goes with.
+    pub(crate) compression: Arc<Compression>,
 }
 
 pub(crate) struct Terminals {
     config: TerminalsConfig,
     remembered: Mutex<Remembered>,
     writers: Arc<Writers>,
+    holders: Holders,
 }
 
 impl Terminals {
     pub(crate) fn new(config: TerminalsConfig) -> Self {
         Self {
-            config,
             remembered: Mutex::new(Remembered::default()),
             writers: Arc::new(Writers::default()),
+            holders: Holders::new(config.scrollback_bytes),
+            config,
         }
     }
 
@@ -157,15 +164,19 @@ impl Terminals {
         })
     }
 
-    /// A tab as the API shows it, with the offsets its holder reports.
+    /// A tab as the API shows it, with the offsets its holder link last
+    /// heard.
     async fn describe(&self, tab: &TabRecord) -> pb::Tab {
-        let offsets = tokio::time::timeout(
+        let link = tokio::time::timeout(
             PROBE_TIMEOUT,
-            humata2_holder::attach(&tab.holder_socket, u64::MAX),
+            self.holders.link(&tab.id, &tab.holder_socket),
         )
         .await;
-        let (earliest_offset, end_offset) = match offsets {
-            Ok(Ok(attachment)) => (attachment.welcome.earliest, attachment.welcome.end),
+        let (earliest_offset, end_offset) = match link {
+            Ok(Ok(link)) => {
+                let offsets = link.offsets();
+                (offsets.earliest, offsets.end)
+            }
             _ => (0, 0),
         };
         pb::Tab {
@@ -262,6 +273,43 @@ impl Terminals {
         let identities = self.config.identities.clone();
         let tab = tab.to_owned();
         let _ = blocking(move || identities.revoke(&tab)).await;
+    }
+
+    /// Types `text` into `tab`'s terminal through its holder link and
+    /// waits until all of it is there.
+    async fn type_into(&self, tab: &TabRecord, text: &[u8]) -> Result<(), Status> {
+        let no_log = Path::new("");
+        let link = self
+            .holders
+            .link(&tab.id, &tab.holder_socket)
+            .await
+            .map_err(|error| holder_failed("reach the tab's shell", &error, no_log))?;
+        let typed = match tokio::time::timeout(TYPE_TIMEOUT, link.type_text(text)).await {
+            Ok(typed) => typed,
+            Err(_) => {
+                // A late answer must not reach the next call: it gets a
+                // connection of its own.
+                self.holders.forget(&tab.id);
+                return Err(status::internal(
+                    format!(
+                        "tab {}'s shell didn't take the text within {} seconds; some of it may have been typed",
+                        tab.id,
+                        TYPE_TIMEOUT.as_secs()
+                    ),
+                    "",
+                ));
+            }
+        };
+        typed.map_err(|failed| match failed {
+            TypeFailed::Lost(error) => holder_failed("type into the tab", &error, no_log),
+            TypeFailed::Refused { .. } => status::internal(status::chain(&failed), ""),
+            TypeFailed::Exited => status::not_found(
+                pb::EntityKind::Tab,
+                &tab.id,
+                format!("tab {}'s shell exited before the text reached it", tab.id),
+                "open a new tab in the session and type again",
+            ),
+        })
     }
 
     fn recall(&self, key: Option<&str>) -> Option<Outcome> {
@@ -400,6 +448,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             .await?
             .map_err(|error| status::store(error, &self.config.machine, "forget the closed tab"))?;
         self.writers.forget(&tab.id);
+        self.holders.forget(&tab.id);
         self.revoke(&tab.id).await;
         self.remember(key, Outcome::Closed);
         Ok(Response::new(pb::CloseTabResponse {}))
@@ -437,7 +486,8 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             }
             _ => self.check_input(&caller, target)?,
         }
-        let stream = attach::start(&tab, &open, incoming, &self.writers).await?;
+        let codec = self.config.compression.pick(Link::Local, &open.accept_codecs);
+        let stream = attach::start(&tab, &open, incoming, &self.writers, codec).await?;
         Ok(Response::new(stream))
     }
 
@@ -472,7 +522,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             Some(tab) => self.tab(&tab, Some(&session.id)).await?,
             None => self.typing_tab(&session.id).await?,
         };
-        type_into(&tab, request.text.as_bytes()).await?;
+        self.type_into(&tab, request.text.as_bytes()).await?;
         let typed = pb::TypeResponse {
             queued: None,
             typed: true,
@@ -637,54 +687,6 @@ pub(crate) fn no_tab(id: &str) -> Status {
         format!("no tab {id} is open on this machine"),
         "list the session's tabs for the ones still open",
     )
-}
-
-/// Types `text` into `tab`'s terminal and waits until all of it is there.
-async fn type_into(tab: &TabRecord, text: &[u8]) -> Result<(), Status> {
-    let no_log = Path::new("");
-    let mut attachment = humata2_holder::attach(&tab.holder_socket, u64::MAX)
-        .await
-        .map_err(|error| holder_failed("reach the tab's shell", &error, no_log))?;
-    attachment
-        .control
-        .input(1, text)
-        .await
-        .map_err(|error| holder_failed("type into the tab", &error, no_log))?;
-    let written = async {
-        loop {
-            match attachment.events.next().await {
-                Ok(Some(Event::InputWritten { seq: 1 })) => return Ok(()),
-                Ok(Some(Event::Refused { message })) => {
-                    return Err(status::internal(
-                        format!("the tab's holder refused the typing: {message}"),
-                        "",
-                    ));
-                }
-                Ok(Some(Event::Exited { .. }) | None) => {
-                    return Err(status::not_found(
-                        pb::EntityKind::Tab,
-                        &tab.id,
-                        format!("tab {}'s shell exited before the text reached it", tab.id),
-                        "open a new tab in the session and type again",
-                    ));
-                }
-                Ok(Some(_)) => {}
-                Err(error) => return Err(holder_failed("type into the tab", &error, no_log)),
-            }
-        }
-    };
-    tokio::time::timeout(TYPE_TIMEOUT, written)
-        .await
-        .map_err(|_| {
-            status::internal(
-                format!(
-                    "tab {}'s shell didn't take the text within {} seconds; some of it may have been typed",
-                    tab.id,
-                    TYPE_TIMEOUT.as_secs()
-                ),
-                "",
-            )
-        })?
 }
 
 fn holder_failed(doing: &str, error: &HolderError, log: &Path) -> Status {

@@ -978,6 +978,14 @@ fn an_inbox_card_names_the_action_requester_and_machine() {
 - Snapshots sit next to their test as text and are reviewed like code.
   `testing/snapshot` gives one command that records them; `bazel test`
   verifies.
+- In Bazel, declare the test with `humata2_snapshot_test` from
+  `//apps/humata2/testing:defs.bzl`, depending on
+  `//apps/humata2/testing/snapshot` and `//apps/humata2/testing/flow` (or
+  their `_fast` twins on GPUI Fast). It makes the snapshots the test's data
+  and adds `<name>_record`: `bazel run` it to record into the source tree,
+  then read `git diff`. A failed check's files land in
+  `bazel-testlogs/<package>/<name>/test.outputs/`. `testing/README.md` has
+  the details.
 - A failed check prints the tree's diff. Record again only when the change
   is meant.
 

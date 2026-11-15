@@ -17,8 +17,11 @@ service DiffService {
   // RV-3, RV-17: one file's hunks, with outdated/draft markers left to
   // CommentService.
   rpc GetFileDiff(GetFileDiffRequest) returns (FileDiff);
-  // RV-6. User-only: it decides what the user sees as new.
+  // RV-6, RV-28. User-only: it decides what the user sees as new.
   rpc MarkReviewed(MarkReviewedRequest) returns (MarkReviewedResponse);
+  // RV-30: the reviews kept per repo, for "Since review 3, Tuesday 14:02".
+  rpc ListReviewedSnapshots(ListReviewedSnapshotsRequest)
+      returns (ListReviewedSnapshotsResponse);
 }
 
 service CommentService {
@@ -73,6 +76,29 @@ service ViewService {
   rpc SetViewState(SetViewStateRequest) returns (PreparedView);
 }
 
+// PR-22–PR-26 (D59): the review chat's agent works the user's view of
+// their review. The app reports what is on screen; the agent reads it,
+// moves the view and leaves notes (CommentService with a `note`
+// destination); each change comes back to the app at once, with Undo.
+service ReviewChatService {
+  // review_context: what the user is looking at.
+  rpc GetReviewContext(GetReviewContextRequest) returns (ReviewContext);
+  // The app, debounced while the user scrolls: the view as it is now.
+  // User-only.
+  rpc ReportReviewView(ReportReviewViewRequest)
+      returns (ReportReviewViewResponse);
+  // review_focus. Denied (SOURCE_REVIEW_SWITCH_OFF) when "Focus" is off.
+  rpc FocusReview(FocusReviewRequest) returns (ReviewChange);
+  // The chat line's Undo (PR-24). User-only.
+  rpc UndoReviewChange(UndoReviewChangeRequest) returns (ReviewChange);
+  // The app's feed of the agent's changes, in order, to apply once the
+  // user stops scrolling, typing or selecting (PR-24). Resumes after `seq`.
+  rpc WatchReviewChanges(WatchReviewChangesRequest)
+      returns (stream ReviewChange);
+  // PR-25: "Agent may: Focus, Notes, Order". User-only.
+  rpc SetAgentSwitches(SetAgentSwitchesRequest) returns (AgentSwitches);
+}
+
 // ---------------------------------------------------------------------------
 
 message DiffBase {
@@ -83,7 +109,88 @@ message DiffBase {
     SinceFork since_fork = 4;
     SessionId other_session = 5;           // its branch, per repo
     PullRequestBase pull_request_base = 6; // PR-10
+    DiffSpec spec = 7;                     // RV-31: any spec, as edited
   }
+}
+
+// RV-31: per repo, what a review shows. Every base of RV-1 is one, and
+// review_prepare and the skills write one (D55, D57). Computed on the
+// session's machine by humata2_review_diff.
+message DiffSpec {
+  repeated RepoDiffSpec repos = 1;
+}
+
+message RepoDiffSpec {
+  RepoRef repo = 1;
+  // The old side.
+  DiffSpecBase base = 2;
+  // The new side: how much of the work in progress counts.
+  DiffSpecCompare compare = 3;
+  // Git pathspecs relative to the repo root (`src/`, `*.sql`). An empty
+  // include shows every path.
+  repeated string include_paths = 4;
+  repeated string exclude_paths = 5;
+  DiffWhitespace whitespace = 6;
+  // Renames are detected (git -M) unless this is set; then a moved file
+  // is a deletion and an addition.
+  bool no_renames = 7;
+}
+
+message DiffSpecBase {
+  oneof base {
+    // The merge base of HEAD and this branch, as GitHub shows a pull
+    // request (`origin/main...HEAD`).
+    string merge_base_with = 1;
+    // A branch, tag or commit as it is.
+    string rev = 2;
+    // A reviewed snapshot of this session (RV-28): its n, or 0 for the
+    // latest.
+    uint32 reviewed_snapshot = 3;
+    // The parent's fork point (forks only).
+    ForkPointBase fork_point = 4;
+    // What is staged, for "only my unstaged changes".
+    IndexBase index = 5;
+  }
+}
+
+message ForkPointBase {}
+message IndexBase {}
+
+message DiffSpecCompare {
+  enum Upto {
+    UPTO_UNSPECIFIED = 0;  // as UNSTAGED
+    UPTO_COMMITS = 1;      // HEAD's commit only
+    UPTO_STAGED = 2;       // plus the index
+    UPTO_UNSTAGED = 3;     // plus tracked files as they are on disk
+  }
+  enum Untracked {
+    UNTRACKED_UNSPECIFIED = 0;  // as ALL
+    UNTRACKED_NONE = 1;
+    UNTRACKED_ALL = 2;          // every file git doesn't ignore
+    UNTRACKED_PATHS = 3;        // only under untracked_paths
+  }
+  Upto upto = 1;
+  Untracked untracked = 2;
+  repeated string untracked_paths = 3;
+}
+
+enum DiffWhitespace {
+  DIFF_WHITESPACE_UNSPECIFIED = 0;     // whitespace counts
+  DIFF_WHITESPACE_IGNORE_CHANGES = 1;  // git -b
+  DIFF_WHITESPACE_IGNORE_ALL = 2;      // git -w
+}
+
+// The two trees a repo's diff compared. Passing them back with
+// GetFileDiff shows exactly the state the file list came from.
+message DiffTrees {
+  string old_tree = 1;
+  string new_tree = 2;
+}
+
+// Where in a file's diff a chunk starts.
+message DiffCursor {
+  uint32 hunk = 1;
+  uint32 line = 2;
 }
 
 message OriginMain {}
@@ -107,6 +214,12 @@ message FileSummary {
   uint32 added = 4;
   uint32 removed = 5;
   bool binary = 6;
+  // The sides' git blob ids; new_blob_sha is the content hash per-file
+  // Viewed records (RV-29). Empty for a missing side.
+  string old_blob_sha = 7;
+  string new_blob_sha = 8;
+  // git's rename score, 0–100, for CHANGE_KIND_RENAMED.
+  uint32 similarity = 9;
 }
 
 message RepoDiff {
@@ -116,6 +229,10 @@ message RepoDiff {
   uint32 added = 4;
   uint32 removed = 5;
   repeated FileSummary files = 6;
+  // RV-31 "Comparing: origin/main...HEAD + staged + unstaged".
+  string label = 7;
+  DiffTrees trees = 8;
+  string head = 9;
 }
 
 message GetDiffRequest {
@@ -147,6 +264,12 @@ message DiffLine {
 message Hunk {
   string header = 1;
   repeated DiffLine lines = 2;
+  uint32 index = 3;
+  uint32 old_start = 4;
+  uint32 new_start = 5;
+  string section = 6;
+  // These lines continue the previous chunk's last hunk: append them.
+  bool continued = 7;
 }
 
 message GetFileDiffRequest {
@@ -155,6 +278,23 @@ message GetFileDiffRequest {
   RepoPath file = 3;
   // RV-21: the whole new file with changes marked.
   bool full_file = 4;
+  // From the GetDiff response, so the hunks match its file list. Unset:
+  // computed again from base.
+  DiffTrees trees = 5;
+  // Large diffs come in chunks (TR-11): start here, at most max_lines
+  // lines (0: the daemon's default) and 1 MiB.
+  DiffCursor from = 6;
+  uint32 max_lines = 7;
+  // RV-29: the file was marked Viewed at this content hash; show only the
+  // change since.
+  string viewed_blob_sha = 8;
+}
+
+enum ViewedResult {
+  VIEWED_RESULT_UNSPECIFIED = 0;  // not asked
+  VIEWED_RESULT_UNCHANGED = 1;    // stays folded as viewed
+  VIEWED_RESULT_CHANGED = 2;      // hunks are the change since; clear Viewed
+  VIEWED_RESULT_FORGOTTEN = 3;    // that content is gone; hunks are the whole diff
 }
 
 message FileDiff {
@@ -163,15 +303,56 @@ message FileDiff {
   repeated Hunk hunks = 3;
   string old_blob_sha = 4;
   string new_blob_sha = 5;
+  // Set when more hunks follow: ask again from here.
+  DiffCursor next = 6;
+  ViewedResult viewed = 7;
 }
 
 message MarkReviewedRequest {
   IdempotencyKey idempotency_key = 1;
   SessionId session = 2;
   PresenceProof presence = 3;
+  // The new tree (DiffTrees.new_tree) of each repo's diff the client
+  // showed, when it knows: these win over the daemon's last GetDiff for
+  // the repos they name. Empty (the CLI): the last GetDiff's trees.
+  repeated ShownTree shown_tree = 4;
 }
 
-message MarkReviewedResponse {}
+message ShownTree {
+  RepoRef repo = 1;
+  string tree = 2;
+}
+
+// RV-28: the snapshot is exactly what the user saw: per repo, the new
+// tree (DiffTrees.new_tree) of the last GetDiff the daemon answered for
+// the session; a repo it hasn't shown yet is snapshotted as its working
+// tree is now (staged, unstaged and untracked).
+message MarkReviewedResponse {
+  repeated ReviewedSnapshot snapshots = 1;
+}
+
+// RV-28: under refs/humata/reviewed/<session>/<n> in the repo's clone.
+message ReviewedSnapshot {
+  RepoRef repo = 1;
+  uint32 n = 2;
+  string commit = 3;
+  string tree = 4;
+  string head = 5;
+  google.protobuf.Timestamp taken_at = 6;
+  // RV-30: kept beyond the last 20 (a comment was sent from it).
+  bool pinned = 7;
+}
+
+message ListReviewedSnapshotsRequest {
+  SessionId session = 1;
+  // Empty: every repo of the session.
+  repeated RepoRef repos = 2;
+}
+
+message ListReviewedSnapshotsResponse {
+  // Per repo, oldest first.
+  repeated ReviewedSnapshot snapshots = 1;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -206,10 +387,15 @@ message CommentDestination {
   oneof destination {
     SessionTerminal terminal = 1;
     PullRequestRef pull_request = 2;
+    UserNote note = 3;
   }
 }
 
 message SessionTerminal {}
+
+// PR-23: a note for the user from the review chat, shown under its lines;
+// never posted. "Make it a draft" copies it to a pull request draft.
+message UserNote {}
 
 message Comment {
   CommentId id = 1;
@@ -225,6 +411,9 @@ message Comment {
   Revision revision = 10;
   // SM-16: when it became addressed, by which agent change.
   Timestamped addressed = 11;
+  // PR-24: a note the review chat left; its change's id for Undo. In
+  // the answer to CreateComment or EditComment, that call's change.
+  string undo_id = 12;
 }
 
 message ListCommentsRequest {
@@ -263,7 +452,10 @@ message DropCommentRequest {
   Revision expected_revision = 3;
 }
 
-message DropCommentResponse {}
+message DropCommentResponse {
+  // PR-24: for a review chat note, the drop's change id, for Undo.
+  string undo_id = 1;
+}
 
 message ReattachCommentRequest {
   IdempotencyKey idempotency_key = 1;
@@ -473,6 +665,45 @@ message PullRequestDraft {
   repeated PerRepo repos = 1;
 }
 
+// RV-32: an agent-prepared review (review_prepare): a diff spec, the
+// files in reading order, groups over that order, and notes. Files the
+// order leaves out follow it.
+message ReviewPlan {
+  DiffSpec spec = 1;
+  repeated RepoPath order = 2;
+  repeated ReviewGroup groups = 3;
+  repeated ReviewNote notes = 4;
+}
+
+// A titled section of the order, from `first` until the next group.
+message ReviewGroup {
+  string title = 1;
+  string note = 2;
+  RepoPath first = 3;
+}
+
+message ReviewNote {
+  enum Target {
+    TARGET_UNSPECIFIED = 0;  // as FILE
+    TARGET_FILE = 1;
+    TARGET_HUNK = 2;         // the hunk covering lines.first
+    TARGET_LINES = 3;
+  }
+  RepoPath file = 1;
+  Target target = 2;
+  LineRange lines = 3;
+  DiffSide side = 4;
+  string text = 5;
+  // RV-34, set by the daemon when the plan is prepared: the blob and the
+  // lines the note was written against.
+  string blob_sha = 6;
+  LineRange anchored = 7;
+  repeated string quoted = 8;
+  // Set when read back: its lines changed since (kept, shown at the old
+  // lines). `lines` then holds where they are now when they only moved.
+  bool outdated = 9;
+}
+
 message PreparedView {
   ViewId id = 1;
   SessionId session = 2;
@@ -482,12 +713,17 @@ message PreparedView {
     ReviewWalkthrough review = 5;
     BoardViewOffer board = 6;
     PullRequestDraft pull_request = 12;
+    ReviewPlan review_plan = 13;
   }
   AgentActor prepared_by = 7;
   google.protobuf.Timestamp prepared_at = 8;
   ViewState state = 9;
   Revision revision = 10;
   JournalPosition journal = 11;
+  // PR-24: a review_plan prepared in the session's open review chat
+  // applies at once instead of becoming a draft: this is its change's id,
+  // for Undo, and nothing else is set but the title.
+  string undo_id = 14;
 }
 
 message PrepareViewRequest {
@@ -498,6 +734,7 @@ message PrepareViewRequest {
     ReviewWalkthrough review = 4;
     BoardViewOffer board = 5;
     PullRequestDraft pull_request = 6;
+    ReviewPlan review_plan = 7;
   }
 }
 
@@ -510,6 +747,7 @@ message ReviseViewRequest {
     ReviewWalkthrough review = 5;
     BoardViewOffer board = 6;
     PullRequestDraft pull_request = 8;
+    ReviewPlan review_plan = 9;
   }
   Revision expected_revision = 7;
 }
@@ -534,4 +772,121 @@ message SetViewStateRequest {
   IdempotencyKey idempotency_key = 1;
   ViewId id = 2;
   ViewState state = 3;
+}
+
+// ---------------------------------------------------------------------------
+// The review chat (PR-22–PR-26, D59)
+
+// PR-25, all on by default.
+message AgentSwitches {
+  bool focus = 1;  // review_focus
+  bool notes = 2;  // review_note, review_note_edit, review_note_drop
+  bool order = 3;  // review_prepare
+}
+
+message SetAgentSwitchesRequest {
+  SessionId session = 1;
+  AgentSwitches switches = 2;
+}
+
+// Where the user is in the review.
+message ReviewPlace {
+  RepoPath file = 1;
+  // The lines on screen, on `side`.
+  LineRange visible = 2;
+  // Unset: nothing selected.
+  LineRange selection = 3;
+  DiffSide side = 4;
+}
+
+// RV-29: a file folded as viewed at this content hash.
+message ViewedFile {
+  RepoPath file = 1;
+  string blob_sha = 2;
+}
+
+// A labelled range the agent highlighted (PR-23).
+message Highlight {
+  RepoPath file = 1;
+  LineRange lines = 2;
+  DiffSide side = 3;
+  string label = 4;
+}
+
+// The view's state, as the app reports it.
+message ReviewViewState {
+  // Per repo, what each diff shows.
+  DiffSpec spec = 1;
+  // Unset: no file open.
+  ReviewPlace open = 2;
+  repeated RepoPath order = 3;
+  repeated ReviewGroup groups = 4;
+  repeated ViewedFile viewed = 5;
+  repeated Highlight highlights = 6;
+}
+
+message ReportReviewViewRequest {
+  SessionId session = 1;
+  ReviewViewState view = 2;
+}
+
+message ReportReviewViewResponse {}
+
+message GetReviewContextRequest {
+  SessionId session = 1;
+}
+
+// review_context.
+message ReviewContext {
+  ReviewViewState view = 1;
+  // The quoted lines of the selection, so "what does this do?" needs no
+  // copying.
+  repeated string selected_text = 2;
+  // The review's notes for the user, outdated ones marked (PR-26).
+  repeated Comment notes = 3;
+  AgentSwitches switches = 4;
+}
+
+message FocusReviewRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  RepoPath file = 3;
+  // Unset: the top of the file.
+  LineRange lines = 4;
+  DiffSide side = 5;
+  // Replace the agent's highlights; empty clears them.
+  repeated Highlight highlights = 6;
+}
+
+// One change the agent made to the view, as the app applies it and the
+// chat shows it ("● review_focus refund.rs:140  [Undo]").
+message ReviewChange {
+  string undo_id = 1;
+  // Increases per review; WatchReviewChanges resumes after it.
+  uint64 seq = 2;
+  // "review_focus", "review_note", "review_note_edit", "review_note_drop",
+  // "review_prepare", or "undo".
+  string tool = 3;
+  // For the chat line: `refund.rs:140`.
+  string summary = 4;
+  oneof change {
+    ReviewPlace focus = 5;
+    Comment note = 6;
+    CommentId note_dropped = 7;
+    ReviewPlan plan = 8;
+  }
+  repeated Highlight highlights = 9;
+  // The change this one undid, for "undo".
+  string undid = 10;
+  google.protobuf.Timestamp at = 11;
+}
+
+message UndoReviewChangeRequest {
+  SessionId session = 1;
+  string undo_id = 2;
+}
+
+message WatchReviewChangesRequest {
+  SessionId session = 1;
+  uint64 after_seq = 2;
 }

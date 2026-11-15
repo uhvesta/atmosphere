@@ -21,6 +21,7 @@ The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) is le
 | `terminal/vt` | `ghostty_vt` | Safe Rust over libghostty-vt (D10). The view reads it through a `Grid` trait, so an `alacritty_terminal` fallback would only have to implement `Grid`. |
 | `terminal/view` | `humata2_terminal_view` | The GPUI grid view that draws any `Grid`. |
 | `desktop` | `humata2` binary | The app: windows, menus, wiring. |
+| `engine` | `humata2_engine` | The one place the GUI engine is chosen (D57): ordinary GPUI, or GPUI Fast with the `fast` feature (`:engine` and `:engine_fast` in Bazel). Headless windows, natural frames and real input for tests, and the parity check of natural frames against fresh windows (D58). |
 
 ## Daemon and boundaries
 | Package | Crate | What it holds |
@@ -36,11 +37,11 @@ The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) is le
 ## Testing
 | Package | What it holds |
 |---|---|
-| `testing/snapshot` | State, view and image snapshots: record and verify commands. |
+| `testing/snapshot` | State, view, layout and image snapshots: record and verify commands. `:snapshot` and `:snapshot_fast`, one per engine; `humata2_snapshot_test` in `testing/defs.bzl` makes a test's snapshots its data and adds a `bazel run` `_record` target. |
 | `testing/boundary` | `humata2_boundary`: real daemons on Unix sockets with the spec's fixture and fake outside services, for the gRPC, MCP and CLI suites (`TESTING.md` §3). |
-| `testing/flow` | The flow runner: scripts of user actions against real state and views with fake clients, or against real daemons. |
+| `testing/flow` | The flow runner: scripts of user actions against real state and views with fake clients, or against real daemons. `:flow` and `:flow_fast`, one per engine. |
 | `testing/linux` | Runs any test target on Linux. It cross-compiles to static musl (`--config=linux_arm64`) on this Mac and runs the binary in the `humata2-linux` Lima VM. |
-| `spike/gui` | The I2 spike, built with cargo in its own workspace until gpui-kit moves into Bazel. |
+| `spike/gui` | The I2 spike, on each engine (`:spike`, `:spike_fast`); its on-screen benchmarks are in its README. |
 
 ## Running the suites
 - macOS: `bazel test //apps/humata2/... //libs/tca-rust/...`

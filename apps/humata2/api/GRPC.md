@@ -65,8 +65,8 @@ its answer comes when it exists. The peer link sends an HTTP/2 PING after
 20 seconds: that PING is how a dead link is noticed and the only timer an
 idle link runs. The local sockets need none: a closed socket ends the
 connection at once. The ssh carrying a link keeps its own
-`ServerAliveInterval`, which should match (30 s; machines' `link.rs`
-still sets 15 s).
+`ServerAliveInterval`, which matches (30 s in machines' `link.rs`, with
+`ServerAliveCountMax` 4, so ssh gives up after two minutes unanswered).
 
 Every interval or poll still in the daemon, the CLI and the MCP server,
 and why no notification replaces it yet. Each runs only while what it waits
@@ -75,12 +75,26 @@ for is pending; none runs on an idle daemon.
 | Where | Interval | Waits for | Why it isn't a notification |
 | --- | --- | --- | --- |
 | `WaitForAnswer` keepalive (humatad `inbox.rs`) | 15 s, only while a wait is open | nothing: it says the request is still pending, which MCP turns into `notifications/progress` (TP-11, TP-12) | it's a heartbeat the API promises, not a check; the answer itself is a watch channel |
-| `humatad2 bridge` connect (humatad `bridge.rs`) | 25 ms for 0.5 s, then 25 ms up to 10 s after starting a daemon | the daemon's socket to accept | startup only; a ready pipe from the started daemon would replace it |
-| Holder probe per tab in `ListTabs` and per `TypeInto` (humatad `terminal.rs`) | none, but one new connection per tab per call, 2 s timeout | the holder's welcome | the holder has no long-lived control connection to the daemon yet |
+| `humatad2 bridge` connect (humatad `bridge.rs`) | one retry after 0.5 s; past that, no interval | the daemon's socket to accept | a daemon the bridge starts writes a line on its `--ready-fd` pipe once it listens, so the bridge waits on the pipe (10 s at most) instead of retrying the connect |
 | Holder scrollback sync (holder `server.rs`, `saved.rs`) | 500 ms, forever, per tab | new output to save | not this API's code; to become a notify on output with a 500 ms debounce |
 | Holder hang-up (holder `server.rs`) | 20 ms, up to the hang-up grace | the program to exit | to become a watch on exit |
 | Revive agent output (revive `agent.rs`) | the crate's `POLL`, while reviving | output and exit | to read the holder's event stream |
-| Command runner (machines `system.rs`) | 20 ms on a blocking thread, per command | the child to exit | to wait on the child in its own thread |
+| Machine setup retries (machines `setup.rs`, `RetryPolicy`) | 2 s, doubling to 30 s, at most 10 attempts, only while `ADD_MACHINE`'s `connect` fails as a machine still booting would | ssh to answer | a machine that isn't up yet sends nothing to be told by; an ssh refusal or a host key change fails at once |
+| Remote service start (machines `service.rs`, run over ssh) | 1 s, at most 10 times, then a 2 s settle | the systemd user manager, then `humatad2.service` to be active, and an old daemon to exit | systemd's `is-active` and `pgrep` are what a POSIX shell has; it runs only during `install`/`start` |
+
+The command runner (machines `system.rs`) no longer polls: a thread waits
+on the child and the runner waits on that thread, with the command's
+timeout as the only timer. `WatchOperation` pushes each change of an
+operation, coalesced to the latest, and ends when it finishes.
+
+`ListTabs` and `TypeInto` no longer connect to each tab's holder per
+call: humatad keeps one connection to each holder (`holders.rs`) and reads
+where the tab stands from it, so listing tabs or typing is a message on an
+open socket. An attach coalesces output already queued, up to 64 KiB and
+its window, into one `Output` message. A test (`serve.rs`,
+`an_idle_daemon_with_a_connected_client_fires_no_timers`) holds a client
+connection open to an idle daemon for ten hours of paused time and checks
+no timer woke it.
 
 Nothing watches agent conversation files, git state or `shared/` yet; when
 they're read they're to come from file notifications (FSEvents, inotify),
@@ -122,6 +136,7 @@ a machine checks only calls it answers alone, using the host's last
 | InboxService (inbox) | host; a machine while its host is away, for requests it holds (§9.4) | host socket; machine socket for `humata inbox` | |
 | AccessService, AuditService, CliAuthService (access) | host | host socket; forwarded | The policy a machine applies offline is a copy (§9.2). A machine checks CLI logins and the approval passphrase itself while the host is away |
 | DiffService, CommentService, ViewService, PullRequestReviewService (review) | host for comments, views, drafts, review state; the machine computes diffs | host socket; forwarded; comment and view drafts journaled | |
+| ReviewChatService (review) | the review session's machine, which keeps the review chat's view state, notes and switches (PR-22–PR-26) | host socket; forwarded | The app reports its view; agents in the review change it through MCP (review_*), each change undoable. Switches off are denied with `SOURCE_REVIEW_SWITCH_OFF` |
 | OperationService (operations) | host | host socket; forwarded | |
 | MachineService, ProviderService, SkillsService (hosts) | host | host socket only for user-only calls; forwarded otherwise | Provider commands run on the Mac or `run_on` (MP-5) |
 | BridgeService (hosts) | host; the forward's two ends are the session's machine and the Mac | host socket; forwarded from the session's machine | HO-10, HO-11: the only way anything but Humata's own calls crosses the bridge |
@@ -221,6 +236,55 @@ Rules:
   without a fetch. `PointersUpdated` is coalesced to one per session per
   second.
 
+### 6.1 Chunks and compression (TR-11, TR-13, D60, D65)
+
+Byte streams travel in chunks of at most 1 MiB (`humata2_chunk::CHUNK_MAX`),
+each compressed on its own so a resumed stream can switch codec mid-file.
+
+- **Codec ids** are `ChunkCodec` numbers, never strings: 0 none, 1 lz4,
+  2 zstd. The one-byte id at rest is the same number. Ids are never reused.
+- **Negotiation:** each end lists the codecs it decodes, best first.
+  `ServerInfo.chunk_codecs` is what a daemon offers (a writer picks the
+  first it supports); `ReadFileRequest.accept_codecs` is what a reader
+  decodes (the daemon picks from it in its own order). An empty list means
+  "none only", so an old peer still gets plain bytes.
+  `HelloRequest/HelloResponse.chunk_codecs` carry the same for the peer
+  link; a machine's Hello lists what its setting ranks for a remote link.
+  `AttachOpen.accept_codecs` is what an attaching client decodes.
+- **Policy:** `compression.toml` in the daemon's state folder,
+  `compression = "auto" | "lz4" | "zstd" | "off"`, with
+  `[machines.<id>] compression = ...` overrides; read per stream. Auto is
+  lz4 locally and on fast links, zstd when the link's measured throughput is
+  under 50 MB/s. Off offers only none.
+- **Throughput** is measured from real transfers, never probes or timers:
+  each finished ReadFile or WriteFile of at least 1 MiB on the remote link
+  gives a rate (encoded bytes over first-to-last chunk). It counts as the
+  link's rate when this end spent at least half that time waiting on the
+  link; otherwise only when it is already fast. The estimate averages the
+  old one with each new rate, so a link that changes is noticed within a
+  few transfers. An unmeasured link is taken as fast.
+- **Chunk fields** (`FileChunk`): `codec`, `raw_size` (the decoded length;
+  0 with none means `len(data)`), `crc32` of the decoded bytes (required
+  for lz4 and zstd). Chunks under 512 bytes, chunks that save less than
+  1/16, and streams that start with a known compressed format (images,
+  archives, media) go as none.
+- **At rest** (store rows, blobs, snapshots, reports) the same codecs sit
+  behind a 22-byte little-endian frame header: magic `\x89H2Z`, header
+  format (1), codec id (u8), message type id (u16), format version (u16),
+  decoded length (u64), CRC-32 (u32). See `humata2_chunk::encode_framed`.
+- **Terminals:** `TerminalOutput` and `TerminalSnapshot` carry the same
+  `codec`, `raw_size` and `crc32`; offsets, windows and acks count decoded
+  bytes. To a client that lists codecs, a snapshot over 1 MiB comes as
+  several `TerminalSnapshot` messages with the same offset, `more` set on
+  all but the last. A client that lists none gets each snapshot whole and
+  raw, as before.
+- **Applied so far:** `FileService.ReadFile` and `WriteFile` (session
+  clones on the local socket), `humata files get/put`, terminal attach
+  snapshots and output (`humata attach`), and the peer-link Hello lists.
+  FileService isn't on the peer link yet, so the remote throughput is
+  measured only once it is. `TransferService.Upload`, diffs and bug
+  reports are not compressed yet.
+
 ## 7. Operations and cancellation
 
 Long work (start, fork, move, archive with push, restore, rebuild, give own
@@ -259,6 +323,15 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
 | UPDATE_PR_CLONE | `fetch`, `reset`, `reattach_drafts` | `reset` | Nothing changed |
 | SUBMIT_PR_REVIEW | `post:<pr>`… | first `post` | Finishes; a failure after the first post returns `review_partly_posted` naming which PRs got it |
 | DELETE_CHANNEL | `stop_agents`, `withdraw_requests`, `trash:<machine>`…, `remove_record` | `stop_agents` | Before: nothing. After: finishes; offline machines' `trash:` steps wait for them; restoring the Mac's trash item undoes it within 30 days (CH-24) |
+
+What humatad2 builds of this so far (D61): `ADD_MACHINE` and
+`REMOVE_MACHINE` only, kept in memory (a restart forgets finished
+operations; a machine left half added or half removed is finished or
+undone when the daemon starts, PER-27). A failed add is undone at once, so
+Try again is a fresh `AddSshMachine`; `CancelOperation` and
+`RetryOperation` answer `not_built`. `REMOVE_MACHINE` runs `stop_daemon`
+and `forget`; `dispose:`, `leave_channels` and `provider_delete` come with
+sessions, channels and providers.
 
 ## 8. The peer link
 
@@ -445,6 +518,14 @@ code is for generic handling; clients branch on `Error.kind`, never on text.
 key": it says the key differs from the one pinned, that this is what an
 interception looks like, and how to check the machine's real key before
 `TrustNewHostKey`.
+
+A first add has no pinned key: `AddSshMachine` without
+`trust_host_key_fingerprint` fails at `connect` with `host_key_changed`
+whose `expected_fingerprint` is empty and `presented_fingerprint` is the
+machine's key, for the user to check and confirm by sending the add again
+with that fingerprint. A
+fingerprint that doesn't match what the machine shows fails the same way
+and nothing is sent to it.
 
 ## 11. Versioning
 

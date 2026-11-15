@@ -286,7 +286,36 @@ pub struct Attach {
     pub states: Vec<pb::TerminalState>,
     pub notices: Vec<pb::TerminalNotice>,
     pub accepted: Vec<u64>,
+    /// Snapshot pieces and outputs that came compressed.
+    pub compressed: u32,
+    /// Messages that carried a snapshot, pieces counted one by one.
+    pub snapshot_pieces: u32,
+    /// A snapshot whose last piece hasn't come yet.
+    piecing: bool,
+    decoder: humata2_chunk::Decoder,
     seq: u64,
+}
+
+/// Decodes a snapshot piece's or an output's bytes.
+fn decoded(
+    decoder: &mut humata2_chunk::Decoder,
+    codec: i32,
+    raw_size: u32,
+    crc32: Option<u32>,
+    data: Vec<u8>,
+) -> Vec<u8> {
+    let codec = humata2_chunk::Codec::from_wire(codec).expect("a codec this build knows");
+    if codec == humata2_chunk::Codec::None && crc32.is_none() {
+        // Raw and whole, as to a client that lists no codecs.
+        return data;
+    }
+    let raw_len = match (codec, raw_size) {
+        (humata2_chunk::Codec::None, 0) => data.len() as u32,
+        (_, raw_size) => raw_size,
+    };
+    decoder
+        .decode(humata2_chunk::Header { codec, raw_len, crc32 }, data)
+        .expect("a chunk that decodes")
 }
 
 pub fn open(tab: &pb::TabId, from_offset: u64) -> pb::AttachOpen {
@@ -298,6 +327,7 @@ pub fn open(tab: &pb::TabId, from_offset: u64) -> pb::AttachOpen {
         cols: 0,
         rows: 0,
         window_bytes: 0,
+        accept_codecs: Vec::new(),
     }
 }
 
@@ -328,6 +358,10 @@ impl Attach {
             states: Vec::new(),
             notices: Vec::new(),
             accepted: Vec::new(),
+            compressed: 0,
+            snapshot_pieces: 0,
+            piecing: false,
+            decoder: humata2_chunk::Decoder::new(),
             seq: 0,
         })
     }
@@ -365,14 +399,32 @@ impl Attach {
             .expect("the attach ended");
         match message.message.expect("a message") {
             pb::attach_server_message::Message::Snapshot(snapshot) => {
-                self.snapshots += 1;
-                self.screen = snapshot.vt;
+                self.snapshot_pieces += 1;
+                if snapshot.codec != 0 {
+                    self.compressed += 1;
+                }
+                let vt = decoded(&mut self.decoder, snapshot.codec, snapshot.raw_size, snapshot.crc32, snapshot.vt);
+                if self.piecing {
+                    assert_eq!(snapshot.offset, self.cursor, "a snapshot's pieces disagree on its offset");
+                    self.screen.extend_from_slice(&vt);
+                } else {
+                    self.screen = vt;
+                }
+                self.piecing = snapshot.more;
+                if !snapshot.more {
+                    self.snapshots += 1;
+                }
                 self.cursor = snapshot.offset;
             }
             pb::attach_server_message::Message::Output(output) => {
+                assert!(!self.piecing, "output came in the middle of a snapshot");
                 assert_eq!(output.offset, self.cursor, "output skipped or repeated bytes");
-                self.cursor += output.data.len() as u64;
-                self.screen.extend_from_slice(&output.data);
+                if output.codec != 0 {
+                    self.compressed += 1;
+                }
+                let data = decoded(&mut self.decoder, output.codec, output.raw_size, output.crc32, output.data);
+                self.cursor += data.len() as u64;
+                self.screen.extend_from_slice(&data);
             }
             pb::attach_server_message::Message::State(state) => self.states.push(state),
             pb::attach_server_message::Message::Notice(notice) => self.notices.push(notice),

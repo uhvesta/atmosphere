@@ -36,6 +36,7 @@ use tonic::transport::Server;
 use tonic::transport::server::Connected;
 use tower::util::MapRequestLayer;
 
+use crate::compression::Compression;
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
 use crate::link_proof;
@@ -88,13 +89,47 @@ pub(crate) async fn run(
     let handshake = Arc::new(Handshake::new(
         state.join(link_proof::KEY_FILE),
         machine.clone(),
+        Arc::new(Compression::new(state)),
     ));
     let stop = serve::stop_signal()?;
-    serve_link(tokio::io::stdin(), output, handshake.clone(), machine, stop).await?;
+    let (input, output) = stdio(output);
+    serve_link(input, output, handshake.clone(), machine, stop).await?;
     if handshake.host_proof_was_wrong() {
         return Err(DaemonError::PeerHostProofWrong);
     }
     Ok(())
+}
+
+type Input = Box<dyn AsyncRead + Unpin + Send>;
+type Output = Box<dyn AsyncWrite + Unpin + Send>;
+
+/// The link's stdin and stdout. When they're pipes, as SSH and most
+/// connect commands give, they're read and written as the runtime's own
+/// non-blocking fds, woken by the kernel; otherwise, such as on a terminal
+/// or a socket, through tokio's stdio, which uses blocking threads.
+fn stdio(stdout: tokio::io::Stdout) -> (Input, Output) {
+    let input: Input = match pipe_end(rustix::stdio::stdin(), |fd| {
+        tokio::net::unix::pipe::Receiver::from_owned_fd(fd)
+    }) {
+        Some(pipe) => Box::new(pipe),
+        None => Box::new(tokio::io::stdin()),
+    };
+    let output: Output = match pipe_end(rustix::stdio::stdout(), |fd| {
+        tokio::net::unix::pipe::Sender::from_owned_fd(fd)
+    }) {
+        Some(pipe) => Box::new(pipe),
+        None => Box::new(stdout),
+    };
+    (input, output)
+}
+
+/// `open` on a copy of `fd`, or None when it isn't a pipe tokio can take.
+fn pipe_end<T>(
+    fd: std::os::fd::BorrowedFd<'_>,
+    open: impl FnOnce(std::os::fd::OwnedFd) -> std::io::Result<T>,
+) -> Option<T> {
+    let copy = rustix::io::dup(fd).ok()?;
+    open(copy).ok()
 }
 
 /// Serves the link on `input` and `output` until the connection ends,
@@ -234,6 +269,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::serve_link;
+    use crate::compression::Compression;
     use crate::error::DaemonError;
     use crate::link_proof;
     use crate::peer::Handshake;
@@ -288,6 +324,7 @@ mod tests {
         let handshake = Arc::new(Handshake::new(
             dir.join(link_proof::KEY_FILE),
             "ma_test".to_owned(),
+            Arc::new(Compression::new(dir)),
         ));
         let (stop, stopped) = oneshot::channel::<()>();
         let served = tokio::spawn(serve_link(input, output, handshake, "ma_test".to_owned(), async {

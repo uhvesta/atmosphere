@@ -1,18 +1,9 @@
-//! Data the store keeps whole rather than in columns: a small header, then
-//! the body, compressed when that pays (TR-13, D44, D60).
-//!
-//! ```text
-//! magic      [u8; 4] "H2BL"
-//! codec      u8      humata.v1.ChunkCodec: 0 = as is, 1 = lz4, 2 = zstd
-//! type       u16 BE  what the body is: a [`Type`] id
-//! version    u16 BE  the body's format version
-//! body       [u8]    lz4: the decoded length (u32 LE), then the block
-//! ```
-//!
-//! Every field is a number (D60). The codec numbers are the link's, so a
-//! body a link delivered can be stored as it came. The store writes zstd
-//! and reads all three. Only unreleased builds wrote blobs without the
-//! magic; those are refused as damaged.
+//! Data the store keeps whole rather than in columns: a frame
+//! ([`humata2_chunk::encode_framed`], D65) naming the codec, the body's
+//! [`Type`] and its format version by number, then the body, zstd when
+//! that pays (TR-13, D60). It is the same frame every file Humata keeps at
+//! rest uses, so one reader decodes them all. The frame's checksum of the
+//! decoded body catches damage a codec wouldn't.
 //!
 //! A blob up to [`INLINE_MAX`] bytes goes in its row. A bigger one goes in
 //! `blobs/<sha256>` under the state folder, named by the hash of its bytes,
@@ -22,27 +13,20 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use humata2_chunk::{Codec, FrameError, decode_framed, encode_framed};
 use sha2::{Digest, Sha256};
 
 use crate::StoreError;
 use crate::atomic::{is_partial, write_atomic};
 use crate::fault;
 
-/// Bodies shorter than this are kept as they are: zstd's frame costs more
-/// than it saves.
-const COMPRESS_MIN: usize = 256;
 /// Blobs bigger than this live in a file of their own.
 pub(crate) const INLINE_MAX: usize = 64 << 10;
 /// No body the store wrote is bigger; a header claiming more is damage.
 const BODY_MAX: u64 = 1 << 30;
-
-const MAGIC: [u8; 4] = *b"H2BL";
-const PLAIN: u8 = 0;
-const LZ4: u8 = 1;
-const ZSTD: u8 = 2;
 
 /// What a blob's body is. Each id is used for one type forever: a type
 /// that goes away keeps its id, and a new one takes the next.
@@ -57,9 +41,10 @@ pub(crate) enum Type {
 /// Why a blob's bytes can't be read back.
 #[derive(Debug)]
 pub(crate) enum Unreadable {
-    Damaged(&'static str),
-    /// Its header names a codec this build doesn't know.
-    UnknownCodec(u8),
+    /// The frame itself is damaged, cut short or from a newer Humata.
+    Frame(FrameError),
+    /// A sound frame holding another type than the row expects.
+    OtherType,
 }
 
 /// A blob's bytes and where they go.
@@ -85,79 +70,45 @@ impl Placed {
     }
 }
 
-/// `body` with its header, compressed with zstd when that makes it
-/// smaller.
-pub(crate) fn encode(kind: Type, version: u16, body: &[u8]) -> Vec<u8> {
-    let compressed = (body.len() >= COMPRESS_MIN)
-        .then(|| ruzstd::encoding::compress_to_vec(body, ruzstd::encoding::CompressionLevel::Fastest))
-        .filter(|smaller| smaller.len() < body.len());
-    match &compressed {
-        Some(smaller) => framed(ZSTD, kind, version, smaller),
-        None => framed(PLAIN, kind, version, body),
+impl Type {
+    fn name(self) -> &'static str {
+        match self {
+            Self::JournalPayload => "a journal entry",
+            Self::AgentLaunch => "an agent's launch record",
+        }
     }
 }
 
-/// `stored`, already encoded with `codec`, behind the header.
-fn framed(codec: u8, kind: Type, version: u16, stored: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(MAGIC.len() + 5 + stored.len());
-    bytes.extend_from_slice(&MAGIC);
-    bytes.push(codec);
-    bytes.extend_from_slice(&(kind as u16).to_be_bytes());
-    bytes.extend_from_slice(&version.to_be_bytes());
-    bytes.extend_from_slice(stored);
-    bytes
+/// `body` in its frame, compressed with zstd when that makes it smaller.
+pub(crate) fn encode(kind: Type, version: u16, body: &[u8]) -> Result<Vec<u8>, StoreError> {
+    encode_framed(Codec::Zstd, kind as u16, version, body).map_err(|source| StoreError::Encode {
+        what: kind.name(),
+        source,
+    })
 }
 
-/// The body of a blob of type `kind`, and its format version.
-pub(crate) fn decode(bytes: &[u8], kind: Type) -> Result<(u16, Vec<u8>), Unreadable> {
-    let cut_short = Unreadable::Damaged("its header is cut short");
-    let Some(rest) = bytes.strip_prefix(&MAGIC) else {
-        return Err(Unreadable::Damaged("its header is unrecognised"));
-    };
-    let [codec, type_high, type_low, version_high, version_low, body @ ..] = rest else {
-        return Err(cut_short);
-    };
-    if u16::from_be_bytes([*type_high, *type_low]) != kind as u16 {
-        return Err(Unreadable::Damaged("it holds another kind of record"));
+/// The body of a blob of type `kind`, and its format version. `origin`
+/// names where it was read from.
+pub(crate) fn decode(bytes: &[u8], kind: Type, origin: &str) -> Result<(u16, Vec<u8>), Unreadable> {
+    let framed = decode_framed(bytes, origin, BODY_MAX).map_err(Unreadable::Frame)?;
+    if framed.header.kind != kind as u16 {
+        return Err(Unreadable::OtherType);
     }
-    let (codec, version) = (*codec, u16::from_be_bytes([*version_high, *version_low]));
-    let unreadable = Unreadable::Damaged("its compressed body is unreadable");
-    let too_big = Unreadable::Damaged("its body is larger than any the store writes");
-    let body = match codec {
-        PLAIN => body.to_vec(),
-        LZ4 => {
-            let Some((len, block)) = body.split_first_chunk::<4>() else {
-                return Err(cut_short);
-            };
-            if u64::from(u32::from_le_bytes(*len)) > BODY_MAX {
-                return Err(too_big);
-            }
-            lz4_flex::block::decompress_size_prepended(&[len.as_slice(), block].concat())
-                .map_err(|_| unreadable)?
-        }
-        ZSTD => {
-            let decoder =
-                ruzstd::decoding::StreamingDecoder::new(body).map_err(|_| unreadable)?;
-            let mut plain = Vec::new();
-            decoder
-                .take(BODY_MAX + 1)
-                .read_to_end(&mut plain)
-                .map_err(|_| Unreadable::Damaged("its compressed body is unreadable"))?;
-            if plain.len() as u64 > BODY_MAX {
-                return Err(too_big);
-            }
-            plain
-        }
-        other => return Err(Unreadable::UnknownCodec(other)),
-    };
-    Ok((version, body))
+    Ok((framed.header.version, framed.data))
 }
 
 /// The error for a blob of `what` at `path` that [`decode`] couldn't read.
 fn unreadable(path: PathBuf, what: String, why: Unreadable) -> StoreError {
     match why {
-        Unreadable::Damaged(reason) => StoreError::Damaged { path, what, reason },
-        Unreadable::UnknownCodec(codec) => StoreError::UnknownCodec { path, what, codec },
+        Unreadable::OtherType => StoreError::Damaged {
+            path,
+            what,
+            reason: "it holds another kind of record",
+        },
+        Unreadable::Frame(source @ (FrameError::UnknownFormat { .. } | FrameError::UnknownCodec { .. })) => {
+            StoreError::NewerFormat { path, what, source }
+        }
+        Unreadable::Frame(source) => StoreError::Undecodable { path, what, source },
     }
 }
 
@@ -173,7 +124,8 @@ pub(crate) fn read(
 ) -> Result<(u16, Vec<u8>), StoreError> {
     let path = file.as_ref().map_or_else(|| database.to_owned(), |hash| blobs.join(hash));
     let bytes = load(blobs, inline, file, &what)?;
-    decode(&bytes, kind).map_err(|why| unreadable(path, what(), why))
+    let origin = format!("{} in {}", what(), path.display());
+    decode(&bytes, kind, &origin).map_err(|why| unreadable(path, what(), why))
 }
 
 /// Puts `encoded` where it belongs: in the row, or, when big, in a file
@@ -278,7 +230,7 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{LZ4, MAGIC, Type, Unreadable, decode, encode, framed, read};
+    use super::{Type, Unreadable, decode, encode, read};
     use crate::StoreError;
 
     fn sample() -> Vec<u8> {
@@ -288,35 +240,30 @@ mod tests {
     #[test]
     fn what_is_encoded_decodes_to_the_same_body_and_version() {
         for body in [Vec::new(), b"short".to_vec(), sample()] {
-            let encoded = encode(Type::AgentLaunch, 7, &body);
-            assert_eq!(decode(&encoded, Type::AgentLaunch).unwrap(), (7, body));
+            let encoded = encode(Type::AgentLaunch, 7, &body).unwrap();
+            assert_eq!(decode(&encoded, Type::AgentLaunch, "test").unwrap(), (7, body));
         }
-        assert!(encode(Type::AgentLaunch, 1, &sample()).len() < sample().len());
+        assert!(encode(Type::AgentLaunch, 1, &sample()).unwrap().len() < sample().len());
     }
 
     #[test]
-    fn an_lz4_body_from_a_link_decodes() {
-        let packed = lz4_flex::block::compress_prepend_size(&sample());
-        let stored = framed(LZ4, Type::JournalPayload, 1, &packed);
-        assert_eq!(decode(&stored, Type::JournalPayload).unwrap(), (1, sample()));
+    fn another_type_a_cut_header_or_a_changed_body_is_damage() {
+        let encoded = encode(Type::AgentLaunch, 1, &sample()).unwrap();
+        assert!(matches!(decode(&encoded, Type::JournalPayload, "test"), Err(Unreadable::OtherType)));
+        assert!(matches!(decode(&encoded[..6], Type::AgentLaunch, "test"), Err(Unreadable::Frame(_))));
+        assert!(matches!(decode(b"\x02nope", Type::AgentLaunch, "test"), Err(Unreadable::Frame(_))));
+        let mut plain = encode(Type::AgentLaunch, 1, b"body").unwrap();
+        let last = plain.len() - 1;
+        plain[last] ^= 1;
+        assert!(matches!(decode(&plain, Type::AgentLaunch, "test"), Err(Unreadable::Frame(_))));
     }
 
     #[test]
-    fn another_type_or_a_cut_header_is_damage() {
-        let encoded = encode(Type::AgentLaunch, 1, b"body");
-        assert!(matches!(decode(&encoded, Type::JournalPayload), Err(Unreadable::Damaged(_))));
-        assert!(matches!(decode(&encoded[..6], Type::AgentLaunch), Err(Unreadable::Damaged(_))));
-        assert!(matches!(decode(b"\x02nope", Type::AgentLaunch), Err(Unreadable::Damaged(_))));
-    }
-
-    #[test]
-    fn an_unknown_codec_is_refused_naming_the_codec_and_the_file() {
+    fn a_blob_from_a_newer_humata_is_refused_as_newer_naming_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut stored = MAGIC.to_vec();
-        stored.push(9);
-        stored.extend_from_slice(&(Type::JournalPayload as u16).to_be_bytes());
-        stored.extend_from_slice(&1u16.to_be_bytes());
-        stored.extend_from_slice(b"whatever this is");
+        let mut stored = encode(Type::JournalPayload, 1, b"whatever this is").unwrap();
+        // The codec id: one this build doesn't know.
+        stored[5] = 9;
         let hash = super::hex(&<sha2::Sha256 as sha2::Digest>::digest(&stored));
         std::fs::write(dir.path().join(&hash), &stored).unwrap();
 
@@ -329,10 +276,8 @@ mod tests {
             || "journal entry 1".to_owned(),
         );
         match found {
-            Err(StoreError::UnknownCodec { path, codec, .. }) => {
-                assert_eq!((path, codec), (dir.path().join(hash), 9));
-            }
-            other => panic!("not refused for its codec: {other:?}"),
+            Err(StoreError::NewerFormat { path, .. }) => assert_eq!(path, dir.path().join(hash)),
+            other => panic!("not refused as newer: {other:?}"),
         }
     }
 }

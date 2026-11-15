@@ -96,6 +96,12 @@ const MIGRATIONS: &[&str] = &["
         saved_tail_damaged INTEGER NOT NULL,
         PRIMARY KEY (session, n)
     ) STRICT;
+", "
+    -- When the resumed agent was told it had been interrupted, and how long
+    -- its conversation was then, saved before it's told, so a resume a
+    -- crash redoes doesn't tell it twice.
+    ALTER TABLE interruptions ADD COLUMN told_unix_ms INTEGER;
+    ALTER TABLE interruptions ADD COLUMN told_conversation_len INTEGER;
 "];
 
 /// The schema this build writes and reads.

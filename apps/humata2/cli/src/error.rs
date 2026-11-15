@@ -71,6 +71,20 @@ pub enum CliError {
     },
     #[error("stopped waiting")]
     Interrupted,
+    #[error("the chunk of the file at byte {offset} didn't decode")]
+    BadChunk {
+        offset: u64,
+        #[source]
+        source: humata2_chunk::ChunkError,
+    },
+    #[error("the terminal's output at byte {offset} didn't decode")]
+    BadTerminalChunk {
+        offset: u64,
+        #[source]
+        source: humata2_chunk::ChunkError,
+    },
+    #[error("humata stopped while decoding the chunk of the file at byte {offset}")]
+    DecoderStopped { offset: u64 },
 }
 
 /// A failure as printed: `error` in `--json`, message and fix on stderr.
@@ -157,6 +171,21 @@ impl CliError {
                 )
             },
             Self::Interrupted => plain("interrupted", exit::INTERRUPTED, String::new()),
+            Self::DecoderStopped { .. } => plain(
+                "internal",
+                exit::INTERNAL,
+                "This is a bug in humata; run the command again, and report it if it happens again.".into(),
+            ),
+            Self::BadTerminalChunk { .. } => plain(
+                "invalid_field",
+                exit::INTERNAL,
+                "Attach again: the terminal resumes from where it stopped. If it fails the same way, set compression to Off in the daemon's compression.toml and report it.".into(),
+            ),
+            Self::BadChunk { .. } => plain(
+                "invalid_field",
+                exit::INTERNAL,
+                "Run the command again. If it fails the same way, set compression to Off in the daemon's compression.toml and report it.".into(),
+            ),
             Self::LoginNeedsHome => plain(
                 "invalid_field",
                 exit::USAGE,

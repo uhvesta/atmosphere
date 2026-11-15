@@ -219,6 +219,8 @@ pub(super) async fn diff<D: Daemon, C: Console>(
                 idempotency_key: key.clone(),
                 session: session.clone(),
                 presence,
+                // The daemon snapshots what its last GetDiff showed.
+                shown_tree: Vec::new(),
             })
             .await
             .map(Done::reply)

@@ -1,0 +1,33 @@
+[package]
+name = "humata2-durable"
+description = "File writes that say when they are on disk, so Humata 2's tests can play back a power cut."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_durable"
+path = "src/lib.rs"
+
+[features]
+# Test builds only: remembers writes until they're synced and can put the
+# unsynced ones back (`HUMATA2_POWER_CUT_ROOTS`). Release builds never turn
+# this on.
+faults = ["dep:libsqlite3-sys", "dep:rustix"]
+
+[dependencies]
+libsqlite3-sys = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Also here so Bazel's crate universe, which skips optional dependencies,
+# has it for the faults build.
+libsqlite3-sys = { workspace = true }
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
+
+[[test]]
+name = "power_cut"
+path = "tests/power_cut.rs"
+required-features = ["faults"]

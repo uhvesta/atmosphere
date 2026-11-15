@@ -1,0 +1,22 @@
+// What humatad2's store keeps on disk whole rather than in columns (D44).
+// Never sent on the wire: the API's messages are in humata/v1. Paths and
+// arguments are bytes, as the machine's file system and exec take them.
+syntax = "proto3";
+
+package humata.store.v1;
+
+// How an agent was started, so it can be started again in the same
+// conversation after a crash or reboot (PER-11, PER-12). Variable values
+// are never kept: tokens are minted again on resume.
+message AgentLaunch {
+  string agent = 1;
+  bytes folder = 2;
+  repeated bytes argv = 3;
+  repeated bytes resume_argv = 4;
+  repeated string variable_names = 5;
+  string conversation_id = 6;
+  bytes conversation_file = 7;
+  bytes holder_socket = 8;
+  uint32 cols = 9;
+  uint32 rows = 10;
+}

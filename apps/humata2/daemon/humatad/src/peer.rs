@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use humata2_chunk::Link;
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use tokio::sync::Notify;
@@ -21,6 +22,7 @@ use tonic::service::Interceptor;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::attach;
+use crate::compression::Compression;
 use crate::daemon::{API_MAJOR, API_MINOR};
 use crate::identity;
 use crate::link_proof::{
@@ -60,6 +62,8 @@ enum Phase {
 pub(crate) struct Handshake {
     key_file: PathBuf,
     machine: String,
+    /// What Hello offers the host to decode.
+    compression: Arc<Compression>,
     booted_at: Timestamp,
     phase: Mutex<Phase>,
     host_proof_wrong: AtomicBool,
@@ -67,10 +71,11 @@ pub(crate) struct Handshake {
 }
 
 impl Handshake {
-    pub(crate) fn new(key_file: PathBuf, machine: String) -> Self {
+    pub(crate) fn new(key_file: PathBuf, machine: String, compression: Arc<Compression>) -> Self {
         Self {
             key_file,
             machine,
+            compression,
             booted_at: attach::now(),
             phase: Mutex::new(Phase::Fresh),
             host_proof_wrong: AtomicBool::new(false),
@@ -234,6 +239,11 @@ impl pb::peer_service_server::PeerService for Peer {
             running: Vec::new(),
             booted_at: Some(handshake.booted_at),
             machine_nonce: machine_nonce.to_vec(),
+            // What this machine's chunked streams to the host may use,
+            // ranked for the link as measured so far (TR-11).
+            chunk_codecs: handshake.compression.offered(Link::Remote {
+                bytes_per_second: None,
+            }),
         }))
     }
 

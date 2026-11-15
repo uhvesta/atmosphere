@@ -18,7 +18,7 @@ Legend: **Fixed** here; **Open** with the fix, for the crate's owner.
 | humatad `serve.rs` (local socket server) | No keepalive | none: a closed Unix socket ends the connection at once | fine as is |
 | machines `link.rs:272` | ssh `ServerAliveInterval=15`, `ServerAliveCountMax=4` | a wake every 15 s on every link, twice the 30 s TR-9 allows | **Open**: set 30 (and CountMax 2), or drop it and rely on the HTTP/2 PING |
 | (no code yet) host-side peer client | No `Endpoint` dials the peer link yet | n/a | **Open**: when built, `http2_keep_alive_interval(30 s)`, `keep_alive_timeout(20 s)`, `keep_alive_while_idle(true)` |
-| humatad `peer_link.rs` stdio | `tokio::io::stdin()`/`stdout()` hand each read and write to the blocking pool | a thread hop per frame; adds to every event's latency | **Open** (measured by `peer_link_latency_bench`): if the bench shows it, read stdin with `AsyncFd` on a non-blocking dup, keeping a fallback for takeover terminals that can't be made non-blocking |
+| humatad `peer_link.rs` stdio | `tokio::io::stdin()`/`stdout()` hand each read and write to the blocking pool | a thread hop per frame; adds to every event's latency | **Fixed**: when stdin and stdout are pipes, the link reads and writes them as tokio pipe fds (non-blocking dups, woken by the kernel); terminals and sockets keep tokio's stdio. Bench below: p50 and p99 down, max noisy |
 
 ## Waiting for an answer
 
@@ -46,16 +46,16 @@ Legend: **Fixed** here; **Open** with the fix, for the crate's owner.
 
 | Where | What | Cost | Status / fix |
 | --- | --- | --- | --- |
-| humatad `terminal.rs:160` `describe` | `ListTabs` opens a holder connection per tab, one after another, 2 s probe timeout each | O(tabs) connects and handshakes per list; a hung holder stalls the list 2 s | **Open** (holder + terminal wiring): keep one control connection per holder, with the tab's state pushed as a watch; meanwhile probe tabs concurrently (`join_all`) |
-| humatad `terminal.rs:~640` `type_into` | attaches to the holder per call | a connect per call | **Open**: reuse that per-holder connection |
-| humatad `bridge.rs:86–130` `connect_or_start` | 25 ms connect loop for 0.5 s, and up to 10 s after starting the daemon | startup only | **Open**: have the started daemon write a byte to a pipe once it listens, and wait on that |
+| humatad `terminal.rs:160` `describe` | `ListTabs` opens a holder connection per tab, one after another, 2 s probe timeout each | O(tabs) connects and handshakes per list; a hung holder stalls the list 2 s | **Fixed**: `holders.rs` keeps one connection per holder, opened on first use and kept until the holder hangs up or the tab closes; its offsets are a watch kept from the holder's events. The protocol has no control-only connection, so the link reads its tab's output and keeps only offsets (a read per chunk, nothing while quiet); offsets can trail output in flight |
+| humatad `terminal.rs:~640` `type_into` | attaches to the holder per call | a connect per call | **Fixed**: types through the same link, one call at a time with its own sequence number; a failure or timeout drops the link, so the next call reconnects |
+| humatad `bridge.rs:86–130` `connect_or_start` | 25 ms connect loop for 0.5 s, and up to 10 s after starting the daemon | startup only | **Fixed**: one retry after 0.5 s for a daemon starting on its own; a daemon the bridge starts gets `--ready-fd` and writes a line on it once it listens, and the bridge waits on the pipe (10 s at most; exit or silence are errors) |
 
 ## Streams: one message per event
 
 | Where | What | Cost | Status / fix |
 | --- | --- | --- | --- |
 | cli `commands/streams.rs:73` attach | sent an `OutputAck` for every output message | a client message per output chunk, over the link | **Fixed**: one ack per quarter window (256 KiB by default); the window never fills |
-| humatad `attach.rs` | one gRPC message per holder output event; bounded (64 out, 16 in) | many small frames on fast output | **Open**: coalesce queued output events up to ~64 KiB before sending |
+| humatad `attach.rs` | one gRPC message per holder output event; bounded (64 out, 16 in) | many small frames on fast output | **Fixed**: output already queued and contiguous joins the message, up to 64 KiB and the window's room; never waits for more |
 
 ## Polls in other crates (not edited here)
 
@@ -69,7 +69,7 @@ Legend: **Fixed** here; **Open** with the fix, for the crate's owner.
 | revive `agent.rs:395–401` | `sleep(POLL)` loop probing the holder after SIGTERM, up to 5 s | a connect every 100 ms | the holder's event stream ending (or its pid's exit via kqueue/pidfd) |
 | machines `system.rs:117–157` | `try_wait` plus `thread::sleep(POLL)` / `recv_timeout(POLL)`, 20 ms, per command | 50 wakes a second on a blocking thread per running command | a thread that calls `child.wait()` and sends on the same channel; then `recv_timeout(deadline)` only |
 | machines `takeover.rs` | deadlines for a takeover | per takeover | fine where it's a single timeout |
-| tca-rust `store.rs:105`, `local_store.rs:93` | `unbounded_channel` for actions | unbounded memory if a producer floods | bounded, or coalesce latest-value actions at the source |
+| tca-rust `store.rs:105`, `local_store.rs:93` | `unbounded_channel` for actions | unbounded memory if a producer floods | **Fixed** (for effects): the UI's sends stay unbounded (synchronous, never block or drop, human rate); actions effects send are counted, and `Effect::stream` awaits `Sender::ready` while 1024 (`EFFECT_QUEUE`) wait, so a fast server is held by flow control, not memory |
 | tca-rust `test_store.rs:301` | 1 ms sleep loop | test helper only | fine |
 
 ## Files to watch
@@ -83,11 +83,19 @@ code in this audit's scope reads those files yet.
 
 ## Measured
 
+- `humatad2_unit_test`: an idle daemon (`serve`) with a client connected
+  over HTTP/2 on its socket parks its runtime over ten hours of paused
+  time at most 4 times more than over one minute (a handful either way),
+  and still answers a PING; a probe hourly interval made it fail (46).
 - `humatad2_unit_test`: an idle link for an hour on the paused clock sends
   only PING frames, at most one per 30 s; an unanswered PING ends it.
 - `peer_link_latency_bench` (manual, `-c opt`): WhoAmI round trip over a
   real `serve --stdio` child, 5000 calls on the M-series dev Mac
   (2026-11-14, `-c opt`): p50 158 µs, p90 370 µs, p99 1.8 ms, max 20.5 ms.
   The p99/max tail is the one to watch; the blocking-pool stdio hop is a
-  suspect. Uplink, the event
+  suspect. Later the same day, blocking-pool stdio: p50 135 µs, p90 184 µs,
+  p99 336 µs, max 1.9 ms (one run; reruns were blocked by an unrelated
+  build break). Pipe fds, three runs: p50 77–90 µs, p90 111–141 µs, p99
+  200–260 µs, max 0.56–3.0 ms. Kept for p50 and p99; max varies run to
+  run either way and isn't shown better. Uplink, the event
   stream, isn't built, so event latency itself isn't measurable yet.

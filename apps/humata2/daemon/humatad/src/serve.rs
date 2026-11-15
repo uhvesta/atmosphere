@@ -6,11 +6,14 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
+use humata2_machines::{Builds, Bundle, MANIFEST, Machines, MachinesConfig, Platform, RetryPolicy};
 use humata2_store::Store;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -22,13 +25,19 @@ use tower::util::MapRequestLayer;
 use crate::access_service::Access;
 use crate::cli_login::{CliAuth, CliLogins};
 use crate::daemon::Daemon;
+use crate::compression::Compression;
 use crate::error::DaemonError;
+use crate::files::Files;
 use crate::guard::Guard;
 use crate::identity::{self, Authenticate, Identities};
 use crate::inbox::Inbox;
+use crate::last_good;
+use crate::machine_service::{self, MachineSvc, Work};
 use crate::not_built;
+use crate::operations::{OperationSvc, Operations};
 use crate::paste::PASTE_MAX_BYTES;
 use crate::peer_link;
+use crate::restart;
 use crate::sync;
 use crate::terminal::{Terminals, TerminalsConfig};
 use crate::terminal_session::Kernel;
@@ -77,6 +86,16 @@ pub(crate) struct ServeArgs {
     /// The humata2_holder binary. Default: the one beside humatad2.
     #[arg(long)]
     holder: Option<PathBuf>,
+    /// The tools bundle machines get their humatad2, humata2_holder and
+    /// humata from (TS-2): a folder with a manifest.json. Default: the
+    /// `tools` folder beside humatad2 when it has one, else this host's
+    /// own three files beside humatad2 (machines of this platform only).
+    #[arg(long)]
+    tools: Option<PathBuf>,
+    /// The ssh config SSH machines' aliases are read from. Default:
+    /// ~/.ssh/config.
+    #[arg(long)]
+    ssh_config: Option<PathBuf>,
     /// The shell new shell tabs run. Default: $SHELL, else /bin/sh.
     #[arg(long)]
     shell: Option<PathBuf>,
@@ -88,6 +107,11 @@ pub(crate) struct ServeArgs {
     /// How much of each tab's output its holder keeps.
     #[arg(long, default_value_t = 8 << 20)]
     scrollback_bytes: usize,
+    /// An open pipe to write a byte to, then close, once the socket
+    /// listens: how `humatad2 bridge` hears that a daemon it started is
+    /// ready. Not for people.
+    #[arg(long, hide = true, conflicts_with = "stdio", value_parser = clap::value_parser!(i32).range(3..))]
+    ready_fd: Option<i32>,
     /// Test daemons only: a call with no credential acts as the user.
     /// Builds without the `admin` feature, as releases are, lack this flag.
     /// Never with --stdio: the peer link is the Mac's, not the user's.
@@ -120,6 +144,13 @@ pub(crate) fn default_socket() -> Result<PathBuf, DaemonError> {
 }
 
 pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
+    // SAFETY: the process that started this one opened the descriptor for
+    // it alone, and nothing else here takes it. Owning it from the start
+    // closes it on any way out, which tells the bridge this one won't
+    // listen.
+    let ready = args
+        .ready_fd
+        .map(|fd| File::from(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }));
     let state = match args.state {
         Some(state) => state,
         None => home_folder()?.join("state"),
@@ -168,7 +199,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let logs = state.join("logs");
     private_folder(&holders)?;
     private_folder(&logs)?;
-    let store = Arc::new(Store::open(state.join("store")).map_err(|source| DaemonError::Store { source })?);
+    let (store, restored) = Store::open_or_restore(state.join("store")).map_err(|source| DaemonError::Store { source })?;
+    let store = Arc::new(store);
     let machine = machine_id(&state.join("machine-id"))?;
     let role = match args.role {
         Role::Host => pb::DaemonRole::Host,
@@ -206,6 +238,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let guard = Arc::new(Guard::new(&machine, role));
 
     let listener = bind(&socket)?;
+    let reports = state.join("restarts");
+    private_folder(&reports)?;
+    let revive = restart::Revive {
+        holder: holder.clone(),
+        logs: logs.clone(),
+        scrollback_bytes: args.scrollback_bytes,
+        shell: shell.clone(),
+        shell_args: shell_args.clone(),
+        home: root.clone(),
+        reports,
+        machine: machine.clone(),
+    };
+    let last_start = restart::in_background(store.clone(), identities.clone(), revive, restored);
+    last_good::keep(store.clone(), last_good::Quiet::default());
+    let compression = Arc::new(Compression::new(&state));
     let terminals = Terminals::new(TerminalsConfig {
         store: store.clone(),
         machine: machine.clone(),
@@ -218,9 +265,26 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         scrollback_bytes: args.scrollback_bytes,
         guard: guard.clone(),
         identities: identities.clone(),
+        compression: compression.clone(),
     });
+    let files = Files::new(
+        store.clone(),
+        guard.clone(),
+        machine.clone(),
+        compression.clone(),
+        Link::Local,
+    );
     let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone());
-    let access = Access::new(guard);
+    let access = Access::new(guard.clone());
+    let operations = Arc::new(Operations::default());
+    let machines = match role {
+        pb::DaemonRole::Host => {
+            let work = Arc::new(machine_work(&state, args.tools, args.ssh_config)?);
+            machine_service::recover_in_background(work.clone());
+            Some(MachineSvc::new(guard, work, operations.clone()))
+        }
+        _ => None,
+    };
 
     // Every call is matched to its caller before a service sees it. The
     // first layer is the outer one: it marks the methods open to anyone,
@@ -228,10 +292,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let router = Server::builder()
         .layer(MapRequestLayer::new(identity::mark_open))
         .layer(InterceptorLayer::new(authenticate))
-        .add_service(pb::daemon_service_server::DaemonServiceServer::new(Daemon::new(
-            machine.clone(),
-            role,
-        )))
+        .add_service(pb::daemon_service_server::DaemonServiceServer::new(
+            Daemon::new(machine.clone(), role).offering(compression).started(last_start),
+        ))
+        .add_service(pb::file_service_server::FileServiceServer::new(files))
         .add_service(
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
@@ -244,14 +308,59 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             machine,
             role,
         }));
+    let router = router.add_service(pb::operation_service_server::OperationServiceServer::new(
+        OperationSvc::new(operations),
+    ));
+    // Only the host keeps machines; a machine's daemon forwards these to
+    // it once the link does (GRPC.md §4).
+    let router = match machines {
+        Some(machines) => router.add_service(pb::machine_service_server::MachineServiceServer::new(machines)),
+        None => not_built::register_host_only(router),
+    };
     let router = not_built::register(router);
 
     let stop = stop_signal()?;
+    if let Some(mut ready) = ready {
+        // A bridge that went meanwhile has nothing to hear.
+        let _ = ready.write_all(b"\n");
+    }
     let served = router
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), stop)
         .await;
     let _ = std::fs::remove_file(&socket);
     served.map_err(|source| DaemonError::Serve { source })
+}
+
+/// The host's machine list, its own known_hosts and the tools bundle.
+fn machine_work(state: &Path, tools: Option<PathBuf>, ssh_config: Option<PathBuf>) -> Result<Work, DaemonError> {
+    let builds: Box<dyn Builds + Send + Sync> = match tools {
+        Some(tools) => Box::new(Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?),
+        None => {
+            let beside = beside_this_binary("tools");
+            if beside.join(MANIFEST).is_file() {
+                Box::new(Bundle::open(&beside).map_err(|source| DaemonError::Tools { source })?)
+            } else {
+                let here = beside_this_binary("humatad2");
+                let folder = here.parent().map(Path::to_owned).unwrap_or_default();
+                let platform = Platform::host().ok_or(DaemonError::UnknownHostPlatform)?;
+                Box::new(Bundle::beside(&folder, platform))
+            }
+        }
+    };
+    let ssh_config = match ssh_config {
+        Some(path) => path,
+        None => std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(|home| PathBuf::from(home).join(".ssh/config"))
+            .ok_or(DaemonError::NoHome)?,
+    };
+    let machines = Machines::open(MachinesConfig {
+        hosts_file: state.join("hosts.json"),
+        known_hosts: state.join("known_hosts"),
+        ssh_config,
+        retry: RetryPolicy::default(),
+    });
+    Ok(Work::new(machines, builds))
 }
 
 fn beside_this_binary(name: &str) -> PathBuf {
@@ -432,6 +541,188 @@ mod tests {
         let path = dir.path().join("machine-id");
         let first = machine_id(&path).unwrap();
         assert_eq!(machine_id(&path).unwrap(), first);
+    }
+
+    mod idle {
+        //! A daemon serving its socket on tokio's paused clock: time moves
+        //! only when every task waits, so an hour of idling takes no time,
+        //! and a timer anywhere in the daemon would wake the runtime for
+        //! each time it fires (TR-7).
+
+        use std::os::fd::{IntoRawFd, OwnedFd};
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        use clap::Parser;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::UnixStream;
+        use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf, pipe};
+
+        use super::super::{ServeArgs, run};
+
+        const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+        const DATA: u8 = 0;
+        const HEADERS: u8 = 1;
+        const SETTINGS: u8 = 4;
+        const PING: u8 = 6;
+        const WINDOW_UPDATE: u8 = 8;
+        const ACK: u8 = 1;
+        const END_STREAM: u8 = 1;
+        const END_HEADERS: u8 = 4;
+        const HOUR: Duration = Duration::from_secs(3600);
+
+        #[derive(Parser)]
+        struct Command {
+            #[command(flatten)]
+            serve: ServeArgs,
+        }
+
+        struct Frame {
+            kind: u8,
+            flags: u8,
+            payload: Vec<u8>,
+        }
+
+        fn frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+            let length = u32::try_from(payload.len()).unwrap().to_be_bytes();
+            let mut bytes = vec![length[1], length[2], length[3], kind, flags];
+            bytes.extend_from_slice(&stream.to_be_bytes());
+            bytes.extend_from_slice(payload);
+            bytes
+        }
+
+        async fn read_frame(from: &mut OwnedReadHalf) -> Option<Frame> {
+            let mut head = [0u8; 9];
+            from.read_exact(&mut head).await.ok()?;
+            let length = u32::from_be_bytes([0, head[0], head[1], head[2]]) as usize;
+            let mut payload = vec![0; length];
+            from.read_exact(&mut payload).await.ok()?;
+            Some(Frame {
+                kind: head[3],
+                flags: head[4],
+                payload,
+            })
+        }
+
+        /// A header as HPACK spells it with no index and no Huffman code.
+        fn header(block: &mut Vec<u8>, name: &str, value: &str) {
+            block.push(0);
+            block.push(u8::try_from(name.len()).unwrap());
+            block.extend_from_slice(name.as_bytes());
+            block.push(u8::try_from(value.len()).unwrap());
+            block.extend_from_slice(value.as_bytes());
+        }
+
+        /// Calls GetServerInfo on stream 1 and reads up to its trailers.
+        async fn get_server_info(from: &mut OwnedReadHalf, to: &mut OwnedWriteHalf) {
+            let mut block = Vec::new();
+            header(&mut block, ":method", "POST");
+            header(&mut block, ":scheme", "http");
+            header(&mut block, ":path", "/humata.v1.DaemonService/GetServerInfo");
+            header(&mut block, ":authority", "localhost");
+            header(&mut block, "content-type", "application/grpc");
+            header(&mut block, "te", "trailers");
+            to.write_all(&frame(HEADERS, END_HEADERS, 1, &block)).await.unwrap();
+            to.write_all(&frame(DATA, END_STREAM, 1, &[0, 0, 0, 0, 0])).await.unwrap();
+            loop {
+                let next = read_frame(from).await.expect("the daemon hung up mid-call");
+                match (next.kind, next.flags) {
+                    (SETTINGS, flags) if flags & ACK == 0 => {
+                        to.write_all(&frame(SETTINGS, ACK, 0, &[])).await.unwrap();
+                    }
+                    (HEADERS, flags) if flags & END_STREAM != 0 => return,
+                    _ => {}
+                }
+            }
+        }
+
+        /// Waits `span` for frames, and returns how many times the runtime
+        /// woke meanwhile and the frames heard besides SETTINGS and
+        /// WINDOW_UPDATE. Hanging up counts as a frame of type 255.
+        async fn idle(from: &mut OwnedReadHalf, span: Duration) -> (u64, Vec<u8>) {
+            let before = parks();
+            let mut heard = Vec::new();
+            let _ = tokio::time::timeout(span, async {
+                loop {
+                    match read_frame(from).await {
+                        Some(next) if matches!(next.kind, SETTINGS | WINDOW_UPDATE) => {}
+                        Some(next) => heard.push(next.kind),
+                        None => {
+                            heard.push(u8::MAX);
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                }
+            })
+            .await;
+            (parks() - before, heard)
+        }
+
+        fn parks() -> u64 {
+            tokio::runtime::Handle::current()
+                .metrics()
+                .worker_park_count(0)
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn an_idle_daemon_with_a_connected_client_fires_no_timers() {
+            let dir = tempfile::Builder::new()
+                .prefix("h2u")
+                .tempdir_in("/tmp")
+                .unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let socket = dir.path().join("d.sock");
+            let (ready, ready_writer) = std::io::pipe().unwrap();
+            let holder = std::env::current_exe().unwrap();
+            let ready_fd = ready_writer.into_raw_fd().to_string();
+            let args = Command::try_parse_from([
+                "serve".into(),
+                "--socket".into(),
+                socket.clone().into_os_string(),
+                "--state".into(),
+                dir.path().join("state").into_os_string(),
+                "--root".into(),
+                dir.path().as_os_str().to_owned(),
+                "--holder".into(),
+                holder.into_os_string(),
+                "--ready-fd".into(),
+                ready_fd.into(),
+            ] as [std::ffi::OsString; 11])
+            .unwrap()
+            .serve;
+            let served = tokio::spawn(run(args));
+            let mut ready = pipe::Receiver::from_owned_fd(OwnedFd::from(ready)).unwrap();
+            assert_eq!(ready.read(&mut [0; 1]).await.unwrap(), 1, "the daemon listens");
+            let (mut from, mut to) = UnixStream::connect(&socket).await.unwrap().into_split();
+            to.write_all(PREFACE).await.unwrap();
+            to.write_all(&frame(SETTINGS, 0, 0, &[])).await.unwrap();
+            get_server_info(&mut from, &mut to).await;
+
+            // Waking a few times to wait at all is much the same for a
+            // minute as for ten hours: a long wait is refiled through the
+            // levels of tokio's timer wheel a few times. A timer that fires
+            // on its own every 30 s wakes it 1200 times; hourly, 10.
+            let (minute, heard_in_a_minute) = idle(&mut from, Duration::from_secs(60)).await;
+            let (hours, heard_in_hours) = idle(&mut from, 10 * HOUR).await;
+
+            assert!(
+                heard_in_a_minute.is_empty() && heard_in_hours.is_empty(),
+                "the daemon sent {heard_in_a_minute:?} {heard_in_hours:?} while idle"
+            );
+            assert!(
+                hours <= minute + 4,
+                "the runtime woke {hours} times in ten idle hours, {minute} in a minute"
+            );
+            to.write_all(&frame(PING, 0, 0, &[7; 8])).await.unwrap();
+            let pong = loop {
+                let next = read_frame(&mut from).await.expect("the daemon hung up");
+                if next.kind == PING {
+                    break next;
+                }
+            };
+            assert_eq!((pong.flags, pong.payload), (ACK, vec![7; 8]));
+            served.abort();
+        }
     }
 
     #[test]

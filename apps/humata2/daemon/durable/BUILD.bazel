@@ -1,0 +1,49 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# File writes that say when they're on disk. The store and the holder write
+# through it; in a release build it is the std calls and nothing more.
+rust_library(
+    name = "durable",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_durable",
+    visibility = [
+        "//apps/humata2/daemon/holder:__pkg__",
+        "//apps/humata2/daemon/store:__pkg__",
+    ],
+)
+
+# With the power-cut simulation (`HUMATA2_POWER_CUT_ROOTS`): writes are
+# remembered until synced, and a cut puts back the rest before SIGKILL.
+# Never linked into a release binary.
+rust_library(
+    name = "durable_faults",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_durable",
+    visibility = [
+        "//apps/humata2/daemon/holder:__pkg__",
+        "//apps/humata2/daemon/revive:__pkg__",
+        "//apps/humata2/daemon/store:__pkg__",
+    ],
+    deps = [
+        "@crates//:libsqlite3-sys",
+        "@crates//:rustix",
+    ],
+)
+
+rust_test(
+    name = "power_cut_test",
+    srcs = ["tests/power_cut.rs"],
+    deps = [
+        ":durable_faults",
+        "@crates//:rusqlite",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

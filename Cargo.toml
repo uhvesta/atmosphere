@@ -15,20 +15,51 @@ members = [
     "apps/humata2/bindgen",
     "apps/humata2/rehearsal",
     "apps/humata2/daemon/access",
+    "apps/humata2/daemon/durable",
     "apps/humata2/daemon/store",
     "apps/humata2/daemon/holder",
+    "apps/humata2/daemon/revive",
     "apps/humata2/daemon/humatad",
+    "apps/humata2/chunk",
     "apps/humata2/report",
     "apps/humata2/daemon/mcp",
     "apps/humata2/daemon/machines",
+    "apps/humata2/daemon/review_diff",
     "apps/humata2/cli",
+    "apps/humata2/engine",
     "apps/humata2/ui-prototype",
+    "apps/humata2/terminal/grid",
+    "apps/humata2/terminal/view",
+    "apps/humata2/diff",
+    "apps/humata2/review",
+    # Humata 2's desktop app on fake clients (UI before gate G).
+    "apps/humata2/clients",
+    "apps/humata2/features/app",
+    "apps/humata2/features/board",
+    "apps/humata2/features/files",
+    "apps/humata2/features/hosts",
+    "apps/humata2/features/inbox",
+    "apps/humata2/features/layout",
+    "apps/humata2/features/palette",
+    "apps/humata2/features/review",
+    "apps/humata2/features/session",
+    "apps/humata2/features/settings",
+    "apps/humata2/features/sidebar",
+    "apps/humata2/features/views",
+    "apps/humata2/ui",
+    "apps/humata2/desktop",
+    "apps/humata2/markdown",
+    "apps/humata2/spike/gui",
     "libs/tca-rust",
 ]
 resolver = "3"
 # The UI prototype reuses these test tools as path dependencies; they keep
 # their own workspace settings instead of becoming implicit members here.
-exclude = ["apps/humata2/testing/snapshot", "apps/humata2/testing/flow"]
+exclude = [
+    "apps/humata2/testing/snapshot",
+    "apps/humata2/testing/flow",
+    # The diff view's GUI tests, on those tools.
+]
 
 [workspace.package]
 edition = "2024"
@@ -38,8 +69,11 @@ publish = false
 [workspace.dependencies]
 # Workspace crates.
 bootstrap = { path = "tools/bootstrap/lib" }
+humata2-durable = { path = "apps/humata2/daemon/durable" }
 humata2-store = { path = "apps/humata2/daemon/store" }
 humata2-holder = { path = "apps/humata2/daemon/holder" }
+humata2-revive = { path = "apps/humata2/daemon/revive" }
+humata2-report = { path = "apps/humata2/report" }
 tca-rust = { path = "libs/tca-rust" }
 
 # Third-party crates.
@@ -55,6 +89,8 @@ console_error_panic_hook = "0.1.7"
 # splices its nested Cargo workspace into this workspace for feature resolution.
 gpui-pre-apple = { version = "=0.3.12", features = ["font-kit", "test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Humata 2's peer link proves both ends with the enrollment key.
+hmac = "0.13.0"
 # Humata 2 tests drive the daemon over a Unix socket with these.
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 plist = "1.10.3"
@@ -67,14 +103,24 @@ rand = "0.10.3"
 rayon = "1.12.0"
 regex = "1.13.1"
 rusqlite = { version = "0.42.0", features = ["bundled"] }
+# Humata 2 waits on file changes (a resumed agent's conversation) instead of
+# polling.
+notify = "8.2.2"
+# The same SQLite rusqlite bundles, for Humata 2's power-cut test VFS.
+libsqlite3-sys = "0.40.0"
 ruzstd = "0.9.1"
+# Humata 2's per-chunk compression on links (TR-11, D57): lz4 for fast
+# links, zstd (the C library) for slow ones, a CRC-32 per chunk.
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
+zstd = { version = "0.14.3", default-features = false }
+crc32fast = "1.5.5"
 # Humata 2's Rust core, called from Swift. The generator is built without
 # cargo-metadata: Bazel runs it on the library, outside any cargo project.
 uniffi = "0.32.2"
 uniffi_bindgen = { version = "0.32.2", default-features = false }
 camino = "1.2.6"
 # Pseudo-terminals for Humata's terminals.
-rustix = { version = "1.1.6", features = ["fs", "process", "pty", "termios"] }
+rustix = { version = "1.1.6", features = ["event", "fs", "process", "pty", "stdio", "termios"] }
 # ring, not aws-lc-rs, which needs CMake to build.
 russh = { version = "0.65.1", default-features = false, features = ["ring"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -87,7 +133,9 @@ tonic-prost = "0.14.9"
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tower = { version = "0.5.3", features = ["util"] }
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+# test-util is for paused-clock tests (TR-9, D54); it changes nothing unless a
+# test pauses the clock.
+tokio = { version = "1.54.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 toml = "1.2.1"
 ureq = "3.5.1"
 uuid = { version = "1.29.2", features = ["v4"] }

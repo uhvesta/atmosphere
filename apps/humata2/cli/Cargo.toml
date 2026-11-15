@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+humata2-chunk = { path = "../chunk" }
 hyper-util = { workspace = true }
 prost = { workspace = true }
 prost-reflect = { workspace = true }

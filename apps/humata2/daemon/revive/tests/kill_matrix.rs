@@ -357,6 +357,13 @@ fn same_conversation(world: &World, said: &str) {
     assert!(!world.conv().join("other.jsonl").exists(), "a fresh conversation was started");
 }
 
+/// How many times the agent was told it was interrupted, as its
+/// conversation shows.
+fn times_told(world: &World) -> usize {
+    let conversation = fs::read_to_string(world.conv().join("c1.jsonl")).unwrap();
+    conversation.matches("Run `git status`").count()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_killed_holder_is_resumed_with_its_conversation_and_its_output() {
     let world = World::new();
@@ -382,6 +389,7 @@ async fn a_killed_holder_is_resumed_with_its_conversation_and_its_output() {
     // Told it was interrupted, in the conversation it had.
     same_conversation(&world, "hello");
     same_conversation(&world, "git status");
+    assert_eq!(times_told(&world), 1);
     // The old output is shown above the resumed agent's.
     let shown = read_until(&world.socket(), 0, "agent up --resume").await;
     assert!(contains(&shown, "got: hello"));
@@ -451,6 +459,8 @@ async fn a_daemon_killed_while_resuming_finishes_the_resume_when_it_starts_again
         "store.agent.put.committing",
         "revive.resume.recorded",
         "revive.resume.spawned",
+        "revive.resume.telling",
+        "revive.resume.told",
         "revive.resume.verified",
         "store.agent_and_tab.put.committed",
     ] {
@@ -473,6 +483,8 @@ async fn a_daemon_killed_while_resuming_finishes_the_resume_when_it_starts_again
         let record = store.agent("se_a").unwrap().unwrap();
         assert!(!record.interruptions.is_empty(), "{point}");
         same_conversation(&world, "hello");
+        // Told it was interrupted once, however far the first try got.
+        assert_eq!(times_told(&world), 1, "{point}");
         read_until(&world.socket(), 0, "got: hello").await;
         type_and_see(&world.socket(), "ping", "got: ping").await;
     }
@@ -678,6 +690,8 @@ async fn a_power_cut_while_launching_or_resuming_comes_back_with_its_conversatio
         "store.agent.put.committing",
         "revive.resume.recorded",
         "revive.resume.spawned",
+        "revive.resume.telling",
+        "revive.resume.told",
         "revive.resume.verified",
         "store.agent_and_tab.put.committed",
     ];
@@ -719,6 +733,10 @@ async fn a_power_cut_while_launching_or_resuming_comes_back_with_its_conversatio
         one_running(&world, &store).await;
         if mode == "reconcile" {
             same_conversation(&world, "hello");
+            // Once per interruption: a cut after the resume was saved
+            // interrupts the resumed agent too.
+            let interruptions = if point == "store.agent_and_tab.put.committed" { 2 } else { 1 };
+            assert_eq!(times_told(&world), interruptions, "{point}");
         }
         type_and_see(&world.socket(), "ping", "got: ping").await;
         assert!(!world.conv().join("other.jsonl").exists(), "{mode} {point}");

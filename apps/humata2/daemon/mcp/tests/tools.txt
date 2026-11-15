@@ -39,9 +39,15 @@ network_close
 network_connect
 operation_get
 pr_review_start
+review_context
 review_draft
 review_draft_drop
 review_draft_edit
+review_focus
+review_note
+review_note_drop
+review_note_edit
+review_prepare
 review_summary_draft
 session_add_repo
 session_answer

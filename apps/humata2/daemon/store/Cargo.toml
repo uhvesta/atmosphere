@@ -19,11 +19,10 @@ path = "src/lib.rs"
 faults = ["humata2-durable/faults"]
 
 [dependencies]
+humata2-chunk = { path = "../../chunk" }
 humata2-durable = { workspace = true }
-lz4_flex = { workspace = true }
 prost = { workspace = true }
 rusqlite = { workspace = true }
-ruzstd = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 

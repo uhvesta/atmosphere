@@ -1,0 +1,19 @@
+[package]
+name = "humata2-diff-view"
+description = "Humata 2's diff view: a virtualized GPUI view of changes across repos, inline, side by side or as the full file, with wrapping, highlighting and line comments."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_diff_view"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+thiserror.workspace = true
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.3"
+
+# Builds and tests run only in Bazel (BUILD.bazel).

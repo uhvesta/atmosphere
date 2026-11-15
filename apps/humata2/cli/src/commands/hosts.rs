@@ -43,6 +43,8 @@ pub(super) async fn host<D: Daemon, C: Console>(
                 ssh_host,
                 name: name.unwrap_or_default(),
                 root: root.unwrap_or_default(),
+                // No flag for it yet: a first add fails naming the key.
+                trust_host_key_fingerprint: String::new(),
             };
             reply(ctx, rpc::machine::ADD_SSH_MACHINE, &request).await
         }

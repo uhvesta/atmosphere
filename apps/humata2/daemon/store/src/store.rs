@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use crate::atomic::{create_dir, write_atomic};
+use crate::atomic::{create_dir, sweep_partials, write_atomic};
 use crate::journal::Journal;
 use crate::last_good::{self, LastGood, Restored};
 use crate::{Pointers, RepoPointer, SessionRecord, StoreError, TabKind, TabRecord, blob, fault, schema};
@@ -47,8 +47,9 @@ pub(crate) struct Inner {
 
 impl Store {
     /// Opens the state in `root`, making it if it's missing, brings its
-    /// schema up to this build's, and removes files a crash left that no
-    /// record names.
+    /// schema up to this build's, and removes files a crash left: writes
+    /// it cut short, and blobs no record names. A restore of the last good
+    /// copy a crash cut short is finished first.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let root = root.into();
         create_dir(&root)?;
@@ -56,6 +57,9 @@ impl Store {
         create_dir(&blobs)?;
         create_dir(&root.join(FILES))?;
         let database = root.join(DATABASE);
+        last_good::finish_restore(&root, &database)?;
+        sweep_partials(&root)?;
+        Self::sweep_paste_partials(&root.join(FILES))?;
         let connection = schema::open(&database)?;
         let inner = Arc::new(Inner {
             root,
@@ -79,6 +83,9 @@ impl Store {
     pub fn open_or_restore(root: impl Into<PathBuf>) -> Result<(Self, Option<Restored>), StoreError> {
         let root = root.into();
         let database = root.join(DATABASE);
+        if let Some(finished) = last_good::finish_restore(&root, &database)? {
+            return Ok((Self::open(root)?, Some(finished)));
+        }
         let damage = match Self::open(root.clone()) {
             Ok(store) => {
                 let problem = store.inner.read_with(|connection| Ok(last_good::integrity(connection, "quick_check")))?;
@@ -326,6 +333,20 @@ impl Store {
         ));
         write_atomic(&path, bytes)?;
         Ok(path)
+    }
+
+    /// Removes the pastes a crash cut short in each session's folder under
+    /// `files`.
+    fn sweep_paste_partials(files: &Path) -> Result<(), StoreError> {
+        let read_failed = |source| StoreError::Read {
+            path: files.to_owned(),
+            source,
+        };
+        for entry in fs::read_dir(files).map_err(read_failed)? {
+            let entry = entry.map_err(read_failed)?;
+            sweep_partials(&entry.path().join(PASTE))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn inner(&self) -> &Inner {

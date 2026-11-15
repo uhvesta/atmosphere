@@ -57,7 +57,6 @@ not_built! {
     TransferService => transfer_service_server,
     TrashService => trash_service_server,
     EventService => event_service_server,
-    OperationService => operation_service_server,
     MachineService => machine_service_server,
     ProviderService => provider_service_server,
     SkillsService => skills_service_server,
@@ -81,12 +80,9 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(BoardService)
         .add_service(ChannelService)
         .add_service(ActivityService)
-        .add_service(FileService)
         .add_service(TransferService)
         .add_service(TrashService)
         .add_service(EventService)
-        .add_service(OperationService)
-        .add_service(MachineService)
         .add_service(ProviderService)
         .add_service(SkillsService)
         .add_service(BridgeService)
@@ -101,10 +97,17 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(ViewService)
 }
 
+/// Adds MachineService to a machine's `router`: only the host keeps
+/// machines, and the machine's daemon doesn't forward to it yet.
+pub(crate) fn register_host_only<L>(router: Router<L>) -> Router<L> {
+    router.add_service(MachineService)
+}
+
 /// Adds to the peer link's `router` what it carries that isn't built yet:
 /// the services the Mac relays to this machine. PeerService is `peer`'s.
-/// TerminalService is built, but only in the socket's daemon, which holds
-/// the terminals; this process doesn't (see `peer_link`).
+/// TerminalService and FileService are built, but only in the socket's
+/// daemon, which holds the terminals and the store; this process doesn't
+/// (see `peer_link`).
 pub(crate) fn register_peer_link<L>(router: Router<L>) -> Router<L> {
     router
         .add_service(TerminalService)

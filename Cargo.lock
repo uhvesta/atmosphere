@@ -794,6 +794,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -810,6 +828,12 @@ checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
 dependencies = [
  "bit-vec 0.10.2",
 ]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
 name = "bit-vec"
@@ -2288,6 +2312,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fancy-regex"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2919,10 +2954,12 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
- "similar",
+ "similar 2.7.0",
  "smallvec",
  "smol",
+ "syntect",
  "tracing",
+ "two-face",
  "unicode-segmentation",
  "unicode-width",
  "uuid",
@@ -3265,6 +3302,7 @@ dependencies = [
  "gpui-component",
  "gpui-fast",
  "gpui-fast-platform",
+ "gpui-fast-web",
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-macros",
@@ -3279,6 +3317,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb5abe0bbd8f9226170c8726e529f6574519e297e9ed1bde86d5fd4d3536079a"
 dependencies = [
  "anyhow",
+ "gpui-fast",
  "gpui-pre",
  "gpui-pre-reqwest",
  "log",
@@ -4130,6 +4169,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-app"
+version = "0.0.0"
+dependencies = [
+ "humata2-board",
+ "humata2-clients",
+ "humata2-files",
+ "humata2-hosts",
+ "humata2-inbox",
+ "humata2-layout",
+ "humata2-palette",
+ "humata2-review",
+ "humata2-session",
+ "humata2-settings",
+ "humata2-sidebar",
+ "humata2-views",
+ "serde",
+ "serde_json",
+ "tca-rust",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "humata2-bindgen"
 version = "0.0.0"
 dependencies = [
@@ -4139,10 +4201,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-board"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-chunk"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "lz4_flex",
+ "ruzstd",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.2.1+spec-1.1.0",
+ "zstd",
+]
+
+[[package]]
 name = "humata2-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "humata2-chunk",
  "hyper-util",
  "prost",
  "prost-reflect",
@@ -4159,6 +4245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-clients"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "tca-rust",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "humata2-core"
 version = "0.0.0"
 dependencies = [
@@ -4169,14 +4265,109 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-desktop"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
+ "humata2-app",
+ "humata2-clients",
+ "humata2-engine",
+ "humata2-report",
+ "humata2-ui",
+ "tca-rust",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "humata2-diff-view"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
+ "thiserror 2.0.21",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
+name = "humata2-durable"
+version = "0.0.0"
+dependencies = [
+ "libsqlite3-sys",
+ "rusqlite",
+ "rustix",
+ "tempfile",
+]
+
+[[package]]
+name = "humata2-engine"
+version = "0.0.0"
+dependencies = [
+ "gpui-fast-apple",
+ "gpui-kit",
+ "gpui-pre-apple",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "humata2-files"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-gui-spike"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
+ "libc",
+ "tca-rust",
+ "terminal_grid",
+ "terminal_view",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "humata2-holder"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "humata2-durable",
  "rustix",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "humata2-hosts"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-inbox"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-layout"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
 ]
 
 [[package]]
@@ -4193,6 +4384,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-markdown"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
+ "markdown",
+ "mermaid-rs-renderer",
+ "similar 3.2.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "humata2-mcp"
 version = "0.0.0"
 dependencies = [
@@ -4201,6 +4403,15 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "humata2-palette"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
 ]
 
 [[package]]
@@ -4222,24 +4433,111 @@ dependencies = [
 ]
 
 [[package]]
-name = "humata2-snapshot"
+name = "humata2-review"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-review-diff"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "humata2-review-view"
 version = "0.0.0"
 dependencies = [
  "gpui-kit",
- "gpui-pre-apple",
  "image",
- "tca-rust",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "humata2-revive"
+version = "0.0.0"
+dependencies = [
+ "humata2-holder",
+ "humata2-report",
+ "humata2-store",
+ "notify",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "humata2-session"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-settings"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
+name = "humata2-sidebar"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
 ]
 
 [[package]]
 name = "humata2-store"
 version = "0.0.0"
 dependencies = [
- "serde",
- "serde_json",
+ "humata2-chunk",
+ "humata2-durable",
+ "prost",
+ "rusqlite",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "humata2-ui"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
+ "humata2-app",
+ "humata2-board",
+ "humata2-clients",
+ "humata2-files",
+ "humata2-hosts",
+ "humata2-inbox",
+ "humata2-layout",
+ "humata2-palette",
+ "humata2-report",
+ "humata2-review",
+ "humata2-session",
+ "humata2-settings",
+ "humata2-sidebar",
+ "humata2-views",
+ "tca-rust",
+ "tokio",
 ]
 
 [[package]]
@@ -4248,9 +4546,21 @@ version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
  "gpui-kit",
- "gpui-pre-apple",
- "humata2-snapshot",
+ "humata2-engine",
+ "markdown",
+ "mermaid-rs-renderer",
+ "terminal_grid",
+ "terminal_view",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "humata2-views"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
 ]
 
 [[package]]
@@ -4277,11 +4587,17 @@ name = "humatad2"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "hmac 0.13.0",
  "humata2-access",
+ "humata2-chunk",
  "humata2-holder",
+ "humata2-machines",
  "humata2-mcp",
+ "humata2-review-diff",
+ "humata2-revive",
  "humata2-store",
  "hyper-util",
+ "notify",
  "prost",
  "protoc-gen-prost",
  "protoc-gen-tonic",
@@ -4831,6 +5147,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "json5"
+version = "1.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0348cde6df2b507ba3c3753beba226baba8567af588d6568cdb9877f02c75b60"
+dependencies = [
+ "serde",
+ "ucd-trie",
+]
+
+[[package]]
 name = "keccak"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5115,6 +5441,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5239,6 +5571,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mermaid-rs-renderer"
+version = "0.3.1"
+source = "git+https://github.com/research-developer/mermaid-rs-renderer?rev=2cdc01421a153bc33d010ddadddf5aefbbf1e38d#2cdc01421a153bc33d010ddadddf5aefbbf1e38d"
+dependencies = [
+ "anyhow",
+ "fontdb",
+ "json5",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -8213,6 +8561,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "similar"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f8bec09ae8fae0f4f265a4559a9334be3929d8504e9b536df0a41302bd1733"
+dependencies = [
+ "bstr",
+]
+
+[[package]]
 name = "simplecss"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8601,6 +8958,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "syntect"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
+dependencies = [
+ "bincode",
+ "fancy-regex",
+ "flate2",
+ "fnv",
+ "once_cell",
+ "regex-syntax",
+ "serde",
+ "serde_derive",
+ "thiserror 2.0.21",
+ "walkdir",
+]
+
+[[package]]
 name = "sys-locale"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8734,6 +9109,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "terminal_grid"
+version = "0.0.0"
+
+[[package]]
+name = "terminal_view"
+version = "0.0.0"
+dependencies = [
+ "gpui-kit",
+ "humata2-engine",
+ "terminal_grid",
 ]
 
 [[package]]
@@ -9201,6 +9589,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "two-face"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39e51b6e60e545cfdae5a4639ff423818f52372211a8d9a3e892b4b0761f76b2"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "syntect",
+]
+
+[[package]]
 name = "twox-hash"
 version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9217,6 +9616,12 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "ucd-trie"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971"
 
 [[package]]
 name = "uds_windows"
@@ -11300,6 +11705,34 @@ dependencies = [
  "rustix",
  "socket2",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "8.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.2+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]
 
 [[package]]

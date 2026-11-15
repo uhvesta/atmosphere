@@ -129,6 +129,10 @@ message Denied {
     SOURCE_USER_DENIED = 2;   // IN-13
     SOURCE_HARD_LIMIT = 3;    // IN-20 context-only fork writing its parent
     SOURCE_AWAY_SKIP = 4;     // AW-4 "Skip the step"
+    // PR-25: the user turned off "Agent may: Focus", "Notes" or "Order"
+    // for this review; the message names it and the fix says where it is
+    // turned back on.
+    SOURCE_REVIEW_SWITCH_OFF = 5;
   }
   Source source = 1;
   Capability capability = 2;

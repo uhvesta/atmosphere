@@ -102,6 +102,7 @@ fn hello() -> pb::HelloRequest {
         host_api_minor: 0,
         nonce: vec![7; 32],
         sync_marker: String::new(),
+        chunk_codecs: Vec::new(),
     }
 }
 
@@ -208,6 +209,32 @@ async fn the_machine_proves_it_holds_the_key() {
         answer.proof,
         sign(&KEY, MACHINE_LABEL, &hello().nonce, &answer.machine_nonce)
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hello_lists_the_codecs_the_machine_decodes() {
+    let dir = common::folder();
+    write_key(dir.path(), &KEY, 0o600);
+    let (_child, channel) = link_in("HUMATAD2_RELEASE", dir.path()).await;
+    let answer = peer(&channel).hello(hello()).await.unwrap().into_inner();
+    let mut codecs = answer.chunk_codecs.clone();
+    codecs.sort_unstable();
+    let all = [pb::ChunkCodec::None, pb::ChunkCodec::Lz4, pb::ChunkCodec::Zstd].map(|codec| codec as i32);
+    assert_eq!(codecs, all);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_compression_off_hello_lists_only_raw_chunks() {
+    let dir = common::folder();
+    write_key(dir.path(), &KEY, 0o600);
+    std::fs::write(
+        common::state_folder(dir.path()).join("compression.toml"),
+        "compression = \"off\"\n",
+    )
+    .unwrap();
+    let (_child, channel) = link_in("HUMATAD2_RELEASE", dir.path()).await;
+    let answer = peer(&channel).hello(hello()).await.unwrap().into_inner();
+    assert_eq!(answer.chunk_codecs, vec![pb::ChunkCodec::None as i32]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

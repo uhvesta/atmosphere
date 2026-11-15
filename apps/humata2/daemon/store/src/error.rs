@@ -97,10 +97,35 @@ pub enum StoreError {
     },
 
     #[error(
-        "{what} in {} is compressed with codec {codec}, which this build of Humata doesn't know, so it was likely written by a newer one. Update Humata on this machine to read it; don't delete the file or the state folder, since nothing else holds what it does",
+        "{what} in {} was written by a newer Humata, in a format or codec this build doesn't read. Update Humata on this machine to read it; don't delete the file or the state folder, since nothing else holds what it does",
         path.display()
     )]
-    UnknownCodec { path: PathBuf, what: String, codec: u8 },
+    NewerFormat {
+        path: PathBuf,
+        what: String,
+        #[source]
+        source: humata2_chunk::FrameError,
+    },
+
+    #[error(
+        "{what} in {} is damaged: its saved bytes don't decode. Restore the state folder from a backup if you have one; deleting the damaged entry loses what it held",
+        path.display()
+    )]
+    Undecodable {
+        path: PathBuf,
+        what: String,
+        #[source]
+        source: humata2_chunk::FrameError,
+    },
+
+    #[error(
+        "couldn't compress {what} to save it; nothing was changed. This is a bug in Humata: report it, with the error below"
+    )]
+    Encode {
+        what: &'static str,
+        #[source]
+        source: humata2_chunk::FrameError,
+    },
 
     #[error(
         "couldn't save a last good copy of the state at {}: the new copy failed its check ({problem}), so the one before it is kept. The database itself may be damaged too: run `PRAGMA integrity_check` on it, and don't delete the copy kept",
