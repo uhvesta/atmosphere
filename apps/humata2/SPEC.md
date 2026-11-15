@@ -1548,6 +1548,28 @@ outside the session go through the Mac.
   added, updated and removed, and any name clashes with machine-local skills.
   Automatic syncs apply without asking except when there is a new clash.
 
+### Tools and scripted syncs (D49)
+
+- **TS-1** Adding a machine, and every connect after, installs Humata's own
+  binaries there automatically, with no prompt and no download: `humatad2`,
+  `humata2_holder` and the `humata` CLI, into `~/.humata2/bin`, a folder only
+  Humata uses. Sessions Humata starts there have it on their PATH. A machine
+  whose copies differ from the app's (by checksum) gets the app's, replaced
+  atomically and only when no session's holder uses the old ones.
+- **TS-2** The desktop app embeds these binaries for every machine platform
+  it supports (macOS and Linux, arm64 and x86_64), as Humata 1 did. Setup
+  reads the machine's OS and architecture and copies the matching set, so a
+  machine needs no network, toolchain or package manager. An unsupported
+  platform fails at Add machine, naming it.
+- **TS-3** Other things can be synced by script: a sync rule names a source
+  on the Mac (a folder or a command's output), a destination on machines, and
+  optional `before`/`after` commands run there, as command templates like
+  providers'. Rules run on connect and on demand (`humata sync run [rule]
+  [machine…]`), with the same preview, secret filtering, offline catch-up and
+  whole-set replacement as skills (SK-6, SK-7, SK-9, SK-11).
+- **TS-4** Skills sync is the built-in rule; scripted rules can't write into
+  Humata's managed folders or outside the user's home.
+
 ## 18. Machine providers
 
 Every machine runs `humatad` and is reached through one command. A provider is

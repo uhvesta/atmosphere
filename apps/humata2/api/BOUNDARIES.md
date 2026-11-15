@@ -119,11 +119,16 @@ by whatever drives that terminal), and the error says so
 - The host starts every peer link itself, over SSH or the provider's connect
   command (MP-7); no machine dials in, and no port is open (TR-5).
 - `Hello` proves the machine holds the enrollment key written at install
-  (HMAC over a host nonce), so a reinstalled or swapped machine is noticed.
+  (HMAC over the host's nonce and the machine's), so a reinstalled or
+  swapped machine is noticed. `ProveHost` then proves the host holds it too
+  (GRPC.md §8); until it does the link serves only the handshake and
+  `WhoAmI`, and a wrong proof closes the link.
   The SSH host key is pinned; a changed key stops the link with
   `host_key_changed` until the user checks and trusts it (user-only).
-- PeerService is served only on that link, never on a socket, so nothing
-  local to a machine can call it.
+- PeerService is served only on that link, never on a socket. A local
+  process could still start `humatad serve --stdio` itself, so the host's
+  proof is what keeps a contained agent out. An uncontained agent (SPEC D1)
+  runs as the user and can read the key file, so it can pose as the host.
 - What a peer may assert: pointers, mirror chunks, status and journal entries
   for sessions placed on it; agent calls for those sessions; local answers
   for requests it holds, each with the passphrase check it made. Anything
@@ -277,8 +282,10 @@ agent do more.
      every journaled write is checked again on the host against the current
      rules at replay. Writes that fail are kept as `journal_entry_rejected`
      and shown; the snapshot copy never outranks the host.
-   - *Forge a peer:* PeerService isn't on any socket, and a peer can assert
-     only its own sessions (§2.5).
+   - *Forge a peer:* PeerService isn't on any socket, a link that starts
+     `humatad serve --stdio` locally gets nothing past the handshake
+     without the enrollment key, and a peer can assert only its own
+     sessions (§2.5). An uncontained agent can read the key (SPEC D1).
    - *Phish the user:* a view, note or question can carry any text, but the
      app renders agent text as text, never as controls; the only controls
      on an Inbox card are the app's own, and every card names the requester

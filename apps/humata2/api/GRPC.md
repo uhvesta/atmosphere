@@ -46,7 +46,10 @@ wrong. Requirement ids (SL-1, TP-9, …) refer to SPEC.md.
 | Peer link | stdio of `humatad serve --stdio`, started by the host through the machine's connect command or SSH (MP-7) | the host's daemon only | PeerService, plus TerminalService, FileService, DiffService for relaying |
 
 No TCP port is opened anywhere (TR-5). PeerService is never registered on a
-socket, so no local process on a machine (agent, CLI, script) can call it.
+socket, so no local process on a machine (agent, CLI, script) can call it
+there. That alone isn't enough, since any local process can also run
+`humatad serve --stdio` itself, so the link serves nothing but the handshake
+until the host proves it holds the machine's enrollment key (§8).
 
 ## 3. Principals on a connection
 
@@ -61,7 +64,7 @@ established is in BOUNDARIES.md §2; in short:
 | User via CLI, logged in | As above, and the process is in a terminal session that `humata login` bound (`CliAuthService`) | The present user: needs no further proof until the login expires (12 hours at most) |
 | Script | `HUMATA_TOKEN` from `CreateScriptToken` | Only the token's capabilities on its channels; never a user-only one |
 | Agent | `humatad mcp` presents the session token from its launch environment; the daemon checks the presenting process descends from that session's holder | Also any `humata` process inside a session's tree: it is that session's agent, not the user |
-| Peer | The SSH stdio link the host itself started, then `PeerService.Hello` with the enrollment proof | A machine may assert an `AgentPrincipal` only for sessions the host placed on it |
+| Peer | The SSH stdio link the host itself started, then the mutual enrollment proof: `PeerService.Hello` (the machine's) and `PeerService.ProveHost` (the host's) | A machine may assert an `AgentPrincipal` only for sessions the host placed on it |
 
 ## 4. Services and which daemon owns them
 
@@ -226,11 +229,32 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
 `PeerService` (peer.proto) is served by every remote daemon and called only
 by the host over the stdio link the host started.
 
-- **Hello** proves the machine is the one enrolled: when the host installs
-  `humatad` it writes a random enrollment key (0600) on the machine and keeps
-  its own copy in the Mac's keychain. Hello sends a nonce; the machine
-  answers with an HMAC. A mismatch is `identity_mismatch`: the machine was
-  re-imaged or swapped, and LD-12 applies (add it again as a new machine).
+- **Hello and ProveHost** prove each side holds the enrollment key: when
+  the host installs `humatad` it writes a random key of at least 32 bytes,
+  as hex in a 0600 file in the machine daemon's state folder
+  (`enrollment-key`), and keeps its own copy in the Mac's keychain. Hello
+  sends 32 to 64 random bytes as `nonce`; the machine answers with 32 of
+  its own as `machine_nonce` and the proof
+  HMAC-SHA256(key, "humata-peer-machine-v1" ‖ nonce ‖ machine_nonce). A
+  wrong proof is `identity_mismatch` on the host: the machine was re-imaged
+  or swapped, and LD-12 applies (add it again as a new machine). The host
+  then calls ProveHost with
+  HMAC-SHA256(key, "humata-peer-host-v1" ‖ machine_nonce ‖ nonce). Until
+  that succeeds the link answers only Hello, ProveHost and
+  `DaemonService.WhoAmI`; everything else, `GetServerInfo` included, is
+  `peer_unproven` with reason `HOST_NOT_PROVEN`. A wrong host proof is
+  `peer_unproven` `HOST_PROOF_WRONG`, and the machine closes the link and
+  exits with a failure. A link has one Hello, whatever its outcome; a second,
+  or ProveHost before Hello or after it succeeded, is `OUT_OF_ORDER` and
+  leaves the link open. A machine with no key file refuses Hello with
+  `NOT_ENROLLED`, and one whose key file other users can open or don't own,
+  or that is a link, with `KEY_UNSAFE`: its fix says not to just tighten
+  the mode, since the key may already have been read or replaced, but to
+  forget the machine and add it again. Once the link is up its stderr goes
+  to `logs/peer-link.log` (0600) in the state folder, so no error line can
+  corrupt the stream. This keeps out a swapped machine and a contained
+  agent posing as the host. An uncontained agent (SPEC D1) runs as the user
+  and can read the key file, so it can still pose as the host.
 - **Uplink** is opened right after Hello and lives as long as the link.
   Machine to host: pointers (SL-3), mirror chunks (LD-8), status, journal
   entries (SL-5), forwarded calls from its local clients, local answers,
@@ -369,7 +393,7 @@ code is for generic handling; clients branch on `Error.kind`, never on text.
 | `INVALID_ARGUMENT` | `invalid_field`, `outside_humata_folders` |
 | `ALREADY_EXISTS` | `name_taken` |
 | `PERMISSION_DENIED` | `denied`, `user_only`, `presence_required`, `not_in_channel`, `parent_read_only`, `main_clone_read_only`, `push_refused` |
-| `UNAUTHENTICATED` | `identity_mismatch` |
+| `UNAUTHENTICATED` | `identity_mismatch`, `peer_unproven` (the peer link's handshake: which step failed is in its `reason`) |
 | `ABORTED` | `revision_conflict`, `plan_stale`, `already_answered` |
 | `FAILED_PRECONDITION` | `unpushed_work`, `session_busy`, `agent_lacks_feature`, `resume_failed`, `request_withdrawn`, `user_away`, `pr_closed`, `skill_name_clash`, `login_needs_user`, `host_key_changed`, `not_cancellable`, `journal_entry_rejected`, `linger_unavailable`, `daemon_already_running`, `daemon_not_running`, `repo_not_visible`, `github_cli` (not signed in, missing scope), `provider_identity_invalid` |
 | `UNAVAILABLE` | `machine_offline`, `host_unreachable`, `ssh_failed` |
