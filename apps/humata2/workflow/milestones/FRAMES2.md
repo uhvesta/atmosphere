@@ -1,6 +1,6 @@
 # FRAMES2: The screens for machines, files, forks, PR reviews and views are drawn and signed off
 
-- **Status:** blocked
+- **Status:** in progress (lane FRAMES2)
 - **Depends on:**
   - FRAMES1: same files and the same lane; the earlier frames set the patterns
 - **Unblocks:** MACH, FORK, FILES, VIEWS, PR

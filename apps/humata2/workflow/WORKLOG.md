@@ -33,7 +33,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | done |
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 | minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
-| minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | running |
+| minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
 
 ## Claims
 
@@ -43,8 +43,8 @@ Files a lane is editing. No two lanes claim the same file.
 |---|---|
 | C1 | `clients/src/{daemon,fixture,workspace}.rs`, `clients/tests/fake_daemon.rs`, `desktop/tests/native.rs`, `desktop/tests/__snapshots__/native/`, `features/app/src/lib.rs`, `features/session/src/lib.rs`, `ui/BUILD.bazel`, `ui/src/{lib,overlays,pages,session_tabs,shell}.rs`, its OVERVIEW pickup block |
 | P0 | `LAYOUT.md`, `api/{BOUNDARIES,MCP,GRPC}.md` ("Always let" → "Always allow"); `features/app/src/` (lib.rs and new sibling files); `clients/BUILD.bazel`, `clients/src/{daemon,fixture}.rs`, new `clients/src/{daemon,fixture}/`; `ui/src/overlays.rs` and new `ui/src/overlay_*.rs` (all clean in git status when claimed; not panels.rs, native.rs, ui/src/lib.rs) |
-| ASK | `daemon/humatad/src/{inbox,inbox/kept,inbox/deferred,guard,status,channel_service,access_service,rules_kept,identity,restart,session_service,mcp}.rs`, `daemon/humatad/tests/{inbox,access,auth,sessions,mcp,matrix}.rs`, `daemon/humatad/tests/common/mod.rs` (additive), `daemon/store/src/{rules,schema,lib}.rs`, `daemon/store/BUILD.bazel`, `cli/src/{error,call,exit}.rs`, `workflow/milestones/ASK.md` Lane |
-| FRAMES1 | `desktop/tests/design.rs` (FRAMES list and icons only); `desktop/tests/design/{session,channel,pages,overlays}.rs` (additive only: frames 01–43 draw the same); new `desktop/tests/design/{new_channel,resume,channel_tabs,comments,cleanup}.rs`; `workflow/milestones/FRAMES1.md` Lane (clean in git status when claimed; no goldens) |
+| ASK | `daemon/humatad/src/{identity,restart,terminal_session,inbox,inbox/deferred,inbox/kept,grant_target,session_service,channel_service,terminal,files}.rs`, `daemon/humatad/tests/{auth,inbox,sessions,channels,files,terminal}.rs`, `daemon/humatad/tests/common/mod.rs` (additive), `workflow/milestones/ASK.md` Lane |
+| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal}.rs`, `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
 
 ## Lanes
 
@@ -53,8 +53,8 @@ Each lane's plan, tasks and workers live in its milestone file
 
 | Lane | Milestone file | Manager | Workers running | State |
 |---|---|---|---|---|
-| ASK | `milestones/ASK.md` | minion ASK | defer, rules, sessions, mcp, matrix | opened after FL-D closed; daemon part first (FL, LOOK1, FRAMES1, W1 block only closing) |
-| FRAMES1 | `milestones/FRAMES1.md` | minion FRAMES1 | none (FA, FB, FC done) | batch 1 reported: frames 44–55 drafted as code, waiting on the gate (design_test build + record) |
+| ASK | `milestones/ASK.md` | minion ASK | sec15, cards, handlers | batch 2 (daemon): SEC-15, deferred card previews + store flag, more handlers deferred |
+| LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
 Old template, kept for reference:
@@ -102,4 +102,7 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: opened ASK (daemon lane), manager minion ASK (Opus 5.5).
 - 2026-11-15 main: ASK batch 1 reported (T1–T5, decisions A1–A11). Main applied seams S1 (errors.proto ApprovalPending=57), S2 (mod rules_kept), S3 (serve.rs restore + Access store + inbox to ChannelSvc/SessionSvc; DaemonError::RulesKept), S4 (events Rules filter). S5 deferred. Gate 1 ASK running.
 - 2026-11-15 main: gate 1 ASK: main fixed its own RulesKept {0} and added exit_codes pending arm; build pass; humatad+cli 28/29, store+sessions pass; matrix_test 3 cases fail (--wait ends pending after deny; MCP went quiet). Sent to minion ASK.
-- 2026-11-15 main: gate 2 ASK: 45/45 pass. Committed ASK batch 1 as 4d873e4c (D126). ASK stays open: batch 2 next.
+- 2026-11-15 main: gate 2 ASK: 45/45 pass. Committed ASK batch 1 as 4d873e4c (D127). ASK stays open: batch 2 next.
+- 2026-11-15 main: owner approved frames 44–55 with main's picks (FRAMES1 asked for the 45 Cancel + failed/Retry change) and reads allowed by default (D127.4, sent to ASK). C1 stopped (9e185a5b, C1_HANDOFF.md); its D126 committed, ASK's renumbered D127 (e5ac5a24). Opened LOOK1 as a workflow lane, manager minion LOOK1.
+- 2026-11-15 main: FRAMES1 recorded with the 45 change; design_test pass, 01–43 unchanged. Closed FRAMES1: 59340201. Claims released.
+- 2026-11-15 main: opened FRAMES2 (docs lane), manager minion FRAMES2 (Opus 5.5).
