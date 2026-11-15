@@ -397,3 +397,65 @@ async fn a_question_the_agent_stops_waiting_on_is_withdrawn() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// A clone of `api` in the session's folder with `refund.rs` committed,
+/// then edited, and the diff shown once, as the app does.
+async fn shown_review(fixture: &Fixture) {
+    let clone = fixture.daemon.dir.path().join("api");
+    std::fs::create_dir(&clone).unwrap();
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(&clone)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(clone.join("refund.rs"), "one\ntwo\nthree\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    std::fs::write(clone.join("refund.rs"), "one\n2\nthree\n").unwrap();
+    pb::diff_service_client::DiffServiceClient::new(fixture.daemon.channel().await)
+        .get_diff(pb::GetDiffRequest {
+            session: Some(session()),
+            base: Some(pb::DiffBase {
+                base: Some(pb::diff_base::Base::UncommittedOnly(pb::UncommittedOnly {})),
+            }),
+            repos: Vec::new(),
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_review_chats_agent_shows_the_user_a_place_and_reads_it_back() {
+    let fixture = Fixture::start().await;
+    shown_review(&fixture).await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    let focused = mcp
+        .call(
+            1,
+            "review_focus",
+            json!({ "repo": "api", "path": "refund.rs", "lines": { "first": 2, "last": 2 } }),
+        )
+        .await;
+    let context = mcp.call(2, "review_context", json!({})).await;
+    let outside = mcp
+        .call(3, "review_focus", json!({ "repo": "api", "path": "other.rs" }))
+        .await;
+
+    assert_eq!(focused["isError"], false, "{focused}");
+    assert_eq!(context["isError"], false, "{context}");
+    let seen = &context["structuredContent"]["result"];
+    assert_eq!(seen["open"]["file"]["path"], "refund.rs");
+    assert_eq!(seen["selected_text"], json!(["2"]));
+    assert_eq!(outside["isError"], true, "a file the review doesn't show can't be focused");
+}

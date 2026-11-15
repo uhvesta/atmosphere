@@ -95,6 +95,69 @@ impl GrpcDaemon {
         pb::terminal_service_client::TerminalServiceClient::new(self.channel.clone())
     }
 
+    fn review_chat(&self) -> pb::review_chat_service_client::ReviewChatServiceClient<Channel> {
+        pb::review_chat_service_client::ReviewChatServiceClient::new(self.channel.clone())
+    }
+
+    /// The caller's own session: the review chat acts on its own review.
+    async fn own_session(&self) -> Result<pb::SessionId, ToolError> {
+        let (agent, _) = self.agent().await?;
+        agent.session.ok_or_else(not_a_token)
+    }
+
+    /// `review_context`: what the user is looking at in this review.
+    async fn review_context(&self) -> Result<Reply, ToolError> {
+        let session = self.own_session().await?;
+        let request = self.request(pb::GetReviewContextRequest {
+            session: Some(session),
+        })?;
+        let context = self
+            .review_chat()
+            .get_review_context(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(review::context_json(&context), None))
+    }
+
+    /// `review_focus`: show the user a place in the review.
+    async fn review_focus(&self, call: Call) -> Result<Reply, ToolError> {
+        let session = self.own_session().await?;
+        let arguments = &call.arguments;
+        let highlights = arguments
+            .get("highlights")
+            .and_then(Value::as_array)
+            .map(|highlights| {
+                highlights
+                    .iter()
+                    .filter_map(Value::as_object)
+                    .map(|highlight| pb::Highlight {
+                        file: Some(review::repo_path(highlight)),
+                        lines: review::lines(highlight.get("lines")),
+                        side: review::side(highlight),
+                        label: text(highlight, "label"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let request = self.request(pb::FocusReviewRequest {
+            idempotency_key: Some(key(&call)),
+            session: Some(session),
+            file: Some(review::repo_path(arguments)),
+            lines: review::lines(arguments.get("lines")),
+            side: review::side(arguments),
+            highlights,
+        })?;
+        let change = self
+            .review_chat()
+            .focus_review(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let result = json!({ "undo_id": change.undo_id, "summary": change.summary });
+        Ok(applied(result, None))
+    }
+
     /// The agent this connection is, per the daemon.
     async fn agent(&self) -> Result<(pb::AgentActor, Option<pb::ChannelId>), ToolError> {
         let request = self.request(pb::WhoAmIRequest {})?;
@@ -193,6 +256,8 @@ impl Daemon for GrpcDaemon {
             Operation::Whoami => self.whoami().await,
             Operation::InboxAsk => self.ask(call).await,
             Operation::SessionType => self.session_type(call).await,
+            Operation::ReviewContext => self.review_context().await,
+            Operation::ReviewFocus => self.review_focus(call).await,
             other => Err(not_built(other)),
         }
     }
@@ -464,4 +529,96 @@ fn capability_name(value: i32) -> Option<String> {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The review tools' arguments and answers, as JSON.
+mod review {
+    use humata2_grpc::humata::v1 as pb;
+    use serde_json::{Map, Value, json};
+
+    /// `repo` (`owner/name`) and `path` of a tool's arguments.
+    pub(super) fn repo_path(arguments: &Map<String, Value>) -> pb::RepoPath {
+        let repo = super::text(arguments, "repo");
+        let (owner, name) = repo.split_once('/').unwrap_or(("", repo.as_str()));
+        pb::RepoPath {
+            repo: Some(pb::RepoRef {
+                owner: owner.to_owned(),
+                name: name.to_owned(),
+            }),
+            path: super::text(arguments, "path"),
+        }
+    }
+
+    pub(super) fn lines(lines: Option<&Value>) -> Option<pb::LineRange> {
+        let lines = lines?;
+        let number = |field: &str| lines.get(field).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+        Some(pb::LineRange {
+            first: number("first")?,
+            last: number("last")?,
+        })
+    }
+
+    pub(super) fn side(arguments: &Map<String, Value>) -> i32 {
+        match arguments.get("side").and_then(Value::as_str) {
+            Some("old") => pb::DiffSide::Old as i32,
+            _ => pb::DiffSide::New as i32,
+        }
+    }
+
+    fn path_json(path: Option<&pb::RepoPath>) -> Value {
+        path.map_or(Value::Null, |path| {
+            let repo = path.repo.as_ref().map_or_else(String::new, |repo| {
+                if repo.owner.is_empty() {
+                    repo.name.clone()
+                } else {
+                    format!("{}/{}", repo.owner, repo.name)
+                }
+            });
+            json!({ "repo": repo, "path": path.path })
+        })
+    }
+
+    fn lines_json(lines: Option<&pb::LineRange>) -> Value {
+        lines.map_or(Value::Null, |lines| json!({ "first": lines.first, "last": lines.last }))
+    }
+
+    fn side_json(side: i32) -> &'static str {
+        if side == pb::DiffSide::Old as i32 { "old" } else { "new" }
+    }
+
+    pub(super) fn context_json(context: &pb::ReviewContext) -> Value {
+        let view = context.view.clone().unwrap_or_default();
+        let open = view.open.as_ref().map_or(Value::Null, |place| {
+            json!({
+                "file": path_json(place.file.as_ref()),
+                "visible": lines_json(place.visible.as_ref()),
+                "selection": lines_json(place.selection.as_ref()),
+                "side": side_json(place.side),
+            })
+        });
+        let switches = context.switches.unwrap_or_default();
+        json!({
+            "open": open,
+            "selected_text": context.selected_text,
+            "order": view.order.iter().map(|path| path_json(Some(path))).collect::<Vec<_>>(),
+            "viewed": view.viewed.iter().map(|viewed| path_json(viewed.file.as_ref())).collect::<Vec<_>>(),
+            "highlights": view.highlights.iter().map(|highlight| json!({
+                "file": path_json(highlight.file.as_ref()),
+                "lines": lines_json(highlight.lines.as_ref()),
+                "side": side_json(highlight.side),
+                "label": highlight.label,
+            })).collect::<Vec<_>>(),
+            "notes": context.notes.iter().map(|note| {
+                let anchor = note.anchor.clone().unwrap_or_default();
+                json!({
+                    "note_id": note.id.as_ref().map(|id| id.value.clone()),
+                    "file": path_json(anchor.file.as_ref()),
+                    "lines": lines_json(anchor.lines.as_ref()),
+                    "text": note.text,
+                    "outdated": anchor.outdated,
+                })
+            }).collect::<Vec<_>>(),
+            "agent_may": { "focus": switches.focus, "notes": switches.notes, "order": switches.order },
+        })
+    }
 }

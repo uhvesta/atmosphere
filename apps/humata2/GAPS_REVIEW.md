@@ -111,3 +111,8 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `serve.rs` registers both; `not_built.rs` keeps DiffService only on the peer link.
 - Verified: `bazel test //apps/humata2/daemon/humatad:review_test` (5 tests; before this commit DiffService and ReviewChatService answered Unimplemented, so each fails there).
 - Look at: the state is memory only (new OVERVIEW item); `diff_failed`'s code per DiffError; GetFileDiff computes the file list again to find the file's summary even when the client sends trees.
+
+### (this commit): MCP's review_context and review_focus (review_diff wiring)
+- `daemon/humatad/src/mcp.rs`: `review_context` and `review_focus` call ReviewChatService for the session the token belongs to (from WhoAmI, so an agent can't name another review). Arguments map `repo` (`owner/name` or a bare name), `path`, `lines`, `side` and `highlights`; review_context answers the open place, the selection's text, order, Viewed files, highlights, notes and the switches as JSON.
+- Verified: `bazel test //apps/humata2/daemon/humatad:mcp_test` (the new test fails before: both tools answered not built).
+- Look at: the JSON shape of review_context isn't in MCP.md yet; the four note/prepare tools still answer not built.
