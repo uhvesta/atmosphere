@@ -76,7 +76,7 @@ DAEMON_DEPS = [
 # The release daemon: a call with no credential is refused (SEC-9).
 rust_binary(
     name = "humatad2",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     visibility = ["//apps/humata2:__subpackages__"],
     deps = DAEMON_DEPS,
 )
@@ -103,7 +103,7 @@ tools_bundle(
 rust_binary(
     name = "humatad2_admin",
     testonly = True,
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     crate_features = ["admin"],
     deps = DAEMON_DEPS,
 )

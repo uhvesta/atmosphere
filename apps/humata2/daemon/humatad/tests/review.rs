@@ -790,8 +790,14 @@ async fn a_plan_in_an_open_review_chat_orders_the_review_and_leaves_its_notes() 
     let closed = views
         .prepare_view(as_agent(plan(&["api.rs", "refund.rs"], notes.clone()), &token))
         .await
-        .unwrap_err();
-    assert_eq!(closed.code(), Code::Unimplemented, "a draft view isn't built yet");
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        (closed.state, closed.undo_id.as_str()),
+        (pb::ViewState::Draft as i32, ""),
+        "outside an open review chat a plan is a draft view"
+    );
+    assert!(context(&daemon).await.view.unwrap().order.is_empty(), "a draft changes nothing on screen");
 
     chat(&daemon)
         .await
@@ -979,4 +985,220 @@ async fn undo_and_a_repeated_key_act_the_same_after_a_restart() {
         undo(&daemon, &prepared.undo_id).await.is_err(),
         "an undone change stays undone"
     );
+}
+
+fn walkthrough(title: &str, path: &str) -> pb::PrepareViewRequest {
+    pb::PrepareViewRequest {
+        idempotency_key: None,
+        title: title.to_owned(),
+        summary: "Read the refund first".to_owned(),
+        content: Some(pb::prepare_view_request::Content::Review(pb::ReviewWalkthrough {
+            steps: vec![pb::review_walkthrough::Step {
+                file: Some(file(path)),
+                lines: Some(pb::LineRange { first: 1, last: 3 }),
+                note: "the refund starts here".to_owned(),
+            }],
+        })),
+    }
+}
+
+async fn list_views(daemon: &Daemon, token: Option<&str>) -> Vec<(String, String, i32)> {
+    let request = pb::ListViewsRequest {
+        session: Some(session()),
+        ..pb::ListViewsRequest::default()
+    };
+    let request = match token {
+        Some(token) => as_agent(request, token),
+        None => Request::new(request),
+    };
+    views(daemon)
+        .await
+        .list_views(request)
+        .await
+        .unwrap()
+        .into_inner()
+        .views
+        .into_iter()
+        .map(|view| (view.id.unwrap().value, view.title, view.state))
+        .collect()
+}
+
+fn set_state(id: &pb::ViewId, state: pb::ViewState) -> pb::SetViewStateRequest {
+    pb::SetViewStateRequest {
+        idempotency_key: None,
+        id: Some(id.clone()),
+        state: state as i32,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_view_is_the_agents_until_offered_then_the_users_and_a_restart_keeps_it() {
+    let (mut daemon, _clone) = daemon_with_clone().await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut views = views(&daemon).await;
+    let keyed_draft = || {
+        keyed(walkthrough("Refund walkthrough", "refund.rs"), "draft-once", |request, key| {
+            request.idempotency_key = key;
+        })
+    };
+
+    let draft = views.prepare_view(as_agent(keyed_draft(), &token)).await.unwrap().into_inner();
+    let id = draft.id.clone().unwrap();
+    assert_eq!(draft.state, pb::ViewState::Draft as i32);
+    assert_eq!(draft.revision.unwrap().value, 1);
+    let again = views.prepare_view(as_agent(keyed_draft(), &token)).await.unwrap().into_inner();
+    assert_eq!(again.id, draft.id, "a repeated key makes no second draft");
+    assert_eq!(list_views(&daemon, Some(&token)).await.len(), 1, "the agent sees its draft");
+    assert!(list_views(&daemon, None).await.is_empty(), "a draft isn't offered (VW-14)");
+    let early = views
+        .set_view_state(set_state(&id, pb::ViewState::Opened))
+        .await
+        .unwrap_err();
+    assert_eq!(early.code(), Code::InvalidArgument, "the user can't answer a draft");
+
+    let revise = |title: &str, expected: u64| pb::ReviseViewRequest {
+        id: Some(id.clone()),
+        title: title.to_owned(),
+        expected_revision: Some(pb::Revision { value: expected }),
+        ..pb::ReviseViewRequest::default()
+    };
+    let revised = views.revise_view(as_agent(revise("Refund, step by step", 1), &token)).await.unwrap().into_inner();
+    assert_eq!(
+        (revised.title.as_str(), revised.summary.as_str(), revised.revision.unwrap().value),
+        ("Refund, step by step", "Read the refund first", 2),
+        "a revision replaces what it names and keeps the rest"
+    );
+    let stale = views.revise_view(as_agent(revise("Stale", 1), &token)).await.unwrap_err();
+    assert_eq!(stale.code(), Code::Aborted, "a stale revision is a conflict");
+
+    let ready = views
+        .mark_ready(as_agent(
+            pb::MarkReadyRequest {
+                idempotency_key: None,
+                id: Some(id.clone()),
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(ready.state, pb::ViewState::Waiting as i32);
+    let late = views.revise_view(as_agent(revise("Too late", 3), &token)).await.unwrap_err();
+    assert_eq!(late.code(), Code::InvalidArgument, "an offered view can't be revised");
+    assert!(
+        views
+            .set_view_state(as_agent(set_state(&id, pb::ViewState::Kept), &token))
+            .await
+            .is_err(),
+        "only the user answers an offer"
+    );
+    let later = views
+        .set_view_state(set_state(&id, pb::ViewState::Later))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(later.state, pb::ViewState::Later as i32);
+
+    daemon.restart().await;
+
+    let offered = vec![(
+        id.value.clone(),
+        "Refund, step by step".to_owned(),
+        pb::ViewState::Later as i32,
+    )];
+    assert_eq!(list_views(&daemon, None).await, offered, "a restart keeps the view and its state");
+    let (token, _attach) = agent_token(&daemon).await;
+    let repeated = crate::views(&daemon)
+        .await
+        .prepare_view(as_agent(keyed_draft(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(repeated.id, draft.id, "a repeated key after a restart makes no new draft");
+    assert_eq!(list_views(&daemon, Some(&token)).await, offered);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_view_is_checked_before_it_is_kept() {
+    let (daemon, _clone) = daemon_with_sessions(&["se_other"]).await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut views = views(&daemon).await;
+    let prepare = |content| pb::PrepareViewRequest {
+        title: "A view".to_owned(),
+        content: Some(content),
+        ..pb::PrepareViewRequest::default()
+    };
+    let board = |scope| {
+        prepare(pb::prepare_view_request::Content::Board(pb::BoardViewOffer { scope: Some(scope) }))
+    };
+
+    let by_user = views.prepare_view(walkthrough("Mine", "refund.rs")).await.unwrap_err();
+    assert_eq!(by_user.code(), Code::FailedPrecondition, "only a session's agent prepares views");
+    let untitled = views.prepare_view(as_agent(walkthrough("  ", "refund.rs"), &token)).await.unwrap_err();
+    assert_eq!(untitled.code(), Code::InvalidArgument, "a view needs a title");
+    let empty = views
+        .prepare_view(as_agent(
+            prepare(pb::prepare_view_request::Content::Review(pb::ReviewWalkthrough::default())),
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(empty.code(), Code::InvalidArgument, "a walkthrough needs a step");
+    let no_repos = views
+        .prepare_view(as_agent(
+            prepare(pb::prepare_view_request::Content::PullRequest(pb::PullRequestDraft::default())),
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(no_repos.code(), Code::InvalidArgument, "a pull request view needs a repo");
+    let elsewhere = views
+        .prepare_view(as_agent(
+            board(pb::board_view_offer::Scope::Channel(pb::ChannelId {
+                value: "ch_elsewhere".to_owned(),
+            })),
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(elsewhere.code(), Code::InvalidArgument, "a board view stays in the session's channel");
+    let gone = views
+        .prepare_view(as_agent(plan(&["gone.rs"], Vec::new()), &token))
+        .await
+        .unwrap_err();
+    assert_eq!(gone.code(), Code::FailedPrecondition, "a draft plan names only files its spec shows");
+    assert!(list_views(&daemon, Some(&token)).await.is_empty(), "nothing refused was kept");
+
+    let neighbour = views
+        .prepare_view(as_agent(
+            board(pb::board_view_offer::Scope::OneSession(pb::SessionId {
+                value: "se_other".to_owned(),
+            })),
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(neighbour.state, pb::ViewState::Draft as i32, "a session of the same channel is fine");
+    let by_user = views
+        .mark_ready(pb::MarkReadyRequest {
+            idempotency_key: None,
+            id: neighbour.id.clone(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(by_user.code(), Code::FailedPrecondition, "the user doesn't offer the agent's draft");
+    let unknown = views
+        .mark_ready(as_agent(
+            pb::MarkReadyRequest {
+                idempotency_key: None,
+                id: Some(pb::ViewId {
+                    value: "vw_missing".to_owned(),
+                }),
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), Code::NotFound);
 }

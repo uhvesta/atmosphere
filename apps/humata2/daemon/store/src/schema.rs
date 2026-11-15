@@ -112,6 +112,19 @@ const MIGRATIONS: &[&str] = &["
         state_file TEXT,
         CHECK ((state IS NULL) <> (state_file IS NULL))
     ) STRICT;
+", "
+    -- The views a session's agent prepared (VW-1, VW-14), drafts and
+    -- offered ones, with the idempotency keys their calls carried.
+    CREATE TABLE views (
+        id TEXT PRIMARY KEY,
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        prepared_unix_ms INTEGER NOT NULL,
+        updated_unix_ms INTEGER NOT NULL,
+        view BLOB,
+        view_file TEXT,
+        CHECK ((view IS NULL) <> (view_file IS NULL))
+    ) STRICT;
+    CREATE INDEX views_by_session ON views (session, prepared_unix_ms, id);
 "];
 
 /// The schema this build writes and reads.

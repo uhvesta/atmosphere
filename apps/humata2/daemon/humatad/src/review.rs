@@ -36,6 +36,8 @@ use crate::guard::Guard;
 use crate::identity::{self, AgentCaller, Caller};
 use crate::status;
 
+mod views;
+
 /// At most this many lines of a selection go back with review_context.
 const SELECTED_LINES_MAX: u32 = 200;
 
@@ -54,6 +56,9 @@ struct Inner {
     guard: Arc<Guard>,
     machine: String,
     sessions: Mutex<HashMap<String, Arc<SessionReview>>>,
+    /// Held while a view is read, changed and saved, so two calls on one
+    /// view, or two with one idempotency key, don't both act.
+    views: tokio::sync::Mutex<()>,
 }
 
 /// What a call with an idempotency key answered, so a repeat answers the
@@ -119,6 +124,7 @@ impl Review {
                 guard,
                 machine,
                 sessions: Mutex::default(),
+                views: tokio::sync::Mutex::default(),
             }),
         }
     }
@@ -210,6 +216,36 @@ impl Review {
                 target: Target::Session(session.clone()),
             },
         )
+    }
+
+    /// `plan` checked against the diffs its spec makes now, its notes
+    /// anchored, with those diffs.
+    async fn checked_plan(
+        &self,
+        caller: &Caller,
+        record: &SessionRecord,
+        session: &SessionRef,
+        plan: &pb::ReviewPlan,
+    ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>), Status> {
+        let mut plan = wire::plan_from_pb(plan).map_err(|error| wire_failed("review_plan", &error))?;
+        let asked_repos: Vec<pb::RepoRef> = plan.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
+        let keys = repo_keys(record, &asked_repos).await?;
+        self.require_read(caller, session, &keys)?;
+        let clones = clones(record, &keys).await?;
+        let diffs = clones
+            .diff(&plan.spec, &context_of(record))
+            .await
+            .map_err(|error| diff_failed(&error))?;
+        plan.check(&diffs).map_err(|error| plan_failed(&error))?;
+        for (diff, spec) in diffs.iter().zip(&plan.spec.repos) {
+            let checkout = clones.get(&diff.repo).map_err(|error| diff_failed(&error))?.clone();
+            let notes = std::mem::take(&mut plan.notes);
+            plan.notes = checkout
+                .anchor_notes(diff.clone(), Matching::from(spec), notes)
+                .await
+                .map_err(|error| anchor_failed(&error))?;
+        }
+        Ok((plan, diffs))
     }
 }
 
@@ -760,47 +796,26 @@ impl pb::comment_service_server::CommentService for Review {
     }
 }
 
-/// A review plan the review chat's agent prepares (PR-24): in an open
-/// review chat it applies at once. Draft views aren't built yet.
+/// A view a session's agent prepares. A review plan in the session's open
+/// review chat applies at once (PR-24); anything else is a draft view
+/// until the agent marks it ready (VW-14, `views`).
 #[tonic::async_trait]
 impl pb::view_service_server::ViewService for Review {
     async fn prepare_view(&self, request: Request<pb::PrepareViewRequest>) -> Result<Response<pb::PreparedView>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let Some(pb::prepare_view_request::Content::ReviewPlan(plan)) = request.content else {
-            return Err(status::not_built(
-                "humata.v1.ViewService.PrepareView for walkthroughs, board offers and pull request drafts",
-            ));
-        };
-        let asked = own_session(&caller).ok_or_else(|| {
-            status::failure(
-                Code::FailedPrecondition,
-                status::error(
-                    "a view is prepared by a session's agent: PrepareView takes the session from the agent's token".to_owned(),
-                    "call it from the agent's MCP server (review_prepare), not as the user",
-                    pb::error::Kind::InvalidField(pb::InvalidField {
-                        field: "review_plan".to_owned(),
-                        problem: pb::invalid_field::Problem::NotAllowedHere as i32,
-                    }),
-                ),
-            )
-        })?;
+        let asked = own_session(&caller).ok_or_else(|| views::agents_only("PrepareView"))?;
         let (record, session) = self.session(Some(&asked))?;
+        let in_chat = matches!(request.content, Some(pb::prepare_view_request::Content::ReviewPlan(_)))
+            && lock(&self.review(&record.id)?.chat).reported;
+        if !in_chat {
+            return self.prepare_draft(&caller, &record, &session, request).await.map(Response::new);
+        }
+        let Some(pb::prepare_view_request::Content::ReviewPlan(plan)) = request.content else {
+            return Err(status::missing("review_plan"));
+        };
         let author = note_author(&caller)?;
         let review = self.review(&record.id)?;
-        if !lock(&review.chat).reported {
-            // A draft view is offered in the session's channel.
-            self.require(
-                &caller,
-                &Call::Use {
-                    capability: Capability::ViewsPrepare,
-                    target: Target::Channel(session.channel.clone()),
-                },
-            )?;
-            return Err(status::not_built(
-                "humata.v1.ViewService.PrepareView outside an open review chat (draft views)",
-            ));
-        }
         self.require_use(&caller, Capability::ReviewOrder, &session)?;
         let idempotency = idempotency(request.idempotency_key.as_ref());
         if let Some(Answer::Prepared(answer)) = answered(&review, idempotency.as_ref()) {
@@ -811,24 +826,7 @@ impl pb::view_service_server::ViewService for Review {
             .switches()
             .allow(ChatTool::Prepare)
             .map_err(|error| chat_failed(&error))?;
-        let mut plan = wire::plan_from_pb(&plan).map_err(|error| wire_failed("review_plan", &error))?;
-        let asked_repos: Vec<pb::RepoRef> = plan.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
-        let keys = repo_keys(&record, &asked_repos).await?;
-        self.require_read(&caller, &session, &keys)?;
-        let clones = clones(&record, &keys).await?;
-        let diffs = clones
-            .diff(&plan.spec, &context_of(&record))
-            .await
-            .map_err(|error| diff_failed(&error))?;
-        plan.check(&diffs).map_err(|error| plan_failed(&error))?;
-        for (diff, spec) in diffs.iter().zip(&plan.spec.repos) {
-            let checkout = clones.get(&diff.repo).map_err(|error| diff_failed(&error))?.clone();
-            let notes = std::mem::take(&mut plan.notes);
-            plan.notes = checkout
-                .anchor_notes(diff.clone(), Matching::from(spec), notes)
-                .await
-                .map_err(|error| anchor_failed(&error))?;
-        }
+        let (plan, diffs) = self.checked_plan(&caller, &record, &session, &plan).await?;
         // What the plan compares is what the review shows from now on.
         {
             let mut shown = lock(&review.shown);
@@ -855,26 +853,30 @@ impl pb::view_service_server::ViewService for Review {
         Ok(Response::new(answer))
     }
 
-    async fn revise_view(&self, _request: Request<pb::ReviseViewRequest>) -> Result<Response<pb::PreparedView>, Status> {
-        Err(status::not_built("humata.v1.ViewService.ReviseView"))
+    async fn revise_view(&self, request: Request<pb::ReviseViewRequest>) -> Result<Response<pb::PreparedView>, Status> {
+        let caller = identity::caller(&request)?;
+        self.revise_draft(&caller, request.into_inner()).await.map(Response::new)
     }
 
-    async fn mark_ready(&self, _request: Request<pb::MarkReadyRequest>) -> Result<Response<pb::PreparedView>, Status> {
-        Err(status::not_built("humata.v1.ViewService.MarkReady"))
+    async fn mark_ready(&self, request: Request<pb::MarkReadyRequest>) -> Result<Response<pb::PreparedView>, Status> {
+        let caller = identity::caller(&request)?;
+        self.mark_draft_ready(&caller, request.into_inner()).await.map(Response::new)
     }
 
     async fn list_views(
         &self,
-        _request: Request<pb::ListViewsRequest>,
+        request: Request<pb::ListViewsRequest>,
     ) -> Result<Response<pb::ListViewsResponse>, Status> {
-        Err(status::not_built("humata.v1.ViewService.ListViews"))
+        let caller = identity::caller(&request)?;
+        self.list_prepared(&caller, request.into_inner()).await.map(Response::new)
     }
 
     async fn set_view_state(
         &self,
-        _request: Request<pb::SetViewStateRequest>,
+        request: Request<pb::SetViewStateRequest>,
     ) -> Result<Response<pb::PreparedView>, Status> {
-        Err(status::not_built("humata.v1.ViewService.SetViewState"))
+        let caller = identity::caller(&request)?;
+        self.set_state(&caller, request.into_inner()).await.map(Response::new)
     }
 }
 

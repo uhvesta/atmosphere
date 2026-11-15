@@ -495,7 +495,10 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
         "notes": [{ "repo": "api", "path": "refund.rs", "lines": { "first": 2, "last": 2 }, "text": "start here" }],
     });
     let draft = mcp.call(6, "review_prepare", plan.clone()).await;
-    assert_eq!(draft["isError"], true, "a draft view outside an open review isn't built: {draft}");
+    assert_eq!(
+        draft["structuredContent"]["result"]["state"], "draft",
+        "outside an open review a plan is a draft view: {draft}"
+    );
     pb::review_chat_service_client::ReviewChatServiceClient::new(fixture.daemon.channel().await)
         .report_review_view(pb::ReportReviewViewRequest {
             session: Some(session()),
@@ -522,6 +525,59 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
         .call(9, "review_note", json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "again" }))
         .await;
     assert_eq!(off["isError"], true, "the user turned notes off: {off}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_prepares_revises_and_offers_a_view() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let result = |reply: &Value| reply["structuredContent"]["result"].clone();
+    let walkthrough = json!({
+        "title": "Refund walkthrough",
+        "summary": "Read the refund first",
+        "content": { "review": { "steps": [
+            { "repo": "api", "path": "refund.rs", "lines": { "first": 1, "last": 2 }, "note": "start here" },
+        ] } },
+    });
+
+    let prepared = mcp.call(1, "view_prepare", walkthrough).await;
+    assert_eq!(result(&prepared)["state"], "draft", "{prepared}");
+    let id = result(&prepared)["view_id"].as_str().unwrap().to_owned();
+    let board = mcp
+        .call(2, "view_prepare", json!({ "title": "Board", "summary": "", "content": { "board": "channel" } }))
+        .await;
+    assert_eq!(result(&board)["state"], "draft", "the caller's channel board is fine: {board}");
+    let global = mcp
+        .call(3, "view_prepare", json!({ "title": "Board", "summary": "", "content": { "board": "global" } }))
+        .await;
+    assert_eq!(global["isError"], true, "the global board isn't the channel's: {global}");
+
+    let revised = mcp
+        .call(4, "view_revise", json!({ "view_id": id, "title": "Refund, step by step", "expected_revision": 1 }))
+        .await;
+    assert_eq!(result(&revised)["title"], "Refund, step by step", "{revised}");
+    let stale = mcp
+        .call(5, "view_revise", json!({ "view_id": id, "title": "Stale", "expected_revision": 1 }))
+        .await;
+    assert_eq!(stale["isError"], true, "a stale revision is refused: {stale}");
+    let ready = mcp.call(6, "view_mark_ready", json!({ "view_id": id })).await;
+    assert_eq!(result(&ready)["state"], "waiting", "{ready}");
+
+    let listed = mcp.call(7, "views_list", json!({})).await;
+    let mut states: Vec<(String, String)> = result(&listed)["views"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|view| (view["title"].as_str().unwrap().to_owned(), view["state"].as_str().unwrap().to_owned()))
+        .collect();
+    states.sort();
+    assert_eq!(
+        states,
+        [
+            ("Board".to_owned(), "draft".to_owned()),
+            ("Refund, step by step".to_owned(), "waiting".to_owned()),
+        ]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

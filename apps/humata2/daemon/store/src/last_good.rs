@@ -188,6 +188,7 @@ pub(crate) fn copy_files(root: &Path) -> HashSet<String> {
         "SELECT payload_file FROM journal WHERE payload_file IS NOT NULL",
         "SELECT launch_file FROM agents WHERE launch_file IS NOT NULL",
         "SELECT state_file FROM reviews WHERE state_file IS NOT NULL",
+        "SELECT view_file FROM views WHERE view_file IS NOT NULL",
     ]
     .into_iter()
     .flat_map(|query| {

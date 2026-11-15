@@ -261,6 +261,110 @@ impl GrpcDaemon {
         Ok(applied(result, None))
     }
 
+    /// `view_prepare`: a draft view, kept until `view_mark_ready`.
+    async fn view_prepare(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let content = self.view_content(arguments.get("content")).await?;
+        let request = self.request(pb::PrepareViewRequest {
+            idempotency_key: Some(key(&call)),
+            title: text(arguments, "title"),
+            summary: text(arguments, "summary"),
+            content: content.map(views::prepare_content),
+        })?;
+        let prepared = self
+            .views()
+            .prepare_view(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(views::view_json(&prepared), None))
+    }
+
+    /// `view_revise`: new parts for a draft view.
+    async fn view_revise(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let content = self.view_content(arguments.get("content")).await?;
+        let request = self.request(pb::ReviseViewRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(views::id(arguments)),
+            title: text(arguments, "title"),
+            summary: text(arguments, "summary"),
+            content: content.map(views::revise_content),
+            expected_revision: arguments
+                .get("expected_revision")
+                .and_then(Value::as_u64)
+                .map(|value| pb::Revision { value }),
+        })?;
+        let revised = self
+            .views()
+            .revise_view(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(views::view_json(&revised), None))
+    }
+
+    /// `view_mark_ready`: offer the draft to the user.
+    async fn view_mark_ready(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::MarkReadyRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(views::id(&call.arguments)),
+        })?;
+        let ready = self
+            .views()
+            .mark_ready(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(views::view_json(&ready), None))
+    }
+
+    /// `views_list`: the caller's views, drafts included.
+    async fn views_list(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::ListViewsRequest {
+            session: None,
+            include_forks: call
+                .arguments
+                .get("include_forks")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            page: None,
+        })?;
+        let listed = self
+            .views()
+            .list_views(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let views: Vec<Value> = listed.views.iter().map(views::view_json).collect();
+        Ok(applied(json!({ "views": views }), None))
+    }
+
+    /// A view's `content`: a board names the caller's own session or
+    /// channel unless it names another session.
+    async fn view_content(&self, content: Option<&Value>) -> Result<Option<views::Content>, ToolError> {
+        let Some(content) = content.and_then(Value::as_object) else {
+            return Ok(None);
+        };
+        if let Some(board) = content.get("board") {
+            let scope = match board {
+                Value::String(scope) if scope == "session" => {
+                    pb::board_view_offer::Scope::OneSession(self.own_session().await?)
+                }
+                Value::String(scope) if scope == "channel" => {
+                    let (_, channel) = self.agent().await?;
+                    pb::board_view_offer::Scope::Channel(channel.unwrap_or_default())
+                }
+                Value::Object(other) => pb::board_view_offer::Scope::OneSession(pb::SessionId {
+                    value: text(other, "session"),
+                }),
+                _ => return Err(views::global_board()),
+            };
+            return Ok(Some(views::Content::Board(pb::BoardViewOffer { scope: Some(scope) })));
+        }
+        Ok(views::content(content))
+    }
+
     /// The agent this connection is, per the daemon.
     async fn agent(&self) -> Result<(pb::AgentActor, Option<pb::ChannelId>), ToolError> {
         let request = self.request(pb::WhoAmIRequest {})?;
@@ -365,6 +469,10 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewNoteEdit => self.review_note_edit(call).await,
             Operation::ReviewNoteDrop => self.review_note_drop(call).await,
             Operation::ReviewPrepare => self.review_prepare(call).await,
+            Operation::ViewPrepare => self.view_prepare(call).await,
+            Operation::ViewRevise => self.view_revise(call).await,
+            Operation::ViewMarkReady => self.view_mark_ready(call).await,
+            Operation::ViewsList => self.views_list(call).await,
             other => Err(not_built(other)),
         }
     }
@@ -636,6 +744,121 @@ fn capability_name(value: i32) -> Option<String> {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The view tools' arguments and answers, as JSON.
+mod views {
+    use humata2_grpc::humata::v1 as pb;
+    use humata2_mcp::{ErrorKind, ToolError};
+    use serde_json::{Map, Value, json};
+
+    /// What a view shows; the board's scope is resolved by the caller.
+    pub(super) enum Content {
+        Review(pb::ReviewWalkthrough),
+        Board(pb::BoardViewOffer),
+        PullRequest(pb::PullRequestDraft),
+    }
+
+    pub(super) fn prepare_content(content: Content) -> pb::prepare_view_request::Content {
+        use pb::prepare_view_request::Content as Wire;
+        match content {
+            Content::Review(review) => Wire::Review(review),
+            Content::Board(board) => Wire::Board(board),
+            Content::PullRequest(draft) => Wire::PullRequest(draft),
+        }
+    }
+
+    pub(super) fn revise_content(content: Content) -> pb::revise_view_request::Content {
+        use pb::revise_view_request::Content as Wire;
+        match content {
+            Content::Review(review) => Wire::Review(review),
+            Content::Board(board) => Wire::Board(board),
+            Content::PullRequest(draft) => Wire::PullRequest(draft),
+        }
+    }
+
+    pub(super) fn id(arguments: &Map<String, Value>) -> pb::ViewId {
+        pb::ViewId {
+            value: super::text(arguments, "view_id"),
+        }
+    }
+
+    /// The objects in `value`'s list `field`.
+    fn objects<'a>(value: &'a Value, field: &str) -> impl Iterator<Item = &'a Map<String, Value>> {
+        value
+            .get(field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+    }
+
+    fn repo(arguments: &Map<String, Value>) -> pb::RepoRef {
+        super::review::repo_path(arguments).repo.unwrap_or_default()
+    }
+
+    /// A walkthrough or pull request `content`; the server checked the
+    /// schema, so one of them is there.
+    pub(super) fn content(content: &Map<String, Value>) -> Option<Content> {
+        if let Some(review) = content.get("review") {
+            let steps = objects(review, "steps")
+                .map(|step| pb::review_walkthrough::Step {
+                    file: Some(super::review::repo_path(step)),
+                    lines: super::review::lines(step.get("lines")),
+                    note: super::text(step, "note"),
+                })
+                .collect();
+            return Some(Content::Review(pb::ReviewWalkthrough { steps }));
+        }
+        let draft = content.get("pull_request")?;
+        let repos = objects(draft, "repos")
+            .map(|one| pb::pull_request_draft::PerRepo {
+                repo: Some(repo(one)),
+                title: super::text(one, "title"),
+                body: super::text(one, "body"),
+                base_branch: super::text(one, "base_branch"),
+                draft: one.get("draft").and_then(Value::as_bool).unwrap_or(false),
+            })
+            .collect();
+        Some(Content::PullRequest(pb::PullRequestDraft { repos }))
+    }
+
+    /// The global board isn't a channel's (VW-1).
+    pub(super) fn global_board() -> ToolError {
+        let mut details = Map::new();
+        details.insert("field".to_owned(), json!("content.board"));
+        details.insert("problem".to_owned(), json!("not_allowed_here"));
+        ToolError {
+            kind: ErrorKind::InvalidField,
+            message: "a view can't offer the global board; a view stays in your session's channel".to_owned(),
+            fix: "offer \"session\", \"channel\" or {\"session\": ...} for a session of your channel".to_owned(),
+            retry: None,
+            details,
+        }
+    }
+
+    fn state(state: i32) -> &'static str {
+        match pb::ViewState::try_from(state).unwrap_or_default() {
+            pb::ViewState::Unspecified => "unspecified",
+            pb::ViewState::Draft => "draft",
+            pb::ViewState::Waiting => "waiting",
+            pb::ViewState::Later => "later",
+            pb::ViewState::NotNow => "not_now",
+            pb::ViewState::Opened => "opened",
+            pb::ViewState::Reverted => "reverted",
+            pb::ViewState::OpenedAndClosed => "opened_and_closed",
+            pb::ViewState::Kept => "kept",
+        }
+    }
+
+    pub(super) fn view_json(view: &pb::PreparedView) -> Value {
+        json!({
+            "view_id": view.id.as_ref().map(|id| id.value.clone()),
+            "title": view.title,
+            "state": state(view.state),
+            "revision": view.revision.as_ref().map(|revision| revision.value),
+        })
+    }
 }
 
 /// The review tools' arguments and answers, as JSON.

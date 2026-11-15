@@ -35,6 +35,14 @@ message ReviewState {
   bytes history = 6;
 }
 
+// A view a session's agent prepared (VW-1, VW-14; D87). `view` is a
+// humata.v1.PreparedView as the daemon encodes it; `keys` are the
+// idempotency keys of the calls that made or changed it, newest last.
+message View {
+  bytes view = 1;
+  repeated string keys = 2;
+}
+
 // What a review keeps so a restart doesn't change what a call does
 // (D86): the changes Undo can still take back, and the answers to calls
 // that carried an idempotency key, oldest first.

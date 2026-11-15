@@ -469,7 +469,8 @@ impl Inner {
             .prepare(
                 "SELECT payload_file FROM journal WHERE payload_file IS NOT NULL
                  UNION SELECT launch_file FROM agents WHERE launch_file IS NOT NULL
-                 UNION SELECT state_file FROM reviews WHERE state_file IS NOT NULL",
+                 UNION SELECT state_file FROM reviews WHERE state_file IS NOT NULL
+                 UNION SELECT view_file FROM views WHERE view_file IS NOT NULL",
             )
             .and_then(|mut statement| {
                 statement

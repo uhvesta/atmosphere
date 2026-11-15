@@ -98,6 +98,21 @@ pub struct ReviewRecord {
     pub updated_unix_ms: i64,
 }
 
+/// A view a session's agent prepared (VW-1): a draft, or offered once
+/// ready. The store keeps what the daemon encodes without reading it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewRecord {
+    pub id: String,
+    pub session: String,
+    /// The view, as the daemon encodes it.
+    pub view: Vec<u8>,
+    /// The idempotency keys of the calls that made or changed it, so a
+    /// repeat answers without acting again.
+    pub keys: Vec<String>,
+    pub prepared_unix_ms: i64,
+    pub updated_unix_ms: i64,
+}
+
 /// Everything needed to start an agent again in the same conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentLaunch {
