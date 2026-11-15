@@ -2170,10 +2170,12 @@ daemon and, as far as physically possible, the machine.
   shrink (images, archives) is sent as is. Settings › Advanced picks
   Auto, lz4, zstd or Off, globally and per machine. (D56)
 - **TR-13** Every compressed payload names its codec, on the wire and at
-  rest: chunk messages carry a `codec` field, and every stored compressed
+  rest, as a number, never a name: chunk messages carry a `codec` enum
+  (one varint byte), and every stored compressed
   blob (store rows, content-addressed blob files, snapshots, scrollback,
-  restart and bug reports) starts with a header naming the codec, the
-  message type and the format version, so any reader can decode it without
+  restart and bug reports) starts with a small binary header: magic, a
+  one-byte codec id (0 none, 1 lz4, 2 zstd; ids are never reused), a
+  numeric message type and the format version, so any reader can decode it without
   context and the codec can change without a migration. A reader that
   meets a codec it doesn't know says which codec and which file or stream,
   and refuses rather than guessing. (D60)

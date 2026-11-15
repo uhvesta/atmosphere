@@ -496,6 +496,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 
 ## D60: Every compressed payload names its codec (SPEC TR-13, owner direction 2026-11-14). Provisional
 - **Pick:** one self-describing frame for compressed data everywhere: on the wire the chunk message's `codec` enum (none, lz4, zstd); at rest the D44 blob header (magic, codec, message type, format version) on every compressed proto or file the daemons write. lz4 and zstd are both valid at rest, so stored data can be written with whatever the link delivered without recompressing.
+- **Pick:** codecs are numbers, never strings: a one-byte id (0 none, 1 lz4, 2 zstd), the same values as the proto enum, and message types are numeric ids too. Ids are never reused once assigned (owner direction 2026-11-14).
 - **Why:** readers never guess; a codec or level change needs no migration; restart doctor and bug reports can decode any file on their own.
 - **Reverse:** the header lives in `humata2_chunk`, shared by wire and store.
 
