@@ -3,7 +3,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use humata2_holder::{Event, Events, HolderError, HolderSpec, attach, shutdown, spawn};
+use humata2_holder::{
+    Event, Events, HolderError, HolderSpec, attach, holder_pid, read_saved, saved_scrollback_path,
+    shutdown, spawn,
+};
 use rustix::process::{Pid, Signal};
 use tempfile::TempDir;
 
@@ -62,6 +65,15 @@ impl Holder {
     fn is_running(&self) -> bool {
         rustix::process::test_kill_process(self.pid()).is_ok()
     }
+
+    async fn stop_with(&self, signal: Signal) {
+        rustix::process::kill_process(self.pid(), signal).unwrap();
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while self.is_running() {
+            assert!(tokio::time::Instant::now() < deadline, "the holder is still running");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
 }
 
 impl Drop for Holder {
@@ -104,7 +116,12 @@ impl Transcript {
                 self.cursor = offset + data.len() as u64;
                 self.bytes.extend(data);
             }
-            Some(Event::Trimmed { resume_at }) => self.trimmed.push(resume_at),
+            Some(Event::Trimmed { resume_at }) => {
+                self.trimmed.push(resume_at);
+                if self.start.is_some() {
+                    self.cursor = resume_at;
+                }
+            }
             Some(Event::InputWritten { seq }) => self.written.push(seq),
             Some(Event::Exited { code }) => self.exited = Some(code),
             Some(Event::Refused { message }) => panic!("refused: {message}"),
@@ -233,6 +250,70 @@ async fn shutting_down_stops_the_holder() {
         attach(&holder.socket, 0).await,
         Err(HolderError::Connect { .. })
     ));
+    let saved = saved_scrollback_path(&holder.socket);
+    assert_eq!(read_saved(&saved).unwrap(), None, "a closed terminal's output was kept");
+}
+
+#[tokio::test]
+async fn a_holder_stopped_by_a_signal_keeps_its_output_saved() {
+    let holder = Holder::start(1 << 20);
+    let attached = attach(&holder.socket, 0).await.unwrap();
+    let mut control = attached.control;
+    let mut seen = Transcript::new(attached.events);
+    control.input(1, b"echo kept-$((3+4))\n").await.unwrap();
+    seen.until_text("kept-7").await;
+
+    holder.stop_with(Signal::TERM).await;
+
+    let saved = read_saved(&saved_scrollback_path(&holder.socket)).unwrap().unwrap();
+    assert!(saved.saved_through >= seen.cursor);
+    assert!(!saved.tail_damaged);
+}
+
+#[tokio::test]
+async fn a_holder_started_after_one_was_killed_shows_the_old_output_then_the_new() {
+    let killed = Holder::start(1 << 20);
+    let attached = attach(&killed.socket, 0).await.unwrap();
+    let mut control = attached.control;
+    let mut seen = Transcript::new(attached.events);
+    control.input(1, b"echo before-$((5+5))\n").await.unwrap();
+    seen.until_text("before-10").await;
+    let old_cursor = seen.cursor;
+    drop(seen);
+    drop(control);
+
+    killed.stop_with(Signal::KILL).await;
+    let saved = read_saved(&saved_scrollback_path(&killed.socket)).unwrap().unwrap();
+    assert!(saved.saved_through >= old_cursor, "output sent was never saved");
+    assert!(saved.resumes_at >= saved.saved_through);
+    assert!(!saved.tail_damaged);
+
+    let dir = killed.socket.parent().unwrap();
+    let spawned = spawn(&spec(dir, 1 << 20)).unwrap();
+    let next = Holder {
+        socket: killed.socket.clone(),
+        pid: spawned.pid,
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    assert_eq!(holder_pid(&next.socket), Some(spawned.pid));
+
+    // A client that was caught up is told its cursor is gone, and goes on
+    // from where the new program starts.
+    let caught_up = attach(&next.socket, old_cursor).await.unwrap();
+    let mut caught_up = Transcript::new(caught_up.events);
+    caught_up.until(|seen| !seen.trimmed.is_empty()).await;
+    assert_eq!(caught_up.trimmed, vec![saved.resumes_at]);
+
+    // One from the start sees the old output, a gap, then the new.
+    let replay = attach(&next.socket, 0).await.unwrap();
+    assert_eq!(replay.welcome.earliest, 0);
+    let mut control = replay.control;
+    let mut replayed = Transcript::new(replay.events);
+    control.input(2, b"echo after-$((6+6))\n").await.unwrap();
+    replayed.until_text("after-12").await;
+    assert!(contains(&replayed.bytes, "before-10"));
+    assert_eq!(replayed.trimmed, vec![saved.resumes_at]);
+    assert!(replayed.cursor > saved.resumes_at);
 }
 
 #[tokio::test]

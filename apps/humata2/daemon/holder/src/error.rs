@@ -117,4 +117,14 @@ pub enum HolderError {
         log: PathBuf,
         seconds: u64,
     },
+
+    #[error(
+        "couldn't read or write {}, where the terminal's output is saved for after a restart; check that its folder belongs to you and the disk has room",
+        path.display()
+    )]
+    Saved {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }

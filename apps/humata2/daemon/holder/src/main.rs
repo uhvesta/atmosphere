@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use humata2_holder::{ServeOptions, serve};
+use humata2_holder::{ServeOptions, saved_scrollback_path, serve};
 
 #[derive(Parser)]
 #[command(about = "Holds one terminal's program and scrollback for humatad2.")]
@@ -26,6 +26,10 @@ struct Args {
     /// How much output to keep for clients that attach later.
     #[arg(long, default_value_t = 8 << 20)]
     scrollback_bytes: usize,
+    /// Where output is saved for a holder started on the same socket
+    /// after this one is killed. Beside the socket unless set.
+    #[arg(long)]
+    scrollback_file: Option<PathBuf>,
     /// The program and its arguments.
     #[arg(last = true, required = true)]
     command: Vec<OsString>,
@@ -42,7 +46,11 @@ fn main() -> ExitCode {
         eprintln!("humata2_holder: name the program to run after `--`");
         return ExitCode::FAILURE;
     };
+    let saved = args
+        .scrollback_file
+        .unwrap_or_else(|| saved_scrollback_path(&args.socket));
     let options = ServeOptions {
+        saved: Some(saved),
         socket: args.socket,
         program: PathBuf::from(program),
         args: command.collect(),

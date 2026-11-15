@@ -145,17 +145,27 @@ fn ids_that_could_leave_their_folder_are_refused() {
 }
 
 #[test]
-fn a_record_that_cannot_be_read_is_reported_not_skipped() {
+fn a_tab_or_pointers_of_an_unsaved_session_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+
+    let tab = store.put_tab(&tab("tb_1", Some("se_gone")));
+    assert!(matches!(tab, Err(StoreError::NoSession { id }) if id == "se_gone"));
+    let pointers = store.put_pointers("se_gone", &Pointers::default());
+    assert!(matches!(pointers, Err(StoreError::NoSession { id }) if id == "se_gone"));
+    assert!(store.tabs().unwrap().is_empty());
+}
+
+#[test]
+fn rewriting_a_session_keeps_its_tabs() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     store.put_session(&session("se_a", 1)).unwrap();
-    fs::write(dir.path().join("sessions/se_a.json"), b"{ not json").unwrap();
+    store.put_tab(&tab("tb_a", Some("se_a"))).unwrap();
 
-    assert!(matches!(
-        store.session("se_a"),
-        Err(StoreError::Corrupt { .. })
-    ));
-    assert!(matches!(store.sessions(), Err(StoreError::Corrupt { .. })));
+    store.put_session(&session("se_a", 1)).unwrap();
+
+    assert_eq!(store.tab("tb_a").unwrap(), Some(tab("tb_a", Some("se_a"))));
 }
 
 #[test]
@@ -163,11 +173,10 @@ fn state_from_a_newer_schema_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     drop(Store::open(dir.path()).unwrap());
     let newer = SCHEMA_VERSION + 1;
-    fs::write(
-        dir.path().join("schema"),
-        format!("{{\"version\":{newer}}}"),
-    )
-    .unwrap();
+    rusqlite::Connection::open(dir.path().join("state.sqlite"))
+        .unwrap()
+        .pragma_update(None, "user_version", newer)
+        .unwrap();
 
     match Store::open(dir.path()) {
         Err(StoreError::SchemaTooNew { found, supported, .. }) => {
@@ -185,23 +194,15 @@ fn files_and_folders_are_private() {
     let root = dir.path().join("state");
     let store = Store::open(&root).unwrap();
     store.put_session(&session("se_a", 1)).unwrap();
+    store.journal().append("big", &vec![7; 1 << 20]).unwrap();
 
     let mode = |path: PathBuf| fs::metadata(path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(root.clone()), 0o700);
-    assert_eq!(mode(root.join("sessions")), 0o700);
-    assert_eq!(mode(root.join("sessions/se_a.json")), 0o600);
-}
-
-#[test]
-fn leftovers_of_an_interrupted_write_are_removed_on_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
-    store.put_session(&session("se_a", 1)).unwrap();
-    drop(store);
-    let leftover = dir.path().join("sessions/.se_a.json.1-0.partial");
-    fs::write(&leftover, b"{\"id\":").unwrap();
-
-    let store = Store::open(dir.path()).unwrap();
-    assert!(!leftover.exists());
-    assert_eq!(store.sessions().unwrap(), vec![session("se_a", 1)]);
+    assert_eq!(mode(root.join("blobs")), 0o700);
+    for entry in fs::read_dir(&root).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            assert_eq!(mode(entry.path()), 0o600, "{:?} is readable by others", entry.path());
+        }
+    }
 }

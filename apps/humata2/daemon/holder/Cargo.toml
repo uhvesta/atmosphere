@@ -14,8 +14,17 @@ path = "src/lib.rs"
 name = "humata2_holder"
 path = "src/main.rs"
 
+[[test]]
+name = "power_cut"
+required-features = ["faults"]
+
+[features]
+# Test builds only: SIGUSR2 plays back a power cut (see humata2-durable).
+faults = ["humata2-durable/faults"]
+
 [dependencies]
 clap = { workspace = true }
+humata2-durable = { workspace = true }
 rustix = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

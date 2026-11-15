@@ -1,0 +1,35 @@
+[package]
+name = "humata2-revive"
+description = "Brings Humata 2's sessions back after their terminals' holders are gone: verified agent resumes, fresh shells, reattaching."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Built on humata2-store, which builds with Bazel only.
+[lib]
+name = "humata2_revive"
+path = "src/lib.rs"
+
+[features]
+# Test builds only: the store's fault points, and this crate's.
+faults = ["humata2-holder/faults", "humata2-store/faults"]
+
+[dependencies]
+humata2-holder = { workspace = true }
+humata2-report = { workspace = true }
+humata2-store = { workspace = true }
+notify = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[test]]
+name = "kill_matrix"
+path = "tests/kill_matrix.rs"
+required-features = ["faults"]

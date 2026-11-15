@@ -1,11 +1,10 @@
 //! The records the store keeps, as plain data.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 /// A session as this machine knows it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRecord {
     pub id: String,
     pub channel: String,
@@ -19,15 +18,14 @@ pub struct SessionRecord {
 }
 
 /// What runs in a terminal tab.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabKind {
     Agent,
     Shell,
 }
 
 /// A terminal tab and the holder process that keeps its PTY.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabRecord {
     pub id: String,
     /// Unset for a machine shell, which belongs to no session.
@@ -41,14 +39,14 @@ pub struct TabRecord {
 }
 
 /// Where a session's clones stand (SL-3).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pointers {
     pub repos: Vec<RepoPointer>,
     pub reported_unix_ms: i64,
 }
 
 /// One clone's position.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoPointer {
     pub owner: String,
     pub name: String,
@@ -58,4 +56,98 @@ pub struct RepoPointer {
     pub pushed: bool,
     /// Repo-relative paths with uncommitted changes.
     pub dirty_files: Vec<String>,
+}
+
+/// A session's agent: how it was started, so it can be started again
+/// after a crash or reboot (PER-11), and how it stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentRecord {
+    /// The session the agent belongs to; one agent per session.
+    pub session: String,
+    /// The terminal tab the agent runs in.
+    pub tab: String,
+    pub launch: AgentLaunch,
+    pub state: AgentState,
+    /// How many times the agent has been started: 1 at launch, one more
+    /// for each resume.
+    pub generation: u32,
+    /// Each time the agent's holder was found gone, oldest first.
+    pub interruptions: Vec<Interruption>,
+    pub updated_unix_ms: i64,
+}
+
+/// Everything needed to start an agent again in the same conversation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentLaunch {
+    /// The agent as named in Settings › Agents.
+    pub agent: String,
+    pub folder: PathBuf,
+    /// The program and its arguments at launch, the pinned conversation id
+    /// among them (PER-12).
+    pub argv: Vec<OsString>,
+    /// The program and its arguments to resume the same conversation.
+    pub resume_argv: Vec<OsString>,
+    /// The names of the variables set for the agent. Their values are
+    /// never saved: tokens are minted again on resume.
+    pub variable_names: Vec<String>,
+    pub conversation_id: String,
+    /// The file the agent keeps the conversation in, checked on resume
+    /// (PER-14).
+    pub conversation_file: PathBuf,
+    pub holder_socket: PathBuf,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Where an agent stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentState {
+    /// Saved, and its holder may or may not have started.
+    Launching,
+    /// Its holder started and answered.
+    Running { holder_pid: u32 },
+    /// Found gone and being started again in its conversation.
+    Resuming,
+    /// The agent ended on its own; nothing is resumed.
+    Exited { code: i32 },
+    /// The user closed it; nothing is resumed.
+    Stopped,
+    /// Starting it again in its conversation failed; it is never started
+    /// fresh in its place (PER-15).
+    ResumeFailed {
+        reason: ResumeFailure,
+        exit_code: Option<i32>,
+    },
+}
+
+impl AgentState {
+    /// Whether the agent should be running, so a missing holder means it
+    /// was interrupted.
+    pub fn should_run(self) -> bool {
+        matches!(self, Self::Launching | Self::Running { .. } | Self::Resuming)
+    }
+}
+
+/// Why a resume failed, as `ResumeFailed.Reason` says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeFailure {
+    ConversationFileMissing,
+    AgentStartedAnotherConversation,
+    AgentExited,
+    AgentNotInstalled,
+    FolderMissing,
+}
+
+/// One time an agent's holder was found gone, and what of its output
+/// survived.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Interruption {
+    pub at_unix_ms: i64,
+    /// The offset just past the last byte of output saved to disk.
+    pub output_saved_through: u64,
+    /// The offset the restarted terminal's output starts at; the gap from
+    /// `output_saved_through` was never saved.
+    pub output_resumes_at: u64,
+    /// The end of the saved output was cut short and dropped.
+    pub saved_tail_damaged: bool,
 }

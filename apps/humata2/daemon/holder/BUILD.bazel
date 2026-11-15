@@ -4,6 +4,12 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 # own so the program in it outlives humatad2. Output carries byte offsets,
 # so a client that drops can reattach from where it was. Knows nothing
 # about gRPC: it speaks a small framed protocol on its own Unix socket.
+HOLDER_DEPS = [
+    "@crates//:rustix",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+]
+
 rust_library(
     name = "holder",
     srcs = glob(
@@ -12,11 +18,7 @@ rust_library(
     ),
     crate_name = "humata2_holder",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
-    deps = [
-        "@crates//:rustix",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-    ],
+    deps = HOLDER_DEPS + ["//apps/humata2/daemon/durable"],
 )
 
 rust_binary(
@@ -27,6 +29,54 @@ rust_binary(
         ":holder",
         "@crates//:clap",
         "@crates//:rustix",
+        "@crates//:tokio",
+    ],
+)
+
+# The holder with power cuts playable (SIGUSR2 under
+# `HUMATA2_POWER_CUT_ROOTS`), for the tests that cut one. Never shipped.
+rust_library(
+    name = "holder_faults",
+    testonly = True,
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_features = ["faults"],
+    crate_name = "humata2_holder",
+    visibility = ["//apps/humata2/daemon/revive:__pkg__"],
+    deps = HOLDER_DEPS + ["//apps/humata2/daemon/durable:durable_faults"],
+)
+
+rust_binary(
+    name = "humata2_holder_faults",
+    testonly = True,
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata2/daemon/revive:__pkg__"],
+    deps = [
+        ":holder_faults",
+        "@crates//:clap",
+        "@crates//:rustix",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "holder_unit_test",
+    crate = ":holder",
+    deps = ["@crates//:tokio"],
+)
+
+# Cuts a holder's power part way through its output (PER-25).
+rust_test(
+    name = "power_cut_test",
+    srcs = ["tests/power_cut.rs"],
+    data = [":humata2_holder_faults"],
+    env = {"HUMATA2_HOLDER": "$(rootpath :humata2_holder_faults)"},
+    deps = [
+        ":holder_faults",
+        "@crates//:rustix",
+        "@crates//:tempfile",
         "@crates//:tokio",
     ],
 )
@@ -44,7 +94,10 @@ rust_binary(
             "@crates//:tokio",
         ],
     )
-    for src in glob(["tests/*.rs"])
+    for src in glob(
+        ["tests/*.rs"],
+        exclude = ["tests/power_cut.rs"],
+    )
 ]
 
 filegroup(

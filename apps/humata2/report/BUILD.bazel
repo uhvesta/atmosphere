@@ -10,6 +10,13 @@ rust_library(
     name = "report",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_report",
+    visibility = [
+        # The daemon's restart reports (PER-29).
+        "//apps/humata2/daemon/revive:__pkg__",
+        # Record and replay in the desktop app (I9).
+        "//apps/humata2/desktop:__subpackages__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
     deps = [
         "@crates//:serde",
         "@crates//:serde_json",

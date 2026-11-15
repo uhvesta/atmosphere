@@ -1,4 +1,6 @@
-//! Kills a writer part way through and checks what's left on disk.
+//! Kills a writer part way through and checks what's left on disk: each
+//! SQLite commit is whole or absent, and a big blob's file is never named
+//! by a row before it's on disk, nor left behind once the store reopens.
 //!
 //! The writer is this test binary run again with `crash_child` selected and
 //! the environment naming what to write; that test does nothing otherwise.
@@ -32,9 +34,18 @@ fn record(fill: char) -> SessionRecord {
     }
 }
 
+/// Bytes zstd can't shrink, so each payload is too big for its row and
+/// goes in a file of its own.
 fn payload(seq: u64) -> Vec<u8> {
+    let mut state = seq.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut bytes = seq.to_be_bytes().to_vec();
-    bytes.resize(PAYLOAD_BYTES, (seq % 251) as u8);
+    while bytes.len() < PAYLOAD_BYTES {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        bytes.extend_from_slice(&state.to_le_bytes());
+    }
+    bytes.truncate(PAYLOAD_BYTES);
     bytes
 }
 
@@ -63,9 +74,14 @@ fn crash_child() {
         }
         "journal" => {
             let mut seq = store.journal().entries().unwrap().last().map_or(1, |e| e.seq + 1);
-            ready();
+            // Ready once one append has finished, so each run keeps at
+            // least one entry however slow a synced write is here.
+            let first = seq;
             loop {
                 assert_eq!(store.journal().append("write", &payload(seq)).unwrap(), seq);
+                if seq == first {
+                    ready();
+                }
                 seq += 1;
             }
         }
@@ -109,11 +125,11 @@ fn delay(kill: u64) -> Duration {
     Duration::from_micros(500 + (kill * 7_919) % 60_000)
 }
 
-fn leftovers(folder: &Path) -> Vec<String> {
-    fs::read_dir(folder)
+/// The files in the store's blob folder.
+fn blob_files(root: &Path) -> Vec<String> {
+    fs::read_dir(root.join("blobs"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".partial"))
         .collect()
 }
 
@@ -130,7 +146,7 @@ fn a_record_killed_mid_write_is_the_old_copy_or_the_new_one() {
         let first = found.title.chars().next().unwrap();
         assert!(first == 'a' || first == 'b');
         assert_eq!(found, record(first), "kill {kill} left a torn record");
-        assert!(leftovers(&dir.path().join("sessions")).is_empty());
+        assert!(blob_files(dir.path()).is_empty());
     }
 }
 
@@ -152,7 +168,8 @@ fn a_journal_killed_mid_append_keeps_every_finished_entry_in_order() {
         }
         assert!(entries.len() >= kept, "kill {kill} lost finished entries");
         kept = entries.len();
-        assert!(leftovers(&dir.path().join("journal")).is_empty());
+        // Reopening swept what a cut-short append left: one file per entry.
+        assert_eq!(blob_files(dir.path()).len(), entries.len(), "kill {kill} left a file behind");
     }
     assert!(kept > 0, "no entry was ever written");
 }

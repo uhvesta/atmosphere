@@ -44,30 +44,75 @@ pub enum StoreError {
     },
 
     #[error(
-        "{} isn't a record Humata can read; it may have been edited by hand. Restore it from a backup if you have one: moving it aside makes Humata forget what it held",
+        "couldn't open Humata's state database {}; check that it belongs to you, that the disk is mounted and that no other program holds it open for writing",
         path.display()
     )]
-    Corrupt {
+    Open {
         path: PathBuf,
         #[source]
-        source: serde_json::Error,
+        source: rusqlite::Error,
     },
 
     #[error(
-        "journal entry {} is damaged ({reason}); restore it from a backup if you have one. Deleting it loses that write, and the entries after it still replay",
+        "couldn't update Humata's state database {} from schema {from} to {to}; it is unchanged, so the humatad2 that wrote it still reads it. Free some disk space and start humatad2 again",
         path.display()
     )]
-    JournalEntryDamaged { path: PathBuf, reason: &'static str },
+    Migrate {
+        path: PathBuf,
+        from: i64,
+        to: i64,
+        #[source]
+        source: rusqlite::Error,
+    },
 
     #[error(
-        "the state in {} was written by a newer Humata (schema {found}; this humatad2 reads up to {supported}). Update humatad2 on this machine; don't delete the folder, which would lose every session in it",
+        "the state in {} was written by a newer Humata (schema {found}; this humatad2 reads up to {supported}). Update humatad2 on this machine; don't delete the database, which would lose every session in it",
         path.display()
     )]
     SchemaTooNew {
         path: PathBuf,
-        found: u32,
-        supported: u32,
+        found: i64,
+        supported: i64,
     },
+
+    #[error(
+        "couldn't {doing} in Humata's state database {}; nothing was changed. If the disk is full, free some space and try again",
+        path.display()
+    )]
+    Database {
+        path: PathBuf,
+        doing: &'static str,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error(
+        "{what} in {} is damaged ({reason}); restore the state folder from a backup if you have one. Deleting the damaged entry loses what it held",
+        path.display()
+    )]
+    Damaged {
+        path: PathBuf,
+        what: String,
+        reason: &'static str,
+    },
+
+    #[error(
+        "{what} in {} is compressed with codec {codec}, which this build of Humata doesn't know, so it was likely written by a newer one. Update Humata on this machine to read it; don't delete the file or the state folder, since nothing else holds what it does",
+        path.display()
+    )]
+    UnknownCodec { path: PathBuf, what: String, codec: u8 },
+
+    #[error(
+        "couldn't save a last good copy of the state at {}: the new copy failed its check ({problem}), so the one before it is kept. The database itself may be damaged too: run `PRAGMA integrity_check` on it, and don't delete the copy kept",
+        path.display()
+    )]
+    Snapshot { path: PathBuf, problem: String },
+
+    #[error(
+        "the state database at {} is damaged ({damage}) and there's no last good copy to restore it from. Restore the state folder from a backup if you have one; deleting the database loses every session, tab and agent record on this machine",
+        path.display()
+    )]
+    DamagedWithoutCopy { path: PathBuf, damage: String },
 
     #[error(
         "{id:?} can't be used as an id: ids are 1 to 128 letters, digits, '-', '_' or '.', and don't start with '.'"
@@ -82,9 +127,14 @@ impl StoreError {
     /// True when a write failed because the disk is full, so the caller
     /// can say so in its own terms.
     pub fn is_disk_full(&self) -> bool {
-        matches!(
-            self,
-            Self::Write { source, .. } if source.kind() == std::io::ErrorKind::StorageFull
-        )
+        match self {
+            Self::Write { source, .. } => source.kind() == std::io::ErrorKind::StorageFull,
+            Self::Database { source, .. }
+            | Self::Open { source, .. }
+            | Self::Migrate { source, .. } => {
+                source.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull)
+            }
+            _ => false,
+        }
     }
 }

@@ -1,19 +1,40 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-# Humata 2's state on disk: session records, terminal tabs, pointers and the
-# journal of writes made while the host is away. Every file is written
-# atomically (temp file, fsync, rename, fsync of the folder) under a schema
-# version. Knows nothing about the network.
+# Humata 2's state on disk: session records, terminal tabs, agents and how
+# to resume them, pointers and the journal of writes made while the host is
+# away, in one SQLite database (WAL, synchronous = FULL) under a schema
+# version. Data kept whole is a proto blob behind a numbered header (codec,
+# type, version; TR-13), zstd when that pays; big ones live in
+# files named by their hash, written before the row that names them. Knows
+# nothing about the network.
+STORE_DEPS = [
+    "//apps/humata2/api/proto:humata2_store_rust",
+    "@crates//:lz4_flex",
+    "@crates//:prost",
+    "@crates//:rusqlite",
+    "@crates//:ruzstd",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+]
+
 rust_library(
     name = "store",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_store",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
-    deps = [
-        "@crates//:serde",
-        "@crates//:serde_json",
-        "@crates//:thiserror",
-    ],
+    deps = STORE_DEPS + ["//apps/humata2/daemon/durable"],
+)
+
+# The store with its fault points live (`HUMATA2_STOP_AT`), for the tests
+# that kill a process at each one. Never linked into a release binary.
+rust_library(
+    name = "store_faults",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_features = ["faults"],
+    crate_name = "humata2_store",
+    visibility = ["//apps/humata2/daemon/revive:__pkg__"],
+    deps = STORE_DEPS + ["//apps/humata2/daemon/durable:durable_faults"],
 )
 
 [
@@ -22,11 +43,47 @@ rust_library(
         srcs = [src],
         deps = [
             ":store",
+            "@crates//:rusqlite",
             "@crates//:tempfile",
         ],
     )
-    for src in glob(["tests/*.rs"])
+    for src in glob(
+        ["tests/*.rs"],
+        exclude = [
+            "tests/kill_points.rs",
+            "tests/power_cut.rs",
+        ],
+    )
 ]
+
+rust_test(
+    name = "kill_points_test",
+    size = "medium",
+    srcs = ["tests/kill_points.rs"],
+    deps = [
+        ":store_faults",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "store_unit_test",
+    crate = ":store",
+    deps = ["@crates//:tempfile"],
+)
+
+# Cuts the power under a host's store and a machine's at each point a
+# write passes (PER-25).
+rust_test(
+    name = "power_cut_test",
+    size = "medium",
+    srcs = ["tests/power_cut.rs"],
+    deps = [
+        ":store_faults",
+        "@crates//:rusqlite",
+        "@crates//:tempfile",
+    ],
+)
 
 filegroup(
     name = "starlark",

@@ -1,19 +1,41 @@
 [package]
 name = "humata2-store"
-description = "Humata 2's state on disk: sessions, tabs, pointers and the journal, each written atomically."
+description = "Humata 2's state on disk: sessions, tabs, agents, pointers and the journal, in SQLite."
 version = "0.0.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
 
+# Also depends on the store's proto types, which Bazel generates
+# (//apps/humata2/api/proto:humata2_store_rust), so this crate builds with
+# Bazel only.
 [lib]
 name = "humata2_store"
 path = "src/lib.rs"
 
+[features]
+# Test builds only: named points a test can kill the process at
+# (`HUMATA2_STOP_AT`). Release builds never turn this on.
+faults = ["humata2-durable/faults"]
+
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
+humata2-durable = { workspace = true }
+lz4_flex = { workspace = true }
+prost = { workspace = true }
+rusqlite = { workspace = true }
+ruzstd = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[test]]
+name = "kill_points"
+path = "tests/kill_points.rs"
+required-features = ["faults"]
+
+[[test]]
+name = "power_cut"
+path = "tests/power_cut.rs"
+required-features = ["faults"]
