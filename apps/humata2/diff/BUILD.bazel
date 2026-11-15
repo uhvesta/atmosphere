@@ -56,6 +56,20 @@ GPUI_KIT = {
     for engine, gpui_kit in GPUI_KIT.items()
 ]
 
+[
+    rust_test(
+        name = "view" + engine + "_test",
+        srcs = ["tests/view.rs"],
+        compile_data = ["Cargo.toml"],
+        deps = [
+            ":diff_view" + engine,
+            "//apps/humata2/testing/flow:flow" + engine,
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],

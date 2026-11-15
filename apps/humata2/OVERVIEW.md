@@ -267,8 +267,9 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] Measure gix end to end.
 
 ### Diff view (`apps/humata2/diff`; D67)
-- [ ] Write D67 in DECISIONS.md with the GPUI and Fast numbers. Agreed: no "open all folds" action, and Full file mode is gated on its own measurement.
-- [ ] Behaviour tests for the new DiffView (Pane harness, SpecChanged, CommentRequested, ContextNeeded, the counter, viewed files folding). It has been compiled, never run.
+- [x] D67 records the existing GPUI/Fast figures, their old-view/loaded-machine limits, no open-all-folds action, and the separate Full file measurement gate (no benches rerun).
+- [x] Embedded DiffView runs in a Pane harness on both engines: SpecChanged retains the pending comparison, CommentRequested carries code/base/side, ContextNeeded accepts missing text, the counter handles replacement/empty reviews, and Viewed folds until content changes. Tests: `//apps/humata2/diff:view_test`, `//apps/humata2/diff:view_fast_test`.
+- [ ] Change navigation on a review that fits the viewport leaves the counter above the first change after layout (reproduced on both engines); the dependency navigates from the clamped viewport rather than the chosen change (minion C: fixing gpui-component requires the prohibited dependency patch/repin; deferred).
 - [ ] Point the gate at DiffView instead of DiffState, then re-run the gates (GPUI and Fast, incremental patch) on a quiet machine. Last numbers were from a loaded machine, on the old view: scroll with comments p95 6.71 / max 10.07 ms; Fast p95 ≤ 3.64 ms.
 - [ ] Drop the unused unicode-segmentation and unicode-width dependencies (needs a repin).
 
