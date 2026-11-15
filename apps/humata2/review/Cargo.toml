@@ -1,0 +1,25 @@
+[package]
+name = "humata2-review-view"
+description = "Humata 2's review pane: one session's changes across its repos, comments for the agent and the queue that sends them."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_review_view"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+# The same image crate GPUI draws with, so decoded frames go straight to it.
+image = { workspace = true, features = ["gif", "jpeg", "webp"] }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[test]]
+name = "model"
+path = "tests/model.rs"

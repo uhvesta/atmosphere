@@ -1,0 +1,93 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
+
+# The review pane, on ordinary GPUI from @crates (D53). Its source names no
+# engine, so a GPUI Fast build is one more entry here when the app needs it.
+rust_library(
+    name = "review_view",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_review_view",
+    visibility = [
+        "//apps/humata2/desktop:__subpackages__",
+        "//apps/humata2/ui:__subpackages__",
+    ],
+    deps = [
+        "@crates//:gpui-kit",
+        "@crates//:image",
+        "@crates//:serde",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "review_view_test",
+    crate = ":review_view",
+)
+
+# The model: anchors, the comment book and its queue, restarts, agent
+# actions and the file list, without a window.
+rust_test(
+    name = "model_test",
+    srcs = ["tests/model.rs"],
+    deps = [
+        ":review_view",
+        "@crates//:image",
+        "@crates//:serde_json",
+    ],
+)
+
+# The GUI tests' fakes and fixtures: the daemon side of the pane's seams.
+rust_library(
+    name = "harness",
+    testonly = True,
+    srcs = ["harness/src/lib.rs"],
+    crate_name = "humata2_review_harness",
+    deps = [
+        ":review_view",
+        "@crates//:gpui-kit",
+        "@crates//:image",
+        "@crates//:serde_json",
+    ],
+)
+
+# Flows through real input, and view, layout and image snapshots. `bazel run
+# :<name>_record` records a test's snapshots; read them before keeping them.
+[
+    humata2_snapshot_test(
+        name = name,
+        srcs = ["harness/tests/%s.rs" % name],
+        # GPUI's test macro finds gpui-kit through it.
+        compile_data = ["Cargo.toml"],
+        deps = [
+            ":harness",
+            ":review_view",
+            "//apps/humata2/testing/flow",
+            "//apps/humata2/testing/snapshot",
+            "@crates//:gpui-kit",
+            "@crates//:image",
+        ],
+    )
+    for name in [
+        "flows",
+        "snapshots",
+    ]
+]
+
+# Mounting and reuse counters on 300 files and 20,000 lines. Run with `-c opt`
+# for the headless timings it prints; they're never checked.
+rust_test(
+    name = "large",
+    srcs = ["harness/tests/large.rs"],
+    compile_data = ["Cargo.toml"],
+    deps = [
+        ":harness",
+        ":review_view",
+        "@crates//:gpui-kit",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -1,0 +1,40 @@
+Group "Review" focused
+  Status "Agent" value="Agent idle: comments go now."
+    text "Agent idle: comments go now."
+  text "0 not with the agent yet"
+  Status "Saved" value="Saving…"
+    text "Saving…"
+  Button "Changed since viewed" unchecked
+    text "Changed"
+  Button "Commented" unchecked
+  Button "Not viewed" unchecked
+  Button "Choose base" unchecked
+    text "Compare with…"
+  Button "Mark reviewed"
+  Status "Comparing" value="Since review 1, Tuesday 14:02"
+    text "Since review 1, Tuesday 14:02"
+  text "1 files · +2 −1 · 0 viewed"
+  List "Changed files"
+    Button "Repository app" expanded
+      text "▾ app (1)"
+    ListItem "app/src/lib.rs" description="not viewed"
+      text "src/lib.rs"
+      text "+2 −1"
+  #body
+    Heading "app/src/lib.rs"
+      Button "Collapse app/src/lib.rs" expanded
+      text "+2 −1"
+      CheckBox "Viewed app/src/lib.rs" unchecked
+    text "@@ -1,6 +1,7 @@ pub fn start()"
+    ListItem "app/src/lib.rs line 1"
+      text "pub fn start() {"
+    ListItem "app/src/lib.rs line 2"
+      text "    let config = load();"
+    ListItem "app/src/lib.rs old line 3"
+      text "    run(config);"
+    ListItem "app/src/lib.rs line 3"
+      text "    let server = Server::new(config);"
+    ListItem "app/src/lib.rs line 4"
+      text "    server.run();"
+    ListItem "app/src/lib.rs line 5"
+      text "}"

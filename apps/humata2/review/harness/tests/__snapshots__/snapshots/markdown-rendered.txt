@@ -1,0 +1,104 @@
+Group "Review" focused
+  Status "Agent" value="Agent idle: comments go now."
+    text "Agent idle: comments go now."
+  text "0 not with the agent yet"
+  Status "Saved" value="Saving…"
+    text "Saving…"
+  Button "Changed since viewed" unchecked
+    text "Changed"
+  Button "Commented" unchecked
+  Button "Not viewed" unchecked
+  Button "Choose base" unchecked
+    text "Compare with…"
+  Button "Mark reviewed"
+  Status "Comparing" value="All changes since the session's base"
+    text "All changes since the session's base"
+  text "8 files · +7 −5 · 0 viewed"
+  List "Changed files"
+    Button "Repository app" expanded
+      text "▾ app (7)"
+    ListItem "app/README.md" description="not viewed"
+      text "README.md"
+      text "+2 −1"
+    ListItem "app/assets/broken.png" description="not viewed"
+      text "assets/broken.png"
+      text "image"
+    ListItem "app/assets/font.woff2" description="not viewed"
+      text "assets/font.woff2"
+      text "binary"
+    ListItem "app/assets/icon.png" description="not viewed"
+      text "assets/icon.png"
+      text "image"
+    ListItem "app/assets/logo.png" description="not viewed"
+      text "assets/logo.png"
+      text "image"
+    ListItem "app/src/lib.rs" description="not viewed"
+      text "src/lib.rs"
+      text "+2 −1"
+    ListItem "app/src/server.rs" description="not viewed"
+      text "src/server.rs"
+      text "+2 −2"
+    Button "Repository docs" expanded
+      text "▾ docs (1)"
+    ListItem "docs/guide.txt" description="not viewed"
+      text "guide.txt"
+      text "+1 −1"
+  #body
+    Heading "app/README.md"
+      Button "Rendered app/README.md" checked
+        text "Rendered"
+      Button "Collapse app/README.md" expanded
+      text "+2 −1"
+      CheckBox "Viewed app/README.md" unchecked
+    ListItem "app/README.md block 1" description="unchanged"
+      text "Humata"
+    ListItem "app/README.md block 2" description="unchanged"
+      text "A terminal for agents."
+    ListItem "app/README.md block 3" description="unchanged"
+      text "Install"
+    ListItem "app/README.md block 4" description="changed"
+      text "Run the installer, then sign in."
+    ListItem "app/README.md block 5" description="unchanged"
+      text "• macOS"
+    ListItem "app/README.md block 6" description="unchanged"
+      text "• Linux"
+    ListItem "app/README.md block 7" description="added"
+      text "• Windows, later"
+    Heading "app/assets/broken.png"
+      Button "Collapse app/assets/broken.png" expanded
+      text "image"
+      CheckBox "Viewed app/assets/broken.png" unchecked
+    Figure "Image app/assets/broken.png" description="side by side"
+      Figure "Before app/assets/broken.png"
+        text "Before: 96×64"
+      Figure "After app/assets/broken.png"
+        text "After: can't be shown"
+        text "This image doesn't decode, so the file may be damaged or in a format Humata can't read. Open it in an image viewer to check. (Format error decoding Png: ChunkType { type: real, critical: false, private: true, reserved: true, safecopy: true } chunk appeared before IHDR chunk)"
+    Heading "app/assets/font.woff2"
+      Button "Collapse app/assets/font.woff2" expanded
+      text "binary"
+      CheckBox "Viewed app/assets/font.woff2" unchecked
+    text "Binary file, not shown: 47.0 KB before, 49.8 KB after."
+    Heading "app/assets/icon.png"
+      Button "Collapse app/assets/icon.png" expanded
+      text "image"
+      CheckBox "Viewed app/assets/icon.png" unchecked
+    Figure "Image app/assets/icon.png" description="side by side"
+      Figure "Before app/assets/icon.png"
+        text "Before: none"
+        text "Added: there was no image before."
+      Figure "After app/assets/icon.png"
+        text "After: 32×32"
+    Heading "app/assets/logo.png"
+      Button "Collapse app/assets/logo.png" expanded
+      text "image"
+      CheckBox "Viewed app/assets/logo.png" unchecked
+    Figure "Image app/assets/logo.png" description="side by side"
+      Button "Side by side app/assets/logo.png" checked
+        text "Side by side"
+      Button "Swipe app/assets/logo.png" unchecked
+        text "Swipe"
+      Button "Onion skin app/assets/logo.png" unchecked
+        text "Onion skin"
+      Button "Highlight changes app/assets/logo.png" unchecked
+        text "Highlight changes"

@@ -1,0 +1,89 @@
+window 1280x900, macos fonts
+Group "Review" 0,0 1280x900 bg #ffffff
+  box 0,0 1280x900 bg #1a1d21
+    box 0,0 280x900 bg #121417 border 0,1,0,0 #33373e
+      Button "Changed since viewed" 8,8 69x22 bg #262a30 border 1 #33373e radius 4
+        text "Changed" 17,9 51x20
+      Button "Commented" 81,8 87x22 bg #262a30 border 1 #33373e radius 4
+        text "Commented" 90,9 69x20
+      Button "Not viewed" 172,8 82x22 bg #262a30 border 1 #33373e radius 4
+        text "Not viewed" 181,9 64x20
+      text "4 files · +0 −0 · 0 viewed" 0,38 279x24
+      List "Changed files" 0,62 279x838
+        Button "Repository app" 0,62 69x24
+          text "▾ app (4)" 8,64 53x19
+        ListItem "app/assets/broken.png" 0,86 192x24
+          text "assets/broken.png" 36,88 105x19
+          text "image" 149,88 35x19
+        ListItem "app/assets/font.woff2" 0,110 186x24
+          text "assets/font.woff2" 36,112 98x19
+          text "binary" 142,112 36x19
+        ListItem "app/assets/icon.png" 0,134 177x24
+          text "assets/icon.png" 36,136 90x19
+          text "image" 134,136 35x19
+        ListItem "app/assets/logo.png" 0,158 177x24
+          text "assets/logo.png" 36,160 90x19
+          text "image" 134,160 35x19
+    box 280,0 1000x32 bg #202328 border 0,0,1,0 #33373e
+      Status "Agent" 292,6 769x19
+        text "Agent idle: comments go now." 292,6 769x19
+      text "0 not with the agent yet" 1073,6 135x19
+      Status "Saved" 1220,6 48x19
+        text "Saving…" 1220,6 48x19
+    box 280,32 1000x31 bg #202328 border 0,0,1,0 #33373e
+      Button "Choose base" 1052,36 107x22 bg #262a30 border 1 #33373e radius 4
+        text "Compare with…" 1061,37 89x20
+      Button "Mark reviewed" 1167,36 101x22 bg #262a30 border 1 #33373e radius 4
+        text "Mark reviewed" 1176,37 83x20
+      Status "Comparing" 292,37 752x20
+        text "All changes since the session's base" 292,37 752x20
+    #body 280,63 1000x837
+      Heading "app/assets/broken.png" 280,63 1000x32 bg #202328 border 1,0,1,0 #33373e
+        Button "Collapse app/assets/broken.png" 292,69 14x20
+        text "app/assets/broken.png" 314,69 847x20
+        text "image" 1169,69 35x20
+        CheckBox "Viewed app/assets/broken.png" 1212,69 56x20
+      Figure "Image app/assets/broken.png" 280,95 1000x228
+        Figure "Before app/assets/broken.png" 292,111 96x204
+          text "Before: 96×64" 292,111 96x20
+        Figure "After app/assets/broken.png" 400,111 240x204
+          text "After: can't be shown" 400,111 240x20
+          box 400,135 240x180 bg #202328
+            text "This image doesn't decode, so the file may be damaged or in a format Humata can't read. Open it in an image viewer to check. (Format error decoding Png: ChunkType { type: real, critical: false, private: true, reserved: true, safecopy: true } chunk appeared before IHDR chunk)" 400,135 240x180
+      Heading "app/assets/font.woff2" 280,323 1000x32 bg #202328 border 1,0,1,0 #33373e
+        Button "Collapse app/assets/font.woff2" 292,329 14x19
+        text "app/assets/font.woff2" 314,329 846x19
+        text "binary" 1168,329 36x19
+        CheckBox "Viewed app/assets/font.woff2" 1212,329 56x19
+      text "Binary file, not shown: 47.0 KB before, 49.8 KB after." 280,355 1000x35
+      Heading "app/assets/icon.png" 280,390 1000x32 bg #202328 border 1,0,1,0 #33373e
+        Button "Collapse app/assets/icon.png" 292,396 14x20
+        text "app/assets/icon.png" 314,396 803x20
+        text "image" 1169,396 35x20
+        CheckBox "Viewed app/assets/icon.png" 1212,396 56x20
+      Figure "Image app/assets/icon.png" 280,422 1000x91
+        Figure "Before app/assets/icon.png" 292,438 240x67
+          text "Before: none" 292,438 240x20
+          box 292,462 240x43 bg #202328
+            text "Added: there was no image before." 292,462 240x43
+        Figure "After app/assets/icon.png" 544,438 72x67
+          text "After: 32×32" 544,438 72x20
+      Heading "app/assets/logo.png" 280,513 1000x32 bg #202328 border 1,0,1,0 #33373e
+        Button "Collapse app/assets/logo.png" 292,519 14x20
+        text "app/assets/logo.png" 314,519 847x20
+        text "image" 1169,519 35x20
+        CheckBox "Viewed app/assets/logo.png" 1212,519 56x20
+      Figure "Image app/assets/logo.png" 280,545 1000x161
+        Button "Side by side app/assets/logo.png" 292,553 87x22 bg #5b9dff33 border 1 #5b9dff radius 4
+          text "Side by side" 301,554 69x20
+        Button "Swipe app/assets/logo.png" 383,553 53x22 bg #262a30 border 1 #33373e radius 4
+          text "Swipe" 392,554 35x20
+        Button "Onion skin app/assets/logo.png" 440,553 78x22 bg #262a30 border 1 #33373e radius 4
+          text "Onion skin" 449,554 60x20
+        Button "Highlight changes app/assets/logo.png" 522,553 121x22 bg #262a30 border 1 #33373e radius 4
+          text "Highlight changes" 531,554 103x20
+        Figure "Before app/assets/logo.png" 292,583 96x88
+          text "Before: 96×64" 292,583 96x20
+        Figure "After app/assets/logo.png" 400,583 96x88
+          text "After: 96×64" 400,583 96x20
+        text "1616 of 6144 pixels changed (26.3%)" 292,679 976x19
