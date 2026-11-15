@@ -372,12 +372,15 @@ by the host over the stdio link the host started.
 - **Hello and ProveHost** prove each side holds the enrollment key: when
   the host installs `humatad` it writes a random key of at least 32 bytes,
   as hex in a 0600 file in the machine daemon's state folder
-  (`enrollment-key`), and keeps its own copy in the Mac's keychain. Hello
+  (`enrollment-key`), and keeps its own copy (for now `peer-keys/<machine>`,
+  0600, in the host's state folder; later the Mac's keychain, D84). Hello
   sends 32 to 64 random bytes as `nonce`; the machine answers with 32 of
   its own as `machine_nonce` and the proof
   HMAC-SHA256(key, "humata-peer-machine-v1" ‖ nonce ‖ machine_nonce). A
-  wrong proof is `identity_mismatch` on the host: the machine was re-imaged
-  or swapped, and LD-12 applies (add it again as a new machine). The host
+  wrong proof is `identity_mismatch` on the host (the machine's reachability
+  becomes `REACHABILITY_IDENTITY_MISMATCH` and the host stops dialling): the
+  machine was re-imaged or swapped, and LD-12 applies (add it again as a
+  new machine). The host
   then calls ProveHost with
   HMAC-SHA256(key, "humata-peer-host-v1" ‖ machine_nonce ‖ nonce). Until
   that succeeds the link answers only Hello, ProveHost and

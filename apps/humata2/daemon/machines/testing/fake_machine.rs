@@ -183,6 +183,20 @@ impl FakeMachine {
         fs::write(self.state.join("uname"), uname).unwrap();
     }
 
+    /// Every remote command line ssh was asked to run, one per line.
+    pub fn ssh_log(&self) -> String {
+        fs::read_to_string(self.state.join("ssh.log")).unwrap_or_default()
+    }
+
+    /// The enrollment key the host wrote on the machine, if any.
+    pub fn enrollment_key(&self) -> Option<Vec<u8>> {
+        fs::read(self.enrollment_key_path()).ok()
+    }
+
+    pub fn enrollment_key_path(&self) -> PathBuf {
+        self.home.join(".humata2/state/enrollment-key")
+    }
+
     /// The remote command lines ssh was asked to run, scans included.
     pub fn ssh_calls(&self) -> usize {
         fs::read_to_string(self.state.join("ssh.log"))

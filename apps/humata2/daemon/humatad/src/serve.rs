@@ -377,9 +377,10 @@ fn machine_work(
         hosts_file: state.join("hosts.json"),
         known_hosts: state.join("known_hosts"),
         ssh_config,
+        peer_keys: state.join(crate::peer_client::KEYS_DIR),
         retry: RetryPolicy::default(),
     });
-    Ok(Work::new(machines, builds, feed, state.to_owned()))
+    Ok(Work::new(machines, builds, feed, Arc::new(std::time::SystemTime::now)))
 }
 
 fn beside_this_binary(name: &str) -> PathBuf {

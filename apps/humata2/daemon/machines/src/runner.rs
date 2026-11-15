@@ -25,6 +25,8 @@ pub enum Purpose {
     Install,
     /// Moving a staged file into place once no holder runs.
     Promote,
+    /// Writing the peer link's enrollment key, sent on stdin (GRPC.md §8).
+    Enroll,
     /// Writing and starting the user service.
     Service,
     /// Stopping humatad2 and removing its service and files (cancelling

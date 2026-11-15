@@ -8,6 +8,7 @@
 mod base64;
 mod bundle;
 mod check;
+mod enroll;
 mod error;
 mod hosts;
 mod identity;

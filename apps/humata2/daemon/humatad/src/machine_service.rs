@@ -7,17 +7,20 @@
 //!
 //! What a machine's `reachability` says is what this daemon last saw: an
 //! add or reconnect that worked, and then its peer link (`peer_client`)
-//! coming up or going down. A machine the host holds no enrollment key for
-//! gets no link, so one not connected since humatad2 started is
-//! UNSPECIFIED.
+//! coming up or going down, or a machine whose proof is wrong
+//! (IDENTITY_MISMATCH). The add writes the enrollment key the link needs
+//! (D83). A machine not connected since humatad2 started is UNSPECIFIED
+//! until its link comes up. `daemon_version` is what the link's Hello
+//! said, `last_seen_at` when an add, reconnect or link last reached the
+//! machine (or a link was last known up), and `next_retry_at` when a down
+//! link dials again.
 //!
 //! Each change to a machine as ListMachines shows it goes on the feed
 //! (EventService), after the change is written.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
@@ -33,7 +36,7 @@ use crate::events::Feed;
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
 use crate::operations::{Operations, Progress, Started};
-use crate::peer_client::{self, CommandDial, Dial, LinkEvent};
+use crate::peer_client::{self, CommandDial, Dial, LinkError, LinkEvent};
 use crate::status;
 
 /// How long a removal plan stays good.
@@ -47,37 +50,42 @@ pub(crate) struct MachineSvc {
     plans: Mutex<HashMap<String, (String, Instant)>>,
 }
 
+/// The wall clock, which tests set.
+pub(crate) type Clock = Arc<dyn Fn() -> SystemTime + Send + Sync>;
+
+/// What this daemon last saw of a machine.
+#[derive(Clone, Default)]
+struct Seen {
+    reach: pb::Reachability,
+    daemon_version: String,
+    last_seen_at: Option<SystemTime>,
+    next_retry_at: Option<SystemTime>,
+}
+
 /// What the blocking work needs.
 pub(crate) struct Work {
     pub(crate) machines: Machines,
     pub(crate) builds: Box<dyn Builds + Send + Sync>,
     /// What each machine looked like when last connected to.
-    reach: Mutex<HashMap<String, pb::Reachability>>,
+    seen: Mutex<HashMap<String, Seen>>,
     feed: Arc<Feed>,
     /// The machines as the feed last told them.
     shown: Mutex<BTreeMap<String, pb::Machine>>,
-    /// The host's copies of machines' enrollment keys, one file each.
-    peer_keys: PathBuf,
     /// Each machine's peer link supervisor, while one runs.
     links: Mutex<HashMap<String, AbortHandle>>,
+    clock: Clock,
 }
 
 impl Work {
-    /// `state` is the host's state folder, which holds `peer-keys`.
-    pub(crate) fn new(
-        machines: Machines,
-        builds: Box<dyn Builds + Send + Sync>,
-        feed: Arc<Feed>,
-        state: PathBuf,
-    ) -> Self {
+    pub(crate) fn new(machines: Machines, builds: Box<dyn Builds + Send + Sync>, feed: Arc<Feed>, clock: Clock) -> Self {
         let work = Self {
             machines,
             builds,
-            reach: Mutex::new(HashMap::new()),
+            seen: Mutex::new(HashMap::new()),
             feed,
             shown: Mutex::new(BTreeMap::new()),
-            peer_keys: state.join(peer_client::KEYS_DIR),
             links: Mutex::new(HashMap::new()),
+            clock,
         };
         *lock(&work.shown) = work.listed().unwrap_or_default();
         work
@@ -142,9 +150,46 @@ impl Work {
         result
     }
 
+    /// An add or reconnect reached `machine` (ONLINE) or failed.
     fn saw(&self, machine: &str, reach: pb::Reachability) {
-        lock(&self.reach).insert(machine.to_owned(), reach);
+        let now = (self.clock)();
+        self.change(machine, |seen| {
+            seen.reach = reach;
+            if reach == pb::Reachability::Online {
+                seen.last_seen_at = Some(now);
+                seen.next_retry_at = None;
+            }
+        });
+    }
+
+    fn change(&self, machine: &str, with: impl FnOnce(&mut Seen)) {
+        with(lock(&self.seen).entry(machine.to_owned()).or_default());
         self.publish_machines();
+    }
+
+    /// The link came up, or went down with `error`, dialling again after
+    /// `retry_in` unless that can't help.
+    fn link_changed(&self, machine: &str, event: &LinkEvent<'_>) {
+        let now = (self.clock)();
+        self.change(machine, |seen| match event {
+            LinkEvent::Up { daemon_version } => {
+                seen.reach = pb::Reachability::Online;
+                (*daemon_version).clone_into(&mut seen.daemon_version);
+                seen.last_seen_at = Some(now);
+                seen.next_retry_at = None;
+            }
+            LinkEvent::Down { error, retry_in } => {
+                if seen.reach == pb::Reachability::Online {
+                    seen.last_seen_at = Some(now);
+                }
+                seen.reach = if identity_wrong(error) {
+                    pb::Reachability::IdentityMismatch
+                } else {
+                    pb::Reachability::Offline
+                };
+                seen.next_retry_at = retry_in.map(|wait| now + wait);
+            }
+        });
     }
 
     /// Starts keeping `machine`'s peer link up over `dial`, in place of a
@@ -154,7 +199,7 @@ impl Work {
         let work = Arc::downgrade(self);
         let name = machine.to_owned();
         let report = Box::new(move |event: LinkEvent<'_>| tell_link(&work, &name, event));
-        let key_file = self.peer_keys.join(machine);
+        let key_file = self.machines.peer_key(machine);
         let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
@@ -162,9 +207,9 @@ impl Work {
     }
 
     /// Keeps `machine`'s link up through its link command, if the host
-    /// holds its key: the Mac doesn't write one at enrollment yet.
+    /// holds its key (written when the machine was added or reconnected).
     fn link_up(self: &Arc<Self>, machine: &str, runtime: &Handle) {
-        if !self.peer_keys.join(machine).exists() {
+        if !self.machines.peer_key(machine).exists() {
             return;
         }
         match self.machines.peer_link(machine) {
@@ -186,12 +231,10 @@ impl Work {
     }
 
     fn machine(&self, entry: &HostEntry) -> pb::Machine {
+        let seen = lock(&self.seen).get(&entry.name).cloned().unwrap_or_default();
         let reachability = match entry.state {
             EntryState::Adding | EntryState::Removing => pb::Reachability::Connecting,
-            EntryState::Ready => lock(&self.reach)
-                .get(&entry.name)
-                .copied()
-                .unwrap_or(pb::Reachability::Unspecified),
+            EntryState::Ready => seen.reach,
         };
         pb::Machine {
             id: Some(machine_id(&entry.name)),
@@ -200,6 +243,9 @@ impl Work {
             reachability: reachability as i32,
             os: entry.os.clone(),
             arch: entry.arch.clone(),
+            daemon_version: seen.daemon_version,
+            last_seen_at: seen.last_seen_at.map(timestamp),
+            next_retry_at: seen.next_retry_at.map(timestamp),
             root: entry.root.clone(),
             ..pb::Machine::default()
         }
@@ -211,15 +257,35 @@ fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent<'_>) {
     let Some(work) = work.upgrade() else {
         return;
     };
-    match event {
+    match &event {
         LinkEvent::Up { daemon_version } => {
             crate::log::say!("humatad2: the peer link to {machine} is up, running humatad2 {daemon_version}");
-            work.saw(machine, pb::Reachability::Online);
         }
-        LinkEvent::Down { error } => {
-            crate::log::say!("humatad2: {}; {}", status::chain(error), error.fix());
-            work.saw(machine, pb::Reachability::Offline);
+        LinkEvent::Down { error, .. } => {
+            crate::log::say!("humatad2: {}; {}", status::chain(*error), error.fix());
         }
+    }
+    work.link_changed(machine, &event);
+}
+
+/// Whether the machine and the host hold different keys: the machine's
+/// proof is wrong, or it refused the host's (LD-12: add it again).
+fn identity_wrong(error: &LinkError) -> bool {
+    matches!(
+        error,
+        LinkError::MachineProofWrong { .. }
+            | LinkError::MachineRefused {
+                reason: pb::peer_unproven::Reason::HostProofWrong,
+                ..
+            }
+    )
+}
+
+fn timestamp(at: SystemTime) -> humata2_grpc::Timestamp {
+    let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
+    humata2_grpc::Timestamp {
+        seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+        nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
     }
 }
 
@@ -415,6 +481,10 @@ fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
             ("check that ssh is installed and on PATH for humatad2, then try again", None)
         }
         ManageError::Cancelled { .. } => ("add the machine again when you want it", None),
+        ManageError::SavePeerKey { .. } | ManageError::DeletePeerKey { .. } => (
+            "fix the permissions of the peer-keys folder in the state folder, then try again",
+            None,
+        ),
         ManageError::Hosts(_) | ManageError::KnownHosts(_) => {
             ("fix the file the message names, then try again", None)
         }

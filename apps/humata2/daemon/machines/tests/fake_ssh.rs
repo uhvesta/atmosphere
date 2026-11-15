@@ -56,6 +56,7 @@ impl Host {
             hosts_file: self.folder.path().join("hosts.json"),
             known_hosts: self.known_hosts(),
             ssh_config: self.folder.path().join("ssh_config"),
+            peer_keys: self.peer_keys(),
             retry: RetryPolicy {
                 attempts: 2,
                 first_delay: Duration::ZERO,
@@ -66,6 +67,15 @@ impl Host {
 
     fn known_hosts(&self) -> PathBuf {
         self.folder.path().join("known_hosts")
+    }
+
+    fn peer_keys(&self) -> PathBuf {
+        self.folder.path().join("peer-keys")
+    }
+
+    /// The host's copy of box-1's enrollment key, if it keeps one.
+    fn peer_key(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.peer_keys().join("box-1")).ok()
     }
 
     fn pinned(&self) -> bool {
@@ -141,6 +151,7 @@ fn assert_has(machine: &FakeMachine, files: &Files) {
 fn assert_clean(host: &Host, machine: &FakeMachine) {
     assert_eq!(host.machines().list().unwrap(), []);
     assert!(!host.pinned(), "the host key is still pinned");
+    assert_eq!(host.peer_key(), None, "the host still keeps an enrollment key");
     for file in InstalledFile::ALL {
         assert_eq!(machine.installed(file.file_name()), None, "{file} is still on the machine");
     }
@@ -171,6 +182,58 @@ fn adding_a_machine_needs_its_host_key_confirmed_and_installs_all_three_tools() 
     assert!(machine.unit_installed());
     assert!(events.contains(&StepEvent::Done(humata2_machines::OpStep::Install)));
     assert!(events.contains(&StepEvent::Skipped(humata2_machines::OpStep::FindAgents)));
+}
+
+fn mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn an_add_writes_the_same_private_enrollment_key_on_the_machine_and_the_host() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+
+    let on_host = host.peer_key().expect("the host keeps its copy");
+    assert_eq!(machine.enrollment_key(), Some(on_host.clone()));
+    assert!(on_host.len() >= 64 && on_host.iter().all(u8::is_ascii_hexdigit));
+    assert_eq!(mode(&host.peer_keys().join("box-1")), 0o600);
+    assert_eq!(mode(&machine.enrollment_key_path()), 0o600);
+    let key = String::from_utf8(on_host).unwrap();
+    assert!(!machine.ssh_log().contains(&key), "the key went on a command line");
+
+    // Another machine added gets another key.
+    let other = Host::new();
+    add(&other, &FakeMachine::new(), &machine.runner(), &Files(1)).unwrap();
+    assert_ne!(other.peer_key().unwrap(), key.as_bytes());
+}
+
+#[test]
+fn reconnecting_keeps_the_key_and_writes_one_only_when_the_host_has_none() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+    let first = host.peer_key().unwrap();
+    let machines = host.machines();
+
+    let runner = machine.runner();
+    let (entry, _) = drive(&runner, &Files(1), |drive| machines.reconnect("box-1", drive));
+    entry.unwrap();
+    assert_eq!(host.peer_key(), Some(first.clone()));
+    assert_eq!(runner.ran(Purpose::Enroll), 0);
+
+    // A machine added before the host kept keys.
+    std::fs::remove_file(host.peer_keys().join("box-1")).unwrap();
+    let runner = machine.runner();
+    let (entry, _) = drive(&runner, &Files(1), |drive| machines.reconnect("box-1", drive));
+    entry.unwrap();
+    let second = host.peer_key().expect("the reconnect wrote a key");
+    assert_ne!(second, first);
+    assert_eq!(machine.enrollment_key(), Some(second));
+    // Only the key was written: the daemon kept running.
+    assert_eq!(runner.ran(Purpose::Install), 0);
+    assert_eq!(runner.ran(Purpose::Service), 0);
 }
 
 #[test]

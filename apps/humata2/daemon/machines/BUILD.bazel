@@ -12,6 +12,7 @@ rust_library(
     crate_name = "humata2_machines",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = [
+        "@crates//:rand",
         "@crates//:rustix",
         "@crates//:serde",
         "@crates//:serde_json",

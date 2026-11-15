@@ -11,8 +11,8 @@
 //!
 //! The host keeps its copy of each machine's key as hex in a 0600 file,
 //! `peer-keys/<machine>` in its state folder, read with the machine's own
-//! checks (`link_proof`). Until the Mac writes the key at enrollment, a
-//! machine with no such file gets no link.
+//! checks (`link_proof`). The add writes it (the machines crate's
+//! `enroll`); a machine with no such file gets no link.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -300,8 +300,15 @@ fn refused_or(source: Status, machine: &str, otherwise: impl FnOnce(Status) -> L
 
 /// What the link did, for whoever shows the machine's state.
 pub(crate) enum LinkEvent<'a> {
-    Up { daemon_version: &'a str },
-    Down { error: &'a LinkError },
+    Up {
+        daemon_version: &'a str,
+    },
+    /// `retry_in` is when the next dial is; none when the supervisor gives
+    /// up, since another dial can't help.
+    Down {
+        error: &'a LinkError,
+        retry_in: Option<Duration>,
+    },
 }
 
 pub(crate) type Report = Box<dyn Fn(LinkEvent<'_>) + Send + Sync>;
@@ -323,8 +330,12 @@ pub(crate) async fn supervise(dial: Box<dyn Dial>, key_file: PathBuf, machine: S
             }
             Err(error) => error,
         };
-        report(LinkEvent::Down { error: &error });
-        if error.permanent() {
+        let permanent = error.permanent();
+        report(LinkEvent::Down {
+            error: &error,
+            retry_in: (!permanent).then_some(wait),
+        });
+        if permanent {
             return error;
         }
         tokio::time::sleep(wait).await;
@@ -624,7 +635,7 @@ mod tests {
         let report: Report = Box::new(move |event| {
             let _ = seen.send(match event {
                 LinkEvent::Up { .. } => Seen::Up,
-                LinkEvent::Down { error } => Seen::Down {
+                LinkEvent::Down { error, .. } => Seen::Down {
                     permanent: error.permanent(),
                 },
             });
@@ -734,29 +745,45 @@ mod tests {
         assert_eq!(machine.dials(), 2);
     }
 
-    /// The reachability of `machine` in the next machine event on `live`,
-    /// waiting at most two minutes of the test clock.
-    async fn next_reach(live: &mut tokio::sync::broadcast::Receiver<Arc<pb::Event>>) -> pb::Reachability {
+    /// `machine` as the next machine event on `live` shows it, waiting at
+    /// most two minutes of the test clock.
+    async fn next_machine(live: &mut tokio::sync::broadcast::Receiver<Arc<pb::Event>>) -> pb::Machine {
         tokio::time::timeout(Duration::from_secs(120), next_machine_event(live))
             .await
-            .expect("the machine's reachability changes within two minutes")
+            .expect("the machine changes within two minutes")
     }
 
-    async fn next_machine_event(live: &mut tokio::sync::broadcast::Receiver<Arc<pb::Event>>) -> pb::Reachability {
+    async fn next_machine_event(live: &mut tokio::sync::broadcast::Receiver<Arc<pb::Event>>) -> pb::Machine {
         loop {
             let event = live.recv().await.unwrap();
             if let Some(pb::event::Payload::Machine(machine)) = &event.payload
                 && machine.name == MACHINE
             {
-                return machine.reachability();
+                return machine.clone();
             }
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn the_feed_tells_when_the_link_comes_up_and_when_it_is_lost() {
-        let dir = tempfile::tempdir().unwrap();
-        let hosts = dir.path().join("hosts.json");
+    /// A wall clock that stands still at `at` seconds until a test moves it.
+    fn still_clock(at: u64) -> (Arc<std::sync::atomic::AtomicU64>, crate::machine_service::Clock) {
+        let seconds = Arc::new(std::sync::atomic::AtomicU64::new(at));
+        let read = seconds.clone();
+        let clock: crate::machine_service::Clock =
+            Arc::new(move || std::time::UNIX_EPOCH + Duration::from_secs(read.load(Ordering::SeqCst)));
+        (seconds, clock)
+    }
+
+    fn seconds(at: &Option<humata2_grpc::Timestamp>) -> Option<i64> {
+        at.as_ref().map(|at| at.seconds)
+    }
+
+    /// The host's machines with `MACHINE` ready on it, its links over
+    /// in-process machines, and a feed of its changes.
+    fn work_with_machine(
+        dir: &Path,
+        clock: crate::machine_service::Clock,
+    ) -> (Arc<Work>, tokio::sync::broadcast::Receiver<Arc<pb::Event>>) {
+        let hosts = dir.join("hosts.json");
         std::fs::write(
             &hosts,
             format!(
@@ -766,22 +793,57 @@ mod tests {
         .unwrap();
         let machines = Machines::open(MachinesConfig {
             hosts_file: hosts,
-            known_hosts: dir.path().join("known_hosts"),
-            ssh_config: dir.path().join("ssh_config"),
+            known_hosts: dir.join("known_hosts"),
+            ssh_config: dir.join("ssh_config"),
+            peer_keys: dir.join(KEYS_DIR),
             retry: RetryPolicy::default(),
         });
-        let builds = Box::new(Bundle::beside(dir.path(), Platform::host().unwrap()));
+        let builds = Box::new(Bundle::beside(dir, Platform::host().unwrap()));
         let feed = Arc::new(Feed::default());
-        let (_, mut live) = feed.subscribe(None);
-        let work = Arc::new(Work::new(machines, builds, feed, dir.path().to_owned()));
+        let (_, live) = feed.subscribe(None);
+        (Arc::new(Work::new(machines, builds, feed, clock)), live)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_feed_tells_when_the_link_comes_up_and_when_it_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let (clock_at, clock) = still_clock(1_000);
+        let (work, mut live) = work_with_machine(dir.path(), clock);
         let machine = Machine::new(dir.path(), Some(0xab));
         host_key(dir.path(), 0xab);
 
         work.start_link(MACHINE, Box::new(InProcess(machine.clone())), &tokio::runtime::Handle::current());
-        assert_eq!(next_reach(&mut live).await, pb::Reachability::Online);
+        let up = next_machine(&mut live).await;
+        assert_eq!(up.reachability(), pb::Reachability::Online);
+        assert!(!up.daemon_version.is_empty(), "the version comes from the machine's Hello");
+        assert_eq!(seconds(&up.last_seen_at), Some(1_000));
+        assert_eq!(up.next_retry_at, None);
 
+        clock_at.store(2_000, Ordering::SeqCst);
         machine.relay(0).frozen.store(true, Ordering::SeqCst);
-        assert_eq!(next_reach(&mut live).await, pb::Reachability::Offline);
-        assert_eq!(next_reach(&mut live).await, pb::Reachability::Online);
+        let down = next_machine(&mut live).await;
+        assert_eq!(down.reachability(), pb::Reachability::Offline);
+        assert_eq!(seconds(&down.last_seen_at), Some(2_000));
+        assert_eq!(seconds(&down.next_retry_at), Some(2_000 + RETRY_FIRST.as_secs() as i64));
+
+        let again = next_machine(&mut live).await;
+        assert_eq!(again.reachability(), pb::Reachability::Online);
+        assert_eq!(again.next_retry_at, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_machine_whose_proof_is_wrong_shows_an_identity_mismatch_and_no_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, clock) = still_clock(1_000);
+        let (work, mut live) = work_with_machine(dir.path(), clock);
+        let machine = Machine::new(dir.path(), Some(0xab));
+        host_key(dir.path(), 0xcd);
+
+        work.start_link(MACHINE, Box::new(InProcess(machine)), &tokio::runtime::Handle::current());
+        let refused = next_machine(&mut live).await;
+
+        assert_eq!(refused.reachability(), pb::Reachability::IdentityMismatch);
+        assert_eq!(refused.next_retry_at, None);
+        assert_eq!(refused.last_seen_at, None, "the machine was never seen up");
     }
 }

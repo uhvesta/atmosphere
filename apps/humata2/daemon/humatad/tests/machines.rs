@@ -23,13 +23,18 @@ use tonic::{Code, Request};
 const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
 
 /// A tools bundle with the three files for linux-x86_64, the fake
-/// machine's default platform.
+/// machine's default platform. Its humatad2 runs the real one, so the
+/// peer link really comes up on the fake machine.
 fn bundle(dir: &Path) -> PathBuf {
     let root = dir.join("tools");
     std::fs::create_dir_all(root.join("linux-x86_64")).unwrap();
     let mut entries = serde_json::Map::new();
     for file in FILES {
-        let body = format!("#!/bin/sh\n# {file}\nexit 0\n");
+        let body = if file == "humatad2" {
+            format!("#!/bin/sh\nexec '{}' \"$@\"\n", binary("HUMATAD2_RELEASE").display())
+        } else {
+            format!("#!/bin/sh\n# {file}\nexit 0\n")
+        };
         std::fs::write(root.join("linux-x86_64").join(file), &body).unwrap();
         entries.insert(
             file.to_owned(),
@@ -56,7 +61,11 @@ struct Host {
 
 impl Host {
     async fn start(machine: &FakeMachine) -> Self {
-        let dir = folder();
+        Self::start_in(machine, folder()).await
+    }
+
+    /// The daemon on `dir`'s state, as a restart finds it.
+    async fn start_in(machine: &FakeMachine, dir: TempDir) -> Self {
         let socket = dir.path().join("d.sock");
         let tools = bundle(dir.path());
         let child = Command::new(binary("HUMATAD2"))
@@ -116,6 +125,37 @@ impl Host {
             seen.push(next);
         }
         seen
+    }
+
+    /// Stops the daemon and starts it again on the same state.
+    async fn restart(mut self, machine: &FakeMachine) -> Self {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let dir = std::mem::replace(&mut self._dir, folder());
+        Self::start_in(machine, dir).await
+    }
+
+    /// The host's copy of box-1's enrollment key, if it keeps one.
+    fn peer_key(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.peer_key_path()).ok()
+    }
+
+    fn peer_key_path(&self) -> PathBuf {
+        self._dir.path().join("state/peer-keys/box-1")
+    }
+
+    /// box-1 once its peer link is up and it reports a daemon version.
+    async fn linked(&self) -> pb::Machine {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(machine) = self.list().await.into_iter().find(|machine| machine.name == "box-1")
+                && !machine.daemon_version.is_empty()
+            {
+                return machine;
+            }
+            assert!(Instant::now() < deadline, "the peer link to box-1 never came up");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     async fn list(&self) -> Vec<pb::Machine> {
@@ -262,6 +302,7 @@ async fn a_machine_is_added_once_its_host_key_is_confirmed_then_removed_by_plan(
     assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
     assert!(host.list().await.is_empty());
     assert!(!machine.unit_installed());
+    assert_eq!(host.peer_key(), None, "the host still keeps box-1's enrollment key");
 
     // A plan is used once.
     let reused = host
@@ -275,6 +316,33 @@ async fn a_machine_is_added_once_its_host_key_is_confirmed_then_removed_by_plan(
         .await
         .unwrap_err();
     assert_eq!(reused.code(), Code::FailedPrecondition);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_added_machine_holds_the_hosts_key_and_its_link_comes_up_again_after_a_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+    let added = host.machines().await.add_ssh_machine(add(&fingerprint, "k")).await.unwrap().into_inner();
+    let last = host.watch(&added).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
+
+    let key = host.peer_key().expect("the host keeps box-1's enrollment key");
+    assert_eq!(machine.enrollment_key(), Some(key.clone()));
+    let mode = std::fs::metadata(host.peer_key_path()).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+
+    let linked = host.linked().await;
+    assert_eq!(pb::Reachability::try_from(linked.reachability).unwrap(), pb::Reachability::Online);
+    assert!(linked.last_seen_at.is_some());
+    assert!(linked.next_retry_at.is_none());
+
+    // A restart finds the machine ready and brings its link up again.
+    let host = host.restart(&machine).await;
+    let linked = host.linked().await;
+    assert_eq!(pb::Reachability::try_from(linked.reachability).unwrap(), pb::Reachability::Online);
+    assert_eq!(host.peer_key(), Some(key));
 }
 
 /// The fingerprint a first, unconfirmed add reports.

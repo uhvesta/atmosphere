@@ -14,6 +14,10 @@
 //! - An undo or removal that can't reach the machine keeps the entry
 //!   (`undo_pending`, or `Removing`) and runs again at the next recover or
 //!   reconnect.
+//! - Add writes a fresh enrollment key on the machine in its install step
+//!   and keeps the host's copy once the rest is set up (GRPC.md §8, D83);
+//!   a reconnect writes one for a machine the host has no copy for. Undoing
+//!   an add and removing a machine delete the host's copy.
 //!
 //! No async and no clock: the daemon passes a [`Runner`], the builds, and
 //! how to wait, and gets each step's progress pushed to it as it happens
@@ -26,6 +30,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::enroll::{self, Key};
 use crate::error::{KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError};
 use crate::hosts::{EntryState, HostEntry, Hosts, HostsError};
 use crate::identity::{SshAccess, SshTarget};
@@ -251,6 +256,26 @@ pub enum ManageError {
         "adding {machine} was cancelled, and what it had done there was undone. Add the machine again when you want it"
     )]
     Cancelled { machine: String },
+    #[error(
+        "couldn't save the peer link's key for {machine} in {}, so the add was undone: {source}. Check that the folder is yours and the disk isn't full, then add the machine again",
+        .path.display()
+    )]
+    SavePeerKey {
+        machine: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "couldn't delete the peer link's key for {machine} at {}: {source}. Delete that file by hand; until then the key stays on this Mac",
+        .path.display()
+    )]
+    DeletePeerKey {
+        machine: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error(transparent)]
     Hosts(#[from] HostsError),
     #[error(transparent)]
@@ -266,6 +291,8 @@ pub struct MachinesConfig {
     /// `~/.ssh/config` in the app; a file of the test's own in tests. A
     /// missing file means no aliases.
     pub ssh_config: PathBuf,
+    /// The folder of the host's copies of machines' enrollment keys.
+    pub peer_keys: PathBuf,
     pub retry: RetryPolicy,
 }
 
@@ -275,6 +302,7 @@ pub struct Machines {
     hosts: Hosts,
     known_hosts: PathBuf,
     ssh_config: PathBuf,
+    peer_keys: PathBuf,
     retry: RetryPolicy,
     busy: Mutex<BTreeSet<String>>,
 }
@@ -300,6 +328,7 @@ impl Machines {
             hosts: Hosts::open(&config.hosts_file),
             known_hosts: config.known_hosts,
             ssh_config: config.ssh_config,
+            peer_keys: config.peer_keys,
             retry: config.retry,
             busy: Mutex::new(BTreeSet::new()),
         }
@@ -359,10 +388,11 @@ impl Machines {
             return Err(ManageError::NameTaken { machine: name });
         }
         let link = Link::ssh(plan.machine.clone(), plan.target, &self.known_hosts);
+        let key = Key::new();
         let result = self
             .confirm_host_key(&link, request.trust_fingerprint.as_deref(), drive)
             .and_then(|()| stop_if_cancelled(&link, drive))
-            .and_then(|()| self.set_up(&link, drive));
+            .and_then(|()| self.set_up(&link, Some(&key), drive));
         match result {
             Ok(ready) => {
                 (drive.events)(StepEvent::Skipped(OpStep::FindAgents));
@@ -401,7 +431,9 @@ impl Machines {
                 });
             }
         }
-        let ready = self.set_up(&link, drive)?;
+        // A machine added before the host kept keys gets one now.
+        let key = (!self.peer_key(machine).exists()).then(Key::new);
+        let ready = self.set_up(&link, key.as_ref(), drive)?;
         let entry = registered(entry, &ready);
         self.hosts.put(entry.clone())?;
         Ok(entry)
@@ -458,6 +490,20 @@ impl Machines {
         Ok(BusyGuard {
             busy: &self.busy,
             machine: machine.to_owned(),
+        })
+    }
+
+    /// Where the host keeps its copy of `machine`'s enrollment key; there
+    /// is none until an add or reconnect set the machine up.
+    pub fn peer_key(&self, machine: &str) -> PathBuf {
+        enroll::host_path(&self.peer_keys, machine)
+    }
+
+    fn forget_peer_key(&self, machine: &str) -> Result<(), ManageError> {
+        enroll::remove_host(&self.peer_keys, machine).map_err(|source| ManageError::DeletePeerKey {
+            machine: machine.to_owned(),
+            path: self.peer_key(machine),
+            source,
         })
     }
 
@@ -529,9 +575,14 @@ impl Machines {
     }
 
     /// Runs connect through service, pushing each step's progress.
-    fn set_up(&self, link: &Link, drive: &mut Drive<'_>) -> Result<setup::Ready, ManageError> {
+    /// With `key`, the install step writes it on the machine and, once the
+    /// rest is set up, the host keeps its copy.
+    fn set_up(&self, link: &Link, key: Option<&Key>, drive: &mut Drive<'_>) -> Result<setup::Ready, ManageError> {
         let machine = link.machine().as_str().to_owned();
         let mut setup = Setup::existing(link.clone(), &self.known_hosts).with_retry(self.retry);
+        if let Some(key) = key {
+            setup = setup.with_enrollment(key.clone());
+        }
         let mut current = OpStep::of(setup.current());
         (drive.events)(StepEvent::Running(current));
         loop {
@@ -567,6 +618,19 @@ impl Machines {
                     });
                 }
                 Progress::Ready(ready) => {
+                    if let Some(key) = key {
+                        enroll::write_host(&self.peer_keys, link.machine(), key).map_err(|source| {
+                            (drive.events)(StepEvent::Failed {
+                                step: current,
+                                output_tail: String::new(),
+                            });
+                            ManageError::SavePeerKey {
+                                machine: machine.clone(),
+                                path: self.peer_key(&machine),
+                                source,
+                            }
+                        })?;
+                    }
                     (drive.events)(StepEvent::Done(current));
                     return Ok(ready);
                 }
@@ -604,6 +668,7 @@ impl Machines {
             (drive.events)(StepEvent::Undone(OpStep::Install));
             known_hosts::unpin(&self.known_hosts, machine)?;
         }
+        self.forget_peer_key(machine.as_str())?;
         self.hosts.remove(machine.as_str())?;
         Ok(())
     }
@@ -618,6 +683,9 @@ impl Machines {
             (drive.events)(StepEvent::Skipped(OpStep::Uninstall));
         }
         (drive.events)(StepEvent::Running(OpStep::Forget));
+        // The key goes first: a removal cut short after it finishes at the
+        // next recover all the same.
+        self.forget_peer_key(machine.as_str())?;
         // The entry goes before the key: an entry without a key is known
         // clean (above), a key without an entry would be a stray pin.
         self.hosts.remove(machine.as_str())?;

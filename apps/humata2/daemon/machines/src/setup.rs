@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::check::{self, Facts};
+use crate::enroll::{self, Key};
 use crate::error::{Remedy, SetupError, ValuesError};
 use crate::identity::{self, HostKey, Identity};
 use crate::install::{self, InstallProblem, Installed, InstalledFile, Payload};
@@ -170,6 +171,10 @@ pub struct Setup {
     pending: Vec<Pending>,
     staged: Vec<InstalledFile>,
     service: Option<ServiceKind>,
+    /// The enrollment key to write on the machine, until it is written.
+    enroll: Option<Key>,
+    /// Whether the install step must start the service again after it.
+    restart: bool,
 }
 
 /// A step's failure before remedies are worked out.
@@ -252,11 +257,19 @@ impl Setup {
             pending: Vec::new(),
             staged: Vec::new(),
             service: None,
+            enroll: None,
+            restart: false,
         }
     }
 
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// Writes `key` on the machine in the install step, before any file.
+    pub(crate) fn with_enrollment(mut self, key: Key) -> Self {
+        self.enroll = Some(key);
         self
     }
 
@@ -675,23 +688,56 @@ impl Setup {
         }
         // Nothing to install and the service already runs the way setup
         // would start it: a reconnect leaves the daemon and its sessions be.
-        let restart = !self.pending.is_empty() || facts.running != Some(service);
+        self.restart = !self.pending.is_empty() || facts.running != Some(service);
         self.service = Some(service);
         self.facts = Some(facts);
-        Ok(if !restart {
-            Done::Ready
-        } else if self.pending.is_empty() {
+        Ok(if self.enroll.is_some() || !self.pending.is_empty() {
+            Done::Next(Step::Install)
+        } else {
+            self.after_install()
+        })
+    }
+
+    /// Where the install step goes once nothing is left to write: a new
+    /// key alone needs no restart, since the link reads it at each Hello.
+    fn after_install(&self) -> Done {
+        if !self.pending.is_empty() {
+            Done::Next(Step::Install)
+        } else if self.restart {
             Done::Next(Step::Service)
         } else {
-            Done::Next(Step::Install)
-        })
+            Done::Ready
+        }
+    }
+
+    /// Writes the enrollment key on the machine, from stdin.
+    fn enroll(&mut self, runner: &dyn Runner, key: Key) -> Result<Done, Failed> {
+        let link = self.require_link()?;
+        let invocation = link
+            .script(&enroll::machine_script(), Purpose::Enroll, Some(CHECK_TIMEOUT), Some(key.bytes()))
+            .map_err(Failed::new)?;
+        let output = runner.run(&invocation).map_err(Failed::new)?;
+        if !output.exit.success() {
+            return Err(Failed::with_output(
+                SetupError::Enroll {
+                    machine: self.machine.clone(),
+                    exit: output.exit,
+                },
+                &output,
+            ));
+        }
+        self.enroll = None;
+        Ok(self.after_install())
     }
 
     /// Installs the next file that differs from the build, or moves in a
     /// staged copy; one per call.
     fn install(&mut self, runner: &dyn Runner) -> Result<Done, Failed> {
+        if let Some(key) = self.enroll.clone() {
+            return self.enroll(runner, key);
+        }
         let Some(pending) = self.pending.first().cloned() else {
-            return Ok(Done::Next(Step::Service));
+            return Ok(self.after_install());
         };
         let payload = pending.payload();
         let link = self.require_link()?;
@@ -732,11 +778,7 @@ impl Setup {
             }
         }
         self.pending.remove(0);
-        Ok(Done::Next(if self.pending.is_empty() {
-            Step::Service
-        } else {
-            Step::Install
-        }))
+        Ok(self.after_install())
     }
 
     fn start_service(&mut self, runner: &dyn Runner) -> Result<Done, Failed> {

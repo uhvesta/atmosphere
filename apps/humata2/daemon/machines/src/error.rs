@@ -327,6 +327,10 @@ pub enum SetupError {
     #[error("installing {file} on {machine} failed: {problem}")]
     Install { machine: MachineName, file: InstalledFile, problem: InstallProblem },
     #[error(
+        "couldn't write the peer link's key into ~/.humata2/state on {machine} ({exit}); the output is below. Check that the folder is yours and the disk isn't full there, then try again"
+    )]
+    Enroll { machine: MachineName, exit: Exit },
+    #[error(
         "{machine} won't let {user} keep services running after logout (linger). An admin must run this once on {machine}: `{admin_command}`, then try again. Or start humatad2 without systemd, which won't restart it if it crashes"
     )]
     LingerUnavailable { machine: MachineName, user: String, admin_command: String },

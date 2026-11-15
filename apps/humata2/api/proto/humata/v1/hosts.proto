@@ -163,6 +163,11 @@ enum Reachability {
   REACHABILITY_STOPPED = 5;
   // MP-9: the pinned host key no longer matches; nothing is sent.
   REACHABILITY_HOST_KEY_CHANGED = 6;
+  // LD-12: the machine answered the peer link without proof that it holds
+  // the enrollment key on record (re-imaged, swapped, or posing as it), or
+  // refused the host's proof. The host stops dialling it; add it again as
+  // a new machine.
+  REACHABILITY_IDENTITY_MISMATCH = 7;
 }
 
 message Machine {
