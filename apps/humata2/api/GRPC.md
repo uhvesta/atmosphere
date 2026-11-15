@@ -45,6 +45,11 @@ wrong. Requirement ids (SL-1, TP-9, …) refer to SPEC.md.
 | Machine socket | `<root>/.humatad/humatad.sock`, 0600, directory 0700 | `humata` on that machine (AW-2, AW-5), `humatad mcp` of its sessions | DaemonService, TerminalService and FileService for its own sessions, and every other client service by forwarding to the host |
 | Peer link | stdio of `humatad serve --stdio`, started by the host through the machine's connect command or SSH (MP-7) | the host's daemon only | PeerService, plus TerminalService, FileService, DiffService for relaying |
 
+Until the app exists, `humatad2 serve` defaults to `~/.humata2/humatad.sock`
+(state in `~/.humata2/state`), and `humata` tries the host socket, the
+machine socket, then that one, in that order (`HUMATA_SOCKET` overrides all
+three). The app's daemon will serve the host socket above.
+
 No TCP port is opened anywhere (TR-5). PeerService is never registered on a
 socket, so no local process on a machine (agent, CLI, script) can call it
 there. That alone isn't enough, since any local process can also run
