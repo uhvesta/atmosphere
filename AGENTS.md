@@ -1,5 +1,9 @@
 # Agent guidelines
 
+## Builds
+
+- Build, test, bench and lint only through Bazel. Never run `cargo` directly; if something needs it, add a Bazel target instead.
+
 ## Errors
 
 - Return explicit error types, not a catch-all like `Box<dyn Error>` or `anyhow::Error`. Each variant records what went wrong in its fields and keeps the underlying error as its source.
