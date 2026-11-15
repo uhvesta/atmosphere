@@ -232,7 +232,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: suspensions and grants ended with a session aren't told, since nothing makes them yet (D91).
 
-### (this commit): review chat notes on the event feed [minion F]
+### 420083fb: review chat notes on the event feed [minion F]
 - The app now hears at once when the review chat's agent leaves, edits or drops a note, when one goes outdated or moves, and when an Undo brings one back or takes it away, in any session, not only the review it's watching. A restart doesn't announce the kept notes again.
 - `daemon/humatad/src/review.rs`: SessionReview keeps `told`, the notes as the feed last heard them (set from the store on load); `publish` now takes the SessionRecord and calls `tell_notes`, which compares the notes with `told` and publishes Created, Updated or Deleted (last state) in the session's channel and session. `daemon/humatad/src/events.rs`: `Filter` passes comments by TOPIC_COMMENTS, the channels or sessions asked for, and `sees_session`.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
