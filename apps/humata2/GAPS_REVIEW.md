@@ -408,6 +408,6 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - AR-1, AR-4, FC-7, FM-9, §16 intro, TP-8, TP-9, SL-1, TR-1, TR-2, SEC-2 and HO-8 now name the host, which may be a Mac or a Linux machine. The §16 intro states the MCP shape already built in `daemon/mcp`: one thin `humatad mcp` per agent proves its session and passes calls to its machine's daemon, which decides and forwards to the host.
 - Other "the Mac" wording is still covered by the glossary's Host entry. Spec only; no code change.
 
-### (this commit): SPEC sweep: "host" wherever "the Mac" meant the host
+### a0c39129: SPEC sweep: "host" wherever "the Mac" meant the host
 - Every rule outside the §26 worked examples now says "host" where it meant the source-of-truth machine: TOC and §20 title, the topology diagram (the Mac box is the host by default; remote boxes are "machine role"), the persistence and storage tables, AW-*, PR-*, LD-*, SK-*, MP-*, SEC-*, VW-12. "This Mac" stays as the UI label for the local machine; §26 stories still use a Mac host, as the glossary says.
 - Spec only; no code change.
