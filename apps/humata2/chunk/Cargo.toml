@@ -1,0 +1,24 @@
+[package]
+name = "humata2-chunk"
+description = "Humata 2's chunks on a link: 1 MiB at most, each compressed with lz4 or zstd (or not) and naming its codec, and the policy that picks the codec."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_chunk"
+path = "src/lib.rs"
+
+[dependencies]
+crc32fast = { workspace = true }
+lz4_flex = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+# The release bench compares the pure-Rust zstd (ruzstd) the store uses with the C zstd crate (D65).
+ruzstd = { workspace = true }
+tempfile = { workspace = true }

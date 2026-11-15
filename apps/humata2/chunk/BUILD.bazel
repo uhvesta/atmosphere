@@ -1,0 +1,69 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Chunks on a link and frames at rest: 1 MiB chunks compressed with lz4 or
+# zstd (or not), each naming its codec, the policy that picks the codec,
+# and the self-describing header for compressed data at rest (TR-11,
+# TR-13, D60, D65).
+rust_library(
+    name = "humata2_chunk",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_chunk",
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
+    ],
+    deps = [
+        "@crates//:crc32fast",
+        "@crates//:lz4_flex",
+        "@crates//:serde",
+        "@crates//:thiserror",
+        "@crates//:toml",
+        "@crates//:zstd",
+    ],
+)
+
+rust_test(
+    name = "humata2_chunk_test",
+    crate = ":humata2_chunk",
+    deps = ["@crates//:tempfile"],
+)
+
+rust_test(
+    name = "chunks_test",
+    srcs = ["tests/chunks.rs"],
+    deps = [":humata2_chunk"],
+)
+
+rust_test(
+    name = "frame_test",
+    srcs = ["tests/frame.rs"],
+    deps = [":humata2_chunk"],
+)
+
+# Throughput and ratio per codec on prose, source code and random data
+# (D65). Measure release builds:
+# `bazel run -c opt //apps/humata2/chunk:codecs_bench -- --nocapture`
+# reads the workspace's apps/humata2 for its corpora.
+rust_test(
+    name = "codecs_bench",
+    srcs = ["benches/codecs.rs"],
+    # The fallback corpora, when not run from the workspace.
+    compile_data = [
+        "src/chunk.rs",
+        "src/lib.rs",
+    ],
+    crate_root = "benches/codecs.rs",
+    tags = ["manual"],
+    deps = [
+        ":humata2_chunk",
+        "@crates//:lz4_flex",
+        "@crates//:ruzstd",
+        "@crates//:zstd",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
