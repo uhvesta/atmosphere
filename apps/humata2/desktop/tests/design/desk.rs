@@ -1,4 +1,4 @@
-//! Drafts for the owner (2026-11-15): the window with no channels and no
+//! Signed off by the owner 2026-11-15 (D100): the window with no channels and no
 //! machines but This Mac, a channel with nothing in it yet, and the
 //! Desk: sessions outside any channel, in a scratch folder, for
 //! running the board, adding projects and writing things down.

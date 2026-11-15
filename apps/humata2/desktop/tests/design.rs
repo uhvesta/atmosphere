@@ -172,17 +172,17 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("31-new-session", LIGHT, |look| overlays::new_session(look, board::kanban(look))),
     ("32-toast", LIGHT, |look| overlays::toast(look, pages::home_list(look), "Archived “Currency codes” and freed 1.4 GB", "Undo")),
     ("33-first-run", DARK, pages::first_run),
-    // Drafts for the owner's review (2026-11-15), not yet signed off.
-    ("34-draft-empty-home", LIGHT, desk::empty_home),
-    ("35-draft-empty-channel", DARK, desk::empty_channel),
-    ("36-draft-desk", LIGHT, desk::desk),
-    ("37-draft-desk-board", DARK, desk::board_session),
-    ("38-draft-desk-move", DARK, desk::move_session),
-    ("39-draft-desk-document", LIGHT, desk::doc_session),
-    ("40-draft-new-desk-session", LIGHT, desk::new_desk),
-    ("41-draft-review-beside-terminal", DARK, desk::split_review),
-    ("42-draft-review-markdown-source", LIGHT, desk::source_review),
-    ("43-draft-review-terminal-source-page", DARK, desk::terminal_source_page),
+    // Empty states, the Desk and markdown review (owner sign-off 2026-11-15, D100).
+    ("34-empty-home", LIGHT, desk::empty_home),
+    ("35-empty-channel", DARK, desk::empty_channel),
+    ("36-desk", LIGHT, desk::desk),
+    ("37-desk-board", DARK, desk::board_session),
+    ("38-desk-move", DARK, desk::move_session),
+    ("39-desk-document", LIGHT, desk::doc_session),
+    ("40-new-desk-session", LIGHT, desk::new_desk),
+    ("41-review-beside-terminal", DARK, desk::split_review),
+    ("42-review-markdown-source", LIGHT, desk::source_review),
+    ("43-review-terminal-source-page", DARK, desk::terminal_source_page),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.

@@ -406,12 +406,13 @@ is configurable per machine.
 - **SE-1** The user can start a session from a channel's **New session**
   button, a machine's page ("New session on devbox-1") or a board item ("Start
   a session for this item").
-- **SE-2** The New session dialog asks for: title, agent and model (preselected from
+- **SE-2** The New session dialog asks for: title, agent (preselected from
   the default, ST-15), machine (any online machine of the channel), and per repo of the
   channel whether to include it ("Own clone, new branch from main" or "Leave
   this repo out"); plus an optional first message that is typed into the agent
   once it starts. With no first message the session starts at the agent's
-  prompt.
+  prompt. The agent starts with its own configured defaults; the dialog does not
+  select or override its model (owner direction, 2026-11-15).
 - **SE-3** When started from a board item, the title defaults to the item's
   title, the dialog shows "for PAY-7", the first-message placeholder names the
   item, the item is assigned to the new session, and an item in Backlog or To
@@ -540,10 +541,11 @@ is configurable per machine.
   channel's Sessions tab, Home, the Desk, search results) the row can show
   it and sort by it, so old sessions are easy to find and clean up.
 
-### The Desk (draft for the owner's review, D100)
+### The Desk (signed off by the owner 2026-11-15, D100)
 
-Frames 34–43 in `desktop/tests/__snapshots__/design/` are drafts, not
-approved goldens.
+Frames 34–43 in `desktop/tests/__snapshots__/design/` are approved goldens
+(empty states, the Desk and markdown review). The Desk row sits under Board
+in the sidebar of every frame, 01–43.
 
 - **DK-1** The sidebar has a **Desk** row under Board, with its open
   sessions under it. A Desk session belongs to no channel. It runs an agent's
@@ -582,8 +584,12 @@ approved goldens.
   text, and then shows as sent (frame 42). The agent answers in its
   terminal, not in the comment thread; the terminal can stay in the first
   tab group beside both (frame 43).
-- **DK-9** (stretch goal, not planned) An MCP tool for the agent to reply
-  in the comment thread. Not needed while the terminal is in view.
+- **DK-9** The agent can also answer in the comment thread with the MCP
+  tool `comment_reply` (`comment.reply`), on a comment that was typed into
+  its own session. The reply shows under the comment, marked with the
+  agent's name, and the page's count goes up. The agent still answers in
+  its terminal as usual; the tool's description asks it to hand the call to
+  a cheap subagent (TP-17). (Built after DK-1–DK-8.)
 
 ## 6. Forks
 
@@ -1651,6 +1657,13 @@ outside the session go through the Mac.
 - **TP-16** Every MCP tool is named `<area>_<verb>` (`session_fork`,
   `board_item_move`) on the MCP server `humata`. Activity, item history and
   Inbox cards show the dotted operation id (`session.fork`).
+- **TP-17** Humata's skills and MCP tool descriptions encourage agents to
+  hand tedious, mechanical MCP and tool calls (replying to comments, board
+  edits, collecting results) to a cheap subagent where the agent's CLI has
+  subagents: Haiku in Claude Code, Luna in GPT-based agents. The subagent
+  runs with the smallest context window and medium reasoning effort where
+  the CLI lets the caller choose them. Where it has no subagents, the agent
+  makes the calls itself. (owner direction 2026-11-15, D100)
 
 ## 17. Hosts and the bridge
 

@@ -236,7 +236,13 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
 - [ ] Finish the indented tree, channel Sessions tab, Home/global Inbox lists, terminal tabs and the two-group split, New session with any agent TUI or a plain terminal, sidebar material and vibrancy, system font sizes and weights, the unified title bar with toolbar items, native list selection, sheets and popovers, light/dark following the system across the shell, and terminal full screen (minion C: this pass builds the session panels only; the rest remains the N1 shell work).
 - [ ] Restyle the remaining shell (sidebar, session header, terminal tabs) and each screen until the whole app matches the goldens (minion C: the new panel/strip use D76 tokens; cropped panel references do not claim the earlier shell is already restyled).
 - [ ] Draw the goldens on Linux (in the Linux VM batch, after the I milestones) and in a browser. Find out whether gpui's web target can draw `design.rs` headless; if not, check the frames another way. Never edit `ui-prototype` for this.
-- [ ] Owner to review drafts 34–43 (empty states, the Desk and markdown review, SPEC SE-26 and DK-1–DK-9, D99/D100). Build them only after sign-off; then add the Desk row to every frame's sidebar.
+- [x] Owner signed off frames 34–43 on 2026-11-15 (D100): empty states, the Desk and markdown review. The Desk row is now in the sidebar of every golden (01–43), so native frames 01–33 differ from the goldens by that row until the app has it.
+- [ ] Build the Desk in the app (SPEC DK-1–DK-8): the sidebar Desk row and its sessions, the Desk page, scratch or picked folders, moving a Desk session into a channel. Frames 36–40.
+- [ ] Build the empty states for Home and a new channel (frames 34, 35), keeping first run (33).
+- [ ] Build markdown review (DK-6–DK-8): Preview/Source/Side by side, linked scroll, comments on source lines sent to the session's agent. Frames 39, 41–43.
+- [ ] Record and show last used per session (SPEC SE-26, D99) wherever sessions are listed.
+- [ ] Add the MCP tool `comment_reply` (SPEC DK-9), after DK-1–DK-8.
+- [ ] Write the TP-17 delegation rule into Humata's skills and MCP tool descriptions: mechanical calls go to a cheap subagent (Haiku / Luna) with the smallest context window and medium reasoning effort where the CLI allows.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
 
 ### Pick up here (minion C1)

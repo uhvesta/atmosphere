@@ -383,3 +383,11 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - SPEC: SE-26 (sessions record last used, owner direction) and DK-1–DK-9 (the Desk, empty states, markdown review; DK-9 a stretch goal). DECISIONS D99 and D100; OVERVIEW N1 item for the owner's review.
 - Verified: `bazel run //apps/humata2/desktop:design_test_record` passes; frames 01–33 are byte-identical; each new frame inspected.
 - Look at: frames 34–43 against SPEC DK-1–DK-8.
+
+### (this commit): goldens 34–43 signed off, the Desk row in every frame (N1; D100, TP-17)
+- The owner signed off drafts 34–43 on 2026-11-15. Frames renamed without `-draft-`; `design.rs` and `design/desk.rs` no longer call them drafts.
+- `design/sidebar.rs` draws the Desk row under Board in every frame, so frames 01–09, 14–32 and 34–43 were re-recorded (10–13 and 33 have no sidebar). Its sessions still show only in Desk frames.
+- SPEC: the Desk section is signed off; DK-9 (`comment_reply`) is planned after DK-1–DK-8; new TP-17: tedious MCP and tool calls go to a cheap subagent (Haiku / Luna) with the smallest context window and medium reasoning effort where the CLI allows. DECISIONS D100 decided. OVERVIEW N1: review item checked, build items added.
+- Native frames 01–33 now differ from the goldens by the Desk row until the app draws it.
+- Verified: `bazel run //apps/humata2/desktop:design_test_record` passes; frames 15 and 16 (tallest sidebars) inspected: the Desk row fits above Settings.
+- Look at: frame 15, the tightest sidebar.

@@ -17,7 +17,7 @@ pub struct Side {
     pub pinned: bool,
     /// Every channel folded to one row.
     pub folded: bool,
-    /// Show the Desk row and its sessions (draft).
+    /// List the open Desk sessions under the Desk row.
     pub desk: bool,
     /// No channels and no machines but This Mac yet (draft).
     pub empty: bool,
@@ -158,10 +158,10 @@ fn channels(look: Look, side: Side) -> Div {
         .child(channel(look, side, "web", false, None, false))
 }
 
-/// The Desk row, with its open sessions under it (draft).
+/// The Desk row; on the Desk and its sessions, the open sessions under it (D100).
 fn desk(look: Look, side: Side) -> Div {
     let mut list = div().flex().flex_col().child(nav(look, side, IconName::SquareTerminal, "Desk", None));
-    if !side.empty {
+    if side.desk && !side.empty {
         list = list
             .child(session(look, side, St::Working, "Plan Q4 board", 18., None))
             .child(session(look, side, St::Idle, "BRIN rollout RFC", 18., None));
@@ -266,7 +266,7 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         .child(nav(look, side, IconName::House, "Home", None))
         .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else { Some("7") }))
         .child(nav(look, side, IconName::SquareKanban, "Board", None))
-        .when(side.desk, |bar| bar.child(desk(look, side)))
+        .child(desk(look, side))
         .child(section(look, "Channels").child(small_icon(IconName::Plus, look.secondary)))
         .when(side.empty, |bar| match side.fresh {
             Some(name) => bar

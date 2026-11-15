@@ -579,6 +579,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Pick (owner):** the 33 frames in `desktop/tests/__snapshots__/design/` (drawn by `desktop/tests/design.rs`, target `//apps/humata2/desktop:design_test`) are what the UI should look like. Screens are built to match them. A design change goes to the frames first, with the owner's OK.
 - **Picks (owner):** right panel switched from a labelled strip on the right edge, plus a header toggle; terminals and files are tabs in one row; the only split is two tab groups in one session, at most one terminal per agent, and anything more is a fork (code + context, context only, code only); indented sidebar tree; a channel opens to its Sessions tree table; Board kanban, drawer, table and dashboard, and the expanded Board panel shows the kanban; Home and Inbox list what needs you first; New session runs any agent's TUI or a plain terminal.
 - **Platforms (owner):** macOS, Linux and web only.
+- **New session revision (owner, 2026-11-15; recorded by minion C1):** choose the agent or Terminal, then launch it with its own configured defaults. Remove the separate Opus/model row; model selection stays in the agent UI. This revises frame31 and SE-2; the approved frame source/image is retained as the earlier reference.
 - **Revises D74:** no general pane workspace or Panes sidebar.
 - **Reverse:** re-record the frames from the earlier options in c16dff55.
 
@@ -746,8 +747,8 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Pick:** SE-26. "Last used" is the user's last typing, opening or answer, not the agent's last output, so a long-running agent doesn't make a forgotten session look fresh. Listed sessions can show it and sort by it, for cleanup.
 - Approved frames (18 etc.) are not changed for this now; rows gain it when the screens are next redrawn.
 
-## D100: The Desk, empty states and markdown review (proposed in drafts 34–43). Provisional
-- **Pick:** DK-1–DK-8; DK-9 (agent replies in the comment thread over MCP) is a stretch goal. The owner noted the agent answers in its terminal, so inline replies aren't needed for now. The owner asked for a place, beside Home, Inbox and Board, for ephemeral sessions that manage things (the global board, items and projects, documents), and for barebones screens with no channel or no machine. The owner named it Desk.
+## D100: The Desk, empty states and markdown review (frames 34–43). Decided (owner sign-off 2026-11-15)
+- **Pick:** DK-1–DK-9. The agent answers a comment in its terminal; it can also reply in the thread with the MCP tool `comment_reply` (DK-9), built after the rest. Owner direction: tedious MCP and tool calls like this go to cheap subagents (Haiku for Claude Code, Luna for GPT-based agents) with the smallest context window and medium reasoning effort where the CLI allows, written as TP-17 into Humata's skills and tool descriptions. The owner asked for a place, beside Home, Inbox and Board, for ephemeral sessions that manage things (the global board, items and projects, documents), and for barebones screens with no channel or no machine. The owner named it Desk.
 - Scratch folders go 7 days after close unless kept; picked folders are never deleted. Moving a Desk session copies its folder and restarts the agent with its conversation.
-- Once approved: frame 34 replaces or joins 33 (first run), and the Desk row is added to the sidebar in every frame.
+- Done at sign-off: frames renamed without `-draft-`; the Desk row is in the sidebar of every frame (01–43); frame 33 (first run) stays alongside 34 (empty Home).
 - Reverse: drop `desktop/tests/design/desk.rs`, the `desk`, `empty` and `fresh` fields in `design/sidebar.rs`, frames 34–43 and SPEC DK-1–DK-9.
