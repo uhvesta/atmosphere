@@ -83,3 +83,24 @@ humata2_snapshot_test(
         "@crates//:gpui-kit",
     ],
 )
+
+humata2_snapshot_test(
+    name = "native_test",
+    srcs = ["tests/native.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/native.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/review",
+        "//apps/humata2/features/session",
+        "//apps/humata2/features/sidebar",
+        "//apps/humata2/testing/snapshot",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)

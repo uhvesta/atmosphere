@@ -326,6 +326,8 @@ pub enum AppAction {
     Retry,
     /// Show a screen; the current one goes on the trail.
     Navigate(Route),
+    /// Lateral navigation (sidebar, breadcrumb or shortcut): clear Back.
+    Switch(Route),
     /// ⌘[: back to the previous screen.
     Back,
     /// Escape: close the top overlay or dialog.
@@ -494,6 +496,12 @@ impl App {
         self.arrive(state)
     }
 
+    fn switch(&self, state: &mut AppState, route: Route) -> Effect<AppAction> {
+        state.route = route;
+        state.trail.clear();
+        self.arrive(state)
+    }
+
     /// Tells the features what the route now shows.
     fn arrive(&self, state: &mut AppState) -> Effect<AppAction> {
         let current = match &state.route {
@@ -586,8 +594,8 @@ impl App {
         let clock = self.clients.clock.clone();
         match action {
             AppAction::Sidebar(SidebarAction::Delegate(delegate)) => match delegate {
-                D::OpenChannel(id) => self.navigate(state, Route::Channel(id.clone())),
-                D::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
+                D::OpenChannel(id) => self.switch(state, Route::Channel(id.clone())),
+                D::OpenSession(id) => self.switch(state, Route::Session(id.clone())),
             },
             AppAction::Session(SessionAction::Delegate(delegate)) => match delegate {
                 S::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
@@ -763,6 +771,7 @@ impl App {
                 Effect::merge([self.load(), self.follow()])
             }
             AppAction::Navigate(route) => self.navigate(state, route),
+            AppAction::Switch(route) => self.switch(state, route),
             AppAction::Back => match state.trail.pop() {
                 Some(route) => {
                     state.route = route;

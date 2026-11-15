@@ -13,8 +13,9 @@ use std::collections::HashMap;
 use crate::model::{
     Agent, Answer, Channel, ChannelId, Comment, DiffLine, FileDiff, FileEntry, ForkKind, Item,
     ItemId, ItemKind, ItemStatus, JournalEntry, Line, LineKind, Machine, MachineId, MachineKind,
-    PreparedView, Preview, PullRequest, Recovery, RepoDiff, Request, RequestId, RequestKind, Scope, Session,
-    SessionFile, SessionId, Skill, Speaker, Spec, Status, Transfer, TransferId, TransferState, Trashed, Turn,
+    PreparedView, Preview, PullRequest, Recovery, RepoDiff, Request, RequestId, RequestKind, Scope,
+    Session, SessionFile, SessionId, Skill, Speaker, Spec, Status, Transfer, TransferId,
+    TransferState, Trashed, Turn,
 };
 use crate::workspace::Workspace;
 
@@ -52,7 +53,11 @@ pub fn standard() -> Workspace {
                 folder: false,
             },
         ];
-        for diff in workspace.diffs.iter().filter(|diff| diff.session == session.id) {
+        for diff in workspace
+            .diffs
+            .iter()
+            .filter(|diff| diff.session == session.id)
+        {
             for file in &diff.files {
                 files.push(SessionFile {
                     repo: diff.repo.clone(),
@@ -193,6 +198,282 @@ pub fn large(extra: usize) -> Workspace {
     workspace
 }
 
+/// The workspace shown in the owner's approved D76 frames. The demo and
+/// full-screen comparisons share this data; `standard` keeps the broader
+/// boundary fixtures stable.
+#[must_use]
+pub fn design() -> Workspace {
+    let mut workspace = Workspace::default();
+    workspace.machines = vec![
+        machines().remove(0),
+        Machine {
+            id: MachineId::new("devbox-1"),
+            name: "devbox-1".into(),
+            kind: MachineKind::Ssh {
+                address: "dev@devbox-1".into(),
+            },
+            online: true,
+            detail: "Ubuntu 24.04 · 16 vCPU · 64 GB".into(),
+            last_seen: "now".into(),
+        },
+        Machine {
+            id: MachineId::new("gpu-box"),
+            name: "gpu-box".into(),
+            kind: MachineKind::Ssh {
+                address: "dev@gpu-box".into(),
+            },
+            online: false,
+            detail: "Ubuntu 24.04 · RTX 4090 · 64 GB".into(),
+            last_seen: "12 min ago".into(),
+        },
+    ];
+    for (name, repos) in [
+        ("payments-rewrite", vec!["acme/ledger", "acme/api"]),
+        ("infra", vec!["acme/infra"]),
+        ("pr-reviews", vec!["acme/api"]),
+        ("web", vec!["acme/web"]),
+    ] {
+        workspace.channels.push(Channel {
+            id: ChannelId::new(name),
+            name: name.into(),
+            repos: repos.into_iter().map(str::to_owned).collect(),
+            machines: vec![MachineId::new("this-mac"), MachineId::new("devbox-1")],
+            purpose: String::new(),
+        });
+    }
+    for (id, channel, title, agent, machine, status, parent) in [
+        (
+            "ledger",
+            "payments-rewrite",
+            "Ledger schema migration",
+            Agent::Claude,
+            "devbox-1",
+            Status::NeedsYou,
+            None,
+        ),
+        (
+            "brin",
+            "payments-rewrite",
+            "Try BRIN index",
+            Agent::Claude,
+            "devbox-1",
+            Status::Working,
+            Some("ledger"),
+        ),
+        (
+            "partial-brin",
+            "payments-rewrite",
+            "Partial BRIN on posted_at",
+            Agent::Claude,
+            "devbox-1",
+            Status::Working,
+            Some("brin"),
+        ),
+        (
+            "schema-review",
+            "payments-rewrite",
+            "Review the schema",
+            Agent::Codex,
+            "this-mac",
+            Status::Idle,
+            Some("ledger"),
+        ),
+        (
+            "refund",
+            "payments-rewrite",
+            "Refund retries",
+            Agent::Codex,
+            "devbox-1",
+            Status::Working,
+            None,
+        ),
+        (
+            "rate",
+            "payments-rewrite",
+            "API rate limiter",
+            Agent::Claude,
+            "this-mac",
+            Status::Idle,
+            None,
+        ),
+        (
+            "benchmark",
+            "infra",
+            "Benchmark BRIN",
+            Agent::Claude,
+            "devbox-1",
+            Status::Working,
+            None,
+        ),
+        (
+            "postgres",
+            "infra",
+            "Upgrade Postgres 17",
+            Agent::Codex,
+            "devbox-1",
+            Status::Exited { code: 1 },
+            None,
+        ),
+        (
+            "pr-482",
+            "pr-reviews",
+            "acme/api #482",
+            Agent::Claude,
+            "this-mac",
+            Status::Idle,
+            None,
+        ),
+    ] {
+        let mut value = session(id, channel, title, agent, machine, status);
+        value.parent = parent.map(SessionId::new);
+        value.fork = parent.map(|_| ForkKind::Worktree);
+        value.repo = if channel == "infra" {
+            "acme/infra"
+        } else {
+            "acme/ledger"
+        }
+        .into();
+        value.branch = "ledger-schema".into();
+        value.unread = u32::from(["ledger", "refund", "postgres"].contains(&id));
+        value.shells = vec!["zsh".into()];
+        value.transcript = [
+            (Speaker::System, "~/src/ledger (ledger-schema) $ claude"),
+            (
+                Speaker::You,
+                "> Design the ledger schema from PAY-3 and move the reads over.",
+            ),
+            (Speaker::Agent, ""),
+            (Speaker::Agent, "● Read(ledger/docs/model.md)"),
+            (Speaker::System, "  ⎿ Read 212 lines"),
+            (
+                Speaker::Agent,
+                "● Write(ledger/migrations/0042_accounts.sql)",
+            ),
+            (Speaker::System, "  ⎿ Wrote 41 lines"),
+            (Speaker::Agent, "● Update(api/src/client.rs)"),
+            (
+                Speaker::System,
+                "  ⎿ Updated with 62 additions and 21 removals",
+            ),
+            (Speaker::Agent, "● Bash(bazel test //api:ledger_test)"),
+            (Speaker::Tool, "  ⎿ test result: ok. 14 passed; 0 failed"),
+            (Speaker::Agent, ""),
+            (Speaker::Agent, "● Updated plan"),
+            (Speaker::Tool, "  ✓ Add accounts and entries tables"),
+            (Speaker::Tool, "  ✓ Dual-write from client.rs"),
+            (Speaker::Agent, "  ◐ Backfill entries from ledger_entries"),
+            (Speaker::System, "    Switch reads, drop the old index"),
+        ]
+        .into_iter()
+        .map(|(from, text)| Line {
+            from,
+            text: text.into(),
+        })
+        .collect();
+        workspace.sessions.push(value);
+    }
+    workspace.requests = vec![
+        request(
+            "move-pay-3",
+            "ledger",
+            "payments-rewrite",
+            RequestKind::Command,
+            "Move PAY-3 to Done",
+        ),
+        request(
+            "ledger-question",
+            "ledger",
+            "payments-rewrite",
+            RequestKind::Question,
+            "Drop the old ledger_entries index?",
+        ),
+    ];
+    for (id, session, channel, title) in [
+        (
+            "refund-command",
+            "refund",
+            "payments-rewrite",
+            "Run the integration tests",
+        ),
+        (
+            "rate-command",
+            "rate",
+            "payments-rewrite",
+            "Write the API rate limit config",
+        ),
+        (
+            "benchmark-command",
+            "benchmark",
+            "infra",
+            "Run the benchmark on devbox-1",
+        ),
+        (
+            "postgres-command",
+            "postgres",
+            "infra",
+            "Upgrade Postgres 17",
+        ),
+        (
+            "review-command",
+            "pr-482",
+            "pr-reviews",
+            "Post review on acme/api #482",
+        ),
+    ] {
+        workspace
+            .requests
+            .push(request(id, session, channel, RequestKind::Command, title));
+    }
+    workspace.diffs = vec![
+        RepoDiff { session: SessionId::new("ledger"), repo: "ledger".into(), base: "main".into(), files: vec![FileDiff {path: "migrations/0042_accounts.sql".into(),added:41,removed:0,lines:Vec::new()}],comments:Vec::new() },
+        RepoDiff { session: SessionId::new("ledger"), repo: "api".into(), base: "main".into(), files: vec![
+            FileDiff {path:"src/client.rs".into(),added:62,removed:21,lines:lines(&[
+                (LineKind::Hunk,"@@ -40,7 +40,12 @@ impl Client {"),
+                (LineKind::Context,"    pub async fn post(&self, entry: Entry)"),
+                (LineKind::Removed,"        self.db.insert_legacy(&entry).await?;"),
+                (LineKind::Added,"        let tx = self.db.begin().await?;"),
+                (LineKind::Added,"        tx.insert_entry(&entry).await?;"),
+                (LineKind::Added,"        tx.insert_legacy(&entry).await?;"),
+                (LineKind::Added,"        tx.commit().await?;"),
+            ],39)},
+            FileDiff {path:"src/entry.rs".into(),added:81,removed:3,lines:Vec::new()},
+        ],comments:vec![Comment {path:"src/client.rs".into(),line:41,body:"Wrap the two writes in one transaction so a crash can't leave them out of step.".into(),sent:true}] },
+    ];
+    for value in &workspace.sessions {
+        workspace.session_files.insert(
+            value.id.clone(),
+            vec![
+                SessionFile {
+                    repo: "ledger".into(),
+                    path: "migrations/0042_accounts.sql".into(),
+                    folder: false,
+                },
+                SessionFile {
+                    repo: "ledger".into(),
+                    path: "README.md".into(),
+                    folder: false,
+                },
+                SessionFile {
+                    repo: "api".into(),
+                    path: "src/client.rs".into(),
+                    folder: false,
+                },
+                SessionFile {
+                    repo: "api".into(),
+                    path: "src/entry.rs".into(),
+                    folder: false,
+                },
+                SessionFile {
+                    repo: "api".into(),
+                    path: "Cargo.toml".into(),
+                    folder: false,
+                },
+            ],
+        );
+    }
+    workspace
+}
+
 /// What reconnecting ci-runner does to each of its sessions: one of each
 /// outcome PER-26 names.
 #[must_use]
@@ -264,12 +545,7 @@ fn channels() -> Vec<Channel> {
             &["this-mac", "gpu-box"],
             "Public API and its clients",
         ),
-        channel(
-            "infra",
-            &["acme/infra"],
-            &["ci-runner"],
-            "Terraform and CI",
-        ),
+        channel("infra", &["acme/infra"], &["ci-runner"], "Terraform and CI"),
         channel("scratch", &[], &["this-mac"], "No repos: notes and shells"),
     ]
 }
@@ -287,7 +563,10 @@ fn transcript(title: &str, agent: Agent) -> Vec<Line> {
         ];
     }
     vec![
-        line(Speaker::System, &format!("{} started · {title}", agent.name())),
+        line(
+            Speaker::System,
+            &format!("{} started · {title}", agent.name()),
+        ),
         line(Speaker::You, &format!("Please work on: {title}")),
         line(Speaker::Agent, "I'll read the relevant files first."),
         line(Speaker::Tool, "Read src/lib.rs (212 lines)"),
@@ -484,12 +763,13 @@ fn sessions() -> Vec<Session> {
     );
     old.archived = true;
     vec![
-        login, passkey, copy, email, theme, auth, rate, proto, terraform, runner, backup, notes, old,
+        login, passkey, copy, email, theme, auth, rate, proto, terraform, runner, backup, notes,
+        old,
     ]
 }
 
-fn requests() -> Vec<Request> {
-    let request = |id: &str, session: &str, channel: &str, kind, title: &str| Request {
+fn request(id: &str, session: &str, channel: &str, kind: RequestKind, title: &str) -> Request {
+    Request {
         id: RequestId::new(id),
         session: SessionId::new(session),
         channel: ChannelId::new(channel),
@@ -502,7 +782,10 @@ fn requests() -> Vec<Request> {
         undoable: true,
         asked: "2 min ago".to_owned(),
         answer: None,
-    };
+    }
+}
+
+fn requests() -> Vec<Request> {
     let mut command = request(
         "r-test",
         "s-auth",
@@ -745,10 +1028,22 @@ fn diffs() -> Vec<RepoDiff> {
         lines: lines(
             &[
                 (Hunk, "@@ -40,7 +40,9 @@ impl Client {"),
-                (Context, "    pub async fn send(&self, request: Request) -> Result<Response> {"),
-                (Removed, "        let response = self.http.send(request.clone()).await?;"),
-                (Removed, "        if response.status() == 401 { return self.retry(request).await; }"),
-                (Added, "        let response = self.http.send(request.clone()).await?;"),
+                (
+                    Context,
+                    "    pub async fn send(&self, request: Request) -> Result<Response> {",
+                ),
+                (
+                    Removed,
+                    "        let response = self.http.send(request.clone()).await?;",
+                ),
+                (
+                    Removed,
+                    "        if response.status() == 401 { return self.retry(request).await; }",
+                ),
+                (
+                    Added,
+                    "        let response = self.http.send(request.clone()).await?;",
+                ),
                 (Added, "        if response.status() == 401 {"),
                 (Added, "            self.tokens.refresh().await?;"),
                 (Added, "            return self.http.send(request).await;"),
@@ -798,7 +1093,10 @@ fn diffs() -> Vec<RepoDiff> {
             &[
                 (Hunk, "@@ -3,3 +3,3 @@"),
                 (Removed, "  \"surface\": \"#ffffff\","),
-                (Added, "  \"surface\": { \"light\": \"#ffffff\", \"dark\": \"#1a1d21\" },"),
+                (
+                    Added,
+                    "  \"surface\": { \"light\": \"#ffffff\", \"dark\": \"#1a1d21\" },",
+                ),
                 (Context, "  \"text\": \"#1a1d21\""),
             ],
             2,
@@ -866,8 +1164,16 @@ fn journal() -> Vec<JournalEntry> {
         text: text.to_owned(),
     };
     vec![
-        entry("1 min ago", Some("s-auth"), "Asked to run the integration tests"),
-        entry("4 min ago", Some("s-passkey"), "Forked “Login v2” → “Passkey prompt” (worktree)"),
+        entry(
+            "1 min ago",
+            Some("s-auth"),
+            "Asked to run the integration tests",
+        ),
+        entry(
+            "4 min ago",
+            Some("s-passkey"),
+            "Forked “Login v2” → “Passkey prompt” (worktree)",
+        ),
         entry("12 min ago", Some("s-email"), "Exited with code 1"),
         entry("14 min ago", None, "ci-runner went offline"),
         entry("1 h ago", Some("s-theme"), "Opened #87 Dark mode tokens"),

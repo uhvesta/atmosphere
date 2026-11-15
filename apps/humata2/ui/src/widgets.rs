@@ -9,7 +9,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::model::{Agent, Status};
+use humata2_clients::model::Status;
 
 use crate::bridge::Ui;
 use crate::theme::{self, color};
@@ -36,16 +36,6 @@ pub fn title(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// A section heading in small capitals.
-#[must_use]
-pub fn heading(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_size(px(11.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(color(theme::DIM))
-        .child(text.into().to_uppercase())
-}
-
 /// Secondary text.
 #[must_use]
 pub fn dim(text: impl Into<SharedString>) -> Div {
@@ -59,32 +49,6 @@ pub fn faint(text: impl Into<SharedString>) -> Div {
         .text_size(px(11.))
         .text_color(color(theme::FAINT))
         .child(text.into())
-}
-
-/// A rounded tag.
-#[must_use]
-pub fn pill(text: impl Into<SharedString>, hex: u32) -> Div {
-    div()
-        .px(px(7.))
-        .py(px(1.))
-        .rounded(px(9.))
-        .border_1()
-        .border_color(color(hex))
-        .text_size(px(11.))
-        .text_color(color(hex))
-        .child(text.into())
-}
-
-/// A card on a page.
-#[must_use]
-pub fn card() -> Div {
-    col()
-        .gap_2()
-        .p_3()
-        .rounded(px(8.))
-        .bg(color(theme::PANEL))
-        .border_1()
-        .border_color(color(theme::LINE))
 }
 
 /// What shows where a list is empty: what is missing and what to do.
@@ -118,18 +82,6 @@ pub fn dot(status: Status) -> Div {
         .flex_shrink_0()
         .rounded_full()
         .bg(color(status_color(status)))
-}
-
-/// An agent's short tag.
-#[must_use]
-pub const fn agent_tag(agent: Agent) -> &'static str {
-    match agent {
-        Agent::Claude => "CC",
-        Agent::Codex => "CX",
-        Agent::Copilot => "GH",
-        Agent::OpenCode => "OC",
-        Agent::Shell => "SH",
-    }
 }
 
 /// A button that sends `action`.
@@ -225,5 +177,7 @@ pub fn list_item(
         .rounded(px(5.))
         .cursor_pointer()
         .when(selected, |item| item.bg(color(theme::SELECTED)))
-        .when(!selected, |item| item.hover(|item| item.bg(color(theme::PANEL2))))
+        .when(!selected, |item| {
+            item.hover(|item| item.bg(color(theme::PANEL2)))
+        })
 }

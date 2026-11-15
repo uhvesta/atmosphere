@@ -6,17 +6,17 @@
 
 use std::rc::Rc;
 
+use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
-use humata2_app::{AppAction, PaneAction};
+use humata2_app::{AppAction, PaneAction, Route};
+use humata2_clients::model::{Scope, Status};
 use humata2_sidebar::{Move, Row, RowKey, RowKind, SidebarAction};
 
 use crate::bridge::{Part, Ui};
 use crate::keys;
-use crate::theme::{self, color};
+use crate::theme;
 use crate::widgets::{self, row};
 
 /// The sidebar's view.
@@ -40,14 +40,15 @@ impl Sidebar {
     }
 
     fn step(&mut self, step: Move, cx: &mut Context<Self>) {
-        self.ui.send(AppAction::Sidebar(SidebarAction::Move(step)), cx);
+        self.ui
+            .send(AppAction::Sidebar(SidebarAction::Move(step)), cx);
     }
 }
 
 fn label(row: &Row) -> String {
     match &row.kind {
         RowKind::Section(name) => (*name).to_owned(),
-        RowKind::Channel { name, .. } => format!("#{name}"),
+        RowKind::Channel { name, .. } => name.clone(),
         RowKind::Session { title, .. } => title.clone(),
     }
 }
@@ -68,92 +69,182 @@ fn draw_row(
     index: usize,
     cursor: bool,
     current: bool,
+    look: Look,
+    width: f32,
 ) -> AnyElement {
     if let RowKind::Section(name) = &entry.kind {
-        return div()
-            .id(row_id(entry, index))
+        return chrome::section(look, name)
             .h(px(theme::ROW))
-            .px_3()
-            .pt_2()
-            .child(widgets::heading(*name))
             .into_any_element();
     }
     let Some(key) = entry.key.clone() else {
         return div().into_any_element();
     };
-    let indent = px(8. + f32::from(entry.depth) * 14.);
-    let chevron = entry.expanded.map(|open| {
-        let ui = ui.clone();
-        let key = key.clone();
-        Button::new(("sidebar-fold", index))
-            .icon(if open { IconName::ChevronDown } else { IconName::ChevronRight })
-            .ghost()
-            .xsmall()
-            .tab_index(-1)
-            .accessibility_label(if open { "Fold" } else { "Unfold" })
-            .on_click(move |_, _, cx| {
-                cx.stop_propagation();
-                ui.send(AppAction::Sidebar(SidebarAction::Toggle(key.clone())), cx);
-            })
-    });
-    let body = match &entry.kind {
-        RowKind::Channel {
-            name,
-            sessions,
-            needs_you,
-        } => row()
-            .flex_1()
-            .gap_2()
-            .child(
-                div()
-                    .flex_1()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(color(theme::TEXT))
-                    .child(format!("#{name}")),
-            )
-            .when(*needs_you > 0, |r| r.child(widgets::pill(needs_you.to_string(), theme::ORANGE)))
-            .child(widgets::faint(sessions.to_string())),
+    let selected = if current { 0xffffff } else { look.text };
+    let faint = if current { 0xffffff } else { look.tertiary };
+    let mut body = row().gap(px(7.)).flex_1().min_w_0();
+    let indent;
+    match &entry.kind {
+        RowKind::Channel { name, sessions, .. } => {
+            indent = 4.;
+            let fold_ui = ui.clone();
+            let key = key.clone();
+            body = body
+                .child(
+                    div()
+                        .id(("sidebar-fold", index))
+                        .size(px(12.))
+                        .flex_shrink_0()
+                        .role(Role::Button)
+                        .aria_label(if entry.expanded == Some(true) {
+                            "Fold"
+                        } else {
+                            "Unfold"
+                        })
+                        .child(chrome::icon(
+                            if entry.expanded == Some(true) {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            },
+                            faint,
+                            12.,
+                        ))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            fold_ui.send(AppAction::Sidebar(SidebarAction::Toggle(key.clone())), cx)
+                        })
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .font_weight(
+                            if ui.read(|s| {
+                                s.workspace.sessions.iter().any(|x| {
+                                    Some(RowKey::Channel(x.channel.clone())) == entry.key
+                                        && x.unread > 0
+                                })
+                            }) {
+                                FontWeight::BOLD
+                            } else {
+                                FontWeight::MEDIUM
+                            },
+                        )
+                        .child(name.clone()),
+                );
+            if entry.expanded != Some(true) && *sessions > 0 {
+                let channel = match &entry.key {
+                    Some(RowKey::Channel(id)) => Some(id),
+                    _ => None,
+                };
+                let status = ui.read(|s| {
+                    s.workspace
+                        .sessions
+                        .iter()
+                        .filter(|x| Some(&x.channel) == channel)
+                        .map(|x| x.status)
+                        .min_by_key(|x| match x {
+                            Status::NeedsYou => 0,
+                            Status::Exited { .. } => 1,
+                            Status::Working => 2,
+                            _ => 3,
+                        })
+                        .unwrap_or(Status::Idle)
+                });
+                body = body.child(chrome::status(status)).child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(rgb(if current { 0xffffff } else { look.secondary }))
+                        .child(sessions.to_string()),
+                );
+            }
+        }
         RowKind::Session {
             title,
             status,
-            agent,
             unread,
             vip,
-            recovered,
-        } => row()
-            .flex_1()
-            .gap_2()
-            .overflow_hidden()
-            .child(widgets::dot(*status))
-            .child(
+            ..
+        } => {
+            let fork = entry.depth > 1;
+            indent = if entry.depth == 0 {
+                8.
+            } else {
+                18. + f32::from(entry.depth - 1) * 16. - if fork { 17. } else { 0. }
+            };
+            if fork {
+                body = body.child(chrome::icon(IconName::GitFork, faint, 12.));
+            }
+            body = body.child(chrome::status(*status)).child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(color(if *unread > 0 { theme::TEXT } else { theme::DIM }))
-                    .when(*unread > 0, |t| t.font_weight(FontWeight::SEMIBOLD))
+                    .when(*unread > 0, |x| x.font_weight(FontWeight::SEMIBOLD))
                     .child(title.clone()),
-            )
-            .when(*vip, |r| r.child(widgets::pill("VIP", theme::YELLOW)))
-            .when(*recovered, |r| r.child(widgets::pill("Back", theme::ACCENT2)))
-            .when(*unread > 0, |r| r.child(widgets::pill(unread.to_string(), theme::ACCENT)))
-            .child(widgets::faint(widgets::agent_tag(*agent))),
-        RowKind::Section(_) => row(),
-    };
+            );
+            let count = ui.read(|s| match &key {
+                RowKey::Session(id) | RowKey::Pinned(id) => s
+                    .workspace
+                    .requests
+                    .iter()
+                    .filter(|r| &r.session == id && r.answer.is_none())
+                    .count(),
+                _ => 0,
+            });
+            if count > 0 {
+                body = body.child(
+                    row()
+                        .gap(px(2.))
+                        .child(chrome::icon(
+                            IconName::Inbox,
+                            if current { 0xffffff } else { 0xff453a },
+                            12.,
+                        ))
+                        .child(div().text_size(px(11.)).child(count.to_string())),
+                );
+            }
+            if matches!(key, RowKey::Pinned(_)) && *vip {
+                body = body.child(
+                    div()
+                        .rounded(px(3.))
+                        .px(px(4.))
+                        .bg(rgb(0xbf5af2))
+                        .text_size(px(9.5))
+                        .text_color(rgb(0xffffff))
+                        .child("VIP"),
+                );
+            }
+        }
+        RowKind::Section(_) => return div().into_any_element(),
+    }
     let ui = ui.clone();
     let focus = focus.clone();
-    let mut item = widgets::list_item(row_id(entry, index), Role::TreeItem, label(entry), cursor)
+    let mut item = div()
+        .id(row_id(entry, index))
+        .role(Role::TreeItem)
+        .aria_label(label(entry))
+        .aria_selected(current)
         .h(px(theme::ROW))
-        .pl(indent)
-        .pr_2()
-        .mx_1()
-        .when(current, |r| r.border_l_2().border_color(color(theme::ACCENT)))
-        .child(div().w(px(18.)).children(chevron))
+        .w(px(width - 20.))
+        .mx(px(10.))
+        .pl(px(indent))
+        .pr(px(8.))
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .text_color(rgb(selected))
+        .when(current, |x| x.bg(rgb(look.selection)))
+        .when(cursor && !current, |x| x.bg(rgb(look.fill)))
         .child(body)
         .on_click(move |_, window, cx| {
             window.focus(&focus, cx);
-            ui.send(AppAction::Sidebar(SidebarAction::Activate(key.clone())), cx);
+            ui.send(AppAction::Sidebar(SidebarAction::Activate(key.clone())), cx)
         });
     if let Some(open) = entry.expanded {
         item = item.aria_expanded(open);
@@ -161,8 +252,44 @@ fn draw_row(
     item.test_support().into_any_element()
 }
 
+fn nav(
+    ui: &Rc<Ui>,
+    id: &'static str,
+    title: &'static str,
+    glyph: IconName,
+    route: Route,
+    on: bool,
+    count: Option<usize>,
+    look: Look,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id(id)
+        .role(Role::Link)
+        .aria_label(title)
+        .aria_selected(on)
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .h(px(26.))
+        .mx(px(10.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .when(on, |x| x.bg(rgb(look.selection)).text_color(rgb(0xffffff)))
+        .child(chrome::icon(
+            glyph,
+            if on { 0xffffff } else { look.accent },
+            15.,
+        ))
+        .child(div().flex_1().child(title))
+        .children(count.map(|n| div().text_size(px(11.)).child(n.to_string())))
+        .on_click(move |_, _, cx| ui.send(AppAction::Switch(route.clone()), cx))
+        .test_support()
+}
+
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let look = Look::of(cx);
         let (rows, cursor, current, collapsed, width) = self.ui.read(|state| {
             let (width, _) = state.layout.widths(
                 f32::from(window.viewport_size().width) - theme::RAIL_WIDTH,
@@ -176,6 +303,16 @@ impl Render for Sidebar {
                 width,
             )
         });
+        let channel_start = rows
+            .iter()
+            .position(|r| matches!(r.kind, RowKind::Section("Channels")))
+            .unwrap_or(0);
+        let pinned: Vec<_> = rows[..channel_start].to_vec();
+        let rows = rows
+            .iter()
+            .skip(channel_start + 1)
+            .cloned()
+            .collect::<Vec<_>>();
         if collapsed {
             return div().id("sidebar").into_any_element();
         }
@@ -192,13 +329,17 @@ impl Render for Sidebar {
         let focus = self.focus.clone();
         let list = {
             let rows = rows.clone();
+            let cursor = cursor.clone();
+            let current = current.clone();
             uniform_list("sidebar-rows", rows.len(), move |range, _, _| {
                 range
                     .filter_map(|index| {
                         let row = rows.get(index)?;
                         let at_cursor = row.key.is_some() && row.key == cursor;
                         let is_current = row.key.is_some() && row.key == current;
-                        Some(draw_row(&ui, &focus, row, index, at_cursor, is_current))
+                        Some(draw_row(
+                            &ui, &focus, row, index, at_cursor, is_current, look, width,
+                        ))
                     })
                     .collect()
             })
@@ -206,6 +347,17 @@ impl Render for Sidebar {
             .flex_1()
         };
         let ui = &self.ui;
+        let (route, waiting, machines) = ui.read(|s| {
+            (
+                s.route.clone(),
+                s.workspace
+                    .requests
+                    .iter()
+                    .filter(|r| r.answer.is_none())
+                    .count(),
+                s.workspace.machines.clone(),
+            )
+        });
         widgets::col()
             .id("sidebar")
             .role(Role::Navigation)
@@ -220,60 +372,171 @@ impl Render for Sidebar {
             .on_action(cx.listener(|this, _: &keys::First, _, cx| this.step(Move::First, cx)))
             .on_action(cx.listener(|this, _: &keys::Last, _, cx| this.step(Move::Last, cx)))
             .on_action(cx.listener(|this, _: &keys::Open, _, cx| {
-                this.ui.send(AppAction::Sidebar(SidebarAction::OpenCursor), cx);
+                this.ui
+                    .send(AppAction::Sidebar(SidebarAction::OpenCursor), cx);
             }))
             .w(px(width))
             .h_full()
             .flex_shrink_0()
-            .bg(color(theme::SIDE))
+            .bg(rgb(look.sidebar))
             .border_r_1()
-            .border_color(color(theme::LINE))
+            .border_color(rgb(look.line))
+            .text_color(rgb(look.text))
             .child(
                 row()
-                    .h(px(theme::TOP_BAR))
-                    .px_3()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(color(theme::LINE))
-                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Humata"))
-                    .child(
-                        widgets::ghost(ui, "sidebar-expand-all", "", AppAction::Sidebar(SidebarAction::ExpandAll))
-                            .icon(IconName::ChevronDown)
-                            .xsmall()
-                            .accessibility_label("Expand all")
-                            .tooltip("Expand all  ⌥⌘→"),
-                    )
-                    .child(
-                        widgets::ghost(ui, "sidebar-collapse-all", "", AppAction::Sidebar(SidebarAction::CollapseAll))
-                            .icon(IconName::ChevronRight)
-                            .xsmall()
-                            .accessibility_label("Collapse all")
-                            .tooltip("Collapse all  ⌥⌘←"),
-                    )
-                    .child(
-                        widgets::ghost(ui, "sidebar-new-channel", "", AppAction::StartNewChannel)
-                            .icon(IconName::Plus)
-                            .xsmall()
-                            .accessibility_label("New channel")
-                            .tooltip("New channel  ⇧⌘N"),
-                    )
-                    .child(
-                        widgets::ghost(ui, "sidebar-hide", "", AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)))
-                            .icon(IconName::PanelLeft)
-                            .xsmall()
-                            .accessibility_label("Hide sidebar")
-                            .tooltip("Hide sidebar  ⌘0"),
-                    ),
+                    .h(px(52.))
+                    .pl(px(20.))
+                    .pr(px(14.))
+                    .gap(px(12.))
+                    .on_mouse_down(MouseButton::Left, |event, window, _| {
+                        if event.click_count == 2 {
+                            window.zoom_window()
+                        } else {
+                            window.start_window_move()
+                        }
+                    })
+                    .child(chrome::lights())
+                    .child(div().flex_1())
+                    .child(chrome::action(
+                        ui,
+                        "sidebar-hide",
+                        "Hide sidebar",
+                        IconName::PanelLeft,
+                        AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)),
+                        look.secondary,
+                    ))
+                    .child(chrome::action(
+                        ui,
+                        "sidebar-new-session",
+                        "New session",
+                        IconName::SquarePen,
+                        AppAction::StartNewSession,
+                        look.secondary,
+                    )),
             )
-            .child(div().flex_1().flex().flex_col().py_1().child(list))
             .child(
-                div().p_2().border_t_1().border_color(color(theme::LINE)).child(
-                    widgets::send(ui, "sidebar-new-session", "New session", AppAction::StartNewSession)
-                        .icon(IconName::Plus)
-                        .w_full()
-                        .tooltip("New session  ⌘N"),
-                ),
+                div()
+                    .id("search")
+                    .role(Role::Button)
+                    .aria_label("Search")
+                    .mx(px(10.))
+                    .mb(px(6.))
+                    .h(px(26.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .bg(rgb(look.fill))
+                    .text_color(rgb(look.tertiary))
+                    .child(chrome::icon(IconName::Search, look.tertiary, 12.))
+                    .child(div().flex_1().child("Search"))
+                    .child(div().text_size(px(11.)).child("⌘K"))
+                    .on_click({
+                        let ui = ui.clone();
+                        move |_, _, cx| ui.send(AppAction::OpenPalette, cx)
+                    })
+                    .test_support(),
             )
+            .children(pinned.iter().enumerate().map(|(index, entry)| {
+                draw_row(
+                    ui,
+                    &self.focus,
+                    entry,
+                    index,
+                    entry.key.is_some() && entry.key == cursor,
+                    entry.key.is_some() && entry.key == current,
+                    look,
+                    width,
+                )
+            }))
+            .child(div().h(px(4.)))
+            .child(nav(
+                ui,
+                "rail-home",
+                "Home",
+                IconName::House,
+                Route::Home,
+                route == Route::Home,
+                None,
+                look,
+            ))
+            .child(nav(
+                ui,
+                "rail-inbox",
+                "Inbox",
+                IconName::Inbox,
+                Route::Inbox,
+                route == Route::Inbox,
+                Some(waiting),
+                look,
+            ))
+            .child(nav(
+                ui,
+                "rail-board",
+                "Board",
+                IconName::SquareKanban,
+                Route::Board(Scope::Global),
+                matches!(route, Route::Board(_)),
+                None,
+                look,
+            ))
+            .child(chrome::section(look, "Channels").child(chrome::action(
+                ui,
+                "sidebar-new-channel",
+                "New channel",
+                IconName::Plus,
+                AppAction::StartNewChannel,
+                look.secondary,
+            )))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .h(px(rows.len() as f32 * theme::ROW))
+                    .flex_shrink(1.)
+                    .child(list),
+            )
+            .child(chrome::section(look, "Hosts"))
+            .children(machines.into_iter().enumerate().map(|(index, m)| {
+                let ui = ui.clone();
+                row()
+                    .id(("sidebar-machine", index))
+                    .role(Role::Link)
+                    .aria_label(m.name.clone())
+                    .h(px(26.))
+                    .mx(px(10.))
+                    .px(px(8.))
+                    .gap(px(7.))
+                    .child(chrome::status(if m.online {
+                        Status::Working
+                    } else {
+                        Status::Offline
+                    }))
+                    .child(div().flex_1().child(m.name))
+                    .when(!m.online, |x| {
+                        x.child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(look.secondary))
+                                .child("offline"),
+                        )
+                    })
+                    .on_click(move |_, _, cx| ui.send(AppAction::Switch(Route::Hosts), cx))
+                    .test_support()
+            }))
+            .child(div().flex_1())
+            .child(div().pb(px(10.)).child(nav(
+                ui,
+                "rail-settings",
+                "Settings",
+                IconName::Settings,
+                Route::Settings,
+                route == Route::Settings,
+                None,
+                look,
+            )))
             .into_any_element()
     }
 }

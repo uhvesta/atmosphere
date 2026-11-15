@@ -47,7 +47,10 @@ impl Reducer for Logged {
     type Action = AppAction;
 
     fn reduce(&self, state: &mut AppState, action: AppAction) -> Effect<AppAction> {
-        let name = self.recorder.is_recording().then(|| crate::record::action_name(&action));
+        let name = self
+            .recorder
+            .is_recording()
+            .then(|| crate::record::action_name(&action));
         let effect = self.app.reduce(state, action);
         if let Some(name) = name {
             self.recorder.action(&name, state);
@@ -103,7 +106,14 @@ impl Ui {
         };
         let changed = mark(Part::Sidebar);
         observations.push(self.store.observe(
-            |state: &AppState| (state.sidebar.clone(), state.layout.sidebar, state.load.clone()),
+            |state: &AppState| {
+                (
+                    state.sidebar.clone(),
+                    state.layout.sidebar,
+                    state.load.clone(),
+                    state.route.clone(),
+                )
+            },
             move |_| changed(),
         ));
         let changed = mark(Part::Main);
@@ -133,7 +143,13 @@ impl Ui {
         ));
         let changed = mark(Part::Overlay);
         observations.push(self.store.observe(
-            |state: &AppState| (state.overlays.clone(), state.palette.clone(), state.toasts.clone()),
+            |state: &AppState| {
+                (
+                    state.overlays.clone(),
+                    state.palette.clone(),
+                    state.toasts.clone(),
+                )
+            },
             move |_| changed(),
         ));
     }

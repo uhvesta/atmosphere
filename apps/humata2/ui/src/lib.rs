@@ -10,9 +10,10 @@ pub mod bridge;
 pub mod keys;
 pub mod record;
 
+mod chrome;
 mod overlays;
-mod panels;
 mod pages;
+mod panels;
 mod shell;
 mod sidebar;
 mod theme;
@@ -78,6 +79,9 @@ gpui_kit::assets::icon_assets!(
         FileText,
         ShieldCheck,
         Bot,
+        SquarePen,
+        SquareTerminal,
+        WifiOff,
     ]
 );
 
@@ -98,7 +102,7 @@ impl AssetSource for Assets {
 /// Sets the theme and binds the shortcuts. Call once, after the engine's
 /// own init.
 pub fn init(cx: &mut App) {
-    Theme::change(ThemeMode::Dark, None, cx);
+    Theme::change(ThemeMode::from(cx.window_appearance()), None, cx);
     Theme::update(cx, |theme| {
         theme.font_size = px(13.);
         theme.mono_font_size = px(12.);

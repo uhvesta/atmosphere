@@ -20,64 +20,7 @@ use humata2_session::{Panel, SessionAction};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// Tokens copied from the approved light/dark frames, rather than the
-/// earlier prototype palette used by the rest of the shell.
-#[derive(Clone, Copy)]
-struct Look {
-    panel: u32,
-    line: u32,
-    text: u32,
-    secondary: u32,
-    tertiary: u32,
-    accent: u32,
-    fill: u32,
-    card: u32,
-    term: u32,
-    term_text: u32,
-    term_dim: u32,
-    add: u32,
-    del: u32,
-    content: u32,
-}
-impl Look {
-    fn of(cx: &App) -> Self {
-        if cx.theme().is_dark() {
-            Self {
-                panel: 0x252527,
-                line: 0x3a3a3d,
-                text: 0xe8e8ea,
-                secondary: 0x98989e,
-                tertiary: 0x6a6a70,
-                accent: 0x3b8cff,
-                fill: 0x323235,
-                card: 0x2a2a2c,
-                term: 0x1a1a1b,
-                term_text: 0xdcdcde,
-                term_dim: 0x7c7c82,
-                add: 0x17301f,
-                del: 0x3a1d1d,
-                content: 0x1e1e1f,
-            }
-        } else {
-            Self {
-                panel: 0xf6f5f7,
-                line: 0xdcdadd,
-                text: 0x1d1d1f,
-                secondary: 0x6e6e73,
-                tertiary: 0xa1a1a6,
-                accent: 0x0a6cff,
-                fill: 0xeceaee,
-                card: 0xffffff,
-                term: 0xffffff,
-                term_text: 0x1d1d1f,
-                term_dim: 0x8a8a8f,
-                add: 0xe6f6ea,
-                del: 0xfdeaea,
-                content: 0xffffff,
-            }
-        }
-    }
-}
+use crate::theme::Look;
 const GREEN: u32 = 0x30d158;
 const ORANGE: u32 = 0xff9f0a;
 const RED: u32 = 0xff453a;

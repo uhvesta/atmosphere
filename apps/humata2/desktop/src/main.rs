@@ -12,10 +12,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use gpui_kit::{
-    App, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, px,
-    size,
-};
+use gpui_kit::{App, Bounds, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, px, size};
 use humata2_clients::Clients;
 use humata2_engine::Resources;
 use humata2_ui::bridge::Ui;
@@ -23,16 +20,21 @@ use humata2_ui::keys;
 use humata2_ui::record::Recorder;
 use tca::{FileStorage, SystemClock};
 
-gpui_kit::actions!(humata_desktop, [
-    /// ⌘Q: quit.
-    Quit
-]);
+gpui_kit::actions!(
+    humata_desktop,
+    [
+        /// ⌘Q: quit.
+        Quit
+    ]
+);
 
 /// What went wrong reading the command line.
 #[derive(Debug, thiserror::Error)]
 enum ArgsError {
     /// An option this app doesn't know.
-    #[error("humata2 doesn't know the option `{option}`. Run it with no options, or with `--data <folder>`.")]
+    #[error(
+        "humata2 doesn't know the option `{option}`. Run it with no options, or with `--data <folder>`."
+    )]
     Unknown {
         /// The option given.
         option: String,
@@ -59,7 +61,9 @@ enum StartError {
     #[error(transparent)]
     Args(#[from] ArgsError),
     /// The runtime effects run on.
-    #[error("The app couldn't start its background runtime; the system may be out of threads. Close other apps and try again.")]
+    #[error(
+        "The app couldn't start its background runtime; the system may be out of threads. Close other apps and try again."
+    )]
     Runtime {
         /// What tokio said.
         #[source]
@@ -86,8 +90,10 @@ impl Args {
         }
         let data = match data {
             Some(data) => data,
-            None => PathBuf::from(std::env::var("HOME").map_err(|source| ArgsError::NoHome { source })?)
-                .join("Library/Application Support/Humata 2 (fakes)"),
+            None => {
+                PathBuf::from(std::env::var("HOME").map_err(|source| ArgsError::NoHome { source })?)
+                    .join("Library/Application Support/Humata 2 (fakes)")
+            }
         };
         Ok(Self { data })
     }
@@ -137,10 +143,7 @@ fn run() -> Result<(), StartError> {
         let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Humata".into()),
-                ..TitlebarOptions::default()
-            }),
+            titlebar: None,
             ..WindowOptions::default()
         };
         if let Err(error) = humata2_ui::open(cx, &ui, options) {

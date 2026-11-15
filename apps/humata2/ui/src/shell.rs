@@ -18,10 +18,11 @@ use humata2_sidebar::SidebarAction;
 use crate::bridge::{Part, Ui};
 use crate::keys;
 use crate::overlays::Overlays;
-use crate::{pages, panels};
 use crate::sidebar::Sidebar;
-use crate::theme::{self, color};
+use crate::theme;
+use crate::theme::Look;
 use crate::widgets::{self, col, row};
+use crate::{pages, panels};
 
 /// The window's root view.
 pub struct Shell {
@@ -36,6 +37,7 @@ pub struct Shell {
     file_filter_session: Option<SessionId>,
     file_filter_value: String,
     _file_filter_subscription: Subscription,
+    _appearance: Subscription,
 }
 
 impl Shell {
@@ -58,10 +60,14 @@ impl Shell {
             |this: &mut Self, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     let value = input.read(cx).value().to_string();
-                    this.ui.send(AppAction::Session(SessionAction::FilterFiles(value)), cx);
+                    this.ui
+                        .send(AppAction::Session(SessionAction::FilterFiles(value)), cx);
                 }
             },
         );
+        let appearance = window.observe_window_appearance(|window, cx| {
+            gpui_kit::component::theme::Theme::sync_system_appearance(Some(window), cx)
+        });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
@@ -75,6 +81,7 @@ impl Shell {
             file_filter_session: None,
             file_filter_value: String::new(),
             _file_filter_subscription: file_filter_subscription,
+            _appearance: appearance,
         }
     }
 
@@ -83,126 +90,13 @@ impl Shell {
     }
 }
 
-/// One screen's button on the rail.
-struct Screen {
-    id: &'static str,
-    label: &'static str,
-    icon: IconName,
-    route: Route,
-    shortcut: &'static str,
-}
-
-fn screens() -> [Screen; 6] {
-    [
-        Screen {
-            id: "rail-home",
-            label: "Home",
-            icon: IconName::House,
-            route: Route::Home,
-            shortcut: "⌘1",
-        },
-        Screen {
-            id: "rail-inbox",
-            label: "Inbox",
-            icon: IconName::Inbox,
-            route: Route::Inbox,
-            shortcut: "⌘2",
-        },
-        Screen {
-            id: "rail-board",
-            label: "Board",
-            icon: IconName::LayoutDashboard,
-            route: Route::Board(Scope::Global),
-            shortcut: "⌘3",
-        },
-        Screen {
-            id: "rail-hosts",
-            label: "Hosts",
-            icon: IconName::Server,
-            route: Route::Hosts,
-            shortcut: "",
-        },
-        Screen {
-            id: "rail-files",
-            label: "Files",
-            icon: IconName::Files,
-            route: Route::Files,
-            shortcut: "",
-        },
-        Screen {
-            id: "rail-settings",
-            label: "Settings",
-            icon: IconName::Settings,
-            route: Route::Settings,
-            shortcut: "",
-        },
-    ]
-}
-
-const fn same_screen(a: &Route, b: &Route) -> bool {
-    matches!(
-        (a, b),
-        (Route::Home, Route::Home)
-            | (Route::Inbox, Route::Inbox)
-            | (Route::Board(_), Route::Board(_))
-            | (Route::Hosts, Route::Hosts)
-            | (Route::Files, Route::Files)
-            | (Route::Settings, Route::Settings)
-    )
-}
-
-fn rail(ui: &Rc<Ui>, route: &Route, waiting: usize) -> impl IntoElement {
-    col()
-        .id("rail")
-        .role(Role::Toolbar)
-        .aria_label("Screens")
-        .w(px(theme::RAIL_WIDTH))
-        .h_full()
-        .flex_shrink_0()
-        .items_center()
-        .gap_1()
-        .pt_3()
-        .bg(color(theme::RAIL))
-        .border_r_1()
-        .border_color(color(theme::LINE))
-        .children(screens().into_iter().map(|screen| {
-            let on = same_screen(route, &screen.route);
-            let tooltip = if screen.shortcut.is_empty() {
-                screen.label.to_owned()
-            } else {
-                format!("{}  {}", screen.label, screen.shortcut)
-            };
-            let badge = (screen.label == "Inbox" && waiting > 0).then(|| {
-                div()
-                    .absolute()
-                    .top(px(-4.))
-                    .right(px(-8.))
-                    .min_w(px(16.))
-                    .h(px(16.))
-                    .px_1()
-                    .rounded_full()
-                    .bg(color(theme::ORANGE))
-                    .text_size(px(10.))
-                    .text_color(color(theme::RAIL))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(waiting.to_string())
-            });
-            div().relative().child(
-                widgets::ghost(ui, screen.id, "", AppAction::Navigate(screen.route))
-                    .icon(screen.icon)
-                    .accessibility_label(screen.label)
-                    .tooltip(tooltip)
-                    .toggled(on)
-                    .when(on, |button| button.primary()),
-            )
-            .children(badge)
-        }))
-        .test_support()
-}
-
-fn top_bar(ui: &Rc<Ui>, title: String, can_go_back: bool, sidebar_hidden: bool) -> impl IntoElement {
+fn top_bar(
+    ui: &Rc<Ui>,
+    title: String,
+    can_go_back: bool,
+    sidebar_hidden: bool,
+    look: Look,
+) -> impl IntoElement {
     row()
         .id("top-bar")
         .h(px(theme::TOP_BAR))
@@ -210,13 +104,18 @@ fn top_bar(ui: &Rc<Ui>, title: String, can_go_back: bool, sidebar_hidden: bool) 
         .px_3()
         .gap_2()
         .border_b_1()
-        .border_color(color(theme::LINE))
+        .border_color(rgb(look.line))
         .when(sidebar_hidden, |bar| {
             bar.child(
-                widgets::ghost(ui, "show-sidebar", "", AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)))
-                    .icon(IconName::PanelLeft)
-                    .accessibility_label("Show sidebar")
-                    .tooltip("Show sidebar  ⌘0"),
+                widgets::ghost(
+                    ui,
+                    "show-sidebar",
+                    "",
+                    AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)),
+                )
+                .icon(IconName::PanelLeft)
+                .accessibility_label("Show sidebar")
+                .tooltip("Show sidebar  ⌘0"),
             )
         })
         .child(
@@ -233,7 +132,7 @@ fn top_bar(ui: &Rc<Ui>, title: String, can_go_back: bool, sidebar_hidden: bool) 
                 .aria_label(title.clone())
                 .flex_1()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(color(theme::TEXT))
+                .text_color(rgb(look.text))
                 .child(title)
                 .test_support(),
         )
@@ -250,16 +149,29 @@ fn top_bar(ui: &Rc<Ui>, title: String, can_go_back: bool, sidebar_hidden: bool) 
                     move |_, _, cx| ui.send(AppAction::OpenPalette, cx)
                 }),
         )
-        .when(ui.read(|state| matches!(state.route, Route::Session(_))), |bar| {
-            bar.child(widgets::ghost(ui, "toggle-side-panel", "", AppAction::Pane(PaneAction::Toggle(PaneId::Panel)))
-                .icon(IconName::PanelRight).accessibility_label("Toggle side panel").tooltip("Toggle side panel  ⌥⌘0"))
-        })
+        .when(
+            ui.read(|state| matches!(state.route, Route::Session(_))),
+            |bar| {
+                bar.child(
+                    widgets::ghost(
+                        ui,
+                        "toggle-side-panel",
+                        "",
+                        AppAction::Pane(PaneAction::Toggle(PaneId::Panel)),
+                    )
+                    .icon(IconName::PanelRight)
+                    .accessibility_label("Toggle side panel")
+                    .tooltip("Toggle side panel  ⌥⌘0"),
+                )
+            },
+        )
 }
 
 impl Shell {
     /// The strip between `pane` and the main area: drag it to resize the
     /// pane, past its narrowest to hide it; double-click to reset it.
     fn divider(&self, pane: PaneId, cx: &mut Context<Self>) -> impl IntoElement {
+        let look = Look::of(cx);
         let id = match pane {
             PaneId::Sidebar => "sidebar-divider",
             PaneId::Panel => "panel-divider",
@@ -269,12 +181,12 @@ impl Shell {
             .role(Role::Splitter)
             .aria_label(format!("Resize the {}", pane.name()))
             .w(px(theme::DIVIDER))
-            .ml(px(-theme::DIVIDER / 2.))
-            .mr(px(-theme::DIVIDER / 2.))
+            .ml(px(-(theme::DIVIDER - 1.) / 2.))
+            .mr(px(-(theme::DIVIDER - 1.) / 2.))
             .h_full()
             .flex_shrink_0()
             .cursor_col_resize()
-            .hover(|divider| divider.bg(color(theme::LINE)))
+            .hover(move |divider| divider.bg(rgb(look.line)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -293,37 +205,45 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let look = Look::of(cx);
         let viewport = f32::from(window.viewport_size().width);
         let (panel, panel_width, full, in_session) = self.ui.read(|state| {
             let panel = state.panel().filter(|_| !state.layout.panel.collapsed);
             let in_session = matches!(state.route, Route::Session(_));
             let strip = if in_session { 64. } else { 0. };
-            let (_, width) = state.layout.widths(viewport - theme::RAIL_WIDTH - strip, panel.is_some());
+            let (_, width) = state
+                .layout
+                .widths(viewport - theme::RAIL_WIDTH - strip, panel.is_some());
             let full = panel.is_some() && state.session.view().is_some_and(|view| view.widened);
             (panel, width, full, in_session)
         });
-        let (route, load, can_go_back, collapsed, title, waiting, restore_error) = self.ui.read(|state| {
+        let (load, can_go_back, collapsed, title, restore_error) = self.ui.read(|state| {
             (
-                state.route.clone(),
                 state.load.clone(),
                 !state.trail.is_empty(),
                 state.layout.sidebar.collapsed,
                 pages::title(state),
-                state.workspace.requests.iter().filter(|request| request.answer.is_none()).count(),
                 state.restore_error.clone(),
             )
         });
-        let (session, filter) = self.ui.read(|state| (
-            state.session.open.clone(),
-            state.session.view().map(|view| view.file_filter.clone()).unwrap_or_default(),
-        ));
+        let (session, filter) = self.ui.read(|state| {
+            (
+                state.session.open.clone(),
+                state
+                    .session
+                    .view()
+                    .map(|view| view.file_filter.clone())
+                    .unwrap_or_default(),
+            )
+        });
         // Input events are delivered after the render that follows editing. Sync
         // only a new stored value/session, so that render cannot erase the edit.
         if self.file_filter_session != session || self.file_filter_value != filter {
             self.file_filter_session = session;
             self.file_filter_value = filter.clone();
             if self.file_filter.read(cx).value().as_ref() != filter {
-                self.file_filter.update(cx, |input, cx| input.set_value(filter, window, cx));
+                self.file_filter
+                    .update(cx, |input, cx| input.set_value(filter, window, cx));
             }
         }
         let ui = self.ui.clone();
@@ -339,8 +259,20 @@ impl Render for Shell {
                 .items_center()
                 .justify_center()
                 .gap_3()
-                .child(div().id("load-error").role(Role::Alert).aria_label(message.clone()).child(message).test_support())
-                .child(widgets::primary(&ui, "retry", "Try again", AppAction::Retry))
+                .child(
+                    div()
+                        .id("load-error")
+                        .role(Role::Alert)
+                        .aria_label(message.clone())
+                        .child(message)
+                        .test_support(),
+                )
+                .child(widgets::primary(
+                    &ui,
+                    "retry",
+                    "Try again",
+                    AppAction::Retry,
+                ))
                 .into_any_element(),
             Load::Ready => self.ui.read(|state| pages::page(&ui, state, window, cx)),
         };
@@ -349,10 +281,21 @@ impl Render for Shell {
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(color(theme::BG))
-            .child(top_bar(&ui, title, can_go_back, collapsed))
+            .bg(rgb(look.content))
+            .child(if in_session {
+                self.ui
+                    .read(|state| pages::session_header(&ui, state, collapsed, look))
+                    .into_any_element()
+            } else {
+                top_bar(&ui, title, can_go_back, collapsed, look).into_any_element()
+            })
             .children(restore_error.map(|error| {
-                div().p_3().child(widgets::error_banner(&ui, "restore-error", error, AppAction::DismissRestoreError))
+                div().p_3().child(widgets::error_banner(
+                    &ui,
+                    "restore-error",
+                    error,
+                    AppAction::DismissRestoreError,
+                ))
             }))
             .child(div().flex_1().min_h_0().flex().flex_col().child(body));
         div()
@@ -361,16 +304,27 @@ impl Render for Shell {
             .size_full()
             .flex()
             .flex_row()
-            .bg(color(theme::BG))
-            .text_color(color(theme::TEXT))
+            .bg(rgb(look.content))
+            .text_color(rgb(look.text))
+            .font_family(".SystemUIFont")
             .text_size(px(13.))
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &keys::OpenPalette, _, cx| this.send(AppAction::OpenPalette, cx)))
-            .on_action(cx.listener(|this, _: &keys::NewSession, _, cx| this.send(AppAction::StartNewSession, cx)))
-            .on_action(cx.listener(|this, _: &keys::NewChannel, _, cx| this.send(AppAction::StartNewChannel, cx)))
+            .on_action(cx.listener(|this, _: &keys::OpenPalette, _, cx| {
+                this.send(AppAction::OpenPalette, cx)
+            }))
+            .on_action(cx.listener(|this, _: &keys::NewSession, _, cx| {
+                this.send(AppAction::StartNewSession, cx)
+            }))
+            .on_action(cx.listener(|this, _: &keys::NewChannel, _, cx| {
+                this.send(AppAction::StartNewChannel, cx)
+            }))
             .on_action(cx.listener(|this, _: &keys::Back, _, cx| this.send(AppAction::Back, cx)))
-            .on_action(cx.listener(|this, _: &keys::Dismiss, _, cx| this.send(AppAction::Escape, cx)))
-            .on_action(cx.listener(|this, _: &keys::ShowShortcuts, _, cx| this.send(AppAction::ShowShortcuts, cx)))
+            .on_action(
+                cx.listener(|this, _: &keys::Dismiss, _, cx| this.send(AppAction::Escape, cx)),
+            )
+            .on_action(cx.listener(|this, _: &keys::ShowShortcuts, _, cx| {
+                this.send(AppAction::ShowShortcuts, cx)
+            }))
             .on_action(cx.listener(|this, _: &keys::ExpandAll, _, cx| {
                 this.send(AppAction::Sidebar(SidebarAction::ExpandAll), cx);
             }))
@@ -380,10 +334,14 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &keys::ToggleSidebar, _, cx| {
                 this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)), cx);
             }))
-            .on_action(cx.listener(|this, _: &keys::GoHome, _, cx| this.send(AppAction::Navigate(Route::Home), cx)))
-            .on_action(cx.listener(|this, _: &keys::GoInbox, _, cx| this.send(AppAction::Navigate(Route::Inbox), cx)))
+            .on_action(cx.listener(|this, _: &keys::GoHome, _, cx| {
+                this.send(AppAction::Switch(Route::Home), cx)
+            }))
+            .on_action(cx.listener(|this, _: &keys::GoInbox, _, cx| {
+                this.send(AppAction::Switch(Route::Inbox), cx)
+            }))
             .on_action(cx.listener(|this, _: &keys::GoBoard, _, cx| {
-                this.send(AppAction::Navigate(Route::Board(Scope::Global)), cx);
+                this.send(AppAction::Switch(Route::Board(Scope::Global)), cx);
             }))
             .on_action(cx.listener(|this, _: &keys::FocusSidebar, window, cx| {
                 window.focus(&this.sidebar_focus, cx);
@@ -409,17 +367,46 @@ impl Render for Shell {
                 cx.listener(|this, _: &MouseUpEvent, _, _| this.dragging = None),
             )
             .when(!full, |shell| {
-                shell.child(rail(&ui, &route, waiting))
-                    .when(!collapsed, |shell| shell.child(self.sidebar.clone()).child(self.divider(PaneId::Sidebar, cx)))
+                shell
+                    .when(!collapsed, |shell| {
+                        shell
+                            .child(self.sidebar.clone())
+                            .child(self.divider(PaneId::Sidebar, cx))
+                    })
                     .child(main)
                     .when_some(panel, |shell, panel| {
-                        shell.child(self.divider(PaneId::Panel, cx))
-                            .child(self.ui.read(|state| panels::panel(&ui, state, panel, panel_width, false, self.file_filter.clone(), cx)))
+                        shell
+                            .child(self.divider(PaneId::Panel, cx))
+                            .child(self.ui.read(|state| {
+                                panels::panel(
+                                    &ui,
+                                    state,
+                                    panel,
+                                    panel_width,
+                                    false,
+                                    self.file_filter.clone(),
+                                    cx,
+                                )
+                            }))
                     })
-                    .when(in_session, |shell| shell.child(panels::strip(&ui, panel, cx)))
+                    .when(in_session, |shell| {
+                        shell.child(panels::strip(&ui, panel, cx))
+                    })
             })
             .when(full, |shell| {
-                shell.children(panel.map(|panel| self.ui.read(|state| panels::panel(&ui, state, panel, viewport, true, self.file_filter.clone(), cx))))
+                shell.children(panel.map(|panel| {
+                    self.ui.read(|state| {
+                        panels::panel(
+                            &ui,
+                            state,
+                            panel,
+                            viewport,
+                            true,
+                            self.file_filter.clone(),
+                            cx,
+                        )
+                    })
+                }))
             })
             .child(self.overlays.clone())
     }

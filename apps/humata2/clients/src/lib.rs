@@ -97,7 +97,7 @@ impl Clients {
     /// so loading states and streaming show, and state saved in `storage`.
     #[must_use]
     pub fn demo(clock: Arc<dyn Clock>, storage: Arc<dyn Storage>) -> (Self, FakeDaemon) {
-        let daemon = FakeDaemon::new(fixture::standard(), clock.clone())
+        let daemon = FakeDaemon::new(fixture::design(), clock.clone())
             .with_latency(Duration::from_millis(120))
             .with_step(Duration::from_millis(350));
         let clients = Self {

@@ -1,41 +1,38 @@
-Toolbar "Screens"
-  Button "Home" description="Home  ⌘1" unchecked
-  Button "Inbox" description="Inbox  ⌘2" unchecked
-  Button "Board" description="Board  ⌘3" unchecked
-  Button "Hosts" description="Hosts" unchecked
-  Button "Files" description="Files" unchecked
-  Button "Settings" description="Settings" unchecked
 Navigation "Sidebar"
-  Button "Expand all" description="Expand all  ⌥⌘→"
-  Button "Collapse all" description="Collapse all  ⌥⌘←"
-  Button "New channel" description="New channel  ⇧⌘N"
-  Button "Hide sidebar" description="Hide sidebar  ⌘0"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
   TreeItem "Login v2"
   TreeItem "Token refresh retry"
-  TreeItem "#web" expanded
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Button "New channel"
+  TreeItem "web" expanded
     Button "Fold"
   TreeItem "Login v2" expanded
-    Button "Fold"
   TreeItem "Passkey prompt" expanded
-    Button "Fold"
   TreeItem "Passkey copy edits"
   TreeItem "Email code fallback"
   TreeItem "Dark mode tokens"
-  TreeItem "#api" expanded
+  TreeItem "api" expanded
     Button "Fold"
   TreeItem "Token refresh retry" selected
   TreeItem "Rate limit headers" expanded
-    Button "Fold"
   TreeItem "Proto field docs"
-  TreeItem "#infra" expanded
+  TreeItem "infra" expanded
     Button "Fold"
   TreeItem "Terraform plan"
   TreeItem "CI cache"
   TreeItem "Nightly backup"
-  TreeItem "#scratch" expanded
-    Button "Fold"
-  TreeItem "Shell"
-  Button "New session" description="New session  ⌘N"
+  TreeItem "scratch" expanded
+  Link "This Mac"
+  Link "gpu-box"
+  Link "ci-runner"
+  Link "Settings"
 Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Files"
@@ -69,8 +66,9 @@ Toolbar "Session panels"
   Button "Board"
   Button "Journal"
   Button "Info"
-Heading "Token refresh retry"
-Button "Back" description="Back  ⌘["
-Button "Search" description="Command palette  ⌘K"
-Button "Toggle side panel" description="Toggle side panel  ⌥⌘0"
+Link "Open channel"
+Button "Fork"
+Button "Toggle side panel"
+Button "Session actions"
+Tab "claude" selected
 Log "Token refresh retry terminal"

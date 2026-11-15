@@ -19,8 +19,8 @@ impl PaneId {
     #[must_use]
     pub const fn default_width(self) -> f32 {
         match self {
-            Self::Sidebar => 268.0,
-            Self::Panel => 248.0,
+            Self::Sidebar => 236.0,
+            Self::Panel => 340.0,
         }
     }
 
