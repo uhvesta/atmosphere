@@ -1,22 +1,34 @@
 # Humata 2: behavioural spec
 
-As of Nov 14, 2026. This is the behavioural spec for Humata 2. It records what
-the clickable prototype (`apps/humata2/prototype`) shows and the decisions the
-owner approved on 2026-11-14. Where the two disagree, the decisions win. Section
-28 lists those places.
+As of Nov 15, 2026. This is the behavioural spec for Humata 2. It records the
+decisions the owner approved ([DECISIONS.md](DECISIONS.md)) and what the design
+goldens show. The earlier clickable prototype is no longer a reference (§28).
 
-How it looks is set by the design goldens, not the prototype: the frames in
-`desktop/tests/__snapshots__/design/` (D76, OVERVIEW › Design goldens). Build
-every screen to match its frame. Where this spec and a frame disagree on
-behaviour, the spec wins; on looks, the frame wins.
+What wins, in order:
+
+1. The owner's decisions, newest first.
+2. The design goldens: the frames in `desktop/tests/__snapshots__/design/`
+   (D76, D100, OVERVIEW › Design goldens). A frame settles how a screen looks
+   and what it offers: its layout, controls and wording. Build every screen to
+   match its frame.
+3. This spec. It says what the things a frame draws do.
+
+Where a frame draws something this spec does not define, the spec is changed
+to define it. Where a frame contradicts a newer owner decision, the spec
+follows the decision and the frame is redrawn with the owner's OK; until then
+the requirement names the frame.
 
 Humata 2 is a native app for directing coding agents: Claude Code, Codex CLI,
 Copilot CLI, OpenCode, and plain shells. The UI is written in Rust on GPUI, with
 its state in the repo's `libs/tca-rust`. It runs on macOS, Linux and in a
 browser; no other platforms. A Rust
-daemon, `humatad`, runs on every machine Humata uses: your Mac and any machine
-you reach over SSH. A session is the agent CLI's own terminal, held by
-`humatad`, so it outlives the app, the SSH link and the daemon itself.
+daemon, `humatad`, runs on every machine Humata uses: the computer you work on
+and any machine you reach over SSH. A session is the agent CLI's own terminal,
+held by `humatad`, so it outlives the app, the SSH link and the daemon itself.
+
+This spec says `humatad` for the daemon. Until Humata 1 is retired its binary
+is `humatad2`, its holder `humata2_holder` and its folder `~/.humata2` (D37,
+TS-0, TS-1).
 
 It is for one developer running many agents across several repositories and
 several machines.
@@ -38,7 +50,7 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 8. [Lifecycle and disk](#8-lifecycle-and-disk)
 9. [Review across N repos: diff, files, editor](#9-review-across-n-repos-diff-files-editor)
 10. [PR reviews](#10-pr-reviews)
-11. [Spec mode and comments](#11-spec-mode-and-comments)
+11. [Markdown review and comments](#11-markdown-review-and-comments)
 12. [File manager and transfers](#12-file-manager-and-transfers)
 13. [Boards](#13-boards)
 14. [Inbox and agent access](#14-inbox-and-agent-access)
@@ -55,7 +67,7 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 25. [Security and secrets](#25-security-and-secrets)
 26. [UX flows](#26-ux-flows)
 27. [Non-goals](#27-non-goals)
-28. [Where the prototype differs](#28-where-the-prototype-differs)
+28. [The prototype](#28-the-prototype)
 29. [Open questions](#29-open-questions)
 
 ## 1. Concepts
@@ -63,17 +75,19 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 | Concept | What it is |
 | --- | --- |
 | Channel | A project. It has a name, a set of GitHub repos, a set of machines, a board, an Inbox, agent access rules and an activity feed. Shown like a chat channel (`#payments-rewrite`) but it holds sessions, not messages. |
-| Machine (host) | This Mac, or any machine reached over SSH that runs `humatad`, whether the user owns it or a provider made it (§18). A channel can use any mix of machines and can be all-remote. |
+| Machine | The computer the desktop app runs on (labelled **This Mac** on a Mac), or any machine reached over SSH that runs `humatad`, whether the user owns it or a provider made it (§18). A channel can use any mix of machines and can be all-remote. The **Hosts** page and sidebar section list machines; the name comes from the goldens and does not mean the Host below. |
 | Main clone | One clone per repo per machine of a channel, on the default branch. A read-only reference that Humata fetches on its own. |
 | Session clone | A session's own clone of a repo, on its own branch, named from the work (FC-11). |
 | Shared folder | `~/Humata/<channel>/shared/` on each machine: files anyone in the channel shares. |
-| Session | One agent CLI (or a plain shell) running in a terminal on one machine, with 0, 1 or more repos. |
+| Session | One piece of work on one machine, in one folder, with 0, 1 or more repos: its main agent's CLI (or a plain shell) in a terminal, any shell tabs, and at most one more terminal per other agent (SE-28). |
+| Tab group | A session's tab row, or one of its two halves when it is split (SE-27). |
+| Desk | The place for sessions that belong to no channel (DK-1): an agent or a shell in a scratch folder or a folder the user picks. |
 | Holder | A tiny per-session process on the session's machine that owns its PTY and screen state. |
 | PR review | A session in the PR reviews channel that reviews one or more pull requests; its comments are drafts posted to GitHub only when you submit. |
-| Spec mode | A session where you and the agent iterate on Markdown files, with comments anchored to passages. |
+| Markdown review | Reading a Markdown file in a tab as Preview, Source or Side by side, with comments on its source lines (§11). It works in any session; there is no separate spec mode (D104). |
 | Archived session | A stopped session whose clones are deleted; conversation, record, scrollback and diff summary are kept and it can be restored. |
 | Fork | A new session made from another one. Forks form a tree of any depth. Three kinds: code + context, code only, context only. |
-| Board | Jira-style columns of items: Backlog, To do, In progress, In review, Done. There is a Global board, a board per channel and a board per session. |
+| Board | Columns of items: Backlog, To do, In progress, In review, Done, also shown as a table or a dashboard (BD-11). There is a Global board (the sidebar's **Board**), a board per channel and a board per session. |
 | Inbox | Requests from agents for actions they don't own. Seen globally, per channel and per session. |
 | Agent access rule | Per channel, per kind of action: Allow, Ask me, or Never. |
 | Prepared view | A review walkthrough or board view an agent prepared for you over MCP. Opened only if you choose to. |
@@ -83,21 +97,24 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 | Bridge | The host. Every machine has one SSH link to it, and every call between machines goes through it. |
 | Turn | From a message reaching the agent until the agent waits for input again. How Humata learns a turn ended is per agent (SE-21). |
 | Own clones | The clones under a session's own folder (`sessions/<session>/`). A context-only fork has none until it gets its own copy (FK-9). |
-| Grant | An "Always let …" permission for one session and one target (IN-14, IN-22). |
+| Grant | An "Always allow …" permission for one session and one target (IN-14, IN-22). |
 | Presence | Proof that the person, not an agent, is giving a command from the CLI (SEC-10). |
 | Inactive | A session with no terminal output, no input and not opened by the user for a given time (LD-16). Not the Idle status. |
 | Revision | A counter every editable thing carries; it goes up on each change (SL-7). |
 
 Session statuses, shown as a dot everywhere a session appears:
 
-| Status | Label | Dot |
+| Status | Label | Mark (as the frames draw it) |
 | --- | --- | --- |
-| working | Working | green, pulsing |
-| needs | Needs you | orange |
-| idle | Idle | grey |
-| probably idle | Probably idle (SE-22) | grey, half-filled |
-| exited | Agent exited — resumable | hollow ring |
-| offline | Host offline — reconnecting | red |
+| working | Working | green dot |
+| needs | Needs you | orange dot |
+| idle | Idle | hollow grey ring |
+| probably idle | Probably idle (SE-22) | hollow grey ring, half-filled |
+| exited | Agent exited (resumable) | red ✕ |
+| offline | <machine> is offline (its link is down; Humata is reconnecting) | grey dot |
+
+This is the only table of status marks. The words appear in a header only
+when the session needs attention (SE-6, NV-32).
 
 Built-in agents (Claude, Codex and Copilot are the defaults; users can add
 more, ST-2):
@@ -108,7 +125,10 @@ more, ST-2):
 | Codex CLI | `codex` | yes | output fallback |
 | Copilot CLI | `copilot` | yes | the agent's hooks |
 | OpenCode | `opencode` | no | output fallback |
-| Plain shell | `zsh` (the login shell) | no | none: no turns |
+| Terminal (a plain shell) | `zsh` (the login shell) | no | none: no turns |
+
+The app labels a plain shell **Terminal** (frames 31, 40). This spec says
+plain shell where it means the same thing.
 
 ## 2. Architecture
 
@@ -152,9 +172,9 @@ more, ST-2):
   against its latest copy of the host's rules (AW-8). These checks cover
   calls made through Humata only (SEC-5).
 - **AR-5** View state is stored on the host, not in the app: open panels and
-  tabs, folds, scroll positions and filters (SE-13), pane widths and
-  collapsed panes (NV-16), expand and collapse results (NV-19) and the
-  pinned order (NV-25). After the app is quit, crashes or is reinstalled,
+  tabs, tab groups, folds, scroll positions and filters (SE-13), column
+  widths and collapsed columns (NV-16), expand and collapse results (NV-19)
+  and the pinned order (NV-25). After the app is quit, crashes or is reinstalled,
   each of these comes back as it was.
 - **AR-6** The app is only a client. Any number of clients can be connected to
   one host at once: desktop apps, browsers (AR-8) and the CLI. Each sees the
@@ -181,7 +201,7 @@ more, ST-2):
 
 - **CH-1** The user can create a channel with a name, a set of GitHub repos
   (zero or more) and a set of machines (one or more, any mix of This Mac and
-  SSH machines). A channel with no Mac in it is valid.
+  SSH machines). A channel that leaves out This Mac is valid.
 - **CH-2** The folder name is derived from the channel name (lowercase,
   non-alphanumerics become `-`) and shown live while typing. The user never
   picks a path.
@@ -193,16 +213,15 @@ more, ST-2):
 - **CH-5** When a channel is created, Humata creates its folders and main clones
   on every chosen machine and shows progress until the clones finish, then
   opens the channel.
-- **CH-6** The user can add a repo to an existing channel from the Repos &
-  machines tab. Humata then makes its main clone on every machine of the
-  channel.
+- **CH-6** The user can add a repo to an existing channel from the Repos and
+  machines tab (CH-18, CH-19).
 - **CH-7** The user can add a machine to a channel. Humata creates the
   channel's folders and main clones on it.
 - **CH-8** When the user removes a machine from a channel that has sessions on
   it, Humata asks what to do with each of those sessions: move it to another
   machine of the channel, or archive it. The machine is removed only after
   every session is handled.
-- **CH-9** The Repos & machines tab shows a grid: one row per repo, one
+- **CH-9** The Repos and machines tab shows a grid: one row per repo, one
   column per machine, each cell the number of session clones of that repo on
   that machine (a cell opens the sessions it counts). Each column heading
   shows the machine and its session count and opens its page; offline
@@ -211,7 +230,7 @@ more, ST-2):
   (CH-8). It shows no clone health, "behind main" or similar state.
 
 ```text
-┌ Repos & machines ─────────────────────────────────────────────────────────┐
+┌ Repos and machines ───────────────────────────────────────────────────────┐
 │                     This Mac · 6     devbox-1 · 3     gpu-box · 1 offline │
 │ acme/api            4 clones         2 clones         1 clone             │
 │ acme/ledger         5 clones         1 clone          —                   │
@@ -223,14 +242,19 @@ more, ST-2):
 - **CH-10** A channel with no repos is valid; its sessions start in an empty
   folder (`~/Humata/<channel>/sessions/<session>/`).
 - **CH-11** The channel page has tabs, in this order: **Sessions · n**,
-  **Inbox · n** (count shown only when nonzero), **Board**, **Repos &
+  **Inbox · n** (count shown only when nonzero), **Board**, **Repos and
   machines**, **Agent access**, **Activity**. The page header has the channel
-  name and a **New session** button.
+  name, one faint line naming its repos and machines, and a **New session**
+  button (frame 18).
 - **CH-12** The Sessions tab is one tree table, the only list of sessions on
   that page. Columns: Session (tree connectors `├─ └─ │`, status dot, title,
   fork kind "⑂ code + context / context only / code only", and a red "✉ n"
   inbox count for the session and all its forks), Agent, Machine ("This Mac"
-  shown faint), Status (Needs you in orange), Started.
+  shown faint), Status (Needs you in orange), Started. A session with an open
+  pull request shows its number after the status ("Idle · PR #491"), and
+  clicking it opens the PR. Above the table are a **Filter sessions** field,
+  an **Open / Archived / All** switch (LD-3), and **Expand all** and
+  **Collapse all** (frame 18).
 - **CH-13** Clicking the "✉ n" count opens that session with its Inbox panel
   in "With its forks" mode. Its tooltip says how many come from the session
   and how many from its forks.
@@ -242,24 +266,27 @@ more, ST-2):
   and when. It holds events only, not chat (see q1).
 - **CH-16** The sidebar lists channels; each channel can be folded and shows
   its session tree beneath it, indented per depth, with status dots. A channel
-  or session with unread output is shown bold.
+  or session with unread output is shown bold. A folded channel shows the
+  status mark of the session that most needs the user and its number of
+  sessions (frame 36).
 - **CH-17** Opening a session clears its unread mark.
 
 ### Growing and shrinking a channel's repos
 
 ```text
-┌ Repos & machines ─────────────────────────────────────────────────────────┐
+┌ Repos and machines ───────────────────────────────────────────────────────┐
 │                     This Mac · 6      devbox-1 · 3      gpu-box · offline │
 │ acme/api            4 clones          2 clones          1 clone           │
 │ acme/ledger         5 clones          1 clone           —                 │
 │ acme/web  (new)     ▓▓▓▓▓▓░░ 62%      ✓ main clone      waits for gpu-box │
 │                                                                           │
-│ [Add repo…]  saved repositories · GitHub URL · local path                 │
+│ [Add a GitHub repo…]  saved repositories · URL · local path               │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **CH-18** **Add repo…** is available at any time on the Repos & machines
-  tab. The user picks from saved repositories, pastes a GitHub URL, or picks
+- **CH-18** **Add a GitHub repo…** (frame 20) is available at any time on
+  the Repos and machines tab. The user picks from saved repositories, pastes
+  a GitHub URL, or picks
   a local path on the host (its remote is used for clones; a repo with no
   remote is sent by bundle, FC-7).
 - **CH-19** The new repo's main clone is made on every machine of the channel
@@ -299,7 +326,7 @@ more, ST-2):
 
 ```text
 ┌ # payments-rewrite ───────────────────────────────────────── [New session] ┐
-│ Sessions · 11 │ Inbox · 7 │ Board │ Repos & machines │ Agent access │ Activity│
+│ Sessions · 11 │ Inbox · 7 │ Board │ Repos and machines │ Agent access │ Activity│
 ├──────────────────────────────────────────────────────────────────────────── ┤
 │ SESSION                                   AGENT      MACHINE   STATUS  STARTED│
 │ ● Ledger schema migration  ✉ 7            Claude     This Mac  Working  2h   │
@@ -323,6 +350,7 @@ is configurable per machine.
 ```text
 ~/Humata/                                   root, configurable per machine
 ├── .trash/                                 this machine's Humata trash (LD-6)
+├── desk/                                   Desk sessions' scratch folders (DK-2)
 ├── pr-reviews/                             the PR reviews channel (PR-2)
 └── payments-rewrite/                       one folder per channel
     ├── main/                               read-only reference, auto-fetched
@@ -339,7 +367,8 @@ is configurable per machine.
 ```
 
 - **FC-1** The user never picks a path. Every folder above is created and
-  named by Humata.
+  named by Humata. The one exception is a Desk session's folder, which the
+  user may pick (DK-2).
 - **FC-2** A main clone is a read-only reference: agents and Humata's own
   tools do not write to it. Humata fetches it on its own so new session
   clones start from a recent `main`. (Whether a plain shell may work in it is
@@ -406,17 +435,20 @@ is configurable per machine.
 - **SE-1** The user can start a session from a channel's **New session**
   button, a machine's page ("New session on devbox-1") or a board item ("Start
   a session for this item").
-- **SE-2** The New session dialog asks for: title, agent (preselected from
-  the default, ST-15), machine (any online machine of the channel), and per repo of the
-  channel whether to include it ("Own clone, new branch from main" or "Leave
-  this repo out"); plus an optional first message that is typed into the agent
-  once it starts. With no first message the session starts at the agent's
-  prompt. The agent starts with its own configured defaults; the dialog does not
-  select or override its model (owner direction, 2026-11-15).
+- **SE-2** The New session dialog (frame 31) asks for: title; what it runs,
+  an agent (preselected from the default, ST-15) or **Terminal**; machine
+  (any online machine of the channel; a machine low on disk shows its free
+  space there, LD-19); and per repo of the channel whether to include it
+  ("Own clone, new branch from main" or "Leave this repo out"); plus an
+  optional first message that is typed into the agent once it starts. With no
+  first message the session starts at the agent's prompt. The agent starts
+  with its own configured defaults; the dialog does not select or override
+  its model (owner direction, 2026-11-15, D76). Frame 31 still draws a model
+  picker beside the agents; it is to be removed.
 - **SE-3** When started from a board item, the title defaults to the item's
   title, the dialog shows "for PAY-7", the first-message placeholder names the
-  item, the item is assigned to the new session, and an item in Backlog or To
-  do moves to In progress.
+  item, the new session is added to the item's sessions (BD-16), and an item
+  in Backlog or To do moves to In progress.
 - **SE-4** After Start session, Humata writes the session record (PER-11) to
   disk, makes the clones, launches the agent in its holder and opens the
   session page. The channel's Activity gets "Started “…” with <agent> on
@@ -429,9 +461,9 @@ is configurable per machine.
 ```text
 ┌ # payments-rewrite › Ledger schema migration  ● Claude Code · devbox-1  [Fork] [⋯]┐
 ├─ ◧ Claude Code in “Ledger schema migration” prepared a view: PR review …         ┤
-│    [Open it] [Later] [Not now]                                (offer bar, SE-12)  │
+│    [Open it] [Later] [Not now]                                (offer bar, VW-2)   │
 ├────────────────────────────────────────────┬─────────────────────────┬────────────┤
-│ claude │ zsh │ ▤ client.rs ✕ │ ◧ PR review ✕│ Diff            [⇤] [✕] │  ✉ Inbox 7 │
+│ claude │ zsh │ ▤ client.rs ✕ │ ◧ PR review ✕│ Diff            [⤢] [✕] │  ✉ Inbox 7 │
 ├────────────────────────────────────────────┤ Compare against [main ▾]│  ± Diff  2 │
 │ > Design the ledger schema from PAY-3 …    │ 3 files · 2 repos +184  │  ▤ Files   │
 │ ● Reading ledger/docs/model.md             │ ┌ ledger uhvesta/ledg… ┐│  ▦ Board   │
@@ -442,22 +474,26 @@ is configurable per machine.
 │   ⏳ waiting for your approval (Inbox)      │ └──────────────────────┘│            │
 │ > █                                        │ [Send 2 comments]       │            │
 └────────────────────────────────────────────┴─────────────────────────┴────────────┘
-   terminal area (tabs)                        panel (opens beside,      right strip
-                                               widens ⇤, closes ✕)
+   tab row (terminals, files, views)           panel (opens beside,      right strip
+                                               full screen ⤢, closes ✕)
 ```
 
 - **SE-6** The header shows breadcrumbs (`# channel › parent session › this
-  session`, each a link except the last), the status dot, the agent, the
-  machine when it is not This Mac, and the status when it needs attention
-  (Needs you, exited, offline). Buttons: **Resume agent** (only when the agent
-  exited), **Fork**, and **⋯** (session menu).
+  session`, or `Desk › this session`; each a link except the last), the
+  status dot, the title, the agent and the machine ("Claude Code ·
+  devbox-1"), and the status in words only when it needs attention (Needs
+  you, Agent exited, <machine> is offline). Buttons: **Resume agent** (only
+  when the agent exited), **Fork**, **Terminal full screen** (NV-37), the
+  side panel toggle (SE-11) and **⋯** (session menu).
 - **SE-7** The session menu offers: Rename, Move to another machine…, Stop the
   agent (keeps terminal and clones), Push and open a pull request, Archive
   session….
-- **SE-8** The terminal area has tabs: the agent's terminal (named by its
-  command, e.g. `claude`), a `zsh` shell in the session's folder, one tab per
-  file opened big (with ✕), and one tab per opened agent-prepared review view
-  (with ✕; closing it keeps it in the Journal).
+- **SE-8** A session's terminals, open files and opened views are tabs in one
+  row (D76): the agent's terminal (named by its command, e.g. `claude`, with
+  its status dot), a `zsh` shell in the session's folder, one tab per file
+  opened big (with ✕, RV-15), and one tab per opened agent-prepared review
+  view (with ✕; closing it keeps it in the Journal). **+** at the end of the
+  row opens a new shell tab, a file, or another agent's terminal (SE-28).
 - **SE-9** The user can open more shell tabs. Each tab is its own terminal
   held by `humatad` (PER-1) and survives like the agent's terminal.
 - **SE-10** The terminal is the agent CLI's own terminal: keystrokes go to it
@@ -468,14 +504,17 @@ is configurable per machine.
 - **SE-11** The right strip has, top to bottom: **Inbox** (badge: pending
   requests of the session and its forks), **Diff** (badge: unsent comments),
   **Files**, **Board** (the session's board), **Journal**, **Info**. Clicking
-  one opens its panel beside the terminal; clicking it again closes it.
-- **SE-12** An open panel has a header with its name, **Widen** (⇤, covers the
-  terminal) / **Show the terminal again** (⇥), and **Close** (✕).
+  one opens its panel beside the terminal; clicking it again closes it. The
+  header's panel toggle (⌥⌘0) hides and shows the open panel.
+- **SE-12** An open panel has a header with its name, **Full screen** (the
+  panel covers the terminal; frames 11, 12) / **Show the terminal**, and
+  **Close** (✕).
 - **SE-13** Sessions are stateful. When the user comes back to a session,
-  Humata restores the open panel, whether it was widened, the active terminal
-  tab, open editor tabs and their files, scroll positions, the diff base, the
-  file browser's filter, folds and open file, and the inbox mode. This state
-  survives an app restart.
+  Humata restores the open panel, whether it or the terminal was full screen,
+  the tab groups with each group's tabs and active tab, open files, scroll
+  positions, the diff base, the file browser's filter, folds and open file,
+  and the inbox mode. This state survives an app restart. After a crash or a
+  power cut everything but exact scroll positions comes back (PER-25).
 - **SE-14** When the agent exits, the terminal stays with its last output and
   a line saying the process exited with its code and that Resume starts the
   agent again with its conversation. The header and Home show **Resume**.
@@ -488,8 +527,9 @@ is configurable per machine.
   meanwhile and a line "reconnected; caught up N lines of output". When
   more was produced than the scrollback keeps, the view starts from a fresh
   screen and the line says how many lines were not kept (TR-4).
-- **SE-17** "Open in editor" opens the file in the user's editor on the
-  session's machine.
+- **SE-17** **Open in editor** opens the file in the user's own editor on the
+  session's machine. It is not **Open big**, which opens the file as a tab in
+  Humata (RV-15). The Files panel offers both (frame 06).
 
 ### Info panel
 
@@ -520,10 +560,13 @@ is configurable per machine.
   **Probably idle**, never Idle, until the user types or the agent writes
   output again. (provisional, D7)
 - **SE-23** Messages Humata queues for a session (comments, notes, queued
-  typing, the approval line of IN-12) are typed when the turn ends. When the
+  typing, the approval line of IN-12) are typed when the turn ends. While any
+  wait, a bar under the terminal says "n messages queued · typed when this
+  turn ends" with **Show** (frame 03), which lists them, each with **Send
+  now** and **Remove**. When the
   end comes from the agent's hooks, they are typed on their own. When it
   comes from the output fallback, or the session is a plain shell, they are
-  not: the queue shows "waiting: turn end not certain" with **Send now**.
+  not: the bar says "waiting: turn end not certain" with **Send now**.
   Each message is typed whole as
   one bracketed paste and never in the middle of another. (provisional, D7)
 - **SE-24** Several writers may type into one terminal at once: the app,
@@ -541,55 +584,112 @@ is configurable per machine.
   channel's Sessions tab, Home, the Desk, search results) the row can show
   it and sort by it, so old sessions are easy to find and clean up.
 
+### Tab groups and a second agent (owner direction 2026-11-15, D76)
+
+- **SE-27** A session's tab row can be split into two **tab groups** side by
+  side (frames 14, 41, 43). Each group has its own tabs, its own **+** and a
+  ✕ at its right end. A tab moves to the other group by dragging it there or
+  from its menu; closing a group, or its last tab, leaves one group with
+  every remaining tab. Two groups is the limit, and nothing else in the
+  window splits (NV-36). The divider between the groups drags like any other
+  (NV-12).
+- **SE-28** A session can run a second agent beside its first (frame 14):
+  **+** › **Add an agent** starts another agent's TUI in the session's
+  folder, on the same clones, as a tab. There is at most one terminal per
+  agent in a session: an agent that already has one is not offered. More
+  than that, or a second copy of the code, is a fork (FK-2).
+- **SE-29** The agent a session was started with is its **main agent**. The
+  session's status, its turns (SE-21), the messages Humata queues (SE-23),
+  comments (SM-9), its identity for Humata's tools (SEC-15), its Inbox
+  requests and its grants are the main agent's. An added agent is a terminal
+  that runs an agent and no more: it has its own conversation, pinned,
+  resumed after a restart and carried by a move like the main agent's
+  (PER-12–PER-15, MV-13); its tab's dot says only whether it is running or
+  has exited; nothing is queued for it; and its calls to Humata's tools are
+  refused with a message saying that a fork gives the agent a session of its
+  own. A fork is made from the main agent's conversation. (provisional, D103)
+
 ### The Desk (signed off by the owner 2026-11-15, D100)
 
 Frames 34–43 in `desktop/tests/__snapshots__/design/` are approved goldens
 (empty states, the Desk and markdown review). The Desk row sits under Board
-in the sidebar of every frame, 01–43.
+in the sidebar. DK-6 (empty states) is in §22, and DK-7–DK-9 (markdown
+review) are in §11.
 
 - **DK-1** The sidebar has a **Desk** row under Board, with its open
   sessions under it. A Desk session belongs to no channel. It runs an agent's
-  TUI or a plain terminal, with tabs and the two-group split like any session.
-- **DK-2** A Desk session works in a new scratch folder
-  (`~/humata/desk/<name>`) on a machine, or in a folder the user picks. Humata
-  never deletes a picked folder. A scratch folder is deleted 7 days after its
-  session closes unless the user keeps it (**Keep** on the Desk page, or
-  `humata desk keep`).
-- **DK-3** `humata desk move <machine>` copies the folder to another
-  machine and restarts the agent there with its conversation. `humata desk
-  add <owner/repo>` clones the repo's default branch into the folder;
-  removing a repo deletes its clone, not its branch. The folder bar above the
-  tabs does the same: folder, machine picker, repo chips, Add repo, Keep.
-- **DK-4** A Desk session's Board panel shows every channel's items. With
-  the access switch on, its agent can add and change items in any channel
-  without asking; making channels and adding machines asks each time unless
-  that switch is on too.
-- **DK-5** The Desk page lists Open sessions, Documents (markdown files in
-  Desk folders, each with **Copy to a channel…**) and Closed sessions with
-  the days left before their folder goes, sorted by last used (SE-26), with
-  **Clean up…** and **New desk session**.
-- **DK-6** With no channel, Home shows Get set up (make a channel, add a
-  machine, use the Desk) and the sidebar shows "No channels yet" and This Mac
-  with "Add a machine…" (frame 34). A channel with no sessions shows its own
-  checklist: add a repo, pick machines, start a session (frame 35).
-- **DK-7** In any session, a markdown file tab can sit in the second tab
-  group beside the agent's terminal, so the user reads the rendered file
-  while the agent stays in view (frame 41).
-- **DK-8** A markdown tab shows **Preview**, **Source** or **Side by
-  side**. Side by side puts the source on the left and the rendered page on
-  the right; scrolling is linked (the page follows the source) and can be
-  turned off. Comments go on source lines, and the page lights the block
-  they are on with a count. A comment is typed into the session's agent
-  when its turn ends (SE-23), as `[comment on <file>:<lines>]` and the
-  text, and then shows as sent (frame 42). The agent answers in its
-  terminal, not in the comment thread; the terminal can stay in the first
-  tab group beside both (frame 43).
-- **DK-9** The agent can also answer in the comment thread with the MCP
-  tool `comment_reply` (`comment.reply`), on a comment that was typed into
-  its own session. The reply shows under the comment, marked with the
-  agent's name, and the page's count goes up. The agent still answers in
-  its terminal as usual; the tool's description asks it to hand the call to
-  a cheap subagent (TP-17). (Built after DK-1–DK-8.)
+  TUI or a plain terminal, with tabs, the two tab groups (SE-27) and the side
+  panels like any session.
+- **DK-2** A Desk session works in a new scratch folder under the machine's
+  Humata root (`<root>/desk/<name>`, so `~/Humata/desk/plan-q4` by default;
+  the name is a slug of the title, as FC-13), or in a folder the user picks
+  on that machine. This is the one place the user picks a path (FC-1).
+  Humata never deletes, trashes or moves a picked folder. A scratch folder is
+  deleted 7 days after its session closes (DK-11) unless the user keeps it
+  (**Keep folder** in the folder bar, **Keep** on the Desk page, or `humata
+  desk keep`). `desk` is a reserved folder name: no channel's folder can be
+  `desk`. (Frames 37–40 print the root as `~/humata`; they are to be redrawn
+  with `~/Humata`, D108.)
+- **DK-3** The folder bar above the tabs shows the folder (with a "scratch"
+  chip for a scratch folder), a machine picker, a chip per repo with ✕,
+  **Add repo** and **Keep folder** (frames 37, 39). Picking another machine,
+  or `humata desk move <machine>`, moves the session to any online machine:
+  the folder and conversation are carried and checked as in any move (MV-2,
+  MV-13, MV-14) and the agent restarts there with its conversation. A picked
+  folder is copied, and the original stays where it was. **Add repo**, or
+  `humata desk add <owner/repo>`, clones the repo's default branch into the
+  folder; a Desk session has no branch of its own (FC-11 does not apply).
+  Removing a repo deletes its clone after the unpushed-work check (MV-9), and
+  never a branch on the remote.
+- **DK-4** A Desk session's Board panel shows every channel's items (scope
+  **All channels**, BD-7) and marks the ones the session added. The session
+  has two **Agent access** switches, set in the New desk session dialog and
+  changeable in its Info panel (frame 40):
+  - **Read and change every channel's board**, on by default: its agent adds
+    and changes items in any channel without asking;
+  - **Make channels and add machines**, off by default: off, each of these
+    asks the user; on, neither does.
+- **DK-5** The Desk page (frame 36) lists **Open** sessions (status, title,
+  agent, machine, folder, repos and last used), **Documents** (the markdown
+  files in Desk folders, each with its session and **Copy to a channel…**,
+  DK-13) and **Closed** sessions (DK-11) with the days left before their
+  folder goes, **Keep** and **Reopen**. Its header has **Sort: last used**
+  (SE-26), **Clean up…** and **New desk session**.
+- **DK-10** For every rule that is set per channel (agent access rules, the
+  While I'm away rule, Contain agents, retention), a Desk session uses the
+  defaults for new channels (ST-4, ST-6, ST-14, ST-17). DK-4's two switches
+  are that session's grants on top of them: the first allows the "Global
+  board, or other channels and their boards" row of IN-17, the second the
+  "Create a channel" and "Add, create, start or stop machines" rows. No
+  channel is a Desk agent's own: the IN-17 rows about "its channel" give it
+  nothing. (provisional, D108)
+- **DK-11** **Close session** (the session menu) is the Desk's Archive. It
+  stops the agent and the terminals and keeps the record, conversation and
+  scrollback as archiving does (LD-2), but leaves the folder in place. The
+  session then shows under **Closed** on the Desk page, and **Reopen**
+  resumes its agent with its conversation in the same folder. Seven days
+  after closing, a closed session whose scratch folder was not kept is
+  deleted as LD-5: its folder, record and conversation go to trash and can
+  be restored for 30 days (LD-7). A scratch folder whose clones hold
+  uncommitted or unpushed work is not deleted then; its row names the work
+  that holds it (as LD-17). A kept scratch folder or a picked folder stays,
+  with its closed session, until the user deletes the session; deleting a
+  session with a picked folder leaves that folder alone. **Clean up…** lists
+  the closed sessions, least recently used first, with their folder sizes,
+  and deletes the ones the user ticks after the unpushed-work check (MV-9),
+  under NV-27. (provisional, D108)
+- **DK-12** A Desk session has no board of its own, no branch and no
+  **Fork** (frames 37–43 draw none); work that needs them starts as a
+  channel session. Its Inbox requests show in its own Inbox panel and in the
+  global Inbox under a **Desk** group. It can be pinned, marked VIP and
+  searched like any session (NV-20, LD-23). (provisional, D108)
+- **DK-13** **Copy to a channel…** asks for a channel, and for a machine
+  when the channel has several, and copies the file into that channel's
+  `shared/` folder there (FC-8). The Desk's copy stays. (provisional, D108)
+- **DK-14** **New desk session** (frame 40) asks for a title; what it runs
+  (an agent or **Terminal**); a machine (any online one); the folder (**A
+  new scratch folder**, or **A folder on the machine**); optional repos; and
+  the two access switches of DK-4.
 
 ## 6. Forks
 
@@ -605,7 +705,7 @@ in the sidebar of every frame, 01–43.
   - **Code only**: new clones copied from the parent's files, and a fresh agent
     with no conversation.
 - **FK-3** The dialog also asks: fork from (now, or before an earlier turn,
-  listed by name, when the agent can fork at a turn); agent and model
+  listed by name, when the agent can fork at a turn); agent
   (preselected from the default, ST-15; any agent may be chosen; plain
   shell only for code only); machine
   (any online machine of the channel).
@@ -654,7 +754,8 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 ### Move a session to another machine
 
 - **MV-1** The user can move a session to any other online machine of its
-  channel from the session menu.
+  channel from the session menu. A Desk session moves to any online machine
+  (DK-3).
 - **MV-2** Moving pauses the agent, copies the branch, uncommitted files and
   conversation to the target machine (fixing the agent's path-keyed records),
   resumes the agent there, and deletes the old copy only after the new one is
@@ -697,7 +798,7 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
     ignored files in each clone, and its `refs/humata/…` refs (reviewed
     snapshots, RV-28);
   - the session folder's own files outside the clones, Markdown included
-    (spec-mode documents, plans, notes the agent wrote);
+    (documents under review, plans, notes the agent wrote);
   - the machine daemon's store rows for the session (terminal tabs,
     scrollback, attach state, review notes and highlights, revive data),
     exported and imported as the store's self-describing records (TR-13),
@@ -714,6 +815,17 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
   that fails says which item failed to arrive or to match. The manifest is
   kept in the restart report format (PER-28) so the restart doctor can
   finish or undo a move cut off by a reboot.
+
+### Undoing an archive
+
+- **MV-15** Archiving shows a toast naming the session and the disk it
+  frees, with **Undo** (frame 32). The session is archived at once, but its
+  clones and folder are deleted only when the toast goes: after 10 seconds,
+  or at once when the app quits. **Undo** before then brings the session
+  back exactly as it was, uncommitted work included, and starts its agent
+  again with its conversation. After that only **Restore** brings it back
+  (LD-4), from what was pushed. A restart in between finishes the delete
+  (PER-27). (provisional, D110)
 
 ## 8. Lifecycle and disk
 
@@ -734,15 +846,15 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 
 - **LD-1** Archiving frees the session's disk once the unpushed-work check
   (MV-9) passes: Humata deletes its session clones, the build caches and
-  other files in its session folder.
+  other files in its session folder, once the Undo window has passed (MV-15).
 - **LD-2** An archived session keeps its conversation, its session record
   (title, agent, machine, channel, repos and branches, fork parent, board
   items, journal), its scrollback and a diff summary: per repo, the branch,
   the last pushed commit and the files changed with their +/− at archive time.
-- **LD-3** The channel's Sessions tab has a folded **Archived · n** group under
-  the tree. Opening an archived session shows its scrollback, its
-  conversation and its diff summary, read-only, with **Restore** and
-  **Delete**.
+- **LD-3** The channel's Sessions tab has an **Open / Archived / All** switch
+  (frame 18). Archived lists the archived sessions in the same tree table.
+  Opening an archived session shows its scrollback, its conversation and its
+  diff summary, read-only, with **Restore** and **Delete**.
 - **LD-4** **Restore** asks for a machine (the original one first if it is
   still in the channel), clones each repo's branch from its remote, copies
   the conversation back from the host (fixing path-keyed records) and resumes
@@ -831,14 +943,16 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 
 ### Low disk
 
-- **LD-19** Low disk is shown only where it blocks an action. When a clone,
-  fork, move or transfer would not fit, the dialog says
-  how much it needs and how much is free, and lists the largest items from
-  that machine's Storage page with their actions, so the user can free space
-  and continue in place.
+- **LD-19** Low disk is shown where it blocks an action, and on the Hosts
+  page, where **Free space…** sits beside it (HO-3); nowhere else. When a
+  clone, fork, move or transfer would not fit, or would leave the machine
+  with less than 5 GB free, the dialog says how much it needs and how much
+  is free, and lists the largest items from that machine's Storage page with
+  their actions, so the user can free space and continue in place. (The
+  5 GB floor is provisional, D107.)
 - **LD-20** When a machine runs out of disk while sessions run, those
   sessions show "<machine> is out of disk" with **Free up space** (opens its
-  Storage page). There is no standing low-disk warning elsewhere.
+  Storage page). Sessions, the sidebar and Home carry no other disk notice.
 
 ### The mirror and secrets
 
@@ -888,17 +1002,17 @@ each repo's branch.
   branch and totals (+/−), and has its own **Push** / **Open PR** actions.
   Above the groups: number of files, number of repos, overall +/−.
 - **RV-3** Each file shows repo chip, path, added/modified/deleted, +/−, and
-  **Open big**. Hunks show their header, line numbers and +/− marks, with
+  **Open in editor** (SE-17; frame 01). Clicking the file's path opens it big
+  (RV-15). Hunks show their header, line numbers and +/− marks, with
   syntax highlighting by file type.
-- **RV-4** Clicking a line number opens a comment box for that line ("Comment
-  for the agent — it gets file and line with it"). Add comment queues it;
-  Cancel discards. Queued comments are shown under their line as "not sent
-  yet".
-- **RV-5** **Send N comments to agent** (disabled at zero) pastes all queued
-  comments into the agent's terminal as one message: a header "Review comments
-  from you (N):" then one line per comment `repo/path:line — text`. The
-  comments then show "sent to agent" and the session is marked working.
-  (Whether the agent should fetch them over MCP instead is q2.)
+- **RV-4** Clicking a line number opens a comment box under that line (frame
+  42 draws it): the text, a line saying where it will go ("Typed into claude
+  when its turn ends"), **Cancel** and **Comment**. What is written is a
+  draft at once and shows under its line marked **Draft**. **Cancel**
+  discards it, and **Comment** sends it (SM-9).
+- **RV-5** **Send N comments** (the panel's footer, disabled at zero; frame
+  01) sends every draft of the session as one message (SM-9). The comments
+  then show as sent and the session is marked working.
 - **RV-6** **Mark reviewed** records the current state of every repo, so that
   "Since I last reviewed" starts there.
 - **RV-7** With no changes against the chosen base, the panel says so; with
@@ -917,8 +1031,8 @@ each repo's branch.
   changed files and hides the rest.
 - **RV-12** Picking a file opens a line-numbered, highlighted viewer with a
   breadcrumb `repo › folder › file`, added lines marked, and **Open big**.
-  Narrow panel: the viewer replaces the tree, with a back arrow. Widened panel:
-  tree left, viewer right.
+  Narrow panel: the viewer replaces the tree, with a back arrow. Full-screen
+  panel: tree left, viewer right.
 - **RV-13** For a session on another machine, the panel says the files are
   read from that machine over SSH; while it is offline, it shows the last copy
   read and says so.
@@ -927,9 +1041,9 @@ each repo's branch.
 
 ### Editor tab ("Open big")
 
-- **RV-15** Open big opens the whole file in an editor tab in the terminal
-  area and closes the side panel. One editor tab per session; opening another
-  file replaces its file.
+- **RV-15** Open big opens the whole file as a tab in the session's tab row
+  (SE-8). Each file has its own tab; opening a file that is already open
+  selects its tab. The side panel stays as it was.
 - **RV-16** The editor's left list shows the session's changed files across
   repos (A/M badge, name, folder), the current one highlighted, and "Browse
   files…" which opens the Files panel.
@@ -943,8 +1057,8 @@ each repo's branch.
 - **RV-19** The editor shows the number of changes and ↑/↓ buttons that jump
   to the previous/next change, wrapping around.
 - **RV-20** Comments work in the editor as in the diff (RV-4), on new-side line
-  numbers, and share the same queue. When comments are unsent, a footer shows
-  "N comments not sent" with **Send to agent**.
+  numbers, and share the same drafts. When there are drafts, a footer shows
+  "N draft comments" with **Send N comments** (RV-5).
 
 ### Full-file mode
 
@@ -980,9 +1094,9 @@ each repo's branch.
   range comments in the diff, the editor's three modes, full-file mode and
   Files, against any base (RV-1) and in any repo of the session. They use
   the one comment model (SM-13).
-- **RV-26** Comments are drafted first, then sent one at a time (**Send now**)
-  or as a batch (**Send N**) to the session's terminal, as one bracketed
-  paste that waits for the end of a turn (SM-9, SM-10, SM-14).
+- **RV-26** Comments are drafted first, then sent one at a time (**Comment**)
+  or as a batch (**Send N comments**) to the session's terminal, as one
+  bracketed paste that waits for the end of a turn (SM-9, SM-10, SM-14).
 - **RV-27** Each sent comment carries its repo, file, line range with its side
   (old or new), the base it was compared against, and the quoted code, so
   the agent can find it even after the file has changed.
@@ -1031,10 +1145,15 @@ each repo's branch.
   changes move under them: a note on a line that changed is kept and marked
   outdated, as drafts are (PR-16).
 
+### Upload into a session
+
+- **RV-35** The Files panel's **Upload…** (frame 06) copies files the user
+  picks on their computer into the folder shown, as a transfer (FM-5–FM-8).
+
 ## 10. PR reviews
 
 ```text
- paste https://github.com/acme/api/pull/482  (Home, ⌘K, or #pr-reviews)
+ paste https://github.com/acme/api/pull/482  (⌘K, or #pr-reviews)
 ┌ Review a pull request ────────────────────────────────────────────────────┐
 │ acme/api #482  Fix refund rounding for partial captures                   │
 │ by rkhan · uhvesta/fix-refund-rounding → main · 7 files +214 −38          │
@@ -1063,9 +1182,9 @@ each repo's branch.
 
 ### Starting a review
 
-- **PR-1** Pasting a GitHub pull request URL (or `owner/repo#n`) into Home's
-  field, the ⌘K palette or the **PR reviews** channel opens **Review a pull
-  request**. Other text in ⌘K searches as usual.
+- **PR-1** Pasting a GitHub pull request URL (or `owner/repo#n`) into the ⌘K
+  palette (the sidebar's **Search**) or the **PR reviews** channel opens
+  **Review a pull request**. Other text in ⌘K searches as usual.
 - **PR-2** The **PR reviews** channel holds every review session. Humata
   creates it, with its folders, the first time a PR is reviewed; its repos are
   whatever repos its PRs come from.
@@ -1074,7 +1193,7 @@ each repo's branch.
   dialog says why (not signed in to `gh`, no access to the repo, PR not found,
   rate limited) and what to do; for a rate limit it says to wait.
 - **PR-4** The dialog picks the machine (This Mac or any SSH machine,
-  provider-made ones included), the agent and model (preselected from the
+  provider-made ones included), the agent (preselected from the
   default, ST-15) and optional context for the agent. **Also review** adds PRs from other
   repos to the same session, so one review can span N repos.
 - **PR-5** **Start the review** clones each PR's head into that machine's
@@ -1108,7 +1227,7 @@ each repo's branch.
 - **PR-11** Drafts appear under their lines in the diff, the editor and review
   views, marked with who wrote them, with **Edit** and **Drop**. The user can
   add their own drafts from the same comment box, which in a review session
-  offers **Draft for GitHub** and **Send to agent**.
+  offers **Draft for GitHub** beside **Comment** (RV-4).
 - **PR-12** Nothing is posted to GitHub until the user submits. **Submit
   review** lists the drafts per PR (each editable or droppable), a summary the
   agent may have drafted, and the verdict per PR: **Comment**, **Approve** or
@@ -1124,6 +1243,8 @@ each repo's branch.
 - **PR-15** Every minute while a review session is open, and every 5 minutes
   while it is not, Humata checks each PR's head with the host's `gh`. New commits show
   "N new commits, update the clone" on the session (diff header and Home).
+  GitHub offers nothing to push this, so it is one of the polls TR-7 allows
+  and is listed in `api/GRPC.md`.
 - **PR-16** **Update the clone** fetches the new head and tells the agent
   what changed: the new commits and the files changed since the previous
   head. A force-push is reported as such. Drafts on lines that changed are
@@ -1182,80 +1303,101 @@ user builds a code-level understanding of the change.
   across restarts and moves, stay on their lines as the PR changes (outdated
   when the line changes, as RV-34), and show in the review's Journal.
 
-## 11. Spec mode and comments
+## 11. Markdown review and comments
+
+One model covers reading Markdown and commenting on anything (owner
+directions 2026-11-14 and 2026-11-15; D100, D101, D104). Any session, in a
+channel or on the Desk, reviews Markdown this way; there is no separate spec
+mode. Frames 39 and 41–43 draw it.
 
 ```text
-┌ #payments › Refund spec  ● Claude Code · spec mode ──────────────────────────┐
-│ claude │ ▤ docs/refund-spec.md ✕                                              │
-├──────────────┬──────────────────────────────────────────┬─────────────────────┤
-│ Contents     │ [Rendered] Source       ◐ changed since  │ Comments · 3        │
-│ 1 Goals      │                           you last read  │                     │
-│ 2 Rounding ◐ │ ## 2. Rounding                           │ ┌ L41–43  sent ───┐ │
-│ 3 Ledger     │ ▌Partial captures round half to even,    │ │"half to even"   │ │
-│ 4 Tests      │ ▌per line item, before summing.          │ │ Why per line    │ │
-│              │                                          │ │ item, not total?│ │
-│              │ | Case        | Input  | Refund |        │ └─────────────────┘ │
-│              │ |-------------|--------|--------|        │ ┌ L58  draft ─────┐ │
-│              │ | split       | 10.005 | 10.00  |        │ │"split"          │ │
-│              │                                          │ │ Add a 3-way case│ │
-│              │ - [x] per-item rounding                  │ └─[Send now]──────┘ │
-│              │ - [ ] refund ledger entries              │ ┌ L12  addressed ─┐ │
-│              │                                          │ │ [Resolve][Reopen]│ │
-│              │   capture ──▶ ledger ──▶ refund          │ └─────────────────┘ │
-│              │   (ASCII art in monospace)               │ [Send 1 as a batch] │
-└──────────────┴──────────────────────────────────────────┴─────────────────────┘
+┌ Desk › BRIN rollout RFC  ○ Claude Code · devbox-1 ───────────────────────────┐
+│ claude │ zsh │ ▤ rfc-brin.md ✕ │ +        [Preview] [Source] [Side by side]  │
+│ Scrolling is linked: the page follows the source.        ☑ Link scrolling    │
+├──────────────────────────────────────┬───────────────────────────────────────┤
+│  7 ▢ ledger_entries is 410 GB and …  │ Problem                               │
+│   ┌ You · line 7 · sent to claude ┐  │ ledger_entries is 410 GB and its      │
+│   │ Where are the sizes from?     │  │ btree on posted_at is 38 GB. …        │
+│   └───────────────────────────────┘  │                                       │
+│ 13 ▢ - Keep the btree until the      │ Proposal                              │
+│ 14     backfill ends, then drop …    │ ▌• Keep the btree until the      ▢ 1  │
+│   ┌ You · lines 13–14  [Draft] ───┐  │ ▌  backfill ends, then drop it …      │
+│   │ Keep both until range p95 …   │  │                                       │
+│   │ Typed into claude when its    │  │                                       │
+│   │ turn ends  [Cancel] [Comment] │  │                                       │
+│   └───────────────────────────────┘  │                                       │
+└──────────────────────────────────────┴───────────────────────────────────────┘
+   source on the left, the rendered page on the right; comments under their lines
 
- comment status:   draft ──Send──▶ sent ──agent changes the passage──▶ addressed
-                     ▲                                                    │
-                     └──────────── Reopen ◀── resolved ◀── Resolve ───────┘
+ comment status:  draft ──Comment / Send N──▶ queued ──turn ends──▶ sent
+                    ▲                                                 │ the agent
+                    │                                                 ▼ changes the lines
+                    └────── Reopen ◀── resolved ◀── Resolve ───── addressed
+                  archived: hidden and kept, by the user only (SM-20)
 ```
 
-### Spec mode
+### Markdown tabs
 
-- **SM-1** A session can be in **spec mode** (New session dialog, or the
-  session menu): the user and the agent iterate on Markdown files in its
-  clone. The session page opens the spec files as tabs beside the agent's
-  terminal; the agent works on them as on any file.
-- **SM-2** The user picks which Markdown files are the session's spec files;
-  a Markdown file the agent creates in the session can be added with one
-  click. Any Markdown file in Files can also be opened rendered.
 - **SM-3** Markdown renders fully: headings, tables, fenced code with syntax
   highlighting, task lists, links, and ASCII art and code blocks in monospace
   with their spacing kept.
-- **SM-4** A **Rendered / Source** toggle switches the view; the position in
-  the file is kept. A table of contents from the headings sits beside the
-  file, and clicking an entry scrolls to it.
-- **SM-5** When the agent rewrites the file, passages changed since the user
-  last read them are highlighted, and their contents entries are marked. The
-  highlight clears when the user marks the file read or scrolls past it.
+- **SM-4** A Markdown file opens as a tab in the session's tab row like any
+  file (RV-15), from Files, the **+** menu or ⌘K. The tab shows **Preview**,
+  **Source** or **Side by side**; switching keeps the position in the file.
+- **DK-7** In any session, a markdown file tab can sit in the second tab
+  group (SE-27) beside the agent's terminal, so the user reads the rendered
+  file while the agent stays in view (frame 41).
+- **DK-8** Side by side puts the source on the left and the rendered page on
+  the right. Scrolling is linked (the page follows the source), a bar under
+  the tabs says so, and **Link scrolling** turns it off (frame 42). The
+  terminal can stay in the first tab group beside both (frame 43). The agent
+  answers a comment in its terminal, not in the comment thread, unless it
+  uses DK-9.
 
 ### Comments
 
-- **SM-6** Selecting text in the rendered view (or lines in source) offers
-  **Comment**. The comment is anchored to the source lines of the selected
-  passage and keeps the quoted text.
+- **SM-6** Comments are made on source lines. In Source or Side by side,
+  clicking a line number or selecting lines opens the comment box under them
+  (RV-4). The comment is anchored to those source lines and keeps their
+  text. The rendered page lights each block that has comments and shows
+  their count; clicking the count shows them in Side by side. Selecting text
+  in the rendered page offers no comment.
 - **SM-7** When the file changes, each comment re-anchors to its passage. If
   the passage is gone, the comment says so and offers **Re-attach** (select a
   new passage) or **Drop**.
-- **SM-8** Comments sit in the margin beside their passage. Adding, editing or
-  dropping a comment never types anything into the agent's terminal.
-- **SM-9** **Send now** on one comment, or **Send N as a batch**, types one
-  message into that session's terminal: the file's path, then for each
-  comment the quoted passage with its line numbers and the comment.
-- **SM-10** The message is a bracketed paste, so it arrives as one input. If
-  the agent is mid-turn, the message waits in Humata's queue for that session
-  and is typed when the turn ends, as SE-23 says; the comments show "queued"
-  until then.
-- **SM-11** Each comment has a status: **draft** → **sent** → **addressed**
-  (by the rule in SM-16). The user can
-  **Resolve** a comment or **Reopen** a resolved one; reopening sets it back to
-  draft.
+- **SM-8** Comments show inline under their lines, as in a diff (frame 42),
+  not in a margin. Each shows who wrote it, its lines and its status ("You ·
+  line 7 · sent to claude"). Writing, editing or dropping a draft never
+  types anything into the agent's terminal.
+- **SM-9** A comment is a **draft** from its first keystroke until it is
+  sent or cancelled, and drafts survive restarts (PER-25). **Comment** on
+  the box sends that one comment. **Send N comments** (RV-5) sends every
+  draft of the session as one message. This is the one place the message is
+  defined: it is typed into the session's main agent (SE-29) as one
+  bracketed paste holding, per comment, a line `[comment on <path>:<lines>]`
+  and then the comment's text (frame 43). The path starts with the repo when
+  the session has more than one. A comment made in a diff adds its side and
+  base to that line and the quoted code under it (RV-27).
+- **SM-10** If the agent is mid-turn, the message waits in Humata's queue
+  for that session and is typed when the turn ends, as SE-23 says. The
+  comments show "queued" until then, and "sent to <agent>" after.
+- **SM-11** Each comment has a status: **draft** → **queued** → **sent** →
+  **addressed** (by the rule in SM-16). The user can **Resolve** a comment
+  or **Reopen** a resolved one. Reopening sets it back to draft, whoever
+  resolved it, so the user can edit it and send it again; its replies stay
+  in the thread.
 - **SM-12** Resolved comments are hidden by default and shown with **Show
   resolved**.
+- **DK-9** The agent can also answer in the comment thread with the MCP
+  tool `comment_reply` (`comment.reply`), on a comment that was typed into
+  its own session. The reply shows under the comment, marked with the
+  agent's name, and the page's count goes up. The agent still answers in
+  its terminal as usual; the tool's description asks it to hand the call to
+  a cheap subagent (TP-17). (Built after DK-1–DK-8.)
 
 ### One comment model everywhere
 
-- **SM-13** Comments in rendered Markdown, diffs (RV-4), the editor (RV-20),
+- **SM-13** Comments on Markdown source (SM-6), diffs (RV-4), the editor (RV-20),
   files and PR reviews (PR-11) are one model: anchored to a repo, path and
   source lines with the quoted passage, with the same statuses, re-anchoring
   and batch send.
@@ -1315,8 +1457,8 @@ user builds a code-level understanding of the change.
 ```
 
 - **FM-1** The file manager has two panes. Each pane can show any machine
-  (This Mac or a remote), so the user can work Mac ↔ machine or machine ↔
-  machine.
+  (This Mac or a remote), so the user can work between this computer and a
+  machine, or between two machines.
 - **FM-2** In either pane the user can create a folder, rename, copy, move and
   delete files and folders, and copy or move between the panes.
 - **FM-3** Delete moves to the machine's Humata trash (LD-6). The user can
@@ -1347,72 +1489,127 @@ user builds a code-level understanding of the change.
 - **FM-14** A move across machines deletes the source only after every file
   has arrived with a matching checksum; the source goes to its machine's
   Humata trash.
-- **FM-15** The file manager is its own page (rail, sidebar and ⌘K reach it);
-  it remembers each pane's machine and folder across restarts.
+- **FM-15** The file manager is its own page, reached from ⌘K and from a
+  machine's folders (FM-11); the sidebar has no row for it. It remembers
+  each pane's machine and folder across restarts.
 
 ## 13. Boards
 
-- **BD-1** There are three kinds of board: the **Global** board, one board
-  per **channel**, and one board per **session**. All have the columns
-  Backlog, To do, In progress, In review, Done, with the count per column.
-- **BD-2** The user can create an item on any board (title, status), drag
-  items between columns, and open an item in a drawer.
-- **BD-3** The item drawer shows: id, which board it is on, a link to its
-  assigned session, title, who owns it ("You made this. Agents need your
-  approval to change it." or "Made by <agent · session>. That agent may change
-  it freely; others must ask you."), status, assigned session (any session of
-  its channel, or Nobody), description, **Open its session**, **Start a
-  session for this item**, and its history.
-- **BD-4** An item card shows its id, title, a "by <session>" chip when an
-  agent created it (not shown for your own or for a session's own items on
-  its own board), and a "◦ <session>" chip when it is a session board's item.
-- **BD-5** The channel board has a scope picker: **Channel board**,
+Frames 21–24 draw the Board page, frames 07 and 12 a session's Board panel,
+and frame 37 a Desk session's.
+
+- **BD-1** There are three kinds of board: the **Global** board (the
+  sidebar's **Board**), one board per **channel**, and one board per
+  **session**. All have the columns Backlog, To do, In progress, In review,
+  Done, with the count per column.
+- **BD-2** The user can create an item on any board with **New item** or the
+  **+** on a column (title, status), drag items between columns, and open an
+  item in a drawer.
+- **BD-3** The item drawer (frame 22) shows: id; title; **Status**;
+  **Channel** (which board it is on); **Sessions**, the sessions working on
+  it, each with its status dot and opening that session (BD-16); **Depends
+  on** (BD-14); a pending request about the item (BD-15); description;
+  history; who owns it ("You made this. Agents need your approval to change
+  it." or "Made by <agent · session>. That agent may change it freely; others
+  must ask you."); and **Start a session for this item** (SE-3).
+- **BD-4** An item card shows its id, its channel on a board that spans
+  channels, its title, and a chip for each session working on it with that
+  session's status dot. A card with a pending request shows the Inbox mark
+  and **Review** (BD-15).
+- **BD-5** The channel board's **Scope** picker offers: **Channel board**,
   **Channel + every session board**, **A session and its forks** (one entry
   per session that has forks), **One session's board** (one entry per
   session).
 - **BD-6** New item on the channel board creates a channel item, except in
   "one session's board" scope, where it goes on that session's board.
 - **BD-7** The Global board shows global items and every channel's items (not
-  session items), with a filter: Everything, Global items only, or one
-  channel. Cards there also show their channel.
-- **BD-8** The session strip's Board panel shows that session's board.
+  session items). Its **Scope** picker offers **All channels** (everything,
+  the default), **Global items only**, or one channel. Cards there also show
+  their channel.
+- **BD-8** The session strip's Board panel shows that session's board, one
+  column under another. Made full screen, it shows the columns side by side
+  (frame 12). A Desk session's Board panel is DK-4's.
 - **BD-9** An agent creating, editing, moving or deleting items follows the
   channel's agent access rules (IN-17): by default it may do anything on its
   own session board, add to the channel board and edit, move or delete
   channel items it created; anything else is an Inbox request.
 - **BD-10** What a fork's session board starts with is open (q5).
+- **BD-11** Every board page has in its header (frames 21–24): the **Scope**
+  picker, a **Board / Table / Dashboard** switch, a **Filter** field that
+  narrows what is shown by text (id, title, session, channel), and **New
+  item**. The view, scope and filter are kept per board (SE-13).
+- **BD-12** **Table** lists the same items one per row, grouped by status
+  with each group's count, each group foldable: Key, Title, Worked on by
+  (the item's sessions), Channel. A row opens the drawer. A row with a
+  pending request is highlighted and has **Review** (BD-15).
+- **BD-13** **Dashboard** (frame 24) counts the items in scope, and every
+  figure opens what it counts (NV-7):
+  - tiles for **Waiting on you** (**Review the asks** opens those requests),
+    **In progress** (its line names what needs the user among them, such as
+    "1 session exited", and opens it), **Done this week** (with the change
+    on last week; opens those items in the Table) and **Unassigned**
+    (**Start a session** opens them to pick one);
+  - **By channel**: a bar per channel split by status, with its count, which
+    opens that channel's board;
+  - **Done per day** over 14 days: a bar opens that day's items;
+  - **By session**: each session that has items, with its status, its count
+    and **Open** or **Resume**.
+- **BD-14** An item can depend on other items, on any board. The drawer
+  lists them under **Depends on**, each marked ✓ once it is Done, and each
+  opens. The user edits the list in the drawer; an agent sets it with the
+  board tools, under the rule for editing that item (BD-9). An edge that
+  would close a loop is refused, and the refusal names the loop.
+  Dependencies block nothing: no status change or session start is refused
+  because of one. (provisional, D106)
+- **BD-15** When an agent's Inbox request is about one item (moving, editing
+  or deleting it), the item shows it in place. The card and the table row
+  get **Review**, which opens the drawer with the ask in it: who asks and
+  for what ("Claude Code asks to move this to Done"), the agent's reason,
+  quoted, and buttons named after the change (**Move to Done**, **Keep in
+  progress**) with **Open session**. The first allows the request and the
+  second denies it, exactly as answering its Inbox card does (IN-12, IN-13,
+  IN-15). (provisional, D106)
+- **BD-16** An item can have several sessions working on it. Starting a
+  session for the item adds that session (SE-3); the user adds and removes
+  others in the drawer, from the sessions of the item's channel. An item
+  with none counts as unassigned. (provisional, D106)
 
 ## 14. Inbox and agent access
 
 ### Where the Inbox appears
 
-- **IN-1** There are three Inbox scopes: **global** (all channels; the rail
-  and sidebar show the pending count), **channel** (the channel's Inbox tab),
-  and **session** (the strip's Inbox panel).
+- **IN-1** There are three Inbox scopes: **global** (all channels and the
+  Desk; the sidebar shows the pending count), **channel** (the channel's
+  Inbox tab), and **session** (the strip's Inbox panel).
 - **IN-2** The session Inbox has a toggle **This session · n** / **With its
   forks · n** when the session has forks. Opening it from a tree count opens
   it in "With its forks".
-- **IN-3** Wide inboxes (global, channel) show the list on the left, grouped
-  by session (with channel in the global one), and the selected request in
-  full on the right. The first pending request is selected by default.
+- **IN-3** Wide inboxes (global, channel) show the list on the left and the
+  selected request in full on the right (frame 26). The global list is
+  grouped by channel, and each row names the request, the agent and its
+  session. The first pending request is selected by default.
 - **IN-4** The narrow session Inbox shows rows; clicking a row opens its card
   in place under it, clicking again closes it.
 - **IN-5** Each row shows an icon for its kind (board ▦, bridge ⇄, session ▶),
   the action and its age, or "approved"/"denied" once answered.
-- **IN-6** **Approve all n** and **Deny all** appear when more than one request
+- **IN-6** **Allow all n** and **Deny all** appear when more than one request
   is pending in the current scope and apply only to that scope.
-- **IN-7** **Show answered** reveals answered requests, dimmed, with their
-  answer and any note.
-- **IN-8** The global Inbox has a folded **Allowed without asking (n)** log:
-  what each session did that its rules allowed, and every answer, with when.
+- **IN-7** Wide inboxes have a **Waiting / Answered / All** switch (frame
+  26). Answered requests show dimmed, with their answer and any note. The
+  session Inbox panel lists waiting requests only; what was answered is in
+  its log (IN-8).
+- **IN-8** Every Inbox scope has an **Allowed without asking** log: what the
+  sessions in scope did that their rules allowed, and every answer, with
+  when. In the session panel it sits under the requests (frame 03). In the
+  wide inboxes it is a folded group under Answered and All.
 
 ### The decision card
 
 ```text
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ ● Benchmark BRIN vs btree  [Codex CLI] [devbox-1]  #payments · 3m  Open ↗ │
-│                                                                           │
-│ Run the benchmark against the staging database                            │
+│ ● Run the benchmark against the staging database                       3m │
+│ Codex CLI in Benchmark BRIN vs btree · network_connect                    │
+│ devbox-1 · #payments                                       Open session ↗ │
 │ ┃ “I need numbers from data shaped like production. The staging copy has  │
 │ ┃  40M postings; my local fixture has 10k …”   — the agent, with its ask  │
 │                                                                           │
@@ -1427,26 +1624,34 @@ user builds a code-level understanding of the change.
 │   ● Local run: BRIN 2.1× faster — fixture too small to trust              │
 │   ⏳ network_connect staging-db:5432                                       │
 │                                                                           │
-│ Asks you because: Network connection through the host  Change this rule    │
-│ Nothing to undo: read-only. Stop it any time from its terminal.           │
+│ Asks you because: Network connection through the host   Change this rule  │
 │                                                                           │
-│ [Approve] [Deny] [Deny and reply…]     [Always let this session connect…] │
+│ ☐ Always allow connecting to staging-db:5432 for this session             │
+│ [Allow] [Deny]                                                   [Reply…] │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **IN-9** Every request card shows, in order:
-  1. **Requester**: status dot, session title, agent, machine, channel, age,
-     and **Open session ↗** (hidden when already on that session).
-  2. **The action** as a title.
-  3. **The agent's reason** in its own words, quoted.
-  4. **What will happen**, previewed exactly (IN-10).
-  5. **What it was doing**: its last few steps, the pending call last.
-  6. **The rule** that sent it to you, with **Change this rule** (opens the
-     channel's Agent access tab).
-  7. **Whether it can be undone**, in red when it cannot.
-  8. Buttons: **Approve**, **Deny**, **Deny and reply…**, and a specific
-     **Always let …** whose label names the session and the target it
-     covers (IN-22).
+- **IN-9** Every request card carries what the user needs to decide, laid
+  out as frames 03 and 26 draw it. In order:
+  1. **The action** as a title, with the requester's status dot and the
+     request's age.
+  2. **Requester**: "<agent> in <session>" and the operation (TP-16); in a
+     wide inbox also its machine and channel, and **Open session ↗**
+     (IN-11).
+  3. **The reason**: the agent's reason, and why this needs the user.
+  4. **What will happen**, previewed exactly as labelled rows (IN-10).
+  5. **What it was doing**: its last few steps, the pending call last. Left
+     out in the session Inbox panel, where the terminal is beside the card.
+  6. **The rule** that sent it to the user, with **Change this rule** (opens
+     the channel's Agent access tab).
+  7. **Whether it can be undone**: a line in red, shown only when it cannot
+     be undone or undoing it costs something.
+  8. The grant checkbox (IN-14), then **Allow**, **Deny** and **Reply…**. A
+     question (IN-25) shows its choices and a reply field in their place.
+
+  The frames draw parts 1–4 and 8. Parts 5–7 and Open session ↗ keep the
+  owner's rule that a request carries its full decision context; frames 03,
+  04, 26 and 27 are to gain them. (provisional, D105)
 - **IN-10** The preview depends on the kind of request:
   - Board item change: the item (opens its drawer) and each field before →
     after.
@@ -1473,20 +1678,25 @@ user builds a code-level understanding of the change.
     sent.
 - **IN-11** **Open session ↗** opens the requester's session with its Inbox
   panel on "This session" and the request selected.
-- **IN-12** Approve performs the action whether or not the agent's call is
+- **IN-12** **Allow** performs the action whether or not the agent's call is
   still waiting (TP-13). If the call is waiting, it returns the action's
   result. If the agent already got "pending" (TP-11), Humata types one line
   into its terminal at the end of its turn (SE-23): "… — approved by you",
   with the request id to wait on. (provisional, D4)
-- **IN-13** Deny returns a denial naming the user to the agent's call, or to
-  its next wait on the request (TP-12), and does nothing else. **Deny and
-  reply…** asks for a note; the agent gets the note with the denial. If the
-  agent already got "pending", Humata types "… — denied by you" as IN-12
-  does.
-- **IN-14** **Always let …** approves this request and adds a grant for the
-  requesting session and the target IN-22 names for this kind of action.
-  The label names both ("Always let “Benchmark BRIN” connect to
-  staging-db:5432"). The agent cannot choose a wider scope. The grant is
+- **IN-13** **Deny** returns a denial naming the user to the agent's call, or
+  to its next wait on the request (TP-12), and does nothing else.
+  **Reply…** asks for a note and denies the request with it; the agent gets
+  the note with the denial. If the agent already got "pending", Humata types
+  "… — denied by you" as IN-12 does. (Reply… always denying is provisional,
+  D105.)
+- **IN-14** The card's checkbox is **Always allow …**. With it ticked,
+  **Allow** approves this request and also adds a grant for the requesting
+  session and exactly the target IN-22 names for this kind of action,
+  nothing wider. Its label says what it covers ("Always allow connecting to
+  staging-db:5432 for this session"). Frames 03 and 26 word it "Allow this
+  for the rest of the session"; until they are redrawn that wording stands,
+  with this same narrow meaning. A kind of action with no target in IN-22
+  shows no checkbox. The agent cannot choose a wider scope. The grant is
   listed and removable in Agent access (IN-19).
 - **IN-15** Answering a request removes it from every scope's pending list at
   once and updates every count. Only the first answer counts: a second
@@ -1497,7 +1707,8 @@ user builds a code-level understanding of the change.
 
 - **IN-16** Some actions need no rule, and no setting stops them: reading its
   own session (title, status, repos, branches), reading and writing its own
-  clones, its own views and its own requests. A context-only fork reads its
+  clones, its own views, its own requests, and replies to comments sent to
+  its own session (DK-9). A context-only fork reads its
   parent's clones the same way but can never write them (IN-20). Every other
   action is checked against the channel's rules, including its own session
   board and the channel items it created, whose rules default to Allow. The
@@ -1519,6 +1730,7 @@ user builds a code-level understanding of the change.
   | Fetch files from `shared/`, the channel folder or a main clone on its machine into its own clone | Allow |
   | Prepare views for you (you choose whether to open them) | Allow |
   | Draft PR review comments (review sessions) | Allow |
+  | Resolve comments sent to its own session, with a reply (SM-19) | Allow |
   | Ask you a question, or ask ahead for access (IN-25, IN-26) | Allow |
   | Read another session's files (same machine) | Ask me |
   | Read files on another machine (bridged) | Ask me |
@@ -1528,7 +1740,7 @@ user builds a code-level understanding of the change.
   | Start or fork sessions (same machine) | Ask me |
   | Start or fork sessions on another machine | Ask me |
   | Start a PR review | Ask me |
-  | Change its own session: rename, add or drop a repo, spec mode, own copy | Ask me |
+  | Change its own session: rename, add or drop a repo, own copy | Ask me |
   | Stop, archive or delete its own session | Ask me |
   | Move a session to another machine | Ask me |
   | Push its branch or open a pull request (IN-24) | Ask me |
@@ -1545,7 +1757,7 @@ user builds a code-level understanding of the change.
 
 - **IN-18** "Never" returns a denial to the agent at once, with the rule named,
   and adds nothing to the Inbox.
-- **IN-19** Scoped "Always let …" rules are listed under their rule with their
+- **IN-19** Scoped "Always allow …" rules are listed under their rule with their
   scope and can be removed.
 - **IN-20** A context-only fork's writes to its parent's clones are never
   allowed, whatever the rules say (FK-7).
@@ -1553,7 +1765,7 @@ user builds a code-level understanding of the change.
   pending. When a pending request is answered, the answer is checked against
   the rule as it is then: approving a request whose rule became Never fails
   and says the rule changed.
-- **IN-22** A grant made by **Always let …** covers exactly this target:
+- **IN-22** A grant made by **Always allow …** covers exactly this target:
 
   | Kind of action | Target the grant covers |
   | --- | --- |
@@ -1585,7 +1797,7 @@ user builds a code-level understanding of the change.
   or reply is the result of the agent's call. Waiting works as TP-11.
 - **IN-26** An agent can ask ahead for access: the kind of action, its target
   and its reason. The card shows them; approving makes the same grant as
-  **Always let …** for that target (IN-22), and denying returns a denial.
+  **Always allow …** for that target (IN-22), and denying returns a denial.
 
 ## 15. Agent-prepared views and the Journal
 
@@ -1596,15 +1808,16 @@ user builds a code-level understanding of the change.
   by the "Prepare views for you" rule.
 - **VW-2** Preparing a view changes nothing on screen. Humata shows an offer
   bar: "<agent> in “<session>” prepared a view for you: <title>", the summary,
-  and **Open it**, **Later**, **Not now**.
+  and **Open it**, **Later**, **Not now**. (Frame 03 draws only Open it and
+  Later; Not now is to be added to it, D112.)
 - **VW-3** Review offers appear on the session page. Board offers appear on
   the session page and on the channel board.
 - **VW-4** **Later** hides the offer and shows it again the next time the
   user returns to that session.
 - **VW-5** **Not now** hides the offer for good; the view stays in the
   Journal.
-- **VW-6** **Open it** on a review opens it as a tab in the session's terminal
-  area: the left list shows the title, who prepared it and when, the summary,
+- **VW-6** **Open it** on a review opens it as a tab in the session's tab
+  row: the left list shows the title, who prepared it and when, the summary,
   and numbered steps with notes; the main area shows the step's file in the
   editor (RV-17) with the agent's note above it, and **‹ Prev** / **Next ›**.
 - **VW-7** **Open it** on a board view opens the channel board in the view's
@@ -1612,7 +1825,7 @@ user builds a code-level understanding of the change.
 - **VW-8** While an opened view is showing, a bar says "Showing “<title>”,
   prepared by <agent>" with **Revert** and **Keep**.
 - **VW-9** **Revert** restores exactly what the user had before opening:
-  route, terminal tab, open panel, widened state and board scope. **Keep**
+  route, terminal tab, open panel, full-screen state and board scope. **Keep**
   removes the bar and leaves the view as it is.
 - **VW-10** The Journal panel lists every view prepared in the session and its
   forks, newest first, with its title, which session (for forks), kind, when,
@@ -1702,10 +1915,20 @@ Linux machine (AR-7).
   Hosts and in every machine picker.
 - **HO-2** If a step fails, Humata stops there, says what failed and how to fix
   it, and offers Try again.
-- **HO-3** The Hosts page has a table: status, machine and SSH address,
-  system, daemon version, latency, number of sessions; and a folded "How
-  machines connect" bridge diagram generated from the real machines and
-  session counts.
+- **HO-3** The Hosts page (frame 28) has a table with one row per machine:
+  status; the machine with its system and how it is reached (ssh or a
+  provider); its number of sessions; its disk, as a bar and the free space
+  (an offline machine shows when it was last seen, a stopped one "stopped");
+  and the one action the row needs: **Free space…** when its disk is low
+  (opens its Storage page), **Reconnect** when it is offline, **Start** when
+  its provider says it is stopped (MP-21). The bar turns red, and the
+  low-disk line shows, once more than 85% of the disk is used (provisional,
+  D107). Selecting a row, or a machine in the sidebar, shows that machine's
+  card beside the table: its daemon version, uptime and how it is linked;
+  the tools found on it with their versions (`gh` and the agents); the
+  low-disk line when it applies ("11 GB free: new clones stop at 5 GB",
+  LD-19); and **Free space…** and **Open a shell**. A **Bridge** card lists
+  each link from the host, with its latency or since when it is offline.
 - **HO-4** A machine's page shows its OS, address and daemon version;
   **Reconnect now** when offline; **Open a shell** for remote machines;
   sessions on it (each opens) and **New session on <machine>**; a health card
@@ -1713,8 +1936,8 @@ Linux machine (AR-7).
   variable names); its Humata folders by channel; and what its agents can
   reach through the host with each rule's setting.
 - **HO-5** When a machine goes offline, its sessions keep running there; the
-  sidebar marks it offline, the rail shows "!", its sessions show "Host
-  offline — reconnecting", and its page says only the link is down, Humata
+  sidebar marks it offline, its sessions show "<machine> is offline", and
+  its page says only the link is down, Humata
   retries every 5–30 s, and its files show the last copy read.
 - **HO-6** Humata reconnects on its own with backoff. **Reconnect now** tries
   at once. On reconnect each session catches up its output as TR-4 says:
@@ -1750,7 +1973,7 @@ Linux machine (AR-7).
 ### Skills sync
 
 ```text
- This Mac (main host)                         devbox-1
+ The host                                     devbox-1
  ~/.claude/skills/, plugins       one way     ~/Humata/.skills/   (Humata-managed;
  other agents' skill dirs   ───────────▶    claude/, copilot/  agents pointed here)
    minus exclude patterns,                    ~/.claude/skills/   (made on devbox-1:
@@ -1788,8 +2011,9 @@ Linux machine (AR-7).
 - **TS-0** The desktop app installs the host's own copies the same way: on
   first launch and on every launch after, it puts `humatad2`, `humata2_holder`
   and `humata` from its bundle into `~/.humata2/bin` (checksums, atomic swap,
-  never under a live holder, as TS-1), registers `humatad2` as the launchd
-  login item (PER-20) and puts `humata` on the user's PATH. Nothing on the
+  never under a live holder, as TS-1), registers `humatad2` to start at
+  login (launchd on macOS, PER-20; the systemd user service on Linux, PER-18)
+  and puts `humata` on the user's PATH. Nothing on the
   host needs a separate installer, and an app update updates the daemon at
   its next safe moment (PER-6). (D51)
 
@@ -2250,13 +2474,13 @@ daemon and, as far as physically possible, the machine.
   rules as they are then. A write a tightened rule no longer allows is not
   applied; it is shown in the item's history and as one line in the agent's
   terminal. (provisional, D3)
-- **AW-10** The first answer to a request wins. A second answer from anywhere
-  fails and says who answered, how and when. A deny never undoes an approval
-  that already ran. (provisional, D3)
+- **AW-10** The first answer to a request wins, as IN-15 says, wherever the
+  answers come from. A deny never undoes an approval that already ran.
+  (provisional, D3)
 - **AW-11** Low-risk kinds can never include anything that needs another
   machine, a network connection, typing into another session, or any action
   that is Never by default. (provisional, D3)
-- **AW-12** **Always let …** given on the machine while the host is away
+- **AW-12** **Always allow …** given on the machine while the host is away
   applies there at once and becomes a grant on the host at replay, with the
   same target (IN-22). (provisional, D3)
 
@@ -2307,11 +2531,16 @@ daemon and, as far as physically possible, the machine.
 - **TR-11** Anything that can be large (file transfers, file reads,
   diffs, terminal snapshots, scrollback catch-up, bug reports) moves in
   chunks (1 MiB at most) and is compressed per chunk. The codecs are **lz4**
-  (fast, the default on this Mac and on fast links) and **zstd** (smaller,
+  (fast, the default on the local socket and on fast links) and **zstd** (smaller,
   the default on slow links), plus none; each chunk names its codec, both
   ends say which they support when the link starts, and data that doesn't
   shrink (images, archives) is sent as is. Settings › Advanced picks
   Auto, lz4, zstd or Off, globally and per machine. (D56)
+- **TR-12** Inside a machine, only files that matter are watched: each
+  live agent's own conversation file, and each clone's `HEAD`, index and
+  current branch ref. Working-tree changes are read when they're needed (at
+  the end of an agent's turn, when a Diff panel is showing, before a
+  pointer report), not watched recursively.
 - **TR-13** Every compressed payload names its codec, on the wire and at
   rest, as a number, never a name: chunk messages carry a `codec` enum
   (one varint byte), and every stored compressed
@@ -2322,116 +2551,55 @@ daemon and, as far as physically possible, the machine.
   context and the codec can change without a migration. A reader that
   meets a codec it doesn't know says which codec and which file or stream,
   and refuses rather than guessing. (D60)
-- **TR-12** Inside a machine, only files that matter are watched: each
-  live agent's own conversation file, and each clone's `HEAD`, index and
-  current branch ref. Working-tree changes are read when they're needed (at
-  the end of an agent's turn, when a Diff panel is showing, before a
-  pointer report), not watched recursively.
 
 ## 22. Navigation and UI principles
 
-- **NV-1** The left rail has: Home, Channels, Inbox (pending badge), Global
-  board, Hosts ("!" when a machine is offline), and at the bottom Settings.
-- **NV-2** The sidebar has Home, Inbox (count), Board, the channels with their
-  session trees, Hosts (each machine, marked offline when it is), and
-  Settings; plus a search button (⌘K).
+- **NV-2** The sidebar is the only navigation column; there is no icon rail
+  (D76). Top to bottom (frames 01–43): **Search** (⌘K); a **Pinned** section
+  when anything is pinned (NV-21); **Home**, **Inbox** (pending count),
+  **Board** (the Global board) and **Desk** with its open sessions (DK-1);
+  **Channels**, with **+** to make one, each channel folding over its session
+  tree (CH-16); **Hosts**, each machine with its dot, marked offline when it
+  is; and **Settings** at the bottom.
 - **NV-3** A **Back** button appears only after drilling in from a page
   (e.g. opening a session from a channel table, an Inbox card or an item). It
   is labelled with where it goes ("‹ #payments-rewrite").
-- **NV-4** Lateral moves get no Back and clear the trail: sidebar, rail, tabs,
+- **NV-4** Lateral moves get no Back and clear the trail: the sidebar, tabs,
   breadcrumbs, the palette.
 - **NV-5** ⌘[ goes back (same as the Back button). Escape closes the dialog,
   then the drawer, in that order.
 - **NV-6** Pages that sit inside others show breadcrumbs (channel › parent
-  session › session; Hosts › machine).
+  session › session; Desk › session; Hosts › machine).
 - **NV-7** Every screen offers at least one action on what it shows. A list
   or table of state is shown only where each row opens something or can be
   acted on, or where NV-8 lists it as kept on purpose.
 - **NV-8** Humata does not detect or show what the user can't act on from
   that spot, and shows a problem only where it blocks an action. Kept on
-  purpose: the Hosts table columns, the host health card, the bridge diagram,
-  clone counts, the "Allowed without asking" log, Home's recent feed, the
-  Activity tab, Info's "Survives restarts", Settings' context-fork column and
-  the Started column.
+  purpose: the Hosts table and machine card, the Bridge card, clone counts,
+  the "Allowed without asking" log, Home's Working and Recent groups, the
+  Activity tab, the Board dashboard (every figure opens its items, BD-13),
+  Info's "Survives restarts", Settings' context-fork column and the Started
+  column.
 - **NV-9** Problems that concern a session are shown on that session, not in a
   separate list.
 - **NV-10** Short confirmations appear as a toast at the bottom, sometimes
-  with one action ("Show Home").
-- **NV-11** First run with no channels: the main area explains that a channel
-  is a project (its repos, machines, board and sessions) and offers **Create
-  your first channel** and **Add a machine over SSH**, noting that GitHub
-  access comes from the `gh` CLI with no sign-in in Humata.
+  with one action ("Show Home", "Undo").
+- **NV-11** The first launch of a fresh install, with nothing made yet, shows
+  a welcome in place of every screen (frame 33): a channel is a project (its
+  repos, machines, board and sessions), **Create your first channel** and
+  **Add a machine over SSH**, and a note that GitHub access comes from the
+  `gh` CLI with no sign-in in Humata. It shows once. Each button opens its
+  dialog; when the dialog closes the user is in the new channel, or on Home
+  (DK-6) while there is still none, and the welcome does not come back.
+  (provisional, D109)
+- **DK-6** With no channel, Home shows **Get set up** (make a channel, add a
+  machine, use the Desk) under its empty Needs you and Working groups, with
+  **New desk session** in its header, and the sidebar shows "No channels
+  yet" with **New channel…** and This Mac with "Add a machine…" (frame 34).
+  A channel with no sessions shows its own checklist: add a repo, pick
+  machines, start a session (frame 35).
 
-### A pane-driven workspace (owner direction 2026-11-14, D74)
-
-The window is a workspace of panes. This section wins over the fixed layouts
-drawn elsewhere in this spec (session page with one side panel, tab bars,
-status chrome) and over the prototype where they differ: those drawings show
-the **default layout** for a screen, not the only one.
-
-```text
-┌ #payments › Ledger schema ───────────────────────────────────────┬────────┐
-│ ● claude  (Ledger schema)         │ ● codex  (Benchmark BRIN)     │ Panes  │
-│ > …                               │ > …                           │ ▸ Term │
-│                                   │                               │ ▸ Diff │
-├───────────────────────────────────┴───────────────────────────────┤ ▸ Files│
-│ Diff  Ledger schema · origin/main...HEAD                          │ ▸ Board│
-│ …                                                                 │ ▸ Inbox│
-└───────────────────────────────────────────────────────────────────┴────────┘
-   two sessions' terminals side by side, a diff below; drag a pane by its title
-```
-
-- **NV-28** Any pane can show any one thing: a session's agent terminal, a
-  shell, a diff, files, the editor, a board, the Inbox, a review, a spec
-  document, a channel's sessions, Hosts, Settings. Panes split side by side
-  or one above the other, within the limits of NV-35, so two terminals, two
-  sessions, or a session next to another session's diff can be seen at once.
-- **NV-29** The **Panes** sidebar sits on the right: the kinds of pane the
-  current context offers (for the focused session: its terminals, Diff,
-  Files, Board, Inbox, Journal, Info; and globally: Inbox, Board, Hosts,
-  sessions by channel). Clicking one opens it in the focused pane's place;
-  dragging one onto a pane's edge splits there. It collapses to a strip like
-  any pane (NV-13).
-- **NV-30** A pane is moved by dragging its title onto another pane's edge
-  (split) or centre (swap), closed with ✕ or ⌘W, and focused with a click or
-  ⌘⌥ + an arrow. ⌘\ splits the focused pane with a copy of itself (a new
-  shell for a terminal). Every move is undoable (⌘Z in the layout).
-- **NV-31** Each screen opens in its **default layout** (the session page:
-  agent terminal, with Diff beside it once there are changes; a channel: its
-  sessions; Home: the recent feed). The user's changes to a layout are kept
-  per session and per screen across restarts (NV-16, PER-25).
-- **NV-31a** **Reset** (a button at the top of the Panes sidebar, also in
-  ⌘K and the window menu) puts the window back to the default layout for
-  what it shows. Reset is never destructive: it closes no session, stops no
-  terminal or program, and drops no draft, selection or scroll position
-  inside a pane's content. Panes it removes from view keep running and stay
-  listed in the Panes sidebar to reopen. The layout before the reset is
-  kept, and **Undo reset** (the toast's action, or ⌘Z) brings it back
-  exactly.
-- **NV-32** The chrome stays quiet. There is no status bar of text at the
-  top of the window, no "Working"/"Idle" badges in headers, and no button
-  that repeats something the pane or the palette already offers. A
-  session's state is its dot (● working, ◐ needs you, ○ idle, ✕ exited),
-  whose tooltip says the words. Actions live in the pane's ⋯ menu, its
-  right-click menu and ⌘K; a pane's title row holds its title, ⋯ and ✕.
-- **NV-33** Dialogs and pop-ups are kept for what needs a decision (a
-  destructive action, a form to fill). Anything else opens as a pane or a
-  toast, so the user is never stacked in modals.
-- **NV-35** How much freedom panes have is one setting, **Settings ›
-  Layout › Panes**, so it can be narrowed or widened without code changes:
-  - **Fixed**: only the default layouts; panes open and close in their slots,
-    no splitting or moving;
-  - **Simple** (the default): up to 4 panes, splits two levels deep, moved by
-    dragging;
-  - **Free**: any number and depth.
-  Narrowing the setting never closes anything: layouts that no longer fit are
-  shown as their default layout (as Reset does) and come back if the setting
-  is widened again.
-- **NV-34** Panes are virtualized and paused when hidden: a pane that isn't
-  visible renders nothing and its terminal keeps only its byte stream, so
-  ten panes cost no more than the visible ones.
-
-### Resizable and collapsible panes
+### Resizable and collapsible columns
 
 ```text
  expanded                                        left sidebar collapsed
@@ -2442,33 +2610,35 @@ the **default layout** for a screen, not the only one.
 │  ├─ ●    ◀▶ drag divider         ◀▶ drag    │  │ │                      ◀▶        │
 │  └─ ●    ││                      ││         │  │ │                      ││         │
 └──────────┴┴──────────────────────┴┴─────────┘  └─┴──────────────────────┴┴─────────┘
-   «  collapses the pane          thin strip (›) opens it again at its last width
+   «  collapses the column        thin strip (›) opens it again at its last width
 ```
 
 - **NV-12** Every sidebar and panel can be resized by dragging its divider:
   the left sidebar, the session's side panel (Diff, Files, Inbox, Board,
-  Journal, Info), the editor's changes list, the Files panel's explorer side
-  when the viewer is beside it, and each pane of the file manager.
-- **NV-13** Each of those panes has a collapse button. A collapsed pane leaves
-  a thin strip; clicking the strip opens the pane again at the width it had
+  Journal, Info), the two tab groups (SE-27), the editor's changes list, the
+  Files panel's explorer side when the viewer is beside it, and each pane of
+  the file manager.
+- **NV-13** Each of those columns has a collapse button. A collapsed column
+  leaves a thin strip; clicking the strip opens it again at the width it had
   before it was collapsed.
-- **NV-14** A divider stops at a minimum width for each pane and never lets the
-  terminal or the main content shrink below its own minimum; dragging past a
-  pane's minimum collapses it.
-- **NV-15** Double-clicking a divider returns that pane to its default width.
-- **NV-16** Pane widths and collapsed states persist across app restarts: the
-  left sidebar and the file manager panes globally, the session's panels and
-  editor list per session (with the rest of SE-13).
-- **NV-17** When the window is too narrow for every open pane at its saved
-  width, panes shrink toward their minimums without changing the saved widths;
-  widening the window brings them back.
+- **NV-14** A divider stops at a minimum width for each column and never lets
+  the terminal or the main content shrink below its own minimum; dragging
+  past a column's minimum collapses it.
+- **NV-15** Double-clicking a divider returns that column to its default
+  width.
+- **NV-16** Column widths and collapsed states persist across app restarts:
+  the left sidebar and the file manager panes globally, the session's
+  panels, tab groups and editor list per session (with the rest of SE-13).
+- **NV-17** When the window is too narrow for every open column at its saved
+  width, columns shrink toward their minimums without changing the saved
+  widths; widening the window brings them back.
 
 ### Expand all / Collapse all
 
 - **NV-18** Every tree or grouped list has **Expand all** and **Collapse all**
   on its header and in the palette: the sidebar's channels and fork trees,
-  the diff's repo groups and files, file trees, Inbox groups, and spec
-  contents sections.
+  the diff's repo groups and files, file trees, Inbox groups and the Board
+  table's groups.
 - **NV-19** ⌥⌘→ expands all and ⌥⌘← collapses all in the tree or list that
   has focus. The result is kept like any other fold state (SE-13).
 
@@ -2493,10 +2663,11 @@ the **default layout** for a screen, not the only one.
   reviews and board items, from ⋯, the palette, or a shortcut. Agents can't
   set or clear either.
 - **NV-21** Pinned items appear in a **Pinned** section at the top of the
-  sidebar and of Home, as well as in their usual places. A pinned item with an
+  sidebar (unless Settings › **Sidebar shows Pinned** is off, ST-18) and of
+  Home, as well as in their usual places. A pinned item with an
   event (needs input, finished, failed, new PR commits) shows that event
   there.
-- **NV-22** A VIP item that needs the user shows a "[VIP]" prefix everywhere
+- **NV-22** A VIP item that needs the user shows a **VIP** badge everywhere
   it appears (Inbox, sidebar, notifications, palette), and its requests sort
   first in the Inbox.
 - **NV-23** VIP notifications break through quiet hours only when the user
@@ -2519,13 +2690,46 @@ the **default layout** for a screen, not the only one.
   forgetting a machine, emptying the trash, changing a Humata root and
   submitting a review.
 
+### The window and quiet chrome (owner directions 2026-11-15: D76, D74 as revised)
+
+The pane workspace of D74 is gone: NV-28–NV-31a and NV-35 were dropped, and
+NV-32–NV-34 keep what still holds.
+
+- **NV-32** The chrome stays quiet. There is no status bar of text at the
+  top of the window and no button that repeats something the screen or the
+  palette already offers. A session's state is its mark (§1), and its header
+  adds the words only when the session needs attention (SE-6). Other actions
+  live in ⋯ menus, right-click menus and ⌘K.
+- **NV-33** Dialogs and pop-ups are kept for what needs a decision (a
+  destructive action, a form to fill). Anything else opens as a tab, a panel
+  or a toast, so the user is never stacked in modals.
+- **NV-34** What is hidden costs nothing: a tab or panel that isn't visible
+  renders nothing, and a hidden terminal keeps only its byte stream until it
+  is shown, so ten open tabs cost no more than the visible ones.
+- **NV-36** The window is three columns: the sidebar, the screen in the
+  middle and, on a session, its side panel with the strip that picks it
+  (SE-11). There is no pane tree, no Panes sidebar and no layout setting.
+  The only split is a session's tab row, into two tab groups (SE-27); more
+  than that is a fork.
+- **NV-37** On a session, the terminal or the side panel can each fill the
+  window's middle (frames 10–12): **Terminal full screen** (⇧⌘↩) hides the
+  sidebar and the panel, and the panel's **Full screen** covers the terminal
+  (SE-12). ⌥⌘0 hides and shows the side panel. Both states are kept per
+  session (SE-13). ⌘W closes the active tab and never stops a program (D73).
+
 ## 23. Home, global Inbox, Global board, palette
 
-- **HM-1** Home has **Needs you**: every session that needs input, exited or
-  is offline, with channel, machine, why, and **Open** or **Resume**.
-- **HM-2** Home has **Recent across channels**: the latest events from every
-  channel's Activity.
-- **HM-3** The global Inbox (IN-1) shows "<n> waiting, everywhere".
+- **HM-1** Home lists what needs the user first (frame 25). **Needs you · n**:
+  every session that needs input, exited or is offline, with its channel
+  (and machine when it is not This Mac), why, and one button: **Review** for
+  a request, **Resume** for an exited agent, **Open** otherwise. Then
+  **Working · n**: the sessions whose agents are working, each with the last
+  step it reported; a row opens the session.
+- **HM-2** Home ends with **Recent**: the latest events from every channel's
+  Activity, each with a button where one applies (**Open PR**, **Review**).
+  Home's header has **New session**, which asks for the channel first; with
+  no channel it is **New desk session** (DK-6).
+- **HM-3** The global Inbox (IN-1) shows "<n> waiting" beside its title.
 - **HM-4** The Global board is described in BD-7.
 - **HM-5** ⌘K opens the command palette (KP-1 to KP-6).
 
@@ -2598,14 +2802,14 @@ the **default layout** for a screen, not the only one.
   no horizontal scroll bar                    horizontal scroll bar
 ```
 
-- **ST-8** In Wrap mode, long lines wrap at the pane's width with no
+- **ST-8** In Wrap mode, long lines wrap at the view's width with no
   horizontal scroll bar; continuation lines are indented to the line's own
   indentation; the line number, +/− mark and comment target stay on the
   first visual line, and the gutter stays aligned with it.
 - **ST-9** In Wrap mode, side by side keeps the paired old and new lines
   starting on the same row: the shorter side is padded so the next pair lines
   up.
-- **ST-10** Resizing a pane in Wrap mode rewraps the lines without moving the
+- **ST-10** Resizing a view in Wrap mode rewraps the lines without moving the
   line at the top of the view.
 - **ST-11** In Scroll mode each line is one visual line and the view scrolls
   horizontally; in side by side both sides scroll together.
@@ -2613,14 +2817,33 @@ the **default layout** for a screen, not the only one.
 - **ST-13** **Branch prefix** (e.g. `uhvesta/`), default the `gh` login
   followed by `/`; can be empty; overridable per channel (FC-12).
 - **ST-14** **Retention** defaults for new channels, all off (LD-16).
-- **ST-15** **Default agent and model**, any built-in or user-added agent,
-  with an optional per-channel override. New session, fork and PR review
-  preselect it.
+- **ST-15** **Default agent**, any built-in or user-added agent, with an
+  optional per-channel override. New session, fork and PR review preselect
+  it. Humata sets no model: each agent starts with its own configured
+  defaults (SE-2).
 - **ST-16** **Sync skills to machines automatically** and skill exclude
   patterns (SK-3, SK-6).
 - **ST-17** **Security**: **Contain agents** and its per-channel override
   (SEC-6), the approval passphrase (SEC-13), and CLI logins and script
   tokens, each with **Revoke** (SEC-14).
+- **ST-18** Settings is one page with its sections listed on the left (frame
+  29): **General**, **Agents**, **Machines**, **Layout**, **Agent access**,
+  **Storage**, **Notifications**, **Keyboard**. Layout holds **Appearance**
+  (System, Light or Dark; it follows the system unless the user picks one),
+  **Terminal font** (used by every terminal and the diff) with the rest of
+  ST-3, **Sidebar shows Pinned** and Long lines (ST-7). General holds the
+  branch prefix (ST-13). Agents holds ST-1, ST-2, ST-15 and ST-16. Machines
+  holds ST-5, machine providers (MP-2), compression (TR-11) and web serving
+  and pairings (AR-8, AR-9). Agent access holds ST-4, ST-6 and Security
+  (ST-17). Storage holds ST-14. Frame 29 also draws a **Panes** choice
+  (Fixed, Simple, Free) under Layout; D76 dropped it with the pane
+  workspace, and it is to be removed from the frame. (provisional, D111)
+- **ST-19** **Notifications**: which events notify (a session needs you, a
+  turn finished, an agent exited, a machine went offline), quiet hours, and
+  whether VIP items break through them (NV-23). (provisional, D111)
+- **ST-20** **Keyboard** lists every command with its shortcut. Each can be
+  changed or cleared, and a shortcut already in use is refused, naming the
+  command that has it. (provisional, D111)
 
 ## 25. Security and secrets
 
@@ -2679,7 +2902,8 @@ the **default layout** for a screen, not the only one.
   lists what it may do, which channels and when it expires. Tokens can be
   listed and revoked. A token can never do a user-only action.
 - **SEC-15** No tool takes a caller's identity as an argument: an agent is
-  always the session it was launched in. If a session's identity is used
+  always the session it was launched in (a session's added agent has no
+  identity at all, SE-29). If a session's identity is used
   from outside that session's process tree, the call is refused, the
   identity is replaced at the session's next resume, and the Activity tab
   records it.
@@ -2717,20 +2941,20 @@ the **default layout** for a screen, not the only one.
 1. In a session with `api`, `ledger` and `web`, the user opens **Diff**.
 2. Picks "Since I last reviewed". The panel shows three repo groups, each with
    branch and totals.
-3. Widens the panel (⇤) to read.
-4. Clicks line 40 in `api/src/ledger/client.rs`, writes a comment, Add
-   comment. Repeats on `ledger/…0042_accounts.sql` and `web/…/Cards.tsx`.
-5. Clicks **Open big** on `client.rs`, switches to Side by side, uses ↓ to step
+3. Makes the panel full screen to read.
+4. Clicks line 40 in `api/src/ledger/client.rs`, writes a comment and leaves
+   it as a draft. Repeats on `ledger/…0042_accounts.sql` and `web/…/Cards.tsx`.
+5. Opens `client.rs` big, switches to Side by side, uses ↓ to step
    through changes, adds a fourth comment there.
-6. Clicks **Send 4 comments to agent**. The agent's terminal gets one message
-   listing `repo/path:line — text` for each.
+6. Clicks **Send 4 comments**. The agent's terminal gets one message with a
+   `[comment on repo/path:line]` line and the text for each (SM-9).
 7. Clicks **Mark reviewed**.
 8. Later, pushes `api` and opens its PR from the api group, leaving the other
    repos for later.
 
 ### 26.4 Approve an Inbox request after opening the requester
 
-1. The rail shows Inbox 7. The user opens the global Inbox.
+1. The sidebar shows Inbox 7. The user opens the global Inbox.
 2. Selects "Read files of “Ledger schema migration” on This Mac" from "API
    rate limiter" (devbox-1).
 3. Reads the reason and the two paths; clicks a path to see the file in that
@@ -2738,7 +2962,7 @@ the **default layout** for a screen, not the only one.
 4. Clicks **Open session ↗** on the card. "API rate limiter" opens with its
    Inbox panel and the request selected, beside its terminal.
 5. Reads the terminal: the test failing on `accounts.balance_cents`.
-6. Clicks **Approve**. The agent's waiting call returns the files and the
+6. Clicks **Allow**. The agent's waiting call returns the files and the
    agent continues; nothing is typed into its terminal (IN-12). Counts drop everywhere.
 
 ### 26.5 Agent forks itself onto a GPU machine
@@ -2816,7 +3040,7 @@ the **default layout** for a screen, not the only one.
 
 ### 26.9 Remote machine power loss and resume
 
-1. devbox-2 loses power. Its sessions show "Host offline — reconnecting";
+1. devbox-2 loses power. Its sessions show "devbox-2 is offline";
    Hosts shows it offline.
 2. Power returns. The systemd user service (linger) starts `humatad` at boot.
 3. Boot reconciliation resumes every session marked running, verifies each,
@@ -2863,7 +3087,7 @@ the **default layout** for a screen, not the only one.
    come back exactly; the comment stays queued.
 6. The view is in the Journal as "Reverted" and can be opened again.
 
-### 26.13 Resize and collapse panes
+### 26.13 Resize and collapse columns
 
 1. On a session page, the user drags the divider between the terminal and the
    Diff panel to the left; the panel widens and the terminal narrows.
@@ -2922,7 +3146,7 @@ the **default layout** for a screen, not the only one.
 
 ### 26.17 Review a pull request
 
-1. The user pastes `https://github.com/acme/api/pull/482` into Home.
+1. The user pastes `https://github.com/acme/api/pull/482` into Search (⌘K).
 2. **Review a pull request** opens with the title, author, size and checks
    fetched with `gh`. They add `acme/ledger#91` under Also review, pick
    devbox-1 and Claude Code, and type some context.
@@ -2945,7 +3169,7 @@ the **default layout** for a screen, not the only one.
 ### 26.18 Forget a lost machine and free disk elsewhere
 
 1. A cloud box, devbox-2, was deleted outside Humata. Its sessions show
-   "Host offline — reconnecting".
+   "devbox-2 is offline".
 2. On its page the user picks **Forget machine**. The dialog lists its 3
    sessions and, for one, "2 unpushed commits on uhvesta/cache-warmup, lost".
 3. They confirm. The 3 sessions appear under Archived with their
@@ -2968,27 +3192,29 @@ the **default layout** for a screen, not the only one.
 5. They push and open a PR; its branch name carries no session id or
    machine.
 
-### 26.20 Iterate on a spec with the agent
+### 26.20 Iterate on a document with the agent
 
-1. The user starts "Refund spec" in spec mode and asks the agent to draft
-   `docs/refund-spec.md`.
-2. The agent writes it; the user adds it as a spec file and reads it
-   rendered, with its contents list and ASCII diagram.
-3. They select "half to even" and comment, then select a table row and
-   comment again. Nothing reaches the agent yet.
-4. They click **Send 2 as a batch**. The agent is mid-turn, so the message
-   waits; when the turn ends, it arrives as one paste with the path, quoted
-   passages, line numbers and comments.
-5. The agent rewrites section 2. The changed passages are highlighted; one
-   comment becomes addressed, the other's passage is gone and offers
-   Re-attach or Drop.
-6. The user re-attaches it to the new paragraph, resolves the addressed one,
-   and sends the rest when ready.
+1. On the Desk, the user starts "BRIN rollout RFC" and asks the agent to
+   write `rfc-brin.md`.
+2. The agent writes it. The user opens it from Files as a tab, drags the tab
+   into a second tab group beside the terminal and reads it in Preview, with
+   its table and ASCII diagram.
+3. They switch to Side by side, click line 7 in the source, write "Where are
+   the sizes from?" and press **Comment**. The agent is mid-turn, so the
+   comment shows queued. When the turn ends it is typed as `[comment on
+   rfc-brin.md:7]` and its text, and shows as sent.
+4. They write two more comments and leave them as drafts, then click **Send
+   2 comments**. Both arrive as one paste.
+5. The agent answers in its terminal and rewrites the proposal. One comment
+   becomes addressed and shows its lines before and after; another's lines
+   are gone, and it offers Re-attach or Drop.
+6. The user resolves the addressed one, re-attaches the other to the new
+   paragraph and sends it again.
 
 ### 26.21 Add a repo to a channel, then to one session
 
-1. On `#payments-rewrite` › Repos & machines, the user clicks **Add repo…**
-   and pastes `https://github.com/acme/web`.
+1. On `#payments-rewrite` › Repos and machines, the user clicks **Add a
+   GitHub repo…** and pastes `https://github.com/acme/web`.
 2. The `acme/web` row fills in per machine as main clones finish; gpu-box is
    offline and its cell says it waits for gpu-box.
 3. Existing sessions don't change. In "API rate limiter" the user picks **Add
@@ -3016,7 +3242,7 @@ the **default layout** for a screen, not the only one.
 
 ### 26.23 A machine dies for good
 
-1. devbox-2's disk fails. Its sessions show "Host offline — reconnecting".
+1. devbox-2's disk fails. Its sessions show "devbox-2 is offline".
 2. Days later the user gives up on it and picks **Forget machine**. The dialog
    lists its 3 sessions from the host's records and, from the last pointers,
    what is lost: "uhvesta/cache-warmup: 2 unpushed commits, 4 dirty files".
@@ -3040,31 +3266,23 @@ the **default layout** for a screen, not the only one.
 - Status that the user can't act on: commits behind main, shared-clone
   notices, standing unpushed warnings, per-session latency or disk.
 - Recovering running programs after a reboot without the VM tier.
+- A general pane workspace: the window is the sidebar, the screen and one
+  side panel, and a session splits into two tab groups at most (D76).
+- Choosing an agent's model: the agent's own TUI does that (SE-2).
 
-## 28. Where the prototype differs
+## 28. The prototype
 
-The prototype snapshot predates some decisions. This spec follows the
-decisions:
-
-- The prototype gives a channel one machine ("Main clones live on"); a
-  channel has a set of machines (CH-1).
-- The prototype's Repos tab is "Repos & machines" here (CH-9, CH-11).
-- The prototype's New session dialog offers "Share the clone of …" and "The
-  main clone (shell-style, careful)"; this spec offers only an own clone or
-  leaving the repo out (SE-2), pending q4.
-- The prototype limits context-only forks to the parent's machine; they may go
-  to any machine of the channel (FK-8).
-- The prototype has no file manager, transfers, move flow, While I'm away
-  rule, `humata attach`, "Couldn't resume" state, or per-repo push/PR; they are
-  specified here.
-- The prototype's Access tab has no cross-machine copy, message, remote fork
-  or network-reach rules; IN-17 adds them.
+The clickable prototype (`apps/humata2/prototype`) and `ui-prototype` were the
+first sketches of Humata 2. They are no longer a reference for how it looks or
+behaves: the design goldens and this spec replaced them, and where either
+still differs, it is the one that is out of date. The list of differences
+that used to be here is gone with it.
 
 ## 29. Open questions
 
 - **q1** Channel feed: events only, or can the user also post notes into it?
-- **q2** Diff comments: pasted into the agent's terminal as one message (as
-  specified), or kept in Humata for the agent to fetch over MCP?
+- **q2** Answered: comments are pasted into the agent's terminal as one
+  message (SM-9); the agent replies and resolves over MCP (DK-9, SM-19).
 - **q3** Answered: context-only forks are read-only on their parent's files
   (FK-7, IN-20).
 - **q4** Main clones: read-only reference only, or may a plain shell session
@@ -3078,7 +3296,8 @@ decisions:
   only Humata's own calls and file transfers, each under its rule; port
   forwards only on approval (HO-10, HO-11, HO-12).
 - **q8** Confirm dropping Humata 1's chat features (queue, /rewind, /compact,
-  images).
+  images). Humata's own queue of messages to type at a turn end (SE-23) is a
+  different thing and stays.
 - **q9** Should Humata also show a structured view of tool calls beside the
   terminal?
 - **q10** Answered: channels span many machines.

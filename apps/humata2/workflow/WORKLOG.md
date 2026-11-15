@@ -24,7 +24,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | done |
 | minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
 | minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
-| minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | running |
+| minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | done |
 
 ## Claims
 
@@ -70,3 +70,6 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: milestone files (`workflow/milestones/`) added on owner request; agents read their milestone file and its pointers, not the big docs.
 - 2026-11-15 main: started J1 (judge, Fable high) on owner request. Order: owner directions > goldens > SPEC; golden changes listed for the owner, not made.
 - 2026-11-15 main: A1 done (scratchpad `a1-advice.md`), forwarded to J1. Added the `dag-walk` skill (`tools/skills/dag-walk/`, linked locally at `.claude/skills/dag-walk`) and `workflow/CONFIG.md`.
+- 2026-11-15 main: owner asked: after J1, an Opus 5.5 agent (P0) does A1's pre-manager work: C1 landed first (C1 is active and commits itself; main waits for its files to go clean), docs sweep left after J1, one-time split of the hot shared files. Then dag-walk plan step 3 (DAG.md + milestone files), then dag-walk resume.
+- 2026-11-15 main: C1 landed its work (9158b063, eb4cb93f, pushed). Pre-manager step (a) done. Safety ref kept for now (it also holds the other session's ui-prototype work).
+- 2026-11-15 main: J1 done; committed its SPEC/DECISIONS/OVERVIEW edits (C1's pickup block staged from HEAD). D103–D112 Provisional, D113 frame changes await the owner.

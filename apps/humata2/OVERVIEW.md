@@ -6,8 +6,8 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
 - `SPEC.md`: what Humata 2 does, as behaviour.
 - `REVIEW.md`: the review of the spec.
 - `api/`: the boundaries: `BOUNDARIES.md`, `GRPC.md` + `proto/`, `MCP.md`, `CLI.md`.
-- `prototype/`: how things roughly behave. For how things look, the design goldens below win over it.
-- **Design goldens:** `desktop/tests/__snapshots__/design/*.png` are what the UI should look like (D76). They are drawn by `desktop/tests/design.rs` and `design/*.rs` (`bazel test //apps/humata2/desktop:design_test`; record with `bazel run //apps/humata2/desktop:design_test_record`). They are still mocks, not the app. Every screen you build or restyle must match its frame: layout, spacing, type, colour and wording. If a design needs to change, change the frame first, and only with the owner's OK, then build to it. Don't invent layouts the frames don't show; ask instead.
+- `prototype/`: the first clickable sketch. It is no longer a reference for looks or behaviour (SPEC §28); the design goldens and SPEC replaced it.
+- **Design goldens:** `desktop/tests/__snapshots__/design/*.png` are what the UI should look like (D76). They are drawn by `desktop/tests/design.rs` and `design/*.rs` (`bazel test //apps/humata2/desktop:design_test`; record with `bazel run //apps/humata2/desktop:design_test_record`). They are still mocks, not the app. Every screen you build or restyle must match its frame: layout, spacing, type, colour and wording. If a design needs to change, change the frame first, and only with the owner's OK, then build to it. Don't invent layouts the frames don't show; ask instead. When the docs disagree, the owner's decisions (`DECISIONS.md`), newest first, win; then the goldens; then SPEC. Frames that a newer decision has left out of date, and screens with no frame yet, are listed in D113.
 
 **Rules that hold for every milestone:**
 - **Tests prove behaviour, never how the code is written.**
@@ -16,8 +16,8 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
   - Reducer actions, state and stores are fair to assert on, because they are the abstract model.
   - Private functions, call order and message wording are not.
 - **macOS, Linux and web; no other platforms (owner, 2026-11-15).** Every test suite runs on macOS and Linux, and the app outside `desktop/` runs in a browser.
-- **The app is only a client** of the Mac's daemon (AR-2, AR-3, D34). Any number of clients, desktop or web, can be open at once. App code outside `desktop/` builds for wasm, and CI checks it.
-- **The infrastructure milestones (I1–I9) come first.** The desktop app (A1 onward) starts only after gate G is passed.
+- **The app is only a client** of the host's daemon (AR-2, AR-3, D34). Any number of clients, desktop or web, can be open at once. App code outside `desktop/` builds for wasm, and CI checks it.
+- **Infrastructure and the UI on fakes are built side by side (owner, 2026-11-14).** The infrastructure milestones (I1–I9) and the desktop UI on fake clients with made-up data (N1) run in parallel. Gate G is where real clients replace the fakes. An A box is ticked only when its step works against a real daemon, so the A list stays unticked while N1 shows what exists on fakes.
 - **Each app milestone ships as a signed `humata2` release.** That's a big behavioural step you can install and try.
 
 ---
@@ -25,7 +25,7 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
 ## I0: Agree the foundations
 - [x] Fold the spec review (`REVIEW.md`) into `SPEC.md`: fix contradictions, undefined terms and untestable requirements.
 - [x] Agree the boundary specs in `api/`: every requirement maps to an RPC, MCP tool or CLI command, and the capability matrix leaves no gaps. See `api/TRACE.md`; the gaps it still lists are logged as decisions (D20, D21).
-- [ ] Decide what happens to the earlier H2-0/H2-1 code (`apps/humata2/app` (Swift), `bindgen`, `core`, `rehearsal`): keep, fold in, or remove.
+- [ ] Decide what happens to the earlier H2-0/H2-1 code (`apps/humata2/app` (Swift), `bindgen`, `core`, `rehearsal`): keep, fold in, or remove. Waiting on the owner (D9); deleting can't be undone, so nothing is done until then.
 - [x] Lay out the crates and Bazel targets for Humata 2, with the narrowest visibility (see AGENTS.md). See `LAYOUT.md`.
 
 ## I1: State management (tca-rust)
@@ -41,8 +41,8 @@ Expand `libs/tca-rust` (Store, LocalStore, TestStore, effects, `for_each`, `if_l
 - Linux: pending the next batched Linux run (D18).
 
 ## I2: GUI framework
-Choose by measurement, not reputation.
-- [ ] Criteria written down:
+Choose by measurement, not reputation. **Decided (owner, 2026-11-14): gpui-kit on GPUI (D8), with one crate picking the engine (D57).** The owner dropped the Linux pixel-snapshot condition. The measurements still owed are under Known gaps › Testing infrastructure.
+- [x] Criteria written down (`research/GUI.md`):
   - near-zero CPU when idle;
   - memory;
   - cold start time;
@@ -52,9 +52,9 @@ Choose by measurement, not reputation.
   - custom drawing for a terminal grid;
   - headless rendering for tests;
   - licence and how actively it's maintained.
-- [ ] Shortlist at most three, from GPUI, Iced, Slint, Floem, Makepad, Freya and egui.
-- [ ] Spike the same three screens in each finalist: the sidebar tree, the wrapped multi-repo diff, and a terminal grid. Wire each to tca-rust.
-- [ ] Measure on macOS and Linux, record the numbers, and write a decision you sign off. Fork or patch only if the numbers demand it.
+- [x] Shortlist at most three, from GPUI, Iced, Slint, Floem, Makepad, Freya and egui. Closed by D8: gpui-kit, with Iced and then egui as fallbacks.
+- [x] Spike the same three screens in each finalist: the sidebar tree, the wrapped multi-repo diff, and a terminal grid. Wire each to tca-rust. Closed by D8: the owner chose before the other finalists were spiked; `spike/gui` holds the gpui-kit spike.
+- [x] Measure on macOS and Linux, record the numbers, and write a decision you sign off. Fork or patch only if the numbers demand it. Closed by D8 on the macOS numbers in `research/`; Linux numbers come with the Linux batch.
 
 ## I3: Snapshot testing
 - [x] State snapshots: TestStore steps recorded as readable text.
@@ -80,7 +80,7 @@ Choose by measurement, not reputation.
 - [ ] You sign it off. Every later milestone follows it.
 
 ## I6: Terminals
-- [ ] Choose the terminal engine. Ghostty is the lead candidate (libghostty's VT core in a Rust GPU view, or GhosttyKit on macOS as in Humata 1). Compare alacritty_terminal and drawing the grid ourselves. Decide on correctness (wide characters, emoji, scripts), speed and cross-platform fit.
+- [x] Choose the terminal engine. Decided 2026-11-14: libghostty-vt, drawn by our own GPUI terminal view (D10, D22). The question as first asked: Ghostty is the lead candidate (libghostty's VT core in a Rust GPU view, or GhosttyKit on macOS as in Humata 1). Compare alacritty_terminal and drawing the grid ourselves. Decide on correctness (wide characters, emoji, scripts), speed and cross-platform fit.
 - [ ] Embed it in the chosen GUI: tabs, keys, copy and paste, scrollback, find, and the Wrap setting not applying to terminals.
 - [ ] Remote terminals:
   - a PTY held on the machine by a per-session holder;
@@ -101,9 +101,9 @@ Reuse what holds up from Humata 1's `humatad` (agent, wire, workspace, the SSH e
 - [ ] Restarts never lose state (PER-25–PER-31): power-cut tests for host, machine and both at every fault point, real VM hard resets, every multi-step operation finished or undone, a restart report for every restart, and the restart doctor skill with `humata doctor restarts`.
 - [ ] Links push and never poll (TR-7–TR-10): file notifications inside machines, link work off the UI thread, idle wakeups only for keepalives, and latency benches against a local VM.
 - [ ] Where state lives:
-  - the Mac is the source of truth;
+  - the host is the source of truth;
   - machines hold only clones and agent context, and report pointers (repo, branch, sha, pushed, dirty files);
-  - writes made while the Mac is away are journalled and replayed in order;
+  - writes made while the host is away are journalled and replayed in order;
   - Rebuild on another machine works.
 - [ ] Machine providers: `create`, `connect` with `{cmd}`, `identity`, interactive login with takeover, install humatad, the systemd user service with an admin fallback. The Lima provider config makes local VMs for the tests.
 - [ ] Channels across machines and repos: main clones, per-session clones, branch prefix + slug, add and remove repos.
@@ -158,19 +158,20 @@ A bug report is text an agent can read and act on: what you did, where, what the
   - the report folder checked as a snapshot.
 
 ## G: Gate before the app
+The UI on fake clients did not wait for this gate (owner, 2026-11-14; see N1). The gate now guards swapping the fakes for real clients and ticking A boxes.
 - [ ] I1–I9 are done and their suites pass on macOS and Linux.
 - [ ] Flow and snapshot tooling has proven itself on a throwaway screen.
 - [ ] `features/`, `ui/` and `terminal/` build for `wasm32-unknown-unknown`, and a throwaway screen runs in a browser against a local daemon while the desktop client is open (D34).
-- [ ] You agree to start the app.
+- [ ] You agree to move the app onto real clients.
 
 ---
 
 ## A1: First light (release humata2 0.1)
 - [ ] The app on the chosen GUI and tca-rust, signed and notarized on macOS, with a Linux build.
 - [ ] Channels and sessions in the sidebar, with Expand all / Collapse all.
-- [ ] A local session with an embedded agent terminal (Claude, Codex, Copilot, OpenCode or shell), with default agent and model settings.
+- [ ] A local session with an embedded agent terminal (Claude, Codex, Copilot, OpenCode or shell), with the default agent setting (ST-15; Humata picks no model, SE-2).
 - [ ] The session survives an app restart and a reboot.
-- [ ] Panes resize and collapse, and their sizes persist.
+- [ ] The sidebar and the side panel resize and collapse, and their sizes persist (NV-12–NV-17).
 
 ## A2: Review (0.2)
 - [ ] Diffs across N repos in a session: inline, side by side, and full file with changes inline.
@@ -193,7 +194,7 @@ A bug report is text an agent can read and act on: what you did, where, what the
 - [ ] Pinned and VIP.
 
 ## A6: Boards (0.6)
-- [ ] Session, channel and global boards, with dependency edges and agent edits through MCP.
+- [ ] Session, channel and global boards in board, table and dashboard views (BD-11–BD-13), with several sessions per item, dependency edges and requests answered on the item (BD-14–BD-16), and agent edits through MCP.
 
 ## A7: Files and storage (0.7)
 - [ ] The two-pane file manager, transfers, trash, Storage per machine, and retention rules.
@@ -203,9 +204,9 @@ A bug report is text an agent can read and act on: what you did, where, what the
 - [ ] Drafted comments that post only after you approve them.
 - [ ] Update when the PR gets new commits, and archive when it's merged.
 
-## A9: Spec mode (0.9)
-- [ ] Rendered markdown with a Source toggle and a contents list.
-- [ ] Comments anchored to text, with draft → sent → addressed → resolved, and batch send.
+## A9: Markdown review (0.9)
+- [ ] Markdown tabs with Preview, Source and Side by side (SPEC §11: SM-3, SM-4, DK-7, DK-8). There is no separate spec mode and no contents list (D104). The same work on fakes is N1's markdown review item.
+- [ ] Comments on source lines, with draft → queued → sent → addressed → resolved, sent one at a time or as a batch (SM-6–SM-21).
 
 ## A10: Views, palette and polish (1.0)
 - [ ] Views that agents prepare, which open only if you choose to (Open it / Later / Not now), and the Journal.
@@ -216,7 +217,7 @@ A bug report is text an agent can read and act on: what you did, where, what the
 ## N1: A native macOS look and feel (next, owner 2026-11-15)
 The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so it looks and feels as Apple/macOS-native as we can get, while staying a chat-workspace app with channels and sessions.
 - [x] Owner's pick (2026-11-15): looks A (light) and B (dark), following the system. The middle of a session is its embedded terminal, not a chat. Sidebar, terminal and right panel are three columns resized by dragging; the terminal or the right panel can each go full screen.
-- [x] Owner's picks (2026-11-15, D76), now the 33 design goldens in `desktop/tests/__snapshots__/design/`:
+- [x] Owner's picks (2026-11-15, D76), now design goldens 01–33 (43 frames since D100) in `desktop/tests/__snapshots__/design/`:
   - The right panel is switched from a labelled icon strip down the window's right edge; the session header keeps a panel toggle.
   - A session's terminals and open files are tabs in one row (`claude | zsh | client.rs | +`). The only split is two tab groups side by side in one session, at most one terminal per agent on the same code (14). Anything more is a fork: code + context, context only, or code only. No general pane workspace (revises D74).
   - The sidebar tree indents forks with a fork glyph; channels fold to one row.
@@ -224,7 +225,7 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
   - Board: kanban, item drawer, table and dashboard. The Board panel expanded to full screen shows the kanban lanes side by side (12).
   - Home and Inbox are lists, top to bottom, with what needs you first; the Inbox is split (list and the open request).
   - New session runs any agent's own TUI (Claude Code, Codex, Copilot, OpenCode) or a plain terminal (31).
-- [x] The session panel strip, header toggle, client-backed Changes/Inbox/Files/Board/Journal/Info content and panel full screen are rendered and exercised by `//apps/humata2/desktop:panels_test`; panel frames are checked in light/dark appearances. Unsupported file/permission actions are split out under Known gaps.
+- [x] The session panel strip, header toggle, client-backed Diff/Inbox/Files/Board/Journal/Info content and panel full screen are rendered and exercised by `//apps/humata2/desktop:panels_test`; panel frames are checked in light/dark appearances. Unsupported file/permission actions are split out under Known gaps.
 - [x] Native shell foundation: the rail is gone; the sidebar, window controls, session breadcrumb/header and terminal type use D76 colors and sizes in both appearances. Sidebar navigation/folding and lateral Back behavior are exercised by `//apps/humata2/desktop:native_test` and `//apps/humata2/features/app:navigation_test`. Full matching remains split into the unchecked items below.
 - [x] Session lifecycle and presentation foundation: terminal/panel full screen persists per session and returns to the same columns; exited Resume, offline notices, selected-strip close/reopen and tab-scoped output are covered by `//apps/humata2/features/app:presentation_test` and `//apps/humata2/desktop:native_test`. A 720px -> 1280px resize cycle restores the saved widths; the remaining session visuals and two-group split stay open.
 - [x] Shared session tab row: terminal, file and accepted-view tabs, client-backed plus menu, at most two groups, attach existing agent, join and saved group selection. `//apps/humata2/features/session:tabs_test`, `//apps/humata2/features/app:presentation_test` and `//apps/humata2/desktop:native_test` cover it. Offers wait for Open it, Later returns next visit, Not now stays dismissed (`//apps/humata2/features/views:offers_test`). Interactive TerminalPane/PTY wiring and exact visual matching remain open.
@@ -240,15 +241,17 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
 - [ ] Restyle the remaining shell (sidebar, session header, terminal tabs) and each screen until the whole app matches the goldens (minion C: the new panel/strip use D76 tokens; cropped panel references do not claim the earlier shell is already restyled).
 - [ ] Draw the goldens on Linux (in the Linux VM batch, after the I milestones) and in a browser. Find out whether gpui's web target can draw `design.rs` headless; if not, check the frames another way. Never edit `ui-prototype` for this.
 - [x] Owner signed off frames 34–43 on 2026-11-15 (D100): empty states, the Desk and markdown review. The Desk row is now in the sidebar of every golden (01–43), so native frames 01–33 differ from the goldens by that row until the app has it.
-- [ ] Build the Desk in the app (SPEC DK-1–DK-8): the sidebar Desk row and its sessions, the Desk page, scratch or picked folders, moving a Desk session into a channel. Frames 36–40.
-- [ ] Build the empty states for Home and a new channel (frames 34, 35), keeping first run (33).
-- [ ] Build markdown review (DK-6–DK-8): Preview/Source/Side by side, linked scroll, comments on source lines sent to the session's agent. Frames 39, 41–43.
+- [ ] Build the Desk in the app (SPEC DK-1–DK-5, DK-10–DK-14; D108): the sidebar Desk row and its sessions, the Desk page, New desk session, scratch or picked folders, Close / Reopen / Keep / Clean up…, moving a Desk session to another machine (DK-3) and copying a document to a channel (DK-13). Frames 36–40.
+- [ ] Build the empty states for Home and a new channel (frames 34, 35; DK-6), and the first-launch welcome (33), which shows once (NV-11; D109 asks the owner whether to retire it).
+- [ ] Build markdown review (SPEC §11: SM-3–SM-16, DK-7, DK-8; D104): Preview/Source/Side by side, linked scroll, comments on source lines sent to the session's agent. Frames 39, 41–43.
 - [ ] Record and show last used per session (SPEC SE-26, D99) wherever sessions are listed.
 - [ ] Add the MCP tool `comment_reply` (SPEC DK-9), after DK-1–DK-8.
 - [ ] Draw frames for comment states (addressed with before/after and Resolve, resolved by the agent, archived, the Archived list in Info) for the owner's review (SPEC SM-17–SM-21, D101).
 - [ ] Build resolve/archive (SM-17–SM-21): resolved never comes back, Resolve N addressed, `comment_resolve` MCP tool with a required reply and its own agent access rule, user-only Archive with Undo and the Archived list.
 - [ ] Write the TP-17 delegation rule into Humata's skills and MCP tool descriptions: mechanical calls go to a cheap subagent (Haiku / Luna) with the smallest context window and medium reasoning effort where the CLI allows.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
+- [ ] Build what the docs tidy (minion J1, 2026-11-15) wrote into SPEC from the goldens and the owner's decisions: tab groups and a second agent (SE-27–SE-29, D103); the Inbox card's full context, Allow / Deny / Reply… and the narrow grant checkbox (IN-9, IN-14, D105); the board's Table, Dashboard, Depends on and requests answered on the item (BD-11–BD-16, D106); Hosts' disk column and the 5 GB clone floor (HO-3, LD-19, D107); Undo after Archive as a delayed delete (MV-15, D110); the Settings sections (ST-18–ST-20, D111). Each is Provisional until the owner confirms D103–D112.
+- [ ] Get the owner's OK for the frame changes in D113 (29 without Panes, 31 without the model picker, the Inbox card in 03/04/26/27, 33, and the smaller ones), then redraw them; draw the missing frames D113 lists before their screens are built.
 
 ### Pick up here (minion C1)
 - **In progress:** terminal keyboard/group focus verified, committing/publishing. Fork5b4e59dd/03de7633 and terminal86b1a60c/c1925c66 are published; D102 is still Provisional. Next: robust Changes wrapping (indent-only first visual line and centered gutter), then queued messages/presence, prepared-view controls/Revert, header actions and remaining original-screen gaps, followed by signed-off D100 Desk/empty/markdown34–43. Research: `diff/src/view.rs` uses gpui-component Diff with soft_wrap and simple hunk separators; pinned widget source is external gpui-component-0.9.1/src/diff/{mod,state,document,parser,presentation}.rs. Investigate using that code body inside existing panel framing; do not redo the approved chrome or touch review_diff/real daemon. No edits for wrap yet. Standing publish approval; full goal active, resizing secondary.
@@ -287,29 +290,29 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - Trap: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_...`) can fail under the full parallel run; it passes alone.
 - Traps: OVERVIEW, GAPS_REVIEW and DECISIONS may hold minion C1's uncommitted edits; stage only my hunks from `git show HEAD:<file>`.
 
-### Desktop UI (I2, A10; D72, D74)
+### Desktop UI (I2, A10; D74 as revised, D76)
 - [x] ~~Render the pane tree~~: built in a7c6cf3c, then dropped on the owner's direction (2026-11-15, D74 revised). The window is a left sidebar, the screen in the middle, and the open session's side panel on the right.
 - [x] Drag the sidebar's and the side panel's dividers to resize them (past the narrowest hides them; a double-click resets them); ⌥⌘0 and the palette's "Toggle side panel" hide or show the panel. Each session keeps its own panel when you switch screens and come back. Test: `desktop:shell_test` (`a_sessions_side_panel_hides_shows_and_survives_switching_screens`).
-- [x] Changes, Inbox, Files, Board, Journal and Info show fake-client data in the D76 panel framing, in light/dark appearances. Changes selects a repo/file per session and sends queued drafts; Inbox includes descendants and answers the chosen request; Files filters/folds/selects the session's clone paths; Board scopes to the channel and expands into lanes; Journal scopes to the session; Info shows its agent, host, start, forks and clones. The labelled strip, header toggle and panel full screen work. Tests: `//apps/humata2/desktop:panels_test` (12 tests, 16 inspected image references), `//apps/humata2/desktop:shell_test`, `//apps/humata2/desktop:design_test`.
+- [x] Diff, Inbox, Files, Board, Journal and Info show fake-client data in the D76 panel framing, in light/dark appearances. Diff selects a repo/file per session and sends queued drafts; Inbox includes descendants and answers the chosen request; Files filters/folds/selects the session's clone paths; Board scopes to the channel and expands into lanes; Journal scopes to the session; Info shows its agent, host, start, forks and clones. The labelled strip, header toggle and panel full screen work. Tests: `//apps/humata2/desktop:panels_test` (12 tests, 16 inspected image references), `//apps/humata2/desktop:shell_test`, `//apps/humata2/desktop:design_test`.
 - [x] Files and Info follow approved frames 06 and 05, respectively; the earlier claim that these frames were absent was incorrect. Files uses a per-session clone listing in the existing fake Workspace, including unchanged files, rather than leaking host-wide paths. View state survives switching and older saved sessions still load. New fake forks inherit their parent's listing. Tests: `//apps/humata2/desktop:panels_test`, `//apps/humata2/clients:fake_daemon_test`.
 - [ ] Files Open in editor/Upload and Info Channel rules/restart details (minion C: the existing clients lack editor/upload operations and permission/resume-command data; unsupported controls stay disabled and missing data says it has not been reported).
 - [ ] Session-only Inbox grants and the Reply editor (minion C: the client supports only the broader Always rule, which must not stand in for a session grant; no approved reply-editor frame is recorded. The checkbox/Reply button remain disabled, and questions never offer Allow).
-- [ ] The Changes base picker, Open in editor and comment composer still need their clients/views (minion C: this pass renders the current base and existing comments/drafts only; the excluded review_diff wiring and a selected editor/comment layout are needed before those controls can be made live).
+- [ ] The Diff base picker, Open in editor and comment composer still need their clients/views (minion C: this pass renders the current base and existing comments/drafts only; the excluded review_diff wiring and a selected editor/comment layout are needed before those controls can be made live).
 - [x] A native headless mouse drag checks the panel divider with its 64px strip outside the width: a 40px drag gives 380px, instead of jumping to the 420px maximum. Test: `//apps/humata2/desktop:panels_test` (`resizing_the_panel_keeps_the_strip_outside_its_width`).
 - [ ] Cover the sidebar's drag too, and check both dividers in a real window (minion C: the assigned run is headless only).
 - [x] Removed `features/layout`, `AppState.panes`, the saved `panes` field (old saved files still load; serde ignores it) and the Reset toast's Undo button, on the owner's call (2026-11-15). Test: `desktop:shell_test`.
-- [ ] Settings › Layout, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
-- [x] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
+- [ ] E2e flows, contact sheets, record/replay and FLOWS.md. Settings › Layout keeps Appearance, Terminal font, Sidebar shows Pinned and Long lines, and loses the Panes choice once the owner OKs redrawing frame 29 (ST-18, D111, D113). There is no D72 entry and none is owed: D74 (as revised) and D76 cover the desktop UI.
+- [x] Snapshot fixes, from before the rail was removed: the Inbox badge overlapped the rail icon, and Home's row times stop short of the right edge.
 
 ### Markdown (`apps/humata2/markdown`)
 - [ ] Fix `headless:flows` (1 of 7 still fails, `bazel test //apps/humata2/markdown/headless:flows`):
   - [x] Toggling Source and back with the keyboard: `toggle_mode` moves focus to the new text view.
   - [x] The selection toolbar's buttons act on press, using the selection cached when the toolbar was drawn, because pressing clears the text's selection first. Copy now reaches the clipboard.
   - [x] Copy as Markdown: flow targets can aim at a control's start (`Target::at_start`). A selection starting at a block's first visible character takes in its opening markup, and one ending at its last takes in the closing markup (`with_block_markup`), so it copies as `# Gallery`.
-  - [ ] Comment on selection: dragging paragraph 2 → heading 3 gives no toolbar, because gpui-base's `SourceRangeSelection::merge` turns the whole selection Unmapped when one block can't map (`text/node.rs` in gpui-base 0.9.1). Tried 2026-11-15 and reverted: a patch making `source_range_for_segments` bridge rendered gaps didn't bring the toolbar back, so the Unmapped comes from somewhere else (a block-level Unmapped, the `first.rendered.start` path, or the paragraph's `selected_source_range`). The repin it needed also changed code and inline-code rendering in `headless:snapshots`. Next: log which block returns Unmapped before patching again.
+  - [ ] Comment on selection (the app no longer needs this: comments are made on source lines, SPEC SM-6, D104; it stays open only for the markdown crate's own flow): dragging paragraph 2 → heading 3 gives no toolbar, because gpui-base's `SourceRangeSelection::merge` turns the whole selection Unmapped when one block can't map (`text/node.rs` in gpui-base 0.9.1). Tried 2026-11-15 and reverted: a patch making `source_range_for_segments` bridge rendered gaps didn't bring the toolbar back, so the Unmapped comes from somewhere else (a block-level Unmapped, the `first.rendered.start` path, or the paragraph's `selected_source_range`). The repin it needed also changed code and inline-code rendering in `headless:snapshots`. Next: log which block returns Unmapped before patching again.
 - [x] Inspected both Markdown image goldens and the current render, recorded `headless:timing` figures and limitations in D78, and ran Bazel-managed buildifier. Timing target: `//apps/humata2/markdown/headless:timing` (`-c opt --test_arg=--nocapture`).
 - [ ] The two Markdown pixel checks differ from their stored goldens by about 19,700 pixels each: current fenced/inline code is monospace, stored references use proportional text. Semantic snapshots and streamed/one-shot pixels pass (minion C: left references intact for owner review; no rendering change was made here).
-- [ ] Margin comments clip long text horizontally in the annotated gallery (minion C: observed in the stored golden; needs a layout choice before restyling).
+- [ ] Margin comments clip long text horizontally in the annotated gallery (the app shows comments inline under source lines, SPEC SM-8, so this concerns only the markdown crate's gallery; minion C: observed in the stored golden; needs a layout choice before restyling).
 - [x] Flow scroll actions dispatch pixel deltas at an accessible target in refreshed and natural frames, and the long Markdown scroll flow uses them. `secondary-` parsing already uses the platform OS; new tests prove dispatch on both engines. Tests: `//apps/humata2/testing/flow:scroll_test`, `:scroll_fast_test`, and `//apps/humata2/markdown/headless:flows --test_arg=the_scroll_wheel_moves_a_long_document_and_only_visible_blocks_are_drawn`.
 - [ ] Add syntect to the gpui-fast lock and Markdown Fast GUI suites (minion C: dependency repinning is excluded; flow infrastructure itself is tested on both engines).
 
@@ -327,7 +330,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] The terminal and PR comment destinations answer not built.
 - [x] Draft views: a session's agent prepares a walkthrough, a board of its channel, pull request drafts or (outside an open review chat) a review plan with PrepareView; it alone sees and revises its drafts (ReviseView, `expected_revision`) until MarkReady offers one as Waiting; then only the user answers with SetViewState. The store keeps each view and its idempotency keys (`views` table), so a restart keeps drafts, offers and answers and a repeated key makes no second view (minion F, D87). MCP `view_prepare`, `view_revise`, `view_mark_ready` and `views_list` call them. Tests: `//apps/humata2/daemon/store:views_test`, `//apps/humata2/daemon/humatad:review_test` (`a_draft_view_is_the_agents_until_offered_then_the_users_and_a_restart_keeps_it`, `a_draft_view_is_checked_before_it_is_kept`), `//apps/humata2/daemon/humatad:mcp_test` (`an_agent_prepares_revises_and_offers_a_view`).
 - [x] Views are on the event feed (TOPIC_VIEWS): each change to a view is an Event with the view, which the user gets once it's offered and the session's agent gets from its draft on; a feed narrowed to channels or sessions gets only theirs (minion F, D89). Test: `//apps/humata2/daemon/humatad:review_test` (`the_feed_tells_the_agent_of_its_drafts_and_the_user_of_offers_only`).
-- [ ] An offered view's `journal` (its machine-journal position, SL-5) is unset, since nothing is journaled while the host is away yet; ListViews ignores `include_forks` (no session records its forks yet: forking isn't built) and pages; views live on the daemon that runs the session, not the Mac (VW-12) (D87).
+- [ ] An offered view's `journal` (its machine-journal position, SL-5) is unset, since nothing is journaled while the host is away yet; ListViews ignores `include_forks` (no session records its forks yet: forking isn't built) and pages; views live on the daemon that runs the session, not the host (VW-12; SPEC keeps views on the host, SL-1, so this is a gap in the code) (D87).
 - [x] `humata views [--session s]` and `humata view open|later|not-now|revert|keep <view>`; with no session the user gets every session's offered views, newest first (minion F, D97). Tests: `//apps/humata2/cli:views_test`, `//apps/humata2/daemon/humatad:review_test` (`the_user_lists_every_offered_view_newest_first_without_naming_a_session`).
 - [ ] CommentAnchor has no hunk target, so `review_note`'s `hunk_at` becomes a one-line note on that line (D80).
 - [x] Each GetDiff marks notes outdated whose quoted lines changed, and moves the ones whose lines only moved; the review is saved, so a restart keeps it (RV-34, PR-26; minion E). Test: `//apps/humata2/daemon/humatad:review_test` (`a_later_diff_marks_notes_whose_lines_changed_outdated_and_moves_the_rest`).
@@ -352,7 +355,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 ### Terminal (I6; D73)
 - [ ] Run `stream_bench` and `stream_fast_bench` for 1, 2 and 4 panes.
 - [ ] Test IME in a real window.
-- [ ] Settle ⌘W: TerminalTabs and NV-30 (close pane) both claim it.
+- [x] ⌘W is settled: NV-30 (close pane) left SPEC with the pane workspace (D74 as revised), so ⌘W closes the active tab and never stops a program (D73, SPEC NV-37). Nothing to build.
 
 ### Testing infrastructure (I3–I5)
 - [ ] Run `engine:frames_bench_fast`, `terminal/view:frame_bench{,_fast}` and the ui-prototype `markdown_frame_costs`. Fast can't become the default until it has numbers.
@@ -371,7 +374,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] Push `last_start` to the app when it's set (EventService) instead of the app asking again.
 - [ ] MV-13/MV-14 move export and import, including the store's MV-13 export.
 - [x] Wire humatad to the store's restart work: `Store::open_or_restore` with `Restored` passed to reconcile, `save_last_good` after writes go quiet (30 s, at most 10 min) on a blocking thread, `ReviveConfig.reports` filled, and one `NotBroughtBack` line per agent or shell that didn't come back in `ServerInfo.last_start`. Test: `daemon/humatad:restart_test` (`a_shell_that_cant_come_back_is_one_line_and_the_others_still_do`, `a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so`).
-- [ ] Show `last_start`'s lines (and a restore's losses) in the app, as the goldens draw it.
+- [ ] Show `last_start`'s lines (and a restore's losses) in the app (PER-29, PER-15). No golden draws the restart report line or "Couldn't resume" yet; they are among the frames still to draw (D113).
 - [ ] A resume redone after a crash skips the "you were interrupted" note when the conversation already holds it, and then only checks that the agent came up, stayed up and opened no other conversation (D71). Find a stronger check if one exists.
 - [x] Rechecked `terminal_test`: 2097152 is `SNAPSHOT_MAX`, a whole 2 MiB snapshot sent as one chunk, past the decoder's 1 MiB `CHUNK_MAX`; snapshots now go in pieces (5c795563), covered by `a_big_snapshot_comes_in_pieces_to_a_client_that_decodes`. Passed 65 runs (`--runs_per_test=40 --local_test_jobs=16` plus 25).
 - [x] Fixed the flaky `humatad2_unit_test`: its idle-daemon test counted wakes while the start's background reconcile (and, before 71c9071b, file events for the last good copy) could still land in either window. It now waits for the restart report first. Passed 40 runs at 16 jobs.
@@ -413,5 +416,6 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] ReportService, script tokens (SEC-14), and the web listener.
 - [x] MCP `inbox_request` asks ahead through RequestAccess and answers `{decision, grant_id}` (D93): `//apps/humata2/daemon/humatad:mcp_test`.
 - [ ] Ask→Inbox (D38.6).
+- [ ] Once the owner confirms D104 (no spec mode), remove what is left of it: `SetSpecMode` and `spec_mode` in `sessions.proto`, the MCP tool `session_spec_mode`, `humata session spec`, and the SM-1, SM-2 and SM-5 rows of `api/TRACE.md`. Until then they stay, unused by SPEC.
 - [x] The Inbox and grants kept across a restart: each request, its answer and its grant saved before anyone hears of them; grants rebuilt exactly as narrow, revoked ones stay revoked, new grant ids never reuse old ones (minion F, D96). Tests: `//apps/humata2/daemon/humatad:inbox_test` (`a_restart_keeps_the_inbox_and_the_grants_still_standing`), `//apps/humata2/daemon/store:inbox_test`.
-- [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64).
+- [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64). From the docs tidy (minion J1): D103–D112, the frame changes in D113, and D9 (the Swift-era folders).
