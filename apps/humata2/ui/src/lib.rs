@@ -14,6 +14,7 @@ mod chrome;
 mod overlays;
 mod pages;
 mod lists;
+mod channel;
 mod session_tabs;
 mod panels;
 mod shell;
@@ -44,6 +45,7 @@ gpui_kit::assets::icon_assets!(
         Terminal,
         GitBranch,
         GitFork,
+        GitPullRequest,
         Files,
         File,
         Folder,

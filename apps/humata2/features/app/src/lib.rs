@@ -7,6 +7,7 @@
 //! Each screen is its own feature crate; this one holds their states, sends
 //! them the data as it changes, and handles what they delegate.
 
+pub mod channel;
 pub mod layout;
 pub mod saved;
 
@@ -148,6 +149,8 @@ pub struct AppState {
     pub full_screens: std::collections::BTreeMap<SessionId, FullScreen>,
     /// A temporary navigation overlay when the sidebar is folded.
     pub navigation_overlay: bool,
+    /// Each channel's page tab, filters and folding, saved independently.
+    pub channel_pages: std::collections::BTreeMap<ChannelId, channel::View>,
     /// Toasts, oldest first.
     pub toasts: Vec<Toast>,
     /// Why saved state from the last run couldn't be used, shown once.
@@ -197,6 +200,7 @@ impl AppState {
             layout: saved.layout,
             full_screens: saved.full_screens.clone(),
             navigation_overlay: false,
+            channel_pages: saved.channels.clone(),
             toasts: Vec::new(),
             restore_error,
             sidebar: SidebarState::default(),
@@ -255,6 +259,7 @@ impl AppState {
             sessions: self.session.views.clone(),
             layout: self.layout,
             full_screens: self.full_screens.clone(),
+            channels: self.channel_pages.clone(),
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
             review: self.review.saved.clone(),
@@ -354,6 +359,8 @@ pub enum AppAction {
     Navigate(Route),
     /// Lateral navigation (sidebar, breadcrumb or shortcut): clear Back.
     Switch(Route),
+    /// Change the current channel's tab, filters or tree folds.
+    Channel(channel::Action),
     /// ⌘[: back to the previous screen.
     Back,
     /// Escape: close the top overlay or dialog.
@@ -579,6 +586,22 @@ impl App {
                 effects
                     .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
                 effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
+            }
+            Route::Channel(id) => {
+                state.session.open = None;
+                match state.channel_pages.get(&id).map(|v| v.tab) {
+                    Some(channel::Tab::Inbox) => effects.push(self.child(
+                        state,
+                        AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
+                            id,
+                        ))),
+                    )),
+                    Some(channel::Tab::Board) => effects.push(self.child(
+                        state,
+                        AppAction::Board(BoardAction::SetScope(Scope::Channel(id))),
+                    )),
+                    _ => {}
+                }
             }
             Route::Inbox => {
                 state.session.open = None;
@@ -1073,6 +1096,26 @@ impl App {
             AppAction::CloseNavigationOverlay => {
                 state.navigation_overlay = false;
                 Effect::none()
+            }
+            AppAction::Channel(action) => {
+                let Route::Channel(id) = state.route.clone() else {
+                    return Effect::none();
+                };
+                let view = state.channel_pages.entry(id.clone()).or_default();
+                view.change(action, &state.workspace, &id);
+                match view.tab {
+                    channel::Tab::Inbox => self.child(
+                        state,
+                        AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
+                            id,
+                        ))),
+                    ),
+                    channel::Tab::Board => self.child(
+                        state,
+                        AppAction::Board(BoardAction::SetScope(Scope::Channel(id))),
+                    ),
+                    _ => Effect::none(),
+                }
             }
             AppAction::ToggleFullScreen(side) => {
                 if let Route::Session(id) = &state.route {

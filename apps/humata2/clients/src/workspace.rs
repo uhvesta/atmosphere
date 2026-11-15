@@ -39,6 +39,8 @@ pub struct Workspace {
     pub specs: Vec<Spec>,
     /// The journal, newest first.
     pub journal: Vec<JournalEntry>,
+    /// Channel events, newest first.
+    pub activity: Vec<crate::model::Activity>,
     /// Views agents prepared.
     pub views: Vec<PreparedView>,
     /// The skills the composer's `/` menu offers.

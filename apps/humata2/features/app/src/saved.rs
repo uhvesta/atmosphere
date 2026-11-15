@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata2_clients::Storage;
-use humata2_clients::model::{MachineId, SessionId};
+use humata2_clients::model::{ChannelId, MachineId, SessionId};
 use humata2_palette::Command;
 use humata2_review::ReviewSaved;
 use humata2_session::SessionView;
@@ -40,6 +40,8 @@ pub struct SavedUi {
     pub layout: Layout,
     /// Full-window presentation saved per session.
     pub full_screens: BTreeMap<SessionId, FullScreen>,
+    /// Each channel's selected tab, filters and folds.
+    pub channels: BTreeMap<ChannelId, crate::channel::View>,
     /// What the sidebar folded.
     pub folding: Folding,
     /// Settings.

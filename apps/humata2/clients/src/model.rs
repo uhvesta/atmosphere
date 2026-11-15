@@ -679,6 +679,28 @@ pub struct JournalEntry {
     pub text: String,
 }
 
+/// What happened on a channel's Activity feed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivityKind {
+    Inbox,
+    Fork,
+    Turn,
+    Item,
+    Offline,
+    PullRequest,
+}
+
+/// One event on a channel's Activity feed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Activity {
+    pub channel: ChannelId,
+    pub session: Option<SessionId>,
+    pub kind: ActivityKind,
+    pub text: String,
+    pub by: String,
+    pub at: String,
+}
+
 /// A prepared view an agent offered (VW-1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedView {

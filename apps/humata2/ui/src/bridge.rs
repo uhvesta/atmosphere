@@ -124,6 +124,7 @@ impl Ui {
                     state.load.clone(),
                     state.route.clone(),
                     state.trail.len(),
+                    state.channel_pages.clone(),
                     (
                         state.layout,
                         state.full_screens.clone(),

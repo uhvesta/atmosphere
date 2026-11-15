@@ -11,7 +11,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::{FullScreen, PaneId};
 use humata2_app::{AppAction, Load, PaneAction, Route};
-use humata2_clients::model::{Scope, SessionId};
+use humata2_clients::model::{ChannelId, Scope, SessionId};
 use humata2_session::SessionAction;
 use humata2_sidebar::SidebarAction;
 
@@ -37,6 +37,10 @@ pub struct Shell {
     file_filter_session: Option<SessionId>,
     file_filter_value: String,
     _file_filter_subscription: Subscription,
+    channel_filter: Entity<InputState>,
+    channel_filter_id: Option<ChannelId>,
+    channel_filter_value: String,
+    _channel_filter_subscription: Subscription,
     _appearance: Subscription,
     viewport: f32,
 }
@@ -66,6 +70,21 @@ impl Shell {
                 }
             },
         );
+        let channel_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter sessions"));
+        let channel_filter_subscription = cx.subscribe(
+            &channel_filter,
+            |this: &mut Self, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.ui.send(
+                        AppAction::Channel(humata2_app::channel::Action::Filter(
+                            input.read(cx).value().to_string(),
+                        )),
+                        cx,
+                    );
+                }
+            },
+        );
         let appearance = window.observe_window_appearance(|window, cx| {
             gpui_kit::component::theme::Theme::sync_system_appearance(Some(window), cx)
         });
@@ -82,6 +101,10 @@ impl Shell {
             file_filter_session: None,
             file_filter_value: String::new(),
             _file_filter_subscription: file_filter_subscription,
+            channel_filter,
+            channel_filter_id: None,
+            channel_filter_value: String::new(),
+            _channel_filter_subscription: channel_filter_subscription,
             _appearance: appearance,
             viewport: 0.,
         }
@@ -271,6 +294,23 @@ impl Render for Shell {
                     .update(cx, |input, cx| input.set_value(filter, window, cx));
             }
         }
+        let (channel, query) = self.ui.read(|s| match &s.route {
+            Route::Channel(id) => (
+                Some(id.clone()),
+                s.channel_pages
+                    .get(id)
+                    .map_or_else(String::new, |v| v.query.clone()),
+            ),
+            _ => (None, String::new()),
+        });
+        if self.channel_filter_id != channel || self.channel_filter_value != query {
+            self.channel_filter_id = channel;
+            self.channel_filter_value = query.clone();
+            if self.channel_filter.read(cx).value().as_ref() != query {
+                self.channel_filter
+                    .update(cx, |input, cx| input.set_value(query, window, cx));
+            }
+        }
         let ui = self.ui.clone();
         let body = match load {
             Load::Loading => col()
@@ -299,7 +339,9 @@ impl Render for Shell {
                     AppAction::Retry,
                 ))
                 .into_any_element(),
-            Load::Ready => self.ui.read(|state| pages::page(&ui, state, window, cx)),
+            Load::Ready => self
+                .ui
+                .read(|state| pages::page(&ui, state, self.channel_filter.clone(), window, cx)),
         };
         let main = col()
             .id("main")
@@ -313,7 +355,11 @@ impl Render for Shell {
                     .into_any_element()
             } else {
                 self.ui.read(|state| {
-                    if matches!(state.route, Route::Home | Route::Inbox) {
+                    if let Route::Channel(id) = &state.route
+                        && let Some(channel) = state.workspace.channel(id)
+                    {
+                        crate::channel::header(&ui, state, channel, look).into_any_element()
+                    } else if matches!(state.route, Route::Home | Route::Inbox) {
                         crate::lists::toolbar(&ui, state, title, collapsed, look).into_any_element()
                     } else {
                         top_bar(&ui, title, can_go_back, collapsed, look).into_any_element()

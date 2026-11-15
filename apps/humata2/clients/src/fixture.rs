@@ -362,6 +362,31 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         if id == "postgres" {
             value.agent = Agent::Claude;
         }
+        match id {
+            "ledger" => value.started = "Today 11:40".into(),
+            "brin" => value.started = "Today 12:05".into(),
+            "partial-brin" => {
+                value.agent = Agent::Codex;
+                value.machine = MachineId::new("gpu-box");
+                value.started = "Today 12:31".into();
+                value.fork = Some(ForkKind::Shared);
+            }
+            "schema-review" => {
+                value.agent = Agent::Claude;
+                value.started = "Today 12:50".into();
+                value.fork = Some(ForkKind::Conversation);
+            }
+            "refund" => {
+                value.machine = MachineId::new("this-mac");
+                value.started = "Yesterday".into();
+            }
+            "rate" => {
+                value.agent = Agent::Codex;
+                value.machine = MachineId::new("devbox-1");
+                value.started = "Mon".into();
+            }
+            _ => {}
+        }
         value.activity = activity.into();
         value.active = when.into();
         value.transcript = [
@@ -567,6 +592,55 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             checks: "Passed".into(),
         },
     ];
+    use crate::model::{Activity, ActivityKind as K};
+    workspace.activity = [
+        (
+            K::Inbox,
+            "Asks to move PAY-3 to Done",
+            "Claude Code · Ledger schema migration",
+            "2m",
+            Some("ledger"),
+        ),
+        (
+            K::Fork,
+            "Forked “Try BRIN index” → “Partial BRIN on posted_at” (code only)",
+            "You",
+            "14m",
+            Some("partial-brin"),
+        ),
+        (
+            K::Turn,
+            "Finished a turn: +184 −24 across 2 repos",
+            "Claude Code · Ledger schema migration",
+            "20m",
+            Some("ledger"),
+        ),
+        (
+            K::Item,
+            "Created PAY-9 “Backfill progress bar”",
+            "Claude Code · Ledger schema migration",
+            "22m",
+            Some("ledger"),
+        ),
+        (K::Offline, "gpu-box went offline", "Humata", "41m", None),
+        (
+            K::PullRequest,
+            "Pushed rate-limiter and opened PR #491",
+            "Codex · API rate limiter",
+            "1h",
+            Some("rate"),
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, text, by, at, session)| Activity {
+        channel: ChannelId::new("payments-rewrite"),
+        session: session.map(SessionId::new),
+        kind,
+        text: text.into(),
+        by: by.into(),
+        at: at.into(),
+    })
+    .collect();
     workspace.items = [
         (
             "PAY-12",
@@ -690,6 +764,12 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 },
             ],
         );
+    }
+    if let Some(files) = workspace
+        .session_files
+        .get_mut(&SessionId::new("partial-brin"))
+    {
+        files.retain(|f| f.repo != "api");
     }
     workspace
 }

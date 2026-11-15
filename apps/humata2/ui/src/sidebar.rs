@@ -363,7 +363,7 @@ fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .text_ellipsis()
-                        .text_size(px(11.5))
+                        .text_size(px(11.))
                         .text_color(rgb(if session.status == Status::NeedsYou {
                             0xff9f0a
                         } else {
@@ -544,6 +544,7 @@ impl Render for Sidebar {
                     })
                     .test_support(),
             )
+            .child(div().h(px(if pinned.is_empty() { 0. } else { 8. })))
             .children(pinned.iter().enumerate().map(|(index, entry)| {
                 if let Some(row) = pinned_row(ui, entry, look) {
                     return row;
