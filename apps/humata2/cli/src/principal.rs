@@ -46,7 +46,8 @@ pub enum Principal {
     Agent { token: String },
     /// A script (SEC-14): only its token's capabilities and channels.
     Script { token: String },
-    /// The person: unverified until `humata login` or a confirmation.
+    /// The person. With no token and no `humata login`, the daemon refuses
+    /// every call but WhoAmI and logging in (SEC-9).
     User,
 }
 

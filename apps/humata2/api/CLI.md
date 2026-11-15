@@ -22,17 +22,18 @@ Each connection gets one principal, and no flag chooses it
 | Where `humata` runs | It acts as | It can |
 | --- | --- | --- |
 | Inside a session's terminal, or any process the agent started (the session's process tree, or `HUMATA_SESSION_TOKEN` set) | that session's agent (SEC-8), wherever it was typed | exactly what the agent can through MCP. User-only commands fail with `user_only`, and the error says to run them from a terminal outside Humata's sessions |
-| Any other terminal, not logged in | the user, unverified (SEC-9) | read what is stored on this machine (on the Mac: every channel, board and record; elsewhere: this machine's sessions, files and journal). Every write, every live read from another machine, and every user-only command asks for presence (§3) |
+| Any other terminal, not logged in | no one (SEC-9) | only `humata whoami`, which says it has no credential, and `humata login`. Every other command fails with `presence_required`, and the error says to log in or use the app |
 | A terminal session where `humata login` succeeded | the user, present (SEC-10) | everything, until the login ends (12 hours at most, or `humata logout`). Only that terminal session: a process that leaves it (`setsid`) is not covered (SEC-11) |
 | With `HUMATA_TOKEN` set | a script (SEC-14) | only the token's capabilities on its channels, until it expires; never a user-only command |
 
-The unverified tier exists because "not inside a session's tree" doesn't
-prove a person: an agent can start a process that its holder no longer
-parents (a double fork leaves it with launchd or init as parent). Such a
-process can already read this machine's disk as the same user (BOUNDARIES.md
-§1), so local reads give it nothing new; writes and reads that cross to
-another machine would, so they need presence. Scripts that write use a token
-(§5.4).
+A terminal with no credential gets nothing because "not inside a session's
+tree" doesn't prove a person: an agent can start a process that its holder
+no longer parents (a double fork leaves it with launchd or init as parent).
+So a process with no session token, script token, CLI login or app key is
+refused everything except `humata whoami` and `humata login`; there is no
+unverified read tier. Scripts use a token (§5.4). Test daemons built with
+the `admin` feature and started with `--admin` take such a process for the
+user (BOUNDARIES.md §2.2); release builds can't.
 
 ## 3. Presence
 
@@ -69,7 +70,8 @@ Each row: command, operation id, gRPC call, who may run it, behaviour with the
 host away (as in MCP.md §5). "User" means the person (logged in or
 confirming, §3) or a script token holding the capability named after
 "agent:", which is also what an agent needs; "user-only" means agents and
-scripts can never run it. "Anyone" covers the unverified tier for reads.
+scripts can never run it. "Anyone" means any caller with a credential; with
+none, only `humata whoami` and `humata login` run.
 
 ### 5.1 Looking around
 

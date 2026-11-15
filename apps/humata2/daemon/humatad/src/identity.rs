@@ -1,8 +1,11 @@
 //! Who a connection is (BOUNDARIES.md §2, MCP.md §1). Each session tab's
 //! shell gets a session token of its own in `HUMATA_SESSION_TOKEN`; a call
-//! that carries one is that session's agent, and a call with none is the
-//! user. Only hashes of the tokens are kept, in a 0600 file in the state,
-//! so tabs that outlive a daemon restart keep theirs.
+//! that carries one is that session's agent. A call with no credential is
+//! refused, except WhoAmI and logging in, which answer it as
+//! unauthenticated; a test daemon built with the `admin` feature and run
+//! with `--admin` takes it for the user instead. Only hashes of the tokens
+//! are kept, in a 0600 file in the state, so tabs that outlive a daemon
+//! restart keep theirs.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -13,6 +16,8 @@ use humata2_access::{ChannelId, MachineId, SessionId, SessionRef};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store, StoreError, write_atomic};
 use sha2::{Digest, Sha256};
+use tonic::body::Body;
+use tonic::codegen::http;
 use tonic::service::Interceptor;
 use tonic::{Request, Status};
 
@@ -25,11 +30,12 @@ pub(crate) const TOKEN_HEADER: &str = "humata-session-token";
 /// A token's random bytes: 32 hex characters.
 const TOKEN_BYTES: usize = 16;
 
-/// Who made a call, as the token established it.
+/// Who made a call, as its credential established it.
 #[derive(Clone, Debug)]
 pub(crate) enum Caller {
-    /// No token: the user. Until the process-tree check exists, an agent
-    /// that drops its token is taken for the user too.
+    /// The user. Only an admin test daemon finds one today: it takes a call
+    /// with no credential for the user.
+    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     User,
     Agent(AgentCaller),
 }
@@ -82,14 +88,59 @@ pub(crate) fn session_ref(record: &SessionRecord, here: &str) -> SessionRef {
     }
 }
 
+/// Marks a call that carried no credential on a method open to anyone.
+#[derive(Clone, Copy, Debug)]
+struct Unauthenticated;
+
+/// Marks a request for a method a caller with no credential may make:
+/// WhoAmI, so a refused shell can learn why, and logging in.
+#[derive(Clone, Copy, Debug)]
+struct OpenToAnyone;
+
+/// The methods `OpenToAnyone` covers, as (service, method).
+const OPEN_TO_ANYONE: [(&str, &str); 2] = [
+    (pb::daemon_service_server::SERVICE_NAME, "WhoAmI"),
+    (pb::cli_auth_service_server::SERVICE_NAME, "BeginCliSession"),
+];
+
+/// Marks `request` when its method is open to anyone. Runs before
+/// `Authenticate`, which can't see the path. Extensions are the server's
+/// own: a client can't set this marker.
+pub(crate) fn mark_open(mut request: http::Request<Body>) -> http::Request<Body> {
+    let open = request
+        .uri()
+        .path()
+        .strip_prefix('/')
+        .and_then(|path| path.split_once('/'))
+        .is_some_and(|route| OPEN_TO_ANYONE.iter().any(|listed| *listed == route));
+    if open {
+        request.extensions_mut().insert(OpenToAnyone);
+    }
+    request
+}
+
 /// The caller the interceptor found for `request`.
 pub(crate) fn caller<T>(request: &Request<T>) -> Result<Caller, Status> {
-    request.extensions().get::<Caller>().cloned().ok_or_else(|| {
-        status::internal(
-            "a call reached its handler without its caller being checked",
-            "",
-        )
-    })
+    request.extensions().get::<Caller>().cloned().ok_or_else(unchecked)
+}
+
+/// The caller of a method open to anyone: none when the call carried no
+/// credential.
+pub(crate) fn caller_if_any<T>(request: &Request<T>) -> Result<Option<Caller>, Status> {
+    if let Some(caller) = request.extensions().get::<Caller>() {
+        return Ok(Some(caller.clone()));
+    }
+    match request.extensions().get::<Unauthenticated>() {
+        Some(_) => Ok(None),
+        None => Err(unchecked()),
+    }
+}
+
+fn unchecked() -> Status {
+    status::internal(
+        "a call reached its handler without its caller being checked",
+        "",
+    )
 }
 
 /// The tokens this daemon gave out, by their hash.
@@ -209,33 +260,69 @@ impl Identities {
 }
 
 /// Finds each call's caller from its token and puts it in the request's
-/// extensions. A token this daemon didn't give out is refused before any
-/// handler runs. The token itself is never logged.
+/// extensions. A token this daemon didn't give out, or no credential on a
+/// method not open to anyone, is refused before any handler runs. The
+/// token itself is never logged.
 #[derive(Clone)]
 pub(crate) struct Authenticate {
     identities: Arc<Identities>,
+    /// Admin mode: a call with no credential is the user. Test daemons
+    /// only; release builds don't have the feature, so not the code.
+    #[cfg(feature = "admin")]
+    admin: bool,
 }
 
 impl Authenticate {
     pub(crate) fn new(identities: Arc<Identities>) -> Self {
-        Self { identities }
+        Self {
+            identities,
+            #[cfg(feature = "admin")]
+            admin: false,
+        }
+    }
+
+    /// Takes a call with no credential for the user, as a test daemon run
+    /// with `--admin` does.
+    #[cfg(feature = "admin")]
+    pub(crate) fn admin(identities: Arc<Identities>) -> Self {
+        Self {
+            identities,
+            admin: true,
+        }
+    }
+
+    /// Who a call with no credential is, if anyone.
+    fn without_credential(&self) -> Option<Caller> {
+        #[cfg(feature = "admin")]
+        if self.admin {
+            return Some(Caller::User);
+        }
+        None
     }
 }
 
 impl Interceptor for Authenticate {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         let caller = match request.metadata().get(TOKEN_HEADER) {
-            None => Caller::User,
+            None => self.without_credential(),
             Some(value) => match value
                 .to_str()
                 .ok()
                 .and_then(|token| self.identities.find(token))
             {
-                Some(agent) => Caller::Agent(agent),
+                Some(agent) => Some(Caller::Agent(agent)),
                 None => return Err(status::identity_mismatch()),
             },
         };
-        request.extensions_mut().insert(caller);
+        match caller {
+            Some(caller) => {
+                request.extensions_mut().insert(caller);
+            }
+            None if request.extensions().get::<OpenToAnyone>().is_some() => {
+                request.extensions_mut().insert(Unauthenticated);
+            }
+            None => return Err(status::unauthenticated()),
+        }
         Ok(request)
     }
 }

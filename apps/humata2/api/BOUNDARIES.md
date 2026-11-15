@@ -58,16 +58,25 @@ the person is using the app.
 | How `humata` was started | Principal |
 | --- | --- |
 | Inside a session's process tree, or with `HUMATA_SESSION_TOKEN` set | That session's agent. It can do exactly what the agent can through MCP |
-| Elsewhere, no login | User, unverified: reads of what this daemon stores. Every write, every relayed read from another machine and every user-only call needs presence (§2.3) |
+| Elsewhere, no login | None. Every call is refused with `presence_required` except `WhoAmI`, which reports no actor, and `humata login` |
 | In a terminal session bound by `humata login` | User, present, until the login ends (12 hours at most) |
 | With `HUMATA_TOKEN` | Script: the token's capabilities on its channels |
 
-Why the unverified tier: the daemon decides "inside a session's tree" from
-the caller's audit token (pid, then parents up to launchd or init, comparing
-pid and start time with each holder). An agent can double-fork so its child
-is reparented to launchd and has no holder above it. Treating that process
-as the user would make every rule advisory. So a process outside every tree
-is only trusted to read what it could already read from disk (§1).
+Why a process with no credential gets nothing: the daemon decides "inside
+a session's tree" from the caller's audit token (pid, then parents up to
+launchd or init, comparing pid and start time with each holder). An agent
+can double-fork so its child is reparented to launchd and has no holder
+above it. Treating that process as the user would make every rule
+advisory. So a process with no session token, script token, CLI login or
+app key is refused everything except `WhoAmI` and logging in. There is no
+unverified read tier.
+
+Admin mode is for test daemons only. A daemon built with the `admin`
+feature and started with `humatad2 serve --admin` takes a call with no
+credential for the present user, so tests can drive it without logging in,
+and says so in a warning when it starts. The feature is a compile-time
+switch that release builds don't have, so a release daemon has neither the
+flag nor the code.
 
 A CLI login binds the terminal session that ran `humata login`: its session
 id, the session leader's start time, and its controlling tty. A process the
@@ -79,8 +88,7 @@ where to run it.
 
 ### 2.3 Presence
 
-A user-only call from the CLI, and any write from the unverified tier, needs
-one of:
+A user-only call from the CLI needs one of:
 
 | Proof | Where | How it can't be faked |
 | --- | --- | --- |
@@ -249,8 +257,8 @@ agent do more.
    every agent-holdable operation's set against the policy stores.
 4. **Indirect paths, each closed:**
    - *Approve its own request:* answering is user-only; a process the agent
-     starts outside its tree is the unverified tier, which can't answer
-     without presence.
+     starts outside its tree has no credential, so the daemon refuses it
+     everything but `WhoAmI` and logging in.
    - *Ask for a wider grant:* the card offers only the daemon's standard
      scope for that capability (§4); the agent can't name another session,
      "all sessions" or the channel.
@@ -283,15 +291,15 @@ Behaviour tests, not wording tests:
 - For every RPC, call it with an agent principal on a channel whose rules
   are all Allow and a generated valid request; then read every policy store.
   Nothing changed. Run it with rules all Never as well.
-- For every user-only RPC, call it as an agent, as an unverified CLI user and
-  as a script: each fails with `user_only` or `presence_required`, and the
+- For every user-only RPC, call it as an agent, with no credential and as a
+  script: each fails with `user_only` or `presence_required`, and the
   stores are unchanged.
 - `tools/list` for an agent contains no tool whose operation is user-only;
   calling each user-only name fails with `user_only`.
 - An agent's request for access, approved with "Always let", creates exactly
   the card's grant, for that session only; a fork of that session has none.
-- A process double-forked from a session's agent connects as the
-  unverified tier: its reads succeed, its writes return `presence_required`.
+- A process double-forked from a session's agent connects with no
+  credential: every call but `WhoAmI` returns `presence_required`.
 - A journaled write accepted under a policy copy that has since changed to
   Never is rejected at replay, and the item is unchanged on the host.
 

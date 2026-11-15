@@ -10,7 +10,8 @@ service DaemonService {
   // when api_major differs.
   rpc GetServerInfo(GetServerInfoRequest) returns (ServerInfo);
   // The principal this connection was bound to (BOUNDARIES.md §2). Callers
-  // can't choose it; there is no field to.
+  // can't choose it; there is no field to. Answers a caller with no
+  // credential too, which every other call refuses (SEC-9).
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
 }
 
@@ -47,6 +48,7 @@ message ServerInfo {
 message WhoAmIRequest {}
 
 message WhoAmIResponse {
+  // Unset when the call carried no credential.
   Actor actor = 1;
   // For an agent: its channel. Empty for the user.
   ChannelId channel = 2;

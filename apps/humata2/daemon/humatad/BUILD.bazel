@@ -44,33 +44,48 @@ rust_library(
     ],
 )
 
+DAEMON_DEPS = [
+    ":grpc",
+    "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/holder",
+    "//apps/humata2/daemon/mcp",
+    "//apps/humata2/daemon/store",
+    "@crates//:clap",
+    "@crates//:hyper-util",
+    "@crates//:prost",
+    "@crates//:rand",
+    "@crates//:serde_json",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+    "@crates//:tokio",
+    "@crates//:tokio-stream",
+    "@crates//:tonic",
+    "@crates//:tower",
+    "@crates//:uuid",
+]
+
+# The release daemon: a call with no credential is refused (SEC-9).
 rust_binary(
     name = "humatad2",
     srcs = glob(["src/*.rs"]),
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = [
-        ":grpc",
-        "//apps/humata2/daemon/access",
-        "//apps/humata2/daemon/holder",
-        "//apps/humata2/daemon/mcp",
-        "//apps/humata2/daemon/store",
-        "@crates//:clap",
-        "@crates//:hyper-util",
-        "@crates//:prost",
-        "@crates//:rand",
-        "@crates//:serde_json",
-        "@crates//:sha2",
-        "@crates//:thiserror",
-        "@crates//:tokio",
-        "@crates//:tokio-stream",
-        "@crates//:tonic",
-        "@crates//:tower",
-        "@crates//:uuid",
-    ],
+    deps = DAEMON_DEPS,
+)
+
+# A test daemon: with `serve --admin`, a call with no credential acts as
+# the user, so tests can drive it without logging in. Never shipped.
+rust_binary(
+    name = "humatad2_admin",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_features = ["admin"],
+    deps = DAEMON_DEPS,
 )
 
 # Each test starts humatad2 and humata2_holder as the real binaries and
-# talks to them over gRPC on a socket of its own.
+# talks to them over gRPC on a socket of its own: the admin daemon with
+# --admin as HUMATAD2, and the release one as HUMATAD2_RELEASE for the
+# checks that a call with no credential is refused.
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
@@ -78,11 +93,13 @@ rust_binary(
         crate_root = src,
         data = [
             ":humatad2",
+            ":humatad2_admin",
             "//apps/humata2/daemon/holder:humata2_holder",
         ],
         env = {
             "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
-            "HUMATAD2": "$(rootpath :humatad2)",
+            "HUMATAD2": "$(rootpath :humatad2_admin)",
+            "HUMATAD2_RELEASE": "$(rootpath :humatad2)",
         },
         deps = [
             ":grpc",

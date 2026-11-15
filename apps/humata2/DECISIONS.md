@@ -333,3 +333,15 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 5. **Errors** map each daemon error kind to an exit code and a message that says how to fix it.
 6. **Tests** use an in-process fake daemon on a real Unix socket.
 7. **Still open, picked in code:** id prefixes, how waiting and streams print, and where CLI.md and the proto disagree (the CLI follows the proto).
+
+## D41: No credential, no access; admin mode only in test daemons (owner ruling 2026-11-14)
+- **Ruling:** "make shell require auth before anything, except in admin mode (for test tooling and stuff, release build shells never run as admin)." The unverified read tier of SEC-9 is gone. A caller with no session token, script token, CLI login or app key is refused everything except `WhoAmI` and `CliAuthService.BeginCliSession`. SEC-9, BOUNDARIES §2.2, CLI.md §2, TRACE §2 and TESTING follow.
+- **Admin mode:** humatad2's `admin` Cargo feature plus `serve --admin`. In Bazel only `humatad2_admin` (`testonly`, private) has the feature; the release `humatad2` doesn't contain the code path. With `--admin`, a token-less call is the present user, as the tests need.
+- **Provisional picks**:
+  1. **Error for no credential:** gRPC `Unauthenticated` with kind `presence_required`, accepted `[CLI_LOGIN]`; no proto change. Reverse: add an `unauthenticated` kind to errors.proto.
+  2. **`WhoAmI` with no credential:** `actor` and `channel` unset, `presence_possible` false. Reverse: a `NoCredential` actor.
+  3. **Open methods:** only the two above, so `humata status` with no credential fails. Reverse: `OPEN_TO_ANYONE` in `identity.rs`.
+  4. **How open methods are marked:** a request mapper outside the interceptor puts a marker in server-side extensions, which a client can't set.
+  5. **The feature alone does nothing:** `humatad2_admin` without `--admin` acts as the release daemon.
+  6. **Script tokens:** the daemon doesn't check them yet, so a script-token-only call is refused as having no credential.
+- **Consequences:** a release daemon serves only agents until `humata login` (SEC-10) and the app's keychain key (§2.1) exist; the app and CLI run against `humatad2_admin --admin` until then. `humata2_access` still models `Principal::Cli(Presence::Unverified)`; humatad2 can't reach it now. Recommendation: remove that tier from the access crate and its TRACE matrix tests next.

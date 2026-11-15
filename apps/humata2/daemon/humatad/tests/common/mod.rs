@@ -1,5 +1,7 @@
 //! Starts a real `humatad2` on a socket of its own, connects to it over
-//! gRPC, and stops it and the holders it started when the test ends.
+//! gRPC, and stops it and the holders it started when the test ends. By
+//! default it is the admin test daemon run with `--admin`, so calls with no
+//! credential act as the user; `Build::Release` is the daemon as shipped.
 
 #![allow(dead_code)]
 
@@ -53,8 +55,18 @@ pub fn state_folder(dir: &Path) -> PathBuf {
     state
 }
 
+/// Which humatad2 a test runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Build {
+    /// The admin test daemon, run with `--admin`.
+    Admin,
+    /// The release daemon: a call with no credential is refused.
+    Release,
+}
+
 pub struct Daemon {
     child: Option<Child>,
+    build: Build,
     pub socket: PathBuf,
     pub state: PathBuf,
     pub dir: TempDir,
@@ -66,8 +78,13 @@ impl Daemon {
     }
 
     pub async fn start_in(dir: TempDir) -> Self {
+        Self::start_build(Build::Admin, dir).await
+    }
+
+    pub async fn start_build(build: Build, dir: TempDir) -> Self {
         let mut daemon = Self {
             child: None,
+            build,
             socket: dir.path().join("d.sock"),
             state: dir.path().join("state"),
             dir,
@@ -77,8 +94,15 @@ impl Daemon {
     }
 
     async fn launch(&mut self) {
-        let child = Command::new(binary("HUMATAD2"))
-            .arg("serve")
+        let mut command = match self.build {
+            Build::Admin => Command::new(binary("HUMATAD2")),
+            Build::Release => Command::new(binary("HUMATAD2_RELEASE")),
+        };
+        command.arg("serve");
+        if self.build == Build::Admin {
+            command.arg("--admin");
+        }
+        let child = command
             .arg("--socket")
             .arg(&self.socket)
             .arg("--state")
@@ -112,6 +136,13 @@ impl Daemon {
 
     pub async fn restart(&mut self) {
         self.kill();
+        self.launch().await;
+    }
+
+    /// Stops this daemon and starts `build` on the same socket and state.
+    pub async fn restart_as(&mut self, build: Build) {
+        self.kill();
+        self.build = build;
         self.launch().await;
     }
 

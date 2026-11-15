@@ -29,22 +29,6 @@ async fn server_info_names_the_api_and_a_machine_that_stays_the_same() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_connection_on_the_socket_is_the_user() {
-    let daemon = Daemon::start().await;
-
-    let me = pb::daemon_service_client::DaemonServiceClient::new(daemon.channel().await)
-        .who_am_i(pb::WhoAmIRequest {})
-        .await
-        .unwrap()
-        .into_inner();
-
-    let Some(pb::actor::Actor::User(user)) = me.actor.and_then(|actor| actor.actor) else {
-        panic!("expected the user");
-    };
-    assert_eq!(user.via(), pb::user_actor::Via::CliOnHost);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_service_not_built_yet_says_so_with_an_error() {
     let daemon = Daemon::start().await;
 

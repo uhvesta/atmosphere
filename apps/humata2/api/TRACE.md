@@ -442,7 +442,7 @@ against its last policy copy (AW-8).
 | Agent, another session or machine | not in this tier: the act falls to its capability | does it, checked on the Mac (TP-8) | Inbox request on the Mac | denied | refused user_only | no |
 | CLI inside a session tree (SEC-8) | as that session's agent | as the agent | as the agent | as the agent | refused | no |
 | CLI outside a session, with presence | does it as the user | does it | does it, no request | does it | does it | no |
-| CLI outside a session, no presence (SEC-9) | reads this machine's own state only | reads only; writes ask for presence | asks for presence | asks for presence | asks for presence | no |
+| CLI outside a session, no credential (SEC-9) | refused: only WhoAmI and logging in | refused | refused | refused | refused | no |
 | A machine while the Mac is away | done on the machine | journaled (SL-5) or waits if it needs the Mac | per the While I'm away rule; never low-risk if it needs another machine (AW-11) | denied | only answering requests it holds, with the passphrase | judges with its PolicySnapshot |
 | Script token (SEC-14) | none: a token has no session | only what the token lists, in its channels | refused: a token cannot wait for the user | refused unless listed | refused always | no |
 | Peer daemon (PeerService) | n/a | n/a | n/a | n/a | n/a | Mac-to-daemon only, over the SSH link |

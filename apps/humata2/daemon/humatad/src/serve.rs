@@ -13,11 +13,12 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::service::InterceptorLayer;
 use tonic::transport::Server;
+use tower::util::MapRequestLayer;
 
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
 use crate::guard::Guard;
-use crate::identity::{Authenticate, Identities};
+use crate::identity::{self, Authenticate, Identities};
 use crate::inbox::Inbox;
 use crate::not_built;
 use crate::paste::PASTE_MAX_BYTES;
@@ -66,6 +67,11 @@ pub(crate) struct ServeArgs {
     /// How much of each tab's output its holder keeps.
     #[arg(long, default_value_t = 8 << 20)]
     scrollback_bytes: usize,
+    /// Test daemons only: a call with no credential acts as the user.
+    /// Builds without the `admin` feature, as releases are, lack this flag.
+    #[cfg(feature = "admin")]
+    #[arg(long)]
+    admin: bool,
 }
 
 /// `~/.humata2`, where the daemon lives unless told otherwise.
@@ -135,6 +141,17 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         &store,
         &machine,
     )?);
+    #[cfg(feature = "admin")]
+    let authenticate = if args.admin {
+        eprintln!(
+            "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
+        );
+        Authenticate::admin(identities.clone())
+    } else {
+        Authenticate::new(identities.clone())
+    };
+    #[cfg(not(feature = "admin"))]
+    let authenticate = Authenticate::new(identities.clone());
     let guard = Arc::new(Guard::new(&machine, role));
 
     let listener = bind(&socket)?;
@@ -152,9 +169,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         identities: identities.clone(),
     });
 
-    // Every call is matched to its caller before a service sees it.
+    // Every call is matched to its caller before a service sees it. The
+    // first layer is the outer one: it marks the methods open to anyone,
+    // which the interceptor can't see the path of.
     let router = Server::builder()
-        .layer(InterceptorLayer::new(Authenticate::new(identities)))
+        .layer(MapRequestLayer::new(identity::mark_open))
+        .layer(InterceptorLayer::new(authenticate))
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(Daemon::new(
             machine, role,
         )))

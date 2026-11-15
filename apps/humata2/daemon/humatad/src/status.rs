@@ -197,6 +197,23 @@ pub(crate) fn identity_mismatch() -> Status {
     )
 }
 
+/// A call with no credential: no session token, script token, CLI login or
+/// app key (SEC-9). The proto has no kind for it; `presence_required` with
+/// the CLI login is the closest, since that is how a person's shell gets in.
+pub(crate) fn unauthenticated() -> Status {
+    failure(
+        Code::Unauthenticated,
+        error(
+            "humatad2 refused the call: it carried no credential, so the daemon can't tell a person from an agent or a script",
+            "use the Humata app, or run the command in a Humata session tab, where it acts as that session's agent. `humata login` will let your own terminal in, but this build doesn't have it yet. If you are developing Humata, run a test daemon built as humatad2_admin with `serve --admin`; never use it as your real daemon, since it lets anything on your account act as you",
+            pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: vec![pb::presence_required::Method::CliLogin as i32],
+                caller_in_session_terminal: false,
+            }),
+        ),
+    )
+}
+
 /// A call the policy refused, with the proto kind and fix it names.
 pub(crate) fn refused(refusal: &Refusal) -> Status {
     use pb::denied::Source as Denied;

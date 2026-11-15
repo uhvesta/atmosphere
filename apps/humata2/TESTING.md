@@ -88,7 +88,7 @@ Boundary suites share one harness: `testing/boundary`, crate
   runs. The fake agent prints, reads input and calls MCP tools when the test
   tells it to.
 - Principals connect the real way, never by a flag: `world.app()`,
-  `world.cli_user()` (unverified), `world.cli_logged_in()`,
+  `world.cli_user()` (no credential), `world.cli_logged_in()`,
   `world.agent(&session)` (a process under that session's holder with its
   token), `world.script(&token)` and `world.double_forked(&session)`. Each
   hands out the generated `tonic` clients: `.boards()`, `.sessions()`,
@@ -125,8 +125,8 @@ use pb::error::Kind;
 - No RPC called by an agent changes a policy store, with every rule Allow
   and with every rule Never (BOUNDARIES.md §6.1).
 - Every user-only RPC fails with `user_only` for an agent and for a script,
-  and with `presence_required` for the unverified CLI. The policy stores
-  stay as they were.
+  and with `presence_required` for the CLI with no credential. The policy
+  stores stay as they were.
 
 ```rust
 /// BOUNDARIES.md §6.1: no agent call widens what an agent may do.
@@ -613,8 +613,8 @@ async fn a_fork_that_asks_returns_pending_and_runs_once_approved() {
 TRACE.md §2 is a data table in `testing/boundary/tests/matrix.rs`: one cell
 per actor and tier. Agents act through `MCP`, the CLI tiers and scripts
 through `humata`, the app through `gRPC`. Each tier has one representative
-call, and a cell may name its own call when the row's words need it (the
-unverified tier's reads).
+call, and a cell may name its own call when the row's words need it (a
+`whoami` with no credential).
 
 | Tier | Representative call | Capability |
 | --- | --- | --- |
@@ -636,8 +636,8 @@ const MATRIX: &[Cell] = &[
     Cell::new(Actor::AgentOwnSession, Tier::UserOnly, Expect::UserOnly),
     Cell::new(Actor::CliInSessionTree, Tier::UserOnly, Expect::UserOnly),
     Cell::new(Actor::CliPresent, Tier::AskMe, Expect::Applied),
-    Cell::new(Actor::CliUnverified, Tier::DefaultAllow, Expect::PresenceRequired),
-    Cell::new(Actor::CliUnverified, Tier::NoRule, Expect::Applied).reading_this_machine(),
+    Cell::new(Actor::CliNoCredential, Tier::DefaultAllow, Expect::PresenceRequired),
+    Cell::new(Actor::CliNoCredential, Tier::NoRule, Expect::PresenceRequired),
     Cell::new(Actor::MachineWithMacAway, Tier::DefaultAllow, Expect::Journaled),
     Cell::new(Actor::Script, Tier::UserOnly, Expect::UserOnly),
 ];
@@ -767,11 +767,11 @@ Where `humata` runs decides its actor, never a flag (CLI.md §2):
 
 - Inside a session's process tree it is that session's agent, with its
   rules. User-only commands fail with `user_only`, exit 5.
-- Elsewhere, not logged in, it is the unverified user. It reads what this
-  machine stores. Writes, relayed reads and user-only commands need
-  presence.
+- Elsewhere, not logged in, it has no credential. Every command but
+  `humata whoami` and `humata login` fails with `presence_required`,
+  exit 5.
 - After `humata login` it is the present user, in that terminal session
-  only. A child that calls `setsid` is unverified again (SEC-11).
+  only. A child that calls `setsid` has no credential again (SEC-11).
 - With `HUMATA_TOKEN` it is a script: only the token's capabilities on its
   channels.
 - A session token used outside its tree fails with `identity_mismatch`
@@ -789,9 +789,9 @@ async fn whoami_reports_the_actor_of_where_it_runs() {
 
     for (cli, actor) in [
         (world.cli().in_session(&session), "agent"),
-        (world.cli(), "user_unverified"),
+        (world.cli(), "none"),
         (world.cli().logged_in(), "user_present"),
-        (world.cli().logged_in().after_setsid(), "user_unverified"),
+        (world.cli().logged_in().after_setsid(), "none"),
         (world.cli().with_token(&token), "script"),
     ] {
         let run = cli.run(["whoami", "--json"]).await;

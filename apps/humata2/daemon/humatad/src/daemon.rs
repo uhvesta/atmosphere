@@ -43,13 +43,22 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         }))
     }
 
-    /// A connection with a session token is that session's agent; one
-    /// without is the user (BOUNDARIES.md §2).
+    /// A connection with a session token is that session's agent
+    /// (BOUNDARIES.md §2). One with no credential gets no actor: it is
+    /// refused everything else, and this tells it so.
     async fn who_am_i(
         &self,
         request: Request<pb::WhoAmIRequest>,
     ) -> Result<Response<pb::WhoAmIResponse>, Status> {
-        let (actor, channel) = match identity::caller(&request)? {
+        let Some(caller) = identity::caller_if_any(&request)? else {
+            return Ok(Response::new(pb::WhoAmIResponse {
+                actor: None,
+                channel: None,
+                presence_possible: false,
+                contained: false,
+            }));
+        };
+        let (actor, channel) = match caller {
             Caller::User => {
                 let via = match self.role {
                     pb::DaemonRole::Machine => pb::user_actor::Via::CliOnMachine,

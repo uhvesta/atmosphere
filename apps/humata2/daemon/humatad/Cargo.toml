@@ -17,6 +17,11 @@ path = "src/main.rs"
 name = "protoc-gen-tonic"
 path = "codegen/protoc_gen_tonic.rs"
 
+[features]
+# Test daemons only: `humatad2 serve --admin` takes a call with no
+# credential for the user. Release builds never turn this on.
+admin = []
+
 [dependencies]
 clap = { workspace = true }
 humata2-access = { path = "../access" }

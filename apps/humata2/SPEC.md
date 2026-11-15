@@ -289,7 +289,7 @@ more, ST-2):
   it from the Mac's trash within 30 days brings the channel back with its
   sessions archived. (provisional, D11)
 - **CH-25** Only the user can delete a channel. An agent has no way to ask
-  for it, and the CLI needs presence (SEC-9). (provisional, D11)
+  for it, and the CLI needs presence (SEC-10). (provisional, D11)
 
 ```text
 ┌ # payments-rewrite ───────────────────────────────────────── [New session] ┐
@@ -1898,7 +1898,7 @@ daemon and, as far as physically possible, the machine.
 - **AW-2** From any plain SSH terminal on a machine, `humata attach <session>`
   attaches to a session's terminal; detaching leaves it running. `humata ls`
   lists the machine's sessions. Attaching with input is user-only and needs
-  presence (SEC-9); an agent's attempt is refused. Several writers may be
+  presence (SEC-10); an agent's attempt is refused. Several writers may be
   attached at once (SE-24).
 - **AW-3** While the Mac is away, each remote daemon keeps its agents'
   requests in its local journal (SL-5). `humata inbox` on that machine shows
@@ -2225,10 +2225,11 @@ daemon and, as far as physically possible, the machine.
 - **SEC-8** A `humata` command run inside a session's process tree acts as
   that session's agent, with that agent's rules, wherever it was typed.
   (provisional, D2)
-- **SEC-9** A `humata` command run outside any session is treated as an
-  unverified user. It can read only that machine's own state. Writes, reads
-  that go through the Mac and user-only actions need presence (SEC-10).
-  (provisional, D2)
+- **SEC-9** A process with no session token, script token, CLI login or
+  app key is refused everything except asking who it is (`humata whoami`)
+  and logging in (SEC-10). There is no unverified read tier. Only a test
+  daemon built in admin mode takes such a process for the user; release
+  builds can't. (provisional, D2)
 - **SEC-10** The user shows presence in one of three ways: confirming in the
   app (a dialog naming the command, with **Allow** and **Don't Allow**);
   `humata login`, which lasts up to 12 hours or until `humata logout`; or the
