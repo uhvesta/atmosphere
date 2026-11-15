@@ -84,7 +84,7 @@ pub(crate) async fn run(
         source: source.into(),
     })?;
     drop(log);
-    eprintln!("humatad2: peer link up (pid {})", std::process::id());
+    crate::log::say!("humatad2: peer link up (pid {})", std::process::id());
 
     let handshake = Arc::new(Handshake::new(
         state.join(link_proof::KEY_FILE),

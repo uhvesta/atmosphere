@@ -287,8 +287,10 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 
 ### Daemon and persistence (I7; PER-25–PER-31, D71)
 - [x] The last good copy no longer waits on file events (Bazel's darwin sandbox delivered none): the store calls `Store::on_commit` hooks after each committed write, and humatad's keeper debounces those. Tests: `daemon/humatad:humatad2_unit_test` (`a_copy_is_saved_once_writes_go_quiet`, no longer ignored), `daemon/store:records_test` (`each_committed_write_is_told_and_a_refused_one_is_not`).
-- [ ] Give the background reconcile, `ServerInfo.last_start` and the debounce a decision number and a GRPC entry.
-- [ ] Put humatad's own log lines in restart reports. Write the restart doctor skill (`humata doctor restarts`).
+- [x] The background reconcile, `ServerInfo.last_start` and the last good copy's debounce are D77 and GRPC.md §2.2 (and its §2.1 table).
+- [x] humatad2's own log lines go in restart reports: `logs/humatad2.log`, kept as `humatad2.previous.log` at each start, its last 50 lines in `daemon.log` and `restart.json`'s `daemon_log` (D77). Tests: `daemon/humatad:restart_test` (`the_restart_report_has_what_the_daemon_logged_before_it_stopped`), `daemon/revive:kill_matrix_test` (`a_failed_resume_is_reported_with_what_it_takes_to_diagnose_it`).
+- [ ] Write the restart doctor skill (`humata doctor restarts`).
+- [ ] Push `last_start` to the app when it's set (EventService) instead of the app asking again.
 - [ ] MV-13/MV-14 move export and import, including the store's MV-13 export.
 - [x] Wire humatad to the store's restart work: `Store::open_or_restore` with `Restored` passed to reconcile, `save_last_good` after writes go quiet (30 s, at most 10 min) on a blocking thread, `ReviveConfig.reports` filled, and one `NotBroughtBack` line per agent or shell that didn't come back in `ServerInfo.last_start`. Test: `daemon/humatad:restart_test` (`a_shell_that_cant_come_back_is_one_line_and_the_others_still_do`, `a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so`).
 - [ ] Show `last_start`'s lines (and a restore's losses) in the app, as the goldens draw it.

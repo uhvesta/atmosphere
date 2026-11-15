@@ -32,7 +32,7 @@ impl Compression {
         match Settings::load(&self.file) {
             Ok(settings) => settings.global(),
             Err(error) => {
-                eprintln!(
+                crate::log::say!(
                     "humatad2: warning: {}; using Auto until it is fixed",
                     status::chain(&error)
                 );

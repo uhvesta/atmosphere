@@ -98,6 +98,7 @@ impl World {
                 version: "0.0.0-test".to_owned(),
                 machine: "ma_1".to_owned(),
                 os: "test".to_owned(),
+                daemon_log: Some(self.root.join("logs/humatad2.previous.log")),
             },
         }
     }
@@ -764,6 +765,13 @@ async fn a_failed_resume_is_reported_with_what_it_takes_to_diagnose_it() {
         unreadable_tables: Vec::new(),
     };
 
+    fs::create_dir_all(world.root.join("logs")).unwrap();
+    fs::write(
+        world.root.join("logs/humatad2.previous.log"),
+        "humatad2: serving\nhumatad2: the last thing before the crash\n",
+    )
+    .unwrap();
+
     let reconciled = reconcile(&store, &world.config(), &world.env(), Some(&restored)).await.unwrap();
 
     let folder = reconciled.report.as_ref().expect("no restart report was written");
@@ -811,6 +819,9 @@ async fn a_failed_resume_is_reported_with_what_it_takes_to_diagnose_it() {
     assert!(contains(log.as_bytes(), "agent_exited"), "{log}");
     let state = fs::read_to_string(folder.join("state.txt")).unwrap();
     assert!(contains(state.as_bytes(), "se_a"), "{state}");
+    // So are the daemon's own last lines from before the restart.
+    assert!(contains(log.as_bytes(), "the last thing before the crash"), "{log}");
+    assert_eq!(json["daemon_log"][1], "humatad2: the last thing before the crash");
 
     // A restart that brings everything back is reported too.
     let again = reconcile(&store, &world.config(), &world.env(), None).await.unwrap();

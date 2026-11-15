@@ -80,6 +80,7 @@ for is pending; none runs on an idle daemon.
 | Holder hang-up (holder `server.rs`) | 20 ms, up to the hang-up grace | the program to exit | to become a watch on exit |
 | Revive agent output (revive `agent.rs`) | the crate's `POLL`, while reviving | output and exit | to read the holder's event stream |
 | Machine setup retries (machines `setup.rs`, `RetryPolicy`) | 2 s, doubling to 30 s, at most 10 attempts, only while `ADD_MACHINE`'s `connect` fails as a machine still booting would | ssh to answer | a machine that isn't up yet sends nothing to be told by; an ssh refusal or a host key change fails at once |
+| Last good copy (humatad `last_good.rs`) | 30 s after the last committed write, at most 10 min while writes continue | writes to go quiet before saving a copy of the state (PER-31, D77) | it is a debounce, woken by the store's commit hook; it runs only while a write is pending |
 | Remote service start (machines `service.rs`, run over ssh) | 1 s, at most 10 times, then a 2 s settle | the systemd user manager, then `humatad2.service` to be active, and an old daemon to exit | systemd's `is-active` and `pgrep` are what a POSIX shell has; it runs only during `install`/`start` |
 
 The command runner (machines `system.rs`) no longer polls: a thread waits
@@ -100,6 +101,21 @@ Nothing watches agent conversation files, git state or `shared/` yet; when
 they're read they're to come from file notifications (FSEvents, inotify),
 never a rescan on a timer. POLLING-AUDIT-2026-11-14.md in `research/` has
 the detail and the fixes.
+
+### 2.2 Starting again (PER-29, PER-31, D77)
+
+`humatad2 serve` binds its socket, then opens its state, restoring the last
+good copy if the database is damaged, and serves at once. Bringing back the
+agents and shells whose holders are gone runs beside serving, since an
+agent may take 30 seconds to resume. Until that's done,
+`GetServerInfo.last_start` is unset; then it names the restart report's
+folder, has one `NotBroughtBack` line for each agent (by session) or shell
+(by tab) that didn't come back, and after a restore says when the copy was
+taken and how many rows it changed. Only the user gets `last_start`.
+
+The restart report includes the last 50 lines humatad2 logged in the run
+before (`logs/humatad2.previous.log`), so it can say what the daemon was
+doing when it stopped.
 
 ## 3. Principals on a connection
 
@@ -125,7 +141,7 @@ a machine checks only calls it answers alone, using the host's last
 
 | Service (file) | Owner | Served on | Notes |
 | --- | --- | --- | --- |
-| DaemonService (daemon) | each daemon | every endpoint | |
+| DaemonService (daemon) | each daemon | every endpoint | `GetServerInfo.last_start` says what the start brought back (§2.2) |
 | ChannelService, ActivityService (channels) | host | host socket; forwarded from machines | Channel records, repos, machines (SL-1) |
 | SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8) |
 | TerminalService (terminal) | the session's machine | machine socket for its own sessions; host socket, relayed over the peer link | One HTTP/2 stream per attached tab end to end. `PasteImage` saves a pasted image (32 MiB at most) in the session's own folder on its machine, file 0600, gone with the session, and returns the path there for the client to type as input; a text paste is plain input |

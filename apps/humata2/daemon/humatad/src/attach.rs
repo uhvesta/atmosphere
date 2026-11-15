@@ -241,7 +241,7 @@ impl Attached {
                     .await?;
             }
             Event::Refused { message } => {
-                eprintln!("humatad2: tab {}'s holder refused a request: {message}", self.tab.id);
+                crate::log::say!("humatad2: tab {}'s holder refused a request: {message}", self.tab.id);
             }
         }
         Ok(())

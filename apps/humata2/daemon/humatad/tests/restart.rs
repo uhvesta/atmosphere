@@ -150,3 +150,23 @@ async fn a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_s
     after.type_text("echo bac''k\n").await;
     after.wait_for("back").await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_restart_report_has_what_the_daemon_logged_before_it_stopped() {
+    let mut daemon = Daemon::start().await;
+    let first = last_start(&daemon).await;
+    let first_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(Path::new(&first.report).join("restart.json")).unwrap()).unwrap();
+    // A first start has no run before it.
+    assert_eq!(first_json["daemon_log"], serde_json::json!([]));
+
+    daemon.restart().await;
+
+    let start = last_start(&daemon).await;
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(Path::new(&start.report).join("restart.json")).unwrap()).unwrap();
+    let before = std::fs::read_to_string(daemon.state.join("logs/humatad2.previous.log")).unwrap();
+    let lines: Vec<&str> = before.lines().filter(|line| !line.trim().is_empty()).collect();
+    assert!(!lines.is_empty(), "the first run logged nothing");
+    assert_eq!(json["daemon_log"], serde_json::json!(lines));
+}

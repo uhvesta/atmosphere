@@ -18,6 +18,7 @@ mod holders;
 mod identity;
 mod inbox;
 mod last_good;
+mod log;
 mod link_proof;
 mod machine_service;
 mod mcp;
@@ -81,7 +82,7 @@ fn main() -> ExitCode {
     let code = match result {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("humatad2: {}", status::chain(&error));
+            crate::log::say!("humatad2: {}", status::chain(&error));
             1
         }
     };

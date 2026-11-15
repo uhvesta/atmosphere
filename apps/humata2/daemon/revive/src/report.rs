@@ -48,6 +48,10 @@ pub struct RestartReports {
     pub machine: String,
     /// The OS and its version, such as `macOS 26.7`.
     pub os: String,
+    /// The daemon's own log from the run before this start, whose last
+    /// lines say what it was doing when it stopped. None when there is
+    /// none (a first start).
+    pub daemon_log: Option<PathBuf>,
 }
 
 /// A file a session relied on, as it was found before reviving it.
@@ -148,6 +152,8 @@ struct RestartJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     restored: Option<RestoredJson>,
     sessions: &'a [Entry],
+    /// The last lines the daemon logged before this start.
+    daemon_log: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -174,6 +180,7 @@ pub(crate) struct Restart {
     secrets: Vec<(String, String)>,
     recording: Recording,
     restored: Option<RestoredJson>,
+    daemon_log: Vec<String>,
 }
 
 impl Restart {
@@ -234,13 +241,23 @@ impl Restart {
                 .collect(),
             unreadable_tables: restored.unreadable_tables.clone(),
         });
+        let daemon_log = reports.daemon_log.as_deref().map(log_tail).unwrap_or_default();
+        let mut recording = Recording::start(context, trees, Limits::default());
+        for line in &daemon_log {
+            recording.log(LogLine {
+                at_ms: 0,
+                machine: reports.machine.clone(),
+                line: format!("(last run) {line}"),
+            });
+        }
         let mut restart = Self {
             at_unix_ms,
             started: Instant::now(),
             entries: Vec::new(),
             secrets: Vec::new(),
-            recording: Recording::start(context, trees, Limits::default()),
+            recording,
             restored,
+            daemon_log,
         };
         restart.step("found the saved sessions");
         restart
@@ -476,6 +493,7 @@ impl Restart {
             store_schema_version: SCHEMA_VERSION,
             restored: self.restored,
             sessions: &self.entries,
+            daemon_log: &self.daemon_log,
         };
         let mut text = serde_json::to_string_pretty(&json).map_err(|source| ReviveError::RestartJson {
             path: folder.join("restart.json"),

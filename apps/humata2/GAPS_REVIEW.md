@@ -73,3 +73,10 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - The rest of the wiring (`open_or_restore`, `Restored` into reconcile, `ReviveConfig.reports`, `last_start.not_brought_back`) was already in 5c795563; this adds the tests that drive it through the real daemon.
 - Verified: `bazel test //apps/humata2/daemon/store:all //apps/humata2/daemon/humatad:humatad2_unit_test //apps/humata2/daemon/humatad:restart_test`. New: `each_committed_write_is_told_and_a_refused_one_is_not`, `a_copy_is_saved_once_writes_go_quiet` (un-ignored), `a_shell_that_cant_come_back_is_one_line_and_the_others_still_do`, `a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so`.
 - Look at: the two restart tests pass on the code before this commit too (they cover 5c795563's wiring); the keeper tests are the ones that failed before.
+
+### (this commit): D77 and the daemon's own log in restart reports (Daemon and persistence; D71, D77)
+- D77 records the background reconcile, `ServerInfo.last_start`, the last good copy's debounce and the daemon's log; GRPC.md gains §2.2 (starting again), a §2.1 row for the debounce, and a DaemonService note. D71's "Open" no longer lists the log.
+- `daemon/humatad/src/log.rs`: every stderr line (now `log::say!`) and a panic also go to `logs/humatad2.log`; each start keeps the run before's as `humatad2.previous.log` and hands it to the report. `serve.rs` binds the socket before opening the store, so a second daemon stops before touching the state and only the socket's owner rotates the log.
+- `daemon/revive/src/report.rs`: `RestartReports.daemon_log`; its last 50 lines go in `daemon.log` ("(last run)") and `restart.json`'s `daemon_log`.
+- Verified: `bazel test //apps/humata2/daemon/...` (new `the_restart_report_has_what_the_daemon_logged_before_it_stopped`; `a_failed_resume_is_reported_with_what_it_takes_to_diagnose_it` checks the lines).
+- Look at: the log starts over past 4 MiB rather than rotating; the peer link's own `peer-link.log` isn't in the report.

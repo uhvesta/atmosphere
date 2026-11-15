@@ -108,7 +108,7 @@ pub(crate) fn missing(field: &str) -> Status {
 pub(crate) fn internal(message: impl Into<String>, log_path: &str) -> Status {
     let incident = format!("in_{}", uuid::Uuid::new_v4().simple());
     let message = message.into();
-    eprintln!("humatad2: incident {incident}: {message}");
+    crate::log::say!("humatad2: incident {incident}: {message}");
     failure(
         Code::Internal,
         error(

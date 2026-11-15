@@ -199,6 +199,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let logs = state.join("logs");
     private_folder(&holders)?;
     private_folder(&logs)?;
+    // Bound before the state is touched, so a second daemon on the same
+    // socket stops here; and only the daemon that has the socket keeps
+    // the log.
+    let listener = bind(&socket)?;
+    let daemon_log = crate::log::start(&logs);
     let (store, restored) = Store::open_or_restore(state.join("store")).map_err(|source| DaemonError::Store { source })?;
     let store = Arc::new(store);
     let machine = machine_id(&state.join("machine-id"))?;
@@ -220,13 +225,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     #[cfg(feature = "admin")]
     let authenticate = match (args.admin, args.admin_pid) {
         (true, _) => {
-            eprintln!(
+            crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
             );
             Authenticate::admin(identities.clone(), logins.clone(), identity::Admin::Anyone)
         }
         (false, Some(pid)) => {
-            eprintln!(
+            crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential from process {pid} acts as the user. This is a test daemon; don't use it as your real one"
             );
             Authenticate::admin(identities.clone(), logins.clone(), identity::Admin::Process(pid))
@@ -237,7 +242,6 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let authenticate = Authenticate::new(identities.clone(), logins.clone());
     let guard = Arc::new(Guard::new(&machine, role));
 
-    let listener = bind(&socket)?;
     let reports = state.join("restarts");
     private_folder(&reports)?;
     let revive = restart::Revive {
@@ -249,6 +253,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         home: root.clone(),
         reports,
         machine: machine.clone(),
+        daemon_log,
     };
     let last_start = restart::in_background(store.clone(), identities.clone(), revive, restored);
     last_good::keep(store.clone(), last_good::Quiet::default());

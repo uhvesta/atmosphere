@@ -101,7 +101,7 @@ pub(crate) fn recover_in_background(work: Arc<Work>) {
             Ok(recovered) => {
                 for machine in recovered {
                     if let Err(error) = machine.outcome {
-                        eprintln!(
+                        crate::log::say!(
                             "humatad2: {} was left {:?} by the last run and couldn't be finished yet: {}",
                             machine.machine,
                             machine.found,
@@ -110,7 +110,7 @@ pub(crate) fn recover_in_background(work: Arc<Work>) {
                     }
                 }
             }
-            Err(error) => eprintln!(
+            Err(error) => crate::log::say!(
                 "humatad2: couldn't finish the machine adds and removals the last run left: {}",
                 status::chain(&error)
             ),

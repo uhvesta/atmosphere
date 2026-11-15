@@ -68,12 +68,12 @@ async fn run(
             Ok(Ok(copy)) => {
                 saved.send_replace(Some(copy));
             }
-            Ok(Err(error)) => eprintln!(
+            Ok(Err(error)) => crate::log::say!(
                 "humatad2: couldn't save a last good copy of the state in {}; the one before is kept. Check the disk isn't full: {}",
                 store.root().display(),
                 status::chain(&error)
             ),
-            Err(error) => eprintln!("humatad2: saving the last good copy stopped: {error}"),
+            Err(error) => crate::log::say!("humatad2: saving the last good copy stopped: {error}"),
         }
         // A write committed while the copy was taken waited for it, so it
         // is pending here and gets a copy of its own.

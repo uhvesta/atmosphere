@@ -34,6 +34,8 @@ pub(crate) struct Revive {
     pub(crate) reports: PathBuf,
     /// This machine's id, named in the report when it has no host name.
     pub(crate) machine: String,
+    /// The daemon's log from the run before, if there was one.
+    pub(crate) daemon_log: Option<PathBuf>,
 }
 
 /// Brings back what the last run left while the daemon serves: each agent
@@ -76,6 +78,7 @@ async fn bring_back(
             version: env!("CARGO_PKG_VERSION").to_owned(),
             machine: host_name().unwrap_or(revive.machine),
             os: os_name(),
+            daemon_log: revive.daemon_log,
         },
     };
     let tokens = Tokens::new(store.clone(), identities.clone());
@@ -88,7 +91,7 @@ async fn bring_back(
     match humata2_revive::reconcile(store, &config, &env, restored).await {
         Ok(reconciled) => describe(reconciled, &mut start),
         Err(error) => {
-            eprintln!("humatad2: couldn't bring back this machine's sessions: {}", status::chain(&error));
+            crate::log::say!("humatad2: couldn't bring back this machine's sessions: {}", status::chain(&error));
             start.not_brought_back.push(pb::NotBroughtBack {
                 session: String::new(),
                 tab: String::new(),
@@ -120,7 +123,7 @@ fn describe(reconciled: Reconciled, start: &mut pb::LastStart) {
     }
     match reconciled.report {
         Ok(folder) => start.report = folder.display().to_string(),
-        Err(error) => eprintln!("humatad2: couldn't write the restart report: {}", status::chain(&error)),
+        Err(error) => crate::log::say!("humatad2: couldn't write the restart report: {}", status::chain(&error)),
     }
 }
 
@@ -153,7 +156,7 @@ impl Tokens {
             Ok(Some(record)) => record,
             Ok(None) => return Vec::new(),
             Err(error) => {
-                eprintln!(
+                crate::log::say!(
                     "humatad2: couldn't read session {session} to give tab {} a token, so its agent can't reach Humata until the tab is restarted: {}",
                     tab.id,
                     status::chain(&error)
@@ -163,12 +166,12 @@ impl Tokens {
         };
         // The old holder's token went with it.
         if let Err(error) = self.identities.revoke(&tab.id) {
-            eprintln!("humatad2: couldn't drop tab {}'s old token: {}", tab.id, status::chain(&error));
+            crate::log::say!("humatad2: couldn't drop tab {}'s old token: {}", tab.id, status::chain(&error));
         }
         let env = match self.identities.mint(&tab.id, &record) {
             Ok(token) => vec![(OsString::from(humata2_mcp::TOKEN_VAR), OsString::from(token))],
             Err(error) => {
-                eprintln!(
+                crate::log::say!(
                     "humatad2: couldn't save a token for tab {}, so its agent can't reach Humata until the tab is restarted: {}",
                     tab.id,
                     status::chain(&error)
