@@ -198,7 +198,7 @@ A bug report is text an agent can read and act on: what you did, where, what the
 - [ ] The two-pane file manager, transfers, trash, Storage per machine, and retention rules.
 
 ## A8: PR reviews (0.8)
-- [ ] Paste a PR link, then clone it on any machine with a read-only agent.
+- [ ] Paste a PR link, then clone it on any machine with a review chat: an agent that answers your questions and works the view (focus, highlight, notes for you, order), never a verdict of its own.
 - [ ] Drafted comments that post only after you approve them.
 - [ ] Update when the PR gets new commits, and archive when it's merged.
 

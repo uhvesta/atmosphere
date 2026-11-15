@@ -935,7 +935,7 @@ each repo's branch.
 │ Also review  [+ add a PR in another repo]   acme/ledger #91 (linked)  ✕   │
 │ Machine  [This Mac ▾]  (This Mac · devbox-1 · gpu-box · lima-dev)         │
 │ Agent    [Claude Code ▾]                                                  │
-│ Focus    rounding on partial captures; anything that can double-refund    │
+│ Context  rounding on partial captures; anything that can double-refund    │
 │ [ ] Let the agent push to the PR branch                                   │
 │                                              [Cancel] [Start the review]  │
 └───────────────────────────────────────────────────────────────────────────┘
@@ -943,11 +943,11 @@ each repo's branch.
  the review session
 ┌ #pr-reviews › acme/api #482 ● Claude Code ──────────────── [Submit review]┐
 │ claude │ zsh                        │ Diff  PR #482 against main · 2 repos │
-│ > Reviewing #482 with focus: …      │ api  uhvesta/fix-refund-rounding     │
-│ ● Bash: cargo test -p payments      │  refund.rs  +62 −21                  │
-│   test result: ok. 31 passed        │  140 │+ let cents = amount.round();  │
-│ ● review_draft refund.rs:140        │      ┆ draft by Claude Code:         │
-│ ● review_draft ledger …:22          │      ┆ "round() is half-away-from-…" │
+│ > why round() and not floor()?      │ api  uhvesta/fix-refund-rounding     │
+│ ● review_focus refund.rs:140        │  refund.rs  +62 −21                  │
+│   It rounds half away from zero …   │  140 │+ let cents = amount.round();  │
+│ > note that on the line for me      │      ┆ note by Claude Code:          │
+│ ● review_note refund.rs:140  [Undo] │      ┆ "round() is half-away-from-…" │
 │ > █                                 │      ┆ [Edit] [Drop]                 │
 │                                     │ ledger #91  uhvesta/refund-ledger    │
 │ ⚠ 2 new commits · [Update the clone]│ Drafts: 4 (3 by agent, 1 by you)    │
@@ -968,19 +968,20 @@ each repo's branch.
   rate limited) and what to do; for a rate limit it says to wait.
 - **PR-4** The dialog picks the machine (This Mac or any SSH machine,
   provider-made ones included), the agent and model (preselected from the
-  default, ST-15) and an optional focus. **Also review** adds PRs from other
+  default, ST-15) and optional context for the agent. **Also review** adds PRs from other
   repos to the same session, so one review can span N repos.
 - **PR-5** **Start the review** clones each PR's head into that machine's
   `~/Humata/pr-reviews/sessions/<review>/<repo>` (FC-6, FC-7) and starts the
-  agent with a first message giving each PR's URL, title, base and head, the
-  focus, and how to draft comments (PR-9).
+  **review chat** (PR-22): an agent told each PR's URL, title, base and head,
+  the user's context, and the tools of PR-23. It is not asked to review the
+  PR, and waits for the user's first question.
 - **PR-6** A review's clones are on the PR's own head branch name, tracking
   the PR's head (`refs/pull/<n>/head` for PRs from forks).
 
 ### Read-only by default
 
 - **PR-7** A review session is read-only towards GitHub by default: the agent
-  can edit files, build and test in its clones, but pushes through Humata
+  can edit files, build and test in its clones to answer a question, but pushes through Humata
   are refused, and the refusal tells it so. The channel's push rule (IN-24)
   does not apply to review sessions; only PR-8 does. An uncontained agent
   that pushes with the machine's own git credentials is not stopped
@@ -991,9 +992,9 @@ each repo's branch.
 
 ### Draft comments
 
-- **PR-9** The agent drafts line comments with the MCP tool
-  `review_draft` (repo, path, line or range, side, text). Drafts are
-  allowed by default and never posted by the agent.
+- **PR-9** When the user asks for one, the agent drafts a line comment for
+  GitHub with the MCP tool `review_draft` (repo, path, line or range, side,
+  text). Drafts are allowed by default and never posted by the agent.
 - **PR-10** The Diff panel's base defaults to each PR's base ("PR #482 against
   main"), grouped per repo with the PR's number. The other bases of RV-1 stay
   available.
@@ -1017,8 +1018,8 @@ each repo's branch.
   while it is not, Humata checks each PR's head with the Mac's `gh`. New commits show
   "N new commits, update the clone" on the session (diff header and Home).
 - **PR-16** **Update the clone** fetches the new head and tells the agent
-  what changed: the new commits and the files changed since the head it
-  reviewed. A force-push is reported as such. Drafts on lines that changed are
+  what changed: the new commits and the files changed since the previous
+  head. A force-push is reported as such. Drafts on lines that changed are
   kept and marked outdated.
 - **PR-17** A merged or closed PR shows "PR #482 was merged" (or closed) on
   its session with **Archive**. If drafts were never submitted, the Archive
@@ -1030,14 +1031,49 @@ each repo's branch.
 
 - **PR-19** Every line, range, hunk and file in a PR review offers **Ask**
   besides the comment box: the question goes, with its repo, file, lines,
-  side and the quoted code, to the review's **Ask** chat, never to GitHub.
-- **PR-20** The Ask chat is a second agent terminal in the review session,
-  read-only towards the clones (like /side), so questions never interrupt or
-  steer the reviewing agent. The user can also type any general question
-  about the PR there. Answers that cite code link back to it in the diff.
+  side and the quoted code, to the review chat (PR-22), never to GitHub.
+- **PR-20** The user can also type any general question about the PR in
+  the review chat. Answers that cite code link back to it in the diff.
 - **PR-21** Where a review clones is the user's choice, as for any session
   (PR-4): This Mac or any machine. A review can be moved to another machine
-  later (MV-1), drafts, Ask chat and reviewed snapshots included.
+  later (MV-1), drafts, notes, the review chat and reviewed snapshots
+  included.
+
+### The review chat (owner direction 2026-11-14, D59)
+
+The agent in a review session does not review the PR. The user reviews it;
+the agent is there to answer questions and to work the review's view, so the
+user builds a code-level understanding of the change.
+
+- **PR-22** A review session's agent terminal is the **review chat**. The
+  agent has the clones to read, search, build and run, and the review's view
+  to work with. It never posts to GitHub and gives no verdict of its own.
+- **PR-23** The agent works the view with MCP tools, each scoped to its own
+  review session:
+  - `review_context`: what the user is looking at (the diff spec, the open
+    file, the visible lines, the selection, the order and groups, Viewed
+    files and notes), so "what does this do?" needs no copying;
+  - `review_focus`: open a file, scroll to and select lines or a hunk, and
+    highlight ranges (possibly in several files) with a short label;
+  - `review_note`: an inline note **for the user** on a file, hunk, line or
+    range, shown under it marked with the agent's name; notes are never
+    posted, and **Make it a draft** turns one into a GitHub draft (PR-11);
+  - `review_prepare` (RV-32) to order, group, filter and collapse files, and
+    `review_draft` (PR-9) when the user asks for a GitHub draft.
+- **PR-24** In the review chat, the agent's changes to the view show at
+  once, without an offer (VW-2), because the user asked for them in the
+  chat. Each one appears in the chat as a line ("● review_focus
+  refund.rs:140") with **Undo**, and **Back** in the view returns to where
+  the user was before the agent last moved it. The agent never moves the
+  view while the user is scrolling, typing or selecting; it waits until they
+  stop.
+- **PR-25** The user can say how much the agent may do: in the review
+  session's Info panel, **Agent may: Focus, Notes, Order** (all on by
+  default). With one off, the tool returns a denial that says the user
+  turned it off.
+- **PR-26** Notes, highlights and order are part of the review: they persist
+  across restarts and moves, stay on their lines as the PR changes (outdated
+  when the line changes, as RV-34), and show in the review's Journal.
 
 ## 11. Spec mode and comments
 
@@ -2133,6 +2169,14 @@ daemon and, as far as physically possible, the machine.
   ends say which they support when the link starts, and data that doesn't
   shrink (images, archives) is sent as is. Settings › Advanced picks
   Auto, lz4, zstd or Off, globally and per machine. (D56)
+- **TR-13** Every compressed payload names its codec, on the wire and at
+  rest: chunk messages carry a `codec` field, and every stored compressed
+  blob (store rows, content-addressed blob files, snapshots, scrollback,
+  restart and bug reports) starts with a header naming the codec, the
+  message type and the format version, so any reader can decode it without
+  context and the codec can change without a migration. A reader that
+  meets a codec it doesn't know says which codec and which file or stream,
+  and refuses rather than guessing. (D60)
 - **TR-12** Inside a machine, only files that matter are watched: each
   live agent's own conversation file, and each clone's `HEAD`, index and
   current branch ref. Working-tree changes are read when they're needed (at
@@ -2667,13 +2711,16 @@ daemon and, as far as physically possible, the machine.
 1. The user pastes `https://github.com/acme/api/pull/482` into Home.
 2. **Review a pull request** opens with the title, author, size and checks
    fetched with `gh`. They add `acme/ledger#91` under Also review, pick
-   devbox-1 and Claude Code, and type a focus.
+   devbox-1 and Claude Code, and type some context.
 3. **Start the review** clones both heads into
-   `~/Humata/pr-reviews/sessions/…` on devbox-1 and starts the agent with the
-   PRs and the focus.
-4. The agent builds and runs the tests, then drafts three comments with
-   `review_draft`. They show as drafts under their lines.
-5. The user edits one, drops one, adds one of their own as Draft for GitHub.
+   `~/Humata/pr-reviews/sessions/…` on devbox-1 and starts the review chat
+   with the PRs and the context. The agent waits.
+4. The user asks "where does a partial capture get refunded?". The agent
+   focuses `refund.rs:140`, highlights the two callers and leaves a note on
+   the rounding line. The user asks it to order the files bottom-up; it does,
+   and the user undoes one move.
+5. The user turns the agent's note into a draft, edits it, and adds one of
+   their own as Draft for GitHub.
 6. The author pushes 2 commits. The session shows "2 new commits, update the
    clone"; the user clicks it and the agent is told which files changed.
 7. The user opens **Submit review**, picks Request changes for #482 and
