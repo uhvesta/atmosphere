@@ -5,10 +5,12 @@
 //! provider that tests use. Registering a machine (hosts.json) is the
 //! daemon's; this crate hands it a ready link.
 
+mod base64;
 mod check;
 mod error;
 mod identity;
 mod install;
+mod known_hosts;
 mod link;
 mod name;
 mod platform;
@@ -22,7 +24,7 @@ mod takeover;
 
 pub use check::Facts;
 pub use error::{
-    ConfigError, FieldProblem, IdentityError, NameError, Problem, ProblemKind, Problems,
+    ConfigError, FieldProblem, IdentityError, KnownHostsError, NameError, Problem, ProblemKind, Problems,
     QuoteError, Remedy, RunError, SetupError, TakeoverError, ValuesError,
 };
 pub use identity::{parse_identity, HostKey, Identity, SshAccess, SshTarget};

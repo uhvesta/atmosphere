@@ -17,8 +17,11 @@ pub struct Facts {
     pub git: bool,
     /// Free space in the home folder; none when `df` said nothing usable.
     pub disk_free_kib: Option<u64>,
-    /// `systemctl --user` works, so humatad2 can be a user service.
+    /// `systemctl --user` works now, so humatad2 can be a user service.
     pub systemd: bool,
+    /// systemd booted the machine, so the user's manager starts once
+    /// lingering is on even when it isn't running yet.
+    pub systemd_init: bool,
     /// Lingering is already on for the user.
     pub linger: bool,
     pub crontab: bool,
@@ -51,6 +54,7 @@ fact home "$HOME"
 fact git "$(has git)"
 fact disk_free_kib "$(df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { print $4 }')"
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then fact systemd yes; else fact systemd no; fi
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then fact systemd_init yes; else fact systemd_init no; fi
 fact linger "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)"
 fact crontab "$(has crontab)"
 fact setsid "$(has setsid)"
@@ -96,6 +100,7 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         git: yes("git"),
         disk_free_kib: facts.get("disk_free_kib").and_then(|kib| kib.parse().ok()),
         systemd: yes("systemd"),
+        systemd_init: yes("systemd_init"),
         linger: yes("linger"),
         crontab: yes("crontab"),
         setsid: yes("setsid"),

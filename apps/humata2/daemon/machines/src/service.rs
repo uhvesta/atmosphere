@@ -8,6 +8,7 @@ use crate::runner::Exit;
 
 /// The service script's exit codes for what it found wrong.
 pub(crate) const LINGER_UNAVAILABLE: i32 = 75;
+pub(crate) const USER_MANAGER_UNAVAILABLE: i32 = 76;
 pub(crate) const DID_NOT_START: i32 = 79;
 
 /// How humatad2 is kept running.
@@ -22,9 +23,11 @@ pub enum ServiceKind {
 }
 
 impl ServiceKind {
-    /// The kind the machine supports, systemd first.
+    /// The kind the machine supports, systemd first: a machine booted by
+    /// systemd gets a user service even when the user's manager isn't
+    /// running yet, since turning lingering on starts it.
     pub(crate) fn for_machine(facts: &Facts) -> Option<Self> {
-        if facts.systemd {
+        if facts.systemd || facts.systemd_init {
             Some(Self::SystemdUser)
         } else if facts.setsid && facts.crontab {
             Some(Self::Setsid)
@@ -38,6 +41,7 @@ impl ServiceKind {
 pub(crate) enum ServiceOutcome {
     Running,
     LingerUnavailable,
+    UserManagerUnavailable,
     DidNotStart,
     Failed(Exit),
 }
@@ -47,6 +51,7 @@ impl ServiceOutcome {
         match exit {
             Exit::Code(0) => Self::Running,
             Exit::Code(LINGER_UNAVAILABLE) => Self::LingerUnavailable,
+            Exit::Code(USER_MANAGER_UNAVAILABLE) => Self::UserManagerUnavailable,
             Exit::Code(DID_NOT_START) => Self::DidNotStart,
             exit => Self::Failed(exit),
         }
@@ -69,46 +74,109 @@ KillMode=process
 WantedBy=default.target
 ";
 
+/// Shell helpers every script shares. `stray` stops a machine daemon this
+/// unit doesn't own, such as one a bridge or an older setsid start left
+/// behind, which would hold the socket and make the new one exit; it never
+/// matches a `serve --stdio` peer link. The bracket keeps pkill and pgrep
+/// from matching the script itself.
+const HELPERS: &str = r#"set -u
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+drop_cron() {
+  if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q '# humatad2$'; then
+    crontab -l 2>/dev/null | grep -v '# humatad2$' | crontab - || return 1
+  fi
+  return 0
+}
+stray() {
+  pkill -u "$(id -u)" -f '[h]umatad2 serve --role machine' 2>/dev/null
+  n=0
+  while pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null 2>&1 && [ "$n" -lt 10 ]; do
+    sleep 1; n=$((n + 1))
+  done
+  return 0
+}
+"#;
+
 /// The script that installs and (re)starts the service, so a new humatad2
-/// takes over. It exits 0 once humatad2 is running.
+/// takes over. It exits 0 once humatad2 has been running for a moment.
 pub(crate) fn script(kind: ServiceKind) -> String {
-    match kind {
+    let body = match kind {
         ServiceKind::SystemdUser => format!(
-            r#"set -u
-export XDG_RUNTIME_DIR="${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"
-u=$(id -un)
-if [ "$(loginctl show-user "$u" -p Linger --value 2>/dev/null)" != yes ]; then
-  loginctl enable-linger "$u" 2>/dev/null || {{ echo "lingering can't be turned on for $u" >&2; exit {LINGER_UNAVAILABLE}; }}
+            r#"u=$(id -un)
+linger() {{ [ "$(loginctl show-user "$u" -p Linger --value 2>/dev/null)" = yes ]; }}
+if ! linger; then
+  loginctl enable-linger "$u" >/dev/null 2>&1
+  linger || {{ echo "lingering can't be turned on for $u" >&2; exit {LINGER_UNAVAILABLE}; }}
 fi
-dir="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"
-mkdir -p "$dir" || exit 1
-cat > "$dir/humatad2.service.new" <<'HUMATA_UNIT'
+# Lingering starts the user's manager; give it a moment.
+n=0
+until systemctl --user show-environment >/dev/null 2>&1; do
+  n=$((n + 1))
+  [ "$n" -le 10 ] || {{ echo "the systemd user manager for $u isn't running" >&2; exit {USER_MANAGER_UNAVAILABLE}; }}
+  sleep 1
+done
+mkdir -p "$unit_dir" || exit 1
+cat > "$unit_dir/humatad2.service.new" <<'HUMATA_UNIT'
 {UNIT}HUMATA_UNIT
-mv -f "$dir/humatad2.service.new" "$dir/humatad2.service" || exit 1
+mv -f "$unit_dir/humatad2.service.new" "$unit_dir/humatad2.service" || exit 1
 systemctl --user daemon-reload || exit 1
 systemctl --user enable humatad2.service || exit 1
-systemctl --user restart humatad2.service || exit 1
-sleep 1
-if ! systemctl --user is-active --quiet humatad2.service; then
+systemctl --user stop humatad2.service 2>/dev/null
+stray
+drop_cron || exit 1
+systemctl --user start humatad2.service || exit 1
+up() {{ systemctl --user is-active --quiet humatad2.service; }}
+n=0
+until up; do
+  n=$((n + 1)); [ "$n" -le 10 ] || break
+  sleep 1
+done
+# A daemon that exits at once can look active for a moment.
+up && sleep 2
+if ! up; then
   journalctl --user -u humatad2.service -n 20 --no-pager >&2 2>/dev/null || systemctl --user status humatad2.service --no-pager >&2
   exit {DID_NOT_START}
 fi
 "#
         ),
         ServiceKind::Setsid => format!(
-            r#"set -u
-bin="$HOME/{BIN_DIR}/humatad2"
-# The bracket keeps pkill and pgrep from matching this script itself.
+            r#"bin="$HOME/{BIN_DIR}/humatad2"
+# A user service from an earlier setup would start a second daemon.
+if command -v systemctl >/dev/null 2>&1 && [ -f "$unit_dir/humatad2.service" ]; then
+  systemctl --user disable --now humatad2.service >/dev/null 2>&1
+  rm -f "$unit_dir/humatad2.service"
+  systemctl --user daemon-reload >/dev/null 2>&1
+fi
 line='@reboot setsid "$HOME/{BIN_DIR}/humatad2" serve --role machine </dev/null >/dev/null 2>&1 # humatad2'
 {{ crontab -l 2>/dev/null | grep -v '# humatad2$'; printf '%s\n' "$line"; }} | crontab - || exit 1
-pkill -u "$(id -u)" -f '[h]umatad2 serve' 2>/dev/null
-sleep 1
+stray
 setsid "$bin" serve --role machine </dev/null >/dev/null 2>&1 &
-sleep 1
-pgrep -u "$(id -u)" -f '[h]umatad2 serve' >/dev/null || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
+sleep 2
+pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
 "#
         ),
-    }
+    };
+    format!("{HELPERS}{body}")
+}
+
+/// The script that stops humatad2 and removes what setup put in place: the
+/// user service or crontab entry, and the files in `~/.humata2/bin`. State,
+/// folders and lingering stay. It exits 0 when nothing was there.
+pub(crate) fn remove_script() -> String {
+    format!(
+        r#"{HELPERS}if command -v systemctl >/dev/null 2>&1 && [ -f "$unit_dir/humatad2.service" ]; then
+  systemctl --user disable --now humatad2.service >/dev/null 2>&1
+  rm -f "$unit_dir/humatad2.service" || exit 1
+  systemctl --user daemon-reload >/dev/null 2>&1
+fi
+drop_cron || exit 1
+stray
+rm -f "$HOME/{BIN_DIR}/humatad2" "$HOME/{BIN_DIR}/humata2_holder" || exit 1
+rmdir "$HOME/{BIN_DIR}" 2>/dev/null
+exit 0
+"#
+    )
 }
 
 /// The command an admin runs once so `user`'s services outlive their login
@@ -120,18 +188,270 @@ pub(crate) fn linger_command(user: &str) -> String {
     }
 }
 
+/// The command an admin runs once to start `user`'s systemd manager by
+/// hand.
+pub(crate) fn user_manager_command(user: &str) -> String {
+    match crate::quote::quote("the user name", user) {
+        Ok(user) => format!("sudo systemctl start \"user@$(id -u {user}).service\""),
+        Err(_) => "sudo systemctl start user@<uid>.service".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
     use super::*;
+
+    /// Stand-ins for every service tool the scripts touch, keeping their
+    /// state as files in `state`, so the dev machine's own crontab, systemd
+    /// and processes are never touched. `sleep` is shortened too.
+    const FAKES: [(&str, &str); 7] = [
+        (
+            "systemctl",
+            r#"case "$*" in
+  *show-environment*) [ -e "$STATE/manager" ] ;;
+  *is-active*) [ -e "$STATE/active" ] ;;
+  *start*) [ -e "$STATE/broken" ] || touch "$STATE/active" ;;
+  *stop*|*disable*) rm -f "$STATE/active" ;;
+  *) exit 0 ;;
+esac"#,
+        ),
+        (
+            "loginctl",
+            r#"case "$1" in
+  show-user) [ -e "$STATE/linger" ] && echo yes || echo no ;;
+  enable-linger) [ -e "$STATE/no_linger" ] || touch "$STATE/linger" ;;
+esac"#,
+        ),
+        ("journalctl", "echo journal"),
+        (
+            "crontab",
+            r#"if [ "$1" = -l ]; then [ -e "$STATE/crontab" ] && cat "$STATE/crontab"; else cat > "$STATE/crontab.new" && mv "$STATE/crontab.new" "$STATE/crontab"; fi"#,
+        ),
+        ("pkill", r#"rm -f "$STATE/running""#),
+        ("pgrep", r#"[ -e "$STATE/running" ]"#),
+        (
+            "setsid",
+            r#"[ -e "$STATE/broken" ] || touch "$STATE/running"; touch "$STATE/setsid_ran""#,
+        ),
+    ];
+    const REAL: [&str; 8] = ["id", "mkdir", "cat", "mv", "grep", "rm", "rmdir", "touch"];
+
+    struct Machine {
+        _folder: tempfile::TempDir,
+        home: PathBuf,
+        state: PathBuf,
+        bin: PathBuf,
+    }
+
+    impl Machine {
+        /// A home folder and a PATH holding only the fakes and harmless
+        /// real tools; without `systemd` there is no `systemctl` at all.
+        fn new(systemd: bool) -> Self {
+            let folder = tempfile::tempdir().unwrap();
+            let home = folder.path().join("home");
+            let state = folder.path().join("state");
+            let bin = folder.path().join("bin");
+            for dir in [&home, &state, &bin] {
+                fs::create_dir_all(dir).unwrap();
+            }
+            for (name, body) in FAKES {
+                if !systemd && name == "systemctl" {
+                    continue;
+                }
+                let path = bin.join(name);
+                fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let real = |name: &str| {
+                ["/usr/bin", "/bin"]
+                    .iter()
+                    .map(|dir| Path::new(dir).join(name))
+                    .find(|path| path.exists())
+                    .unwrap()
+            };
+            for name in REAL {
+                symlink(real(name), bin.join(name)).unwrap();
+            }
+            // Short, except the scripts' 2-second settle, which waits until a
+            // fake started with `&` has run (or a unit is active), however
+            // loaded the machine is, bounded at 10 s.
+            let sleep = bin.join("sleep");
+            let real_sleep = real("sleep");
+            fs::write(
+                &sleep,
+                format!(
+                    r#"#!/bin/sh
+if [ "$1" = 2 ]; then
+  n=0
+  until [ -e "$STATE/setsid_ran" ] || [ -e "$STATE/active" ] || [ "$n" -ge 100 ]; do
+    {real} 0.1; n=$((n + 1))
+  done
+  exit 0
+fi
+exec {real} 0.2
+"#,
+                    real = real_sleep.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&sleep, fs::Permissions::from_mode(0o755)).unwrap();
+            let installed = home.join(BIN_DIR);
+            fs::create_dir_all(&installed).unwrap();
+            fs::write(installed.join("humatad2"), "").unwrap();
+            fs::write(installed.join("humata2_holder"), "").unwrap();
+            fs::create_dir_all(home.join(".humata2/state")).unwrap();
+            Self {
+                _folder: folder,
+                home,
+                state,
+                bin,
+            }
+        }
+
+        fn set(&self, flag: &str) {
+            fs::write(self.state.join(flag), "").unwrap();
+        }
+
+        fn has(&self, flag: &str) -> bool {
+            self.state.join(flag).exists()
+        }
+
+        fn crontab(&self) -> String {
+            fs::read_to_string(self.state.join("crontab")).unwrap_or_default()
+        }
+
+        fn unit(&self) -> PathBuf {
+            self.home.join(".config/systemd/user/humatad2.service")
+        }
+
+        fn run(&self, script: &str) -> Option<i32> {
+            let output = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(script)
+                .env_clear()
+                .env("HOME", &self.home)
+                .env("PATH", &self.bin)
+                .env("STATE", &self.state)
+                .env("XDG_RUNTIME_DIR", &self.state)
+                .output()
+                .unwrap();
+            // Shown when a test fails, to say why the script exited.
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            output.status.code()
+        }
+    }
+
+    const OTHER_CRON: &str = "0 3 * * * backup\n";
 
     #[test]
     fn the_scripts_are_valid_shell() {
-        for kind in [ServiceKind::SystemdUser, ServiceKind::Setsid] {
-            let status = std::process::Command::new("/bin/sh")
-                .args(["-n", "-c", &script(kind)])
-                .status()
-                .unwrap();
-            assert!(status.success(), "{kind:?}");
+        for text in [script(ServiceKind::SystemdUser), script(ServiceKind::Setsid), remove_script()] {
+            let status = Command::new("/bin/sh").args(["-n", "-c", &text]).status().unwrap();
+            assert!(status.success());
+        }
+    }
+
+    #[test]
+    fn a_user_service_replaces_a_stray_daemon_and_an_old_crontab_start() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        machine.set("running");
+        fs::write(
+            machine.state.join("crontab"),
+            format!("{OTHER_CRON}@reboot setsid old serve --role machine # humatad2\n"),
+        )
+        .unwrap();
+
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(0));
+
+        assert!(machine.has("linger"));
+        assert!(machine.has("active"));
+        assert!(!machine.has("running"));
+        assert_eq!(machine.crontab(), OTHER_CRON);
+        assert!(fs::read_to_string(machine.unit()).unwrap().contains("serve --role machine"));
+    }
+
+    #[test]
+    fn a_user_service_needs_lingering() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        machine.set("no_linger");
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(LINGER_UNAVAILABLE));
+        assert!(!machine.has("active"));
+    }
+
+    #[test]
+    fn a_user_service_needs_the_user_manager() {
+        let machine = Machine::new(true);
+        assert_eq!(
+            machine.run(&script(ServiceKind::SystemdUser)),
+            Some(USER_MANAGER_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn a_service_that_never_comes_up_did_not_start() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        machine.set("broken");
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(DID_NOT_START));
+
+        let machine = Machine::new(false);
+        machine.set("broken");
+        assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(DID_NOT_START));
+    }
+
+    #[test]
+    fn setsid_starts_the_daemon_and_adds_one_boot_entry() {
+        let machine = Machine::new(false);
+        fs::write(machine.state.join("crontab"), OTHER_CRON).unwrap();
+
+        assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
+        assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
+
+        assert!(machine.has("running"));
+        let crontab = machine.crontab();
+        assert!(crontab.starts_with(OTHER_CRON));
+        assert_eq!(crontab.lines().filter(|line| line.ends_with("# humatad2")).count(), 1);
+    }
+
+    #[test]
+    fn setsid_takes_over_from_an_earlier_user_service() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(0));
+
+        assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
+
+        assert!(!machine.unit().exists());
+        assert!(!machine.has("active"));
+        assert!(machine.has("running"));
+    }
+
+    #[test]
+    fn removing_undoes_setup_and_keeps_state() {
+        for systemd in [true, false] {
+            let machine = Machine::new(systemd);
+            machine.set("manager");
+            fs::write(machine.state.join("crontab"), OTHER_CRON).unwrap();
+            let kind = if systemd { ServiceKind::SystemdUser } else { ServiceKind::Setsid };
+            assert_eq!(machine.run(&script(kind)), Some(0));
+
+            assert_eq!(machine.run(&remove_script()), Some(0));
+            assert_eq!(machine.run(&remove_script()), Some(0));
+
+            assert!(!machine.has("active"));
+            assert!(!machine.has("running"));
+            assert!(!machine.unit().exists());
+            assert_eq!(machine.crontab(), OTHER_CRON);
+            assert!(!machine.home.join(BIN_DIR).join("humatad2").exists());
+            assert!(!machine.home.join(BIN_DIR).join("humata2_holder").exists());
+            assert!(machine.home.join(".humata2/state").is_dir());
         }
     }
 }

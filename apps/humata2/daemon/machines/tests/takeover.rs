@@ -60,7 +60,14 @@ struct Shell {
 
 impl Shell {
     fn start(home: &std::path::Path) -> Self {
+        Self::spawn(home, &[])
+    }
+
+    /// `/bin/sh` with `args`, such as `-c` and a script that stands in for
+    /// what a login ends at.
+    fn spawn(home: &std::path::Path, args: &[&str]) -> Self {
         let mut child = Command::new("/bin/sh")
+            .args(args)
             .env_clear()
             .env("HOME", home)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
@@ -306,4 +313,24 @@ fn only_the_whole_marker_line_for_this_nonce_counts() {
         matches!(end, End::Failed(TakeoverError::SyncTimedOut { .. })),
         "the takeover took a marker that wasn't its own"
     );
+}
+
+#[test]
+fn a_login_that_ends_in_a_menu_is_not_a_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let menu = "echo '1) dev  2) prod'; while read -r line; do echo 'Pick 1-2:'; done";
+    let mut shell = Shell::spawn(home.path(), &["-c", menu]);
+    let takeover = Takeover::new(machine()).with_shell_timeout(SHORT);
+
+    let (end, sent) = run_takeover(takeover, &mut shell, &AnyPlatform(fake_files()), <[u8]>::to_vec);
+
+    let End::Failed(TakeoverError::NoShell {
+        waited, output_tail, ..
+    }) = end
+    else {
+        panic!("the takeover didn't give up on the menu");
+    };
+    assert_eq!(waited, SHORT);
+    assert!(output_tail.contains("Pick 1-2:"), "{output_tail}");
+    assert!(sent.is_empty());
 }

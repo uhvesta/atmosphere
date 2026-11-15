@@ -3,7 +3,9 @@
 //! and never kept or shown.
 
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
+use crate::base64;
 use crate::error::{FieldProblem, IdentityError};
 use crate::name::MachineName;
 use crate::platform::{Arch, Os, Platform};
@@ -40,8 +42,9 @@ pub enum SshAccess {
 /// A public host key, as in `known_hosts`: `ssh-ed25519 AAAA…`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostKey {
-    pub algorithm: String,
-    pub key: String,
+    algorithm: String,
+    key: String,
+    fingerprint: String,
 }
 
 const KEY_ALGORITHMS: [&str; 7] = [
@@ -155,19 +158,42 @@ pub fn parse_identity(stdout: &[u8], machine: &MachineName) -> Result<Identity, 
 }
 
 impl HostKey {
-    /// `<algorithm> <base64>`, with an optional comment after.
-    fn parse(value: &str) -> Option<Self> {
+    /// `<algorithm> <base64>`, with an optional comment after. The base64
+    /// must decode to an SSH key blob of that algorithm.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         let mut words = value.split_whitespace();
         let algorithm = words.next()?;
         let key = words.next()?;
-        let base64 = key.len() >= 16
-            && key
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=');
-        (KEY_ALGORITHMS.contains(&algorithm) && base64).then(|| Self {
+        if !KEY_ALGORITHMS.contains(&algorithm) {
+            return None;
+        }
+        let blob = base64::decode(key)?;
+        // The blob starts with its own algorithm name, length first.
+        let len = usize::try_from(u32::from_be_bytes(blob.get(..4)?.try_into().ok()?)).ok()?;
+        if blob.get(4..4 + len)? != algorithm.as_bytes() || blob.len() <= 4 + len {
+            return None;
+        }
+        Some(Self {
             algorithm: algorithm.to_owned(),
+            fingerprint: format!("SHA256:{}", base64::encode(&Sha256::digest(&blob))),
             key: key.to_owned(),
         })
+    }
+
+    /// Such as `ssh-ed25519`.
+    pub fn algorithm(&self) -> &str {
+        &self.algorithm
+    }
+
+    /// The key's base64, as in `known_hosts`.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// `SHA256:…`, as `ssh` and `ssh-keygen -l` print it, for the user to
+    /// compare before trusting a key.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
     }
 }
 

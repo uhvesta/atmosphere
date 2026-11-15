@@ -43,6 +43,10 @@ pub enum TakeoverAction {
 /// 10.5 s for a machine daemon it starts itself (D42), and a slow link adds
 /// to that.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the shell has to answer the facts line once the person says
+/// they're in. A shell answers at once; a login that ends in a menu never
+/// does (MP-18).
+const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 /// How much of the terminal's output a failure keeps.
 const TAIL_BYTES: usize = 4096;
 const TAIL_LINES: usize = 20;
@@ -53,8 +57,9 @@ pub struct Takeover {
     machine: MachineName,
     nonce: String,
     sync_timeout: Duration,
-    /// When the bridge must have printed its marker by; set once it is
-    /// typed.
+    shell_timeout: Duration,
+    /// When the shell must have answered the facts line, or the bridge
+    /// printed its marker, by; set when each is typed.
     deadline: Option<Instant>,
     /// The last [`TAIL_BYTES`] the terminal printed since the login, for a
     /// failure's output.
@@ -82,13 +87,14 @@ enum State {
 }
 
 impl Takeover {
-    /// Takes over a terminal logged in to `machine`, giving the bridge 30 s
-    /// to print its sync marker.
+    /// Takes over a terminal logged in to `machine`, giving its shell 20 s
+    /// to answer and the bridge 30 s to print its sync marker.
     pub fn new(machine: MachineName) -> Self {
         Self {
             machine,
             nonce: install::nonce(),
             sync_timeout: SYNC_TIMEOUT,
+            shell_timeout: SHELL_TIMEOUT,
             deadline: None,
             recent: Vec::new(),
             state: State::LoggingIn,
@@ -106,10 +112,17 @@ impl Takeover {
         }
         self.buffer.clear();
         self.state = State::Facts;
+        self.deadline = Some(Instant::now() + self.shell_timeout);
         match self.typed(&facts_script(&self.nonce)) {
             Ok(write) => vec![write],
             Err(error) => self.fail(error),
         }
+    }
+
+    /// Gives the shell `timeout` to answer the facts line instead.
+    pub fn with_shell_timeout(mut self, timeout: Duration) -> Self {
+        self.shell_timeout = timeout;
+        self
     }
 
     /// Gives the bridge `timeout` to print its sync marker instead.
@@ -128,7 +141,7 @@ impl Takeover {
     /// logging in and installing take as long as they take.
     pub fn deadline(&self) -> Option<Instant> {
         match self.state {
-            State::Sync => self.deadline,
+            State::Facts | State::Sync => self.deadline,
             _ => None,
         }
     }
@@ -138,10 +151,20 @@ impl Takeover {
     pub fn time_passed(&mut self, now: Instant) -> Vec<TakeoverAction> {
         match self.deadline() {
             Some(deadline) if now >= deadline => {
-                let error = TakeoverError::SyncTimedOut {
-                    machine: self.machine.clone(),
-                    waited: self.sync_timeout,
-                    output_tail: self.tail(),
+                let machine = self.machine.clone();
+                let output_tail = self.tail();
+                let error = if self.state == State::Facts {
+                    TakeoverError::NoShell {
+                        machine,
+                        waited: self.shell_timeout,
+                        output_tail,
+                    }
+                } else {
+                    TakeoverError::SyncTimedOut {
+                        machine,
+                        waited: self.sync_timeout,
+                        output_tail,
+                    }
                 };
                 self.fail(error)
             }

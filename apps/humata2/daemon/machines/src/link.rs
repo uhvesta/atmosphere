@@ -8,12 +8,36 @@ use std::time::Duration;
 
 use crate::error::QuoteError;
 use crate::identity::{SshAccess, SshTarget};
+use crate::known_hosts;
 use crate::name::MachineName;
 use crate::quote::{self, sh_command};
 use crate::runner::{EnvValue, Invocation, Purpose};
+use crate::service;
 
 /// Where humatad2 and its holder live on a machine, under `$HOME`.
 pub(crate) const BIN_DIR: &str = ".humata2/bin";
+
+/// Learns a machine's host key: ssh records what the machine presents in a
+/// fresh file, which is printed and removed. The `-o` given first wins, so
+/// nothing in the user's ssh config can point it elsewhere.
+const SCAN_SCRIPT: &str = r#"t=$(mktemp "${TMPDIR:-/tmp}/humata2-hostkey.XXXXXX") || exit 70
+trap 'rm -f "$t"' EXIT
+ssh -o UserKnownHostsFile="$t" "$@" >/dev/null
+s=$?
+cat "$t"
+exit "$s"
+"#;
+
+/// How an ssh command is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Non-interactive, for every step and the bridge.
+    Batch,
+    /// In a real terminal, for a login (MP-14).
+    Interactive,
+    /// Up to the host key and no further: no credential is offered.
+    Scan,
+}
 
 /// How a machine is reached.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,12 +92,48 @@ impl Link {
     /// (MP-9), when the identity gave one.
     pub fn known_hosts_entry(&self) -> Option<String> {
         match &self.how {
-            How::Ssh { target, .. } => target
-                .host_key
-                .as_ref()
-                .map(|key| format!("{} {} {}", host_key_alias(&self.machine), key.algorithm, key.key)),
+            How::Ssh { target, .. } => target.host_key.as_ref().map(|key| {
+                format!(
+                    "{} {} {}",
+                    known_hosts::alias(&self.machine),
+                    key.algorithm(),
+                    key.key()
+                )
+            }),
             How::Connect { .. } => None,
         }
+    }
+
+    /// Humata's `known_hosts` file, for SSH it runs itself; none for a
+    /// provider's `connect`, whose tool checks keys on its own.
+    pub(crate) fn known_hosts(&self) -> Option<&Path> {
+        match &self.how {
+            How::Ssh { known_hosts, .. } => Some(known_hosts.as_path()),
+            How::Connect { .. } => None,
+        }
+    }
+
+    /// Connects only far enough to learn the host key the machine
+    /// presents, offering no key, password or agent, and prints it in
+    /// `known_hosts` form. None for a provider's `connect`.
+    pub(crate) fn scan_host_key(&self) -> Option<Invocation> {
+        let How::Ssh { target, .. } = &self.how else {
+            return None;
+        };
+        let mut args = vec![
+            "-c".to_owned(),
+            SCAN_SCRIPT.to_owned(),
+            "humata2-scan".to_owned(),
+        ];
+        args.extend(ssh_args(&self.machine, target, None, Mode::Scan, "true"));
+        Some(Invocation {
+            program: "/bin/sh".to_owned(),
+            args,
+            env: Vec::new(),
+            stdin: None,
+            timeout: Some(Duration::from_secs(60)),
+            purpose: Purpose::ScanHostKey,
+        })
     }
 
     /// Runs `script` with `sh` on the machine, non-interactively.
@@ -103,6 +163,19 @@ impl Link {
     /// [`crate::Takeover`].
     pub fn interactive(&self) -> Result<Invocation, QuoteError> {
         self.invocation(&sh_command("exec sh -i")?, true, Purpose::Login, None, None)
+    }
+
+    /// Stops humatad2 and removes its user service (or crontab entry) and
+    /// its files from `~/.humata2/bin`, for cancelling Add machine or
+    /// removing a machine. It leaves Humata's folders, state and lingering
+    /// alone, and succeeds when there was nothing to remove.
+    pub fn remove_daemon(&self) -> Result<Invocation, QuoteError> {
+        self.script(
+            &service::remove_script(),
+            Purpose::Uninstall,
+            Some(Duration::from_secs(2 * 60)),
+            None,
+        )
     }
 
     /// Adds a public key to the machine's `authorized_keys`, once, so later
@@ -142,7 +215,13 @@ impl Link {
                 known_hosts,
             } => (
                 "ssh".to_owned(),
-                ssh_args(&self.machine, target, known_hosts, interactive, remote),
+                ssh_args(
+                    &self.machine,
+                    target,
+                    Some(known_hosts.as_path()),
+                    if interactive { Mode::Interactive } else { Mode::Batch },
+                    remote,
+                ),
                 Vec::new(),
             ),
         };
@@ -157,17 +236,13 @@ impl Link {
     }
 }
 
-/// The name Humata's `known_hosts` keys a machine's host key under, so the
-/// pin holds whatever address or alias reaches it.
-fn host_key_alias(machine: &MachineName) -> String {
-    format!("humata2.{machine}")
-}
-
+/// The arguments to `ssh`. `known_hosts_file` is none only for a scan,
+/// whose file the scan script gives first.
 fn ssh_args(
     machine: &MachineName,
     target: &SshTarget,
-    known_hosts: &Path,
-    interactive: bool,
+    known_hosts_file: Option<&Path>,
+    mode: Mode,
     remote: &str,
 ) -> Vec<String> {
     let mut args = Vec::new();
@@ -177,24 +252,49 @@ fn ssh_args(
         SshAccess::Direct { .. } => "/dev/null",
     };
     args.extend(["-F".to_owned(), config.to_owned()]);
-    let options = [
-        format!("BatchMode={}", if interactive { "no" } else { "yes" }),
-        format!("UserKnownHostsFile=\"{}\"", known_hosts.display()),
+    let mut options = vec![
+        format!("BatchMode={}", if mode == Mode::Interactive { "no" } else { "yes" }),
         "GlobalKnownHostsFile=/dev/null".to_owned(),
-        "StrictHostKeyChecking=yes".to_owned(),
-        format!("HostKeyAlias={}", host_key_alias(machine)),
+        format!(
+            "StrictHostKeyChecking={}",
+            if mode == Mode::Scan { "accept-new" } else { "yes" }
+        ),
+        format!("HostKeyAlias={}", known_hosts::alias(machine)),
         "UpdateHostKeys=no".to_owned(),
+        // Hashed names wouldn't match the alias Humata looks for.
+        "HashKnownHosts=no".to_owned(),
+        // A shared connection would skip the host key check against
+        // Humata's file.
+        "ControlPath=none".to_owned(),
         // A file streamed during takeover may hold `\n~.`.
         "EscapeChar=none".to_owned(),
         "ConnectTimeout=10".to_owned(),
         "ServerAliveInterval=15".to_owned(),
         "ServerAliveCountMax=4".to_owned(),
     ];
+    if let Some(file) = known_hosts_file {
+        options.push(format!("UserKnownHostsFile=\"{}\"", file.display()));
+    }
+    if mode == Mode::Scan {
+        // An unverified machine gets no credential and no forwarding.
+        options.extend(
+            [
+                "PubkeyAuthentication=no",
+                "PasswordAuthentication=no",
+                "KbdInteractiveAuthentication=no",
+                "GSSAPIAuthentication=no",
+                "HostbasedAuthentication=no",
+                "ForwardAgent=no",
+                "ClearAllForwardings=yes",
+            ]
+            .map(str::to_owned),
+        );
+    }
     for option in options {
         args.push("-o".to_owned());
         args.push(option);
     }
-    args.push(if interactive { "-tt" } else { "-T" }.to_owned());
+    args.push(if mode == Mode::Interactive { "-tt" } else { "-T" }.to_owned());
     if let SshAccess::Direct {
         port,
         user,
@@ -202,7 +302,7 @@ fn ssh_args(
     } = &target.access
     {
         args.extend(["-p".to_owned(), port.to_string(), "-l".to_owned(), user.clone()]);
-        if let Some(identity_file) = identity_file {
+        if let (Some(identity_file), false) = (identity_file, mode == Mode::Scan) {
             args.extend([
                 "-i".to_owned(),
                 identity_file.clone(),

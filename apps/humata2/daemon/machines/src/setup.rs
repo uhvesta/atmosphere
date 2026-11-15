@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use crate::check::{self, Facts};
 use crate::error::{Remedy, SetupError, ValuesError};
-use crate::identity::{self, Identity};
+use crate::identity::{self, HostKey, Identity};
 use crate::install::{self, InstallProblem, Payload};
+use crate::known_hosts;
 use crate::link::Link;
 use crate::name::MachineName;
 use crate::platform::{Os, Platform};
@@ -264,8 +265,64 @@ impl Setup {
             .flatten()
     }
 
+    /// Learns the host key the machine presents, without offering it any
+    /// credential, for **Confirm host key** (MP-10): the person compares its
+    /// fingerprint with the machine's own before [`Setup::trust_host_key`].
+    /// Only for SSH Humata runs itself; a provider's `connect` checks keys
+    /// in its own tool.
+    pub fn scan_host_key(&self, runner: &dyn Runner) -> Result<HostKey, Failure> {
+        let machine = self.machine.clone();
+        let fail = |error: SetupError, output_tail: String| Failure {
+            step: Step::Connect,
+            error,
+            output_tail,
+            remedies: vec![Remedy::TryAgain],
+        };
+        let link = self
+            .require_link()
+            .map_err(|failed| fail(failed.error, String::new()))?;
+        let Some(invocation) = link.scan_host_key() else {
+            return Err(fail(SetupError::ConnectHostKey { machine }, String::new()));
+        };
+        let output = runner
+            .run(&invocation)
+            .map_err(|error| fail(error.into(), String::new()))?;
+        known_hosts::keys_for(&String::from_utf8_lossy(&output.stdout), &machine)
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                // stdout holds only keys; the tail is ssh's own words.
+                let tail = Output {
+                    stdout: Vec::new(),
+                    ..output.clone()
+                }
+                .tail(TAIL_LINES);
+                fail(
+                    SetupError::HostKeyScanFailed {
+                        machine: machine.clone(),
+                        exit: output.exit,
+                    },
+                    tail,
+                )
+            })
+    }
+
+    /// Pins `key` as the machine's host key in Humata's `known_hosts`,
+    /// replacing any it had, once the person confirmed its fingerprint or
+    /// chose to trust a changed key (MP-9). Then try the step again.
+    pub fn trust_host_key(&self, key: &HostKey) -> Result<(), SetupError> {
+        let machine = self.machine.clone();
+        let path = match &self.link {
+            Some(link) if link.is_connect() => return Err(SetupError::ConnectHostKey { machine }),
+            Some(link) => link.known_hosts().unwrap_or(self.known_hosts.as_path()),
+            None => self.known_hosts.as_path(),
+        };
+        known_hosts::pin(path, &machine, key)?;
+        Ok(())
+    }
+
     /// Use `setsid` and crontab instead of systemd from now on (PER-19),
-    /// when lingering can't be had.
+    /// when lingering or the user's service manager can't be had.
     pub fn use_setsid(&mut self) {
         self.service = Some(ServiceKind::Setsid);
     }
@@ -352,9 +409,12 @@ impl Setup {
                 }
             }
             SetupError::HostKeyUnknown { .. } | SetupError::HostKeyChanged { .. } => {
-                remedies.push(Remedy::ConfirmHostKey);
+                if self.link.as_ref().is_some_and(|link| !link.is_connect()) {
+                    remedies.push(Remedy::ConfirmHostKey);
+                }
             }
-            SetupError::LingerUnavailable { admin_command, .. } => {
+            SetupError::LingerUnavailable { admin_command, .. }
+            | SetupError::UserManagerUnavailable { admin_command, .. } => {
                 remedies.push(Remedy::RunAsAdmin {
                     command: admin_command.clone(),
                 });
@@ -439,6 +499,11 @@ impl Setup {
         }
         let identity = identity::parse_identity(&output.stdout, &self.machine)
             .map_err(|error| failed(error.into()))?;
+        // A key the provider gave is pinned with no prompt (MP-9),
+        // replacing the one an earlier machine of this name had.
+        if let Some(key) = &identity.ssh.host_key {
+            known_hosts::pin(&self.known_hosts, &self.machine, key).map_err(Failed::new)?;
+        }
         self.link = Some(Link::ssh(
             self.machine.clone(),
             identity.ssh.clone(),
@@ -463,11 +528,25 @@ impl Setup {
         }
         let text = output.text();
         let lower = text.to_lowercase();
-        if text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-            return Err(Failed::with_output(SetupError::HostKeyChanged { machine }, &output));
-        }
-        if lower.contains("host key verification failed") || lower.contains("no host key is known") {
-            return Err(Failed::with_output(SetupError::HostKeyUnknown { machine }, &output));
+        let changed = text.contains("REMOTE HOST IDENTIFICATION HAS CHANGED");
+        if changed
+            || lower.contains("host key verification failed")
+            || lower.contains("no host key is known")
+        {
+            let error = match link.known_hosts() {
+                // A provider's own tool refused the key, not Humata's pin.
+                None => SetupError::ConnectHostKey { machine },
+                Some(path) if changed => SetupError::HostKeyChanged {
+                    expected_fingerprint: known_hosts::pinned(path, &machine)
+                        .ok()
+                        .flatten()
+                        .map(|key| key.fingerprint().to_owned()),
+                    presented_fingerprint: presented_fingerprint(&text),
+                    machine,
+                },
+                Some(_) => SetupError::HostKeyUnknown { machine },
+            };
+            return Err(Failed::with_output(error, &output));
         }
         if output.exit == Exit::TimedOut {
             return Ok(Done::Login(LoginReason::Hung, output.tail(TAIL_LINES)));
@@ -608,13 +687,22 @@ impl Setup {
                 Ok(Done::Ready)
             }
             ServiceOutcome::LingerUnavailable => {
-                let user = self
-                    .facts
-                    .as_ref()
-                    .map_or_else(String::new, |facts| facts.user.clone());
+                let user = self.user();
                 let admin_command = service::linger_command(&user);
                 Err(Failed::with_output(
                     SetupError::LingerUnavailable {
+                        machine,
+                        user,
+                        admin_command,
+                    },
+                    &output,
+                ))
+            }
+            ServiceOutcome::UserManagerUnavailable => {
+                let user = self.user();
+                let admin_command = service::user_manager_command(&user);
+                Err(Failed::with_output(
+                    SetupError::UserManagerUnavailable {
                         machine,
                         user,
                         admin_command,
@@ -633,6 +721,13 @@ impl Setup {
         }
     }
 
+    /// The user the check found, for an admin command.
+    fn user(&self) -> String {
+        self.facts
+            .as_ref()
+            .map_or_else(String::new, |facts| facts.user.clone())
+    }
+
     /// The link, which create, identity or [`Setup::existing`] always set
     /// before the steps that use it.
     fn require_link(&self) -> Result<&Link, Failed> {
@@ -642,6 +737,14 @@ impl Setup {
             })
         })
     }
+}
+
+/// The `SHA256:…` fingerprint ssh says the machine presented, from its
+/// changed-key warning.
+fn presented_fingerprint(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find(|word| word.starts_with("SHA256:"))
+        .map(|word| word.trim_end_matches('.').to_owned())
 }
 
 #[cfg(test)]

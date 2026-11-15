@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -218,6 +219,29 @@ pub enum RunError {
     MissingHostVariable { name: String },
 }
 
+/// Humata's own `known_hosts` file can't be used (MP-9).
+#[derive(Debug, Error)]
+pub enum KnownHostsError {
+    #[error(
+        "couldn't read Humata's known_hosts file {}: {source}. Fix its permissions so this user can read it; Humata never falls back to ~/.ssh/known_hosts",
+        .path.display()
+    )]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error(
+        "couldn't save the host key to Humata's known_hosts file {}: {source}. Check that its folder is writable and the disk isn't full, then try again",
+        .path.display()
+    )]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+}
+
 /// A step of setting a machine up failed (MP-19, MP-20).
 #[derive(Debug, Error)]
 pub enum SetupError {
@@ -233,6 +257,8 @@ pub enum SetupError {
     Quote(#[from] QuoteError),
     #[error(transparent)]
     Run(#[from] RunError),
+    #[error(transparent)]
+    KnownHosts(#[from] KnownHostsError),
     #[error(
         "couldn't reach {machine} after {attempts} attempts (last: {exit}); the output is below. If it is still booting, try again; if it asks for a login, open it interactively"
     )]
@@ -246,9 +272,24 @@ pub enum SetupError {
     )]
     HostKeyUnknown { machine: MachineName },
     #[error(
-        "{machine}'s SSH host key changed since Humata pinned it. That happens when the machine was rebuilt, and also when something intercepts the connection; confirm the new key only if you know it was rebuilt"
+        "{machine}'s SSH host key changed since Humata pinned it{}. That happens when the machine was rebuilt, and also when something intercepts the connection. Trust the new key only if you know {machine} was rebuilt, after checking its fingerprint on the machine itself (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`); otherwise leave it and find out who changed it",
+        fingerprints(.expected_fingerprint.as_deref(), .presented_fingerprint.as_deref())
     )]
-    HostKeyChanged { machine: MachineName },
+    HostKeyChanged {
+        machine: MachineName,
+        /// The pinned key's, when Humata's known_hosts could be read.
+        expected_fingerprint: Option<String>,
+        /// The one the machine presented, as ssh reported it.
+        presented_fingerprint: Option<String>,
+    },
+    #[error(
+        "the provider's `connect` command refused {machine}'s SSH host key. Humata pins keys only for SSH it runs itself, so check the key in that tool's own known_hosts: if the machine was rebuilt, update it there; if it wasn't, someone may be intercepting the connection, so don't. Then try again"
+    )]
+    ConnectHostKey { machine: MachineName },
+    #[error(
+        "Humata couldn't learn {machine}'s SSH host key: the connection ended before the machine presented one ({exit}); the output is below. Check the address and that sshd runs there, then try again"
+    )]
+    HostKeyScanFailed { machine: MachineName, exit: Exit },
     #[error(
         "{machine} answered, but `uname -sm` printed nothing Humata can read; make sure `connect` runs `{{cmd}}` unchanged and that nothing else prints to stdout"
     )]
@@ -286,6 +327,10 @@ pub enum SetupError {
     )]
     LingerUnavailable { machine: MachineName, user: String, admin_command: String },
     #[error(
+        "{machine} runs systemd, but {user}'s user service manager didn't start, so humatad2 can't be a user service. Lingering is on, which normally starts it; an admin can start it once on {machine} with `{admin_command}`, then try again. Or start humatad2 without systemd, which won't restart it if it crashes"
+    )]
+    UserManagerUnavailable { machine: MachineName, user: String, admin_command: String },
+    #[error(
         "setting up the humatad2 service on {machine} failed ({exit}); the output is below. Fix what it reports and try again"
     )]
     ServiceFailed { machine: MachineName, exit: Exit },
@@ -303,6 +348,11 @@ pub enum TakeoverError {
         "after the login, the machine's shell answered {line:?}, which Humata can't read; make sure the login ends at a POSIX shell with nothing rewriting its output, then open it interactively again"
     )]
     BadAnswer { line: String },
+    #[error(
+        "after the login, {machine} didn't run the line Humata typed within {}s, so the login doesn't end at a shell; the end of the terminal's output is below. A menu-only tool can't carry Humata's link (MP-18): give the provider an `identity` command that prints SSH details instead, or point `connect` at a wrapper script that ends in a POSIX shell. If the machine was only slow, open it interactively again",
+        .waited.as_secs_f32()
+    )]
+    NoShell { machine: MachineName, waited: Duration, output_tail: String },
     #[error("this Humata has no humatad2 build for {platform}; use a machine of a supported platform")]
     NoBuild { platform: Platform },
     #[error("installing {file} over the login failed: {problem}")]
@@ -339,4 +389,14 @@ pub enum Remedy {
     StartWithoutSystemd,
     /// Run the provider's `delete` for what `create` made.
     DeleteWhatWasMade,
+}
+
+/// ` (pinned SHA256:…, presented SHA256:…)`, for what is known.
+fn fingerprints(expected: Option<&str>, presented: Option<&str>) -> String {
+    match (expected, presented) {
+        (Some(expected), Some(presented)) => format!(" (pinned {expected}, now {presented})"),
+        (Some(expected), None) => format!(" (pinned {expected})"),
+        (None, Some(presented)) => format!(" (now {presented})"),
+        (None, None) => String::new(),
+    }
 }

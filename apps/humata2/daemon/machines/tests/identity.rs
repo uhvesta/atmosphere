@@ -18,7 +18,7 @@ fn field_error(json: &str) -> (String, FieldProblem) {
 #[test]
 fn direct_details_are_read_with_port_22_by_default() {
     let identity = parse_identity(
-        br#"{"name":"box-1","ssh":{"host":"10.0.0.5","user":"dev","identity_file":"/keys/box 1","host_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB comment"},"os":"linux","arch":"arm64"}"#,
+        br#"{"name":"box-1","ssh":{"host":"10.0.0.5","user":"dev","identity_file":"/keys/box 1","host_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl comment"},"os":"linux","arch":"arm64"}"#,
         &machine(),
     )
     .unwrap();
@@ -32,7 +32,9 @@ fn direct_details_are_read_with_port_22_by_default() {
             identity_file: Some("/keys/box 1".to_owned()),
         }
     );
-    assert_eq!(identity.ssh.host_key.unwrap().algorithm, "ssh-ed25519");
+    let host_key = identity.ssh.host_key.unwrap();
+    assert_eq!(host_key.algorithm(), "ssh-ed25519");
+    assert_eq!(host_key.fingerprint(), "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU");
     assert_eq!(identity.platform.os, Os::Linux);
     assert_eq!(identity.platform.arch, Arch::Aarch64);
 }

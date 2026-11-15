@@ -25,6 +25,12 @@ pub enum Purpose {
     Install,
     /// Writing and starting the user service.
     Service,
+    /// Stopping humatad2 and removing its service and files (cancelling
+    /// Add machine, or removing a machine).
+    Uninstall,
+    /// Connecting without offering any credential, only to learn the host
+    /// key a machine presents (MP-9, MP-10).
+    ScanHostKey,
     /// Adding a Humata key to `authorized_keys` (MP-17).
     AuthorizeKey,
     /// The bridge that carries the gRPC stream (TR-2).

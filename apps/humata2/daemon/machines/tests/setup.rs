@@ -8,8 +8,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use humata2_machines::{
-    Exit, IdentityError, InstallProblem, InstalledFile, MachineName, Progress, Provider, Purpose,
-    Remedy, RetryPolicy, ServiceKind, Setup, SetupError, Step, ValuesError,
+    Exit, IdentityError, InstallProblem, InstalledFile, Link, MachineName, Progress, Provider,
+    Purpose, Remedy, RetryPolicy, ServiceKind, Setup, SetupError, SshAccess, SshTarget, Step,
+    ValuesError,
 };
 use support::{payloads, CheckFacts, FakeBuilds, FakeRunner};
 
@@ -506,4 +507,191 @@ fn values_the_provider_doesnt_declare_are_refused() {
     );
 
     assert!(matches!(result, Err(ValuesError::Undeclared { .. })));
+}
+
+const HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+const HOST_KEY_FINGERPRINT: &str = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU";
+const UNKNOWN_KEY: &str = "Host key verification failed.\r\n";
+
+/// A machine typed in as an SSH host (MP-10), checked against `known_hosts`.
+fn ssh_machine(known_hosts: &Path) -> Setup {
+    let target = SshTarget {
+        host: "10.0.0.7".to_owned(),
+        access: SshAccess::Direct {
+            port: 22,
+            user: "dev".to_owned(),
+            identity_file: None,
+        },
+        host_key: None,
+    };
+    Setup::existing(Link::ssh(name("box-1"), target, known_hosts), known_hosts)
+        .with_retry(RetryPolicy {
+            attempts: 1,
+            first_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        })
+}
+
+#[test]
+fn a_host_key_from_the_identity_is_pinned_before_connecting() {
+    let folder = tempfile::tempdir().unwrap();
+    let known_hosts = folder.path().join("known_hosts");
+    let runner = FakeRunner::new();
+    runner.ok(Purpose::Create, "").ok(
+        Purpose::Identity,
+        &format!(
+            r#"{{"name":"box-1","ssh":{{"host":"10.0.0.5","user":"dev","host_key":"{HOST_KEY}"}},"os":"linux","arch":"x86_64"}}"#
+        ),
+    );
+    let mut setup = Setup::new(cloud(true), name("box-1"), BTreeMap::new(), &known_hosts).unwrap();
+
+    setup.step(&runner, &FakeBuilds::files());
+    setup.step(&runner, &FakeBuilds::files());
+
+    assert_eq!(setup.current(), Step::Connect);
+    let pinned = std::fs::read_to_string(&known_hosts).unwrap();
+    assert_eq!(pinned.trim(), format!("humata2.box-1 {HOST_KEY}"));
+}
+
+#[test]
+fn an_unknown_host_key_is_scanned_shown_and_trusted() {
+    let folder = tempfile::tempdir().unwrap();
+    let known_hosts = folder.path().join("known_hosts");
+    let runner = FakeRunner::new();
+    runner
+        .answer(Purpose::Probe, Exit::Code(255), "", UNKNOWN_KEY)
+        .answer(
+            Purpose::ScanHostKey,
+            Exit::Code(255),
+            &format!("humata2.box-1 {HOST_KEY}\n"),
+            "dev@10.0.0.7: Permission denied (publickey).\n",
+        )
+        .ok(Purpose::Probe, "Linux x86_64\n");
+    let mut setup = ssh_machine(&known_hosts);
+
+    let Progress::Failed(failure) = setup.step(&runner, &FakeBuilds::files()) else {
+        panic!("an unknown key was accepted");
+    };
+    assert!(matches!(failure.error, SetupError::HostKeyUnknown { .. }));
+    assert!(failure.remedies.contains(&Remedy::ConfirmHostKey));
+
+    let key = setup.scan_host_key(&runner).unwrap();
+    assert_eq!(key.fingerprint(), HOST_KEY_FINGERPRINT);
+    // The scan offers the unverified machine nothing to log in with.
+    let scan = &runner.ran(Purpose::ScanHostKey)[0];
+    for refused in ["PubkeyAuthentication=no", "PasswordAuthentication=no", "KbdInteractiveAuthentication=no"] {
+        assert!(scan.args.iter().any(|arg| arg == refused), "{refused} in {:?}", scan.args);
+    }
+    assert!(!scan.args.iter().any(|arg| arg.contains("known_hosts")));
+
+    setup.trust_host_key(&key).unwrap();
+    assert!(matches!(setup.step(&runner, &FakeBuilds::files()), Progress::Continue));
+    assert_eq!(setup.current(), Step::Check);
+    assert!(std::fs::read_to_string(&known_hosts).unwrap().contains(HOST_KEY));
+}
+
+#[test]
+fn a_scan_that_learns_no_key_says_what_ssh_said() {
+    let folder = tempfile::tempdir().unwrap();
+    let runner = FakeRunner::new();
+    runner.answer(
+        Purpose::ScanHostKey,
+        Exit::Code(255),
+        "",
+        "ssh: connect to host 10.0.0.7 port 22: Connection refused\n",
+    );
+    let setup = ssh_machine(&folder.path().join("known_hosts"));
+
+    let failure = setup.scan_host_key(&runner).unwrap_err();
+
+    assert!(matches!(failure.error, SetupError::HostKeyScanFailed { .. }));
+    assert!(failure.output_tail.contains("Connection refused"));
+}
+
+#[test]
+fn a_changed_host_key_shows_both_fingerprints_and_offers_no_login() {
+    let folder = tempfile::tempdir().unwrap();
+    let known_hosts = folder.path().join("known_hosts");
+    let runner = FakeRunner::new();
+    runner
+        .answer(
+            Purpose::ScanHostKey,
+            Exit::Code(255),
+            &format!("humata2.box-1 {HOST_KEY}\n"),
+            "",
+        )
+        .answer(
+            Purpose::Probe,
+            Exit::Code(255),
+            "",
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r\n\
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\r\n\
+             The fingerprint for the ED25519 key sent by the remote host is\r\n\
+             SHA256:n3wK3yn3wK3yn3wK3yn3wK3yn3wK3yn3wK3yn3wK3yA.\r\n\
+             Host key verification failed.\r\n",
+        );
+    let mut setup = ssh_machine(&known_hosts);
+    let key = setup.scan_host_key(&runner).unwrap();
+    setup.trust_host_key(&key).unwrap();
+
+    let Progress::Failed(failure) = setup.step(&runner, &FakeBuilds::files()) else {
+        panic!("a changed key was accepted");
+    };
+
+    let SetupError::HostKeyChanged {
+        expected_fingerprint,
+        presented_fingerprint,
+        ..
+    } = &failure.error
+    else {
+        panic!("{:?}", failure.error);
+    };
+    assert_eq!(expected_fingerprint.as_deref(), Some(HOST_KEY_FINGERPRINT));
+    assert_eq!(
+        presented_fingerprint.as_deref(),
+        Some("SHA256:n3wK3yn3wK3yn3wK3yn3wK3yn3wK3yn3wK3yn3wK3yA")
+    );
+    assert!(failure.remedies.contains(&Remedy::ConfirmHostKey));
+    assert!(!failure.remedies.contains(&Remedy::OpenInteractively));
+}
+
+#[test]
+fn a_provider_connect_that_refuses_a_host_key_is_left_to_its_tool() {
+    let runner = FakeRunner::new();
+    runner
+        .ok(Purpose::Create, "")
+        .answer(Purpose::Probe, Exit::Code(255), "", UNKNOWN_KEY);
+    let mut setup = lima("box-1");
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Failed(failure) = progress else {
+        panic!("{progress:?}");
+    };
+    assert!(matches!(failure.error, SetupError::ConnectHostKey { .. }));
+    assert!(!failure.remedies.contains(&Remedy::ConfirmHostKey));
+    let scan = setup.scan_host_key(&runner).unwrap_err();
+    assert!(matches!(scan.error, SetupError::ConnectHostKey { .. }));
+    assert!(runner.ran(Purpose::ScanHostKey).is_empty());
+}
+
+#[test]
+fn without_a_user_manager_an_admin_command_or_setsid_is_offered() {
+    let runner = FakeRunner::new();
+    answer_up_to_service(&runner, &CheckFacts::default());
+    runner.answer(Purpose::Service, Exit::Code(76), "", "no user manager");
+    let mut setup = lima("box-1");
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Failed(failure) = progress else {
+        panic!("{progress:?}");
+    };
+    let SetupError::UserManagerUnavailable { ref admin_command, .. } = failure.error else {
+        panic!("{:?}", failure.error);
+    };
+    assert!(failure
+        .remedies
+        .contains(&Remedy::RunAsAdmin { command: admin_command.clone() }));
+    assert!(failure.remedies.contains(&Remedy::StartWithoutSystemd));
 }
