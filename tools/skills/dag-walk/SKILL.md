@@ -78,7 +78,8 @@ Turn the project's specs and work list into a DAG of goal milestones.
 2. List running agents. A lane whose manager is gone gets a fresh manager
    pointed at its milestone file; its Lane section says where it stopped.
 3. Open every milestone in DAG.md whose dependencies are done, up to the
-   lane limit: spawn a fresh manager with the brief in
+   lane limit (an edge marked `*` only blocks closing: the milestone may
+   open and build before it, but can't close until it is done): spawn a fresh manager with the brief in
    `templates/roles/MAIN.md` › Spawning a manager. Log it in the roster
    before it starts.
 4. Keep going: brief-review each batch a manager reports, run `gate` when
@@ -93,7 +94,7 @@ Turn the project's specs and work list into a DAG of goal milestones.
 
 ### close <ID>
 1. Check the exit criterion holds and the lane's targets passed the last
-   gate.
+   gate. Every `*` dependency must be done too.
 2. Commit only that lane's claimed paths with CONFIG's commit rules, push,
    verify. Release its claims.
 3. Mark it done in DAG.md and its milestone file (with the commit), end its

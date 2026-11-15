@@ -25,6 +25,8 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
 | minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
 | minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | done |
+| minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | running |
+| minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 
 ## Claims
 
@@ -33,6 +35,7 @@ Files a lane is editing. No two lanes claim the same file.
 | Lane | Paths |
 |---|---|
 | C1 | `clients/src/{daemon,fixture,workspace}.rs`, `clients/tests/fake_daemon.rs`, `desktop/tests/native.rs`, `desktop/tests/__snapshots__/native/`, `features/app/src/lib.rs`, `features/session/src/lib.rs`, `ui/BUILD.bazel`, `ui/src/{lib,overlays,pages,session_tabs,shell}.rs`, its OVERVIEW pickup block |
+| P0 | `LAYOUT.md`, `api/{BOUNDARIES,MCP,GRPC}.md` ("Always let" → "Always allow"); `features/app/src/` (lib.rs and new sibling files); `clients/BUILD.bazel`, `clients/src/{daemon,fixture}.rs`, new `clients/src/{daemon,fixture}/`; `ui/src/overlays.rs` and new `ui/src/overlay_*.rs` (all clean in git status when claimed; not panels.rs, native.rs, ui/src/lib.rs) |
 
 ## Lanes
 
@@ -41,6 +44,7 @@ Each lane's plan, tasks and workers live in its milestone file
 
 | Lane | Milestone file | Manager | Workers running | State |
 |---|---|---|---|---|
+| P0 | none (pre-manager step) | minion P0 | Sonnet split workers, one file each | LAYOUT.md sweep; splitting features/app lib.rs, clients daemon.rs and fixture.rs, ui overlays.rs |
 
 Old template, kept for reference:
 
@@ -73,3 +77,5 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: owner asked: after J1, an Opus 5.5 agent (P0) does A1's pre-manager work: C1 landed first (C1 is active and commits itself; main waits for its files to go clean), docs sweep left after J1, one-time split of the hot shared files. Then dag-walk plan step 3 (DAG.md + milestone files), then dag-walk resume.
 - 2026-11-15 main: C1 landed its work (9158b063, eb4cb93f, pushed). Pre-manager step (a) done. Safety ref kept for now (it also holds the other session's ui-prototype work).
 - 2026-11-15 main: J1 done; committed its SPEC/DECISIONS/OVERVIEW edits (C1's pickup block staged from HEAD). D103–D112 Provisional, D113 frame changes await the owner.
+- 2026-11-15 main: J1 committed (ba1a357e). Started P0 (Opus) and D1 (Fable, DAG files). C1 active again on Changes wrapping (ui panels/shell/lib, native.rs).
+- 2026-11-15 main: D1 done: DAG.md + 26 milestone files. Scripted syncs moved into MACH (D49). Skill honours `*` edges. Next: P0 report → gate → commit → dag-walk resume (FL-D daemon lane, FRAMES1 docs lane first).
