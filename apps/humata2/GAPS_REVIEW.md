@@ -238,6 +238,12 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: an agent hears only of its own session's notes, narrower than what ListComments lets it read (D92).
 
+### (this commit): the MCP inbox_request tool [minion F]
+- A session's agent can now ask the user ahead for access, say to reach a port, from its MCP tools. It waits for the answer; approved, it gets the grant's id, and asking again for something already granted is approved at once. A no comes back as an error carrying the user's note.
+- `daemon/humatad/src/mcp.rs`: `Operation::InboxRequest` calls `request_access`, which maps the capability name and the JSON target (board, path, network, agent on machine, repo branch, machine action, session) to RequestAccess; `outcome` decodes the Grant from an approved answer into `grant_id`. `inbox.rs`: `GRANT_TYPE` is `pub(crate)`.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
+- Look at: Ask verdicts still don't become Inbox requests, and the Inbox and grants still live in memory.
+
 ### 13396a5c: session lifecycle and full-screen presentation (Desktop UI; N1) [minion C1]
 - The session can now put its terminal or panel full screen and return to its saved columns; the choice survives a restart per session. Exited sessions keep their transcript and Resume; offline sessions retain output with a disconnected notice. Selected panel-strip choices close/reopen, and pending Inbox/unsent-comment badges are visible. Frames 03–06 and 09–13 now have real-app comparison images; they remain partial for the differences below.
 - `features/app/src/layout.rs`, `saved.rs` and `lib.rs` own presentation and navigation-overlay state. Narrow windows fold columns without overwriting saved widths. `ui/src/shell.rs`, `sidebar.rs`, `bridge.rs` and `pages.rs` use that state and shared column sizing; `panels.rs` gains actionable full-screen window controls and badges. `clients::fixture::design_session` supplies lifecycle tails and the approved PAY/INF board items. The transcript now contains the mock's literal command text; no cargo command was executed. Terminal output is isolated by selected tab. Panel contents were preserved.

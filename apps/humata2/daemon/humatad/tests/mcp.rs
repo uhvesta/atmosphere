@@ -527,6 +527,98 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
     assert_eq!(off["isError"], true, "the user turned notes off: {off}");
 }
 
+/// Sends an `inbox_request` for `localhost:port` and waits till the user
+/// sees it, so the test can answer it.
+async fn ask_for_port(
+    mcp: &mut Mcp,
+    inbox: &mut pb::inbox_service_client::InboxServiceClient<tonic::transport::Channel>,
+    id: u64,
+    port: u16,
+) -> pb::RequestId {
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": "inbox_request",
+            "arguments": {
+                "capability": "network_reach",
+                "target": { "network": { "host": "localhost", "port": port } },
+                "reason": "run the database tests",
+            },
+        },
+    }))
+    .await;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let pending = inbox
+            .list_requests(pb::ListRequestsRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .requests;
+        if let Some(id) = pending.into_iter().find_map(|request| request.id) {
+            return id;
+        }
+        assert!(Instant::now() < deadline, "the request never reached the Inbox");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn answered(id: &pb::RequestId, answer: pb::request_answer::Answer) -> pb::AnswerRequestRequest {
+    pb::AnswerRequestRequest {
+        id: Some(id.clone()),
+        answer: Some(pb::RequestAnswer { answer: Some(answer) }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_asks_ahead_for_access_and_gets_the_grant_or_the_users_no() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+
+    let asked = ask_for_port(&mut mcp, &mut inbox, 1, 5432).await;
+    inbox
+        .answer_request(answered(&asked, pb::request_answer::Answer::Approve(pb::Approve {})))
+        .await
+        .unwrap();
+    let approved = mcp.response(1).await;
+    let again = mcp
+        .call(
+            2,
+            "inbox_request",
+            json!({
+                "capability": "network_reach",
+                "target": { "network": { "host": "localhost", "port": 5432 } },
+                "reason": "run them again",
+            }),
+        )
+        .await;
+    let other = ask_for_port(&mut mcp, &mut inbox, 3, 6379).await;
+    inbox
+        .answer_request(answered(
+            &other,
+            pb::request_answer::Answer::Deny(pb::Deny {
+                note: "not the cache".to_owned(),
+            }),
+        ))
+        .await
+        .unwrap();
+    let denied = mcp.response(3).await;
+    assert_eq!(approved["isError"], false, "{approved}");
+    let approved = &approved["structuredContent"]["result"];
+    assert_eq!(approved["decision"], "approved");
+    let grant = approved["grant_id"].as_str().unwrap();
+    assert!(!grant.is_empty());
+    let again = &again["structuredContent"]["result"];
+    assert_eq!(again["decision"], "approved", "a covered ask needs no new answer");
+    assert_eq!(again["grant_id"], grant);
+    assert_eq!(denied["isError"], true, "{denied}");
+    assert_eq!(denied["structuredContent"]["error"]["kind"], "denied");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_prepares_revises_and_offers_a_view() {
     let fixture = Fixture::start().await;

@@ -257,6 +257,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - Done: a note going outdated or moving is a WatchReviewChanges change (D88).
 - Done: views on the event feed (D89).
 - Done: Inbox requests on the event feed (D90), grants made and revoked (D91), and review chat notes (D92).
+- Done: MCP `inbox_request` (D93).
 - On: next open daemon/CLI/MCP items that need no UI, Linux batch, repin or owner call.
 - Trap: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_...`) can fail under the full parallel run; it passes alone.
 - Traps: OVERVIEW, GAPS_REVIEW and DECISIONS may hold minion C1's uncommitted edits; stage only my hunks from `git show HEAD:<file>`.
@@ -381,5 +382,6 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 
 ### MCP, access and other open items (I8, A5)
 - [ ] ReportService, script tokens (SEC-14), and the web listener.
-- [ ] MCP `inbox_request` and Ask→Inbox (D38.6); persist the Inbox and grants.
+- [x] MCP `inbox_request` asks ahead through RequestAccess and answers `{decision, grant_id}` (D93): `//apps/humata2/daemon/humatad:mcp_test`.
+- [ ] Ask→Inbox (D38.6); persist the Inbox and grants.
 - [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64).

@@ -35,7 +35,7 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 const CHOICES_MAX: usize = 4;
 
 /// What a wait's `result` holds when the answer made a grant.
-const GRANT_TYPE: &str = "humata.v1.Grant";
+pub(crate) const GRANT_TYPE: &str = "humata.v1.Grant";
 
 pub(crate) struct Inbox {
     guard: Arc<Guard>,

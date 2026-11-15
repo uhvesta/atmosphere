@@ -423,6 +423,57 @@ impl GrpcDaemon {
         outcome(response)
     }
 
+    /// `inbox_request` (IN-26): asks ahead for `capability` on `target`.
+    async fn request_access(&self, call: Call) -> Result<Reply, ToolError> {
+        let name = text(&call.arguments, "capability");
+        let capability = pb::Capability::from_str_name(&format!("CAPABILITY_{}", name.to_ascii_uppercase()))
+            .ok_or_else(|| access::unknown_capability(&name))?;
+        let target = match call.arguments.get("target").and_then(Value::as_object) {
+            Some(target) => self.grant_target(target).await?,
+            None => pb::GrantTarget::default(),
+        };
+        let request = self.request(pb::RequestAccessRequest {
+            idempotency_key: Some(key(&call)),
+            capability: capability as i32,
+            target: Some(target),
+            reason: text(&call.arguments, "reason"),
+            wait_seconds: 0,
+        })?;
+        let response = self
+            .inbox()
+            .request_access(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        outcome(response)
+    }
+
+    /// A tool's `target` as a GrantTarget; a board named `session` or
+    /// `channel` is the caller's own.
+    async fn grant_target(&self, target: &Map<String, Value>) -> Result<pb::GrantTarget, ToolError> {
+        use pb::grant_target::Target;
+        let board = match target.get("board") {
+            Some(Value::String(scope)) if scope == "session" => {
+                Some(pb::board_ref::Board::Session(self.own_session().await?))
+            }
+            Some(Value::String(scope)) if scope == "channel" => {
+                let (_, channel) = self.agent().await?;
+                Some(pb::board_ref::Board::Channel(channel.unwrap_or_default()))
+            }
+            Some(Value::String(_)) => Some(pb::board_ref::Board::Global(pb::GlobalBoard {})),
+            Some(Value::Object(other)) => Some(pb::board_ref::Board::Session(pb::SessionId {
+                value: text(other, "session"),
+            })),
+            _ => None,
+        };
+        let target = if let Some(board) = board {
+            Target::Board(pb::BoardRef { board: Some(board) })
+        } else {
+            access::target(target)
+        };
+        Ok(pb::GrantTarget { target: Some(target) })
+    }
+
     async fn session_type(&self, call: Call) -> Result<Reply, ToolError> {
         let when = match call.arguments.get("when").and_then(Value::as_str) {
             Some("turn_end") => pb::type_request::When::TurnEnds,
@@ -462,6 +513,7 @@ impl Daemon for GrpcDaemon {
         match call.operation {
             Operation::Whoami => self.whoami().await,
             Operation::InboxAsk => self.ask(call).await,
+            Operation::InboxRequest => self.request_access(call).await,
             Operation::SessionType => self.session_type(call).await,
             Operation::ReviewContext => self.review_context().await,
             Operation::ReviewFocus => self.review_focus(call).await,
@@ -546,7 +598,14 @@ fn outcome(response: pb::WaitResponse) -> Result<Reply, ToolError> {
         Ok(pb::RequestState::Answered | pb::RequestState::Approved) => {
             let result = match response.answer.and_then(|answer| answer.answer) {
                 Some(pb::request_answer::Answer::Reply(reply)) => json!({ "reply": reply.text }),
-                Some(_) => json!({ "approved": true }),
+                Some(_) => {
+                    let grant = (response.result_type == crate::inbox::GRANT_TYPE)
+                        .then(|| <pb::Grant as prost::Message>::decode(response.result.as_slice()).ok())
+                        .flatten()
+                        .and_then(|grant| grant.id)
+                        .map(|id| id.value);
+                    json!({ "decision": "approved", "grant_id": grant })
+                }
                 None => json!({}),
             };
             Ok(applied(result, Some(id)))
@@ -857,6 +916,94 @@ mod views {
             "title": view.title,
             "state": state(view.state),
             "revision": view.revision.as_ref().map(|revision| revision.value),
+        })
+    }
+}
+
+/// `inbox_request`'s arguments, as the access protos.
+mod access {
+    use humata2_grpc::humata::v1 as pb;
+    use humata2_mcp::{ErrorKind, ToolError};
+    use serde_json::{Map, Value, json};
+
+    use super::text;
+
+    /// A capability name this humatad2 doesn't know; the server checked
+    /// the schema, so the MCP server and this daemon differ.
+    pub(super) fn unknown_capability(name: &str) -> ToolError {
+        let mut details = Map::new();
+        details.insert("field".to_owned(), json!("capability"));
+        details.insert("problem".to_owned(), json!("unknown_value"));
+        ToolError {
+            kind: ErrorKind::InvalidField,
+            message: format!("capability {name:?} isn't one this humatad2 knows"),
+            fix: "use a capability from the tool's list, or update Humata on this machine".to_owned(),
+            retry: None,
+            details,
+        }
+    }
+
+    fn machine(arguments: &Map<String, Value>) -> Option<pb::MachineId> {
+        let value = text(arguments, "machine");
+        (!value.is_empty()).then_some(pb::MachineId { value })
+    }
+
+    fn session(arguments: &Map<String, Value>) -> Option<pb::SessionId> {
+        let value = text(arguments, "session");
+        (!value.is_empty()).then_some(pb::SessionId { value })
+    }
+
+    fn repo(arguments: &Map<String, Value>) -> pb::RepoRef {
+        super::review::repo_path(arguments).repo.unwrap_or_default()
+    }
+
+    /// Every target but a board; the server checked that exactly one is
+    /// there.
+    pub(super) fn target(target: &Map<String, Value>) -> pb::grant_target::Target {
+        use pb::grant_target::Target;
+        let inner = |field: &str| target.get(field).and_then(Value::as_object);
+        if let Some(path) = inner("path") {
+            return Target::Path(pb::PathScope {
+                machine: machine(path),
+                session: session(path),
+                prefix: Some(super::review::repo_path(path)),
+            });
+        }
+        if let Some(network) = inner("network") {
+            return Target::Network(pb::NetworkTarget {
+                host: text(network, "host"),
+                port: network
+                    .get("port")
+                    .and_then(Value::as_u64)
+                    .and_then(|port| u32::try_from(port).ok())
+                    .unwrap_or_default(),
+                machine: machine(network),
+            });
+        }
+        if let Some(agent) = inner("agent_on_machine") {
+            return Target::AgentOnMachine(pb::AgentOnMachine {
+                machine: machine(agent),
+                agent: Some(pb::AgentId {
+                    value: text(agent, "agent"),
+                }),
+            });
+        }
+        if let Some(branch) = inner("repo_branch") {
+            return Target::RepoBranch(pb::RepoBranch {
+                repo: Some(repo(branch)),
+                branch: text(branch, "branch"),
+            });
+        }
+        if let Some(action) = inner("machine_action") {
+            let kind = format!("MACHINE_ACTION_KIND_{}", text(action, "action").to_ascii_uppercase());
+            return Target::MachineAction(pb::MachineAction {
+                machine: machine(action),
+                new_machine: text(action, "new_machine"),
+                action: pb::MachineActionKind::from_str_name(&kind).unwrap_or_default() as i32,
+            });
+        }
+        Target::Session(pb::SessionId {
+            value: text(target, "session"),
         })
     }
 }
