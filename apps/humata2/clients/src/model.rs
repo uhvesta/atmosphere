@@ -502,6 +502,49 @@ pub struct Comment {
     pub body: String,
     /// Whether it was sent to the agent.
     pub sent: bool,
+    /// The comparison shown when this new-side comment was written.
+    #[serde(default)]
+    pub context: Option<CommentContext>,
+}
+
+/// Source context retained with a comment on the new side of a diff.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentContext {
+    /// The repository whose comparison was shown.
+    pub repo: String,
+    /// The base selected when the comment was written.
+    pub base: String,
+    /// The shown source line, when the comparison contains it.
+    pub quoted: Option<String>,
+}
+
+impl Comment {
+    /// Comments delivered together to the session's main agent (SM-9).
+    #[must_use]
+    pub fn message(comments: &[Self]) -> String {
+        comments
+            .iter()
+            .map(|comment| {
+                if let Some(context) = &comment.context {
+                    let quote = context
+                        .quoted
+                        .as_ref()
+                        .map(|line| format!("> {line}\n"))
+                        .unwrap_or_default();
+                    format!(
+                        "[comment on {}/{}:{} · new · base {}]\n{quote}{}",
+                        context.repo, comment.path, comment.line, context.base, comment.body
+                    )
+                } else {
+                    format!(
+                        "[comment on {}:{}]\n{}",
+                        comment.path, comment.line, comment.body
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
 }
 
 /// A session's changes in one repository.

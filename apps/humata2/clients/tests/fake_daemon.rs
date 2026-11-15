@@ -372,3 +372,73 @@ fn fork_kinds_keep_the_right_conversation_files_and_branch() {
         assert!(!workspace.terminal_bytes[&(id, 0)].is_empty());
     }
 }
+
+#[test]
+fn an_ambiguous_legacy_comment_refuses_the_whole_batch_before_delivery() {
+    use humata2_clients::model::{Comment, CommentContext};
+    let mut workspace = fixture::design();
+    let duplicate = workspace
+        .diffs
+        .iter()
+        .find(|diff| diff.repo == "api")
+        .unwrap()
+        .files
+        .iter()
+        .find(|file| file.path == "src/client.rs")
+        .unwrap()
+        .clone();
+    workspace
+        .diffs
+        .iter_mut()
+        .find(|diff| diff.repo == "ledger")
+        .unwrap()
+        .files
+        .push(duplicate);
+    let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
+    let before = daemon.workspace();
+    let id = SessionId::new("ledger");
+    let mut comments = vec![
+        Comment {
+            path: "src/client.rs".into(),
+            line: 43,
+            body: "A scoped comment in the same batch.".into(),
+            sent: false,
+            context: Some(CommentContext {
+                repo: "api".into(),
+                base: "main".into(),
+                quoted: None,
+            }),
+        },
+        Comment {
+            path: "src/client.rs".into(),
+            line: 44,
+            body: "A restored comment without its repository.".into(),
+            sent: false,
+            context: None,
+        },
+    ];
+    assert!(matches!(
+        block_on(daemon.send_comments(&id, comments.clone())),
+        Err(DaemonError::Refused { .. })
+    ));
+    assert_eq!(daemon.workspace(), before);
+    comments[1].context = Some(CommentContext {
+        repo: "api".into(),
+        base: "main".into(),
+        quoted: None,
+    });
+    block_on(daemon.send_comments(&id, comments.clone())).unwrap();
+    let workspace = daemon.workspace();
+    for diff in workspace.diffs.iter().filter(|diff| diff.session == id) {
+        let delivered = diff
+            .comments
+            .iter()
+            .filter(|comment| {
+                comments
+                    .iter()
+                    .any(|expected| expected.body == comment.body)
+            })
+            .count();
+        assert_eq!(delivered, if diff.repo == "api" { 2 } else { 0 });
+    }
+}

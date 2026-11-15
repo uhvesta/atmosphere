@@ -333,6 +333,22 @@ fn sending_comments_from_the_panel_delivers_the_open_sessions_queue() {
     assert!(app.contains("send-comments"));
     app.click("send-comments");
     assert!(app.ui.read(|state| state.review.queued().is_empty()));
+    assert_eq!(
+        app.ui
+            .read(|state| state.session.view().unwrap().queue.len()),
+        1
+    );
+    assert!(
+        !app.fakes
+            .daemon
+            .workspace()
+            .diffs
+            .iter()
+            .flat_map(|d| &d.comments)
+            .any(|c| c.body == "Surface a second auth failure")
+    );
+    app.click("show-queued");
+    app.click("send-queued-0");
     let workspace = app.fakes.daemon.workspace();
     let delivered: Vec<_> = workspace
         .diffs

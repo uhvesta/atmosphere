@@ -13,6 +13,7 @@ pub mod saved;
 
 mod commands;
 mod events;
+mod messages;
 mod new_channel;
 mod new_session;
 mod overlay;
@@ -360,7 +361,7 @@ impl App {
         Self {
             saver: Saver::new(clients.storage.clone()),
             sessions: Sessions::new(clients.clone()),
-            review: Review::new(clients.clone()),
+            review: Review,
             inbox: Inbox::new(clients.clone()),
             board: Board::new(clients.clone()),
             hosts: Hosts::new(clients.clone()),
@@ -443,6 +444,17 @@ impl App {
                 D::OpenSession(id) => self.switch(state, Route::Session(id.clone())),
             },
             AppAction::Session(SessionAction::Delegate(delegate)) => match delegate {
+                S::CommentsSent(_, count) => state.toast(
+                    format!(
+                        "Sent {count} comment{} to the agent.",
+                        if *count == 1 { "" } else { "s" }
+                    ),
+                    &clock,
+                ),
+                S::CommentsUnqueued(id, comments) => self.child(
+                    state,
+                    AppAction::Review(ReviewAction::Unqueued(id.clone(), comments.clone())),
+                ),
                 S::Archived(id, title) => {
                     let notice = state.toast(format!("Archived “{title}”"), &clock);
                     if let Some(toast) = state.toasts.last_mut() {
@@ -480,6 +492,9 @@ impl App {
                 H::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 H::Toast(text) => state.toast(text.clone(), &clock),
             },
+            AppAction::Review(ReviewAction::Delegate(R::QueueComments(id, comments))) => {
+                self.queue_comments(state, id.clone(), comments.clone())
+            }
             AppAction::Review(ReviewAction::Delegate(R::Toast(text)))
             | AppAction::Files(FilesAction::Delegate(F::Toast(text))) => {
                 state.toast(text.clone(), &clock)

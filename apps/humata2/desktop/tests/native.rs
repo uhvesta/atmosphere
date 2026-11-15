@@ -1413,7 +1413,14 @@ fn queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab() 
     app.snapshot("queued-messages-expanded-dark");
     app.click("remove-queued-0");
     assert_eq!(
-        app.ui.read(|s| s.session.view().unwrap().queue.clone()),
+        app.ui.read(|s| s
+            .session
+            .view()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>()),
         ["Then check the read path before dropping the old index."]
     );
     app.click("send-queued-0");
@@ -1478,7 +1485,14 @@ fn a_failed_queued_message_stays_visible_for_retry() {
     app.click("send-queued-0");
     assert!(app.contains("session-error"));
     assert_eq!(
-        app.ui.read(|s| s.session.view().unwrap().queue.clone()),
+        app.ui.read(|s| s
+            .session
+            .view()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>()),
         ["Retry this message intact."]
     );
     assert!(app.contains("send-next-queued"));
@@ -1497,4 +1511,104 @@ fn a_failed_queued_message_stays_visible_for_retry() {
     app.click("send-next-queued");
     assert!(!app.contains("session-queue"));
     assert!(!app.contains("session-error"));
+}
+
+/// SM-9/10: Review Send waits for the turn and Remove returns the comments to drafts.
+#[test]
+fn review_comments_wait_in_the_session_queue_and_retry_without_losing_their_anchor() {
+    use humata2_review::{Anchor, ReviewAction as R};
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(R::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    app.send(AppAction::Review(R::StartComment(Anchor {
+        path: "src/client.rs".into(),
+        line: 43,
+    })));
+    app.send(AppAction::Review(R::CommentText(
+        "Keep these writes in one transaction.".into(),
+    )));
+    app.send(AppAction::Review(R::SaveComment));
+    app.click("send-comments");
+    assert!(app.ui.read(|s| s.review.queued().is_empty()));
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().queue.len()), 1);
+    assert!(
+        !app.fakes
+            .daemon
+            .workspace()
+            .diffs
+            .iter()
+            .flat_map(|d| &d.comments)
+            .any(|c| c.body == "Keep these writes in one transaction.")
+    );
+    app.snapshot("review-comments-queued");
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("review-comments-queued-dark");
+    app.cx
+        .update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    app.click("show-queued");
+    app.click("remove-queued-0");
+    assert!(app.ui.read(|s| s.session.view().unwrap().queue.is_empty()));
+    assert_eq!(app.ui.read(|s| s.review.queued().len()), 1);
+    app.click("send-comments");
+    app.fakes.daemon.fail_next(
+        humata2_clients::Operation::SendComments,
+        "The connection dropped. Reconnect and try again.",
+    );
+    app.click("send-queued-0");
+    assert!(app.contains("session-error"));
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().queue.len()), 1);
+    app.snapshot("review-comments-retry");
+    app.click("send-next-queued");
+    assert!(!app.contains("session-queue"));
+    let workspace = app.fakes.daemon.workspace();
+    let sent: Vec<_> = workspace
+        .diffs
+        .iter()
+        .filter(|d| d.session == SessionId::new("ledger"))
+        .flat_map(|d| &d.comments)
+        .filter(|c| c.body == "Keep these writes in one transaction.")
+        .collect();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].sent);
+    app.snapshot("review-comments-sent");
+}
+
+/// SE-10: keyboard input follows focus; palette editing cannot type into the terminal.
+#[test]
+fn an_unfocused_terminal_does_not_receive_palette_keystrokes() {
+    let mut app = App::new(fixture::design());
+    app.cx
+        .update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    app.settle();
+    app.open("ledger", Panel::Info);
+    app.click("terminal");
+    let key = (SessionId::new("ledger"), 0);
+    let before = app.fakes.daemon.workspace().terminal_bytes[&key].clone();
+    app.send(AppAction::OpenPalette);
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.input("focus stays in search", cx);
+            window.press("down", cx);
+        })
+        .unwrap();
+    app.settle();
+    assert_eq!(app.fakes.daemon.workspace().terminal_bytes[&key], before);
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    app.settle();
+    app.click("terminal");
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in ["p", "w", "d", "enter"] {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+    assert_ne!(app.fakes.daemon.workspace().terminal_bytes[&key], before);
 }

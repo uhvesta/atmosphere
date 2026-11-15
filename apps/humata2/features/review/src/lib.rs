@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use humata2_clients::model::{Comment, DiffLine, LineKind, SessionId};
-use humata2_clients::{Clients, DaemonError, Workspace};
+use humata2_clients::model::{Comment, CommentContext, DiffLine, LineKind, SessionId};
+use humata2_clients::{DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
@@ -114,6 +114,8 @@ impl ReviewState {
 /// What the review page asks its parent to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delegate {
+    /// Queue this batch in the session, rather than type during a turn.
+    QueueComments(SessionId, Vec<Comment>),
     /// Say this in a toast.
     Toast(String),
 }
@@ -147,25 +149,19 @@ pub enum ReviewAction {
     RemoveComment(usize),
     /// Send every queued comment to the agent.
     Send,
-    /// The daemon took them, or didn't.
-    Sent(SessionId, Result<(), DaemonError>),
+    /// The parent retained this batch in the session queue.
+    Queued(SessionId, Vec<Comment>),
+    /// A queued batch was removed and can be edited again.
+    Unqueued(SessionId, Vec<Comment>),
+    /// The parent could not retain the batch; the drafts remain.
+    QueueFailed(DaemonError),
     /// For the parent.
     Delegate(Delegate),
 }
 
 /// The review page's reducer.
 #[derive(Clone)]
-pub struct Review {
-    clients: Clients,
-}
-
-impl Review {
-    /// A review page that sends comments with `clients`.
-    #[must_use]
-    pub const fn new(clients: Clients) -> Self {
-        Self { clients }
-    }
-}
+pub struct Review;
 
 impl Reducer for Review {
     type State = ReviewState;
@@ -176,7 +172,8 @@ impl Reducer for Review {
             ReviewAction::SelectFile { repo, path } => {
                 if let Some(session) = state.session.clone()
                     && state.workspace.diffs.iter().any(|diff| {
-                        diff.session == session && diff.repo == repo
+                        diff.session == session
+                            && diff.repo == repo
                             && diff.files.iter().any(|file| file.path == path)
                     })
                 {
@@ -227,12 +224,39 @@ impl Reducer for Review {
                     && let Some((anchor, body)) = state.saved.drafts.remove(&session)
                     && !body.trim().is_empty()
                 {
-                    state.saved.queued.entry(session).or_default().push(Comment {
-                        path: anchor.path,
-                        line: anchor.line,
-                        body: body.trim().to_owned(),
-                        sent: false,
-                    });
+                    let selected_repo = state.saved.selected.get(&session).map(|(repo, _)| repo);
+                    let context = state
+                        .workspace
+                        .diffs
+                        .iter()
+                        .filter(|diff| diff.session == session)
+                        .find_map(|diff| {
+                            if selected_repo.is_some_and(|repo| *repo != diff.repo) {
+                                return None;
+                            }
+                            let file = diff.files.iter().find(|file| file.path == anchor.path)?;
+                            Some(CommentContext {
+                                repo: diff.repo.clone(),
+                                base: diff.base.clone(),
+                                quoted: file
+                                    .lines
+                                    .iter()
+                                    .find(|line| line.new == Some(anchor.line))
+                                    .map(|line| line.text.clone()),
+                            })
+                        });
+                    state
+                        .saved
+                        .queued
+                        .entry(session)
+                        .or_default()
+                        .push(Comment {
+                            path: anchor.path,
+                            line: anchor.line,
+                            body: body.trim().to_owned(),
+                            sent: false,
+                            context,
+                        });
                     return prepare(state);
                 }
             }
@@ -242,6 +266,9 @@ impl Reducer for Review {
                 }
             }
             ReviewAction::RemoveComment(index) => {
+                if state.sending {
+                    return Effect::none();
+                }
                 if let Some(session) = &state.session
                     && let Some(queued) = state.saved.queued.get_mut(session)
                     && index < queued.len()
@@ -259,25 +286,35 @@ impl Reducer for Review {
                     return Effect::none();
                 }
                 state.sending = true;
-                let daemon = self.clients.daemon.clone();
-                return Effect::future(async move {
-                    let result = daemon.send_comments(&session, comments).await;
-                    ReviewAction::Sent(session, result)
-                });
+                return Effect::send(ReviewAction::Delegate(Delegate::QueueComments(
+                    session, comments,
+                )));
             }
-            ReviewAction::Sent(session, result) => {
+            ReviewAction::Queued(session, comments) => {
                 state.sending = false;
-                match result {
-                    Ok(()) => {
-                        let count = state.saved.queued.remove(&session).map_or(0, |queued| queued.len());
-                        state.error = None;
-                        return Effect::send(ReviewAction::Delegate(Delegate::Toast(format!(
-                            "Sent {count} comment{} to the agent.",
-                            if count == 1 { "" } else { "s" }
-                        ))));
+                state.error = None;
+                if let Some(drafts) = state.saved.queued.get_mut(&session) {
+                    for comment in comments {
+                        if let Some(index) = drafts.iter().position(|draft| *draft == comment) {
+                            drafts.remove(index);
+                        }
                     }
-                    Err(error) => state.error = Some(error.to_string()),
                 }
+                return prepare(state);
+            }
+            ReviewAction::Unqueued(session, comments) => {
+                state
+                    .saved
+                    .queued
+                    .entry(session)
+                    .or_default()
+                    .extend(comments);
+                return prepare(state);
+            }
+            ReviewAction::QueueFailed(error) => {
+                state.sending = false;
+                state.error = Some(error.to_string());
+                return Effect::send(ReviewAction::Delegate(Delegate::Toast(error.to_string())));
             }
             ReviewAction::Delegate(_) => {}
         }
@@ -293,10 +330,23 @@ fn prepare(state: &mut ReviewState) -> Effect<ReviewAction> {
     state.generation += 1;
     let generation = state.generation;
     let workspace = state.workspace.clone();
-    let folded = state.saved.folded.get(&session).cloned().unwrap_or_default();
-    let queued = state.saved.queued.get(&session).cloned().unwrap_or_default();
+    let folded = state
+        .saved
+        .folded
+        .get(&session)
+        .cloned()
+        .unwrap_or_default();
+    let queued = state
+        .saved
+        .queued
+        .get(&session)
+        .cloned()
+        .unwrap_or_default();
     Effect::future(async move {
-        ReviewAction::Prepared(generation, Arc::new(rows(&workspace, &session, &folded, &queued)))
+        ReviewAction::Prepared(
+            generation,
+            Arc::new(rows(&workspace, &session, &folded, &queued)),
+        )
     })
     .cancellable("review-prepare", true)
 }
@@ -311,7 +361,11 @@ pub fn rows(
     queued: &[Comment],
 ) -> Vec<DiffRow> {
     let mut rows = Vec::new();
-    for diff in workspace.diffs.iter().filter(|diff| &diff.session == session) {
+    for diff in workspace
+        .diffs
+        .iter()
+        .filter(|diff| &diff.session == session)
+    {
         for file in &diff.files {
             let open = !folded.contains(&file.path);
             rows.push(DiffRow::File {
@@ -332,7 +386,13 @@ pub fn rows(
                     continue;
                 };
                 for comment in diff.comments.iter().chain(queued) {
-                    if comment.path == file.path && comment.line == number {
+                    if comment.path == file.path
+                        && comment.line == number
+                        && comment
+                            .context
+                            .as_ref()
+                            .is_none_or(|context| context.repo == diff.repo)
+                    {
                         rows.push(DiffRow::Comment {
                             path: file.path.clone(),
                             line: number,

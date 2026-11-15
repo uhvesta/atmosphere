@@ -78,5 +78,5 @@ Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Desi
   #terminal-pane
     #terminal focused
 #session-queue
-  text "2 messages queued · typed when this turn ends"
+  text "2 messages waiting to send · after this turn"
   Button "Show"

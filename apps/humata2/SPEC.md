@@ -500,7 +500,13 @@ is configurable per machine.
   exactly as in a normal terminal, and everything the CLI draws is shown as
   drawn (colours, cursor, alternate screen, mouse, OSC 52 clipboard). There is
   no chat layer: queueing, rewind, compaction and images are whatever the CLI
-  offers.
+  offers. Mouse interaction includes click-to-focus, selection, scrolling,
+  and the CLI's requested mouse reporting; Shift keeps local selection when
+  mouse reporting is active. Interactive keyboard text, keys and paste go only to the
+  focused terminal grid. Editing a palette, form, find field or another
+  terminal must not also type into this terminal. App shortcuts respect the
+  focused control. Read-only and disconnected terminals cannot send input.
+  (Owner clarification, 2026-11-15; D126.)
 - **SE-11** The right strip has, top to bottom: **Inbox** (badge: pending
   requests of the session and its forks), **Diff** (badge: unsent comments),
   **Files**, **Board** (the session's board), **Journal**, **Info**. Clicking
@@ -559,16 +565,20 @@ is configurable per machine.
 - **SE-22** A session whose turn end comes from the output fallback shows
   **Probably idle**, never Idle, until the user types or the agent writes
   output again. (provisional, D7)
-- **SE-23** Messages Humata queues for a session (comments, notes, queued
-  typing, the approval line of IN-12) are typed when the turn ends. While any
-  wait, a bar under the terminal says "n messages queued · typed when this
-  turn ends" with **Show** (frame 03), which lists them, each with **Send
-  now** and **Remove**. When the
-  end comes from the agent's hooks, they are typed on their own. When it
-  comes from the output fallback, or the session is a plain shell, they are
-  not: the bar says "waiting: turn end not certain" with **Send now**.
-  Each message is typed whole as
-  one bracketed paste and never in the middle of another. (provisional, D7)
+- **SE-23** Humata may hold messages the user has not sent to the terminal.
+  The waiting list represents only this app-owned buffer; it cannot inspect
+  or control the agent CLI's internal queue. A bar says **Waiting to send**
+  with the number of held messages; **Show** lists them with **Send now**
+  and **Remove**, and **Hide** collapses it. The user can send an individual
+  message now or send a batch. Explicit Send delivers terminal input without
+  requiring Humata to detect a turn end; the CLI decides how to interpret it.
+  Once terminal delivery is acknowledged, the item leaves Humata's waiting
+  list. Delivery does not mean the agent has processed or accepted it.
+  An optional wait-until-turn-end mode must be an explicit choice and only
+  auto-send on a reliable hook; fallback detection and plain shells need
+  explicit Send. Whole messages use serialized bracketed paste, never
+  interleaving bytes with another writer. (Owner clarification, 2026-11-15;
+  D126, superseding the mandatory wait policy of D7.)
 - **SE-24** Several writers may type into one terminal at once: the app,
   `humata attach` and Humata's own queued messages. Each writer's terminal
   shows "n others can type here" while others are attached with input.
@@ -1378,10 +1388,14 @@ mode. Frames 39 and 41–43 draw it.
   and then the comment's text (frame 43). The path starts with the repo when
   the session has more than one. A comment made in a diff adds its side and
   base to that line and the quoted code under it (RV-27).
-- **SM-10** If the agent is mid-turn, the message waits in Humata's queue
-  for that session and is typed when the turn ends, as SE-23 says. The
-  comments show "queued" until then, and "sent to <agent>" after.
-- **SM-11** Each comment has a status: **draft** → **queued** → **sent** →
+- **SM-10** The user can send comments one at a time as they write them,
+  or keep drafts and send them together (SM-9). Explicit Send follows SE-23:
+  input goes to the terminal and its CLI interprets it. Only comments held
+  by Humata before terminal delivery may say **Waiting to send**. After
+  acknowledged delivery they may say **sent to <agent>**; this makes no
+  claim about an agent-internal queue or whether the agent has acted on them.
+  (Owner clarification, 2026-11-15; D126.)
+- **SM-11** Each comment has a status: **draft** → **waiting to send** → **sent** →
   **addressed** (by the rule in SM-16). The user can **Resolve** a comment
   or **Reopen** a resolved one. Reopening sets it back to draft, whoever
   resolved it, so the user can edit it and send it again; its replies stay

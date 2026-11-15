@@ -38,7 +38,14 @@ fn fallback_and_plain_shell_messages_wait_for_an_explicit_send() {
         store.send(A::Draft("one whole message\nwith two lines".into()), |_| {});
         store.send(A::Submit, |_| {});
         assert_eq!(
-            store.state().view().unwrap().queue,
+            store
+                .state()
+                .view()
+                .unwrap()
+                .queue
+                .iter()
+                .map(|message| message.text())
+                .collect::<Vec<_>>(),
             ["one whole message\nwith two lines"]
         );
         assert!(!store.state().sending);
@@ -113,7 +120,17 @@ fn a_failed_selected_message_returns_to_its_original_session_after_navigation() 
     }
     fakes.daemon.fail_next(Operation::Send, "link unavailable");
     store.send(A::SendQueued(1), |s| s.sending = true);
-    assert_eq!(store.state().view().unwrap().queue, ["first", "second"]);
+    assert_eq!(
+        store
+            .state()
+            .view()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
     store.send(A::RemoveQueued(0), |_| {});
     store.send(A::SendQueued(0), |_| {});
     store.send(A::Open(SessionId::new("brin")), |_| {});
@@ -123,7 +140,11 @@ fn a_failed_selected_message_returns_to_its_original_session_after_navigation() 
         |s| s.sending = false,
     );
     assert_eq!(
-        store.state().views[&SessionId::new("ledger")].queue,
+        store.state().views[&SessionId::new("ledger")]
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
         ["first", "second"]
     );
     assert!(store.state().view().unwrap().queue.is_empty());
@@ -138,7 +159,11 @@ fn a_failed_selected_message_returns_to_its_original_session_after_navigation() 
     store.send(A::Show(Arc::new(workspace.clone())), |_| {});
     assert!(!store.state().sending);
     assert_eq!(
-        store.state().views[&SessionId::new("ledger")].queue,
+        store.state().views[&SessionId::new("ledger")]
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
         ["first", "second"]
     );
     // A new snapshot cannot silently retry a failed delivery. The person can.
@@ -156,7 +181,17 @@ fn a_failed_selected_message_returns_to_its_original_session_after_navigation() 
         |a| matches!(a, A::Sent { result: Ok(()), .. }),
         |s| s.sending = false,
     );
-    assert_eq!(store.state().view().unwrap().queue, ["first"]);
+    assert_eq!(
+        store
+            .state()
+            .view()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
+        ["first"]
+    );
     assert!(store.state().failed_queues.is_empty());
     store.finish();
 }
@@ -175,7 +210,17 @@ fn offline_send_preserves_the_queue_and_remove_only_changes_the_open_session() {
         .status = Status::Offline;
     store.send(A::Show(Arc::new(workspace)), |_| {});
     store.send(A::SendQueued(0), |_| {});
-    assert_eq!(store.state().view().unwrap().queue, ["keep this"]);
+    assert_eq!(
+        store
+            .state()
+            .view()
+            .unwrap()
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
+        ["keep this"]
+    );
     assert!(!store.state().sending);
     store.send(A::ShowQueue(true), |s| s.queue_expanded = true);
     store.send(A::Open(SessionId::new("brin")), |s| {
@@ -183,7 +228,11 @@ fn offline_send_preserves_the_queue_and_remove_only_changes_the_open_session() {
     });
     store.send(A::RemoveQueued(0), |_| {});
     assert_eq!(
-        store.state().views[&SessionId::new("ledger")].queue,
+        store.state().views[&SessionId::new("ledger")]
+            .queue
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
         ["keep this"]
     );
     store.finish();

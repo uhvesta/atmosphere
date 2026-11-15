@@ -325,6 +325,16 @@ fn changes(
                 }))
         }));
     let queued = state.review.queued();
+    let pending: Vec<_> = state
+        .session
+        .view()
+        .into_iter()
+        .flat_map(|view| &view.queue)
+        .flat_map(|message| match message {
+            humata2_session::QueuedMessage::Comments { comments } => comments.as_slice(),
+            humata2_session::QueuedMessage::Text(_) => &[],
+        })
+        .collect();
     let view = col()
         .flex_1()
         .min_w_0()
@@ -461,8 +471,26 @@ fn changes(
                         diff.comments
                             .iter()
                             .chain(queued)
-                            .filter(|comment| comment.path == file.path)
-                            .map(|comment| comment_card(look, comment)),
+                            .filter(|comment| {
+                                comment.path == file.path
+                                    && comment
+                                        .context
+                                        .as_ref()
+                                        .is_none_or(|context| context.repo == diff.repo)
+                            })
+                            .map(|comment| comment_card(look, comment, false))
+                            .chain(
+                                pending
+                                    .iter()
+                                    .filter(|comment| {
+                                        comment.path == file.path
+                                            && comment
+                                                .context
+                                                .as_ref()
+                                                .is_none_or(|context| context.repo == diff.repo)
+                                    })
+                                    .map(|comment| comment_card(look, comment, true)),
+                            ),
                     ),
             )
         })
@@ -521,7 +549,11 @@ fn changes(
                     footer.child(action(
                         ui,
                         "send-comments",
-                        format!("Send {} comments", queued.len()),
+                        format!(
+                            "Send {} comment{}",
+                            queued.len(),
+                            if queued.len() == 1 { "" } else { "s" }
+                        ),
                         AppAction::Review(ReviewAction::Send),
                         look,
                         true,
@@ -529,7 +561,7 @@ fn changes(
                 }),
         )
 }
-fn comment_card(look: Look, comment: &Comment) -> Div {
+fn comment_card(look: Look, comment: &Comment, queued: bool) -> Div {
     card(look)
         .mx(px(10.))
         .my(px(6.))
@@ -544,7 +576,7 @@ fn comment_card(look: Look, comment: &Comment) -> Div {
                 .child(text("You").font_weight(FontWeight::SEMIBOLD))
                 .when(!comment.sent, |row| {
                     row.child(
-                        text("Draft")
+                        text(if queued { "Waiting to send" } else { "Draft" })
                             .px(px(6.))
                             .py(px(1.))
                             .rounded(px(4.))

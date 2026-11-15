@@ -7,13 +7,17 @@
 //! daemon's event stream and is appended to [`SessionState::live`], so a
 //! line doesn't copy the workspace.
 
+mod message;
 mod tabs;
+pub use message::QueuedMessage;
 pub use tabs::{Tab, TabGroup};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use humata2_clients::model::{Agent, ForkKind, Line, Session, SessionId, Skill, Speaker, Turn};
+use humata2_clients::model::{
+    Agent, Comment, ForkKind, Line, Session, SessionId, Skill, Speaker, Turn,
+};
 use humata2_clients::{Clients, DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
@@ -82,7 +86,7 @@ pub struct SessionView {
     /// What the composer holds.
     pub draft: String,
     /// Messages waiting for the turn to end, first to go first.
-    pub queue: Vec<String>,
+    pub queue: Vec<QueuedMessage>,
     /// The selected clone and relative file path in Files.
     #[serde(default)]
     pub file: Option<(String, String)>,
@@ -173,6 +177,10 @@ impl SessionState {
 /// What the session pages ask their parent to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delegate {
+    /// Delivered comments can be refreshed from the client.
+    CommentsSent(SessionId, usize),
+    /// Removing queued comments returns them to drafts.
+    CommentsUnqueued(SessionId, Vec<Comment>),
     /// Open this session, such as a new fork.
     OpenSession(SessionId),
     /// Say this in a toast.
@@ -278,6 +286,11 @@ pub enum SessionAction {
     SendQueued(usize),
     /// Expand or collapse the waiting-message list.
     ShowQueue(bool),
+    /// Queue review comments without changing the currently open session.
+    QueueComments {
+        session: SessionId,
+        comments: Vec<Comment>,
+    },
     /// Take a queued message back into the composer to edit it.
     EditQueued(usize),
     /// Drop a queued message.
@@ -286,7 +299,7 @@ pub enum SessionAction {
     Sent {
         session: SessionId,
         index: usize,
-        text: String,
+        message: QueuedMessage,
         result: Result<(), DaemonError>,
     },
     /// Start an exited session again on its conversation (SE-14).
@@ -336,14 +349,24 @@ impl Sessions {
         Self { clients }
     }
 
-    fn send(&self, session: SessionId, index: usize, text: String) -> Effect<SessionAction> {
+    fn send(
+        &self,
+        session: SessionId,
+        index: usize,
+        message: QueuedMessage,
+    ) -> Effect<SessionAction> {
         let daemon = self.clients.daemon.clone();
         Effect::future(async move {
-            let result = daemon.send(&session, &text).await;
+            let result = match &message {
+                QueuedMessage::Text(text) => daemon.send(&session, text).await,
+                QueuedMessage::Comments { comments } => {
+                    daemon.send_comments(&session, comments.clone()).await
+                }
+            };
             SessionAction::Sent {
                 session,
                 index,
-                text,
+                message,
                 result,
             }
         })
@@ -749,7 +772,7 @@ impl Reducer for Sessions {
                     return Effect::none();
                 }
                 view.draft.clear();
-                view.queue.push(text);
+                view.queue.push(QueuedMessage::Text(text));
                 return self.flush(state, &id);
             }
             SessionAction::SendNow | SessionAction::SendQueued(_) => {
@@ -763,6 +786,18 @@ impl Reducer for Sessions {
                 return self.send_queued(state, &id, index);
             }
             SessionAction::ShowQueue(show) => state.queue_expanded = show,
+            SessionAction::QueueComments { session, comments } => {
+                if comments.is_empty() || state.workspace.session(&session).is_none() {
+                    return Effect::none();
+                }
+                state
+                    .views
+                    .entry(session.clone())
+                    .or_default()
+                    .queue
+                    .push(QueuedMessage::Comments { comments });
+                return self.flush(state, &session);
+            }
             SessionAction::EditQueued(index) => {
                 if state.sending {
                     return Effect::none();
@@ -770,7 +805,18 @@ impl Reducer for Sessions {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
-                    let text = view.queue.remove(index);
+                    let message = view.queue.remove(index);
+                    let text = match message {
+                        QueuedMessage::Text(text) => text,
+                        QueuedMessage::Comments { comments } => {
+                            let Some(id) = state.open.clone() else {
+                                return Effect::none();
+                            };
+                            return Effect::send(SessionAction::Delegate(
+                                Delegate::CommentsUnqueued(id, comments),
+                            ));
+                        }
+                    };
                     if view.draft.trim().is_empty() {
                         view.draft = text;
                     } else {
@@ -785,13 +831,20 @@ impl Reducer for Sessions {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
-                    view.queue.remove(index);
+                    if let QueuedMessage::Comments { comments } = view.queue.remove(index) {
+                        let Some(id) = state.open.clone() else {
+                            return Effect::none();
+                        };
+                        return Effect::send(SessionAction::Delegate(Delegate::CommentsUnqueued(
+                            id, comments,
+                        )));
+                    }
                 }
             }
             SessionAction::Sent {
                 session,
                 index,
-                text,
+                message,
                 result,
             } => {
                 state.sending = false;
@@ -799,17 +852,19 @@ impl Reducer for Sessions {
                     // The daemon echoes the message as output.
                     Ok(()) => {
                         if let Some(view) = state.views.get_mut(&session)
-                            && view.queue.get(index) == Some(&text)
+                            && view.queue.get(index) == Some(&message)
                         {
                             view.queue.remove(index);
                         }
                         let waiting: Vec<_> = state.views.keys().cloned().collect();
-                        return Effect::merge(
-                            waiting
-                                .iter()
-                                .map(|id| self.flush(state, id))
-                                .collect::<Vec<_>>(),
-                        );
+                        let mut effects: Vec<_> =
+                            waiting.iter().map(|id| self.flush(state, id)).collect();
+                        if let QueuedMessage::Comments { comments } = message {
+                            effects.push(Effect::send(SessionAction::Delegate(
+                                Delegate::CommentsSent(session, comments.len()),
+                            )));
+                        }
+                        return Effect::merge(effects);
                     }
                     Err(error) => {
                         state.failed_queues.insert(session.clone());

@@ -599,7 +599,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 (LineKind::Added,"        tx.commit().await?;"),
             ],39)},
             FileDiff {path:"src/entry.rs".into(),added:81,removed:3,lines:Vec::new()},
-        ],comments:vec![Comment {path:"src/client.rs".into(),line:41,body:"Wrap the two writes in one transaction so a crash can't leave them out of step.".into(),sent:true}] },
+        ],comments:vec![Comment {path:"src/client.rs".into(),line:41,body:"Wrap the two writes in one transaction so a crash can't leave them out of step.".into(),sent:true,context:None}] },
     ];
     for value in &workspace.sessions {
         workspace.session_files.insert(

@@ -12,14 +12,23 @@ pub(super) fn send_comments(
         Some(Operation::SendComments),
         format!("comments {session} {}", comments.len()),
         move |inner| {
-            inner.session_mut(&id)?;
-            let mut text = format!("{} review comments:", comments.len());
-            for comment in &comments {
-                text.push_str(&format!(
-                    " {}:{} {};",
-                    comment.path, comment.line, comment.body
-                ));
+            if !inner.session_mut(&id)?.status.accepts_input() {
+                return Err(DaemonError::Refused {
+                    what: format!("Sending comments to {id}"),
+                    reason: "the session cannot take input. Reconnect its machine or resume the agent, then send again".into(),
+                });
             }
+            for comment in &comments {
+                let matches = inner.workspace.diffs.iter().filter(|diff| diff.session == id)
+                    .filter(|diff| diff.files.iter().any(|file| file.path == comment.path)).count();
+                if comment.context.is_none() && matches > 1 {
+                    return Err(DaemonError::Refused {
+                        what: format!("Sending the saved comment on {}", comment.path),
+                        reason: "the same path exists in several repositories and this older comment does not name one. Specify its repository before sending. Its text has been kept; retrying unchanged will not resolve the ambiguity".into(),
+                    });
+                }
+            }
+            let text = Comment::message(&comments);
             for diff in inner
                 .workspace
                 .diffs
@@ -27,7 +36,8 @@ pub(super) fn send_comments(
                 .filter(|diff| diff.session == id)
             {
                 for comment in &comments {
-                    if diff.files.iter().any(|file| file.path == comment.path) {
+                    if comment.context.as_ref().is_none_or(|context| context.repo == diff.repo)
+                        && diff.files.iter().any(|file| file.path == comment.path) {
                         let mut sent = comment.clone();
                         sent.sent = true;
                         diff.comments.push(sent);
@@ -35,6 +45,7 @@ pub(super) fn send_comments(
                 }
             }
             inner.output(&id, 0, Speaker::You, &text);
+            inner.emit(crate::daemon::Event::Resync);
             Ok(())
         },
     )

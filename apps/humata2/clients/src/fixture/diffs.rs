@@ -125,6 +125,7 @@ pub(super) fn diffs() -> Vec<RepoDiff> {
                 line: 42,
                 body: "Refresh once only; a second 401 should surface.".to_owned(),
                 sent: true,
+                context: None,
             }],
         },
         RepoDiff {

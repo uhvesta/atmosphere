@@ -514,16 +514,31 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
     let certain = !failed
         && matches!(session.agent, Agent::Claude | Agent::Copilot)
         && session.turn != Turn::Uncertain;
-    let count = view.queue.len();
+    let comments_only = view
+        .queue
+        .iter()
+        .all(|message| matches!(message, humata2_session::QueuedMessage::Comments { .. }));
+    let count = if comments_only {
+        view.queue
+            .iter()
+            .map(|message| match message {
+                humata2_session::QueuedMessage::Comments { comments } => comments.len(),
+                humata2_session::QueuedMessage::Text(_) => 0,
+            })
+            .sum()
+    } else {
+        view.queue.len()
+    };
+    let noun = if comments_only { "comment" } else { "message" };
     let caption = format!(
-        "{count} message{} queued · {}",
+        "{count} {noun}{} waiting to send · {}",
         if count == 1 { "" } else { "s" },
         if failed {
-            "waiting: send failed"
+            "send failed"
         } else if certain {
-            "typed when this turn ends"
+            "after this turn"
         } else {
-            "waiting: turn end not certain"
+            "send manually"
         }
     );
     Some(
@@ -584,11 +599,18 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
             )
             .when(state.session.queue_expanded, |list| {
                 list.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child("Humata holds these messages before sending them to the terminal."),
+                )
+                .child(
                     col()
                         .id("queued-list")
                         .max_h(px(200.))
                         .overflow_y_scroll()
                         .children(view.queue.iter().enumerate().map(|(index, message)| {
+                            let message = message.text();
                             row()
                                 .id(SharedString::from(format!("queued-message-{index}")))
                                 .items_start()

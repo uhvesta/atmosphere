@@ -77,6 +77,6 @@ Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Desi
   #terminal-pane
     #terminal focused
 #session-queue
-  text "1 message queued · waiting: turn end not certain"
+  text "1 message waiting to send · send manually"
   Button "Send now"
   Button "Show"
