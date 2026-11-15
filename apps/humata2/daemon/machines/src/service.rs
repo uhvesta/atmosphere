@@ -98,6 +98,38 @@ stray() {
 }
 "#;
 
+/// The crontab line that starts humatad2 at boot without systemd. It holds
+/// no single quote, so scripts can quote it whole.
+const BOOT_LINE: &str = r#"@reboot setsid "$HOME/.humata2/bin/humatad2" serve --role machine </dev/null >/dev/null 2>&1 # humatad2"#;
+
+/// A check fragment: prints `humata2.running=systemd` when the user service
+/// runs from the unit [`script`] writes, with lingering on and no boot
+/// entry beside it; `humata2.running=setsid` when the daemon runs with the
+/// boot entry and no unit; else `humata2.running=no`. Setup then restarts
+/// nothing when no file changed either.
+pub(crate) fn running_script() -> String {
+    let unit = UNIT.trim_end();
+    format!(
+        r#"unit_dir="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"
+expected_unit='{unit}'
+boot_entry=no
+if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qxF '{BOOT_LINE}'; then boot_entry=yes; fi
+if [ -f "$unit_dir/humatad2.service" ] && [ "$(cat "$unit_dir/humatad2.service" 2>/dev/null)" = "$expected_unit" ] \
+  && [ "$boot_entry" = no ] \
+  && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = yes ] \
+  && systemctl --user is-enabled --quiet humatad2.service 2>/dev/null \
+  && systemctl --user is-active --quiet humatad2.service 2>/dev/null; then
+  printf 'humata2.running=systemd\n'
+elif [ ! -f "$unit_dir/humatad2.service" ] && [ "$boot_entry" = yes ] \
+  && pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null 2>&1; then
+  printf 'humata2.running=setsid\n'
+else
+  printf 'humata2.running=no\n'
+fi
+"#
+    )
+}
+
 /// The script that installs and (re)starts the service, so a new humatad2
 /// takes over. It exits 0 once humatad2 has been running for a moment.
 pub(crate) fn script(kind: ServiceKind) -> String {
@@ -148,7 +180,7 @@ if command -v systemctl >/dev/null 2>&1 && [ -f "$unit_dir/humatad2.service" ]; 
   rm -f "$unit_dir/humatad2.service"
   systemctl --user daemon-reload >/dev/null 2>&1
 fi
-line='@reboot setsid "$HOME/{BIN_DIR}/humatad2" serve --role machine </dev/null >/dev/null 2>&1 # humatad2'
+line='{BOOT_LINE}'
 {{ crontab -l 2>/dev/null | grep -v '# humatad2$'; printf '%s\n' "$line"; }} | crontab - || exit 1
 stray
 setsid "$bin" serve --role machine </dev/null >/dev/null 2>&1 &
@@ -362,9 +394,49 @@ exec {real} 0.2
 
     const OTHER_CRON: &str = "0 3 * * * backup\n";
 
+    impl Machine {
+        /// What [`running_script`] says runs now.
+        fn running(&self) -> String {
+            let output = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(running_script())
+                .env_clear()
+                .env("HOME", &self.home)
+                .env("PATH", &self.bin)
+                .env("STATE", &self.state)
+                .env("XDG_RUNTIME_DIR", &self.state)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        }
+    }
+
+    #[test]
+    fn the_check_sees_how_the_daemon_runs_after_each_start_and_after_removal() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        assert_eq!(machine.running(), "humata2.running=no");
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(0));
+        assert_eq!(machine.running(), "humata2.running=systemd");
+
+        fs::remove_file(machine.state.join("active")).unwrap();
+        assert_eq!(machine.running(), "humata2.running=no");
+
+        assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
+        assert_eq!(machine.running(), "humata2.running=setsid");
+
+        assert_eq!(machine.run(&remove_script()), Some(0));
+        assert_eq!(machine.running(), "humata2.running=no");
+    }
+
     #[test]
     fn the_scripts_are_valid_shell() {
-        for text in [script(ServiceKind::SystemdUser), script(ServiceKind::Setsid), remove_script()] {
+        for text in [
+            script(ServiceKind::SystemdUser),
+            script(ServiceKind::Setsid),
+            remove_script(),
+            running_script(),
+        ] {
             let status = Command::new("/bin/sh").args(["-n", "-c", &text]).status().unwrap();
             assert!(status.success());
         }

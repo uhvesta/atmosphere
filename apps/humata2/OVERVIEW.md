@@ -310,7 +310,8 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] `restart_test`'s one Unauthenticated wasn't reproduced in 65 runs. Its daemon runs `--admin`, where a call with no credential is the user, so that call must have reached a daemon without it (or carried a stale token). Watch for it.
 
 ### Machines (I7, A3; D61)
-- [ ] Restart the service only when checksums change, not on every connect.
+- [x] Restart the service only when a file changes or it isn't running the way setup starts it: the check reports `running` (systemd: our unit, lingering, enabled and active, no boot entry; setsid: the boot entry, the daemon, no unit), and setup skips the service step when nothing is pending and that matches. Tests: `daemon/machines:fake_ssh_test` (`reconnecting_with_the_same_build_installs_nothing`, `reconnecting_starts_the_service_again_only_when_it_stopped_or_a_file_changed`), `daemon/machines:machines_unit_test` (`the_check_sees_how_the_daemon_runs_after_each_start_and_after_removal`).
+- [ ] `daemon/machines:takeover_test` `a_bridge_that_never_syncs_times_out_with_the_end_of_its_output` failed once under a full `daemon/machines/...` run (its 3 s sync timeout on a loaded machine) and passed 5 runs alone. Watch for it.
 - [ ] Operation Cancel and Retry, EventService machine streaming, and launchd for macOS remotes.
 - [ ] A host-side peer-link client with keepalive.
 - [ ] The remove plan covers sessions and channels, and runs the dispose, leave_channels, provider_delete and find_agents steps.

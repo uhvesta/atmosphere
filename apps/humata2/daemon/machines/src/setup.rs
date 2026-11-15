@@ -673,13 +673,18 @@ impl Setup {
             }
             self.pending.push(Pending::Send(payload));
         }
+        // Nothing to install and the service already runs the way setup
+        // would start it: a reconnect leaves the daemon and its sessions be.
+        let restart = !self.pending.is_empty() || facts.running != Some(service);
         self.service = Some(service);
         self.facts = Some(facts);
-        Ok(Done::Next(if self.pending.is_empty() {
-            Step::Service
+        Ok(if !restart {
+            Done::Ready
+        } else if self.pending.is_empty() {
+            Done::Next(Step::Service)
         } else {
-            Step::Install
-        }))
+            Done::Next(Step::Install)
+        })
     }
 
     /// Installs the next file that differs from the build, or moves in a

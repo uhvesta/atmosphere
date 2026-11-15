@@ -208,7 +208,29 @@ fn reconnecting_with_the_same_build_installs_nothing() {
     assert_eq!(entry.unwrap().state, EntryState::Ready);
     assert_eq!(runner.ran(Purpose::Install), 0);
     assert_eq!(runner.ran(Purpose::Promote), 0);
+    // The daemon keeps running: nothing changed, so nothing restarts.
+    assert_eq!(runner.ran(Purpose::Service), 0);
     assert_has(&machine, &Files(1));
+}
+
+#[test]
+fn reconnecting_starts_the_service_again_only_when_it_stopped_or_a_file_changed() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+    let machines = host.machines();
+
+    machine.clear("active");
+    let runner = machine.runner();
+    let (entry, _) = drive(&runner, &Files(1), |drive| machines.reconnect("box-1", drive));
+    assert_eq!(entry.unwrap().state, EntryState::Ready);
+    assert_eq!(runner.ran(Purpose::Service), 1);
+
+    let runner = machine.runner();
+    let (entry, _) = drive(&runner, &Files(2), |drive| machines.reconnect("box-1", drive));
+    assert_eq!(entry.unwrap().state, EntryState::Ready);
+    assert_eq!(runner.ran(Purpose::Service), 1);
+    assert_has(&machine, &Files(2));
 }
 
 #[test]

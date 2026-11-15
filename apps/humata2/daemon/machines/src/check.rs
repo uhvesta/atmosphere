@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use crate::install::{InstalledFile, HOLDERS_FN};
 use crate::link::BIN_DIR;
 use crate::platform::{Arch, Os, Platform};
+use crate::service::{self, ServiceKind};
 
 /// What the check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,9 @@ pub struct Facts {
     /// A `humata2_holder` of the user runs, so files that wait for holders
     /// are staged rather than swapped.
     pub holders: bool,
+    /// How humatad2 runs now from what setup put in place; none when it
+    /// doesn't, or not that way.
+    pub running: Option<ServiceKind>,
     installed: BTreeMap<InstalledFile, String>,
     staged: BTreeMap<InstalledFile, String>,
 }
@@ -72,6 +76,7 @@ fact setsid "$(has setsid)"
     );
     script.push_str(HOLDERS_FN);
     script.push_str("if holders; then fact holders yes; else fact holders no; fi\n");
+    script.push_str(&service::running_script());
     for file in InstalledFile::ALL {
         let name = file.file_name();
         script.push_str(&format!(
@@ -126,6 +131,11 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         crontab: yes("crontab"),
         setsid: yes("setsid"),
         holders: yes("holders"),
+        running: match facts.get("running") {
+            Some(&"systemd") => Some(ServiceKind::SystemdUser),
+            Some(&"setsid") => Some(ServiceKind::Setsid),
+            _ => None,
+        },
         installed,
         staged,
     })
