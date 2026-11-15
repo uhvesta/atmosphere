@@ -214,7 +214,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass; `machines_test` flaked once under load and passed alone).
 - Look at: the app's pane must not offer Undo on a `diff` change (D88).
 
-### (this commit): views on the event feed (review_diff wiring) [minion F]
+### b34d06b2: views on the event feed (review_diff wiring) [minion F]
 - The app now hears at once when an agent offers it a view or the view's state changes, and an agent hears of its own drafts, without asking again. Drafts never reach the user's feed.
 - `daemon/humatad/src/events.rs`: kept events carry an optional `Scope` (channel, session); `Feed::publish_in` adds one; `Filter` passes views by topic, by the channels or sessions asked for, drafts only to the session's own agent. `daemon/humatad/src/review/views.rs`: `put` publishes Created/Updated after the store saved the view, only when it changed. `review.rs`/`serve.rs`: Review holds the feed. `peer_client.rs` tests read `Published` (it derefs to the Event).
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
