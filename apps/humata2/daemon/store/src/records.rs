@@ -92,6 +92,9 @@ pub struct ReviewRecord {
     pub last_note: u64,
     /// Whether the user's view was reported, so the chat is a review chat.
     pub view_reported: bool,
+    /// What Undo can take back and the answers idempotency keys got, as
+    /// the daemon encodes them.
+    pub history: Vec<u8>,
     pub updated_unix_ms: i64,
 }
 

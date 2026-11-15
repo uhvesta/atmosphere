@@ -23,6 +23,7 @@ impl Store {
             last_seq: review.last_seq,
             last_note: review.last_note,
             view_reported: review.view_reported,
+            history: review.history.clone(),
         };
         let encoded = blob::encode(blob::Type::ReviewState, STATE_VERSION, &state.encode_to_vec())?;
         inner.write_for_session("review.put", doing, Some(&review.session), |transaction| {
@@ -84,6 +85,7 @@ impl Store {
                 last_seq: state.last_seq,
                 last_note: state.last_note,
                 view_reported: state.view_reported,
+                history: state.history,
                 updated_unix_ms,
             }))
         })

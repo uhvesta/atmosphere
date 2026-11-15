@@ -23,6 +23,7 @@ fn review(session: &str, chat_len: usize) -> ReviewRecord {
         last_seq: 7,
         last_note: 3,
         view_reported: true,
+        history: b"undo history".to_vec(),
         updated_unix_ms: 42,
     }
 }

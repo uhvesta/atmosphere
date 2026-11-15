@@ -38,7 +38,10 @@ proto_library(
 rust_prost_library(
     name = "humata2_store_rust",
     proto = ":humata2_store_proto",
-    visibility = ["//apps/humata2/daemon/store:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/store:__pkg__",
+    ],
 )
 
 filegroup(

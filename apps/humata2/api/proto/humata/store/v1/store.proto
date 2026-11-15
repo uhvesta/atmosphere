@@ -31,4 +31,45 @@ message ReviewState {
   uint64 last_seq = 3;
   bool view_reported = 4;
   uint64 last_note = 5;
+  // A ReviewHistory, as the daemon encodes it.
+  bytes history = 6;
+}
+
+// What a review keeps so a restart doesn't change what a call does
+// (D86): the changes Undo can still take back, and the answers to calls
+// that carried an idempotency key, oldest first.
+message ReviewHistory {
+  repeated ReviewUndo undo = 1;
+  repeated ReviewAnswer answers = 2;
+}
+
+// One change of the review chat and what it replaced. A view is a
+// humata.v1.ReviewViewState holding only what the change replaced (the
+// open place and highlights, or the order and groups), a note a
+// humata.v1.Comment.
+message ReviewUndo {
+  string undo_id = 1;
+  uint64 seq = 2;
+  bool undone = 3;
+  oneof before {
+    bytes focus = 4;
+    string added_note = 5;
+    bytes note = 6;
+    bytes order = 7;
+  }
+  // For `order`: the notes the plan added, which Undo takes away.
+  repeated string added_notes = 8;
+}
+
+// The answer a call with idempotency key `key` got, as the humata.v1
+// message it returned.
+message ReviewAnswer {
+  string key = 1;
+  oneof answer {
+    bytes comment = 2;
+    bytes dropped = 3;
+    bytes prepared = 4;
+    bytes focused = 5;
+    bytes marked = 6;
+  }
 }

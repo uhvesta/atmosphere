@@ -45,7 +45,7 @@ use std::path::PathBuf;
 
 pub use chat::{
     AgentSwitches, Change, ChangeKind, ChangeTool, ChatError, ChatTool, Context, Highlight, Lines,
-    Place, ReviewChat, Switch, UserNote, ViewState, ViewedFile,
+    Place, Replaced, ReviewChat, Switch, Undoable, UserNote, ViewState, ViewedFile,
 };
 pub use checkout::{Checkout, Stamp, WatchSet};
 pub use diff::Matching;

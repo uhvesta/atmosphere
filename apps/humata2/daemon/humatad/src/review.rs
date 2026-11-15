@@ -8,8 +8,9 @@
 //! repo, which MarkReviewed snapshots and the review chat's tools check
 //! files against, and the chat's view, notes and switches. Each change is
 //! saved to the store before it is answered, so a restart keeps them
-//! (PR-26); the list of changes, for Undo, lives only as long as the
-//! daemon.
+//! (PR-26), with what Undo can still take back and the answers to calls
+//! that carried an idempotency key (D86). The feed of changes for
+//! WatchReviewChanges lives only as long as the daemon.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -20,10 +21,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use humata2_access::{Call, Capability, Entry, Place, RepoPath, Root, SessionRef, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
-    AnchorError, Base, BaseContext, ChangeKind, Compare, DiffSpec, RepoSpec, ChatError, ChatTool, Checkout, Clones, DiffError, FileRef,
-    FileSummary, Matching, PlanError, RepoDiff, ReviewChat, Side, UserNote, Viewed, Whitespace, wire,
+    AnchorError, Base, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, Compare,
+    DiffError, DiffSpec, FileRef, FileSummary, Matching, PlanError, Replaced, RepoDiff, RepoSpec,
+    ReviewChat, Side, Undoable, UserNote, ViewState, Viewed, Whitespace, wire,
 };
 use humata2_store::{ReviewRecord, SessionRecord, Store};
+use humata2_store_proto::humata::store::v1 as stored;
 use prost::Message;
 use tokio::sync::watch;
 use tokio_stream::Stream;
@@ -36,6 +39,10 @@ use crate::status;
 /// At most this many lines of a selection go back with review_context.
 const SELECTED_LINES_MAX: u32 = 200;
 
+/// A review keeps the answers to this many calls with an idempotency key;
+/// a retry comes soon after its call, so older ones are forgotten.
+const ANSWERS_MAX: usize = 256;
+
 /// The services' shared state: per session, what its review showed.
 #[derive(Clone)]
 pub(crate) struct Review {
@@ -47,18 +54,38 @@ struct Inner {
     guard: Arc<Guard>,
     machine: String,
     sessions: Mutex<HashMap<String, Arc<SessionReview>>>,
-    /// Answers to calls that carried an idempotency key, by key.
-    marked: Mutex<HashMap<String, pb::MarkReviewedResponse>>,
-    focused: Mutex<HashMap<String, pb::ReviewChange>>,
-    /// Answers to the review chat's notes and plans, by idempotency key.
-    answered: Mutex<HashMap<String, Answer>>,
 }
 
+/// What a call with an idempotency key answered, so a repeat answers the
+/// same without acting again.
 #[derive(Clone)]
 enum Answer {
     Comment(pb::Comment),
     Dropped(pb::DropCommentResponse),
     Prepared(pb::PreparedView),
+    Focused(pb::ReviewChange),
+    Marked(pb::MarkReviewedResponse),
+}
+
+/// A review's answers by idempotency key, oldest first, at most
+/// [`ANSWERS_MAX`].
+#[derive(Default)]
+struct Answers(Vec<(String, Answer)>);
+
+impl Answers {
+    fn get(&self, key: &str) -> Option<&Answer> {
+        self.0
+            .iter()
+            .find(|(held, _)| held == key)
+            .map(|(_, answer)| answer)
+    }
+
+    fn put(&mut self, key: String, answer: Answer) {
+        self.0.retain(|(held, _)| *held != key);
+        self.0.push((key, answer));
+        let over = self.0.len().saturating_sub(ANSWERS_MAX);
+        self.0.drain(..over);
+    }
 }
 
 /// One session's review.
@@ -67,6 +94,7 @@ struct SessionReview {
     /// The last GetDiff's answer per repo folder.
     shown: Mutex<BTreeMap<String, RepoDiff>>,
     chat: Mutex<Chat>,
+    answers: Mutex<Answers>,
     /// The last change's seq, for WatchReviewChanges.
     changed: watch::Sender<u64>,
     /// Held while the review is saved, so saves land in order.
@@ -91,9 +119,6 @@ impl Review {
                 guard,
                 machine,
                 sessions: Mutex::default(),
-                marked: Mutex::default(),
-                focused: Mutex::default(),
-                answered: Mutex::default(),
             }),
         }
     }
@@ -154,17 +179,6 @@ impl Review {
         let saved = self.save(session, review).await;
         review.changed.send_replace(seq);
         saved
-    }
-
-    /// The answer an earlier call with the same idempotency key got.
-    fn answered(&self, key: Option<&String>) -> Option<Answer> {
-        key.and_then(|key| lock(&self.inner.answered).get(key).cloned())
-    }
-
-    fn remember(&self, key: Option<String>, answer: Answer) {
-        if let Some(key) = key {
-            lock(&self.inner.answered).insert(key, answer);
-        }
     }
 
     fn require(&self, caller: &Caller, call: &Call) -> Result<(), Status> {
@@ -357,19 +371,15 @@ impl pb::diff_service_server::DiffService for Review {
         let request = request.into_inner();
         let (record, session) = self.session(request.session.as_ref())?;
         self.require_use(&caller, Capability::UserReviewState, &session)?;
-        let idempotency = request
-            .idempotency_key
-            .as_ref()
-            .map(|key| format!("{}/{}", record.id, key.value))
-            .filter(|key| !key.ends_with('/'));
-        if let Some(answer) = idempotency.as_ref().and_then(|key| lock(&self.inner.marked).get(key).cloned()) {
+        let review = self.review(&record.id)?;
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Marked(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
         let keys = repo_keys(&record, &[]).await?;
         let clones = clones(&record, &keys).await?;
         // RV-28: per repo, the tree the client says it showed, else the
         // last GetDiff's, else the working tree as it is now.
-        let review = self.review(&record.id)?;
         let mut trees: BTreeMap<String, String> = lock(&review.shown)
             .iter()
             .map(|(folder, diff)| (folder.clone(), diff.trees.new.clone()))
@@ -391,8 +401,8 @@ impl pb::diff_service_server::DiffService for Review {
             snapshots.push(wire::snapshot_to_pb(key, &snapshot));
         }
         let answer = pb::MarkReviewedResponse { snapshots };
-        if let Some(key) = idempotency {
-            lock(&self.inner.marked).insert(key, answer.clone());
+        if remember(&review, idempotency, Answer::Marked(answer.clone())) {
+            self.save(&record.id, &review).await?;
         }
         Ok(Response::new(answer))
     }
@@ -465,16 +475,13 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         let request = request.into_inner();
         let (record, session) = self.session(request.session.as_ref())?;
         self.require_use(&caller, Capability::ReviewFocus, &session)?;
-        let idempotency = request
-            .idempotency_key
-            .as_ref()
-            .map(|key| format!("{}/{}", record.id, key.value))
-            .filter(|key| !key.ends_with('/'));
-        if let Some(answer) = idempotency.as_ref().and_then(|key| lock(&self.inner.focused).get(key).cloned()) {
+        let review = self.review(&record.id)?;
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Focused(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
-        let (place, highlights) = wire::focus_from_pb(&request).map_err(|error| wire_failed("file", &error))?;
-        let review = self.review(&record.id)?;
+        let (place, highlights) =
+            wire::focus_from_pb(&request).map_err(|error| wire_failed("file", &error))?;
         let shown = lock(&review.shown).clone();
         let change = {
             let mut chat = lock(&review.chat);
@@ -486,10 +493,8 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             chat.at.insert(change.seq, at);
             wire::change_to_pb(&change, at)
         };
+        remember(&review, idempotency, Answer::Focused(change.clone()));
         self.publish(&record.id, &review, change.seq).await?;
-        if let Some(key) = idempotency {
-            lock(&self.inner.focused).insert(key, change.clone());
-        }
         Ok(Response::new(change))
     }
 
@@ -623,13 +628,13 @@ impl pb::comment_service_server::CommentService for Review {
         let (record, session) = self.session(asked.as_ref())?;
         self.require_use(&caller, Capability::ReviewNote, &session)?;
         let author = note_author(&caller)?;
-        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
-        if let Some(Answer::Comment(answer)) = self.answered(idempotency.as_ref()) {
+        let review = self.review(&record.id)?;
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Comment(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
         let mut note = wire::note_from_anchor(request.anchor.as_ref(), &request.text)
             .map_err(|error| wire_failed("anchor", &error))?;
-        let review = self.review(&record.id)?;
         lock(&review.chat)
             .chat
             .switches()
@@ -668,9 +673,12 @@ impl pb::comment_service_server::CommentService for Review {
             chat.at.insert(change.seq, now());
             (change.seq, changed_note(&change, &record.id))
         };
+        if let Some(comment) = &comment {
+            remember(&review, idempotency, Answer::Comment(comment.clone()));
+        }
         self.publish(&record.id, &review, seq).await?;
-        let comment = comment.ok_or_else(|| status::internal("a new note made no note".to_owned(), ""))?;
-        self.remember(idempotency, Answer::Comment(comment.clone()));
+        let comment =
+            comment.ok_or_else(|| status::internal("a new note made no note".to_owned(), ""))?;
         Ok(Response::new(comment))
     }
 
@@ -679,11 +687,11 @@ impl pb::comment_service_server::CommentService for Review {
         let request = request.into_inner();
         let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
         self.require_use(&caller, Capability::ReviewNote, &session)?;
-        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
-        if let Some(Answer::Comment(answer)) = self.answered(idempotency.as_ref()) {
+        let review = self.review(&record.id)?;
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Comment(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
-        let review = self.review(&record.id)?;
         let (seq, comment) = {
             let mut chat = lock(&review.chat);
             let change = chat
@@ -693,9 +701,12 @@ impl pb::comment_service_server::CommentService for Review {
             chat.at.insert(change.seq, now());
             (change.seq, changed_note(&change, &record.id))
         };
+        if let Some(comment) = &comment {
+            remember(&review, idempotency, Answer::Comment(comment.clone()));
+        }
         self.publish(&record.id, &review, seq).await?;
-        let comment = comment.ok_or_else(|| status::internal("an edited note made no note".to_owned(), ""))?;
-        self.remember(idempotency, Answer::Comment(comment.clone()));
+        let comment = comment
+            .ok_or_else(|| status::internal("an edited note made no note".to_owned(), ""))?;
         Ok(Response::new(comment))
     }
 
@@ -707,22 +718,22 @@ impl pb::comment_service_server::CommentService for Review {
         let request = request.into_inner();
         let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
         self.require_use(&caller, Capability::ReviewNote, &session)?;
-        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
-        if let Some(Answer::Dropped(answer)) = self.answered(idempotency.as_ref()) {
+        let review = self.review(&record.id)?;
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Dropped(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
-        let review = self.review(&record.id)?;
         let change = {
             let mut chat = lock(&review.chat);
             let change = chat.chat.drop_note(&id).map_err(|error| chat_failed(&error))?;
             chat.at.insert(change.seq, now());
             change
         };
-        self.publish(&record.id, &review, change.seq).await?;
         let answer = pb::DropCommentResponse {
-            undo_id: change.undo_id,
+            undo_id: change.undo_id.clone(),
         };
-        self.remember(idempotency, Answer::Dropped(answer.clone()));
+        remember(&review, idempotency, Answer::Dropped(answer.clone()));
+        self.publish(&record.id, &review, change.seq).await?;
         Ok(Response::new(answer))
     }
 
@@ -791,8 +802,8 @@ impl pb::view_service_server::ViewService for Review {
             ));
         }
         self.require_use(&caller, Capability::ReviewOrder, &session)?;
-        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
-        if let Some(Answer::Prepared(answer)) = self.answered(idempotency.as_ref()) {
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Prepared(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
         lock(&review.chat)
@@ -834,13 +845,13 @@ impl pb::view_service_server::ViewService for Review {
             chat.at.insert(change.seq, now());
             change
         };
-        self.publish(&record.id, &review, change.seq).await?;
         let answer = pb::PreparedView {
             title: request.title,
-            undo_id: change.undo_id,
+            undo_id: change.undo_id.clone(),
             ..pb::PreparedView::default()
         };
-        self.remember(idempotency, Answer::Prepared(answer.clone()));
+        remember(&review, idempotency, Answer::Prepared(answer.clone()));
+        self.publish(&record.id, &review, change.seq).await?;
         Ok(Response::new(answer))
     }
 
@@ -999,9 +1010,25 @@ fn on_file(note: &FileRef, file: &pb::RepoPath) -> bool {
     note.path == file.path && repo.is_none_or(|name| folder_name(&note.repo) == name)
 }
 
-fn idempotency(session: &str, key: Option<&pb::IdempotencyKey>) -> Option<String> {
+/// The call's idempotency key; a review holds its own session's keys.
+fn idempotency(key: Option<&pb::IdempotencyKey>) -> Option<String> {
     key.filter(|key| !key.value.is_empty())
-        .map(|key| format!("{session}/{}", key.value))
+        .map(|key| key.value.clone())
+}
+
+/// The answer an earlier call with the same idempotency key got.
+fn answered(review: &SessionReview, key: Option<&String>) -> Option<Answer> {
+    key.and_then(|key| lock(&review.answers).get(key).cloned())
+}
+
+/// Keeps `answer` for a repeat of the call; it is saved with the review.
+/// Returns whether there was a key.
+fn remember(review: &SessionReview, key: Option<String>, answer: Answer) -> bool {
+    let Some(key) = key else {
+        return false;
+    };
+    lock(&review.answers).put(key, answer);
+    true
 }
 
 /// The note a change shows, as the Comment CreateComment and EditComment
@@ -1036,9 +1063,26 @@ fn note_comment(note: &UserNote, session: &str) -> pb::Comment {
 /// The review as the store keeps it: the chat as a ReviewContext, the
 /// shown diffs as RepoDiffs.
 fn saved(session: &str, review: &SessionReview) -> ReviewRecord {
-    let (context, last_seq, last_note, reported) = {
+    let (context, last_seq, last_note, reported, undoable) = {
         let chat = lock(&review.chat);
-        (chat.chat.context(), chat.chat.last_seq(), chat.chat.last_note(), chat.reported)
+        (
+            chat.chat.context(),
+            chat.chat.last_seq(),
+            chat.chat.last_note(),
+            chat.reported,
+            chat.chat.undoable(),
+        )
+    };
+    let history = stored::ReviewHistory {
+        undo: undoable
+            .iter()
+            .map(|entry| undo_to_stored(entry, session))
+            .collect(),
+        answers: lock(&review.answers)
+            .0
+            .iter()
+            .map(|(key, answer)| answer_to_stored(key, answer))
+            .collect(),
     };
     let mut chat = wire::context_to_pb(&context, Vec::new());
     chat.notes = context.notes.iter().map(|note| note_comment(note, session)).collect();
@@ -1053,8 +1097,125 @@ fn saved(session: &str, review: &SessionReview) -> ReviewRecord {
         last_seq,
         last_note,
         view_reported: reported,
+        history: history.encode_to_vec(),
         updated_unix_ms: now().saturating_mul(1000),
     }
+}
+
+fn undo_to_stored(entry: &Undoable, session: &str) -> stored::ReviewUndo {
+    use stored::review_undo::Before;
+    let view = |view: ViewState| wire::view_to_pb(&view).encode_to_vec();
+    let mut added_notes = Vec::new();
+    let before = match &entry.before {
+        Replaced::Focus { place, highlights } => Before::Focus(view(ViewState {
+            open: place.clone(),
+            highlights: highlights.clone(),
+            ..ViewState::default()
+        })),
+        Replaced::NoNote(id) => Before::AddedNote(id.clone()),
+        Replaced::Note(note) => Before::Note(note_comment(note, session).encode_to_vec()),
+        Replaced::Order {
+            order,
+            groups,
+            added,
+        } => {
+            added_notes.clone_from(added);
+            Before::Order(view(ViewState {
+                order: order.clone(),
+                groups: groups.clone(),
+                ..ViewState::default()
+            }))
+        }
+    };
+    stored::ReviewUndo {
+        undo_id: entry.undo_id.clone(),
+        seq: entry.seq,
+        undone: entry.undone,
+        before: Some(before),
+        added_notes,
+    }
+}
+
+/// A saved Undo entry back, or `None` when this build can't read it.
+fn undo_from_stored(entry: stored::ReviewUndo) -> Option<Undoable> {
+    use stored::review_undo::Before;
+    let view = |bytes: &[u8]| {
+        pb::ReviewViewState::decode(bytes)
+            .ok()
+            .and_then(|view| wire::view_from_pb(&view).ok())
+    };
+    let before = match entry.before? {
+        Before::Focus(bytes) => {
+            let view = view(&bytes)?;
+            Replaced::Focus {
+                place: view.open,
+                highlights: view.highlights,
+            }
+        }
+        Before::AddedNote(id) => Replaced::NoNote(id),
+        Before::Note(bytes) => Replaced::Note(note_from_comment(
+            &pb::Comment::decode(bytes.as_slice()).ok()?,
+        )?),
+        Before::Order(bytes) => {
+            let view = view(&bytes)?;
+            Replaced::Order {
+                order: view.order,
+                groups: view.groups,
+                added: entry.added_notes,
+            }
+        }
+    };
+    Some(Undoable {
+        undo_id: entry.undo_id,
+        seq: entry.seq,
+        undone: entry.undone,
+        before,
+    })
+}
+
+fn answer_to_stored(key: &str, answer: &Answer) -> stored::ReviewAnswer {
+    use stored::review_answer::Answer as Kept;
+    let kept = match answer {
+        Answer::Comment(comment) => Kept::Comment(comment.encode_to_vec()),
+        Answer::Dropped(dropped) => Kept::Dropped(dropped.encode_to_vec()),
+        Answer::Prepared(prepared) => Kept::Prepared(prepared.encode_to_vec()),
+        Answer::Focused(change) => Kept::Focused(change.encode_to_vec()),
+        Answer::Marked(marked) => Kept::Marked(marked.encode_to_vec()),
+    };
+    stored::ReviewAnswer {
+        key: key.to_owned(),
+        answer: Some(kept),
+    }
+}
+
+/// A saved answer back, or `None` when this build can't read it.
+fn answer_from_stored(answer: stored::ReviewAnswer) -> Option<(String, Answer)> {
+    use stored::review_answer::Answer as Kept;
+    let back = match answer.answer? {
+        Kept::Comment(bytes) => Answer::Comment(pb::Comment::decode(bytes.as_slice()).ok()?),
+        Kept::Dropped(bytes) => {
+            Answer::Dropped(pb::DropCommentResponse::decode(bytes.as_slice()).ok()?)
+        }
+        Kept::Prepared(bytes) => Answer::Prepared(pb::PreparedView::decode(bytes.as_slice()).ok()?),
+        Kept::Focused(bytes) => Answer::Focused(pb::ReviewChange::decode(bytes.as_slice()).ok()?),
+        Kept::Marked(bytes) => {
+            Answer::Marked(pb::MarkReviewedResponse::decode(bytes.as_slice()).ok()?)
+        }
+    };
+    Some((answer.key, back))
+}
+
+/// A saved note back, with the agent that wrote it.
+fn note_from_comment(comment: &pb::Comment) -> Option<UserNote> {
+    let author = match comment
+        .author
+        .as_ref()
+        .and_then(|author| author.actor.as_ref())
+    {
+        Some(pb::actor::Actor::Agent(agent)) => agent.agent.as_ref().map(|id| id.value.clone()),
+        _ => None,
+    };
+    wire::user_note_from_pb(comment, author.as_deref().unwrap_or_default()).ok()
 }
 
 /// A review back from the store. What can't be read back starts empty,
@@ -1084,11 +1245,7 @@ fn restored(record: &ReviewRecord) -> SessionReview {
         .notes
         .iter()
         .filter_map(|comment| {
-            let author = match comment.author.as_ref().and_then(|author| author.actor.as_ref()) {
-                Some(pb::actor::Actor::Agent(agent)) => agent.agent.as_ref().map(|id| id.value.clone()),
-                _ => None,
-            };
-            let note = wire::user_note_from_pb(comment, author.as_deref().unwrap_or_default()).ok();
+            let note = note_from_comment(comment);
             if note.is_none() {
                 lost("a note");
             }
@@ -1108,13 +1265,37 @@ fn restored(record: &ReviewRecord) -> SessionReview {
         .map(|diff| (folder_name(&diff.repo).to_owned(), diff))
         .collect();
     let switches = wire::switches_from_pb(context.switches.as_ref());
+    let history = stored::ReviewHistory::decode(record.history.as_slice()).unwrap_or_else(|_| {
+        lost("an Undo history");
+        stored::ReviewHistory::default()
+    });
+    let undoable: Vec<Undoable> = history
+        .undo
+        .into_iter()
+        .filter_map(|entry| {
+            let entry = undo_from_stored(entry);
+            if entry.is_none() {
+                lost("a change to undo");
+            }
+            entry
+        })
+        .collect();
+    let mut answers = Answers::default();
+    for answer in history.answers {
+        match answer_from_stored(answer) {
+            Some((key, answer)) => answers.put(key, answer),
+            None => lost("an answer to a repeated call"),
+        }
+    }
     SessionReview {
         shown: Mutex::new(shown),
         chat: Mutex::new(Chat {
-            chat: ReviewChat::restore(view, switches, notes, record.last_seq, record.last_note),
+            chat: ReviewChat::restore(view, switches, notes, record.last_seq, record.last_note)
+                .with_undoable(undoable),
             at: BTreeMap::new(),
             reported: record.view_reported,
         }),
+        answers: Mutex::new(answers),
         ..SessionReview::default()
     }
 }

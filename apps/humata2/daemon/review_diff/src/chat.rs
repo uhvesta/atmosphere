@@ -237,22 +237,32 @@ pub enum ChatError {
     )]
     NoSuchNote { id: String },
 
-    #[error("nothing to undo for {undo_id}: it was undone already or isn't from this review")]
+    #[error(
+        "nothing to undo for {undo_id}: it was undone already, is older than the review's last 256 changes, or isn't from this review"
+    )]
     NothingToUndo { undo_id: String },
 
     #[error("there is nowhere to go back to: the agent hasn't moved the view")]
     NothingBack,
 }
 
+/// At most this many changes can be undone; the oldest is forgotten
+/// first, so a saved review stays small.
+const UNDO_MAX: usize = 256;
+
 /// What a change replaced, to undo it.
-#[derive(Clone, Debug)]
-enum Before {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Replaced {
+    /// The place open before and the agent's highlights.
     Focus {
         place: Option<Place>,
         highlights: Vec<Highlight>,
     },
+    /// No note: the change added this one.
     NoNote(String),
+    /// The note as it was before an edit or a drop.
     Note(UserNote),
+    /// The order and groups before a plan, and the notes it added.
     Order {
         order: Vec<FileRef>,
         groups: Vec<Group>,
@@ -260,10 +270,20 @@ enum Before {
     },
 }
 
+/// A change Undo can take back, as it is saved with the review so Undo
+/// still works after a restart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Undoable {
+    pub undo_id: String,
+    pub seq: u64,
+    pub undone: bool,
+    pub before: Replaced,
+}
+
 #[derive(Clone, Debug)]
 struct Done {
     seq: u64,
-    before: Before,
+    before: Replaced,
     undone: bool,
 }
 
@@ -310,6 +330,42 @@ impl ReviewChat {
             next_note,
             ..Self::default()
         }
+    }
+
+    /// The chat with the Undo history saved with it
+    /// ([`ReviewChat::undoable`]); only the newest 256 are kept.
+    #[must_use]
+    pub fn with_undoable(mut self, history: Vec<Undoable>) -> Self {
+        for entry in history {
+            self.done.insert(
+                entry.undo_id,
+                Done {
+                    seq: entry.seq,
+                    before: entry.before,
+                    undone: entry.undone,
+                },
+            );
+        }
+        self.forget_oldest();
+        self
+    }
+
+    /// The changes Undo can still take back (and those already undone, so
+    /// a second Undo still says so), oldest first, to save with the chat.
+    #[must_use]
+    pub fn undoable(&self) -> Vec<Undoable> {
+        let mut history: Vec<Undoable> = self
+            .done
+            .iter()
+            .map(|(undo_id, done)| Undoable {
+                undo_id: undo_id.clone(),
+                seq: done.seq,
+                undone: done.undone,
+                before: done.before.clone(),
+            })
+            .collect();
+        history.sort_by_key(|entry| entry.seq);
+        history
     }
 
     /// The number of the last change, to save with the chat.
@@ -386,7 +442,7 @@ impl ReviewChat {
                 return Err(not_in_review(file));
             }
         }
-        let before = Before::Focus {
+        let before = Replaced::Focus {
             place: self.view.open.clone(),
             highlights: std::mem::replace(&mut self.view.highlights, highlights),
         };
@@ -436,7 +492,7 @@ impl ReviewChat {
             ChangeTool::Tool(ChatTool::Note),
             summary,
             ChangeKind::Note(user_note),
-            Before::NoNote(id),
+            Replaced::NoNote(id),
         ))
     }
 
@@ -447,10 +503,11 @@ impl ReviewChat {
     /// [`ChatError::SwitchOff`] when Notes is off; [`ChatError::NoSuchNote`].
     pub fn edit_note(&mut self, id: &str, text: String) -> Result<Change, ChatError> {
         self.switches.allow(ChatTool::NoteEdit)?;
-        let note = self.notes.get_mut(id).ok_or_else(|| ChatError::NoSuchNote {
-            id: id.to_owned(),
-        })?;
-        let before = Before::Note(note.clone());
+        let note = self
+            .notes
+            .get_mut(id)
+            .ok_or_else(|| ChatError::NoSuchNote { id: id.to_owned() })?;
+        let before = Replaced::Note(note.clone());
         note.note.text = text;
         let note = note.clone();
         let summary = note_summary(&note.note);
@@ -477,7 +534,7 @@ impl ReviewChat {
             ChangeTool::Tool(ChatTool::NoteDrop),
             summary,
             ChangeKind::NoteDropped(id.to_owned()),
-            Before::Note(note),
+            Replaced::Note(note),
         ))
     }
 
@@ -507,7 +564,7 @@ impl ReviewChat {
                 },
             );
         }
-        let before = Before::Order {
+        let before = Replaced::Order {
             order: std::mem::replace(&mut self.view.order, plan.order.clone()),
             groups: std::mem::replace(&mut self.view.groups, plan.groups.clone()),
             added,
@@ -541,22 +598,22 @@ impl ReviewChat {
         let undid = done.seq;
         let before = done.before.clone();
         let (what, summary) = match before {
-            Before::Focus { place, highlights } => {
+            Replaced::Focus { place, highlights } => {
                 self.view.highlights = highlights;
                 self.view.open.clone_from(&place);
                 let summary = place.as_ref().map_or_else(String::new, place_summary);
                 (ChangeKind::Focus(place), summary)
             }
-            Before::NoNote(id) => {
+            Replaced::NoNote(id) => {
                 self.notes.remove(&id);
                 (ChangeKind::NoteDropped(id), String::new())
             }
-            Before::Note(note) => {
+            Replaced::Note(note) => {
                 let summary = note_summary(&note.note);
                 self.notes.insert(note.id.clone(), note.clone());
                 (ChangeKind::Note(note), summary)
             }
-            Before::Order {
+            Replaced::Order {
                 order,
                 groups,
                 added,
@@ -636,7 +693,7 @@ impl ReviewChat {
         tool: ChangeTool,
         summary: String,
         what: ChangeKind,
-        before: Before,
+        before: Replaced,
     ) -> Change {
         let seq = self.next_seq + 1;
         self.next_seq = seq;
@@ -649,6 +706,7 @@ impl ReviewChat {
                 undone: false,
             },
         );
+        self.forget_oldest();
         self.push(Change {
             undo_id: id,
             seq,
@@ -657,6 +715,20 @@ impl ReviewChat {
             what,
             highlights: self.view.highlights.clone(),
         })
+    }
+
+    fn forget_oldest(&mut self) {
+        while self.done.len() > UNDO_MAX {
+            let oldest = self
+                .done
+                .iter()
+                .min_by_key(|(_, done)| done.seq)
+                .map(|(id, _)| id.clone());
+            match oldest {
+                Some(id) => self.done.remove(&id),
+                None => break,
+            };
+        }
     }
 
     fn push(&mut self, change: Change) -> Change {
@@ -869,6 +941,58 @@ mod tests {
         assert_eq!(chat.refresh_notes(&[Some(NoteState::Outdated)]).len(), 1);
         assert!(chat.refresh_notes(&[Some(NoteState::Outdated)]).is_empty());
         assert!(chat.notes().all(|note| note.outdated));
+    }
+
+    #[test]
+    fn a_chat_restored_with_its_history_can_still_undo_and_knows_what_was_undone() {
+        let mut chat = ReviewChat::default();
+        chat.report(ViewState {
+            open: Some(at("a.rs", 1)),
+            ..ViewState::default()
+        });
+        let moved = chat
+            .focus(at("b.rs", 2), vec![], everywhere)
+            .map(|change| change.undo_id.clone());
+        let noted = chat
+            .note("Claude Code", line_note("b.rs", 2), everywhere)
+            .map(|change| change.undo_id.clone());
+        let (Ok(moved), Ok(noted)) = (moved, noted) else {
+            panic!("the agent's changes failed");
+        };
+        assert!(chat.undo(&noted).is_ok());
+        let mut back = ReviewChat::restore(
+            chat.view().clone(),
+            chat.switches(),
+            chat.notes().cloned().collect(),
+            chat.last_seq(),
+            chat.last_note(),
+        )
+        .with_undoable(chat.undoable());
+        assert!(matches!(
+            back.undo(&noted),
+            Err(ChatError::NothingToUndo { .. })
+        ));
+        assert!(back.undo(&moved).is_ok());
+        assert_eq!(back.view().open, Some(at("a.rs", 1)));
+    }
+
+    #[test]
+    fn only_the_newest_changes_can_be_undone() {
+        let mut chat = ReviewChat::default();
+        let mut ids = Vec::new();
+        for line in 0..=UNDO_MAX {
+            let line = u32::try_from(line).unwrap_or(u32::MAX);
+            match chat.focus(at("a.rs", line), vec![], everywhere) {
+                Ok(change) => ids.push(change.undo_id),
+                Err(error) => panic!("focus failed: {error}"),
+            }
+        }
+        assert_eq!(chat.undoable().len(), UNDO_MAX);
+        assert!(matches!(
+            chat.undo(&ids[0]),
+            Err(ChatError::NothingToUndo { .. })
+        ));
+        assert!(chat.undo(&ids[UNDO_MAX]).is_ok());
     }
 
     #[test]

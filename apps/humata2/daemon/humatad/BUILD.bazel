@@ -48,6 +48,7 @@ rust_library(
 
 DAEMON_DEPS = [
     ":grpc",
+    "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/holder",

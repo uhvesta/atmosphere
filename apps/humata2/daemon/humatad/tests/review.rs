@@ -832,3 +832,151 @@ async fn a_plan_in_an_open_review_chat_orders_the_review_and_leaves_its_notes() 
     let undone = self::context(&daemon).await;
     assert!(undone.view.unwrap().order.is_empty() && undone.notes.is_empty(), "Undo takes the plan back");
 }
+
+fn keyed<T>(mut request: T, key: &str, set: impl FnOnce(&mut T, Option<pb::IdempotencyKey>)) -> T {
+    set(
+        &mut request,
+        Some(pb::IdempotencyKey {
+            value: key.to_owned(),
+        }),
+    );
+    request
+}
+
+async fn undo(daemon: &Daemon, undo_id: &str) -> Result<pb::ReviewChange, tonic::Status> {
+    chat(daemon)
+        .await
+        .undo_review_change(pb::UndoReviewChangeRequest {
+            session: Some(session()),
+            undo_id: undo_id.to_owned(),
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_and_a_repeated_key_act_the_same_after_a_restart() {
+    let (mut daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=11)).unwrap();
+    get_diff(&daemon, uncommitted()).await;
+    chat(&daemon)
+        .await
+        .report_review_view(pb::ReportReviewViewRequest {
+            session: Some(session()),
+            view: Some(pb::ReviewViewState::default()),
+        })
+        .await
+        .unwrap();
+    let (token, _attach) = agent_token(&daemon).await;
+    let keyed_note = || {
+        keyed(
+            note("refund.rs", 11, 11, "the new line"),
+            "note-once",
+            |request, key| {
+                request.idempotency_key = key;
+            },
+        )
+    };
+    let plan_note = pb::ReviewNote {
+        file: Some(file("refund.rs")),
+        target: pb::review_note::Target::Lines as i32,
+        lines: Some(pb::LineRange {
+            first: 11,
+            last: 11,
+        }),
+        side: pb::DiffSide::New as i32,
+        text: "from the plan".to_owned(),
+        ..pb::ReviewNote::default()
+    };
+    let keyed_plan = || {
+        keyed(
+            plan(&["refund.rs"], vec![plan_note.clone()]),
+            "plan-once",
+            |request, key| {
+                request.idempotency_key = key;
+            },
+        )
+    };
+
+    let noted = comments(&daemon)
+        .await
+        .create_comment(as_agent(keyed_note(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let prepared = views(&daemon)
+        .await
+        .prepare_view(as_agent(keyed_plan(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let edited = comments(&daemon)
+        .await
+        .edit_comment(as_agent(
+            pb::EditCommentRequest {
+                idempotency_key: None,
+                id: noted.id.clone(),
+                text: "edited before the restart".to_owned(),
+                expected_revision: None,
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let before = note_texts(&context(&daemon).await);
+    assert_eq!(before.len(), 2, "the note and the plan's note");
+
+    daemon.restart().await;
+
+    let (token, _attach) = agent_token(&daemon).await;
+    let again = comments(&daemon)
+        .await
+        .create_comment(as_agent(keyed_note(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        note_id(&again),
+        note_id(&noted),
+        "a repeated key gets the first answer"
+    );
+    let replanned = views(&daemon)
+        .await
+        .prepare_view(as_agent(keyed_plan(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        replanned.undo_id, prepared.undo_id,
+        "a repeated plan gets the first answer"
+    );
+    assert_eq!(
+        note_texts(&context(&daemon).await),
+        before,
+        "neither acted again"
+    );
+
+    undo(&daemon, &edited.undo_id).await.unwrap();
+    let texts: Vec<String> = note_texts(&context(&daemon).await)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert!(
+        texts.contains(&"the new line".to_owned()),
+        "Undo of an edit from before the restart: {texts:?}"
+    );
+    undo(&daemon, &prepared.undo_id).await.unwrap();
+    let undone = context(&daemon).await;
+    assert!(
+        undone.view.as_ref().unwrap().order.is_empty(),
+        "Undo takes back a plan from before the restart"
+    );
+    assert_eq!(note_texts(&undone).len(), 1, "and the plan's note");
+
+    daemon.restart().await;
+    assert!(
+        undo(&daemon, &prepared.undo_id).await.is_err(),
+        "an undone change stays undone"
+    );
+}
