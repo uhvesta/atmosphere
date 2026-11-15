@@ -732,3 +732,9 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - Rules aren't saved: they can't be set over gRPC yet, so they're always the defaults.
 - Reverse: the migration adding the `inbox_requests` table, `daemon/store/src/inbox.rs`, `InboxEntry`, `InboxGrant` and `GrantedBy` in `api/proto/humata/store/v1/store.proto`, `daemon/humatad/src/inbox/kept.rs`, `Inbox::commit` and `Inbox::revoked` in `inbox.rs`, and Access's `inbox` in `access_service.rs`.
 
+## D97: ListViews with no session (proposed by minion F). Provisional
+- **Pick:** `humata views` with no `--session` lists, for the user, every session's offered views on the daemon it asks, newest first; drafts stay the agent's (VW-14). An agent naming no session gets its own session's, drafts included, as before; any other caller must name one. `humata view open|later|not-now|revert|keep` sends SetViewState with an idempotency key, so a retry acts once. Recommendation: keep it.
+- `include_forks` still lists only the session's own views: no session record says which session it was forked from until forking is built.
+- Reverse: the `(None, Caller::User(_))` arm and `every_offered` in `daemon/humatad/src/review/views.rs`.
+
+

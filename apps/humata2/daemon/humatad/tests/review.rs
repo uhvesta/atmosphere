@@ -1225,6 +1225,56 @@ async fn a_draft_view_is_checked_before_it_is_kept() {
     assert_eq!(unknown.code(), Code::NotFound);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_lists_every_offered_view_newest_first_without_naming_a_session() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut views = views(&daemon).await;
+    let mut offer = async |title: &str| {
+        let made = views
+            .prepare_view(as_agent(walkthrough(title, "refund.rs"), &token))
+            .await
+            .unwrap()
+            .into_inner();
+        views
+            .mark_ready(as_agent(
+                pb::MarkReadyRequest {
+                    idempotency_key: None,
+                    id: made.id,
+                },
+                &token,
+            ))
+            .await
+            .unwrap();
+    };
+    offer("First offer").await;
+    // Views are ordered by the millisecond they were prepared in.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    offer("Second offer").await;
+    let mut views = self::views(&daemon).await;
+    views
+        .prepare_view(as_agent(walkthrough("Still a draft", "refund.rs"), &token))
+        .await
+        .unwrap();
+
+    let titles = |listed: pb::ListViewsResponse| -> Vec<String> {
+        listed.views.into_iter().map(|view| view.title).collect()
+    };
+    let by_user = views.list_views(pb::ListViewsRequest::default()).await.unwrap().into_inner();
+    let by_agent = views
+        .list_views(as_agent(pb::ListViewsRequest::default(), &token))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(titles(by_user), vec!["Second offer", "First offer"]);
+    assert_eq!(
+        titles(by_agent).len(),
+        3,
+        "an agent naming no session gets its own, its draft included"
+    );
+}
+
 async fn feed(daemon: &Daemon, request: Request<pb::SubscribeRequest>) -> tonic::Streaming<pb::Event> {
     pb::event_service_client::EventServiceClient::new(daemon.channel().await)
         .subscribe(request)

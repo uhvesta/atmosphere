@@ -201,7 +201,8 @@ impl Review {
     }
 
     /// ListViews: a session's views, newest first. Drafts only to the
-    /// session's own agent (VW-14).
+    /// session's own agent (VW-14). With no session, the user gets every
+    /// session's offered views, and an agent its own session's.
     pub(super) async fn list_prepared(
         &self,
         caller: &Caller,
@@ -210,8 +211,12 @@ impl Review {
         let asked = request
             .session
             .filter(|session| !session.value.is_empty())
-            .or_else(|| own_session(caller))
-            .ok_or_else(|| status::missing("session"))?;
+            .or_else(|| own_session(caller));
+        let asked = match (asked, caller) {
+            (Some(asked), _) => asked,
+            (None, Caller::User(_)) => return self.every_offered(),
+            (None, _) => return Err(status::missing("session")),
+        };
         let (record, session) = self.session(Some(&asked))?;
         self.require(caller, &Call::ReadSession(session))?;
         let own = own_session(caller).is_some_and(|own| own.value == record.id);
@@ -223,6 +228,28 @@ impl Review {
             .filter(|held| own || held.state() != pb::ViewState::Draft)
             .map(|held| held.view)
             .collect();
+        Ok(pb::ListViewsResponse { views, page: None })
+    }
+
+    /// Every session's offered views on this daemon, newest first.
+    fn every_offered(&self) -> Result<pb::ListViewsResponse, Status> {
+        let sessions = self
+            .inner
+            .store
+            .sessions()
+            .map_err(|error| status::store(error, &self.inner.machine, "list the sessions"))?;
+        let mut offered = Vec::new();
+        for session in sessions {
+            offered.extend(
+                self.views_of(&session.id)?
+                    .into_iter()
+                    .filter(|held| held.state() != pb::ViewState::Draft),
+            );
+        }
+        offered.sort_by(|a, b| {
+            (b.record.prepared_unix_ms, &b.record.id).cmp(&(a.record.prepared_unix_ms, &a.record.id))
+        });
+        let views = offered.into_iter().map(|held| held.view).collect();
         Ok(pb::ListViewsResponse { views, page: None })
     }
 
