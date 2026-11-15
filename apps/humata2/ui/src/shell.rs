@@ -48,6 +48,7 @@ pub struct Shell {
     _appearance: Subscription,
     viewport: f32,
     terminals: crate::terminals::Terminals,
+    focus_target: Option<crate::terminals::FocusTarget>,
 }
 
 impl Shell {
@@ -120,6 +121,7 @@ impl Shell {
         let terminals = crate::terminals::Terminals::new(&ui, cx);
         Self {
             terminals,
+            focus_target: None,
             ui,
             sidebar,
             sidebar_focus,
@@ -271,6 +273,26 @@ impl Render for Shell {
         let look = Look::of(cx);
         self.ui
             .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
+        let target = self.ui.read(|state| {
+            (state.overlays.is_empty() && state.session.fork.is_none())
+                .then(|| crate::terminals::focus_target(state))
+        });
+        if let Some(target) = target
+            && self.focus_target.as_ref() != Some(&target)
+        {
+            let focused = match &target {
+                (Route::Session(id), Some(humata2_session::Tab::Terminal(tab)), side)
+                    if *side != Some(FullScreen::Panel) =>
+                {
+                    self.terminals.focus(id, *tab, window, cx)
+                }
+                _ => false,
+            };
+            if !focused {
+                window.focus(&self.focus, cx);
+            }
+            self.focus_target = Some(target);
+        }
         let viewport = f32::from(window.viewport_size().width);
         if self.viewport != viewport {
             self.viewport = viewport;

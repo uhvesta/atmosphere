@@ -21,7 +21,9 @@ Each agent edits only its own lane; the main agent edits the rest.
 |---|---|---|---|---|---|
 | main | Opus 5.5 | main agent | — | 2026-11-15 | active |
 | minion C1 | — | restyle app to goldens (launched by the owner) | N1 restyle; uncommitted work in `clients/`, `features/{app,session}`, `ui/`, `desktop/tests/native*` | 2026-11-15 | active, outside this workflow |
-| minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | running |
+| minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | done |
+| minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | running |
+| minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | running |
 
 ## Claims
 
@@ -56,3 +58,4 @@ One section per milestone in progress. Template:
 Newest last. One line per event: spawns, reports, gates, commits, decisions.
 
 - 2026-11-15 main: wrote `workflow/` (WORKFLOW, roles, WORKLOG); started R1.
+- 2026-11-15 R1 done: 10 cohesion problems, 19 goal milestones, layered DAG (critical path LOOK → FL → MACH → SAFE → LINUX → ANYHOST → V1; 2 building lanes + 1 docs lane). Started A1 (advice) and S1 (safety) in parallel.

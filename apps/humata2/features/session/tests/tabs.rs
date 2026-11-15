@@ -184,3 +184,63 @@ fn closing_the_only_file_in_a_split_removes_that_group() {
     );
     store.finish();
 }
+
+/// SE-13: clicking a visible terminal focuses its group without selecting hidden tabs.
+#[test]
+fn terminal_focus_tracks_only_the_visible_tab_in_its_own_session() {
+    let (base, clients) = store();
+    let mut state = base.state().clone();
+    base.finish();
+    let id = SessionId::new("ledger");
+    let view = state.views.get_mut(&id).unwrap();
+    view.groups = vec![
+        TabGroup {
+            tabs: vec![Tab::Terminal(0), Tab::Terminal(1)],
+            selected: 0,
+        },
+        TabGroup {
+            tabs: vec![Tab::Terminal(2)],
+            selected: 0,
+        },
+    ];
+    view.focused_group = 0;
+    let mut store = TestStore::new(state, Sessions::new(clients));
+    store.send(
+        A::FocusTerminal {
+            session: SessionId::new("another"),
+            tab: 2,
+        },
+        |_| {},
+    );
+    store.send(
+        A::FocusTerminal {
+            session: id.clone(),
+            tab: 1,
+        },
+        |_| {},
+    );
+    store.send(
+        A::FocusTerminal {
+            session: id.clone(),
+            tab: 2,
+        },
+        |s| {
+            let view = s.views.get_mut(&id).unwrap();
+            view.focused_group = 1;
+            view.tab = 2;
+        },
+    );
+    store.send(
+        A::FocusTerminal {
+            session: id.clone(),
+            tab: 0,
+        },
+        |s| {
+            let view = s.views.get_mut(&id).unwrap();
+            view.focused_group = 0;
+            view.tab = 0;
+        },
+    );
+    assert_eq!(store.state().view().unwrap().groups[0].selected, 0);
+    store.finish();
+}

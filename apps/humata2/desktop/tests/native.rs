@@ -1183,3 +1183,102 @@ fn the_fork_dialog_creates_the_selected_kind_and_can_cancel() {
     app.click("fork-cancel");
     assert!(app.ui.read(|s| s.session.fork.is_none()));
 }
+
+/// SE-1/8/10: starting a session or selecting a tab immediately directs keyboard input there.
+#[test]
+fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
+    use humata2_app::NewSessionAction as N;
+    use humata2_clients::model::Agent;
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("terminal");
+    app.click("terminal-tab 1");
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in ["p", "w", "d", "enter"] {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+    assert!(app.ui.read(|s| {
+        s.session.terminal_bytes[&(SessionId::new("ledger"), 1)].ends_with(b"~/humata\r\n$ ")
+    }));
+    app.send(AppAction::StartNewSession);
+    app.send(AppAction::NewSession(N::Agent(Agent::Shell)));
+    app.send(AppAction::NewSession(N::Title("Fresh terminal".into())));
+    app.click("new-session-create");
+    let id = app.ui.read(|s| s.session.open.clone()).unwrap();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in ["p", "w", "d", "enter"] {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+    assert!(
+        app.ui
+            .read(|s| s.session.terminal_bytes[&(id, 0)].ends_with(b"~/humata\r\n$ "))
+    );
+    app.click("session-fork");
+    app.click("fork-kind-2");
+    app.click("fork-create");
+    let fork = app.ui.read(|s| s.session.open.clone()).unwrap();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in ["p", "w", "d", "enter"] {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+    assert!(
+        app.ui
+            .read(|s| s.session.terminal_bytes[&(fork.clone(), 0)].ends_with(b"~/humata\r\n$ "))
+    );
+    app.send(AppAction::OpenPalette);
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    app.settle();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in ["l", "s", "enter"] {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+    assert!(
+        app.ui
+            .read(|s| s.session.terminal_bytes[&(fork, 0)].ends_with(b"notes.md  todo.txt\r\n$ "))
+    );
+}
+
+/// SE-13: focus inside either grid determines the group that receives new tabs.
+#[test]
+fn clicking_a_split_terminal_focuses_that_group() {
+    use humata2_clients::model::Agent;
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.send(AppAction::Session(SessionAction::OpenTerminal {
+        agent: Agent::Codex,
+        split: true,
+    }));
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().focused_group), 1);
+    app.click("terminal-area");
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().focused_group), 0);
+    app.click("terminal-secondary");
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().focused_group), 1);
+    app.send(AppAction::Session(SessionAction::OpenTerminal {
+        agent: Agent::Shell,
+        split: false,
+    }));
+    assert!(app.ui.read(|s| {
+        s.session.view().unwrap().groups[1]
+            .tabs
+            .contains(&humata2_session::Tab::Terminal(3))
+    }));
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 2);
+}

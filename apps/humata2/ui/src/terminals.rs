@@ -11,6 +11,19 @@ use terminal_pane::{PaneEvent, Pty, TerminalPane};
 use terminal_view::{CellSize, Theme};
 use tokio::sync::mpsc;
 
+pub(crate) type FocusTarget = (Route, Option<Tab>, Option<FullScreen>);
+pub(crate) fn focus_target(state: &AppState) -> FocusTarget {
+    let tab = match &state.route {
+        Route::Session(id) => state.session.views.get(id).and_then(|view| {
+            view.selected(view.focused_group)
+                .cloned()
+                .or_else(|| view.groups.is_empty().then_some(Tab::Terminal(view.tab)))
+        }),
+        _ => None,
+    };
+    (state.route.clone(), tab, state.full_screen())
+}
+
 type Key = (SessionId, usize);
 enum Io {
     Input(Key, Vec<u8>),
@@ -35,12 +48,16 @@ impl Pty for ClientPty {
         }
     }
 }
+struct FocusObserver {
+    _subscription: Subscription,
+}
 struct Entry {
     pane: Entity<TerminalPane>,
     read: usize,
     appearance: (u32, u32, u32),
     writable: Rc<Cell<bool>>,
     _events: Subscription,
+    _focus_observer: Entity<FocusObserver>,
 }
 /// A terminal belongs to its session/tab, regardless of which group displays it.
 pub(crate) struct Terminals {
@@ -98,6 +115,25 @@ impl Terminals {
             writable: writable.clone(),
         };
         let pane = cx.new(|cx| TerminalPane::new(terminal, pty, font_theme(font), window, cx));
+        let focus = pane.read(cx).focus_handle(cx);
+        let focused_ui = ui.clone();
+        let focus_key = key.clone();
+        let focus_observer = cx.new(|cx| {
+            let subscription = cx.on_focus(&focus, window, move |_: &mut FocusObserver, _, cx| {
+                let ui = focused_ui.clone();
+                let (session, tab) = focus_key.clone();
+                // Focus can change during a render that is reading the store.
+                cx.defer(move |cx| {
+                    ui.send(
+                        AppAction::Session(SessionAction::FocusTerminal { session, tab }),
+                        cx,
+                    )
+                });
+            });
+            FocusObserver {
+                _subscription: subscription,
+            }
+        });
         let ui = ui.clone();
         let events = cx.subscribe(&pane, move |_, event: &PaneEvent, cx| match event {
             PaneEvent::SplitRequested => ui.send(
@@ -122,6 +158,7 @@ impl Terminals {
             appearance: (look.term_text, look.term, look.term_dim),
             writable,
             _events: events,
+            _focus_observer: focus_observer,
         })
     }
     pub(crate) fn sync(
@@ -215,6 +252,22 @@ impl Terminals {
             });
         }
     }
+    pub(crate) fn focus(
+        &self,
+        session: &SessionId,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        if let Some(entry) = self.entries.get(&(session.clone(), tab)) {
+            let focus = entry.pane.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn body(
         &self,
         session: &SessionId,
