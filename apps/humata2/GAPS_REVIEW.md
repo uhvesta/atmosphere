@@ -19,7 +19,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/desktop:shell_test` (new test `splitting_draws_two_panes_and_closing_one_goes_back`, re-recorded `home.png`).
 - Look at: a single pane draws without chrome (no header), on purpose. Divider dragging and pane drag-and-drop are not built.
 
-### (next commit): markdown toolbar and Source toggle (Markdown)
+### 1818f806: markdown toolbar and Source toggle (Markdown)
 - `markdown/src/view.rs`: the toggle keeps keyboard focus; the toolbar caches its selection and acts on mouse down.
 - Verified: in `headless:flows`, `the_keyboard_switches_to_the_source_and_back` passes. Two flows still fail, as recorded in OVERVIEW.
 - Look at: whether acting on press, not click, is acceptable UX for the selection toolbar.
