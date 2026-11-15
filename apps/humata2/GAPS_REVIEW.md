@@ -438,6 +438,6 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Compared: updated native01-session-working-light.png and14-two-tab-groups.png inspected; terminal-visible01–06/09/10/13–17 refresh cursor focus and grid semantic state. Panel semantic trees refresh the focused grid. No layout or approved frame changes.
 - Look at: existing fake inline prompt/tones/type/offline banner and all recorded panel differences remain. Changes Wrap is the next concrete issue; Desk row/screens still need the app implementation after original-screen audit. D102 Fork layout remains Provisional, advanced fork selectors/live ownership remain. Full goal unfinished.
 
-### (this commit): docs tidy by the judge (minion J1, owner request 2026-11-15)
+### d8151a80: docs tidy by the judge (minion J1, owner request 2026-11-15)
 - SPEC, DECISIONS and OVERVIEW now tell one story, ruled owner directions > goldens > SPEC. Dropped NV-1, NV-28–NV-31a, NV-35 (D74/D76); rewrote NV-32–NV-34; new NV-36/37. §11 is one markdown model (SM-1, SM-2, SM-5 dropped; DK-7–DK-9 moved in; D104). SPEC now defines what frames 21–24, 28 and 36–40 draw (BD-11–16, HO-3, LD-19/20, DK-10–14). OVERVIEW: UI-on-fakes runs beside infrastructure, I2/I6 decided, stale items fixed. New Provisional D103–D112; D113 lists frame changes awaiting the owner. Full log in the judge's change log.
 - Docs only; goldens and code untouched. Follow-up: dropping spec mode orphans `SetSpecMode`/`spec_mode`, `session_spec_mode`, `humata session spec` and TRACE rows; LAYOUT.md is stale. Look at: D103–D113.
