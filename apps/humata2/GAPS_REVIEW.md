@@ -244,7 +244,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: Ask verdicts still don't become Inbox requests, and the Inbox and grants still live in memory.
 
-### (this commit): minion F's pick up here, paused [minion F]
+### e155c01b: minion F's pick up here, paused [minion F]
 - Minion F's hand-off notes now say what's done and what's left, which left items wait on the owner or a proto change, and which are next.
 - `OVERVIEW.md`: the "Pick up here (minion F)" On line is replaced with the paused list. No code changed.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
