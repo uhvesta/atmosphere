@@ -880,6 +880,50 @@ each repo's branch.
   (old or new), the base it was compared against, and the quoted code, so
   the agent can find it even after the file has changed.
 
+### Since I last reviewed (owner direction 2026-11-14, D55)
+
+- **RV-28** **Mark reviewed** (RV-6) stores, per repo, a snapshot of exactly
+  what the user saw: the commit plus a tree of the working tree as shown
+  (staged, unstaged and the untracked files the diff included), written as
+  git objects under a private ref (`refs/humata/reviewed/<session>/<n>`).
+  Nothing is copied outside git's object store, and unchanged files cost
+  nothing, so "Since I last reviewed" is a plain tree-to-worktree diff
+  however large the repo.
+- **RV-29** Each file can also be marked **Viewed** on its own, recording
+  its content hash. A viewed file whose content changed since is shown again
+  with only the change since it was viewed, and "Viewed" is cleared; an
+  unchanged one stays folded as viewed.
+- **RV-30** Earlier snapshots are kept (the last 20 per session, and every
+  one a comment was sent from), so the user can compare against any earlier
+  review ("Since review 3, Tuesday 14:02").
+
+### Agent-prepared reviews (owner direction 2026-11-14, D55)
+
+- **RV-31** A **diff spec** says, per repo, what a review shows: the base
+  (the branch's merge base with a branch, as GitHub shows a PR
+  (`origin/main...HEAD`); a branch or commit directly; a reviewed snapshot,
+  RV-28; the parent's fork point), what's compared (commits only; plus
+  staged; plus unstaged; plus untracked, all or by path), path filters, and
+  whether whitespace and renames count. Every base of RV-1 is a diff spec,
+  and the user can edit the one showing ("Comparing: origin/main...HEAD +
+  unstaged ▾").
+- **RV-32** An agent can prepare one with the MCP tool `review_prepare`
+  (gated by "Prepare views for you", like VW-1): a diff spec, an order for
+  the files, groups with titles, and notes on files, hunks and lines. It
+  arrives as a review view offer (VW-2) and opens as the Diff panel or a
+  review tab showing exactly that; **Revert** goes back (VW-9).
+- **RV-33** Humata ships two skills for it, synced to every machine
+  (SK-1): **/render-humata-review** turns the user's words ("against what
+  GitHub will show", "just my unstaged changes", "since commit abc, plus the
+  new files in migrations/") into a diff spec, and **/order-humata-review**
+  orders the files top-down (entry points first) or bottom-up (leaf changes
+  first), groups them and writes the notes. The ordering skill asks the
+  agent to hand the work to a small, fast model where the agent supports
+  subagents (e.g. Claude Code's Haiku), and runs inline otherwise.
+- **RV-34** The order and notes stay attached to the review while the
+  changes move under them: a note on a line that changed is kept and marked
+  outdated, as drafts are (PR-16).
+
 ## 10. PR reviews
 
 ```text
@@ -981,6 +1025,19 @@ each repo's branch.
   dialog names them before going ahead.
 - **PR-18** The PR reviews channel's Sessions table shows, per review, the
   PR(s), author, state (open, merged, closed), drafts count and new commits.
+
+### Asking about the PR (owner direction 2026-11-14, D55)
+
+- **PR-19** Every line, range, hunk and file in a PR review offers **Ask**
+  besides the comment box: the question goes, with its repo, file, lines,
+  side and the quoted code, to the review's **Ask** chat, never to GitHub.
+- **PR-20** The Ask chat is a second agent terminal in the review session,
+  read-only towards the clones (like /side), so questions never interrupt or
+  steer the reviewing agent. The user can also type any general question
+  about the PR there. Answers that cite code link back to it in the diff.
+- **PR-21** Where a review clones is the user's choice, as for any session
+  (PR-4): This Mac or any machine. A review can be moved to another machine
+  later (MV-1), drafts, Ask chat and reviewed snapshots included.
 
 ## 11. Spec mode and comments
 
@@ -2068,6 +2125,19 @@ daemon and, as far as physically possible, the machine.
   remote terminal echoes within the SSH round trip plus 5 ms, and an event
   on a machine reaches the app within the round trip plus 10 ms, measured
   in release benches against a local VM.
+- **TR-11** Anything that can be large (file transfers, file reads,
+  diffs, terminal snapshots, scrollback catch-up, bug reports) moves in
+  chunks (1 MiB at most) and is compressed per chunk. The codecs are **lz4**
+  (fast, the default on this Mac and on fast links) and **zstd** (smaller,
+  the default on slow links), plus none; each chunk names its codec, both
+  ends say which they support when the link starts, and data that doesn't
+  shrink (images, archives) is sent as is. Settings › Advanced picks
+  Auto, lz4, zstd or Off, globally and per machine. (D56)
+- **TR-12** Inside a machine, only files that matter are watched: each
+  live agent's own conversation file, and each clone's `HEAD`, index and
+  current branch ref. Working-tree changes are read when they're needed (at
+  the end of an agent's turn, when a Diff panel is showing, before a
+  pointer report), not watched recursively.
 
 ## 22. Navigation and UI principles
 
