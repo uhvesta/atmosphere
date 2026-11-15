@@ -108,7 +108,15 @@ pub fn new_session(look: Look, under: Div) -> Div {
                 .text_size(px(12.5))
                 .child(div().flex().items_center().gap(px(8.)).child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("New session")).child(secondary(look, "in # payments-rewrite · for PAY-9")))
                 .child(row("Title", field(look, "Backfill progress bar", false)))
-                .child(row("Agent", div().flex().gap(px(8.)).child(popup(look, "Claude Code")).child(popup(look, "Opus")).child(div().flex_1())))
+                .child(row(
+                    "Runs",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(div().flex().child(segmented(look, &["Claude Code", "Codex", "Copilot", "OpenCode", "Terminal"], 0)).child(div().flex_1()))
+                        .child(div().flex().gap(px(8.)).child(popup(look, "Opus")).child(secondary(look, "An agent's own TUI, or a plain shell")).child(div().flex_1())),
+                ))
                 .child(row("Machine", div().flex().gap(px(8.)).child(popup(look, "devbox-1")).child(secondary(look, "11 GB free")).child(div().flex_1())))
                 .child(row(
                     "Repos",

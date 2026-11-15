@@ -48,14 +48,13 @@ filegroup(
     tags = ["starlark"],
 )
 
-# N1: candidate macOS-native looks, drawn headless as still mocks for the
-# owner to pick from. Record with
-# `bazel run //apps/humata2/desktop:directions_test_record`.
+# The design goldens: what the UI should look like (D76). Record with
+# `bazel run //apps/humata2/desktop:design_test_record`.
 humata2_snapshot_test(
-    name = "directions_test",
-    srcs = ["tests/directions.rs"] + glob(["tests/directions/*.rs"]),
+    name = "design_test",
+    srcs = ["tests/design.rs"] + glob(["tests/design/*.rs"]),
     compile_data = ["Cargo.toml"],
-    crate_root = "tests/directions.rs",
+    crate_root = "tests/design.rs",
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/engine:engine_test_support",

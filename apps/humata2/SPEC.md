@@ -5,9 +5,15 @@ the clickable prototype (`apps/humata2/prototype`) shows and the decisions the
 owner approved on 2026-11-14. Where the two disagree, the decisions win. Section
 28 lists those places.
 
+How it looks is set by the design goldens, not the prototype: the frames in
+`desktop/tests/__snapshots__/design/` (D76, OVERVIEW › Design goldens). Build
+every screen to match its frame. Where this spec and a frame disagree on
+behaviour, the spec wins; on looks, the frame wins.
+
 Humata 2 is a native app for directing coding agents: Claude Code, Codex CLI,
 Copilot CLI, OpenCode, and plain shells. The UI is written in Rust on GPUI, with
-its state in the repo's `libs/tca-rust`. It runs on macOS and Linux. A Rust
+its state in the repo's `libs/tca-rust`. It runs on macOS, Linux and in a
+browser; no other platforms. A Rust
 daemon, `humatad`, runs on every machine Humata uses: your Mac and any machine
 you reach over SSH. A session is the agent CLI's own terminal, held by
 `humatad`, so it outlives the app, the SSH link and the daemon itself.

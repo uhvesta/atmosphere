@@ -6,7 +6,8 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
 - `SPEC.md`: what Humata 2 does, as behaviour.
 - `REVIEW.md`: the review of the spec.
 - `api/`: the boundaries: `BOUNDARIES.md`, `GRPC.md` + `proto/`, `MCP.md`, `CLI.md`.
-- `prototype/`: how things look and roughly behave. Where the prototype and the spec differ, the spec wins.
+- `prototype/`: how things roughly behave. For how things look, the design goldens below win over it.
+- **Design goldens:** `desktop/tests/__snapshots__/design/*.png` are what the UI should look like (D76). They are drawn by `desktop/tests/design.rs` and `design/*.rs` (`bazel test //apps/humata2/desktop:design_test`; record with `bazel run //apps/humata2/desktop:design_test_record`). They are still mocks, not the app. Every screen you build or restyle must match its frame: layout, spacing, type, colour and wording. If a design needs to change, change the frame first, and only with the owner's OK, then build to it. Don't invent layouts the frames don't show; ask instead.
 
 **Rules that hold for every milestone:**
 - **Tests prove behaviour, never how the code is written.**
@@ -14,7 +15,7 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
   - Flow tests drive the app the way a person does.
   - Reducer actions, state and stores are fair to assert on, because they are the abstract model.
   - Private functions, call order and message wording are not.
-- **macOS and Linux from the start.** Every test suite runs on both.
+- **macOS, Linux and web; no other platforms (owner, 2026-11-15).** Every test suite runs on macOS and Linux, and the app outside `desktop/` runs in a browser.
 - **The app is only a client** of the Mac's daemon (AR-2, AR-3, D34). Any number of clients, desktop or web, can be open at once. App code outside `desktop/` builds for wasm, and CI checks it.
 - **The infrastructure milestones (I1–I9) come first.** The desktop app (A1 onward) starts only after gate G is passed.
 - **Each app milestone ships as a signed `humata2` release.** That's a big behavioural step you can install and try.
@@ -215,15 +216,17 @@ A bug report is text an agent can read and act on: what you did, where, what the
 ## N1: A native macOS look and feel (next, owner 2026-11-15)
 The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so it looks and feels as Apple/macOS-native as we can get, while staying a chat-workspace app with channels and sessions.
 - [x] Owner's pick (2026-11-15): looks A (light) and B (dark), following the system. The middle of a session is its embedded terminal, not a chat. Sidebar, terminal and right panel are three columns resized by dragging; the terminal or the right panel can each go full screen.
-- [ ] Waiting on the owner's picks among the options in the 37 still mocks in `desktop/tests/__snapshots__/directions/` (`bazel test //apps/humata2/desktop:directions_test`; record with `bazel run //apps/humata2/desktop:directions_test_record`). `opt-a`/`opt-b`/`opt-c` in a file name mark an alternative:
-  - Panel switcher: tabs on top (03), an icon strip at the edge (04), or stacked panes (05).
-  - Sidebar session tree: forks indented with a fork glyph (17) or connector lines (18); channels fold to one row with a status roll-up (19).
-  - Clicking a channel: its Sessions tree table (20) or an overview of sessions, board, what needs you and activity (21). Also drawn: Activity (22) and Repos and machines (23).
-  - Board: kanban (24) with an item drawer (25), a table (26), or a dashboard whose every number opens what it counts (27; new, not in SPEC).
-  - Home: a list (28) or columns (29). Inbox: split (30) or a stream (31).
-  - The session states (working, needs you, exited, offline), panels (Diff, Inbox, Files, Board, Journal, Info), collapsed columns, two terminals split, Pinned, Hosts, Settings, the palette, New session, a toast and first run are drawn too.
-- [ ] Then build it: sidebar material and vibrancy, system font sizes and weights, the unified title bar with toolbar items, native list selection, sheets and popovers, light and dark following the system, and a terminal/panel full-screen state in `features/app` with tests.
-- [ ] Restyle the shell (rail, sidebar, top bar, side panel), then each screen, re-recording snapshots only after the owner signs off on the look.
+- [x] Owner's picks (2026-11-15, D76), now the 33 design goldens in `desktop/tests/__snapshots__/design/`:
+  - The right panel is switched from a labelled icon strip down the window's right edge; the session header keeps a panel toggle.
+  - A session's terminals and open files are tabs in one row (`claude | zsh | client.rs | +`). The only split is two tab groups side by side in one session, at most one terminal per agent on the same code (14). Anything more is a fork: code + context, context only, or code only. No general pane workspace (revises D74).
+  - The sidebar tree indents forks with a fork glyph; channels fold to one row.
+  - Clicking a channel opens its Sessions tree table; Activity and Repos and machines are its other tabs.
+  - Board: kanban, item drawer, table and dashboard. The Board panel expanded to full screen shows the kanban lanes side by side (12).
+  - Home and Inbox are lists, top to bottom, with what needs you first; the Inbox is split (list and the open request).
+  - New session runs any agent's own TUI (Claude Code, Codex, Copilot, OpenCode) or a plain terminal (31).
+- [ ] Then build it to match the goldens: the right-edge strip switcher and header toggle, the indented tree, the channel Sessions tab, Home and Inbox lists, terminal tabs and the two-group split, New session with any agent TUI or a plain terminal, sidebar material and vibrancy, system font sizes and weights, the unified title bar with toolbar items, native list selection, sheets and popovers, light and dark following the system, and a terminal/panel full-screen state in `features/app` with tests.
+- [ ] Restyle the shell (sidebar, session header, terminal tabs, side panel, strip), then each screen, until the app's snapshots match the goldens.
+- [ ] Draw the goldens on Linux (in the Linux VM batch, after the I milestones) and in a browser. Find out whether gpui's web target can draw `design.rs` headless; if not, check the frames another way. Never edit `ui-prototype` for this.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
 
 ## Known gaps (2026-11-15)
@@ -287,6 +290,8 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] Give the background reconcile, `ServerInfo.last_start` and the debounce a decision number and a GRPC entry.
 - [ ] Put humatad's own log lines in restart reports. Write the restart doctor skill (`humata doctor restarts`).
 - [ ] MV-13/MV-14 move export and import, including the store's MV-13 export.
+- [ ] Wire humatad to the store's restart work: call `Store::open_or_restore` and pass `Restored` to reconcile, run `save_last_good` periodically off the async runtime, fill `ReviveConfig.reports`, and show one line per failed session in the app.
+- [ ] A resume redone after a crash skips the "you were interrupted" note when the conversation already holds it, and then only checks that the agent came up, stayed up and opened no other conversation (D71). Find a stronger check if one exists.
 - [ ] Recheck `terminal_test` (once failed with `SizeOutOfRange { claimed: 2097152 }`) and `restart_test` (once Unauthenticated), and fix the flaky `humatad2_unit_test`.
 
 ### Machines (I7, A3; D61)
@@ -304,4 +309,4 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 ### MCP, access and other open items (I8, A5)
 - [ ] ReportService, script tokens (SEC-14), and the web listener.
 - [ ] MCP `inbox_request` and Ask→Inbox (D38.6); persist the Inbox and grants.
-- [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D74's sidebar question, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64).
+- [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64).

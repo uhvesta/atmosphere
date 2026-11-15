@@ -1,28 +1,32 @@
-//! N1: the macOS-native look, drawn headless as still mocks so the owner can
-//! settle the direction before the real screens are restyled. Nothing here
-//! is the app: every frame is a picture built from made-up content.
+//! The design goldens: what Humata 2's UI should look like. Every screen
+//! is drawn headless from made-up content, in look A (light) and look B
+//! (dark), which follow the system. They're the target, not the app: when
+//! you build or restyle a screen, match its frame here, and change the frame
+//! here first (with the owner's say) when the design changes. See
+//! `apps/humata2/OVERVIEW.md` § Design goldens and DECISIONS.md D76.
 //!
-//! Owner direction (2026-11-15): looks A (light) and B (dark) follow the
-//! system. The middle of a session is its embedded terminal, not a chat. The
-//! sidebar, the terminal and the right panel are columns resized by
-//! dragging the handles between them, and the terminal or the right panel
-//! can each go full screen. The frames show every main screen, the states a
-//! session can be in, and options where the layout is still open:
-//! `opt-a`/`opt-b`/`opt-c` in a name mark the alternatives.
+//! The owner's picks (2026-11-15): the middle of a session is its embedded
+//! terminal; sidebar, terminal and right panel are columns resized by
+//! dragging, and the terminal or the panel can go full screen. A labelled
+//! strip down the right edge picks the panel. Forks indent under their
+//! parent in the sidebar. A channel opens on its Sessions tree. Home and the
+//! Inbox are top-to-bottom lists, what needs you first. A session splits
+//! only into its own agents' terminals, one per agent; another copy of the
+//! work is a fork. New session runs any agent's TUI or a plain terminal.
 
-#[path = "directions/board.rs"]
+#[path = "design/board.rs"]
 mod board;
-#[path = "directions/channel.rs"]
+#[path = "design/channel.rs"]
 mod channel;
-#[path = "directions/kit.rs"]
+#[path = "design/kit.rs"]
 mod kit;
-#[path = "directions/overlays.rs"]
+#[path = "design/overlays.rs"]
 mod overlays;
-#[path = "directions/pages.rs"]
+#[path = "design/pages.rs"]
 mod pages;
-#[path = "directions/session.rs"]
+#[path = "design/session.rs"]
 mod session;
-#[path = "directions/sidebar.rs"]
+#[path = "design/sidebar.rs"]
 mod sidebar;
 
 use gpui_kit::{prelude::*, *};
@@ -30,8 +34,8 @@ use humata2_engine::Resources;
 use humata2_snapshot::{Tolerance, snapshots};
 
 use kit::{DARK, LIGHT, Look, SYSTEM_FONT, c};
-use session::{Fill, Panel, Screen, Switch, Term};
-use sidebar::{Side, Tree};
+use session::{Fill, Panel, Screen, Term};
+use sidebar::Side;
 
 // The mocks draw more icons than the app bundles today.
 gpui_kit::assets::icon_assets!(
@@ -111,30 +115,27 @@ type Draw = fn(Look) -> Div;
 const FRAMES: &[(&str, Look, Draw)] = &[
     ("01-session-working-light", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Diff), Term::Working))),
     ("02-session-working-dark", DARK, |look| session::session(look, Screen::new(Some(Panel::Diff), Term::Working))),
-    ("03-panel-switch-opt-a-tabs", DARK, |look| session::session(look, Screen::new(Some(Panel::Inbox), Term::NeedsYou))),
-    ("04-panel-switch-opt-b-strip", DARK, |look| {
-        session::session(look, with(Screen::new(Some(Panel::Inbox), Term::NeedsYou), |s| s.switch = Switch::Strip))
-    }),
-    ("05-panel-switch-opt-c-panes", DARK, |look| {
-        session::session(look, with(Screen::new(Some(Panel::Inbox), Term::NeedsYou), |s| s.switch = Switch::Panes))
-    }),
-    ("06-session-needs-you-light", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Inbox), Term::NeedsYou))),
-    ("07-session-exited", DARK, |look| session::session(look, Screen::new(Some(Panel::Info), Term::Exited))),
-    ("08-session-offline", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Files), Term::Offline))),
-    ("09-session-board-panel", DARK, |look| session::session(look, Screen::new(Some(Panel::Board), Term::Working))),
-    ("10-session-journal-panel", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Journal), Term::Working))),
-    ("11-session-no-panel", DARK, |look| session::session(look, Screen::new(None, Term::Working))),
-    ("12-terminal-full-screen", DARK, |look| {
+    ("03-session-needs-you-light", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Inbox), Term::NeedsYou))),
+    ("04-session-needs-you-dark", DARK, |look| session::session(look, Screen::new(Some(Panel::Inbox), Term::NeedsYou))),
+    ("05-session-exited", DARK, |look| session::session(look, Screen::new(Some(Panel::Info), Term::Exited))),
+    ("06-session-offline", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Files), Term::Offline))),
+    ("07-session-board-panel", DARK, |look| session::session(look, Screen::new(Some(Panel::Board), Term::Working))),
+    ("08-session-journal-panel", LIGHT, |look| session::session(look, Screen::new(Some(Panel::Journal), Term::Working))),
+    ("09-session-no-panel", DARK, |look| session::session(look, Screen::new(None, Term::Working))),
+    ("10-terminal-full-screen", DARK, |look| {
         session::session(look, with(Screen::new(None, Term::Working), |s| s.fill = Fill::TerminalFull))
     }),
-    ("13-panel-full-screen", LIGHT, |look| {
+    ("11-panel-full-screen-diff", LIGHT, |look| {
         session::session(look, with(Screen::new(Some(Panel::Diff), Term::Working), |s| s.fill = Fill::PanelFull))
     }),
-    ("14-columns-collapsed", DARK, |look| {
+    ("12-panel-full-screen-board", DARK, |look| {
+        session::session(look, with(Screen::new(Some(Panel::Board), Term::Working), |s| s.fill = Fill::PanelFull))
+    }),
+    ("13-columns-collapsed", DARK, |look| {
         session::session(look, with(Screen::new(None, Term::Working), |s| s.fill = Fill::Collapsed))
     }),
-    ("15-split-two-terminals", DARK, session::split),
-    ("16-sidebar-pinned", LIGHT, |look| {
+    ("14-two-agents-one-session", DARK, session::split),
+    ("15-sidebar-pinned", LIGHT, |look| {
         session::session(
             look,
             with(Screen::new(Some(Panel::Diff), Term::NeedsYou), |s| {
@@ -142,18 +143,10 @@ const FRAMES: &[(&str, Look, Draw)] = &[
             }),
         )
     }),
-    ("17-tree-opt-a-indent", LIGHT, |look| {
+    ("16-sidebar-fork-selected", LIGHT, |look| {
         session::session(look, with(Screen::new(Some(Panel::Diff), Term::Working), |s| s.side = Side::at("Partial BRIN on posted_at")))
     }),
-    ("18-tree-opt-b-lines", LIGHT, |look| {
-        session::session(
-            look,
-            with(Screen::new(Some(Panel::Diff), Term::Working), |s| {
-                s.side = Side { tree: Tree::Lines, ..Side::at("Partial BRIN on posted_at") };
-            }),
-        )
-    }),
-    ("19-channels-folded", DARK, |look| {
+    ("17-sidebar-channels-folded", DARK, |look| {
         session::session(
             look,
             with(Screen::new(Some(Panel::Diff), Term::Working), |s| {
@@ -161,29 +154,27 @@ const FRAMES: &[(&str, Look, Draw)] = &[
             }),
         )
     }),
-    ("20-channel-opt-a-sessions", LIGHT, channel::sessions),
-    ("21-channel-opt-b-overview", DARK, channel::overview),
-    ("22-channel-activity", LIGHT, channel::activity),
-    ("23-channel-repos-machines", DARK, channel::repos),
-    ("24-board-kanban", LIGHT, board::kanban),
-    ("25-board-item-open", DARK, board::drawer),
-    ("26-board-opt-b-table", LIGHT, board::table),
-    ("27-board-opt-c-dashboard", DARK, board::dashboard),
-    ("28-home-opt-a-list", LIGHT, pages::home_list),
-    ("29-home-opt-b-columns", DARK, pages::home_columns),
-    ("30-inbox-opt-a-split", LIGHT, pages::inbox_split),
-    ("31-inbox-opt-b-stream", DARK, pages::inbox_stream),
-    ("32-hosts", LIGHT, pages::hosts),
-    ("33-settings", DARK, pages::settings),
-    ("34-palette", DARK, |look| overlays::palette(look, session::session(look, Screen::new(Some(Panel::Diff), Term::Working)))),
-    ("35-new-session", LIGHT, |look| overlays::new_session(look, board::kanban(look))),
-    ("36-toast", LIGHT, |look| overlays::toast(look, pages::home_list(look), "Archived “Currency codes” and freed 1.4 GB", "Undo")),
-    ("37-first-run", DARK, pages::first_run),
+    ("18-channel-sessions", LIGHT, channel::sessions),
+    ("19-channel-activity", DARK, channel::activity),
+    ("20-channel-repos-machines", LIGHT, channel::repos),
+    ("21-board-kanban", LIGHT, board::kanban),
+    ("22-board-item-open", DARK, board::drawer),
+    ("23-board-table", LIGHT, board::table),
+    ("24-board-dashboard", DARK, board::dashboard),
+    ("25-home", LIGHT, pages::home_list),
+    ("26-inbox", LIGHT, pages::inbox_split),
+    ("27-inbox-dark", DARK, pages::inbox_split),
+    ("28-hosts", LIGHT, pages::hosts),
+    ("29-settings", DARK, pages::settings),
+    ("30-palette", DARK, |look| overlays::palette(look, session::session(look, Screen::new(Some(Panel::Diff), Term::Working)))),
+    ("31-new-session", LIGHT, |look| overlays::new_session(look, board::kanban(look))),
+    ("32-toast", LIGHT, |look| overlays::toast(look, pages::home_list(look), "Archived “Currency codes” and freed 1.4 GB", "Undo")),
+    ("33-first-run", DARK, pages::first_run),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.
 #[::core::prelude::v1::test]
-fn native_directions() {
+fn design_goldens() {
     let mut cx = humata2_engine::headless(&Resources::new(MockIcons)).expect("the headless context starts");
     cx.update(humata2_ui::init);
     let snapshots = snapshots!().expect("snapshots are kept beside this file");

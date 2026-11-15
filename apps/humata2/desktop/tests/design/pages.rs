@@ -66,7 +66,7 @@ fn group(look: Look, title: &'static str, rows: Vec<Div>) -> Div {
         .child(card(look).overflow_hidden().children(rows))
 }
 
-/// Home, option A: one column of grouped lists.
+/// Home: one column of grouped lists, what needs you at the top.
 pub fn home_list(look: Look) -> Div {
     page(
         look,
@@ -107,63 +107,6 @@ pub fn home_list(look: Look) -> Div {
     )
 }
 
-fn column(look: Look, title: &'static str, cards: Vec<Div>) -> Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .child(label(look, title))
-        .children(cards)
-}
-
-fn tile(look: Look, state: St, title: &'static str, channel: &'static str, what: &'static str, action: Option<Div>) -> Div {
-    card(look)
-        .p(px(12.))
-        .gap(px(6.))
-        .when(state == St::NeedsYou, |card| card.border_color(c(ORANGE)))
-        .child(div().flex().items_center().gap(px(7.)).child(status(state)).child(div().font_weight(FontWeight::SEMIBOLD).child(title)))
-        .child(secondary(look, channel))
-        .child(div().text_size(px(12.)).child(what))
-        .children(action.map(|action| div().flex().pt(px(2.)).child(action)))
-}
-
-/// Home, option B: three columns of cards.
-pub fn home_columns(look: Look) -> Div {
-    page(
-        look,
-        Side::at("Home"),
-        toolbar(look, "Home", None, vec![button(look, Kind::Primary, "New session")]),
-        div().flex().gap(px(18.)).p(px(20.)).text_size(px(13.)).child(column(
-            look,
-            "Needs you",
-            vec![
-                tile(look, St::NeedsYou, "Ledger schema migration", "# payments-rewrite · devbox-1", "Asks to move PAY-3 to Done", Some(button(look, Kind::Primary, "Review"))),
-                tile(look, St::Exited, "Upgrade Postgres 17", "# infra · This Mac", "Exited with code 1 after the dump step", Some(button(look, Kind::Secondary, "Resume"))),
-            ],
-        ))
-        .child(column(
-            look,
-            "Working",
-            vec![
-                tile(look, St::Working, "Refund retries", "# payments-rewrite · devbox-1", "Running cargo test -p refunds", None),
-                tile(look, St::Working, "Try BRIN index", "fork of Ledger schema", "Writing migrations/0043_brin.sql", None),
-                tile(look, St::Working, "Benchmark BRIN", "# infra · gpu-box", "pgbench run 2 of 4", None),
-            ],
-        ))
-        .child(column(
-            look,
-            "Recent",
-            vec![
-                tile(look, St::Idle, "API rate limiter", "# payments-rewrite", "Pushed and opened PR #491 · 1h", Some(button(look, Kind::Secondary, "Open PR"))),
-                tile(look, St::Idle, "acme/api #482", "# pr-reviews", "3 new commits since your review · 2h", None),
-                tile(look, St::Idle, "Currency codes", "# payments-rewrite", "Archived · freed 1.4 GB on devbox-1 · 1d", None),
-            ],
-        )),
-    )
-}
-
 fn inbox_row(look: Look, title: &'static str, from: &'static str, when: &'static str, on: bool, vip: bool) -> Div {
     div()
         .flex()
@@ -186,7 +129,7 @@ fn inbox_row(look: Look, title: &'static str, from: &'static str, when: &'static
         .child(div().text_size(px(11.5)).text_color(c(if on { look.selection_text } else { look.secondary })).child(from))
 }
 
-/// Inbox, option A: a list beside the open request.
+/// Inbox: the list, newest needing you first, beside the open request.
 pub fn inbox_split(look: Look) -> Div {
     page(
         look,
@@ -215,34 +158,7 @@ pub fn inbox_split(look: Look) -> Div {
     )
 }
 
-/// Inbox, option B: one stream of cards, the first one open.
-pub fn inbox_stream(look: Look) -> Div {
-    page(
-        look,
-        Side::at("Inbox"),
-        toolbar(look, "Inbox", Some("7 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
-        div().flex().justify_center().p(px(20.)).text_size(px(12.5)).child(
-            div()
-                .w(px(620.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(decision_card(look, true))
-                .child(decision_card(look, false))
-                .child(
-                    card(look)
-                        .p(px(12.))
-                        .gap(px(6.))
-                        .child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child(div().font_weight(FontWeight::SEMIBOLD).child("Which currency for refunds?")).child(div().flex_1()).child(secondary(look, "15m")))
-                        .child(secondary(look, "Copilot in Refund retries · question"))
-                        .child(div().child("Refunds can be issued in the charge's currency or in USD. Which should the retry job use?"))
-                        .child(div().flex().gap(px(8.)).child(button(look, Kind::Secondary, "Charge's currency")).child(button(look, Kind::Secondary, "USD")).child(button(look, Kind::Secondary, "Reply…"))),
-                ),
-        ),
-    )
-}
-
-/// Hosts: every machine, its health, and what it is running.
+/// Hosts: every machine, its health and what runs on it.
 pub fn hosts(look: Look) -> Div {
     let meter = |used: f32, hex: u32| {
         div().w(px(70.)).h(px(5.)).rounded_full().bg(c(look.fill)).child(div().w(px(70. * used)).h_full().rounded_full().bg(c(hex)))

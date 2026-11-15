@@ -1,6 +1,5 @@
 //! A channel's page, opened by clicking the channel itself (CH-11 to CH-15):
-//! its tabs, the sessions tree table, Activity, Repos and machines, and an
-//! overview option.
+//! its tabs, the sessions tree table, Activity, and Repos and machines.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
@@ -12,7 +11,6 @@ use crate::sidebar::Side;
 /// The channel's tabs (CH-11).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    Overview,
     Sessions,
     Activity,
     Repos,
@@ -33,7 +31,6 @@ fn header(look: Look, on: Tab) -> Div {
             .child(text)
             .children(count.map(|count| badge(look, count, false)))
     };
-    let overview = on == Tab::Overview;
     div()
         .flex()
         .flex_col()
@@ -62,7 +59,6 @@ fn header(look: Look, on: Tab) -> Div {
                 .h(px(32.))
                 .px(px(20.))
                 .text_size(px(12.5))
-                .when(overview, |tabs| tabs.child(tab("Overview", None, true)))
                 .child(tab("Sessions", Some("6"), on == Tab::Sessions))
                 .child(tab("Inbox", Some("2"), false))
                 .child(tab("Board", None, false))
@@ -103,7 +99,7 @@ const ROWS: &[Row] = &[
     Row { lines: "", fold: None, state: St::Idle, title: "API rate limiter", kind: None, inbox: None, agent: "Codex", machine: "devbox-1", status: "Idle · PR #491", started: "Mon" },
 ];
 
-fn sessions_table(look: Look, compact: bool) -> Div {
+fn sessions_table(look: Look) -> Div {
     let head = |text: &'static str| div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(c(look.secondary)).child(text);
     let row = |row: &Row| {
         let status_hex = match row.state {
@@ -136,10 +132,8 @@ fn sessions_table(look: Look, compact: bool) -> Div {
             )
             .child(div().w(px(100.)).child(row.agent))
             .child(div().w(px(80.)).text_color(c(if row.machine == "This Mac" { look.tertiary } else { look.text })).child(row.machine))
-            .when(!compact, |r| {
-                r.child(div().w(px(110.)).text_color(c(status_hex)).child(row.status))
-                    .child(div().w(px(90.)).text_color(c(look.secondary)).child(row.started))
-            })
+            .child(div().w(px(110.)).text_color(c(status_hex)).child(row.status))
+            .child(div().w(px(90.)).text_color(c(look.secondary)).child(row.started))
     };
     card(look)
         .overflow_hidden()
@@ -156,12 +150,13 @@ fn sessions_table(look: Look, compact: bool) -> Div {
                 .child(head("Session").flex_1())
                 .child(head("Agent").w(px(100.)))
                 .child(head("Machine").w(px(80.)))
-                .when(!compact, |r| r.child(head("Status").w(px(110.))).child(head("Started").w(px(90.)))),
+                .child(head("Status").w(px(110.)))
+                .child(head("Started").w(px(90.))),
         )
         .children(ROWS.iter().map(row))
 }
 
-/// Option A: clicking the channel opens its Sessions tab, the one tree
+/// Clicking the channel opens its Sessions tab, the one tree
 /// table of its sessions (CH-12).
 pub fn sessions(look: Look) -> Div {
     frame(
@@ -184,7 +179,7 @@ pub fn sessions(look: Look) -> Div {
                     .child(div().text_color(c(look.accent)).child("Expand all"))
                     .child(div().text_color(c(look.accent)).child("Collapse all")),
             )
-            .child(sessions_table(look, false))
+            .child(sessions_table(look))
             .child(secondary(look, "Click a row to open the session. ✉ opens it with its Inbox, forks included.")),
     )
 }
@@ -262,79 +257,5 @@ pub fn repos(look: Look) -> Div {
                 .child(row("acme/api", [("2 clones", false), ("3 clones", false), ("—", true)])),
         )
         .child(div().flex().gap(px(8.)).child(button(look, Kind::Secondary, "Add a GitHub repo…")).child(button(look, Kind::Secondary, "Add a machine…"))),
-    )
-}
-
-/// Option B: clicking the channel opens an overview first: the tree, what
-/// needs you, the board at a glance and the latest activity.
-pub fn overview(look: Look) -> Div {
-    let lane = |title: &'static str, count: &'static str, top: &'static str| {
-        div()
-            .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .p(px(10.))
-            .rounded(px(8.))
-            .bg(c(look.panel))
-            .child(div().flex().gap(px(6.)).child(div().font_weight(FontWeight::SEMIBOLD).child(title)).child(secondary(look, count)))
-            .child(secondary(look, top))
-    };
-    frame(
-        look,
-        Tab::Overview,
-        div()
-            .p(px(20.))
-            .text_size(px(12.5))
-            .flex()
-            .gap(px(16.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(label(look, "Sessions"))
-                    .child(sessions_table(look, true))
-                    .child(div().pt(px(6.)).child(label(look, "Board")))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(lane("Backlog", "3", "PAY-12 Multi-currency"))
-                            .child(lane("To do", "2", "PAY-9 Progress bar"))
-                            .child(lane("In progress", "2", "PAY-3 Ledger schema"))
-                            .child(lane("In review", "1", "PAY-5 Rate limiter"))
-                            .child(lane("Done", "5", "PAY-2 Currency codes")),
-                    ),
-            )
-            .child(
-                div()
-                    .w(px(340.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(label(look, "Needs you"))
-                    .child(crate::session::decision_card(look, false))
-                    .child(
-                        card(look)
-                            .p(px(12.))
-                            .gap(px(4.))
-                            .child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child(div().font_weight(FontWeight::SEMIBOLD).child("Which currency for refunds?")))
-                            .child(secondary(look, "Copilot in Refund retries · 15m")),
-                    )
-                    .child(div().pt(px(6.)).child(label(look, "Activity")))
-                    .child(
-                        card(look)
-                            .overflow_hidden()
-                            .child(event(look, IconName::GitFork, look.accent, "Forked “Partial BRIN on posted_at”", "You", "14m", None))
-                            .child(event(look, IconName::Check, GREEN, "Finished a turn: +184 −24", "Ledger schema migration", "20m", None))
-                            .child(event(look, IconName::WifiOff, GREY, "gpu-box went offline", "Humata", "41m", None)),
-                    ),
-            ),
     )
 }

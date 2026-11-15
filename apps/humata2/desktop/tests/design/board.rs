@@ -105,7 +105,8 @@ fn item_card(look: Look, item: &Item, on: bool) -> Div {
         })
 }
 
-fn kanban_body(look: Look, selected: Option<&str>) -> Div {
+/// The lanes side by side, for every channel or for one.
+pub fn lanes(look: Look, channel: Option<&str>, selected: Option<&str>) -> Div {
     div()
         .flex()
         .gap(px(10.))
@@ -113,7 +114,7 @@ fn kanban_body(look: Look, selected: Option<&str>) -> Div {
         .size_full()
         .text_size(px(12.5))
         .children(LANES.iter().enumerate().map(|(index, lane)| {
-            let items: Vec<&Item> = ITEMS.iter().filter(|item| item.lane == index).collect();
+            let items: Vec<&Item> = ITEMS.iter().filter(|item| item.lane == index && channel.is_none_or(|channel| item.channel == channel)).collect();
             div()
                 .flex_1()
                 .min_w_0()
@@ -139,7 +140,7 @@ fn kanban_body(look: Look, selected: Option<&str>) -> Div {
 
 /// The kanban across every channel, with the sessions working each item.
 pub fn kanban(look: Look) -> Div {
-    page(look, Side::at("Board"), bar(look, View::Kanban), kanban_body(look, None))
+    page(look, Side::at("Board"), bar(look, View::Kanban), lanes(look, None, None))
 }
 
 /// An item open in its drawer over the board (BD-3).
@@ -185,7 +186,7 @@ pub fn drawer(look: Look) -> Div {
         look,
         Side::at("Board"),
         bar(look, View::Kanban),
-        div().flex().size_full().child(div().flex_1().min_w_0().overflow_hidden().child(kanban_body(look, Some("PAY-3")))).child(drawer),
+        div().flex().size_full().child(div().flex_1().min_w_0().overflow_hidden().child(lanes(look, None, Some("PAY-3")))).child(drawer),
     )
 }
 

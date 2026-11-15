@@ -15,24 +15,14 @@ pub struct Side {
     pub selected: &'static str,
     /// Show the Pinned section at the top.
     pub pinned: bool,
-    pub tree: Tree,
     /// Every channel folded to one row.
     pub folded: bool,
 }
 
 impl Side {
     pub const fn at(selected: &'static str) -> Self {
-        Self { selected, pinned: false, tree: Tree::Indent, folded: false }
+        Self { selected, pinned: false, folded: false }
     }
-}
-
-/// How a channel's session tree is drawn: the options for the owner.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Tree {
-    /// Option A: forks indented under their parent with a fork glyph.
-    Indent,
-    /// Option B: connector lines, as in the channel's Sessions table.
-    Lines,
 }
 
 fn row(look: Look, lead: Option<AnyElement>, text: &'static str, trail: Option<AnyElement>, indent: f32, on: bool) -> Div {
@@ -81,45 +71,33 @@ struct Node {
     fork: bool,
     unread: bool,
     inbox: Option<&'static str>,
-    /// The tree connectors drawn before it in the Lines style.
-    lines: &'static str,
 }
 
 const PAYMENTS: &[Node] = &[
-    Node { depth: 0, state: St::NeedsYou, title: "Ledger schema migration", fork: false, unread: true, inbox: Some("2"), lines: "├─" },
-    Node { depth: 1, state: St::Working, title: "Try BRIN index", fork: true, unread: false, inbox: None, lines: "│ ├─" },
-    Node { depth: 2, state: St::Working, title: "Partial BRIN on posted_at", fork: true, unread: false, inbox: None, lines: "│ │ └─" },
-    Node { depth: 1, state: St::Idle, title: "Review the schema", fork: true, unread: false, inbox: None, lines: "│ └─" },
-    Node { depth: 0, state: St::Working, title: "Refund retries", fork: false, unread: true, inbox: None, lines: "├─" },
-    Node { depth: 0, state: St::Idle, title: "API rate limiter", fork: false, unread: false, inbox: None, lines: "└─" },
+    Node { depth: 0, state: St::NeedsYou, title: "Ledger schema migration", fork: false, unread: true, inbox: Some("2") },
+    Node { depth: 1, state: St::Working, title: "Try BRIN index", fork: true, unread: false, inbox: None },
+    Node { depth: 2, state: St::Working, title: "Partial BRIN on posted_at", fork: true, unread: false, inbox: None },
+    Node { depth: 1, state: St::Idle, title: "Review the schema", fork: true, unread: false, inbox: None },
+    Node { depth: 0, state: St::Working, title: "Refund retries", fork: false, unread: true, inbox: None },
+    Node { depth: 0, state: St::Idle, title: "API rate limiter", fork: false, unread: false, inbox: None },
 ];
 
 const INFRA: &[Node] = &[
-    Node { depth: 0, state: St::Working, title: "Benchmark BRIN", fork: false, unread: false, inbox: None, lines: "├─" },
-    Node { depth: 0, state: St::Exited, title: "Upgrade Postgres 17", fork: false, unread: true, inbox: None, lines: "└─" },
+    Node { depth: 0, state: St::Working, title: "Benchmark BRIN", fork: false, unread: false, inbox: None },
+    Node { depth: 0, state: St::Exited, title: "Upgrade Postgres 17", fork: false, unread: true, inbox: None },
 ];
 
 fn node(look: Look, side: Side, node: &Node) -> Div {
     let on = side.selected == node.title;
     let faint = if on { look.selection_text } else { look.tertiary };
-    let lead = match side.tree {
-        Tree::Indent => div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .when(node.fork, |lead| lead.child(small_icon(IconName::GitFork, faint)))
-            .child(status(node.state)),
-        Tree::Lines => div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .child(div().font_family(MONO).text_size(px(11.)).text_color(c(faint)).child(node.lines))
-            .child(status(node.state)),
-    };
-    let indent = match side.tree {
-        Tree::Indent => 10. + 16. * f32::from(node.depth) - if node.fork { 17. } else { 0. },
-        Tree::Lines => 2.,
-    };
+    // Forks sit under their parent, indented, with a fork glyph.
+    let lead = div()
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .when(node.fork, |lead| lead.child(small_icon(IconName::GitFork, faint)))
+        .child(status(node.state));
+    let indent = 10. + 16. * f32::from(node.depth) - if node.fork { 17. } else { 0. };
     let trail = node.inbox.map(|count| {
         div()
             .flex()

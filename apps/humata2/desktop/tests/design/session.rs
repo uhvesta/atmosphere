@@ -18,17 +18,6 @@ pub enum Panel {
     Info,
 }
 
-/// How the user picks the panel: the options for the owner.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Switch {
-    /// Option A: icon tabs across the top of the panel.
-    Tabs,
-    /// Option B: a labelled strip down the window's right edge (SE-11).
-    Strip,
-    /// Option C: a Panes list on the right (NV-29).
-    Panes,
-}
-
 /// What the terminal shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Term {
@@ -51,7 +40,6 @@ pub enum Fill {
 #[derive(Clone, Copy)]
 pub struct Screen {
     pub panel: Option<Panel>,
-    pub switch: Switch,
     pub term: Term,
     pub fill: Fill,
     pub side: Side,
@@ -61,7 +49,6 @@ impl Screen {
     pub const fn new(panel: Option<Panel>, term: Term) -> Self {
         Self {
             panel,
-            switch: Switch::Tabs,
             term,
             fill: Fill::Columns,
             side: Side::at("Ledger schema migration"),
@@ -122,9 +109,7 @@ fn header(look: Look, screen: Screen) -> Div {
         })
         .child(icon(IconName::GitFork, look.secondary))
         .child(icon(if full { IconName::Minimize2 } else { IconName::Maximize2 }, look.secondary))
-        .when(!full && screen.switch != Switch::Strip, |bar| {
-            bar.child(icon(IconName::PanelRight, if screen.panel.is_some() { look.accent } else { look.secondary }))
-        })
+        .child(icon(IconName::PanelRight, if screen.panel.is_some() { look.accent } else { look.secondary }))
         .child(icon(IconName::Ellipsis, look.secondary))
 }
 
@@ -340,38 +325,7 @@ fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<Div>)
         .child(small_icon(IconName::X, look.secondary))
 }
 
-/// Option A: the panel's kinds as icon tabs at its top.
-fn panel_tabs(look: Look, on: Panel) -> Div {
-    let item = |glyph: IconName, panel: Panel, count: Option<&'static str>| {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(3.))
-            .px(px(8.))
-            .h(px(26.))
-            .rounded(px(6.))
-            .when(panel == on, |tab| tab.bg(c(look.fill)))
-            .child(icon(glyph, if panel == on { look.accent } else { look.secondary }))
-            .children(count.map(|count| badge(look, count, panel == Panel::Inbox)))
-    };
-    div()
-        .flex()
-        .items_center()
-        .gap(px(2.))
-        .h(px(52.))
-        .px(px(10.))
-        .flex_shrink_0()
-        .border_b_1()
-        .border_color(c(look.line))
-        .child(item(IconName::Inbox, Panel::Inbox, Some("1")))
-        .child(item(IconName::FileDiff, Panel::Diff, Some("2")))
-        .child(item(IconName::FolderTree, Panel::Files, None))
-        .child(item(IconName::SquareKanban, Panel::Board, None))
-        .child(item(IconName::BookOpenText, Panel::Journal, None))
-        .child(item(IconName::Info, Panel::Info, None))
-}
-
-/// Option B: a labelled strip down the right edge (SE-11).
+/// The labelled strip down the right edge that picks the panel (SE-11).
 fn strip(look: Look, on: Option<Panel>) -> Div {
     let item = |glyph: IconName, panel: Panel, text: &'static str, count: Option<&'static str>| {
         let lit = on == Some(panel);
@@ -407,58 +361,6 @@ fn strip(look: Look, on: Option<Panel>) -> Div {
         .child(item(IconName::SquareKanban, Panel::Board, "Board", None))
         .child(item(IconName::BookOpenText, Panel::Journal, "Journal", None))
         .child(item(IconName::Info, Panel::Info, "Info", None))
-}
-
-/// Option C: a Panes list on the right (NV-29).
-fn panes(look: Look, on: Option<Panel>) -> Div {
-    let item = |glyph: IconName, text: &'static str, lit: bool, count: Option<&'static str>| {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(7.))
-            .h(px(25.))
-            .mx(px(8.))
-            .px(px(8.))
-            .rounded(px(6.))
-            .when(lit, |row| row.bg(c(look.fill)))
-            .child(small_icon(glyph, if lit { look.accent } else { look.secondary }))
-            .child(div().flex_1().child(text))
-            .children(count.map(|count| badge(look, count, false)))
-    };
-    div()
-        .w(px(170.))
-        .h_full()
-        .flex()
-        .flex_col()
-        .flex_shrink_0()
-        .bg(c(look.sidebar))
-        .border_l_1()
-        .border_color(c(look.line))
-        .text_size(px(12.5))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .h(px(52.))
-                .px(px(16.))
-                .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Panes"))
-                .child(div().text_size(px(11.5)).text_color(c(look.accent)).child("Reset")),
-        )
-        .child(div().px(px(16.)).pb(px(4.)).child(label(look, "This session")))
-        .child(item(IconName::SquareTerminal, "claude", true, None))
-        .child(item(IconName::SquareTerminal, "zsh", false, None))
-        .child(item(IconName::FileDiff, "Diff", on == Some(Panel::Diff), Some("2")))
-        .child(item(IconName::FolderTree, "Files", on == Some(Panel::Files), None))
-        .child(item(IconName::SquareKanban, "Board", on == Some(Panel::Board), None))
-        .child(item(IconName::Inbox, "Inbox", on == Some(Panel::Inbox), Some("1")))
-        .child(item(IconName::BookOpenText, "Journal", on == Some(Panel::Journal), None))
-        .child(item(IconName::Info, "Info", on == Some(Panel::Info), None))
-        .child(div().px(px(16.)).pt(px(12.)).pb(px(4.)).child(label(look, "Everywhere")))
-        .child(item(IconName::Inbox, "Inbox", false, Some("7")))
-        .child(item(IconName::SquareKanban, "Board", false, None))
-        .child(item(IconName::Server, "Hosts", false, None))
-        .child(div().flex_1())
-        .child(div().p(px(14.)).child(secondary(look, "Drag onto a pane's edge to split.")))
 }
 
 fn diff_file(look: Look, name: &'static str, add: &'static str, del: &'static str, on: bool, comments: Option<&'static str>) -> Div {
@@ -840,7 +742,9 @@ fn board_panel(look: Look, full: bool) -> Div {
         .flex()
         .flex_col()
         .child(panel_header(look, "Board", full, Some(secondary(look, "payments-rewrite"))))
-        .child(
+        // Expanded, the panel shows the channel's lanes side by side.
+        .when(full, |panel| panel.child(crate::board::lanes(look, Some("payments-rewrite"), None)))
+        .when(!full, |panel| panel.child(
             div()
                 .flex()
                 .flex_col()
@@ -855,7 +759,7 @@ fn board_panel(look: Look, full: bool) -> Div {
                 .child(item("PAY-11", "Drop ledger_entries", None))
                 .child(div().pt(px(6.)).child(label(look, "Done · 5")))
                 .child(item("PAY-2", "Currency codes", None).opacity(0.6)),
-        )
+        ))
 }
 
 fn journal_panel(look: Look, full: bool) -> Div {
@@ -892,6 +796,14 @@ fn journal_panel(look: Look, full: bool) -> Div {
 
 fn panel(look: Look, screen: Screen, which: Panel) -> Div {
     let full = screen.fill == Fill::PanelFull;
+    let title = match which {
+        Panel::Diff => "Diff",
+        Panel::Inbox => "Inbox",
+        Panel::Files => "Files",
+        Panel::Info => "Info",
+        Panel::Board => "Board",
+        Panel::Journal => "Journal",
+    };
     let body = match which {
         Panel::Diff => diff_panel(look, full),
         Panel::Inbox => inbox_panel(look, full),
@@ -909,7 +821,6 @@ fn panel(look: Look, screen: Screen, which: Panel) -> Div {
         .overflow_hidden()
         .bg(c(look.panel))
         .text_size(px(12.5))
-        .when(screen.switch == Switch::Tabs && !full, |panel| panel.child(panel_tabs(look, which)))
         .when(full, |panel| {
             panel.child(
                 div()
@@ -924,7 +835,7 @@ fn panel(look: Look, screen: Screen, which: Panel) -> Div {
                     .child(traffic_lights())
                     .child(div().w(px(4.)))
                     .child(icon(IconName::PanelLeftOpen, look.secondary))
-                    .child(div().flex().flex_col().child(secondary(look, "# payments-rewrite › Ledger schema migration")).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child("Diff")))
+                    .child(div().flex().flex_col().child(secondary(look, "# payments-rewrite › Ledger schema migration")).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(title)))
                     .child(div().flex_1())
                     .child(button(look, Kind::Secondary, "Show the terminal")),
             )
@@ -991,29 +902,25 @@ pub fn session(look: Look, screen: Screen) -> Div {
         .child(handle(look, true))
         .child(middle(look, screen))
         .when_some(screen.panel, |root, which| root.child(handle(look, true)).child(panel(look, screen, which)))
-        .when(screen.switch == Switch::Strip, |root| root.child(strip(look, screen.panel)))
-        .when(screen.switch == Switch::Panes, |root| root.child(panes(look, screen.panel)))
+        .child(strip(look, screen.panel))
 }
 
-/// One pane's title row in a split workspace (NV-32): dot, title, ⋯, ✕.
-fn pane_title(look: Look, state: St, title: &'static str, note: &'static str, focused: bool) -> Div {
+/// One tab group's row in a split: the same tabs as a lone terminal,
+/// with the focused group's tab lit.
+fn group_tabs(look: Look, state: St, agent: &'static str, extra: Option<&'static str>, focused: bool) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(7.))
-        .h(px(30.))
-        .px(px(12.))
+        .h(px(32.))
         .flex_shrink_0()
         .bg(c(look.panel))
         .border_b_1()
-        .border_color(c(if focused { look.accent } else { look.line }))
-        .text_size(px(12.))
-        .child(status(state))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-        .child(secondary(look, note))
+        .border_color(c(look.line))
+        .child(tab(look, Some(status(state).into_any_element()), agent, true, false).when(!focused, |tab| tab.text_color(c(look.secondary))))
+        .children(extra.map(|name| tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), name, false, false)))
+        .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)))
         .child(div().flex_1())
-        .child(small_icon(IconName::Ellipsis, look.secondary))
-        .child(small_icon(IconName::X, look.secondary))
+        .child(div().mr(px(10.)).child(small_icon(IconName::X, look.tertiary)))
 }
 
 fn small_terminal(look: Look, lines: Vec<Div>) -> Div {
@@ -1032,42 +939,36 @@ fn small_terminal(look: Look, lines: Vec<Div>) -> Div {
         .children(lines)
 }
 
-/// Two sessions' terminals side by side with a diff under them (NV-28).
+/// One session with two agents' terminals side by side on the same code,
+/// at most one terminal per agent; more copies are forks (SE-13).
 pub fn split(look: Look) -> Div {
     let left = div()
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
-        .child(pane_title(look, St::NeedsYou, "Ledger schema migration", "claude · devbox-1", true))
+        .child(group_tabs(look, St::NeedsYou, "claude", Some("zsh"), true))
         .child(small_terminal(look, transcript(look)));
     let right = div()
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
-        .child(pane_title(look, St::Working, "Benchmark BRIN", "codex · gpu-box", false))
+        .child(group_tabs(look, St::Working, "codex", None, false))
         .child(small_terminal(
             look,
             vec![
-                tl(look.term_dim, "~/src/infra (bench-brin) $ codex"),
-                tl(look.term_text, "> Benchmark BRIN against B-tree on the entries table."),
+                tl(look.term_dim, "~/src/ledger (ledger-schema) $ codex"),
+                tl(look.term_text, "> Review the migration Claude is writing; don't edit files."),
                 tl(look.term_text, ""),
-                tl(look.term_text, "• Ran pgbench -c 8 -T 60 (btree)"),
-                tl(look.term_dim, "  tps = 4128.3 (without initial connection time)"),
-                tl(look.term_text, "• Ran pgbench -c 8 -T 60 (brin)"),
-                tl(look.term_dim, "  tps = 3990.7 (without initial connection time)"),
-                tl(look.term_text, "• Index sizes: btree 1.2 GB, brin 48 kB"),
+                tl(look.term_text, "• Read migrations/0042_accounts.sql"),
+                tl(look.term_text, "• Read api/src/client.rs"),
+                tl(look.term_text, ""),
+                tl(look.term_text, "  The dual write isn't in a transaction: a crash between"),
+                tl(look.term_text, "  insert_entry and insert_legacy leaves them out of step."),
                 tl(ORANGE, "• Working (41s • esc to interrupt)"),
             ],
         ));
-    let bottom = div()
-        .h(px(250.))
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .child(pane_title(look, St::NeedsYou, "Diff", "Ledger schema migration · against main", false))
-        .child(div().flex_1().bg(c(look.term)).child(diff_lines(look)));
     div()
         .size_full()
         .flex()
@@ -1080,8 +981,7 @@ pub fn split(look: Look) -> Div {
                 .flex()
                 .flex_col()
                 .child(header(look, Screen::new(None, Term::NeedsYou)))
-                .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right))
-                .child(hline(look))
-                .child(bottom),
+                .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right)),
         )
+        .child(strip(look, None))
 }
