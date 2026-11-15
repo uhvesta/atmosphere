@@ -10,7 +10,6 @@ FEATURES = [
     "files",
     "hosts",
     "inbox",
-    "layout",
     "palette",
     "review",
     "session",

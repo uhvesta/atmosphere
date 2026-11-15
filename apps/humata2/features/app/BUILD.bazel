@@ -1,6 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-# Humata 2's root feature: routes and Back, overlays, pane layout, toasts,
+# Humata 2's root feature: routes and Back, overlays, pane sizes, toasts,
 # loading, the daemon's event stream, and saving where the person was across
 # restarts. State, actions and effects only; the views are in
 # //apps/humata2/ui.
@@ -9,7 +9,6 @@ FEATURES = [
     "files",
     "hosts",
     "inbox",
-    "layout",
     "palette",
     "review",
     "session",

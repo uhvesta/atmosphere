@@ -4177,7 +4177,6 @@ dependencies = [
  "humata2-files",
  "humata2-hosts",
  "humata2-inbox",
- "humata2-layout",
  "humata2-palette",
  "humata2-review",
  "humata2-session",
@@ -4362,15 +4361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "humata2-layout"
-version = "0.0.0"
-dependencies = [
- "humata2-clients",
- "serde",
- "tca-rust",
-]
-
-[[package]]
 name = "humata2-machines"
 version = "0.0.0"
 dependencies = [
@@ -4528,7 +4518,6 @@ dependencies = [
  "humata2-files",
  "humata2-hosts",
  "humata2-inbox",
- "humata2-layout",
  "humata2-palette",
  "humata2-report",
  "humata2-review",

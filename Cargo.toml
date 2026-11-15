@@ -39,7 +39,6 @@ members = [
     "apps/humata2/features/files",
     "apps/humata2/features/hosts",
     "apps/humata2/features/inbox",
-    "apps/humata2/features/layout",
     "apps/humata2/features/palette",
     "apps/humata2/features/review",
     "apps/humata2/features/session",

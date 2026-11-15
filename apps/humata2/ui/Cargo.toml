@@ -18,7 +18,6 @@ humata2-clients = { path = "../clients" }
 humata2-files = { path = "../features/files" }
 humata2-hosts = { path = "../features/hosts" }
 humata2-inbox = { path = "../features/inbox" }
-humata2-layout = { path = "../features/layout" }
 humata2-palette = { path = "../features/palette" }
 humata2-report = { path = "../report" }
 humata2-review = { path = "../features/review" }

@@ -229,7 +229,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [x] Drag the sidebar's and the side panel's dividers to resize them (past the narrowest hides them; a double-click resets them); ⌥⌘0 and the palette's "Toggle side panel" hide or show the panel. Each session keeps its own panel when you switch screens and come back. Test: `desktop:shell_test` (`a_sessions_side_panel_hides_shows_and_survives_switching_screens`).
 - [ ] Give the side panel real content (Changes, Inbox, Files, Board, Info); today it shows its title and an empty state.
 - [ ] A divider drag isn't covered by a test yet (needs mouse events in the headless driver); check it in a real window.
-- [ ] Remove `features/layout` and `AppState.panes` (still reduced on every route change, never drawn), or keep them only if the owner wants splits back later. Ask in the next decision wave.
+- [x] Removed `features/layout`, `AppState.panes`, the saved `panes` field (old saved files still load; serde ignores it) and the Reset toast's Undo button, on the owner's call (2026-11-15). Test: `desktop:shell_test`.
 - [ ] Settings › Layout, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
 - [x] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
 

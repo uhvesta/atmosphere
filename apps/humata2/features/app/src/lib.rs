@@ -19,7 +19,6 @@ use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_files::{Files, FilesAction, FilesState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
-use humata2_layout::{Context, Layout as Panes, LayoutAction, LayoutState};
 use humata2_palette::{Command, Palette, PaletteAction, PaletteState};
 use humata2_review::{Review, ReviewAction, ReviewState};
 use humata2_session::{Panel, SessionAction, SessionState, Sessions};
@@ -128,25 +127,6 @@ pub struct Toast {
     pub id: u64,
     /// What it says.
     pub text: String,
-    /// Its button, if it has one.
-    pub action: Option<ToastAction>,
-}
-
-/// A toast's button.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToastAction {
-    /// Put the layout back as it was before Reset (NV-31a).
-    UndoReset,
-}
-
-impl ToastAction {
-    /// What the button says.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::UndoReset => "Undo reset",
-        }
-    }
 }
 
 /// The whole app's state.
@@ -164,8 +144,6 @@ pub struct AppState {
     pub overlays: Vec<Overlay>,
     /// Pane sizes.
     pub layout: Layout,
-    /// Each screen's panes (NV-28–NV-35).
-    pub panes: LayoutState,
     /// Toasts, oldest first.
     pub toasts: Vec<Toast>,
     /// Why saved state from the last run couldn't be used, shown once.
@@ -213,7 +191,6 @@ impl AppState {
             trail: saved.trail.clone(),
             overlays: Vec::new(),
             layout: saved.layout,
-            panes: LayoutState::default(),
             toasts: Vec::new(),
             restore_error,
             sidebar: SidebarState::default(),
@@ -231,8 +208,6 @@ impl AppState {
             save_generation: 0,
             save_due: false,
         };
-        let _ = Panes.reduce(&mut state.panes, LayoutAction::Restore(saved.panes));
-        let _ = Panes.reduce(&mut state.panes, LayoutAction::Enter(context(&state.route)));
         state.sidebar.folding = saved.folding;
         state.session.views = saved.sessions;
         state.settings.preferences = saved.preferences;
@@ -265,7 +240,6 @@ impl AppState {
             trail: self.trail.clone(),
             sessions: self.session.views.clone(),
             layout: self.layout,
-            panes: self.panes.saved(),
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
             review: self.review.saved.clone(),
@@ -285,18 +259,9 @@ impl AppState {
     }
 
     fn toast(&mut self, text: String, clock: &Arc<dyn tca::Clock>) -> Effect<AppAction> {
-        self.toast_with(text, None, clock)
-    }
-
-    fn toast_with(
-        &mut self,
-        text: String,
-        action: Option<ToastAction>,
-        clock: &Arc<dyn tca::Clock>,
-    ) -> Effect<AppAction> {
         self.next_toast += 1;
         let id = self.next_toast;
-        self.toasts.push(Toast { id, text, action });
+        self.toasts.push(Toast { id, text });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
@@ -383,8 +348,6 @@ pub enum AppAction {
     ChannelCreated(Result<ChannelId, DaemonError>),
     /// A pane changed size.
     Pane(PaneAction),
-    /// A toast's button was clicked.
-    ToastAction(u64, ToastAction),
     /// A toast's close button was clicked.
     DismissToast(u64),
     /// A toast's time ran out.
@@ -415,24 +378,6 @@ pub enum AppAction {
     Palette(PaletteAction),
     /// Prepared views.
     Views(ViewsAction),
-    /// The panes.
-    Panes(LayoutAction),
-}
-
-/// The layout context a screen has its panes in.
-#[must_use]
-pub fn context(route: &Route) -> Context {
-    match route {
-        Route::Home => Context::Home,
-        Route::Inbox => Context::Inbox,
-        Route::Board(scope) => Context::Board(scope.clone()),
-        Route::Channel(id) => Context::Channel(id.clone()),
-        Route::Session(id) => Context::Session(id.clone()),
-        Route::Hosts => Context::Hosts,
-        Route::Files => Context::Files,
-        Route::Views => Context::Views,
-        Route::Settings => Context::Settings,
-    }
 }
 
 /// The app's reducer.
@@ -483,7 +428,6 @@ impl App {
         let workspace = &state.workspace;
         Effect::merge([
             self.child(state, AppAction::Sidebar(SidebarAction::Show(workspace.clone()))),
-            self.child(state, AppAction::Panes(LayoutAction::Show(state.workspace.clone()))),
             self.child(state, AppAction::Session(SessionAction::Show(state.workspace.clone()))),
             self.child(state, AppAction::Review(ReviewAction::Show(state.workspace.clone()))),
             self.child(state, AppAction::Inbox(InboxAction::Show(state.workspace.clone()))),
@@ -535,9 +479,6 @@ impl App {
             AppAction::Views(action) => Views
                 .reduce(&mut state.views, action)
                 .map(AppAction::Views),
-            AppAction::Panes(action) => Panes
-                .reduce(&mut state.panes, action)
-                .map(AppAction::Panes),
             _ => Effect::none(),
         }
     }
@@ -562,7 +503,6 @@ impl App {
         };
         let mut effects = vec![
             self.child(state, AppAction::Sidebar(SidebarAction::SetCurrent(current))),
-            self.child(state, AppAction::Panes(LayoutAction::Enter(context(&state.route)))),
         ];
         match state.route.clone() {
             Route::Session(id) => {
@@ -685,14 +625,6 @@ impl App {
                     state.overlays.retain(|overlay| overlay != &Overlay::Palette);
                     Effect::none()
                 }
-            },
-            AppAction::Panes(LayoutAction::Delegate(delegate)) => match delegate {
-                humata2_layout::Delegate::Refused(refusal) => state.toast(refusal.to_string(), &clock),
-                humata2_layout::Delegate::WasReset => state.toast_with(
-                    "Layout reset. The panes it closed keep running; find them in the Panes sidebar.".to_owned(),
-                    Some(ToastAction::UndoReset),
-                    &clock,
-                ),
             },
             _ => Effect::none(),
         }
@@ -1029,13 +961,6 @@ impl App {
                 }
                 Effect::none()
             }
-            AppAction::ToastAction(id, action) => {
-                state.toasts.retain(|toast| toast.id != id);
-                let undo = match action {
-                    ToastAction::UndoReset => self.child(state, AppAction::Panes(LayoutAction::UndoReset)),
-                };
-                undo.and(Effect::cancel(format!("toast-{id}")))
-            }
             AppAction::DismissToast(id) => {
                 state.toasts.retain(|toast| toast.id != id);
                 Effect::cancel(format!("toast-{id}"))
@@ -1087,8 +1012,7 @@ impl App {
             | AppAction::Files(_)
             | AppAction::Settings(_)
             | AppAction::Palette(_)
-            | AppAction::Views(_)
-            | AppAction::Panes(_)) => {
+            | AppAction::Views(_)) => {
                 let delegated = self.delegate(state, &action);
                 let effect = self.child(state, action);
                 effect.and(delegated)

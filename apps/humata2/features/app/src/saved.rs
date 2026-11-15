@@ -38,8 +38,6 @@ pub struct SavedUi {
     pub sessions: BTreeMap<SessionId, SessionView>,
     /// Pane sizes.
     pub layout: Layout,
-    /// Each screen's panes and the layout policy.
-    pub panes: humata2_layout::Saved,
     /// What the sidebar folded.
     pub folding: Folding,
     /// Settings.

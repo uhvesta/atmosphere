@@ -1,5 +1,5 @@
 {
-  "checksum": "17eb6217a863ac2e55dabf7ef3c38414f352d34dc397e771d90dfcc37ba55f4d",
+  "checksum": "bb8c02a81c74786bae612802e9e40993e514891e7398dc653509ce431c42e0e2",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -19166,29 +19166,6 @@
         {
           "Library": {
             "crate_name": "humata2_inbox",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.0.0"
-    },
-    "humata2-layout 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          }
-        ],
-        "edition": "2024"
-      },
-      "library_target_name": "humata2_layout",
-      "name": "humata2-layout",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "humata2_layout",
             "crate_root": "src/lib.rs"
           }
         }
@@ -52582,7 +52559,6 @@
     "humata2-holder 0.0.0": "apps/humata2/daemon/holder",
     "humata2-hosts 0.0.0": "apps/humata2/features/hosts",
     "humata2-inbox 0.0.0": "apps/humata2/features/inbox",
-    "humata2-layout 0.0.0": "apps/humata2/features/layout",
     "humata2-machines 0.0.0": "apps/humata2/daemon/machines",
     "humata2-markdown 0.0.0": "apps/humata2/markdown",
     "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",

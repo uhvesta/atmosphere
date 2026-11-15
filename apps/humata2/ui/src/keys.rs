@@ -67,7 +67,7 @@ pub const SHORTCUTS: [(&str, &str); 20] = [
     ("⌥⌘→", "Expand all, in the sidebar"),
     ("⌥⌘←", "Collapse all, in the sidebar"),
     ("⌘0", "Hide or show the sidebar"),
-    ("⌥⌘0", "Hide or show the Panes sidebar"),
+    ("⌥⌘0", "Hide or show the side panel"),
     ("⌘\\", "Split the focused pane side by side"),
     ("⇧⌘\\", "Split the focused pane stacked"),
     ("⌘W", "Close the focused pane"),

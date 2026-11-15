@@ -1,6 +1,6 @@
 [package]
 name = "humata2-app"
-description = "Humata 2's root feature: routes and Back, overlays, pane layout, toasts, loading, the daemon's event stream, and saving where the person was across restarts."
+description = "Humata 2's root feature: routes and Back, overlays, pane sizes, toasts, loading, the daemon's event stream, and saving where the person was across restarts."
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,6 @@ humata2-clients = { path = "../../clients" }
 humata2-files = { path = "../files" }
 humata2-hosts = { path = "../hosts" }
 humata2-inbox = { path = "../inbox" }
-humata2-layout = { path = "../layout" }
 humata2-palette = { path = "../palette" }
 humata2-review = { path = "../review" }
 humata2-session = { path = "../session" }
