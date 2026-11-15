@@ -2,7 +2,9 @@
 
 Owner direction 2026-11-15. Every agent working on Humata 2 milestones reads
 this file first, then its role file in `workflow/roles/`, then
-`workflow/WORKLOG.md`.
+`workflow/WORKLOG.md`. A manager then reads only its milestone file,
+`workflow/milestones/<ID>.md`, and the pointers in it: no agent reads
+SPEC.md, OVERVIEW.md or DECISIONS.md whole.
 
 ## The shape
 
@@ -27,8 +29,8 @@ this file first, then its role file in `workflow/roles/`, then
 1. **Open milestones.** The main agent reads the DAG (`workflow/DAG.md`) and
    starts a fresh manager for every milestone whose dependencies are done,
    up to the lane limit in WORKLOG.
-2. **Plan.** The manager reads the milestone's SPEC IDs, goldens and
-   OVERVIEW section, writes its plan into its WORKLOG lane (tasks, files it
+2. **Plan.** The manager reads its milestone file and the SPEC IDs, frames
+   and code it points to, writes its plan into the file's Lane section (tasks, files it
    claims, exit criterion), and spawns workers.
 3. **Implement.** Workers write code and report back what they changed. The
    manager reads each worker's diff against the task and sends it back if it
@@ -82,7 +84,8 @@ this file first, then its role file in `workflow/roles/`, then
 |---|---|---|
 | `workflow/WORKFLOW.md` | this process | main agent, owner |
 | `workflow/roles/*.md` | each role's brief | main agent, owner |
-| `workflow/DAG.md` | milestones, edges, layers, status | main agent |
+| `workflow/DAG.md` | milestones, edges, layers, status (one line each, links to the files) | main agent |
+| `workflow/milestones/<ID>.md` | one milestone: outcome, exit, pointers into SPEC/frames/decisions/code, and its lane | main agent above "Lane"; its manager the Lane section |
 | `workflow/WORKLOG.md` | live roster, lanes, claims, event log, resume steps | everyone, own lane only |
 | `OVERVIEW.md` | the living work list | main agent at commit time |
 | `GAPS_REVIEW.md` | one entry per commit, how to review it | main agent |

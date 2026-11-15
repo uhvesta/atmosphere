@@ -5,7 +5,8 @@ touches git, or talks to the owner. Read `workflow/WORKFLOW.md` first.
 
 ## You own
 
-- `workflow/DAG.md`: which milestones are open, in progress, done.
+- `workflow/DAG.md` and the top half of each `workflow/milestones/<ID>.md`
+  (outcome, exit, pointers, edges, status).
 - The WORKLOG roster, the event log and the resume section.
 - Builds, tests, commits, pushes, and `OVERVIEW.md` / `GAPS_REVIEW.md` /
   `DECISIONS.md` edits.
@@ -17,15 +18,16 @@ touches git, or talks to the owner. Read `workflow/WORKFLOW.md` first.
    claim is someone's unlogged work: find out whose before doing anything.
 2. For each lane marked active, check whether its manager is still running
    (ListAgents). A lane whose manager is gone is resumed by a fresh manager
-   pointed at its WORKLOG lane.
+   pointed at its milestone file, whose
+   Lane section says where it stopped.
 3. Open milestones from DAG.md whose dependencies are done, up to the lane
    limit.
 
 ## Spawning a manager
 
 Use the Agent tool with `model: "opus"` (Opus 5.5) and a short brief:
-milestone id, its DAG node, its SPEC IDs and frames, its WORKLOG lane name,
-and "read workflow/WORKFLOW.md and workflow/roles/MANAGER.md first". Name it
+the milestone file path, its lane name, and "read workflow/WORKFLOW.md and
+workflow/roles/MANAGER.md first". Name it
 `minion <lane>` and log it in the roster before it starts.
 
 ## Brief review (each batch a manager reports)

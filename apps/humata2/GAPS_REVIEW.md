@@ -422,3 +422,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 ### 506fb97c: workflow for walking the milestone DAG (owner direction 2026-11-15)
 - New `workflow/`: WORKFLOW.md (main agent → Opus 5.5 milestone managers → Sonnet 5.5 medium workers; one checkout, one bazel; only the main agent builds and commits), roles/MAIN.md, MANAGER.md, WORKER.md, and WORKLOG.md (resume steps, roster, file claims, lanes, build gates, event log). DAG.md comes after the R1 review.
 - Docs only. Look at: the claims and "only the main agent touches git" rules.
+
+### (this commit): one file per milestone (owner direction 2026-11-15)
+- New `workflow/milestones/README.md`: the template for `milestones/<ID>.md` (status, edges, outcome, exit criterion, pointers into SPEC by ID, frames, decisions and code, out of scope, and the manager's Lane section). WORKFLOW, MAIN, MANAGER and WORKLOG now send agents to their milestone file and its pointers instead of reading SPEC/OVERVIEW whole; lane detail lives in the milestone file, WORKLOG keeps one line per lane.
+- Docs only. The milestone files themselves are written with DAG.md after the advisor's report.

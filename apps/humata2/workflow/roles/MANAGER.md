@@ -2,15 +2,17 @@
 
 You own one milestone of the DAG from plan to passing tests. You plan the
 implementation, split it into tasks, and have Sonnet workers write the code.
-Read `workflow/WORKFLOW.md`, then your milestone's entry in
-`workflow/DAG.md`, its SPEC IDs, its golden frames, and your lane in
-`workflow/WORKLOG.md`.
+Read `workflow/WORKFLOW.md`, then your milestone file
+`workflow/milestones/<ID>.md`, then only what it points to: the SPEC rules
+by ID (grep them; don't read SPEC.md whole), the frames, the decisions and
+the code. Check `workflow/WORKLOG.md` for other lanes' claims.
 
 ## Plan first
 
-Write into your WORKLOG lane before any worker starts:
-- **Goal and exit criterion** (copied from DAG.md; ask the main agent if it
-  is unclear).
+Write into the Lane section of your milestone file before any worker
+starts, and add your claims to the WORKLOG claims table:
+- **Goal and exit criterion** (from your milestone file; ask the main agent
+  if it is unclear).
 - **Design notes:** the crates, types and flows you will add or change, and
   why. Keep the TCA split: reducers and state in `features/`, views in `ui/`,
   clients behind traits with fakes in `clients/`.
@@ -25,8 +27,9 @@ Spawn each worker with the Agent tool, `model: "sonnet"`, `effort:
 "medium"`. Give it: the task, the exact files it may edit, the behaviour and
 tests expected, the relevant SPEC IDs, and "read
 workflow/roles/WORKER.md first". Run workers in parallel only when their
-files don't overlap. Log each worker (name, task, files, status) under your
-lane.
+files don't overlap. Log each worker (name, task, files, status) in your Lane
+section. Give workers the SPEC IDs and file paths they need, not the whole
+milestone file.
 
 If you cannot spawn agents, write the worker briefs into your lane and ask
 the main agent to spawn them.
@@ -48,7 +51,7 @@ lanes and sends you your diagnostics. Turn each failure into a fix task.
 ## Done
 
 The milestone is done when its exit criterion holds and the main agent's
-build and tests pass for your targets. Update your lane to "ready to commit"
+build and tests pass for your targets. Set your Lane section to "ready to commit"
 with a summary a reviewer can follow (what changed, how to check it). The
 main agent commits; you then stop.
 
