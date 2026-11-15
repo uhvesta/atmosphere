@@ -17,14 +17,48 @@ use std::time::{Duration, UNIX_EPOCH};
 use humata2_access::{Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::{GitError, NewChannel, SetupError, Starter, clone_mains, create_channel};
-use humata2_store::{ChannelRecord, MainClone, StoreError};
+use humata2_store::{ChannelRecord, MainClone, Store, StoreError};
 use pb::invalid_field::Problem;
+use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller};
+use crate::inbox::{Deferred, Inbox};
 use crate::operations::{Operations, Progress, Started};
 use crate::status;
+
+/// Every channel `caller` may read.
+async fn readable_channels(
+    guard: &Guard,
+    store: &Arc<Store>,
+    machine: &str,
+    caller: &Caller,
+) -> Result<pb::ListChannelsResponse, Status> {
+    let listing = store.clone();
+    let all = blocking(move || listing.channels())
+        .await?
+        .map_err(|error| status::store(error, machine, "list the channels"))?;
+    let mut channels = Vec::new();
+    for channel in all {
+        let read = Call::Use {
+            capability: Capability::ChannelRead,
+            target: Target::Channel(ChannelId::new(channel.id.as_str())),
+        };
+        if !matches!(guard.check(caller, &read), Ok(Checked::Allowed)) {
+            continue;
+        }
+        let (counting, id) = (store.clone(), channel.id.clone());
+        let live = blocking(move || live_sessions(&counting, &id))
+            .await?
+            .map_err(|error| status::store(error, machine, "count the channel's sessions"))?;
+        channels.push(channel_pb(&channel, live));
+    }
+    Ok(pb::ListChannelsResponse {
+        channels,
+        page: None,
+    })
+}
 
 /// The longest channel name taken.
 const NAME_MAX: usize = 100;
@@ -36,6 +70,8 @@ pub(crate) struct ChannelSvc {
     /// This machine's id: the only machine a channel can have for now.
     machine: String,
     default_agent: String,
+    /// Where a call a rule sends to Ask waits for the user (D38.6).
+    inbox: Arc<Inbox>,
 }
 
 impl ChannelSvc {
@@ -45,6 +81,7 @@ impl ChannelSvc {
         starter: Starter,
         machine: String,
         default_agent: String,
+        inbox: Arc<Inbox>,
     ) -> Self {
         Self {
             guard,
@@ -52,6 +89,7 @@ impl ChannelSvc {
             starter,
             machine,
             default_agent,
+            inbox,
         }
     }
 
@@ -66,15 +104,6 @@ impl ChannelSvc {
         }
         self.guard
             .require(caller, &Call::Use { capability, target })
-    }
-
-    /// Whether `caller` may read channel `id`, without asking anyone.
-    fn may_read(&self, caller: &Caller, id: &str) -> bool {
-        let call = Call::Use {
-            capability: Capability::ChannelRead,
-            target: Target::Channel(ChannelId::new(id)),
-        };
-        matches!(self.guard.check(caller, &call), Ok(Checked::Allowed))
     }
 
     async fn find(&self, id: &str) -> Result<ChannelRecord, Status> {
@@ -524,21 +553,35 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         if matches!(caller, Caller::Peer) {
             return Err(status::refused(&Refusal::PeerCannotCall));
         }
-        let store = self.starter.store.clone();
-        let all = blocking(move || store.channels())
-            .await?
-            .map_err(|error| status::store(error, &self.machine, "list the channels"))?;
-        let mut channels = Vec::new();
-        for channel in all
-            .into_iter()
-            .filter(|channel| self.may_read(&caller, &channel.id))
-        {
-            channels.push(self.show(channel).await?);
+        // Listing reaches every channel, which is the global-read rule's
+        // to judge; when it says Ask, the call waits in the Inbox.
+        let call = Call::Use {
+            capability: Capability::GlobalRead,
+            target: Target::Global,
+        };
+        match self.guard.check(&caller, &call)? {
+            Checked::Allowed => {
+                let store = self.starter.store.clone();
+                Ok(Response::new(
+                    readable_channels(&self.guard, &store, &self.machine, &caller).await?,
+                ))
+            }
+            Checked::Ask(asked) => {
+                let (guard, store) = (self.guard.clone(), self.starter.store.clone());
+                let (machine, who) = (self.machine.clone(), caller.clone());
+                let run: crate::inbox::Run = Box::new(move || {
+                    Box::pin(async move {
+                        let listed = readable_channels(&guard, &store, &machine, &who).await?;
+                        Ok(Deferred {
+                            result: listed.encode_to_vec(),
+                            result_type: "humata.v1.ListChannelsResponse".to_owned(),
+                        })
+                    })
+                });
+                // The request has no idempotency key field.
+                Err(self.inbox.defer(&caller, asked, None, run).await)
+            }
         }
-        Ok(Response::new(pb::ListChannelsResponse {
-            channels,
-            page: None,
-        }))
     }
 
     /// Changes the name shown; the folder keeps its name (FC-1).

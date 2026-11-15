@@ -182,6 +182,9 @@ pub(crate) enum DaemonError {
         source: std::io::Error,
     },
 
+    #[error("couldn't restore the saved access rules: {0}")]
+    RulesKept(#[source] crate::rules_kept::RulesKeptError),
+
     #[error(
         "couldn't read the agents file {}; check the path given to --agents and that you can read it",
         path.display()

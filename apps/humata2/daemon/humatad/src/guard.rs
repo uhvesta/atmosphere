@@ -59,19 +59,23 @@ impl Guard {
                 "",
             ));
         }
-        let verdict = policy.check(&principal, call, &self.context).map_err(|error| {
-            status::internal(
-                format!("couldn't check the call: {}", status::chain(&error)),
-                "",
-            )
-        })?;
+        let verdict = policy
+            .check(&principal, call, &self.context)
+            .map_err(|error| {
+                status::internal(
+                    format!("couldn't check the call: {}", status::chain(&error)),
+                    "",
+                )
+            })?;
         match verdict {
             Verdict::Allowed {
                 effect: Effect::Apply,
                 ..
             } => Ok(Checked::Allowed),
             Verdict::Allowed { effect, .. } => Err(status::internal(
-                format!("the policy said to carry the call out as {effect:?}, which this daemon doesn't do while the Mac is reachable"),
+                format!(
+                    "the policy said to carry the call out as {effect:?}, which this daemon doesn't do while the Mac is reachable"
+                ),
                 "",
             )),
             Verdict::Ask(request) => Ok(Checked::Ask(request)),
@@ -80,8 +84,9 @@ impl Guard {
         }
     }
 
-    /// Checks `call`, refusing one that would need the user's approval:
-    /// only questions go to the Inbox in this build.
+    /// Checks `call`, refusing one that would need the user's approval.
+    /// For calls that can't wait in the Inbox; a call that can uses
+    /// [`Guard::check`] and, on `Checked::Ask`, `Inbox::defer` (D38.6).
     pub(crate) fn require(&self, caller: &Caller, call: &Call) -> Result<(), Status> {
         match self.check(caller, call)? {
             Checked::Allowed => Ok(()),

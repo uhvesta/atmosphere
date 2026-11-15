@@ -1,6 +1,6 @@
 # ASK: Agents ask, I decide
 
-- **Status:** blocked
+- **Status:** in progress (lane ASK)
 - **Depends on:**
   - FL-D: an agent's MCP identity is its real session
   - FL (to close, not to open): flow §26.4 in the app needs a real session on screen
@@ -29,10 +29,42 @@ Daemon first: the capability matrix runs as a boundary suite over MCP and the CL
 The While I'm away rule and journals (AWAY). Board requests answered on the item (BOARD). Contain agents (SEC-6) and script tokens (SEC-14): not in 1.0.
 
 ## Lane (written by the manager)
-- Design notes:
-- Claims: <paths>
+- Design notes (daemon part, batch 1):
+  - Ask on an ordinary call (D38.6 closed): a handler whose `Guard::check` says `Checked::Ask(card)` hands the card and a boxed "run it" future to `Inbox::defer`; the Inbox keeps the request (same idempotency key → same request, TP-14), returns `status::approval_pending(request)` (FailedPrecondition, `Error.kind = ApprovalPending{request}`, seam S1), and on Allow runs the call in a detached task whether or not anyone waits (TP-13), keeping the result bytes + type for 24 h in `WaitResponse.result`. Approving when the rule is now Never fails (IN-21). After a restart the continuation is gone: the answer is kept, a wait returns `request_withdrawn` with a fix telling the agent to repeat the call with the same key (decision A1).
+  - MCP turns `approval_pending` into `Reply::Pending{request}` (the mcp crate already waits); the CLI turns it into exit 12 `pending` with the request id.
+  - Rules: GetChannelRules, SetChannelRule, GetDefaultRules, SetDefaultRules, ListCapabilities, Explain built in `access_service.rs`; rules saved to the store as `humata.v1.ChannelRules` / `DefaultRules` bytes (no new store proto, D96 gap closed) and restored at start; only the user may change them (IN-23); changes apply from the next call (IN-21) and go out on the feed.
+  - Grants end when their session is archived or deleted (IN-22, `Policy::end_grants_of`); a stopped/deleted session's pending requests are withdrawn (TP-15).
+  - SE-29: an added agent's tab gets a token whose caller is `Caller::AddedAgent{session}`; every call but WhoAmI is refused with "a fork gives this agent a session of its own". Opening an added-agent tab needs a terminal.proto RPC (seam S3) and store TabKind (seam S4).
+  - Boundary suite: `daemon/humatad/tests/matrix.rs` runs TESTING.md §5.5 tiers over MCP and the CLI (Board tier skipped until BOARD: BoardService isn't built).
+  - SEC-15 (identity used outside the process tree) is batch 2: turning it on breaks every test that uses a tab's token from the test process (tests/mcp.rs Fixture), so those move to running inside the tab first.
+- Claims (all under `apps/humata2/`, clean in git status when claimed): `daemon/humatad/src/{inbox,inbox/kept,inbox/deferred,guard,status,channel_service,access_service,rules_kept,identity,restart,session_service,mcp}.rs`; `daemon/humatad/tests/{inbox,access,auth,sessions,mcp,matrix}.rs`; `daemon/humatad/tests/common/mod.rs` (additive only); `daemon/store/src/{rules,schema,lib}.rs`; `daemon/store/BUILD.bazel`; `cli/src/{error,call,exit}.rs`; this Lane section
 - Tasks:
-  - [ ] T1 <task> · worker <name> (Sonnet, medium) · files … · status
-- Waiting on:
-- Build gates: <time> pass|fail (targets)
-- Ready to commit: no | yes: <what changed, how a reviewer checks it>
+  - [ ] T1 Ask → Inbox for ordinary calls, ListChannels first (D38.6, IN-6, IN-12, IN-15, IN-21, TP-12–TP-14) · worker defer (Sonnet, medium) · files `daemon/humatad/src/{inbox.rs,inbox/deferred.rs,inbox/kept.rs,guard.rs,status.rs,channel_service.rs}`, `daemon/humatad/tests/inbox.rs` · done (uncompiled): `Inbox::defer` + `deferred.rs`, ListChannels asks under GlobalRead (default Ask), Allow runs the call detached and keeps the result 24 h in memory, IN-21 Never re-check, `withdraw_pending_of` for T3; deferred cards carry no preview and no Always allow yet (batch 2)
+  - [ ] T2 Rules RPCs + rules kept across restart (IN-16, IN-17, IN-21, IN-23, ST-4) · worker rules (Sonnet, medium) · files `daemon/humatad/src/{access_service.rs,rules_kept.rs}`, `daemon/store/src/{rules.rs,schema.rs,lib.rs}`, `daemon/store/BUILD.bazel`, `daemon/humatad/tests/access.rs` · done (uncompiled): six RPCs built (all user-only via AccessChange; agents use Explain), rules in new store tables `access_channel_rules`/`access_default_rules` (schema bump), restore fails loudly on unreadable rows; only channels with a user-set rule are kept; SetDefaultRules has no feed payload
+  - [ ] T3 Grants end with archive/delete, requests withdrawn on stop/delete, added agent refused (IN-22, TP-15, SE-29) · worker sessions (Sonnet, medium) · files `daemon/humatad/src/{identity.rs,restart.rs,session_service.rs}`, `daemon/humatad/tests/{sessions,auth}.rs` · done (uncompiled): stop withdraws pending (needs `Inbox::withdraw_pending_of`, queued for worker defer); `end_grants_of` helper ready but archive/delete RPCs aren't built so nothing calls it yet; SE-29 refused at the interceptor via `TabIdentity::AddedAgent` (no `Caller` variant: would touch 8 unclaimed files), token file gains an optional 4th word
+  - [ ] T4 MCP tools for the matrix + pending over MCP · worker mcp (Sonnet, medium) · files `daemon/humatad/src/mcp.rs`, `daemon/humatad/tests/mcp.rs` · done (uncompiled): channels_list, session_info/stop/archive, files_list/read/write, inbox_withdraw/mine, access_explain wired; ApprovalPending → Reply::Pending; hand-rolled base64 in mcp.rs `mod files` (no base64 dep)
+  - [ ] T5 Boundary matrix over MCP and CLI + CLI pending exit 12 · worker matrix (Sonnet, medium) · files `daemon/humatad/tests/matrix.rs`, `daemon/humatad/tests/common/mod.rs` (additive), `cli/src/{error,call}.rs` · done (uncompiled): matrix.rs MCP+CLI tiers (Board ignored), CLI ApprovalPending → exit 12 or waits with --wait; common gains shell_token/humata_as_agent/inbox helpers; manager added the `exit.rs` of_kind arm
+- Waiting on: main agent for seams, then a build gate. Seams:
+  - S1 `api/proto/humata/v1/errors.proto`: in `Error.kind` add `ApprovalPending approval_pending = 57;`; add `message ApprovalPending { RequestId request = 1; }`
+  - S2 `daemon/humatad/src/main.rs`: `mod rules_kept;` (between `mod restart;` and `mod review;`)
+  - S3 `serve.rs`: after `let guard = Arc::new(Guard::new(&machine, role));` add `crate::rules_kept::restore(&store, &guard).map_err(/* new DaemonError variant with #[source] RulesKeptError */)?;`; `Access::new(guard.clone(), feed.clone(), inbox.clone(), store.clone())`; `ChannelSvc::new(..., args.default_agent.clone(), inbox.clone())`; `SessionSvc::new(..., machine.clone(), inbox.clone())`
+  - S4 `daemon/humatad/src/events.rs` `Filter::passes`, before `_ => false`: `Some(pb::event::Payload::Rules(_)) => self.user && self.access && self.asked(scope),`
+  - S5 (later, SE-29 end to end): store `TabKind::AddedAgent` in `daemon/store/src/records.rs` + its encoding; terminal.proto `OpenAgentTab`; then `restart.rs` `tab_identity`: `TabKind::AddedAgent => TabIdentity::AddedAgent`, arms at `terminal.rs:156,191`, mint with `mint_as(.., TabIdentity::AddedAgent)`
+- Decisions for the main agent:
+  - A1 After a restart an approved Ask can't run (the continuation is in memory): the answer is kept and a wait says to repeat the call with the same key. Reversible: later we can persist calls as replayable requests.
+  - A2 Pending over gRPC is `FailedPrecondition` + `Error.kind = ApprovalPending{request}` (new kind 57), not a new response field on every RPC.
+  - A3 Rules stored as `humata.v1.ChannelRules`/`DefaultRules` bytes in a new store table, not a new store proto.
+  - A4 SEC-15 moved to batch 2 (test fixture impact above).
+- Decisions (batch 1, more):
+  - A5 Agents' ListChannels now goes through GlobalRead (default Ask), so an agent's channel list waits in the Inbox by default (TESTING §5.5 "Ask me" tier). Before, it was only filtered by ChannelRead.
+  - A6 Deferred results are kept in memory only (store InboxEntry has no result field); a pending deferred request is withdrawn (CallEnded) on restore; deferred entries are recognised after restart by having no preview (fragile: a store flag would be better, batch 2).
+  - A7 Deferred cards have no preview and no Always allow yet (IN-10, IN-14: batch 2).
+  - A8 SE-29 refusal is at the interceptor via `TabIdentity::AddedAgent` in the token file (optional 4th word), not a `Caller` variant; WhoAmI shows an added agent as unauthenticated.
+  - A9 Rules reads (Get*) are user-only too; agents read their own access via Explain.
+  - A10 Rules blobs stored as raw proto bytes, not the framed blob format; lazily added channels aren't saved; channel deletion doesn't drop the rules row yet.
+  - A12 Reads (ListChannels) carry no idempotency key, so a repeated read asks again: TP-14 holds only for calls with a key. The CLI waits on the request its own `--wait` run made; the matrix tests do that now.
+  - A11 mcp.rs has a hand-rolled base64 for file_read/file_write (no base64 dep in DAEMON_DEPS); swap for the crate if preferred.
+- Owner questions: none.
+- Batch 2 (next): SEC-15 process-tree check (+ move tests that use a tab token from outside the tab); IN-22 grants end once archive/delete RPCs exist (`SessionSvc::end_grants_of` waits, `#[allow(dead_code)]`) and publish grant-ended events; previews + Always allow on deferred cards; more handlers deferred (sessions, files); then the app part (§26.4, IN-9 card, Agent access tab).
+- Build gates: gate 1 (main): all build; 28/29 pass; matrix_test 3 cases failed (MCP call waited the 45 s default; CLI reran a keyless read expecting the same request) → test fixes in matrix.rs, rerun pending
+- Ready to commit: not yet: after S1–S4 and a green gate. Builds: //apps/humata2/daemon/humatad:humatad2 :humatad2_admin, //apps/humata2/cli:humata; tests: //apps/humata2/daemon/humatad:{humatad2_unit_test,inbox_test,access_test,sessions_test,mcp_test,matrix_test,auth_test,channels_test}, //apps/humata2/daemon/store:store_unit_test, cli unit tests; clippy on humatad, store, cli

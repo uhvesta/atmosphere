@@ -6,7 +6,8 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use common::{
     Attach, Daemon, World, agent_tab, create_channel, finished, get_session, git, holder_answers,
@@ -15,6 +16,8 @@ use common::{
 };
 use humata2_grpc::humata::v1 as pb;
 use pb::SessionStatus as Status;
+use tonic::Request;
+use tonic::metadata::MetadataValue;
 
 /// A world with one repository, one channel, and one working session.
 struct Fixture {
@@ -423,4 +426,110 @@ async fn the_cli_starts_a_session_and_lists_it() {
     let (code, json) = humata(&daemon, &["ls"]);
     assert_eq!(code, 0, "{json}");
     assert!(json.to_string().contains(&id.value), "{json}");
+}
+
+/// `path`'s contents once something non-empty is written there.
+async fn read_when_written(path: &Path) -> String {
+    let deadline = Instant::now() + common::WAIT;
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(text) if !text.is_empty() => return text,
+            _ => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} was never written",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The session token a shell tab of the session was given (SEC-8: a
+/// command run there acts as the session's agent).
+async fn shell_token(fix: &Fixture) -> String {
+    let tab = fix
+        .daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(fix.id()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let file = fix.daemon.dir.path().join("token");
+    let mut attach = Attach::start(&fix.daemon, open(&tab, 0)).await;
+    attach
+        .type_text(&format!(
+            "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r",
+            file.display()
+        ))
+        .await;
+    read_when_written(&file).await
+}
+
+fn as_agent<T>(message: T, token: &str) -> Request<T> {
+    let mut request = Request::new(message);
+    request.metadata_mut().insert(
+        "humata-session-token",
+        MetadataValue::try_from(token).unwrap(),
+    );
+    request
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_session_withdraws_its_pending_requests() {
+    let fix = Fixture::new().await;
+    let token = shell_token(&fix).await;
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(fix.daemon.channel().await);
+    let asked = inbox
+        .ask_user(as_agent(
+            pb::AskUserRequest {
+                question: "Which branch?".to_owned(),
+                ..Default::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(asked.state(), pb::RequestState::Pending);
+
+    fix.daemon
+        .session_service()
+        .await
+        .stop_session(pb::StopSessionRequest {
+            idempotency_key: None,
+            id: Some(fix.id()),
+        })
+        .await
+        .unwrap();
+
+    let mut stream = inbox
+        .wait_for_answer(as_agent(
+            pb::WaitForAnswerRequest {
+                id: asked.id.clone(),
+                wait_seconds: 10,
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let ended = loop {
+        let message = tokio::time::timeout(common::WAIT, stream.message())
+            .await
+            .expect("the wait ended in time")
+            .unwrap()
+            .expect("the wait ended with a state");
+        if !message.keepalive {
+            break message;
+        }
+    };
+    assert_eq!(ended.state(), pb::RequestState::Withdrawn);
 }

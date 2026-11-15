@@ -105,7 +105,11 @@ impl Fixture {
     }
 
     /// The agent asks ahead for `capability` on `target`.
-    async fn ask_ahead(&self, capability: pb::Capability, target: pb::GrantTarget) -> pb::WaitResponse {
+    async fn ask_ahead(
+        &self,
+        capability: pb::Capability,
+        target: pb::GrantTarget,
+    ) -> pb::WaitResponse {
         self.inbox()
             .await
             .request_access(self.as_agent(pb::RequestAccessRequest {
@@ -160,7 +164,9 @@ impl Fixture {
     async fn request(&self, id: &pb::RequestId) -> pb::InboxRequest {
         self.inbox()
             .await
-            .get_request(pb::GetRequestRequest { id: Some(id.clone()) })
+            .get_request(pb::GetRequestRequest {
+                id: Some(id.clone()),
+            })
             .await
             .unwrap()
             .into_inner()
@@ -179,21 +185,26 @@ impl Fixture {
 
     fn as_agent<T>(&self, message: T) -> Request<T> {
         let mut request = Request::new(message);
-        request
-            .metadata_mut()
-            .insert(TOKEN_HEADER, MetadataValue::try_from(self.token.as_str()).unwrap());
+        request.metadata_mut().insert(
+            TOKEN_HEADER,
+            MetadataValue::try_from(self.token.as_str()).unwrap(),
+        );
         request
     }
 }
 
 fn session(id: &str) -> pb::SessionId {
-    pb::SessionId { value: id.to_owned() }
+    pb::SessionId {
+        value: id.to_owned(),
+    }
 }
 
 fn answer_of(id: &pb::RequestId, answer: pb::request_answer::Answer) -> pb::AnswerRequestRequest {
     pb::AnswerRequestRequest {
         id: Some(id.clone()),
-        answer: Some(pb::RequestAnswer { answer: Some(answer) }),
+        answer: Some(pb::RequestAnswer {
+            answer: Some(answer),
+        }),
         ..Default::default()
     }
 }
@@ -207,7 +218,9 @@ fn deny() -> pb::request_answer::Answer {
 }
 
 fn reply(text: &str) -> pb::request_answer::Answer {
-    pb::request_answer::Answer::Reply(pb::Reply { text: text.to_owned() })
+    pb::request_answer::Answer::Reply(pb::Reply {
+        text: text.to_owned(),
+    })
 }
 
 fn network(host: &str, port: u32) -> pb::GrantTarget {
@@ -251,7 +264,11 @@ async fn read_when_written(path: &Path) -> String {
             Ok(text) if !text.is_empty() => return text,
             _ => {}
         }
-        assert!(Instant::now() < deadline, "{} was never written", path.display());
+        assert!(
+            Instant::now() < deadline,
+            "{} was never written",
+            path.display()
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -288,7 +305,10 @@ async fn an_agent_cannot_answer_its_own_request() {
         error_of(&refused).kind,
         Some(pb::error::Kind::UserOnly(_))
     ));
-    assert_eq!(fixture.request(&id).await.state(), pb::RequestState::Pending);
+    assert_eq!(
+        fixture.request(&id).await.state(),
+        pb::RequestState::Pending
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -312,11 +332,21 @@ async fn answer_all_answers_only_the_listed_pending_requests() {
         .unwrap()
         .into_inner();
 
-    let answered: Vec<_> = response.answered.iter().filter_map(|request| request.id.clone()).collect();
+    let answered: Vec<_> = response
+        .answered
+        .iter()
+        .filter_map(|request| request.id.clone())
+        .collect();
     assert_eq!(answered, vec![listed.clone()]);
     assert_eq!(response.skipped, vec![unknown]);
-    assert_eq!(fixture.request(&listed).await.state(), pb::RequestState::Denied);
-    assert_eq!(fixture.request(&unlisted).await.state(), pb::RequestState::Pending);
+    assert_eq!(
+        fixture.request(&listed).await.state(),
+        pb::RequestState::Denied
+    );
+    assert_eq!(
+        fixture.request(&unlisted).await.state(),
+        pb::RequestState::Pending
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -342,7 +372,10 @@ async fn approving_all_never_approves_an_ask_ahead() {
 
     assert!(response.answered.is_empty());
     assert_eq!(response.skipped, vec![ahead.clone()]);
-    assert_eq!(fixture.request(&ahead).await.state(), pb::RequestState::Pending);
+    assert_eq!(
+        fixture.request(&ahead).await.state(),
+        pb::RequestState::Pending
+    );
     assert!(fixture.grants().await.is_empty());
 }
 
@@ -375,7 +408,10 @@ async fn an_approved_ask_ahead_covers_the_same_ask_and_nothing_wider() {
     assert!(grant.granted_at.is_some());
     assert!(matches!(
         grant.target.and_then(|target| target.target),
-        Some(pb::grant_target::Target::Network(pb::NetworkTarget { port: 5432, .. }))
+        Some(pb::grant_target::Target::Network(pb::NetworkTarget {
+            port: 5432,
+            ..
+        }))
     ));
     // Covered: approved at once, with no new request for the user.
     assert_eq!(again.state(), pb::RequestState::Approved);
@@ -394,7 +430,10 @@ async fn a_folder_grant_covers_what_is_under_it_and_not_its_parent() {
 
     fixture.answer(&id, approve()).await.unwrap();
     let inside = fixture
-        .ask_ahead(pb::Capability::FilesReadOtherSession, other_files("src/ledger"))
+        .ask_ahead(
+            pb::Capability::FilesReadOtherSession,
+            other_files("src/ledger"),
+        )
         .await;
     let parent = fixture
         .ask_ahead(pb::Capability::FilesReadOtherSession, other_files(""))
@@ -416,7 +455,11 @@ async fn always_let_grants_only_the_target_the_card_offered() {
         .await
         .id
         .unwrap();
-    let offered = fixture.request(&id).await.always.and_then(|always| always.target);
+    let offered = fixture
+        .request(&id)
+        .await
+        .always
+        .and_then(|always| always.target);
 
     let wider = fixture
         .answer(
@@ -431,7 +474,9 @@ async fn always_let_grants_only_the_target_the_card_offered() {
     let answered = fixture
         .answer(
             &id,
-            pb::request_answer::Answer::Always(pb::AlwaysLet { target: offered.clone() }),
+            pb::request_answer::Answer::Always(pb::AlwaysLet {
+                target: offered.clone(),
+            }),
         )
         .await
         .unwrap();
@@ -552,10 +597,17 @@ async fn a_restart_keeps_the_inbox_and_the_grants_still_standing() {
             (pending.clone(), pb::RequestState::Pending),
         ]
     );
-    assert_eq!(fixture.grants().await, kept, "only the grant still standing comes back");
+    assert_eq!(
+        fixture.grants().await,
+        kept,
+        "only the grant still standing comes back"
+    );
     // The folder grant covers what's under it and no more, as before.
     let inside = fixture
-        .ask_ahead(pb::Capability::FilesReadOtherSession, other_files("src/ledger"))
+        .ask_ahead(
+            pb::Capability::FilesReadOtherSession,
+            other_files("src/ledger"),
+        )
         .await;
     let parent = fixture
         .ask_ahead(pb::Capability::FilesReadOtherSession, other_files(""))
@@ -565,7 +617,11 @@ async fn a_restart_keeps_the_inbox_and_the_grants_still_standing() {
         .await;
     assert_eq!(inside.state(), pb::RequestState::Approved);
     assert_eq!(parent.state(), pb::RequestState::Pending);
-    assert_eq!(again.state(), pb::RequestState::Pending, "a revoked grant stays revoked");
+    assert_eq!(
+        again.state(),
+        pb::RequestState::Pending,
+        "a revoked grant stays revoked"
+    );
     // What was pending can still be answered, and a new grant takes a new id.
     fixture.answer(&question, reply("Postgres")).await.unwrap();
     fixture.answer(&pending, approve()).await.unwrap();
@@ -575,7 +631,10 @@ async fn a_restart_keeps_the_inbox_and_the_grants_still_standing() {
         "grant {:?} was given out before the restart",
         new.id
     );
-    assert_eq!(fixture.wait(&question).await.state(), pb::RequestState::Answered);
+    assert_eq!(
+        fixture.wait(&question).await.state(),
+        pb::RequestState::Answered
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -608,7 +667,10 @@ async fn a_request_takes_only_its_first_answer() {
     assert_eq!(second.code(), Code::Aborted);
     assert!(matches!(
         error_of(&second).kind,
-        Some(pb::error::Kind::AlreadyAnswered(pb::AlreadyAnswered { approved: false, .. }))
+        Some(pb::error::Kind::AlreadyAnswered(pb::AlreadyAnswered {
+            approved: false,
+            ..
+        }))
     ));
     assert_eq!(fixture.request(&id).await.state(), pb::RequestState::Denied);
 }
@@ -706,7 +768,10 @@ async fn an_agent_lists_only_its_own_sessions_grants() {
 }
 
 /// A feed subscribed with `request`, from now.
-async fn feed(fixture: &Fixture, request: Request<pb::SubscribeRequest>) -> tonic::Streaming<pb::Event> {
+async fn feed(
+    fixture: &Fixture,
+    request: Request<pb::SubscribeRequest>,
+) -> tonic::Streaming<pb::Event> {
     pb::event_service_client::EventServiceClient::new(fixture.daemon.channel().await)
         .subscribe(request)
         .await
@@ -717,8 +782,14 @@ async fn feed(fixture: &Fixture, request: Request<pb::SubscribeRequest>) -> toni
 /// The next request event's change, request id and state.
 /// The next event's change, request, its state, and who made the change:
 /// the asking session's agent, the user, or no one (the daemon).
-async fn next_request(events: &mut tonic::Streaming<pb::Event>) -> (i32, pb::RequestId, i32, &'static str) {
-    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+async fn next_request(
+    events: &mut tonic::Streaming<pb::Event>,
+) -> (i32, pb::RequestId, i32, &'static str) {
+    let event = tokio::time::timeout(WAIT, events.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     let by = match event.by.and_then(|by| by.actor) {
         Some(pb::actor::Actor::Agent(agent)) if agent.session == Some(session(ASKER)) => "asker",
         Some(pb::actor::Actor::User(_)) => "user",
@@ -726,7 +797,9 @@ async fn next_request(events: &mut tonic::Streaming<pb::Event>) -> (i32, pb::Req
         Some(other) => panic!("unexpected actor {other:?}"),
     };
     match event.payload {
-        Some(pb::event::Payload::Request(request)) => (event.change, request.id.unwrap(), request.state, by),
+        Some(pb::event::Payload::Request(request)) => {
+            (event.change, request.id.unwrap(), request.state, by)
+        }
         other => panic!("expected an Inbox request, got {other:?}"),
     }
 }
@@ -768,8 +841,18 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
         idempotency_key: None,
         id: Some(withdrawn.clone()),
     };
-    fixture.inbox().await.withdraw_request(fixture.as_agent(withdraw.clone())).await.unwrap();
-    fixture.inbox().await.withdraw_request(fixture.as_agent(withdraw)).await.unwrap();
+    fixture
+        .inbox()
+        .await
+        .withdraw_request(fixture.as_agent(withdraw.clone()))
+        .await
+        .unwrap();
+    fixture
+        .inbox()
+        .await
+        .withdraw_request(fixture.as_agent(withdraw))
+        .await
+        .unwrap();
     // Marks the end: nothing after the second withdrawal was told.
     let last = fixture.ask("Done?").await;
 
@@ -779,7 +862,12 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
         (created, answered.clone(), pending, "asker"),
         (updated, answered, pb::RequestState::Answered as i32, "user"),
         (created, withdrawn.clone(), pending, "asker"),
-        (updated, withdrawn, pb::RequestState::Withdrawn as i32, "asker"),
+        (
+            updated,
+            withdrawn,
+            pb::RequestState::Withdrawn as i32,
+            "asker",
+        ),
         (created, last, pending, "asker"),
     ];
     for events in [&mut users, &mut agents, &mut inbox_only] {
@@ -787,14 +875,19 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
         for _ in 0..expected.len() {
             told.push(next_request(events).await);
         }
-        assert_eq!(told, expected, "a repeated withdrawal changes nothing, so it isn't told");
+        assert_eq!(
+            told, expected,
+            "a repeated withdrawal changes nothing, so it isn't told"
+        );
     }
     for (events, why) in [
         (&mut other_session, "a feed narrowed to another session"),
         (&mut machines_only, "a feed of machines only"),
     ] {
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), events.message()).await.is_err(),
+            tokio::time::timeout(Duration::from_millis(200), events.message())
+                .await
+                .is_err(),
             "{why} hears of no request"
         );
     }
@@ -803,7 +896,11 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
 /// The next event's change and what it tells of: `Ok` a grant's id, `Err`
 /// a request's state.
 async fn next_told(events: &mut tonic::Streaming<pb::Event>) -> (i32, Result<pb::GrantId, i32>) {
-    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    let event = tokio::time::timeout(WAIT, events.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     match event.payload {
         Some(pb::event::Payload::Grant(grant)) => (event.change, Ok(grant.id.unwrap())),
         Some(pb::event::Payload::Request(request)) => (event.change, Err(request.state)),
@@ -872,10 +969,87 @@ async fn the_feed_tells_of_the_grant_an_approval_makes_and_its_revoking() {
         }
         assert_eq!(told, expected);
     }
-    assert_eq!(next_told(&mut access_only).await, (created, Ok(grant.clone())));
+    assert_eq!(
+        next_told(&mut access_only).await,
+        (created, Ok(grant.clone()))
+    );
     assert_eq!(next_told(&mut access_only).await, (deleted, Ok(grant)));
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), other_session.message()).await.is_err(),
+        tokio::time::timeout(Duration::from_millis(200), other_session.message())
+            .await
+            .is_err(),
         "a feed narrowed to another session hears of no grant"
     );
+}
+
+// ----- Calls a rule sends to Ask wait in the Inbox (D38.6). The default
+// rule for reading other channels is Ask. ListChannels has no idempotency
+// key, so the same-key repeat (TP-14) and a rule turned Never after the
+// ask (IN-21) are not covered here: the first needs a deferred call with a
+// key, the second needs SetChannelRule. -----
+
+impl Fixture {
+    /// The agent lists channels; the call is deferred and this returns the
+    /// request it waits on.
+    async fn list_channels_deferred(&self) -> pb::RequestId {
+        let refused =
+            pb::channel_service_client::ChannelServiceClient::new(self.daemon.channel().await)
+                .list_channels(self.as_agent(pb::ListChannelsRequest::default()))
+                .await
+                .unwrap_err();
+        assert_eq!(refused.code(), Code::FailedPrecondition);
+        match error_of(&refused).kind {
+            Some(pb::error::Kind::ApprovalPending(pending)) => pending.request.unwrap(),
+            other => panic!("expected approval_pending, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_deferred_call_runs_and_its_result_is_waited_for() {
+    let fixture = Fixture::start().await;
+    let id = fixture.list_channels_deferred().await;
+    assert_eq!(
+        fixture.request(&id).await.state(),
+        pb::RequestState::Pending
+    );
+
+    fixture.answer(&id, approve()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert_eq!(waited.state(), pb::RequestState::Approved);
+    assert!(waited.error.is_none());
+    assert_eq!(waited.result_type, "humata.v1.ListChannelsResponse");
+    pb::ListChannelsResponse::decode(waited.result.as_slice()).unwrap();
+    assert!(waited.result_kept_until.is_some());
+    // A second wait gets the same result (TP-12).
+    assert_eq!(fixture.wait(&id).await.result, waited.result);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_deferred_call_never_runs() {
+    let fixture = Fixture::start().await;
+    let id = fixture.list_channels_deferred().await;
+
+    fixture.answer(&id, deny()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert_eq!(waited.state(), pb::RequestState::Denied);
+    assert!(waited.result.is_empty());
+    assert!(matches!(
+        waited.error.and_then(|error| error.kind),
+        Some(pb::error::Kind::Denied(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_lists_channels_without_asking() {
+    let fixture = Fixture::start().await;
+
+    let listed =
+        pb::channel_service_client::ChannelServiceClient::new(fixture.daemon.channel().await)
+            .list_channels(pb::ListChannelsRequest::default())
+            .await;
+
+    assert!(listed.is_ok());
 }

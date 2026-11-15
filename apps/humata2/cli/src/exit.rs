@@ -30,6 +30,7 @@ pub fn of_kind(kind: &Kind) -> (&'static str, i32) {
         Kind::HostUnreachable(_) => ("host_unreachable", UNREACHABLE),
         Kind::Denied(_) => ("denied", DENIED),
         Kind::UserOnly(_) => ("user_only", NEEDS_USER),
+        Kind::ApprovalPending(_) => ("pending", PENDING),
         Kind::PresenceRequired(_) => ("presence_required", NEEDS_USER),
         Kind::IdentityMismatch(_) => ("identity_mismatch", NEEDS_USER),
         Kind::PeerUnproven(_) => ("peer_unproven", DENIED),

@@ -12,9 +12,9 @@ use std::time::Duration;
 use humata2_grpc::humata::v1 as pb;
 use humata2_revive::{Reconciled, RestartReports, ReviveConfig, Revived};
 use humata2_sessions::{Agents, Layout, Leftovers, Recovery, Starter, recover};
-use humata2_store::{Restored, ResumeFailure, Store, StoreError, TabRecord};
+use humata2_store::{Restored, ResumeFailure, Store, StoreError, TabKind, TabRecord};
 
-use crate::identity::Identities;
+use crate::identity::{Identities, TabIdentity};
 use crate::status;
 
 /// How long a resumed agent has to show it took up its conversation.
@@ -295,7 +295,10 @@ impl Tokens {
                 status::chain(&error)
             );
         }
-        let env = match self.identities.mint(&tab.id, &record) {
+        let env = match self
+            .identities
+            .mint_as(&tab.id, &record, tab_identity(tab.kind))
+        {
             Ok(token) => vec![(
                 OsString::from(humata2_mcp::TOKEN_VAR),
                 OsString::from(token),
@@ -311,6 +314,19 @@ impl Tokens {
         };
         minted.insert(tab.id.clone(), env.clone());
         env
+    }
+}
+
+/// What a token minted for a tab of `kind` says its holder is. The
+/// session's agent and a shell in its tree act as the session (SEC-8); an
+/// added agent has no identity (SE-29, D103).
+///
+/// Waits for seam S4: the store's `TabKind` has no `AddedAgent` yet, and no
+/// RPC opens one. When it does, add `TabKind::AddedAgent =>
+/// TabIdentity::AddedAgent` here; nothing else changes.
+fn tab_identity(kind: TabKind) -> TabIdentity {
+    match kind {
+        TabKind::Agent | TabKind::Shell => TabIdentity::Session,
     }
 }
 

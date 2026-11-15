@@ -32,6 +32,7 @@ mod peer_client;
 mod peer_link;
 mod restart;
 mod review;
+mod rules_kept;
 mod serve;
 mod session_service;
 mod status;

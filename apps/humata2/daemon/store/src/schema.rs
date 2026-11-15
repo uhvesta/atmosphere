@@ -195,6 +195,21 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (session, owner, name)
     ) STRICT;
 ",
+    "
+    -- The Agent access rules the user set (IN-17, IN-21, ST-4): each
+    -- channel's and the defaults new channels start with, as the daemon
+    -- encodes them, so a restart keeps them (D96).
+    CREATE TABLE access_channel_rules (
+        channel TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        rules BLOB NOT NULL
+    ) STRICT;
+    CREATE TABLE access_default_rules (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL,
+        rules BLOB NOT NULL
+    ) STRICT;
+",
 ];
 
 /// The schema this build writes and reads.

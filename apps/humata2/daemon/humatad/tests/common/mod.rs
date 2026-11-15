@@ -899,3 +899,119 @@ pub async fn wait_for_path(path: &Path) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// Opens a shell tab in `session` and returns the token its shell was
+/// given (an agent's identity), with the attach that keeps the tab in use.
+pub async fn shell_token(daemon: &Daemon, session: &pb::SessionId) -> (String, Attach) {
+    let tab = daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(session.clone()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let mut attach = Attach::start(daemon, open(&tab, 0)).await;
+    let file = daemon.dir.path().join(format!("token-{}", tab.value));
+    attach
+        .type_text(&format!(
+            "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r",
+            file.display()
+        ))
+        .await;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match std::fs::read_to_string(&file) {
+            Ok(text) if text.len() == 32 => return (text, attach),
+            _ => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the shell never wrote its session token"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// `humata --json <args>` as the agent holding `token`; the exit code and
+/// the JSON printed.
+pub async fn humata_as_agent(
+    daemon: &Daemon,
+    token: &str,
+    args: &[&str],
+) -> (i32, serde_json::Value) {
+    let output = tokio::process::Command::new(binary("HUMATA"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", daemon.dir.path())
+        .env("HUMATA_SOCKET", &daemon.socket)
+        .env("HUMATA_SESSION_TOKEN", token)
+        .arg("--json")
+        .args(args)
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let json = serde_json::from_str(&text).unwrap_or_else(|error| {
+        panic!(
+            "humata printed no JSON ({error}): {text:?}; stderr {:?}",
+            output.stderr
+        )
+    });
+    (output.status.code().unwrap_or(-1), json)
+}
+
+impl Daemon {
+    pub async fn inbox_service(&self) -> pb::inbox_service_client::InboxServiceClient<Channel> {
+        pb::inbox_service_client::InboxServiceClient::new(self.channel().await)
+    }
+}
+
+/// The ids of the requests waiting for the user.
+pub async fn pending_requests(daemon: &Daemon) -> Vec<pb::RequestId> {
+    daemon
+        .inbox_service()
+        .await
+        .list_requests(pb::ListRequestsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .requests
+        .into_iter()
+        .filter(|request| request.state() == pb::RequestState::Pending)
+        .filter_map(|request| request.id)
+        .collect()
+}
+
+/// Polls until a request is waiting for the user, and returns its id.
+pub async fn first_pending(daemon: &Daemon) -> pb::RequestId {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(id) = pending_requests(daemon).await.into_iter().next() {
+            return id;
+        }
+        assert!(Instant::now() < deadline, "no request reached the Inbox");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The user approves request `id`.
+pub async fn approve(daemon: &Daemon, id: &pb::RequestId) {
+    daemon
+        .inbox_service()
+        .await
+        .answer_request(pb::AnswerRequestRequest {
+            id: Some(id.clone()),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}

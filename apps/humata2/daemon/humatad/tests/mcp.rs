@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use common::{Attach, Daemon, WAIT, error_of, folder, open, state_folder};
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{SessionRecord, Store};
+use humata2_store::{ChannelRecord, SessionRecord, Store};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -18,6 +18,8 @@ use tonic::metadata::MetadataValue;
 use tonic::{Code, Request};
 
 const SESSION: &str = "se_mcp";
+/// Another session of the same channel.
+const OTHER: &str = "se_other";
 const TOKEN_HEADER: &str = "humata-session-token";
 /// 32 hex characters, as a token is, that the daemon never gave out.
 const FORGED: &str = "0123456789abcdef0123456789abcdef";
@@ -43,16 +45,31 @@ impl Fixture {
         let dir = folder();
         let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
         store
-            .put_session(&SessionRecord {
-                id: SESSION.to_owned(),
-                channel: "ch_test".to_owned(),
-                machine: String::new(),
-                title: "mcp".to_owned(),
-                agent: "zsh".to_owned(),
-                folder: dir.path().to_owned(),
+            .put_channel(&ChannelRecord {
+                id: "ch_test".to_owned(),
+                name: "Test".to_owned(),
+                folder: "test".to_owned(),
+                branch_prefix: String::new(),
+                default_agent: "zsh".to_owned(),
+                repos: Vec::new(),
+                machines: Vec::new(),
+                revision: 1,
                 created_unix_ms: 0,
             })
             .unwrap();
+        for (id, title) in [(SESSION, "mcp"), (OTHER, "other")] {
+            store
+                .put_session(&SessionRecord {
+                    id: id.to_owned(),
+                    channel: "ch_test".to_owned(),
+                    machine: String::new(),
+                    title: title.to_owned(),
+                    agent: "zsh".to_owned(),
+                    folder: dir.path().to_owned(),
+                    created_unix_ms: 0,
+                })
+                .unwrap();
+        }
         drop(store);
         let daemon = Daemon::start_in(dir).await;
 
@@ -108,7 +125,11 @@ async fn read_when_written(path: &Path) -> String {
             Ok(text) if !text.is_empty() => return text,
             _ => {}
         }
-        assert!(Instant::now() < deadline, "{} was never written", path.display());
+        assert!(
+            Instant::now() < deadline,
+            "{} was never written",
+            path.display()
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -202,8 +223,12 @@ impl Mcp {
     }
 
     async fn call(&mut self, id: u64, tool: &str, arguments: Value) -> Value {
-        self.request(id, "tools/call", json!({ "name": tool, "arguments": arguments }))
-            .await
+        self.request(
+            id,
+            "tools/call",
+            json!({ "name": tool, "arguments": arguments }),
+        )
+        .await
     }
 
     /// Reads until a notification `method` comes.
@@ -268,10 +293,11 @@ async fn a_token_the_daemon_never_gave_out_is_refused() {
     let mut mcp = fixture.mcp(FORGED).await;
 
     let result = mcp.call(1, "whoami", json!({})).await;
-    let refused = pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await)
-        .who_am_i(as_agent(pb::WhoAmIRequest {}, FORGED))
-        .await
-        .unwrap_err();
+    let refused =
+        pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await)
+            .who_am_i(as_agent(pb::WhoAmIRequest {}, FORGED))
+            .await
+            .unwrap_err();
 
     assert_eq!(result["isError"], true);
     assert_eq!(
@@ -336,10 +362,11 @@ async fn a_closed_tabs_token_stops_working() {
         })
         .await
         .unwrap();
-    let refused = pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await)
-        .who_am_i(as_agent(pb::WhoAmIRequest {}, &fixture.token))
-        .await
-        .unwrap_err();
+    let refused =
+        pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await)
+            .who_am_i(as_agent(pb::WhoAmIRequest {}, &fixture.token))
+            .await
+            .unwrap_err();
 
     assert_eq!(refused.code(), Code::Unauthenticated);
 }
@@ -361,7 +388,8 @@ async fn a_question_the_agent_stops_waiting_on_is_withdrawn() {
     }))
     .await;
     let progress = mcp.wait_for_notification("notifications/progress").await;
-    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+    let mut inbox =
+        pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
     let asked = inbox
         .list_requests(pb::ListRequestsRequest::default())
         .await
@@ -393,7 +421,10 @@ async fn a_question_the_agent_stops_waiting_on_is_withdrawn() {
         {
             break;
         }
-        assert!(Instant::now() < deadline, "the question was never withdrawn");
+        assert!(
+            Instant::now() < deadline,
+            "the question was never withdrawn"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -449,7 +480,11 @@ async fn the_review_chats_agent_shows_the_user_a_place_and_reads_it_back() {
         .await;
     let context = mcp.call(2, "review_context", json!({})).await;
     let outside = mcp
-        .call(3, "review_focus", json!({ "repo": "api", "path": "other.rs" }))
+        .call(
+            3,
+            "review_focus",
+            json!({ "repo": "api", "path": "other.rs" }),
+        )
         .await;
 
     assert_eq!(focused["isError"], false, "{focused}");
@@ -457,7 +492,10 @@ async fn the_review_chats_agent_shows_the_user_a_place_and_reads_it_back() {
     let seen = &context["structuredContent"]["result"];
     assert_eq!(seen["open"]["file"]["path"], "refund.rs");
     assert_eq!(seen["selected_text"], json!(["2"]));
-    assert_eq!(outside["isError"], true, "a file the review doesn't show can't be focused");
+    assert_eq!(
+        outside["isError"], true,
+        "a file the review doesn't show can't be focused"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -468,25 +506,51 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
     let notes = |context: &Value| -> Vec<String> {
         context["structuredContent"]["result"]["notes"]
             .as_array()
-            .map(|notes| notes.iter().filter_map(|note| note["text"].as_str().map(str::to_owned)).collect())
+            .map(|notes| {
+                notes
+                    .iter()
+                    .filter_map(|note| note["text"].as_str().map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default()
     };
 
     let kept = mcp
-        .call(1, "review_note", json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "why 2?" }))
+        .call(
+            1,
+            "review_note",
+            json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "why 2?" }),
+        )
         .await;
     let gone = mcp
         .call(2, "review_note", json!({ "repo": "api", "path": "refund.rs", "lines": { "first": 3, "last": 3 }, "text": "fine" }))
         .await;
     assert_eq!(kept["isError"], false, "{kept}");
-    let id = |reply: &Value| reply["structuredContent"]["result"]["note_id"].as_str().unwrap().to_owned();
+    let id = |reply: &Value| {
+        reply["structuredContent"]["result"]["note_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
     let edited = mcp
-        .call(3, "review_note_edit", json!({ "note_id": id(&kept), "text": "why a digit?" }))
+        .call(
+            3,
+            "review_note_edit",
+            json!({ "note_id": id(&kept), "text": "why a digit?" }),
+        )
         .await;
-    let dropped = mcp.call(4, "review_note_drop", json!({ "note_id": id(&gone) })).await;
+    let dropped = mcp
+        .call(4, "review_note_drop", json!({ "note_id": id(&gone) }))
+        .await;
     assert_eq!(edited["isError"], false, "{edited}");
-    assert_eq!(dropped["structuredContent"]["result"]["dropped"], true, "{dropped}");
-    assert_eq!(notes(&mcp.call(5, "review_context", json!({})).await), ["why a digit?"]);
+    assert_eq!(
+        dropped["structuredContent"]["result"]["dropped"], true,
+        "{dropped}"
+    );
+    assert_eq!(
+        notes(&mcp.call(5, "review_context", json!({})).await),
+        ["why a digit?"]
+    );
 
     let plan = json!({
         "title": "Refund first",
@@ -507,8 +571,13 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
         .await
         .unwrap();
     let ordered = mcp.call(7, "review_prepare", plan).await;
-    assert_eq!(ordered["structuredContent"]["result"]["applied"], true, "{ordered}");
-    assert!(notes(&mcp.call(8, "review_context", json!({})).await).contains(&"start here".to_owned()));
+    assert_eq!(
+        ordered["structuredContent"]["result"]["applied"], true,
+        "{ordered}"
+    );
+    assert!(
+        notes(&mcp.call(8, "review_context", json!({})).await).contains(&"start here".to_owned())
+    );
 
     pb::review_chat_service_client::ReviewChatServiceClient::new(fixture.daemon.channel().await)
         .set_agent_switches(pb::SetAgentSwitchesRequest {
@@ -522,7 +591,11 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
         .await
         .unwrap();
     let off = mcp
-        .call(9, "review_note", json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "again" }))
+        .call(
+            9,
+            "review_note",
+            json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "again" }),
+        )
         .await;
     assert_eq!(off["isError"], true, "the user turned notes off: {off}");
 }
@@ -560,7 +633,10 @@ async fn ask_for_port(
         if let Some(id) = pending.into_iter().find_map(|request| request.id) {
             return id;
         }
-        assert!(Instant::now() < deadline, "the request never reached the Inbox");
+        assert!(
+            Instant::now() < deadline,
+            "the request never reached the Inbox"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -568,7 +644,9 @@ async fn ask_for_port(
 fn answered(id: &pb::RequestId, answer: pb::request_answer::Answer) -> pb::AnswerRequestRequest {
     pb::AnswerRequestRequest {
         id: Some(id.clone()),
-        answer: Some(pb::RequestAnswer { answer: Some(answer) }),
+        answer: Some(pb::RequestAnswer {
+            answer: Some(answer),
+        }),
         ..Default::default()
     }
 }
@@ -577,11 +655,15 @@ fn answered(id: &pb::RequestId, answer: pb::request_answer::Answer) -> pb::Answe
 async fn an_agent_asks_ahead_for_access_and_gets_the_grant_or_the_users_no() {
     let fixture = Fixture::start().await;
     let mut mcp = fixture.mcp(&fixture.token).await;
-    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+    let mut inbox =
+        pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
 
     let asked = ask_for_port(&mut mcp, &mut inbox, 1, 5432).await;
     inbox
-        .answer_request(answered(&asked, pb::request_answer::Answer::Approve(pb::Approve {})))
+        .answer_request(answered(
+            &asked,
+            pb::request_answer::Answer::Approve(pb::Approve {}),
+        ))
         .await
         .unwrap();
     let approved = mcp.response(1).await;
@@ -613,7 +695,10 @@ async fn an_agent_asks_ahead_for_access_and_gets_the_grant_or_the_users_no() {
     let grant = approved["grant_id"].as_str().unwrap();
     assert!(!grant.is_empty());
     let again = &again["structuredContent"]["result"];
-    assert_eq!(again["decision"], "approved", "a covered ask needs no new answer");
+    assert_eq!(
+        again["decision"], "approved",
+        "a covered ask needs no new answer"
+    );
     assert_eq!(again["grant_id"], grant);
     assert_eq!(denied["isError"], true, "{denied}");
     assert_eq!(denied["structuredContent"]["error"]["kind"], "denied");
@@ -636,23 +721,55 @@ async fn an_agent_prepares_revises_and_offers_a_view() {
     assert_eq!(result(&prepared)["state"], "draft", "{prepared}");
     let id = result(&prepared)["view_id"].as_str().unwrap().to_owned();
     let board = mcp
-        .call(2, "view_prepare", json!({ "title": "Board", "summary": "", "content": { "board": "channel" } }))
+        .call(
+            2,
+            "view_prepare",
+            json!({ "title": "Board", "summary": "", "content": { "board": "channel" } }),
+        )
         .await;
-    assert_eq!(result(&board)["state"], "draft", "the caller's channel board is fine: {board}");
+    assert_eq!(
+        result(&board)["state"],
+        "draft",
+        "the caller's channel board is fine: {board}"
+    );
     let global = mcp
-        .call(3, "view_prepare", json!({ "title": "Board", "summary": "", "content": { "board": "global" } }))
+        .call(
+            3,
+            "view_prepare",
+            json!({ "title": "Board", "summary": "", "content": { "board": "global" } }),
+        )
         .await;
-    assert_eq!(global["isError"], true, "the global board isn't the channel's: {global}");
+    assert_eq!(
+        global["isError"], true,
+        "the global board isn't the channel's: {global}"
+    );
 
     let revised = mcp
-        .call(4, "view_revise", json!({ "view_id": id, "title": "Refund, step by step", "expected_revision": 1 }))
+        .call(
+            4,
+            "view_revise",
+            json!({ "view_id": id, "title": "Refund, step by step", "expected_revision": 1 }),
+        )
         .await;
-    assert_eq!(result(&revised)["title"], "Refund, step by step", "{revised}");
+    assert_eq!(
+        result(&revised)["title"],
+        "Refund, step by step",
+        "{revised}"
+    );
     let stale = mcp
-        .call(5, "view_revise", json!({ "view_id": id, "title": "Stale", "expected_revision": 1 }))
+        .call(
+            5,
+            "view_revise",
+            json!({ "view_id": id, "title": "Stale", "expected_revision": 1 }),
+        )
         .await;
-    assert_eq!(stale["isError"], true, "a stale revision is refused: {stale}");
-    let ready = mcp.call(6, "view_mark_ready", json!({ "view_id": id })).await;
+    assert_eq!(
+        stale["isError"], true,
+        "a stale revision is refused: {stale}"
+    );
+    let ready = mcp
+        .call(6, "view_mark_ready", json!({ "view_id": id }))
+        .await;
     assert_eq!(result(&ready)["state"], "waiting", "{ready}");
 
     let listed = mcp.call(7, "views_list", json!({})).await;
@@ -660,7 +777,12 @@ async fn an_agent_prepares_revises_and_offers_a_view() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|view| (view["title"].as_str().unwrap().to_owned(), view["state"].as_str().unwrap().to_owned()))
+        .map(|view| {
+            (
+                view["title"].as_str().unwrap().to_owned(),
+                view["state"].as_str().unwrap().to_owned(),
+            )
+        })
         .collect();
     states.sort();
     assert_eq!(
@@ -679,7 +801,8 @@ async fn a_tab_that_outlives_a_restart_keeps_its_token() {
     fixture.daemon.restart().await;
     // Once the start has brought back what the last run left, the tab
     // it reattached to is the same shell with the same token.
-    let mut daemon = pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await);
+    let mut daemon =
+        pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await);
     let deadline = Instant::now() + WAIT;
     while daemon
         .get_server_info(pb::GetServerInfoRequest {})
@@ -689,7 +812,10 @@ async fn a_tab_that_outlives_a_restart_keeps_its_token() {
         .last_start
         .is_none()
     {
-        assert!(Instant::now() < deadline, "the daemon never finished bringing sessions back");
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never finished bringing sessions back"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
@@ -702,4 +828,98 @@ async fn a_tab_that_outlives_a_restart_keeps_its_token() {
         panic!("the token is the tab's agent");
     };
     assert_eq!(agent.session, Some(session()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_lists_the_channels_once_the_user_approves() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let mut inbox =
+        pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+
+    let asked = mcp
+        .call(1, "channels_list", json!({ "wait_seconds": 0 }))
+        .await;
+    assert_eq!(asked["structuredContent"]["outcome"], "pending", "{asked}");
+    let id = asked["structuredContent"]["request_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    inbox
+        .answer_request(answered(
+            &pb::RequestId { value: id.clone() },
+            pb::request_answer::Answer::Approve(pb::Approve {}),
+        ))
+        .await
+        .unwrap();
+    let waited = mcp.call(2, "inbox_wait", json!({ "request_id": id })).await;
+
+    assert_eq!(waited["isError"], false, "{waited}");
+    let channels = waited["structuredContent"]["result"]["channels"]
+        .as_array()
+        .unwrap();
+    assert!(
+        channels
+            .iter()
+            .any(|channel| channel["channel_id"] == "ch_test"),
+        "{waited}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_cannot_stop_another_session() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    let result = mcp
+        .call(1, "session_stop", json!({ "session": OTHER }))
+        .await;
+
+    assert_eq!(result["isError"], true, "{result}");
+    assert_eq!(
+        result["structuredContent"]["error"]["kind"], "denied",
+        "{result}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_request_is_waited_for_with_inbox_wait() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let mut inbox =
+        pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+
+    let asked = mcp
+        .call(
+            1,
+            "inbox_request",
+            json!({
+                "capability": "network_reach",
+                "target": { "network": { "host": "localhost", "port": 5432 } },
+                "reason": "run the database tests",
+                "wait_seconds": 0,
+            }),
+        )
+        .await;
+    assert_eq!(asked["structuredContent"]["outcome"], "pending", "{asked}");
+    let id = asked["structuredContent"]["request_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    inbox
+        .answer_request(answered(
+            &pb::RequestId { value: id.clone() },
+            pb::request_answer::Answer::Approve(pb::Approve {}),
+        ))
+        .await
+        .unwrap();
+    let waited = mcp.call(2, "inbox_wait", json!({ "request_id": id })).await;
+
+    assert_eq!(waited["isError"], false, "{waited}");
+    let result = &waited["structuredContent"]["result"];
+    assert_eq!(result["decision"], "approved");
+    assert!(
+        !result["grant_id"].as_str().unwrap_or_default().is_empty(),
+        "{waited}"
+    );
 }

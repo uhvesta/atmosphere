@@ -38,6 +38,7 @@ fn expected(kind: &Kind) -> (&'static str, i32) {
         Kind::HostKeyChanged(_) => ("host_key_changed", 7),
         Kind::ChecksumMismatch(_) => ("checksum_mismatch", 11),
         Kind::ResumeFailed(_) => ("resume_failed", 7),
+        Kind::ApprovalPending(_) => ("pending", 12),
         Kind::AgentLacksFeature(_) => ("agent_lacks_feature", 7),
         Kind::ProviderStepFailed(_) => ("provider_step_failed", 9),
         Kind::ProviderIdentityInvalid(_) => ("provider_identity_invalid", 7),
@@ -160,7 +161,11 @@ async fn a_status_without_a_humata_error_exits_by_its_grpc_code() {
         let daemon = FakeDaemon::new();
         daemon.status(rpc::daemon::WHO_AM_I, code);
         let console = FakeConsole::pipe();
-        assert_eq!(run(&daemon, &console, &["--json", "whoami"]).await, exit, "{name}");
+        assert_eq!(
+            run(&daemon, &console, &["--json", "whoami"]).await,
+            exit,
+            "{name}"
+        );
         assert_eq!(console.json()["error"]["kind"], name);
     }
 }
@@ -169,7 +174,10 @@ async fn a_status_without_a_humata_error_exits_by_its_grpc_code() {
 async fn a_bad_command_line_is_a_usage_error() {
     let daemon = FakeDaemon::new();
     let console = FakeConsole::pipe();
-    assert_eq!(run(&daemon, &console, &["inbox", "approve"]).await, exit::USAGE);
+    assert_eq!(
+        run(&daemon, &console, &["inbox", "approve"]).await,
+        exit::USAGE
+    );
     assert!(!console.stderr().is_empty());
     assert!(!daemon.called(rpc::daemon::WHO_AM_I));
 }
@@ -178,7 +186,10 @@ async fn a_bad_command_line_is_a_usage_error() {
 async fn a_bad_command_line_with_json_is_an_error_object() {
     let daemon = FakeDaemon::new();
     let console = FakeConsole::pipe();
-    assert_eq!(run(&daemon, &console, &["--json", "no-such-command"]).await, exit::USAGE);
+    assert_eq!(
+        run(&daemon, &console, &["--json", "no-such-command"]).await,
+        exit::USAGE
+    );
     let printed = console.json();
     assert_eq!(printed["ok"], false);
     assert_eq!(printed["error"]["kind"], "invalid_field");
@@ -207,7 +218,12 @@ async fn a_name_that_matches_nothing_is_not_found() {
         },
     );
     let console = FakeConsole::pipe();
-    let exit = run(&daemon, &console, &["--json", "session", "stop", "tidy docs"]).await;
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "session", "stop", "tidy docs"],
+    )
+    .await;
     assert_eq!(exit, exit::NOT_FOUND);
     assert_eq!(console.json()["error"]["kind"], "not_found");
     assert!(!daemon.called(rpc::session::STOP_SESSION));
@@ -229,7 +245,12 @@ async fn a_name_that_matches_two_is_a_usage_error_listing_both() {
         },
     );
     let console = FakeConsole::pipe();
-    let exit = run(&daemon, &console, &["--json", "session", "stop", "fix login"]).await;
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "session", "stop", "fix login"],
+    )
+    .await;
     assert_eq!(exit, exit::USAGE);
     let matches = &console.json()["error"]["details"]["matches"];
     assert_eq!(matches.as_array().map(Vec::len), Some(2));

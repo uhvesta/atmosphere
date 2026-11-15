@@ -46,7 +46,11 @@ pub(crate) fn failure(code: Code, error: pb::Error) -> Status {
     Status::with_details(code, message, Bytes::from(details.encode_to_vec()))
 }
 
-pub(crate) fn error(message: impl Into<String>, fix: impl Into<String>, kind: pb::error::Kind) -> pb::Error {
+pub(crate) fn error(
+    message: impl Into<String>,
+    fix: impl Into<String>,
+    kind: pb::error::Kind,
+) -> pb::Error {
     pb::Error {
         message: message.into(),
         fix: fix.into(),
@@ -310,7 +314,9 @@ pub(crate) fn app_only(what: &str) -> Status {
     failure(
         Code::PermissionDenied,
         error(
-            format!("only the Humata app can {what}: a terminal can't, even a logged-in one, or anything able to type there could log in other terminals"),
+            format!(
+                "only the Humata app can {what}: a terminal can't, even a logged-in one, or anything able to type there could log in other terminals"
+            ),
             "do it in the Humata app",
             pb::error::Kind::Denied(pb::Denied {
                 source: pb::denied::Source::Unspecified as i32,
@@ -490,6 +496,24 @@ pub(crate) fn needs_approval(capability: Capability) -> Status {
     )
 }
 
+/// A call the channel's rule sent to the Inbox (D38.6): it runs once the
+/// user approves it, and its result comes from waiting on `request`.
+pub(crate) fn approval_pending(request: &pb::RequestId) -> Status {
+    failure(
+        Code::FailedPrecondition,
+        error(
+            format!(
+                "this call needs the user's approval and is waiting for their answer in the Inbox as request {}",
+                request.value
+            ),
+            "call inbox_wait (WaitForAnswer) with this request id to get the result once the user approves; don't repeat the call without the same idempotency key, which would put a second request in the Inbox",
+            pb::error::Kind::ApprovalPending(pb::ApprovalPending {
+                request: Some(request.clone()),
+            }),
+        ),
+    )
+}
+
 /// The `humata.v1.Error` a status carries, if it has one.
 pub(crate) fn error_of(status: &Status) -> Option<pb::Error> {
     let details = RpcStatus::decode(status.details()).ok()?;
@@ -510,8 +534,13 @@ fn presence_method(method: PresenceMethod) -> pb::presence_required::Method {
 
 fn fix_text(fix: &Fix) -> String {
     match fix {
-        Fix::AskTheUser => "ask the user with inbox_ask; they can do it themselves in the app".to_owned(),
-        Fix::UserChangesRule { channel, capability } => format!(
+        Fix::AskTheUser => {
+            "ask the user with inbox_ask; they can do it themselves in the app".to_owned()
+        }
+        Fix::UserChangesRule {
+            channel,
+            capability,
+        } => format!(
             "only the user can change channel {channel}'s rule for \"{capability}\", in Agent access; asking again is refused the same way"
         ),
         Fix::UseOwnFolders => {

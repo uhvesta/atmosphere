@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use humata2_proto::humata::v1 as pb;
 use serde_json::{Value, json};
 
+use crate::as_json;
 use crate::daemon::DaemonError;
 use crate::exit;
-use crate::as_json;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
@@ -36,7 +36,10 @@ pub enum CliError {
     #[error("stopped before changing anything")]
     NotConfirmed,
     #[error("the daemon needs you to confirm it's you, and humata can't ask here")]
-    NoPresence { accepted: Vec<&'static str>, in_session: bool },
+    NoPresence {
+        accepted: Vec<&'static str>,
+        in_session: bool,
+    },
     #[error("couldn't use the terminal")]
     Console {
         #[source]
@@ -162,14 +165,7 @@ impl CliError {
                 exit::USAGE,
                 "Check the path and that you can read it.".into(),
             ),
-            Self::Pending { request } => Failure {
-                details: json!({ "request": request }),
-                ..plain(
-                    "pending",
-                    exit::PENDING,
-                    format!("`humata inbox show {request}` shows the answer when it comes."),
-                )
-            },
+            Self::Pending { request } => pending_failure(request, self.to_string()),
             Self::Interrupted => plain("interrupted", exit::INTERRUPTED, String::new()),
             Self::DecoderStopped { .. } => plain(
                 "internal",
@@ -221,6 +217,20 @@ impl CliError {
     }
 }
 
+/// A call still waiting for the user (exit 12), as the request that holds it.
+fn pending_failure(request: &str, message: String) -> Failure {
+    Failure {
+        kind: "pending".to_owned(),
+        code: exit::PENDING,
+        message,
+        fix: format!(
+            "`humata inbox show {request}` shows the answer when it comes. Run the command with --wait <seconds> to wait for it in the same run."
+        ),
+        details: json!({ "request": request }),
+        retry: None,
+    }
+}
+
 fn daemon_failure(error: &DaemonError) -> Failure {
     let plain = |kind: &str, code: i32, fix: &str| Failure {
         kind: kind.to_owned(),
@@ -231,7 +241,11 @@ fn daemon_failure(error: &DaemonError) -> Failure {
         retry: None,
     };
     match error {
-        DaemonError::Refused { error: refusal, code, .. } => refusal_failure(refusal, *code),
+        DaemonError::Refused {
+            error: refusal,
+            code,
+            ..
+        } => refusal_failure(refusal, *code),
         DaemonError::Status { code, .. } => {
             let (kind, exit) = exit::of_status(*code);
             plain(
@@ -278,6 +292,14 @@ fn daemon_failure(error: &DaemonError) -> Failure {
 }
 
 fn refusal_failure(error: &pb::Error, code: i32) -> Failure {
+    if let Some(pb::error::Kind::ApprovalPending(pending)) = &error.kind {
+        let request = pending
+            .request
+            .as_ref()
+            .map(|id| id.value.clone())
+            .unwrap_or_default();
+        return pending_failure(&request, error.message.clone());
+    }
     let (kind, exit) = match &error.kind {
         Some(kind) => exit::of_kind(kind),
         None => exit::of_status(code),
@@ -287,12 +309,15 @@ fn refusal_failure(error: &pb::Error, code: i32) -> Failure {
         .cloned()
         .unwrap_or_else(|| json!({}));
     let retry = error.retry.as_ref().map(|retry| {
-        let after = retry.after.as_ref().map_or(std::time::Duration::ZERO, |after| {
-            std::time::Duration::new(
-                u64::try_from(after.seconds).unwrap_or(0),
-                u32::try_from(after.nanos).unwrap_or(0),
-            )
-        });
+        let after = retry
+            .after
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, |after| {
+                std::time::Duration::new(
+                    u64::try_from(after.seconds).unwrap_or(0),
+                    u32::try_from(after.nanos).unwrap_or(0),
+                )
+            });
         (after, retry.same_key)
     });
     Failure {

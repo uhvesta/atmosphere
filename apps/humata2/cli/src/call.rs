@@ -6,10 +6,10 @@ use prost::Message;
 use serde_json::Value as Json;
 
 use crate::args::Global;
+use crate::as_json;
 use crate::console::Console;
 use crate::daemon::{Daemon, DaemonError, Rpc, rpc};
 use crate::error::CliError;
-use crate::as_json;
 use crate::principal::{Environment, Principal};
 
 /// What a command did, for the output to print.
@@ -97,8 +97,69 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         }
     }
 
+    /// One call, its reply bytes. A call the daemon holds for the user's
+    /// approval (an agent's Ask) ends in exit 12 `pending` with the request's
+    /// id, or waits for the answer when `--wait` or a terminal says to, and
+    /// returns what the approved call returned.
     pub async fn raw(&self, rpc: Rpc, request: &impl Message) -> Result<Vec<u8>, CliError> {
-        Ok(self.daemon.unary(rpc, request.encode_to_vec()).await?)
+        match self.daemon.unary(rpc, request.encode_to_vec()).await {
+            Ok(bytes) => Ok(bytes),
+            Err(DaemonError::Refused {
+                rpc: path,
+                code,
+                error,
+            }) => match &error.kind {
+                Some(pb::error::Kind::ApprovalPending(pending)) => {
+                    let id = pending.request.clone().unwrap_or_default();
+                    self.approved_result(id).await
+                }
+                _ => Err(DaemonError::Refused {
+                    rpc: path,
+                    code,
+                    error,
+                }
+                .into()),
+            },
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// The result of the call held as Inbox request `id`, once the user
+    /// approves it: waits `--wait` seconds, until answered in a terminal,
+    /// or not at all with `--json` (CLI.md §6).
+    async fn approved_result(&self, id: pb::RequestId) -> Result<Vec<u8>, CliError> {
+        let request = id.value.clone();
+        let seconds = match self.flags.wait {
+            Some(seconds) => seconds,
+            None if self.interactive() => u32::MAX,
+            None => 0,
+        };
+        if seconds == 0 {
+            return Err(CliError::Pending { request });
+        }
+        self.note(&format!(
+            "Waiting for an answer (request {request}). Ctrl-C stops waiting; the request stays."
+        ));
+        let rpc = rpc::inbox::WAIT_FOR_ANSWER;
+        let asked = pb::WaitForAnswerRequest {
+            id: Some(id),
+            wait_seconds: seconds,
+        };
+        let mut replies = self
+            .daemon
+            .server_stream(rpc, asked.encode_to_vec())
+            .await?;
+        while let Some(message) = replies.recv().await {
+            let message: pb::WaitResponse = decode(rpc, &message?)?;
+            if message.keepalive {
+                continue;
+            }
+            if message.state == pb::RequestState::Pending as i32 {
+                return Err(CliError::Pending { request });
+            }
+            return answered_result(rpc, message);
+        }
+        Err(DaemonError::Ended { rpc: rpc.path }.into())
     }
 
     /// One call, its reply decoded.
@@ -125,12 +186,10 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         build: impl Fn(Option<pb::PresenceProof>) -> Req,
     ) -> Result<Vec<u8>, CliError> {
         let needed = match self.raw(rpc, &build(None)).await {
-            Err(CliError::Daemon(DaemonError::Refused { error, rpc, code })) => {
-                match &error.kind {
-                    Some(pb::error::Kind::PresenceRequired(needed)) => needed.clone(),
-                    _ => return Err(DaemonError::Refused { error, rpc, code }.into()),
-                }
-            }
+            Err(CliError::Daemon(DaemonError::Refused { error, rpc, code })) => match &error.kind {
+                Some(pb::error::Kind::PresenceRequired(needed)) => needed.clone(),
+                _ => return Err(DaemonError::Refused { error, rpc, code }.into()),
+            },
             other => return other,
         };
         let proof = self.proof(&needed)?;
@@ -229,7 +288,11 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             .console
             .confirm("Continue?")
             .map_err(|source| CliError::Console { source })?;
-        if go { Ok(()) } else { Err(CliError::NotConfirmed) }
+        if go {
+            Ok(())
+        } else {
+            Err(CliError::NotConfirmed)
+        }
     }
 
     /// Waits for an Inbox request's answer: `--wait` seconds, or until
@@ -240,7 +303,11 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         if reply.state != pending {
             return Ok(reply);
         }
-        let request = reply.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+        let request = reply
+            .id
+            .as_ref()
+            .map(|id| id.value.clone())
+            .unwrap_or_default();
         let forever = self.flags.wait.is_none() && self.interactive();
         if !forever {
             return Err(CliError::Pending { request });
@@ -255,7 +322,10 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             id: reply.id.clone(),
             wait_seconds: u32::MAX,
         };
-        let mut replies = self.daemon.server_stream(rpc, asked.encode_to_vec()).await?;
+        let mut replies = self
+            .daemon
+            .server_stream(rpc, asked.encode_to_vec())
+            .await?;
         while let Some(message) = replies.recv().await {
             let message: pb::WaitResponse = decode(rpc, &message?)?;
             if message.keepalive {
@@ -281,6 +351,50 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         }
     }
 }
+
+/// What an answered request's held call returned: its result, or the
+/// error it failed with, or the user's no.
+fn answered_result(rpc: Rpc, answer: pb::WaitResponse) -> Result<Vec<u8>, CliError> {
+    let refused = |error: pb::Error| {
+        CliError::Daemon(DaemonError::Refused {
+            rpc: rpc.path,
+            code: UNKNOWN,
+            error: Box::new(error),
+        })
+    };
+    if let Some(error) = answer.error {
+        return Err(refused(error));
+    }
+    let state = answer.state;
+    if state == pb::RequestState::Approved as i32 && !answer.result.is_empty() {
+        return Ok(answer.result);
+    }
+    let (message, fix, kind) = if state == pb::RequestState::Denied as i32 {
+        (
+            "You said no to this request.",
+            "Nothing was changed. Ask again if you've changed your mind.",
+            pb::error::Kind::Denied(pb::Denied {
+                source: pb::denied::Source::UserDenied as i32,
+                ..Default::default()
+            }),
+        )
+    } else {
+        (
+            "The request ended without a result humata can show.",
+            "Run the command again: the held call's result is kept for 24 hours and a restart of humatad drops it.",
+            pb::error::Kind::RequestWithdrawn(pb::RequestWithdrawn::default()),
+        )
+    };
+    Err(refused(pb::Error {
+        message: message.to_owned(),
+        fix: fix.to_owned(),
+        kind: Some(kind),
+        ..Default::default()
+    }))
+}
+
+/// The gRPC status a held call's own error is reported with.
+const UNKNOWN: i32 = 2;
 
 pub fn decode<R: Message + Default>(rpc: Rpc, bytes: &[u8]) -> Result<R, CliError> {
     R::decode(bytes).map_err(|source| {

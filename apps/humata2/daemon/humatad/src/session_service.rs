@@ -30,6 +30,7 @@ use tonic::{Code, Request, Response, Status};
 use crate::channel_service::{blocking, error_of, failed, timestamp_ms};
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller, Identities};
+use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
 use crate::restart::Tokens;
 use crate::status;
@@ -45,6 +46,7 @@ pub(crate) struct SessionSvc {
     operations: Arc<Operations>,
     starter: Starter,
     tokens: Arc<Tokens>,
+    inbox: Arc<Inbox>,
     machine: String,
 }
 
@@ -62,6 +64,7 @@ impl SessionSvc {
         starter: Starter,
         identities: Arc<Identities>,
         machine: String,
+        inbox: Arc<Inbox>,
     ) -> Self {
         let tokens = Arc::new(Tokens::new(starter.store.clone(), identities));
         Self {
@@ -69,8 +72,42 @@ impl SessionSvc {
             operations,
             starter,
             tokens,
+            inbox,
             machine,
         }
+    }
+
+    /// A session that stopped, was archived or was deleted no longer waits
+    /// on anyone: its pending Inbox requests are withdrawn and can't be
+    /// answered (TP-15).
+    async fn withdraw_requests_of(
+        &self,
+        session: &str,
+        reason: pb::WithdrawReason,
+    ) -> Result<(), Status> {
+        self.inbox.withdraw_pending_of(session, reason).await
+    }
+
+    /// Ends the grants of a session that was archived or deleted, in the
+    /// policy and in the store, so a restart doesn't bring them back
+    /// (IN-22). Not called yet: ArchiveSession and DeleteSession are still
+    /// "not built"; each calls this, then `withdraw_requests_of`.
+    #[allow(dead_code)]
+    async fn end_grants_of(&self, session: &str) -> Result<(), Status> {
+        let id = humata2_access::SessionId::new(session);
+        let ended = self
+            .guard
+            .with_policy(|policy, _| policy.end_grants_of(&id));
+        for grant in ended {
+            // The request whose answer made the grant remembers it ended.
+            self.inbox
+                .revoked(
+                    &grant.granted_from.to_string(),
+                    std::time::SystemTime::now(),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     fn refuse_peer(caller: &Caller) -> Result<(), Status> {
@@ -1120,6 +1157,8 @@ impl pb::session_service_server::SessionService for SessionSvc {
         blocking(move || store.put_agent(&saving))
             .await?
             .map_err(|error| status::store(error, &self.machine, "save that the agent stopped"))?;
+        self.withdraw_requests_of(&id, pb::WithdrawReason::SessionStopped)
+            .await?;
         Ok(Response::new(self.show(&loaded)))
     }
 

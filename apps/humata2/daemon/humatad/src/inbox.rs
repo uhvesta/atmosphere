@@ -6,6 +6,7 @@
 //! and the grants (D96). Each new request and each change to one goes on
 //! the event feed.
 
+mod deferred;
 mod kept;
 
 use std::collections::HashMap;
@@ -31,6 +32,9 @@ use crate::grant_target;
 use crate::guard::{self, Guard};
 use crate::identity::{self, AgentCaller, Caller, UserVia};
 use crate::status;
+
+use deferred::Outcome;
+pub(crate) use deferred::{Deferred, Run};
 
 /// How often a wait says it is still waiting (MCP.md §5).
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -71,6 +75,9 @@ struct Entry {
     /// The "session/key" idempotency keys of the calls that made it.
     keys: Vec<String>,
     request: watch::Sender<Held>,
+    /// What a deferred call does once approved (D38.6); taken when it
+    /// starts, and gone after a restart.
+    run: std::sync::Mutex<Option<Run>>,
 }
 
 impl Entry {
@@ -89,6 +96,7 @@ impl Entry {
             asked,
             keys: key.into_iter().collect(),
             request: watch::channel(held).0,
+            run: std::sync::Mutex::new(None),
         }
     }
 }
@@ -101,6 +109,13 @@ struct Held {
     /// What the policy keeps beside the grant, as it's saved; its `grant`
     /// is filled in only on the way to the store.
     granted: Option<stored::InboxGrant>,
+    /// The request is for an ordinary call that waits for the answer
+    /// (D38.6): approving it runs the call.
+    deferred: bool,
+    /// The approved call is running now.
+    running: bool,
+    /// How the approved call ended. Kept in memory only.
+    outcome: Option<Outcome>,
 }
 
 impl Held {
@@ -109,7 +124,15 @@ impl Held {
             request,
             grant: None,
             granted: None,
+            deferred: false,
+            running: false,
+            outcome: None,
         }
+    }
+
+    /// Whether a wait on this request has more to wait for.
+    fn waiting(&self) -> bool {
+        self.request.state == pb::RequestState::Pending as i32 || self.running
     }
 }
 
@@ -123,7 +146,12 @@ struct Decided {
 impl Inbox {
     /// The Inbox as the store kept it, with the grants its answers made
     /// back in the policy. Reads the store: call it before serving.
-    pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>, machine: String, feed: Arc<Feed>) -> Self {
+    pub(crate) fn new(
+        guard: Arc<Guard>,
+        store: Arc<Store>,
+        machine: String,
+        feed: Arc<Feed>,
+    ) -> Self {
         let state = kept::restore(&guard, &store, &machine);
         Self {
             guard,
@@ -150,13 +178,16 @@ impl Inbox {
             .await
             .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?;
         if let Err(error) = saved {
-            let made = next.grant.as_ref().filter(|_| entry.request.borrow().grant.is_none());
+            let made = next
+                .grant
+                .as_ref()
+                .filter(|_| entry.request.borrow().grant.is_none());
             if let (Some(user), Some(id)) = (user, made.and_then(grant_target::grant_number)) {
                 // It was just made, so taking it back can't fail for want
                 // of the host; if it did, a restart drops it anyway.
-                let _ = self
-                    .guard
-                    .with_policy(|policy, _| policy.revoke_grant(user, humata2_access::GrantId::new(id)));
+                let _ = self.guard.with_policy(|policy, _| {
+                    policy.revoke_grant(user, humata2_access::GrantId::new(id))
+                });
             }
             return Err(status::store(error, &self.machine, doing));
         }
@@ -178,7 +209,10 @@ impl Inbox {
         granted.revoked_unix_ms = kept::unix_ms(at);
         let doing = format!(
             "save that grant {} is revoked, so until you revoke it again after the next restart, that restart brings it back",
-            next.grant.as_ref().and_then(grant_target::grant_number).unwrap_or_default()
+            next.grant
+                .as_ref()
+                .and_then(grant_target::grant_number)
+                .unwrap_or_default()
         );
         self.commit(entry, next, None, &doing).await
     }
@@ -196,10 +230,47 @@ impl Inbox {
             .ok_or_else(|| no_request(id))
     }
 
+    /// Withdraws every pending request of `session` for `reason`, as when
+    /// the session stops. A deferred call's closure is dropped, so it never
+    /// runs. The daemon withdraws, so the feed names no one for any reason
+    /// but `CallEnded`.
+    pub(crate) async fn withdraw_pending_of(
+        &self,
+        session: &str,
+        reason: pb::WithdrawReason,
+    ) -> Result<(), Status> {
+        let state = self.state.lock().await;
+        for entry in state
+            .requests
+            .iter()
+            .filter(|entry| entry.session == session)
+        {
+            let mut next = entry.request.borrow().clone();
+            if next.request.state != pb::RequestState::Pending as i32 {
+                continue;
+            }
+            withdraw(&mut next.request, reason);
+            let current = next.request.clone();
+            self.commit(entry, next, None, "save the withdrawal")
+                .await?;
+            entry
+                .run
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            self.tell(pb::Change::Updated, &entry.session, &current);
+        }
+        Ok(())
+    }
+
     /// Tells the feed of `session`'s request as it now stands.
     fn tell(&self, change: pb::Change, session: &str, request: &pb::InboxRequest) {
         let scope = Scope {
-            channel: request.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
+            channel: request
+                .channel
+                .as_ref()
+                .map(|channel| channel.value.clone())
+                .unwrap_or_default(),
             session: session.to_owned(),
         };
         // The asker made and withdraws it (D38.10); the answer is the
@@ -211,10 +282,17 @@ impl Inbox {
             {
                 requester(request)
             }
-            _ => request.answered.as_ref().and_then(|answered| answered.by.clone()),
+            _ => request
+                .answered
+                .as_ref()
+                .and_then(|answered| answered.by.clone()),
         };
-        self.feed
-            .publish_in(change, pb::event::Payload::Request(request.clone()), scope, by);
+        self.feed.publish_in(
+            change,
+            pb::event::Payload::Request(request.clone()),
+            scope,
+            by,
+        );
     }
 
     /// Tells the feed of the grant `entry`'s answer made, if any, then of
@@ -223,12 +301,24 @@ impl Inbox {
         let held = entry.request.borrow().clone();
         if let Some(grant) = held.grant {
             let scope = Scope {
-                channel: grant.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
+                channel: grant
+                    .channel
+                    .as_ref()
+                    .map(|channel| channel.value.clone())
+                    .unwrap_or_default(),
                 session: entry.session.clone(),
             };
-            let by = held.request.answered.as_ref().and_then(|answered| answered.by.clone());
-            self.feed
-                .publish_in(pb::Change::Created, pb::event::Payload::Grant(grant), scope, by);
+            let by = held
+                .request
+                .answered
+                .as_ref()
+                .and_then(|answered| answered.by.clone());
+            self.feed.publish_in(
+                pb::Change::Created,
+                pb::event::Payload::Grant(grant),
+                scope,
+                by,
+            );
         }
         self.tell(pb::Change::Updated, &entry.session, &held.request);
         held.request
@@ -305,7 +395,10 @@ impl Inbox {
                 Ok(decided(pb::RequestState::Approved, answer, grant))
             }
             (Some(access), A::Always(always)) => {
-                let offered = current.always.as_ref().and_then(|always| always.target.as_ref());
+                let offered = current
+                    .always
+                    .as_ref()
+                    .and_then(|always| always.target.as_ref());
                 let target = match (&access.always_let, offered) {
                     (Some(target), Some(offered)) if always.target.as_ref() == Some(offered) => {
                         target.clone()
@@ -313,10 +406,18 @@ impl Inbox {
                     (Some(_), Some(_)) => {
                         return Err(grant_target::answer_failed(&AnswerError::TargetNotOffered));
                     }
-                    _ => return Err(grant_target::answer_failed(&AnswerError::NoStandingApproval)),
+                    _ => {
+                        return Err(grant_target::answer_failed(
+                            &AnswerError::NoStandingApproval,
+                        ));
+                    }
                 };
                 let grant = self.approve(user, id, access, &Answer::AlwaysLet(target), at)?;
-                Ok(decided(pb::RequestState::Approved, A::Always(always), grant))
+                Ok(decided(
+                    pb::RequestState::Approved,
+                    A::Always(always),
+                    grant,
+                ))
             }
         }
     }
@@ -331,7 +432,11 @@ fn sees(caller: &Caller, entry: &Entry) -> bool {
     }
 }
 
-fn in_scope(scope: Option<&pb::inbox_scope::Scope>, entry: &Entry, request: &pb::InboxRequest) -> bool {
+fn in_scope(
+    scope: Option<&pb::inbox_scope::Scope>,
+    entry: &Entry,
+    request: &pb::InboxRequest,
+) -> bool {
     match scope {
         None | Some(pb::inbox_scope::Scope::Global(_)) => true,
         Some(pb::inbox_scope::Scope::Channel(channel)) => request.channel.as_ref() == Some(channel),
@@ -379,7 +484,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
         request: Request<pb::GetRequestRequest>,
     ) -> Result<Response<pb::InboxRequest>, Status> {
         let caller = identity::caller(&request)?;
-        let id = id_of(request.into_inner().id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
+        let id = id_of(request.into_inner().id.map(|id| id.value))
+            .ok_or_else(|| status::missing("id"))?;
         let found = self.find(&caller, &id).await?;
         let current = found.borrow().request.clone();
         Ok(Response::new(current))
@@ -419,11 +525,24 @@ impl pb::inbox_service_server::InboxService for Inbox {
             }
         }
         let at = SystemTime::now();
+        let approving = matches!(
+            answer,
+            pb::request_answer::Answer::Approve(_) | pb::request_answer::Answer::Always(_)
+        );
+        if let Some(refused) = self
+            .deny_if_never(entry, &caller, &user, approving, at)
+            .await?
+        {
+            self.tell_answer(entry);
+            return Err(refused);
+        }
         let decided = self.decide(&user, entry, &current, answer, at)?;
         let by = answered_by(&caller, &user);
         let mut next = entry.request.borrow().clone();
         settle(&mut next, decided, by, at);
-        self.commit(entry, next, Some(&user), "save the answer").await?;
+        self.commit(entry, next, Some(&user), "save the answer")
+            .await?;
+        self.start(entry);
         Ok(Response::new(self.tell_answer(entry)))
     }
 
@@ -459,6 +578,14 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 skipped.push(id);
                 continue;
             }
+            if self
+                .deny_if_never(entry, &caller, &user, request.approve, at)
+                .await?
+                .is_some()
+            {
+                answered.push(self.tell_answer(entry));
+                continue;
+            }
             let decided = if request.approve {
                 match &entry.access {
                     Some(access) if !access.ahead => self
@@ -489,7 +616,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
             let by = answered_by(&caller, &user);
             let mut next = entry.request.borrow().clone();
             settle(&mut next, decided, by, at);
-            self.commit(entry, next, Some(&user), "save the answer").await?;
+            self.commit(entry, next, Some(&user), "save the answer")
+                .await?;
+            self.start(entry);
             answered.push(self.tell_answer(entry));
         }
         Ok(Response::new(pb::AnswerAllResponse { answered, skipped }))
@@ -540,7 +669,11 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let reply = settled(&held);
         let entry = Entry::new(id, session, None, None, key, held.clone());
         self.commit(&entry, held, None, "save the request").await?;
-        self.tell(pb::Change::Created, &entry.session, &entry.request.borrow().request);
+        self.tell(
+            pb::Change::Created,
+            &entry.session,
+            &entry.request.borrow().request,
+        );
         state.add(entry);
         Ok(Response::new(reply))
     }
@@ -607,7 +740,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 Ok(Verdict::Allowed {
                     source: Source::Grant(id),
                     ..
-                }) => policy.grant(*id).map(|grant| grant_target::grant(grant, false)),
+                }) => policy
+                    .grant(*id)
+                    .map(|grant| grant_target::grant(grant, false)),
                 _ => None,
             };
             let decision = policy
@@ -653,9 +788,20 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let made = access_request(&id, agent, &asked, request.reason, decision);
         let held = Held::new(made);
         let reply = settled(&held);
-        let entry = Entry::new(id, session, Some(asked), Some(asked_target), key, held.clone());
+        let entry = Entry::new(
+            id,
+            session,
+            Some(asked),
+            Some(asked_target),
+            key,
+            held.clone(),
+        );
         self.commit(&entry, held, None, "save the request").await?;
-        self.tell(pb::Change::Created, &entry.session, &entry.request.borrow().request);
+        self.tell(
+            pb::Change::Created,
+            &entry.session,
+            &entry.request.borrow().request,
+        );
         state.add(entry);
         Ok(Response::new(reply))
     }
@@ -680,7 +826,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             let mut keepalive = tokio::time::interval(KEEPALIVE);
             loop {
                 let current = answers.borrow_and_update().clone();
-                if current.request.state != pb::RequestState::Pending as i32 {
+                if !current.waiting() {
                     let _ = sender.send(Ok(settled(&current))).await;
                     return;
                 }
@@ -729,7 +875,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 "answer or deny the request in the Inbox instead",
             ));
         }
-        let id = id_of(request.into_inner().id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
+        let id = id_of(request.into_inner().id.map(|id| id.value))
+            .ok_or_else(|| status::missing("id"))?;
         // Under the lock, so it can't land in the middle of an answer.
         let state = self.state.lock().await;
         let entry = state
@@ -745,7 +892,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
         // agent's call ended.
         withdraw(&mut next.request, pb::WithdrawReason::CallEnded);
         let current = next.request.clone();
-        self.commit(entry, next, None, "save the withdrawal").await?;
+        self.commit(entry, next, None, "save the withdrawal")
+            .await?;
         self.tell(pb::Change::Updated, &entry.session, &current);
         Ok(Response::new(current))
     }
@@ -757,6 +905,11 @@ impl State {
         let id = self.keys.get(key?)?;
         let entry = self.requests.iter().find(|entry| &entry.id == id)?;
         Some(settled(&entry.request.borrow()))
+    }
+
+    /// The request id the call with `key` made.
+    fn id_with(&self, key: Option<&str>) -> Option<String> {
+        self.keys.get(key?).cloned()
     }
 
     fn add(&mut self, entry: Entry) {
@@ -785,7 +938,12 @@ fn new_id() -> String {
     format!("rq_{}", uuid::Uuid::new_v4().simple())
 }
 
-fn question(id: &str, agent: &AgentCaller, question: String, choices: Vec<String>) -> pb::InboxRequest {
+fn question(
+    id: &str,
+    agent: &AgentCaller,
+    question: String,
+    choices: Vec<String>,
+) -> pb::InboxRequest {
     pb::InboxRequest {
         id: Some(pb::RequestId {
             value: id.to_owned(),
@@ -798,10 +956,9 @@ fn question(id: &str, agent: &AgentCaller, question: String, choices: Vec<String
         requester: Some(agent.actor()),
         action_title: format!("{} asks you a question", agent.title),
         preview: Some(pb::RequestPreview {
-            preview: Some(pb::request_preview::Preview::Question(pb::QuestionPreview {
-                question,
-                choices,
-            })),
+            preview: Some(pb::request_preview::Preview::Question(
+                pb::QuestionPreview { question, choices },
+            )),
         }),
         capability: pb::Capability::InboxAsk as i32,
         created_at: Some(attach::now()),
@@ -839,11 +996,13 @@ fn access_request(
         ),
         reason,
         preview: Some(pb::RequestPreview {
-            preview: Some(pb::request_preview::Preview::AccessAhead(pb::AccessAheadPreview {
-                capability,
-                target: target.clone(),
-                target_label: target_label.clone(),
-            })),
+            preview: Some(pb::request_preview::Preview::AccessAhead(
+                pb::AccessAheadPreview {
+                    capability,
+                    target: target.clone(),
+                    target_label: target_label.clone(),
+                },
+            )),
         }),
         capability,
         rule_decision: decision.map_or(pb::Decision::Unspecified, decision_of) as i32,
@@ -863,7 +1022,9 @@ fn access_request(
 fn describe(target: &GrantTarget) -> String {
     match target {
         GrantTarget::Session(session) => format!("reach session {session}"),
-        GrantTarget::Board(board) => format!("change others' items on the {} board", board_name(board)),
+        GrantTarget::Board(board) => {
+            format!("change others' items on the {} board", board_name(board))
+        }
         GrantTarget::Path(scope) => {
             let folder = if scope.prefix.as_str().is_empty() {
                 "everything".to_owned()
@@ -871,7 +1032,9 @@ fn describe(target: &GrantTarget) -> String {
                 format!("files under {}", scope.prefix.as_str())
             };
             match &scope.root {
-                humata2_access::Root::Clone(owner) => format!("use {folder} of session {}", owner.id),
+                humata2_access::Root::Clone(owner) => {
+                    format!("use {folder} of session {}", owner.id)
+                }
                 _ => format!("use {folder} on machine {}", scope.machine),
             }
         }
@@ -927,9 +1090,10 @@ fn kind_of(capability: Capability) -> pb::RequestKind {
             pb::RequestKind::Files
         }
         C::FilesReadOtherMachine | C::NetworkReach => pb::RequestKind::Bridge,
-        C::ChannelBoardAdd | C::ChannelBoardEditOthers | C::ChannelBoardEditOwn | C::OwnBoardWrite => {
-            pb::RequestKind::Board
-        }
+        C::ChannelBoardAdd
+        | C::ChannelBoardEditOthers
+        | C::ChannelBoardEditOwn
+        | C::OwnBoardWrite => pb::RequestKind::Board,
         C::SessionNote
         | C::SessionType
         | C::SessionStartSameMachine
@@ -963,6 +1127,8 @@ fn settle(held: &mut Held, decided: Decided, by: pb::Actor, at: SystemTime) {
     });
     request.revision = Some(next_revision(request));
     (held.grant, held.granted) = decided.grant.unzip();
+    // An approved deferred call runs next; waits go on until it ends.
+    held.running = held.deferred && decided.state == pb::RequestState::Approved;
 }
 
 /// Withdraws a pending `request` for `reason`.
@@ -974,7 +1140,11 @@ fn withdraw(request: &mut pb::InboxRequest, reason: pb::WithdrawReason) {
 
 fn next_revision(request: &pb::InboxRequest) -> pb::Revision {
     pb::Revision {
-        value: request.revision.as_ref().map_or(0, |revision| revision.value) + 1,
+        value: request
+            .revision
+            .as_ref()
+            .map_or(0, |revision| revision.value)
+            + 1,
     }
 }
 
@@ -1028,7 +1198,9 @@ fn still_open(request: &pb::InboxRequest) -> Result<(), Status> {
         Ok(pb::RequestState::Withdrawn) => Err(status::failure(
             Code::FailedPrecondition,
             status::error(
-                format!("request {value} was withdrawn: the agent stopped waiting for it before you answered"),
+                format!(
+                    "request {value} was withdrawn: the agent stopped waiting for it before you answered"
+                ),
                 "nothing to answer; if the agent still needs it, it will ask again",
                 pb::error::Kind::RequestWithdrawn(pb::RequestWithdrawn { request: id }),
             ),
@@ -1038,7 +1210,10 @@ fn still_open(request: &pb::InboxRequest) -> Result<(), Status> {
             Err(status::failure(
                 Code::Aborted,
                 status::error(
-                    format!("request {value} was already answered: {}", answered_how(request)),
+                    format!(
+                        "request {value} was already answered: {}",
+                        answered_how(request)
+                    ),
                     "nothing to do: the first answer stands; if it should change, deny the agent's next request or change the rule in Agent access",
                     pb::error::Kind::AlreadyAnswered(pb::AlreadyAnswered {
                         request: id,
@@ -1063,7 +1238,11 @@ fn answered_how(request: &pb::InboxRequest) -> String {
     };
     let how = match answered.by.as_ref().and_then(|by| by.actor.as_ref()) {
         Some(pb::actor::Actor::User(user)) => {
-            let machine = user.machine.as_ref().map(|machine| machine.value.as_str()).unwrap_or_default();
+            let machine = user
+                .machine
+                .as_ref()
+                .map(|machine| machine.value.as_str())
+                .unwrap_or_default();
             match pb::user_actor::Via::try_from(user.via) {
                 Ok(pb::user_actor::Via::CliOnHost) => " by you with humata on the Mac".to_owned(),
                 Ok(pb::user_actor::Via::CliOnMachine) => {
@@ -1120,7 +1299,8 @@ fn settled(held: &Held) -> pb::WaitResponse {
         }),
         Ok(pb::RequestState::Denied) => Some(pb::Error {
             message: format!("the user denied request {value}"),
-            fix: "don't ask again for the same thing; ask the user what they want instead".to_owned(),
+            fix: "don't ask again for the same thing; ask the user what they want instead"
+                .to_owned(),
             retry: None,
             kind: Some(pb::error::Kind::Denied(pb::Denied {
                 source: pb::denied::Source::UserDenied as i32,
@@ -1136,10 +1316,26 @@ fn settled(held: &Held) -> pb::WaitResponse {
         }),
         _ => None,
     };
-    let (result, result_type) = match &held.grant {
+    let (mut result, mut result_type) = match &held.grant {
         Some(grant) => (grant.encode_to_vec(), GRANT_TYPE.to_owned()),
         None => (Vec::new(), String::new()),
     };
+    let mut error = error;
+    let mut result_kept_until = None;
+    if let Some(outcome) = &held.outcome {
+        if outcome.error.is_some() {
+            error.clone_from(&outcome.error);
+        } else {
+            result_kept_until = Some(grant_target::timestamp(outcome.kept_until));
+            // After the keep time the state is still told, the result isn't.
+            if SystemTime::now() <= outcome.kept_until {
+                result.clone_from(&outcome.result);
+                result_type.clone_from(&outcome.result_type);
+            }
+        }
+    } else if deferred::lost(held) {
+        error = Some(deferred::lost_error(&value));
+    }
     pb::WaitResponse {
         id,
         state: request.state,
@@ -1147,6 +1343,7 @@ fn settled(held: &Held) -> pb::WaitResponse {
         result,
         result_type,
         error,
+        result_kept_until,
         ..Default::default()
     }
 }
@@ -1163,4 +1360,3 @@ fn no_request(id: &str) -> Status {
 fn id_of(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
-

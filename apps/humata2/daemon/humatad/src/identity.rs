@@ -109,6 +109,11 @@ pub(crate) fn session_ref(record: &SessionRecord, here: &str) -> SessionRef {
 #[derive(Clone, Copy, Debug)]
 struct Unauthenticated;
 
+/// Marks a request for WhoAmI, the one method an added agent may call
+/// (SE-29). Set by `mark_open` only.
+#[derive(Clone, Copy, Debug)]
+struct AddedAgentMayCall;
+
 /// Marks a request for a method a caller with no credential may make:
 /// WhoAmI, so a refused shell can learn why, and logging in.
 #[derive(Clone, Copy, Debug)]
@@ -132,6 +137,16 @@ pub(crate) fn mark_open(mut request: http::Request<Body>) -> http::Request<Body>
         .is_some_and(|route| OPEN_TO_ANYONE.iter().any(|listed| *listed == route));
     if open {
         request.extensions_mut().insert(OpenToAnyone);
+    }
+    let who_am_i = (pb::daemon_service_server::SERVICE_NAME, "WhoAmI");
+    if request
+        .uri()
+        .path()
+        .strip_prefix('/')
+        .and_then(|path| path.split_once('/'))
+        .is_some_and(|route| route == who_am_i)
+    {
+        request.extensions_mut().insert(AddedAgentMayCall);
     }
     request
 }
@@ -175,7 +190,11 @@ pub(crate) fn actor(caller: &Caller) -> pb::Actor {
 
 /// The caller the interceptor found for `request`.
 pub(crate) fn caller<T>(request: &Request<T>) -> Result<Caller, Status> {
-    request.extensions().get::<Caller>().cloned().ok_or_else(unchecked)
+    request
+        .extensions()
+        .get::<Caller>()
+        .cloned()
+        .ok_or_else(unchecked)
 }
 
 /// The caller of a method open to anyone: none when the call carried no
@@ -218,6 +237,57 @@ pub(crate) struct Identities {
 struct Holder {
     tab: String,
     caller: AgentCaller,
+    /// Whose token it is: the session's agent, or an agent added to the
+    /// session's tabs.
+    identity: TabIdentity,
+}
+
+/// What a token minted for a tab says its holder is (SE-29, SEC-8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabIdentity {
+    /// The session's own agent, or a shell in its tree: calls act as the
+    /// session (SEC-8, SEC-15).
+    Session,
+    /// An agent added to the session (D103). It is a terminal that runs an
+    /// agent and has no identity of its own: every call but WhoAmI is
+    /// refused.
+    AddedAgent,
+}
+
+impl TabIdentity {
+    /// The word the token file keeps for it.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::AddedAgent => "added",
+        }
+    }
+
+    fn of_word(word: Option<&str>) -> Self {
+        match word {
+            Some("added") => Self::AddedAgent,
+            _ => Self::Session,
+        }
+    }
+}
+
+/// An added agent's call, refused (SE-29, D103).
+fn added_agent_refused(session: &str) -> Status {
+    status::failure(
+        tonic::Code::PermissionDenied,
+        status::error(
+            format!(
+                "an agent added to session {session} has no identity of its own, so Humata's tools refuse its calls: only the session's main agent acts for the session"
+            ),
+            "fork the session, so this agent gets a session of its own and its own identity; then call Humata's tools from the fork",
+            pb::error::Kind::Denied(pb::Denied {
+                source: pb::denied::Source::Unspecified as i32,
+                capability: 0,
+                request: None,
+                user_note: String::new(),
+            }),
+        ),
+    )
 }
 
 impl Identities {
@@ -232,11 +302,13 @@ impl Identities {
         let mut dropped = false;
         for line in text.lines() {
             let mut fields = line.split_whitespace();
-            let (Some(hash), Some(tab), Some(session)) = (fields.next(), fields.next(), fields.next())
+            let (Some(hash), Some(tab), Some(session)) =
+                (fields.next(), fields.next(), fields.next())
             else {
                 dropped = true;
                 continue;
             };
+            let identity = TabIdentity::of_word(fields.next());
             let open = match store.tab(tab) {
                 Ok(found) => found.is_some_and(|found| found.session.as_deref() == Some(session)),
                 Err(StoreError::InvalidId { .. }) => false,
@@ -254,6 +326,7 @@ impl Identities {
                         Holder {
                             tab: tab.to_owned(),
                             caller: AgentCaller::of(&record, machine),
+                            identity,
                         },
                     );
                 }
@@ -277,6 +350,16 @@ impl Identities {
     /// A new token for `tab` of `session`, saved before it's returned.
     /// Blocks on the write.
     pub(crate) fn mint(&self, tab: &str, session: &SessionRecord) -> Result<String, StoreError> {
+        self.mint_as(tab, session, TabIdentity::Session)
+    }
+
+    /// As [`Self::mint`], for a token that says its holder is `identity`.
+    pub(crate) fn mint_as(
+        &self,
+        tab: &str,
+        session: &SessionRecord,
+        identity: TabIdentity,
+    ) -> Result<String, StoreError> {
         let (token, hash) = new_token();
         let mut tokens = lock(&self.tokens);
         tokens.insert(
@@ -284,6 +367,7 @@ impl Identities {
             Holder {
                 tab: tab.to_owned(),
                 caller: AgentCaller::of(session, &self.machine),
+                identity,
             },
         );
         if let Err(error) = self.save(&tokens) {
@@ -305,16 +389,22 @@ impl Identities {
         self.save(&tokens)
     }
 
-    fn find(&self, token: &str) -> Option<AgentCaller> {
+    fn find(&self, token: &str) -> Option<(AgentCaller, TabIdentity)> {
         lock(&self.tokens)
             .get(&digest(token))
-            .map(|holder| holder.caller.clone())
+            .map(|holder| (holder.caller.clone(), holder.identity))
     }
 
     fn save(&self, tokens: &HashMap<String, Holder>) -> Result<(), StoreError> {
         let mut text = String::new();
         for (hash, holder) in tokens {
-            let _ = writeln!(text, "{hash} {} {}", holder.tab, holder.caller.session.id);
+            let _ = writeln!(
+                text,
+                "{hash} {} {} {}",
+                holder.tab,
+                holder.caller.session.id,
+                holder.identity.word()
+            );
         }
         write_atomic(&self.file, text.as_bytes())
     }
@@ -393,7 +483,18 @@ impl Interceptor for Authenticate {
                 .ok()
                 .and_then(|token| self.identities.find(token))
             {
-                Some(agent) => Some(Caller::Agent(agent)),
+                Some((agent, TabIdentity::Session)) => Some(Caller::Agent(agent)),
+                // An added agent may ask who it is; nothing else. It
+                // answers as a caller with no credential, so it learns
+                // why its other calls are refused.
+                Some((_, TabIdentity::AddedAgent))
+                    if request.extensions().get::<AddedAgentMayCall>().is_some() =>
+                {
+                    None
+                }
+                Some((agent, TabIdentity::AddedAgent)) => {
+                    return Err(added_agent_refused(agent.session.id.as_str()));
+                }
                 None => return Err(status::identity_mismatch()),
             },
             // Judged strictly, even on an admin daemon: a login that
@@ -449,4 +550,116 @@ fn hex(bytes: &[u8]) -> String {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal_session::tests::Fake;
+
+    fn record() -> SessionRecord {
+        SessionRecord {
+            id: "se_main".to_owned(),
+            channel: "ch_one".to_owned(),
+            machine: String::new(),
+            title: "main".to_owned(),
+            agent: "claude".to_owned(),
+            folder: PathBuf::new(),
+            created_unix_ms: 0,
+        }
+    }
+
+    struct Rig {
+        _dir: tempfile::TempDir,
+        file: PathBuf,
+        store: Store,
+        identities: Arc<Identities>,
+        authenticate: Authenticate,
+    }
+
+    fn rig() -> Rig {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("store")).unwrap();
+        let file = dir.path().join("tokens");
+        let identities = Arc::new(Identities::load(file.clone(), &store, "ma_here").unwrap());
+        let logins = Arc::new(CliLogins::new(Box::new(Fake::default()), None));
+        let authenticate = Authenticate::new(identities.clone(), logins);
+        Rig {
+            _dir: dir,
+            file,
+            store,
+            identities,
+            authenticate,
+        }
+    }
+
+    fn call(token: &str, who_am_i: bool) -> Request<()> {
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .insert(TOKEN_HEADER, token.parse().unwrap());
+        if who_am_i {
+            request.extensions_mut().insert(OpenToAnyone);
+            request.extensions_mut().insert(AddedAgentMayCall);
+        }
+        request
+    }
+
+    #[test]
+    fn an_added_agents_call_is_refused_but_it_may_ask_who_it_is() {
+        let mut rig = rig();
+        let token = rig
+            .identities
+            .mint_as("tab_added", &record(), TabIdentity::AddedAgent)
+            .unwrap();
+
+        let refused = rig.authenticate.call(call(&token, false)).unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::PermissionDenied);
+        let error = status::error_of(&refused).unwrap();
+        assert!(!error.fix.is_empty());
+
+        let answered = rig.authenticate.call(call(&token, true)).unwrap();
+        assert!(caller_if_any(&answered).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_session_token_is_that_sessions_agent() {
+        let mut rig = rig();
+        let token = rig.identities.mint("tab_main", &record()).unwrap();
+
+        let accepted = rig.authenticate.call(call(&token, false)).unwrap();
+
+        assert!(matches!(
+            caller(&accepted).unwrap(),
+            Caller::Agent(agent) if agent.session.id.as_str() == "se_main"
+        ));
+    }
+
+    #[test]
+    fn a_tokens_kind_survives_a_restart() {
+        let rig = rig();
+        let token = rig
+            .identities
+            .mint_as("tab_added", &record(), TabIdentity::AddedAgent)
+            .unwrap();
+        rig.store.put_session(&record()).unwrap();
+        rig.store
+            .put_tab(&humata2_store::TabRecord {
+                id: "tab_added".to_owned(),
+                session: Some("se_main".to_owned()),
+                kind: humata2_store::TabKind::Agent,
+                title: "added".to_owned(),
+                holder_socket: PathBuf::new(),
+                holder_pid: 0,
+                created_unix_ms: 0,
+            })
+            .unwrap();
+
+        let reloaded = Identities::load(rig.file.clone(), &rig.store, "ma_here").unwrap();
+
+        assert_eq!(
+            reloaded.find(&token).map(|(_, kind)| kind),
+            Some(TabIdentity::AddedAgent)
+        );
+    }
 }

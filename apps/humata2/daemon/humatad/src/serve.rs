@@ -267,6 +267,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     #[cfg(not(feature = "admin"))]
     let authenticate = Authenticate::new(identities.clone(), logins.clone());
     let guard = Arc::new(Guard::new(&machine, role));
+    crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
 
     let channels_folder = args.channels.clone().unwrap_or_else(|| root.join("Humata"));
     let agents = match &args.agents {
@@ -339,7 +340,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     ));
     let review =
         crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
-    let access = Access::new(guard.clone(), feed.clone(), inbox.clone());
+    let access = Access::new(guard.clone(), feed.clone(), inbox.clone(), store.clone());
     let events = EventSvc::new(feed.clone(), guard.clone(), machine.clone());
     let operations = Arc::new(Operations::new(feed.clone()));
     let channel_svc = ChannelSvc::new(
@@ -348,6 +349,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         starter.clone(),
         machine.clone(),
         args.default_agent.clone(),
+        inbox.clone(),
     );
     let session_svc = SessionSvc::new(
         guard.clone(),
@@ -355,6 +357,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         starter,
         identities.clone(),
         machine.clone(),
+        inbox.clone(),
     );
     let machines = match role {
         pb::DaemonRole::Host => {

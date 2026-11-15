@@ -54,12 +54,15 @@ impl GrpcDaemon {
     fn new(socket: PathBuf) -> Self {
         let path = socket.clone();
         // The address is a placeholder: the connector dials the socket.
-        let channel = Endpoint::from_static("http://[::]:50051").connect_with_connector_lazy(
-            tower::service_fn(move |_: Uri| {
-                let path = path.clone();
-                async move { Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(path).await?)) }
-            }),
-        );
+        let channel =
+            Endpoint::from_static("http://[::]:50051").connect_with_connector_lazy(
+                tower::service_fn(move |_: Uri| {
+                    let path = path.clone();
+                    async move {
+                        Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(path).await?))
+                    }
+                }),
+            );
         Self {
             socket,
             channel,
@@ -89,6 +92,22 @@ impl GrpcDaemon {
 
     fn inbox(&self) -> pb::inbox_service_client::InboxServiceClient<Channel> {
         pb::inbox_service_client::InboxServiceClient::new(self.channel.clone())
+    }
+
+    fn channels(&self) -> pb::channel_service_client::ChannelServiceClient<Channel> {
+        pb::channel_service_client::ChannelServiceClient::new(self.channel.clone())
+    }
+
+    fn sessions(&self) -> pb::session_service_client::SessionServiceClient<Channel> {
+        pb::session_service_client::SessionServiceClient::new(self.channel.clone())
+    }
+
+    fn files(&self) -> pb::file_service_client::FileServiceClient<Channel> {
+        pb::file_service_client::FileServiceClient::new(self.channel.clone())
+    }
+
+    fn access(&self) -> pb::access_service_client::AccessServiceClient<Channel> {
+        pb::access_service_client::AccessServiceClient::new(self.channel.clone())
     }
 
     fn terminals(&self) -> pb::terminal_service_client::TerminalServiceClient<Channel> {
@@ -173,7 +192,10 @@ impl GrpcDaemon {
         // A comment's anchor has no hunk: a note on a hunk is on the line
         // inside it.
         let lines = review::lines(arguments.get("lines")).or_else(|| {
-            review::number(arguments.get("hunk_at")).map(|line| pb::LineRange { first: line, last: line })
+            review::number(arguments.get("hunk_at")).map(|line| pb::LineRange {
+                first: line,
+                last: line,
+            })
         });
         let request = self.request(pb::CreateCommentRequest {
             idempotency_key: Some(key(&call)),
@@ -235,7 +257,10 @@ impl GrpcDaemon {
             .await
             .map_err(|status| self.failed(&status))?
             .into_inner();
-        Ok(applied(json!({ "dropped": true, "undo_id": dropped.undo_id }), None))
+        Ok(applied(
+            json!({ "dropped": true, "undo_id": dropped.undo_id }),
+            None,
+        ))
     }
 
     /// `review_prepare`: in the review chat, the plan applies at once.
@@ -245,7 +270,9 @@ impl GrpcDaemon {
             idempotency_key: Some(key(&call)),
             title: text(arguments, "title"),
             summary: String::new(),
-            content: Some(pb::prepare_view_request::Content::ReviewPlan(review::plan(arguments))),
+            content: Some(pb::prepare_view_request::Content::ReviewPlan(review::plan(
+                arguments,
+            ))),
         })?;
         let prepared = self
             .views()
@@ -342,7 +369,10 @@ impl GrpcDaemon {
 
     /// A view's `content`: a board names the caller's own session or
     /// channel unless it names another session.
-    async fn view_content(&self, content: Option<&Value>) -> Result<Option<views::Content>, ToolError> {
+    async fn view_content(
+        &self,
+        content: Option<&Value>,
+    ) -> Result<Option<views::Content>, ToolError> {
         let Some(content) = content.and_then(Value::as_object) else {
             return Ok(None);
         };
@@ -360,7 +390,9 @@ impl GrpcDaemon {
                 }),
                 _ => return Err(views::global_board()),
             };
-            return Ok(Some(views::Content::Board(pb::BoardViewOffer { scope: Some(scope) })));
+            return Ok(Some(views::Content::Board(pb::BoardViewOffer {
+                scope: Some(scope),
+            })));
         }
         Ok(views::content(content))
     }
@@ -426,8 +458,9 @@ impl GrpcDaemon {
     /// `inbox_request` (IN-26): asks ahead for `capability` on `target`.
     async fn request_access(&self, call: Call) -> Result<Reply, ToolError> {
         let name = text(&call.arguments, "capability");
-        let capability = pb::Capability::from_str_name(&format!("CAPABILITY_{}", name.to_ascii_uppercase()))
-            .ok_or_else(|| access::unknown_capability(&name))?;
+        let capability =
+            pb::Capability::from_str_name(&format!("CAPABILITY_{}", name.to_ascii_uppercase()))
+                .ok_or_else(|| access::unknown_capability(&name))?;
         let target = match call.arguments.get("target").and_then(Value::as_object) {
             Some(target) => self.grant_target(target).await?,
             None => pb::GrantTarget::default(),
@@ -450,7 +483,10 @@ impl GrpcDaemon {
 
     /// A tool's `target` as a GrantTarget; a board named `session` or
     /// `channel` is the caller's own.
-    async fn grant_target(&self, target: &Map<String, Value>) -> Result<pb::GrantTarget, ToolError> {
+    async fn grant_target(
+        &self,
+        target: &Map<String, Value>,
+    ) -> Result<pb::GrantTarget, ToolError> {
         use pb::grant_target::Target;
         let board = match target.get("board") {
             Some(Value::String(scope)) if scope == "session" => {
@@ -471,7 +507,311 @@ impl GrpcDaemon {
         } else {
             access::target(target)
         };
-        Ok(pb::GrantTarget { target: Some(target) })
+        Ok(pb::GrantTarget {
+            target: Some(target),
+        })
+    }
+
+    /// `channels_list`.
+    async fn channels_list(&self) -> Result<Reply, ToolError> {
+        let request = self.request(pb::ListChannelsRequest { page: None })?;
+        let listed = self
+            .channels()
+            .list_channels(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(channels_json(&listed), None))
+    }
+
+    /// `session_info`: the caller's own session.
+    async fn session_info(&self) -> Result<Reply, ToolError> {
+        let id = self.own_session().await?;
+        let request = self.request(pb::GetSessionRequest { id: Some(id) })?;
+        let session = self
+            .sessions()
+            .get_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(session_json(&session), None))
+    }
+
+    /// The session a tool names, or the caller's own.
+    async fn named_session(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> Result<pb::SessionId, ToolError> {
+        let named = text(arguments, "session");
+        if named.is_empty() {
+            self.own_session().await
+        } else {
+            Ok(pb::SessionId { value: named })
+        }
+    }
+
+    /// `session_stop`.
+    async fn session_stop(&self, call: Call) -> Result<Reply, ToolError> {
+        let id = self.named_session(&call.arguments).await?;
+        let request = self.request(pb::StopSessionRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(id),
+        })?;
+        let session = self
+            .sessions()
+            .stop_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(session_json(&session), None))
+    }
+
+    /// `session_archive`: plans, then archives with nothing unpushed lost.
+    async fn session_archive(&self, call: Call) -> Result<Reply, ToolError> {
+        let id = self.named_session(&call.arguments).await?;
+        let plan = self
+            .sessions()
+            .plan_archive(self.request(pb::PlanArchiveRequest {
+                id: Some(id.clone()),
+            })?)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let request = self.request(pb::ArchiveSessionRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(id),
+            choice: pb::ArchiveChoice::Archive as i32,
+            plan: plan.token,
+        })?;
+        let operation = self
+            .sessions()
+            .archive_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({ "operation": operation.id.map(|id| id.value) }),
+            None,
+        ))
+    }
+
+    /// A tool's `location` as a FileLocation; the caller's own session,
+    /// channel and machine are the defaults.
+    async fn file_location(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> Result<pb::FileLocation, ToolError> {
+        use pb::file_location::Root;
+        let location = arguments
+            .get("location")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let machine = text(&location, "machine");
+        let repo = review::repo_path(&location).repo.unwrap_or_default();
+        let root = match text(&location, "root").as_str() {
+            "clone" => Root::SessionClone(pb::SessionClone {
+                session: Some(self.named_session(&location).await?),
+                repo: Some(repo),
+            }),
+            "shared" => Root::ChannelShared(pb::ChannelShared {
+                channel: Some(self.own_channel().await?),
+            }),
+            "main_clone" => Root::MainClone(pb::MainClone {
+                channel: Some(self.own_channel().await?),
+                repo: Some(repo),
+            }),
+            _ => Root::ChannelFolder(pb::ChannelFolder {
+                channel: Some(self.own_channel().await?),
+            }),
+        };
+        Ok(pb::FileLocation {
+            machine: (!machine.is_empty()).then_some(pb::MachineId { value: machine }),
+            root: Some(root),
+            path: text(&location, "path"),
+        })
+    }
+
+    async fn own_channel(&self) -> Result<pb::ChannelId, ToolError> {
+        let (_, channel) = self.agent().await?;
+        channel.ok_or_else(not_a_token)
+    }
+
+    /// `files_list`.
+    async fn files_list(&self, call: Call) -> Result<Reply, ToolError> {
+        let location = self.file_location(&call.arguments).await?;
+        let request = self.request(pb::ListDirectoryRequest {
+            location: Some(location),
+            page: Some(pb::PageRequest {
+                page_token: text(&call.arguments, "page_token"),
+                ..pb::PageRequest::default()
+            }),
+        })?;
+        let listed = self
+            .files()
+            .list_directory(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(directory_json(&listed), None))
+    }
+
+    /// `file_read`: the file as text, or base64 when it isn't UTF-8.
+    async fn file_read(&self, call: Call) -> Result<Reply, ToolError> {
+        let location = self.file_location(&call.arguments).await?;
+        let number = |field: &str| {
+            call.arguments
+                .get(field)
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        };
+        let request = self.request(pb::ReadFileRequest {
+            location: Some(location),
+            offset: number("offset"),
+            max_bytes: number("max_bytes"),
+            reason: text(&call.arguments, "reason"),
+            accept_codecs: Vec::new(),
+        })?;
+        let mut chunks = self
+            .files()
+            .read_file(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = chunks
+            .message()
+            .await
+            .map_err(|status| self.failed(&status))?
+        {
+            bytes.extend_from_slice(&chunk.data);
+        }
+        let result = match String::from_utf8(bytes) {
+            Ok(text) => json!({ "text": text }),
+            Err(error) => json!({ "base64": files::base64_encode(error.as_bytes()) }),
+        };
+        Ok(applied(result, None))
+    }
+
+    /// `file_write`: one header, then the bytes in chunks.
+    async fn file_write(&self, call: Call) -> Result<Reply, ToolError> {
+        use sha2::{Digest, Sha256};
+        let location = self.file_location(&call.arguments).await?;
+        let bytes = match call.arguments.get("text").and_then(Value::as_str) {
+            Some(text) => text.as_bytes().to_vec(),
+            None => files::base64_decode(&text(&call.arguments, "base64"))
+                .ok_or_else(files::bad_base64)?,
+        };
+        let header = pb::WriteFileMessage {
+            message: Some(pb::write_file_message::Message::Header(
+                pb::WriteFileHeader {
+                    idempotency_key: Some(key(&call)),
+                    location: Some(location),
+                    size: bytes.len() as u64,
+                    sha256: files::hex(&Sha256::digest(&bytes)),
+                    replace: call
+                        .arguments
+                        .get("replace")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                },
+            )),
+        };
+        let mut messages = vec![header];
+        let mut offset = 0usize;
+        loop {
+            let end = (offset + files::CHUNK).min(bytes.len());
+            messages.push(pb::WriteFileMessage {
+                message: Some(pb::write_file_message::Message::Chunk(pb::FileChunk {
+                    offset: offset as u64,
+                    data: bytes[offset..end].to_vec(),
+                    last: end == bytes.len(),
+                    ..pb::FileChunk::default()
+                })),
+            });
+            if end == bytes.len() {
+                break;
+            }
+            offset = end;
+        }
+        let request = self.request(tokio_stream::iter(messages))?;
+        let entry = self
+            .files()
+            .write_file(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(file_json(&entry), None))
+    }
+
+    /// `inbox_withdraw`.
+    async fn inbox_withdraw(&self, call: Call) -> Result<Reply, ToolError> {
+        let id = RequestId::new(text(&call.arguments, "request_id"));
+        self.withdraw(&id).await?;
+        Ok(applied(json!({ "withdrawn": true }), None))
+    }
+
+    /// `inbox_mine`: the caller's own requests.
+    async fn inbox_mine(&self, call: Call) -> Result<Reply, ToolError> {
+        let session = self.own_session().await?;
+        let pending_only = call
+            .arguments
+            .get("pending_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let request = self.request(pb::ListRequestsRequest {
+            scope: Some(pb::InboxScope {
+                scope: Some(pb::inbox_scope::Scope::Session(pb::SessionInbox {
+                    session: Some(session),
+                    with_forks: false,
+                })),
+            }),
+            include_answered: !pending_only,
+            page: None,
+        })?;
+        let listed = self
+            .inbox()
+            .list_requests(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let requests: Vec<Value> = listed
+            .requests
+            .iter()
+            .map(|request| {
+                json!({
+                    "request_id": request.id.as_ref().map(|id| id.value.clone()),
+                    "state": lower(request.state().as_str_name(), "REQUEST_STATE_"),
+                    "action": request.action_title,
+                    "capability": capability_name(request.capability),
+                })
+            })
+            .collect();
+        Ok(applied(json!({ "requests": requests }), None))
+    }
+
+    /// `access_explain`: what the caller's rules decide.
+    async fn access_explain(&self, call: Call) -> Result<Reply, ToolError> {
+        let name = text(&call.arguments, "capability");
+        let capability =
+            pb::Capability::from_str_name(&format!("CAPABILITY_{}", name.to_ascii_uppercase()))
+                .ok_or_else(|| access::unknown_capability(&name))?;
+        let target = match call.arguments.get("target").and_then(Value::as_object) {
+            Some(target) => Some(self.grant_target(target).await?),
+            None => None,
+        };
+        let request = self.request(pb::ExplainRequest {
+            session: None,
+            capability: capability as i32,
+            target,
+        })?;
+        let explained = self
+            .access()
+            .explain(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(explain_json(&explained), None))
     }
 
     async fn session_type(&self, call: Call) -> Result<Reply, ToolError> {
@@ -510,7 +850,7 @@ impl Daemon for GrpcDaemon {
     }
 
     async fn call(&self, call: Call) -> Result<Reply, ToolError> {
-        match call.operation {
+        let reply = match call.operation {
             Operation::Whoami => self.whoami().await,
             Operation::InboxAsk => self.ask(call).await,
             Operation::InboxRequest => self.request_access(call).await,
@@ -525,8 +865,19 @@ impl Daemon for GrpcDaemon {
             Operation::ViewRevise => self.view_revise(call).await,
             Operation::ViewMarkReady => self.view_mark_ready(call).await,
             Operation::ViewsList => self.views_list(call).await,
+            Operation::ChannelsList => self.channels_list().await,
+            Operation::SessionInfo => self.session_info().await,
+            Operation::SessionStop => self.session_stop(call).await,
+            Operation::SessionArchive => self.session_archive(call).await,
+            Operation::FileWrite => self.file_write(call).await,
+            Operation::FilesList => self.files_list(call).await,
+            Operation::FileRead => self.file_read(call).await,
+            Operation::InboxWithdraw => self.inbox_withdraw(call).await,
+            Operation::InboxMine => self.inbox_mine(call).await,
+            Operation::AccessExplain => self.access_explain(call).await,
             other => Err(not_built(other)),
-        }
+        };
+        pending_or(reply)
     }
 
     async fn wait(
@@ -558,10 +909,10 @@ impl Daemon for GrpcDaemon {
                 };
                 let event = match next {
                     Ok(Some(response)) if response.keepalive => WaitEvent::Keepalive,
-                    Ok(Some(response)) => WaitEvent::Done(outcome(response)),
+                    Ok(Some(response)) => WaitEvent::Done(pending_or(outcome(response))),
                     // Ended without an answer: the server reports pending.
                     Ok(None) => return,
-                    Err(status) => WaitEvent::Done(Err(from_status(&status, &socket))),
+                    Err(status) => WaitEvent::Done(pending_or(Err(from_status(&status, &socket)))),
                 };
                 let done = matches!(event, WaitEvent::Done(_));
                 if sender.send(event).await.is_err() || done {
@@ -598,14 +949,7 @@ fn outcome(response: pb::WaitResponse) -> Result<Reply, ToolError> {
         Ok(pb::RequestState::Answered | pb::RequestState::Approved) => {
             let result = match response.answer.and_then(|answer| answer.answer) {
                 Some(pb::request_answer::Answer::Reply(reply)) => json!({ "reply": reply.text }),
-                Some(_) => {
-                    let grant = (response.result_type == crate::inbox::GRANT_TYPE)
-                        .then(|| <pb::Grant as prost::Message>::decode(response.result.as_slice()).ok())
-                        .flatten()
-                        .and_then(|grant| grant.id)
-                        .map(|id| id.value);
-                    json!({ "decision": "approved", "grant_id": grant })
-                }
+                Some(_) => approved_result(&response.result_type, &response.result),
                 None => json!({}),
             };
             Ok(applied(result, Some(id)))
@@ -672,6 +1016,18 @@ fn not_a_token() -> ToolError {
 
 fn from_status(status: &Status, socket: &Path) -> ToolError {
     if let Some(error) = status::error_of(status) {
+        if let Some(pb::error::Kind::ApprovalPending(pending)) = &error.kind {
+            let mut marked = tool_error(status.code(), error.clone());
+            let request = pending
+                .request
+                .as_ref()
+                .map(|id| id.value.clone())
+                .unwrap_or_default();
+            marked
+                .details
+                .insert(PENDING_MARK.to_owned(), json!(request));
+            return marked;
+        }
         return tool_error(status.code(), error);
     }
     if status.code() == Code::Unavailable {
@@ -732,6 +1088,8 @@ macro_rules! kinds {
         fn kind_of(kind: &pb::error::Kind) -> ErrorKind {
             match kind {
                 $(pb::error::Kind::$kind(_) => ErrorKind::$kind,)*
+                // Turned into a pending reply before an agent sees it.
+                pb::error::Kind::ApprovalPending(_) => ErrorKind::Internal,
             }
         }
     };
@@ -803,6 +1161,195 @@ fn capability_name(value: i32) -> Option<String> {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn channels_json(listed: &pb::ListChannelsResponse) -> Value {
+    let channels: Vec<Value> = listed
+        .channels
+        .iter()
+        .map(|channel| {
+            json!({
+                "channel_id": channel.id.as_ref().map(|id| id.value.clone()),
+                "name": channel.name,
+                "folder": channel.folder,
+                "repos": channel.repos.iter().map(|repo| format!("{}/{}", repo.owner, repo.name)).collect::<Vec<_>>(),
+                "machines": channel.machines.iter().map(|machine| machine.value.clone()).collect::<Vec<_>>(),
+                "live_sessions": channel.live_sessions,
+                "pending_requests": channel.pending_requests,
+            })
+        })
+        .collect();
+    json!({ "channels": channels })
+}
+
+fn directory_json(listed: &pb::ListDirectoryResponse) -> Value {
+    let entries: Vec<Value> = listed.entries.iter().map(file_json).collect();
+    let next = listed
+        .page
+        .as_ref()
+        .map(|page| page.next_page_token.clone())
+        .filter(|token| !token.is_empty());
+    json!({ "entries": entries, "next_page_token": next })
+}
+
+fn explain_json(explained: &pb::ExplainResponse) -> Value {
+    json!({
+        "decision": lower(explained.decision().as_str_name(), "DECISION_"),
+        "source": lower(explained.source().as_str_name(), "DECISION_SOURCE_"),
+        "grant_id": explained.grant.as_ref().map(|id| id.value.clone()),
+        "host_away": explained.host_away,
+        "away_mode": lower(explained.away_mode().as_str_name(), "AWAY_MODE_"),
+    })
+}
+
+/// What an approved request's kept result shows the agent, by the
+/// response type the daemon encoded it as. A type this bridge doesn't
+/// know still reports the approval, with a note.
+fn approved_result(result_type: &str, bytes: &[u8]) -> Value {
+    use prost::Message;
+    let shown = match result_type {
+        crate::inbox::GRANT_TYPE => pb::Grant::decode(bytes).ok().map(
+            |grant| json!({ "decision": "approved", "grant_id": grant.id.map(|id| id.value) }),
+        ),
+        "humata.v1.ListChannelsResponse" => pb::ListChannelsResponse::decode(bytes)
+            .ok()
+            .map(|r| channels_json(&r)),
+        "humata.v1.ListDirectoryResponse" => pb::ListDirectoryResponse::decode(bytes)
+            .ok()
+            .map(|r| directory_json(&r)),
+        "humata.v1.FileEntry" => pb::FileEntry::decode(bytes)
+            .ok()
+            .map(|entry| file_json(&entry)),
+        "humata.v1.Session" => pb::Session::decode(bytes)
+            .ok()
+            .map(|session| session_json(&session)),
+        "humata.v1.ExplainResponse" => pb::ExplainResponse::decode(bytes)
+            .ok()
+            .map(|r| explain_json(&r)),
+        _ => None,
+    };
+    shown.unwrap_or_else(|| {
+        let mut result = json!({ "decision": "approved", "grant_id": Value::Null });
+        if !result_type.is_empty() {
+            result["note"] = json!(format!(
+                "the user approved it and it ran, but this MCP server can't show a result of type {}; check the outcome where it applies",
+                result_type
+            ));
+        }
+        result
+    })
+}
+
+fn lower(name: &str, prefix: &str) -> String {
+    name.strip_prefix(prefix)
+        .unwrap_or(name)
+        .to_ascii_lowercase()
+}
+
+fn session_json(session: &pb::Session) -> Value {
+    json!({
+        "session": session.id.as_ref().map(|id| id.value.clone()),
+        "channel": session.channel.as_ref().map(|id| id.value.clone()),
+        "title": session.title,
+        "status": lower(session.status().as_str_name(), "SESSION_STATUS_"),
+        "machine": session.machine.as_ref().map(|id| id.value.clone()),
+        "spec_mode": session.spec_mode,
+        "repos": session.repos.iter().map(|repo| json!({
+            "repo": repo.repo.as_ref().map(|repo| format!("{}/{}", repo.owner, repo.name)),
+            "branch": repo.branch,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn file_json(entry: &pb::FileEntry) -> Value {
+    json!({
+        "path": entry.location.as_ref().map(|location| location.path.clone()),
+        "kind": lower(entry.kind().as_str_name(), "KIND_"),
+        "size": entry.size,
+        "writable": entry.writable,
+    })
+}
+
+/// A call the Inbox holds for the user comes back as a pending reply
+/// (TP-11): `from_status` marks it, and here the mark becomes `Pending`,
+/// so the MCP server waits on the request.
+fn pending_or(reply: Result<Reply, ToolError>) -> Result<Reply, ToolError> {
+    match reply {
+        Err(error) => match error.details.get(PENDING_MARK).and_then(Value::as_str) {
+            Some(request) => Ok(Reply::Pending {
+                request: RequestId::new(request.to_owned()),
+            }),
+            None => Err(error),
+        },
+        reply => reply,
+    }
+}
+
+/// The detail `from_status` sets on an approval-pending error. Never
+/// reaches an agent: `pending_or` turns it into a reply.
+const PENDING_MARK: &str = "approval_pending_request";
+
+/// File bytes in and out of JSON.
+mod files {
+    use humata2_mcp::{ErrorKind, ToolError};
+    use serde_json::Map;
+
+    /// Bytes per chunk of a write, under the 1 MiB a chunk may carry.
+    pub(super) const CHUNK: usize = 512 * 1024;
+
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub(super) fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    pub(super) fn base64_encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for group in bytes.chunks(3) {
+            let value = group.iter().enumerate().fold(0u32, |acc, (i, byte)| {
+                acc | (u32::from(*byte) << (16 - 8 * i))
+            });
+            for i in 0..4 {
+                if i <= group.len() {
+                    out.push(char::from(
+                        ALPHABET[((value >> (18 - 6 * i)) & 63) as usize],
+                    ));
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    pub(super) fn base64_decode(text: &str) -> Option<Vec<u8>> {
+        let digits = text.trim_end_matches('=').as_bytes();
+        if digits.len() % 4 == 1 {
+            return None;
+        }
+        let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+        for group in digits.chunks(4) {
+            let mut value = 0u32;
+            for (i, digit) in group.iter().enumerate() {
+                let sextet = ALPHABET.iter().position(|letter| letter == digit)? as u32;
+                value |= sextet << (18 - 6 * i);
+            }
+            for i in 0..group.len() - 1 {
+                out.push((value >> (16 - 8 * i)) as u8);
+            }
+        }
+        Some(out)
+    }
+
+    pub(super) fn bad_base64() -> ToolError {
+        ToolError {
+            kind: ErrorKind::InvalidField,
+            message: "base64 isn't valid base64".to_owned(),
+            fix: "send standard base64 with + and /, or send the file as text".to_owned(),
+            retry: None,
+            details: Map::new(),
+        }
+    }
 }
 
 /// The view tools' arguments and answers, as JSON.
@@ -889,8 +1436,11 @@ mod views {
         details.insert("problem".to_owned(), json!("not_allowed_here"));
         ToolError {
             kind: ErrorKind::InvalidField,
-            message: "a view can't offer the global board; a view stays in your session's channel".to_owned(),
-            fix: "offer \"session\", \"channel\" or {\"session\": ...} for a session of your channel".to_owned(),
+            message: "a view can't offer the global board; a view stays in your session's channel"
+                .to_owned(),
+            fix:
+                "offer \"session\", \"channel\" or {\"session\": ...} for a session of your channel"
+                    .to_owned(),
             retry: None,
             details,
         }
@@ -937,7 +1487,8 @@ mod access {
         ToolError {
             kind: ErrorKind::InvalidField,
             message: format!("capability {name:?} isn't one this humatad2 knows"),
-            fix: "use a capability from the tool's list, or update Humata on this machine".to_owned(),
+            fix: "use a capability from the tool's list, or update Humata on this machine"
+                .to_owned(),
             retry: None,
             details,
         }
@@ -995,7 +1546,10 @@ mod access {
             });
         }
         if let Some(action) = inner("machine_action") {
-            let kind = format!("MACHINE_ACTION_KIND_{}", text(action, "action").to_ascii_uppercase());
+            let kind = format!(
+                "MACHINE_ACTION_KIND_{}",
+                text(action, "action").to_ascii_uppercase()
+            );
             return Target::MachineAction(pb::MachineAction {
                 machine: machine(action),
                 new_machine: text(action, "new_machine"),
@@ -1035,13 +1589,21 @@ mod review {
     }
 
     pub(super) fn number(value: Option<&Value>) -> Option<u32> {
-        value.and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
+        value
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
     }
 
     fn strings(value: Option<&Value>) -> Vec<String> {
         value
             .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -1059,7 +1621,9 @@ mod review {
         let spec = arguments.get("spec");
         pb::ReviewPlan {
             spec: Some(pb::DiffSpec {
-                repos: objects(spec.and_then(|spec| spec.get("repos"))).map(repo_spec).collect(),
+                repos: objects(spec.and_then(|spec| spec.get("repos")))
+                    .map(repo_spec)
+                    .collect(),
             }),
             order: objects(arguments.get("order")).map(repo_path).collect(),
             groups: objects(arguments.get("groups"))
@@ -1071,11 +1635,18 @@ mod review {
                 .collect(),
             notes: objects(arguments.get("notes"))
                 .map(|note| {
-                    let (target, lines) = match (lines(note.get("lines")), number(note.get("hunk_at"))) {
-                        (Some(lines), _) => (pb::review_note::Target::Lines, Some(lines)),
-                        (None, Some(line)) => (pb::review_note::Target::Hunk, Some(pb::LineRange { first: line, last: line })),
-                        (None, None) => (pb::review_note::Target::File, None),
-                    };
+                    let (target, lines) =
+                        match (lines(note.get("lines")), number(note.get("hunk_at"))) {
+                            (Some(lines), _) => (pb::review_note::Target::Lines, Some(lines)),
+                            (None, Some(line)) => (
+                                pb::review_note::Target::Hunk,
+                                Some(pb::LineRange {
+                                    first: line,
+                                    last: line,
+                                }),
+                            ),
+                            (None, None) => (pb::review_note::Target::File, None),
+                        };
                     pb::ReviewNote {
                         file: Some(repo_path(note)),
                         target: target as i32,
@@ -1158,11 +1729,18 @@ mod review {
     }
 
     fn lines_json(lines: Option<&pb::LineRange>) -> Value {
-        lines.map_or(Value::Null, |lines| json!({ "first": lines.first, "last": lines.last }))
+        lines.map_or(
+            Value::Null,
+            |lines| json!({ "first": lines.first, "last": lines.last }),
+        )
     }
 
     fn side_json(side: i32) -> &'static str {
-        if side == pb::DiffSide::Old as i32 { "old" } else { "new" }
+        if side == pb::DiffSide::Old as i32 {
+            "old"
+        } else {
+            "new"
+        }
     }
 
     pub(super) fn context_json(context: &pb::ReviewContext) -> Value {

@@ -21,6 +21,7 @@ mod journal;
 mod last_good;
 mod records;
 mod reviews;
+mod rules;
 mod schema;
 mod store;
 mod views;
@@ -36,5 +37,6 @@ pub use records::{
     MainClone, Pointers, RepoPointer, ResumeFailure, ReviewRecord, SessionDetail, SessionRecord,
     SessionRepo, StartStep, TabKind, TabRecord, Told, ViewRecord,
 };
+pub use rules::SavedRules;
 pub use schema::SCHEMA_VERSION;
 pub use store::Store;

@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use humata2_grpc::humata::v1 as pb;
 use humata2_access::{Call, ChannelId, MachineId, Refusal, SessionId, SessionRef};
+use humata2_grpc::humata::v1 as pb;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
@@ -74,7 +74,12 @@ impl Default for Feed {
 impl Feed {
     /// Adds one change to the feed, numbered after the last. `by` is who
     /// made it; unset, the daemon did (D95).
-    pub(crate) fn publish(&self, change: pb::Change, payload: pb::event::Payload, by: Option<pb::Actor>) {
+    pub(crate) fn publish(
+        &self,
+        change: pb::Change,
+        payload: pb::event::Payload,
+        by: Option<pb::Actor>,
+    ) {
         self.publish_scoped(change, payload, None, by);
     }
 
@@ -120,7 +125,10 @@ impl Feed {
 
     /// What a subscriber resuming after `after` gets first, and the live
     /// events from there on.
-    pub(crate) fn subscribe(&self, after: Option<u64>) -> (Vec<Arc<Published>>, broadcast::Receiver<Arc<Published>>) {
+    pub(crate) fn subscribe(
+        &self,
+        after: Option<u64>,
+    ) -> (Vec<Arc<Published>>, broadcast::Receiver<Arc<Published>>) {
         let kept = lock(&self.kept);
         let live = self.live.subscribe();
         let Some(after) = after else {
@@ -132,7 +140,12 @@ impl Feed {
         if after + 1 < earliest || after >= kept.next {
             return (vec![resync(earliest)], live);
         }
-        let backlog = kept.events.iter().filter(|event| seq(event) > after).cloned().collect();
+        let backlog = kept
+            .events
+            .iter()
+            .filter(|event| seq(event) > after)
+            .cloned()
+            .collect();
         (backlog, live)
     }
 
@@ -182,7 +195,12 @@ struct Filter {
 }
 
 impl Filter {
-    fn of(caller: &Caller, request: &pb::SubscribeRequest, guard: Arc<Guard>, machine: String) -> Result<Self, Status> {
+    fn of(
+        caller: &Caller,
+        request: &pb::SubscribeRequest,
+        guard: Arc<Guard>,
+        machine: String,
+    ) -> Result<Self, Status> {
         let (user, own_session) = match caller {
             Caller::User(_) => (true, None),
             Caller::Agent(agent) => (false, Some(agent.session.id.to_string())),
@@ -220,13 +238,17 @@ impl Filter {
         if self.channels.is_empty() && self.sessions.is_empty() {
             return true;
         }
-        scope.is_some_and(|scope| self.channels.contains(&scope.channel) || self.sessions.contains(&scope.session))
+        scope.is_some_and(|scope| {
+            self.channels.contains(&scope.channel) || self.sessions.contains(&scope.session)
+        })
     }
 
     /// Whether the caller sees what belongs to `scope`'s session: the user
     /// every session's, an agent its own.
     fn sees_session(&self, scope: Option<&Scope>) -> bool {
-        self.user || scope.is_some_and(|scope| self.own_session.as_deref() == Some(scope.session.as_str()))
+        self.user
+            || scope
+                .is_some_and(|scope| self.own_session.as_deref() == Some(scope.session.as_str()))
     }
 
     /// Whether the caller may read `scope`'s session, as ListComments
@@ -269,15 +291,20 @@ impl Filter {
                 self.inbox && self.sees_session(scope) && self.asked(scope)
             }
             // Grants likewise, as ListGrants lists them.
-            Some(pb::event::Payload::Grant(_)) => self.access && self.sees_session(scope) && self.asked(scope),
+            Some(pb::event::Payload::Grant(_)) => {
+                self.access && self.sees_session(scope) && self.asked(scope)
+            }
             // Review chat notes of every session the caller may read, as
             // ListComments lists them.
-            Some(pb::event::Payload::Comment(_)) => self.comments && self.asked(scope) && self.reads_session(scope),
+            Some(pb::event::Payload::Comment(_)) => {
+                self.comments && self.asked(scope) && self.reads_session(scope)
+            }
             // Operations: the user's and every session's to the user,
             // an agent its own session's, as GetOperation finds them.
             Some(pb::event::Payload::Operation(_)) => {
                 self.operations && self.sees_session(scope) && self.asked(scope)
             }
+            Some(pb::event::Payload::Rules(_)) => self.user && self.access && self.asked(scope),
             _ => false,
         }
     }
@@ -295,7 +322,11 @@ pub(crate) struct EventSvc {
 
 impl EventSvc {
     pub(crate) fn new(feed: Arc<Feed>, guard: Arc<Guard>, machine: String) -> Self {
-        Self { feed, guard, machine }
+        Self {
+            feed,
+            guard,
+            machine,
+        }
     }
 }
 

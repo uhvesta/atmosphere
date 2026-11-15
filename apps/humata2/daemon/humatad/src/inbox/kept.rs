@@ -9,14 +9,15 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{
-    AccessRequest, Agent, Grant, GrantId, MachineId, Policy, PresenceMethod, RequestId, SessionKind,
-    Verdict,
+    AccessRequest, Agent, Grant, GrantId, MachineId, Policy, PresenceMethod, RequestId,
+    SessionKind, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{InboxRecord, Store};
 use humata2_store_proto::humata::store::v1 as stored;
 use prost::Message;
 
+use super::deferred::is_deferred;
 use super::{Entry, Held, State, withdraw};
 use crate::grant_target;
 use crate::guard::Guard;
@@ -25,13 +26,21 @@ use crate::identity::AgentCaller;
 /// The store's record of `entry` standing as `held`.
 pub(super) fn record(entry: &Entry, held: &Held) -> InboxRecord {
     let grant = held.granted.clone().map(|granted| stored::InboxGrant {
-        grant: held.grant.as_ref().map(Message::encode_to_vec).unwrap_or_default(),
+        grant: held
+            .grant
+            .as_ref()
+            .map(Message::encode_to_vec)
+            .unwrap_or_default(),
         ..granted
     });
     let body = stored::InboxEntry {
         request: held.request.encode_to_vec(),
         keys: entry.keys.clone(),
-        asked: entry.asked.as_ref().map(Message::encode_to_vec).unwrap_or_default(),
+        asked: entry
+            .asked
+            .as_ref()
+            .map(Message::encode_to_vec)
+            .unwrap_or_default(),
         grant,
     };
     let created = held.request.created_at.as_ref().map_or(0, |at| {
@@ -141,9 +150,12 @@ fn restored(
         Some(pb::GrantTarget::decode(body.asked.as_slice()).ok()?)
     };
     let grant = match &body.grant {
-        Some(granted) if !granted.grant.is_empty() => Some(pb::Grant::decode(granted.grant.as_slice()).ok()?),
+        Some(granted) if !granted.grant.is_empty() => {
+            Some(pb::Grant::decode(granted.grant.as_slice()).ok()?)
+        }
         _ => None,
     };
+    let deferred = is_deferred(&request);
     let mut held = Held {
         request,
         grant,
@@ -151,17 +163,37 @@ fn restored(
             grant: Vec::new(),
             ..granted
         }),
+        // A call waiting to run is gone with the process that held it.
+        deferred,
+        running: false,
+        outcome: None,
     };
-    let access = asked
-        .clone()
-        .and_then(|target| asked_again(guard, store, machine, &record.session, held.request.capability, target));
+    let access = asked.clone().and_then(|target| {
+        asked_again(
+            guard,
+            store,
+            machine,
+            &record.session,
+            held.request.capability,
+            target,
+        )
+    });
     let mut changed = false;
+    if deferred && held.request.state == pb::RequestState::Pending as i32 {
+        // Nothing is left that could run it, so it can't be approved.
+        withdraw(&mut held.request, pb::WithdrawReason::CallEnded);
+        changed = true;
+    }
     if asked.is_some() && access.is_none() {
         if held.request.state == pb::RequestState::Pending as i32 {
             withdraw(&mut held.request, pb::WithdrawReason::SessionDeleted);
             changed = true;
         }
-        if let Some(granted) = held.granted.as_mut().filter(|granted| granted.revoked_unix_ms == 0) {
+        if let Some(granted) = held
+            .granted
+            .as_mut()
+            .filter(|granted| granted.revoked_unix_ms == 0)
+        {
             granted.revoked_unix_ms = unix_ms(SystemTime::now());
             changed = true;
         }
@@ -179,6 +211,7 @@ fn restored(
         asked,
         keys: body.keys,
         request: tokio::sync::watch::channel(held).0,
+        run: std::sync::Mutex::new(None),
     };
     Some((entry, standing, changed))
 }

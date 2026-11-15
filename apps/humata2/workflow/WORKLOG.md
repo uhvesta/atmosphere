@@ -28,10 +28,11 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | done |
 | minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
 | minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
+| minion ASK | Opus 5.5 | manager | ASK (agent a7b618c1fe3289cef) | 2026-11-15 | active |
 | minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | done |
 | minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | done |
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
-| minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | running |
+| minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
 | minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | running |
 
 ## Claims
@@ -42,6 +43,7 @@ Files a lane is editing. No two lanes claim the same file.
 |---|---|
 | C1 | `clients/src/{daemon,fixture,workspace}.rs`, `clients/tests/fake_daemon.rs`, `desktop/tests/native.rs`, `desktop/tests/__snapshots__/native/`, `features/app/src/lib.rs`, `features/session/src/lib.rs`, `ui/BUILD.bazel`, `ui/src/{lib,overlays,pages,session_tabs,shell}.rs`, its OVERVIEW pickup block |
 | P0 | `LAYOUT.md`, `api/{BOUNDARIES,MCP,GRPC}.md` ("Always let" → "Always allow"); `features/app/src/` (lib.rs and new sibling files); `clients/BUILD.bazel`, `clients/src/{daemon,fixture}.rs`, new `clients/src/{daemon,fixture}/`; `ui/src/overlays.rs` and new `ui/src/overlay_*.rs` (all clean in git status when claimed; not panels.rs, native.rs, ui/src/lib.rs) |
+| ASK | `daemon/humatad/src/{inbox,inbox/kept,inbox/deferred,guard,status,channel_service,access_service,rules_kept,identity,restart,session_service,mcp}.rs`, `daemon/humatad/tests/{inbox,access,auth,sessions,mcp,matrix}.rs`, `daemon/humatad/tests/common/mod.rs` (additive), `daemon/store/src/{rules,schema,lib}.rs`, `daemon/store/BUILD.bazel`, `cli/src/{error,call,exit}.rs`, `workflow/milestones/ASK.md` Lane |
 | FRAMES1 | `desktop/tests/design.rs` (FRAMES list and icons only); `desktop/tests/design/{session,channel,pages,overlays}.rs` (additive only: frames 01–43 draw the same); new `desktop/tests/design/{new_channel,resume,channel_tabs,comments,cleanup}.rs`; `workflow/milestones/FRAMES1.md` Lane (clean in git status when claimed; no goldens) |
 
 ## Lanes
@@ -51,6 +53,7 @@ Each lane's plan, tasks and workers live in its milestone file
 
 | Lane | Milestone file | Manager | Workers running | State |
 |---|---|---|---|---|
+| ASK | `milestones/ASK.md` | minion ASK | defer, rules, sessions, mcp, matrix | opened after FL-D closed; daemon part first (FL, LOOK1, FRAMES1, W1 block only closing) |
 | FRAMES1 | `milestones/FRAMES1.md` | minion FRAMES1 | none (FA, FB, FC done) | batch 1 reported: frames 44–55 drafted as code, waiting on the gate (design_test build + record) |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
@@ -96,3 +99,6 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: gate 1 FRAMES1: design_test builds once C1 fixed its Delegate match; 01–43 unchanged; recorded 44–55 (untracked drafts). Sent back: 55 date/size overlap, 51 duplicate 'addressed'.
 - 2026-11-15 main: FRAMES1 fixes re-recorded (51, 55 clean); all 12 drafts sent to owner for approval. FRAMES1 holds until owner answers (not committed: goldens need owner OK). FL-D gate 2 tests running.
 - 2026-11-15 main: gate 2 FL-D: 43/43 pass. rustfmt applied. Closed FL-D: 9ec5b5ed; decisions D115–D125 Provisional; claims released, lane ended.
+- 2026-11-15 main: opened ASK (daemon lane), manager minion ASK (Opus 5.5).
+- 2026-11-15 main: ASK batch 1 reported (T1–T5, decisions A1–A11). Main applied seams S1 (errors.proto ApprovalPending=57), S2 (mod rules_kept), S3 (serve.rs restore + Access store + inbox to ChannelSvc/SessionSvc; DaemonError::RulesKept), S4 (events Rules filter). S5 deferred. Gate 1 ASK running.
+- 2026-11-15 main: gate 1 ASK: main fixed its own RulesKept {0} and added exit_codes pending arm; build pass; humatad+cli 28/29, store+sessions pass; matrix_test 3 cases fail (--wait ends pending after deny; MCP went quiet). Sent to minion ASK.
