@@ -1224,3 +1224,72 @@ async fn a_draft_view_is_checked_before_it_is_kept() {
         .unwrap_err();
     assert_eq!(unknown.code(), Code::NotFound);
 }
+
+async fn feed(daemon: &Daemon, request: Request<pb::SubscribeRequest>) -> tonic::Streaming<pb::Event> {
+    pb::event_service_client::EventServiceClient::new(daemon.channel().await)
+        .subscribe(request)
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+/// The next view event's change, title and state.
+async fn next_view(events: &mut tonic::Streaming<pb::Event>) -> (i32, String, i32) {
+    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    match event.payload {
+        Some(pb::event::Payload::View(view)) => (event.change, view.title, view.state),
+        other => panic!("expected a view, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_feed_tells_the_agent_of_its_drafts_and_the_user_of_offers_only() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut mine = feed(&daemon, Request::new(pb::SubscribeRequest::default())).await;
+    let mut elsewhere = feed(
+        &daemon,
+        Request::new(pb::SubscribeRequest {
+            channels: vec![pb::ChannelId {
+                value: "ch_elsewhere".to_owned(),
+            }],
+            ..pb::SubscribeRequest::default()
+        }),
+    )
+    .await;
+    let mut agents = feed(&daemon, as_agent(pb::SubscribeRequest::default(), &token)).await;
+    let mut views = views(&daemon).await;
+
+    let draft = views
+        .prepare_view(as_agent(walkthrough("Refund walkthrough", "refund.rs"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = pb::MarkReadyRequest {
+        idempotency_key: None,
+        id: draft.id.clone(),
+    };
+    views.mark_ready(as_agent(ready.clone(), &token)).await.unwrap();
+    views.mark_ready(as_agent(ready, &token)).await.unwrap();
+    views
+        .set_view_state(set_state(draft.id.as_ref().unwrap(), pb::ViewState::Opened))
+        .await
+        .unwrap();
+
+    let (created, updated) = (pb::Change::Created as i32, pb::Change::Updated as i32);
+    let title = || "Refund walkthrough".to_owned();
+    let (waiting, opened) = (pb::ViewState::Waiting as i32, pb::ViewState::Opened as i32);
+    assert_eq!(next_view(&mut agents).await, (created, title(), pb::ViewState::Draft as i32));
+    assert_eq!(next_view(&mut agents).await, (updated, title(), waiting));
+    assert_eq!(next_view(&mut agents).await, (updated, title(), opened));
+    assert_eq!(next_view(&mut mine).await, (updated, title(), waiting), "the user never sees the draft");
+    assert_eq!(
+        next_view(&mut mine).await,
+        (updated, title(), opened),
+        "a repeated MarkReady changes nothing, so it isn't told"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), elsewhere.message()).await.is_err(),
+        "a feed narrowed to another channel hears nothing"
+    );
+}

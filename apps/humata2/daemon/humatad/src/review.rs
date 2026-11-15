@@ -32,6 +32,7 @@ use tokio::sync::watch;
 use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status};
 
+use crate::events::Feed;
 use crate::guard::Guard;
 use crate::identity::{self, AgentCaller, Caller};
 use crate::status;
@@ -55,6 +56,8 @@ struct Inner {
     store: Arc<Store>,
     guard: Arc<Guard>,
     machine: String,
+    /// Where offered views are told (D87).
+    feed: Arc<Feed>,
     sessions: Mutex<HashMap<String, Arc<SessionReview>>>,
     /// Held while a view is read, changed and saved, so two calls on one
     /// view, or two with one idempotency key, don't both act.
@@ -117,12 +120,13 @@ struct Chat {
 }
 
 impl Review {
-    pub(crate) fn new(store: Arc<Store>, guard: Arc<Guard>, machine: String) -> Self {
+    pub(crate) fn new(store: Arc<Store>, guard: Arc<Guard>, machine: String, feed: Arc<Feed>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
                 guard,
                 machine,
+                feed,
                 sessions: Mutex::default(),
                 views: tokio::sync::Mutex::default(),
             }),

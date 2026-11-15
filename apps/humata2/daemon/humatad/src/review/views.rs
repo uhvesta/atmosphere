@@ -18,6 +18,7 @@ use prost::Message;
 use tonic::{Code, Status};
 
 use super::{Review, blocking, idempotency, own_session};
+use crate::events::Scope;
 use crate::identity::Caller;
 use crate::status;
 
@@ -124,7 +125,7 @@ impl Review {
             },
             view,
         };
-        self.put(held, key).await
+        self.put(held, key, Some((pb::Change::Created, &record.channel))).await
     }
 
     /// ReviseView: new parts for a draft the caller prepared.
@@ -171,7 +172,8 @@ impl Review {
         } else if key.is_none() {
             return Ok(held.view);
         }
-        self.put(held, key).await
+        let told = changed.then_some((pb::Change::Updated, record.channel.as_str()));
+        self.put(held, key, told).await
     }
 
     /// MarkReady: the draft is offered (VW-2). An offered view stays as
@@ -182,18 +184,20 @@ impl Review {
         request: pb::MarkReadyRequest,
     ) -> Result<pb::PreparedView, Status> {
         let _writing = self.inner.views.lock().await;
-        let (mut held, _, _) = self.own_view(caller, request.id.as_ref(), "MarkReady")?;
+        let (mut held, record, _) = self.own_view(caller, request.id.as_ref(), "MarkReady")?;
         let key = idempotency(request.idempotency_key.as_ref());
         if held.answered(key.as_ref()) {
             return Ok(held.view);
         }
-        if held.state() == pb::ViewState::Draft {
+        let offered = held.state() == pb::ViewState::Draft;
+        if offered {
             held.view.state = pb::ViewState::Waiting as i32;
             held.bump();
         } else if key.is_none() {
             return Ok(held.view);
         }
-        self.put(held, key).await
+        let told = offered.then_some((pb::Change::Updated, record.channel.as_str()));
+        self.put(held, key, told).await
     }
 
     /// ListViews: a session's views, newest first. Drafts only to the
@@ -258,13 +262,16 @@ impl Review {
                 "wait until the agent marks it ready; a draft isn't offered or in the Journal",
             ));
         }
-        if held.state() != state {
+        let moved = held.state() != state;
+        if moved {
             held.view.state = state as i32;
             held.bump();
         } else if key.is_none() {
             return Ok(held.view);
         }
-        self.put(held, key).await
+        let channel = session.channel.to_string();
+        let told = moved.then_some((pb::Change::Updated, channel.as_str()));
+        self.put(held, key, told).await
     }
 
     /// The caller's own view `id`, with its session: only a session's
@@ -316,8 +323,15 @@ impl Review {
             .collect()
     }
 
-    /// Saves `held` with `key` among its keys, and answers with it.
-    async fn put(&self, mut held: Held, key: Option<String>) -> Result<pb::PreparedView, Status> {
+    /// Saves `held` with `key` among its keys, and answers with it. When
+    /// the view changed, `told` is the change and the view's channel, for
+    /// the event feed.
+    async fn put(
+        &self,
+        mut held: Held,
+        key: Option<String>,
+        told: Option<(pb::Change, &str)>,
+    ) -> Result<pb::PreparedView, Status> {
         if let Some(key) = key {
             let keys = &mut held.record.keys;
             keys.retain(|held| *held != key);
@@ -329,9 +343,17 @@ impl Review {
         held.record.updated_unix_ms = now().1;
         let store = self.inner.store.clone();
         let record = held.record;
+        let session = record.session.clone();
         blocking(move || store.put_view(&record))
             .await?
             .map_err(|error| status::store(error, &self.inner.machine, "save the view"))?;
+        if let Some((change, channel)) = told {
+            let scope = Scope {
+                channel: channel.to_owned(),
+                session,
+            };
+            self.inner.feed.publish_in(change, pb::event::Payload::View(held.view.clone()), scope);
+        }
         Ok(held.view)
     }
 

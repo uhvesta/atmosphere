@@ -498,7 +498,7 @@ mod tests {
 
     use super::*;
     use crate::compression::Compression;
-    use crate::events::Feed;
+    use crate::events::{Feed, Published};
     use crate::link_proof;
     use crate::machine_service::Work;
     use crate::peer::Handshake;
@@ -747,13 +747,13 @@ mod tests {
 
     /// `machine` as the next machine event on `live` shows it, waiting at
     /// most two minutes of the test clock.
-    async fn next_machine(live: &mut tokio::sync::broadcast::Receiver<Arc<pb::Event>>) -> pb::Machine {
+    async fn next_machine(live: &mut tokio::sync::broadcast::Receiver<Arc<Published>>) -> pb::Machine {
         tokio::time::timeout(Duration::from_secs(120), next_machine_event(live))
             .await
             .expect("the machine changes within two minutes")
     }
 
-    async fn next_machine_event(live: &mut tokio::sync::broadcast::Receiver<Arc<pb::Event>>) -> pb::Machine {
+    async fn next_machine_event(live: &mut tokio::sync::broadcast::Receiver<Arc<Published>>) -> pb::Machine {
         loop {
             let event = live.recv().await.unwrap();
             if let Some(pb::event::Payload::Machine(machine)) = &event.payload
@@ -782,7 +782,7 @@ mod tests {
     fn work_with_machine(
         dir: &Path,
         clock: crate::machine_service::Clock,
-    ) -> (Arc<Work>, tokio::sync::broadcast::Receiver<Arc<pb::Event>>) {
+    ) -> (Arc<Work>, tokio::sync::broadcast::Receiver<Arc<Published>>) {
         let hosts = dir.join("hosts.json");
         std::fs::write(
             &hosts,

@@ -693,3 +693,8 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 ## D88: A note going outdated is a review change nobody can undo (proposed by minion F). Provisional
 - **Pick:** when a GetDiff marks a note outdated or moves its lines, each such note is a ReviewChange on WatchReviewChanges with tool `"diff"`, the note as it now is, a new seq and an empty undo_id; Undo can't take it back, since the code changed, not the agent. Recommendation: keep it; the app shows it without Undo.
 - Reverse: `ChangeTool::Diff` and `ReviewChat::refresh_notes` in `daemon/review_diff/src/chat.rs`, and `refresh_notes` in `daemon/humatad/src/review.rs`.
+
+## D89: Views on the event feed, and narrowing a feed to channels or sessions (proposed by minion F). Provisional
+- **Pick:** every saved change to a view goes on the feed as an Event with the PreparedView: Created when the agent prepares it, Updated when it's revised, offered (MarkReady) or answered (SetViewState); a call that changes nothing isn't told. The user sees a view from its offer on, so the first event they get is the Updated that made it Waiting; the session's agent sees its own session's views, drafts included, as ListViews lists them. Recommendation: keep it.
+- Each feed event can carry the channel and session it belongs to (kept beside it, not on the wire). A subscription naming channels or sessions gets the events in any of them; naming topics keeps only those. Machines still belong to none.
+- Reverse: `Scope`/`Published`/`publish_in` and the View arm of `Filter` in `daemon/humatad/src/events.rs`, the `told` argument of `put` in `daemon/humatad/src/review/views.rs`, and Review's `feed`.

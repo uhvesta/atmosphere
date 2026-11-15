@@ -24,13 +24,34 @@ const KEPT: usize = 1024;
 
 struct Kept {
     next: u64,
-    events: VecDeque<Arc<pb::Event>>,
+    events: VecDeque<Arc<Published>>,
+}
+
+/// The channel and session an event belongs to, for subscriptions
+/// narrowed to some.
+pub(crate) struct Scope {
+    pub(crate) channel: String,
+    pub(crate) session: String,
+}
+
+/// An event and where it belongs; machines belong nowhere.
+pub(crate) struct Published {
+    event: pb::Event,
+    scope: Option<Scope>,
+}
+
+impl std::ops::Deref for Published {
+    type Target = pb::Event;
+
+    fn deref(&self) -> &pb::Event {
+        &self.event
+    }
 }
 
 /// The change feed every service publishes to.
 pub(crate) struct Feed {
     kept: Mutex<Kept>,
-    live: broadcast::Sender<Arc<pb::Event>>,
+    live: broadcast::Sender<Arc<Published>>,
 }
 
 impl Default for Feed {
@@ -52,14 +73,26 @@ impl Default for Feed {
 impl Feed {
     /// Adds one change to the feed, numbered after the last.
     pub(crate) fn publish(&self, change: pb::Change, payload: pb::event::Payload) {
+        self.publish_scoped(change, payload, None);
+    }
+
+    /// Adds one change of something in `scope`'s channel and session.
+    pub(crate) fn publish_in(&self, change: pb::Change, payload: pb::event::Payload, scope: Scope) {
+        self.publish_scoped(change, payload, Some(scope));
+    }
+
+    fn publish_scoped(&self, change: pb::Change, payload: pb::event::Payload, scope: Option<Scope>) {
         let mut kept = lock(&self.kept);
-        let event = Arc::new(pb::Event {
-            seq: Some(pb::EventSeq { value: kept.next }),
-            at: Some(now()),
-            by: None,
-            change: change as i32,
-            journal: None,
-            payload: Some(payload),
+        let event = Arc::new(Published {
+            event: pb::Event {
+                seq: Some(pb::EventSeq { value: kept.next }),
+                at: Some(now()),
+                by: None,
+                change: change as i32,
+                journal: None,
+                payload: Some(payload),
+            },
+            scope,
         });
         kept.next += 1;
         if kept.events.len() == KEPT {
@@ -73,7 +106,7 @@ impl Feed {
 
     /// What a subscriber resuming after `after` gets first, and the live
     /// events from there on.
-    pub(crate) fn subscribe(&self, after: Option<u64>) -> (Vec<Arc<pb::Event>>, broadcast::Receiver<Arc<pb::Event>>) {
+    pub(crate) fn subscribe(&self, after: Option<u64>) -> (Vec<Arc<Published>>, broadcast::Receiver<Arc<Published>>) {
         let kept = lock(&self.kept);
         let live = self.live.subscribe();
         let Some(after) = after else {
@@ -83,7 +116,7 @@ impl Feed {
         // `after` names an event this feed numbered: the one just before the
         // oldest kept, or later, but not past the newest.
         if after + 1 < earliest || after >= kept.next {
-            return (vec![Arc::new(resync(earliest))], live);
+            return (vec![resync(earliest)], live);
         }
         let backlog = kept.events.iter().filter(|event| seq(event) > after).cloned().collect();
         (backlog, live)
@@ -95,34 +128,42 @@ impl Feed {
     }
 }
 
-fn seq(event: &pb::Event) -> u64 {
-    event.seq.as_ref().map_or(0, |seq| seq.value)
+fn seq(published: &Published) -> u64 {
+    published.event.seq.as_ref().map_or(0, |seq| seq.value)
 }
 
-fn resync(earliest: u64) -> pb::Event {
-    pb::Event {
-        seq: None,
-        at: Some(now()),
-        by: None,
-        change: pb::Change::Unspecified as i32,
-        journal: None,
-        payload: Some(pb::event::Payload::Resync(pb::Resync {
-            earliest: Some(pb::EventSeq { value: earliest }),
-        })),
-    }
+fn resync(earliest: u64) -> Arc<Published> {
+    Arc::new(Published {
+        event: pb::Event {
+            seq: None,
+            at: Some(now()),
+            by: None,
+            change: pb::Change::Unspecified as i32,
+            journal: None,
+            payload: Some(pb::event::Payload::Resync(pb::Resync {
+                earliest: Some(pb::EventSeq { value: earliest }),
+            })),
+        },
+        scope: None,
+    })
 }
 
 /// Who sees what, and what the request asked for.
 struct Filter {
     user: bool,
+    /// An agent's own session.
+    own_session: Option<String>,
     machines: bool,
+    views: bool,
+    channels: Vec<String>,
+    sessions: Vec<String>,
 }
 
 impl Filter {
     fn of(caller: &Caller, request: &pb::SubscribeRequest) -> Result<Self, Status> {
-        let user = match caller {
-            Caller::User(_) => true,
-            Caller::Agent(_) => false,
+        let (user, own_session) = match caller {
+            Caller::User(_) => (true, None),
+            Caller::Agent(agent) => (false, Some(agent.session.id.to_string())),
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
         };
         let topics = &request.topics;
@@ -130,14 +171,41 @@ impl Filter {
         // some leaves them out unless it names the topic.
         let machines = topics.contains(&(pb::Topic::Machines as i32))
             || (topics.is_empty() && request.channels.is_empty() && request.sessions.is_empty());
-        Ok(Self { user, machines })
+        let views = topics.is_empty() || topics.contains(&(pb::Topic::Views as i32));
+        Ok(Self {
+            user,
+            own_session,
+            machines,
+            views,
+            channels: request.channels.iter().map(|id| id.value.clone()).collect(),
+            sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
+        })
     }
 
-    fn passes(&self, event: &pb::Event) -> bool {
-        match &event.payload {
+    /// Whether `scope` is in the channels or sessions asked for, if any.
+    fn asked(&self, scope: Option<&Scope>) -> bool {
+        if self.channels.is_empty() && self.sessions.is_empty() {
+            return true;
+        }
+        scope.is_some_and(|scope| self.channels.contains(&scope.channel) || self.sessions.contains(&scope.session))
+    }
+
+    fn passes(&self, published: &Published) -> bool {
+        let scope = published.scope.as_ref();
+        match &published.event.payload {
             Some(pb::event::Payload::Resync(_)) => true,
             // An agent sees no machines yet (ListMachines lists none).
             Some(pb::event::Payload::Machine(_)) => self.user && self.machines,
+            // The user sees offered views; an agent sees its own
+            // session's, drafts included (VW-14), as ListViews lists them.
+            Some(pb::event::Payload::View(view)) => {
+                let sees = if self.user {
+                    view.state != pb::ViewState::Draft as i32
+                } else {
+                    scope.is_some_and(|scope| self.own_session.as_deref() == Some(scope.session.as_str()))
+                };
+                self.views && sees && self.asked(scope)
+            }
             _ => false,
         }
     }
@@ -178,7 +246,7 @@ impl pb::event_service_server::EventService for EventSvc {
             let mut last = 0;
             for event in backlog {
                 last = last.max(seq(&event));
-                if filter.passes(&event) && sender.send(Ok((*event).clone())).await.is_err() {
+                if filter.passes(&event) && sender.send(Ok(event.event.clone())).await.is_err() {
                     return;
                 }
             }
@@ -192,12 +260,12 @@ impl pb::event_service_server::EventService for EventSvc {
                     Ok(event) => event,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         live = live.resubscribe();
-                        Arc::new(resync(feed.earliest()))
+                        resync(feed.earliest())
                     }
                     Err(broadcast::error::RecvError::Closed) => return,
                 };
                 last = last.max(seq(&event));
-                if filter.passes(&event) && sender.send(Ok((*event).clone())).await.is_err() {
+                if filter.passes(&event) && sender.send(Ok(event.event.clone())).await.is_err() {
                     return;
                 }
             }

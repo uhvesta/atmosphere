@@ -281,10 +281,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Link::Local,
     );
     let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone());
-    let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone());
+    let feed = Arc::new(Feed::default());
+    let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
     let access = Access::new(guard.clone());
     let operations = Arc::new(Operations::default());
-    let feed = Arc::new(Feed::default());
     let machines = match role {
         pb::DaemonRole::Host => {
             let work = Arc::new(machine_work(&state, args.tools, args.ssh_config, feed.clone())?);
