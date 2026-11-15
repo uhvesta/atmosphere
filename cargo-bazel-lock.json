@@ -1,5 +1,5 @@
 {
-  "checksum": "547ae17a45e87efcfb48530ab74d92c4ce6b40c8106023084bfe2fc3667e8a37",
+  "checksum": "448dec1da055a739530b688a806c1b6098daceb4d342fcbff4db59632d57eaf4",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -6094,6 +6094,41 @@
         {
           "Library": {
             "crate_name": "humata2_holder",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-mcp 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "uuid 1.29.2",
+            "target": "uuid"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_mcp",
+      "name": "humata2-mcp",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_mcp",
             "crate_root": "src/lib.rs"
           }
         }
@@ -16900,6 +16935,7 @@
     "humata2-bindgen 0.0.0": "apps/humata2/bindgen",
     "humata2-core 0.0.0": "apps/humata2/core",
     "humata2-holder 0.0.0": "apps/humata2/daemon/holder",
+    "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",
     "humata2-rehearsal 0.0.0": "apps/humata2/rehearsal",
     "humata2-report 0.0.0": "apps/humata2/report",
     "humata2-store 0.0.0": "apps/humata2/daemon/store",

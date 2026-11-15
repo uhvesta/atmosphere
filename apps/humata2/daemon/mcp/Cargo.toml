@@ -1,0 +1,18 @@
+[package]
+name = "humata2-mcp"
+description = "Humata 2's MCP server: the tools agents call over stdio, each one call on the daemon under the daemon's access checks."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-access = { path = "../access" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }

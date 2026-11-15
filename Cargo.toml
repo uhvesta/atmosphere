@@ -19,6 +19,7 @@ members = [
     "apps/humata2/daemon/holder",
     "apps/humata2/daemon/humatad",
     "apps/humata2/report",
+    "apps/humata2/daemon/mcp",
     "libs/tca-rust",
 ]
 resolver = "3"

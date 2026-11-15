@@ -1,0 +1,48 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2's MCP server (api/MCP.md): JSON-RPC over stdio, the tools and
+# their schemas, waiting for the user, and the refusals. Every tool is one
+# call on the daemon behind the `Daemon` trait, which decides what is
+# allowed; humatad implements it over gRPC and runs the server as
+# `humatad mcp`. No network code here.
+rust_library(
+    name = "mcp",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_mcp",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/daemon/access",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "mcp_unit_test",
+    crate = ":mcp",
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        # tests/schemas.rs reads the expected tool names with include_str!.
+        compile_data = ["tests/tools.txt"],
+        crate_root = src,
+        deps = [
+            ":mcp",
+            "//apps/humata2/daemon/access",
+            "@crates//:serde_json",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
