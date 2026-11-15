@@ -34,7 +34,8 @@ struct Cli {
 enum Command {
     /// Serves Humata's gRPC API on a Unix socket until stopped.
     Serve(serve::ServeArgs),
-    /// Pipes stdin and stdout to the daemon's socket.
+    /// Pipes stdin and stdout to the daemon's socket, starting the daemon
+    /// if none answers.
     Bridge(bridge::BridgeArgs),
     /// Serves MCP on stdin and stdout for the agent of the session whose
     /// token is in HUMATA_SESSION_TOKEN.
@@ -48,13 +49,17 @@ fn main() -> ExitCode {
         .build()
         .map_err(|source| DaemonError::Runtime { source })
         .and_then(|runtime| {
-            runtime.block_on(async move {
+            let result = runtime.block_on(async move {
                 match cli.command {
                     Command::Serve(args) => serve::run(args).await,
                     Command::Bridge(args) => bridge::run(args).await,
                     Command::Mcp(args) => mcp::run(args).await,
                 }
-            })
+            });
+            // Dropping the runtime would wait for a blocking read of stdin
+            // that never finishes (the bridge after its daemon goes away).
+            runtime.shutdown_background();
+            result
         });
     let code = match result {
         Ok(()) => 0,
@@ -63,7 +68,5 @@ fn main() -> ExitCode {
             1
         }
     };
-    // Leaves without waiting for a blocking read of stdin that will never
-    // finish, which the runtime would otherwise wait for.
     std::process::exit(code)
 }

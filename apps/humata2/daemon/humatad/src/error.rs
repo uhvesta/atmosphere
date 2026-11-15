@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::process::ExitStatus;
+use std::time::Duration;
 
 /// What starting the daemon, or bridging to it, can fail at.
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +87,7 @@ pub(crate) enum DaemonError {
     },
 
     #[error(
-        "couldn't reach humatad2 at {}; start it with `humatad2 serve` on this machine",
+        "couldn't connect to humatad2's socket {}; check that it and its folder belong to you, or pass the right --socket",
         socket.display()
     )]
     BridgeConnect {
@@ -93,6 +95,41 @@ pub(crate) enum DaemonError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error(
+        "no humatad2 answers on {}, and the bridge couldn't find its own binary to start one; start it with `humatad2 serve --role machine` on this machine",
+        socket.display()
+    )]
+    BridgeOwnBinary {
+        socket: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "no humatad2 answers on {}, and starting {} failed; check that it is executable, or reinstall Humata on this machine",
+        socket.display(),
+        program.display()
+    )]
+    BridgeStart {
+        program: PathBuf,
+        socket: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the humatad2 the bridge started on {} stopped ({status}) before it listened; run `humatad2 serve --role machine` on this machine to see why",
+        socket.display()
+    )]
+    BridgeDaemonExited { socket: PathBuf, status: ExitStatus },
+
+    #[error(
+        "the humatad2 the bridge started didn't listen on {} within {}s; it is left running, so try again, and if this repeats run `humatad2 serve --role machine` on this machine to see what it is doing",
+        socket.display(),
+        waited.as_secs()
+    )]
+    BridgeDaemonSilent { socket: PathBuf, waited: Duration },
 
     #[error("the bridge to humatad2 broke; reconnect")]
     BridgeCopy {

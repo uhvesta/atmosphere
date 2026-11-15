@@ -54,6 +54,7 @@ DAEMON_DEPS = [
     "@crates//:hyper-util",
     "@crates//:prost",
     "@crates//:rand",
+    "@crates//:rustix",
     "@crates//:serde_json",
     "@crates//:sha2",
     "@crates//:thiserror",
