@@ -67,6 +67,8 @@ fn sees(caller: &Caller, entry: &Entry) -> bool {
     match caller {
         Caller::User => true,
         Caller::Agent(agent) => agent.session.id.as_str() == entry.session,
+        // The Inbox isn't on the peer link; relayed answers come over Uplink.
+        Caller::Peer => false,
     }
 }
 

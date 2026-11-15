@@ -4,8 +4,8 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use humata2_access::{
-    AccessRequest, Agent, Call, Capability, Context, Effect, MachineId, Policy, Principal,
-    SessionKind, Verdict,
+    AccessRequest, Agent, Call, Capability, Context, Effect, MachineId, PeerLink, Policy,
+    Principal, SessionKind, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use tonic::Status;
@@ -50,6 +50,7 @@ impl Guard {
                 session: agent.session.clone(),
                 kind: SessionKind::Ordinary,
             }),
+            Caller::Peer => Principal::Peer(PeerLink::HostToDaemon),
         };
         let mut policy = lock(&self.policy);
         if let Caller::Agent(agent) = caller

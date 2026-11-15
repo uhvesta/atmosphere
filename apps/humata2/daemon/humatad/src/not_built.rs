@@ -1,7 +1,8 @@
 //! The services this build doesn't serve yet. Each answers every method
 //! with UNIMPLEMENTED and an Error naming the method, rather than the bare
-//! status an unknown route gets. PeerService is never served on a socket
-//! (GRPC.md §2), so it isn't here.
+//! status an unknown route gets. The socket and the peer link get
+//! different sets (GRPC.md §2): PeerService is never on a socket, and the
+//! peer link carries only PeerService and the services the Mac relays.
 
 use std::convert::Infallible;
 use std::future::{Ready, ready};
@@ -39,11 +40,6 @@ macro_rules! not_built {
                 }
             }
         )*
-
-        /// Adds every service not built yet to `router`.
-        pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
-            router$(.add_service($service))*
-        }
     };
 }
 
@@ -77,4 +73,47 @@ not_built! {
     CommentService => comment_service_server,
     PullRequestReviewService => pull_request_review_service_server,
     ViewService => view_service_server,
+    PeerService => peer_service_server,
+    TerminalService => terminal_service_server,
+}
+
+/// Adds to the socket's `router` every client service not built yet.
+pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
+    router
+        .add_service(AccessService)
+        .add_service(CliAuthService)
+        .add_service(AuditService)
+        .add_service(BoardService)
+        .add_service(ChannelService)
+        .add_service(ActivityService)
+        .add_service(FileService)
+        .add_service(TransferService)
+        .add_service(TrashService)
+        .add_service(EventService)
+        .add_service(OperationService)
+        .add_service(MachineService)
+        .add_service(ProviderService)
+        .add_service(SkillsService)
+        .add_service(BridgeService)
+        .add_service(SessionService)
+        .add_service(SettingsService)
+        .add_service(AgentService)
+        .add_service(MarkService)
+        .add_service(ViewStateService)
+        .add_service(DiffService)
+        .add_service(CommentService)
+        .add_service(PullRequestReviewService)
+        .add_service(ViewService)
+}
+
+/// Adds to the peer link's `router` what it carries that isn't built yet:
+/// all of PeerService, and the services the Mac relays to this machine.
+/// TerminalService is built, but only in the socket's daemon, which holds
+/// the terminals; this process doesn't (see `peer_link`).
+pub(crate) fn register_peer_link<L>(router: Router<L>) -> Router<L> {
+    router
+        .add_service(PeerService)
+        .add_service(TerminalService)
+        .add_service(FileService)
+        .add_service(DiffService)
 }

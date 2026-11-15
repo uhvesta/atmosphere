@@ -8,6 +8,7 @@
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use humata2_grpc::humata::v1 as pb;
@@ -15,6 +16,7 @@ use hyper_util::rt::TokioIo;
 use prost::Message;
 use rustix::process::{Pid, Signal};
 use tempfile::TempDir;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -177,6 +179,27 @@ pub async fn connect(socket: &Path) -> Channel {
         .connect_with_connector(tower::service_fn(move |_: Uri| {
             let socket = socket.clone();
             async move { Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(socket).await?)) }
+        }))
+        .await
+        .unwrap()
+}
+
+/// A gRPC channel over one byte stream, as the Mac's connector makes over
+/// a link's stdio: a child's stdout to read and its stdin to write.
+pub async fn channel_over(
+    stdout: impl AsyncRead + Send + Unpin + 'static,
+    stdin: impl AsyncWrite + Send + Unpin + 'static,
+) -> Channel {
+    let stdio = Arc::new(Mutex::new(Some(tokio::io::join(stdout, stdin))));
+    Endpoint::try_from("http://[::]:50051")
+        .unwrap()
+        .connect_with_connector(tower::service_fn(move |_: Uri| {
+            let stdio = stdio.lock().unwrap().take();
+            async move {
+                stdio
+                    .map(TokioIo::new)
+                    .ok_or_else(|| std::io::Error::other("a stdio link carries one connection"))
+            }
         }))
         .await
         .unwrap()

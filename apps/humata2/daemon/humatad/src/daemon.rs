@@ -45,20 +45,24 @@ impl pb::daemon_service_server::DaemonService for Daemon {
 
     /// A connection with a session token is that session's agent
     /// (BOUNDARIES.md §2). One with no credential gets no actor: it is
-    /// refused everything else, and this tells it so.
+    /// refused everything else, and this tells it so. The peer link gets
+    /// no actor either: it is neither the user nor an agent.
     async fn who_am_i(
         &self,
         request: Request<pb::WhoAmIRequest>,
     ) -> Result<Response<pb::WhoAmIResponse>, Status> {
+        let no_actor = pb::WhoAmIResponse {
+            actor: None,
+            channel: None,
+            presence_possible: false,
+            contained: false,
+        };
         let Some(caller) = identity::caller_if_any(&request)? else {
-            return Ok(Response::new(pb::WhoAmIResponse {
-                actor: None,
-                channel: None,
-                presence_possible: false,
-                contained: false,
-            }));
+            return Ok(Response::new(no_actor));
         };
         let (actor, channel) = match caller {
+            // Actor has no peer case; the Mac knows it is on the peer link.
+            Caller::Peer => return Ok(Response::new(no_actor)),
             Caller::User => {
                 let via = match self.role {
                     pb::DaemonRole::Machine => pb::user_actor::Via::CliOnMachine,

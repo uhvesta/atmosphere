@@ -6,17 +6,15 @@ mod common;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{Daemon, WAIT, error_of};
+use common::{Daemon, WAIT, channel_over, error_of};
 use humata2_grpc::humata::v1 as pb;
-use hyper_util::rt::TokioIo;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tonic::Code;
-use tonic::transport::{Channel, Endpoint, Uri};
+use tonic::transport::Channel;
 
 fn binary(variable: &str) -> PathBuf {
     std::fs::canonicalize(PathBuf::from(std::env::var_os(variable).unwrap())).unwrap()
@@ -30,27 +28,6 @@ fn bridge(program: &Path) -> Command {
         .stdout(Stdio::piped())
         .kill_on_drop(true);
     command
-}
-
-/// A gRPC channel over one byte stream, as the Mac's connector makes over
-/// the link's stdio.
-async fn channel_over(
-    stdout: impl AsyncRead + Send + Unpin + 'static,
-    stdin: impl AsyncWrite + Send + Unpin + 'static,
-) -> Channel {
-    let stdio = Arc::new(Mutex::new(Some(tokio::io::join(stdout, stdin))));
-    Endpoint::try_from("http://[::]:50051")
-        .unwrap()
-        .connect_with_connector(tower::service_fn(move |_: Uri| {
-            let stdio = stdio.lock().unwrap().take();
-            async move {
-                stdio
-                    .map(TokioIo::new)
-                    .ok_or_else(|| std::io::Error::other("the bridge carries one connection"))
-            }
-        }))
-        .await
-        .unwrap()
 }
 
 async fn exits(child: &mut Child) -> ExitStatus {

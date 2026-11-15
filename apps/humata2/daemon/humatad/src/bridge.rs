@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 
 use crate::error::DaemonError;
-use crate::serve;
+use crate::{serve, sync};
 
 /// How long a daemon that is restarting (a service manager's restart, say)
 /// gets to come back before the bridge starts one of its own.
@@ -33,16 +33,8 @@ pub(crate) struct BridgeArgs {
     /// Once connected, print `HUMATA_SYNC_<nonce>` on a line of its own
     /// before the stream, so a terminal Humata took over can tell where the
     /// stream starts (MP-15). Letters and digits only.
-    #[arg(long, value_parser = parse_nonce)]
+    #[arg(long, value_parser = sync::parse_nonce)]
     sync: Option<String>,
-}
-
-fn parse_nonce(nonce: &str) -> Result<String, String> {
-    if !nonce.is_empty() && nonce.len() <= 64 && nonce.bytes().all(|b| b.is_ascii_alphanumeric()) {
-        Ok(nonce.to_owned())
-    } else {
-        Err("a sync nonce is 1 to 64 letters and digits".to_owned())
-    }
 }
 
 pub(crate) async fn run(args: BridgeArgs) -> Result<(), DaemonError> {
@@ -52,15 +44,10 @@ pub(crate) async fn run(args: BridgeArgs) -> Result<(), DaemonError> {
     };
     let daemon = connect_or_start(&socket).await?;
     let mut stdout = tokio::io::stdout();
-    if let Some(nonce) = &args.sync {
-        let marker = format!("HUMATA_SYNC_{nonce}\n");
-        let written = match stdout.write_all(marker.as_bytes()).await {
-            Ok(()) => stdout.flush().await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = written {
-            return closed_or_broken(error);
-        }
+    if let Some(nonce) = &args.sync
+        && let Err(error) = sync::write_marker(&mut stdout, nonce).await
+    {
+        return closed_or_broken(error);
     }
     carry(daemon, tokio::io::stdin(), stdout).await
 }

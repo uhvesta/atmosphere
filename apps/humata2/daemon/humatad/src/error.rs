@@ -131,6 +131,14 @@ pub(crate) enum DaemonError {
     )]
     BridgeDaemonSilent { socket: PathBuf, waited: Duration },
 
+    #[error(
+        "couldn't print the sync marker on stdout, so the Mac can't find where the peer link starts; reconnect the machine from the Mac, and if this repeats check that the connect command gives humatad2 a working stdout"
+    )]
+    PeerLinkMarker {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("the bridge to humatad2 broke; reconnect")]
     BridgeCopy {
         #[source]

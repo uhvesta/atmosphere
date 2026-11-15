@@ -2,8 +2,9 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load(":tonic.bzl", "rust_tonic_services")
 
 # humatad2, Humata 2's daemon: serves the gRPC API (../../api/GRPC.md) on a
-# Unix socket, and `humatad2 bridge` carries a socket over stdio for SSH or
-# a provider's connect command. It only wires the parts together: state is
+# Unix socket, or the peer link on stdio with `serve --stdio`; `humatad2
+# bridge` carries the socket over stdio for SSH or a provider's connect
+# command. It only wires the parts together: state is
 # //apps/humata2/daemon/store, terminals are //apps/humata2/daemon/holder.
 
 # protoc-gen-tonic, the protoc plugin for tonic, built from the workspace's

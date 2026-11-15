@@ -1,6 +1,6 @@
 [package]
 name = "humatad2"
-description = "Humata 2's daemon: the gRPC API on a Unix socket, and a stdio bridge to it."
+description = "Humata 2's daemon: the gRPC API on a Unix socket, the peer link on stdio, and a stdio bridge to the socket."
 version = "0.0.0"
 publish = false
 edition.workspace = true

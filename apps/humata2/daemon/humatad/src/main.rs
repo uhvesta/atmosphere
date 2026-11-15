@@ -1,6 +1,7 @@
 //! `humatad2`: Humata 2's daemon. `serve` answers the gRPC API (GRPC.md) on
-//! a Unix socket; `bridge` pipes stdin and stdout to that socket, so SSH or
-//! a provider's connect command can carry it; `mcp` is the MCP server an
+//! a Unix socket, or with `--stdio` the peer link the Mac starts over SSH;
+//! `bridge` pipes stdin and stdout to that socket, so SSH or a provider's
+//! connect command can carry a client's calls; `mcp` is the MCP server an
 //! agent starts (MCP.md), a client of that socket.
 
 mod attach;
@@ -13,8 +14,10 @@ mod inbox;
 mod mcp;
 mod not_built;
 mod paste;
+mod peer_link;
 mod serve;
 mod status;
+mod sync;
 mod terminal;
 
 use std::process::ExitCode;
@@ -32,7 +35,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Serves Humata's gRPC API on a Unix socket until stopped.
+    /// Serves Humata's gRPC API on a Unix socket until stopped, or with
+    /// --stdio the peer link on stdin and stdout until it closes.
     Serve(serve::ServeArgs),
     /// Pipes stdin and stdout to the daemon's socket, starting the daemon
     /// if none answers.

@@ -38,6 +38,9 @@ pub(crate) enum Caller {
     #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     User,
     Agent(AgentCaller),
+    /// The Mac, over the peer link it started (`serve --stdio`). Bound to
+    /// the link, never to anything a request carries (GRPC.md §3).
+    Peer,
 }
 
 /// A session's agent, or anything else running in one of its tabs.
@@ -116,6 +119,14 @@ pub(crate) fn mark_open(mut request: http::Request<Body>) -> http::Request<Body>
     if open {
         request.extensions_mut().insert(OpenToAnyone);
     }
+    request
+}
+
+/// Makes every call on the peer link the peer's. Whatever credential a
+/// request carries is ignored: the link is the identity, and nothing on it
+/// is the user or an agent, admin daemon or not.
+pub(crate) fn mark_peer(mut request: http::Request<Body>) -> http::Request<Body> {
+    request.extensions_mut().insert(Caller::Peer);
     request
 }
 

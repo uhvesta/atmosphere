@@ -1,5 +1,7 @@
 //! `humatad2 serve`: opens the state, binds the socket and serves until a
 //! stop signal. Terminals live in their holders, so they outlive this.
+//! With `--stdio` it serves the peer link instead (`peer_link`), and no
+//! socket.
 
 use std::ffi::OsString;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -22,6 +24,8 @@ use crate::identity::{self, Authenticate, Identities};
 use crate::inbox::Inbox;
 use crate::not_built;
 use crate::paste::PASTE_MAX_BYTES;
+use crate::peer_link;
+use crate::sync;
 use crate::terminal::{Terminals, TerminalsConfig};
 
 /// What Unix sockets allow in a path, without its terminating NUL.
@@ -47,6 +51,18 @@ pub(crate) struct ServeArgs {
     /// Default: ~/.humata2/humatad.sock.
     #[arg(long)]
     socket: Option<PathBuf>,
+    /// Serve the peer link on stdin and stdout instead of a socket: what
+    /// the Mac runs over SSH or a provider's connect command (MP-7). It
+    /// serves PeerService and what the Mac relays, takes every call for
+    /// the Mac's, and ends when stdin closes. A peer link is always a
+    /// machine's, whatever --role says.
+    #[arg(long, conflicts_with = "socket")]
+    stdio: bool,
+    /// With --stdio, print `HUMATA_SYNC_<nonce>` on a line of its own
+    /// before the stream, so a terminal Humata took over can tell where
+    /// the stream starts (MP-15). Letters and digits only.
+    #[arg(long, requires = "stdio", value_parser = sync::parse_nonce)]
+    sync: Option<String>,
     /// Where the daemon keeps its state. Default: ~/.humata2/state.
     #[arg(long)]
     state: Option<PathBuf>,
@@ -69,8 +85,9 @@ pub(crate) struct ServeArgs {
     scrollback_bytes: usize,
     /// Test daemons only: a call with no credential acts as the user.
     /// Builds without the `admin` feature, as releases are, lack this flag.
+    /// Never with --stdio: the peer link is the Mac's, not the user's.
     #[cfg(feature = "admin")]
-    #[arg(long)]
+    #[arg(long, conflicts_with = "stdio")]
     admin: bool,
 }
 
@@ -87,13 +104,18 @@ pub(crate) fn default_socket() -> Result<PathBuf, DaemonError> {
 }
 
 pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
-    let socket = match args.socket {
-        Some(socket) => socket,
-        None => default_socket()?,
-    };
     let state = match args.state {
         Some(state) => state,
         None => home_folder()?.join("state"),
+    };
+    if args.stdio {
+        private_folder(&state)?;
+        let machine = machine_id(&state.join("machine-id"))?;
+        return peer_link::run(machine, args.sync.as_deref()).await;
+    }
+    let socket = match args.socket {
+        Some(socket) => socket,
+        None => default_socket()?,
     };
     let root = match args.root {
         Some(root) => root,
@@ -277,7 +299,7 @@ fn bind(socket: &Path) -> Result<UnixListener, DaemonError> {
 }
 
 /// Resolves on SIGTERM or SIGINT.
-fn stop_signal() -> Result<impl Future<Output = ()>, DaemonError> {
+pub(crate) fn stop_signal() -> Result<impl Future<Output = ()>, DaemonError> {
     let mut terminate =
         signal(SignalKind::terminate()).map_err(|source| DaemonError::Signals { source })?;
     let mut interrupt =
