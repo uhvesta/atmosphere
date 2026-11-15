@@ -2261,6 +2261,58 @@ daemon and, as far as physically possible, the machine.
   your first channel** and **Add a machine over SSH**, noting that GitHub
   access comes from the `gh` CLI with no sign-in in Humata.
 
+### A pane-driven workspace (owner direction 2026-11-14, D74)
+
+The window is a workspace of panes. This section wins over the fixed layouts
+drawn elsewhere in this spec (session page with one side panel, tab bars,
+status chrome) and over the prototype where they differ: those drawings show
+the **default layout** for a screen, not the only one.
+
+```text
+┌ #payments › Ledger schema ───────────────────────────────────────┬────────┐
+│ ● claude  (Ledger schema)         │ ● codex  (Benchmark BRIN)     │ Panes  │
+│ > …                               │ > …                           │ ▸ Term │
+│                                   │                               │ ▸ Diff │
+├───────────────────────────────────┴───────────────────────────────┤ ▸ Files│
+│ Diff  Ledger schema · origin/main...HEAD                          │ ▸ Board│
+│ …                                                                 │ ▸ Inbox│
+└───────────────────────────────────────────────────────────────────┴────────┘
+   two sessions' terminals side by side, a diff below; drag a pane by its title
+```
+
+- **NV-28** Any pane can show any one thing: a session's agent terminal, a
+  shell, a diff, files, the editor, a board, the Inbox, a review, a spec
+  document, a channel's sessions, Hosts, Settings. Panes split side by side
+  or one above the other, as deep as the user likes, so two terminals, two
+  sessions, or a session next to another session's diff can be seen at once.
+- **NV-29** The **Panes** sidebar sits on the right: the kinds of pane the
+  current context offers (for the focused session: its terminals, Diff,
+  Files, Board, Inbox, Journal, Info; and globally: Inbox, Board, Hosts,
+  sessions by channel). Clicking one opens it in the focused pane's place;
+  dragging one onto a pane's edge splits there. It collapses to a strip like
+  any pane (NV-13).
+- **NV-30** A pane is moved by dragging its title onto another pane's edge
+  (split) or centre (swap), closed with ✕ or ⌘W, and focused with a click or
+  ⌘⌥ + an arrow. ⌘\ splits the focused pane with a copy of itself (a new
+  shell for a terminal). Every move is undoable (⌘Z in the layout).
+- **NV-31** Each screen opens in its **default layout** (the session page:
+  agent terminal, with Diff beside it once there are changes; a channel: its
+  sessions; Home: the recent feed). The user's changes to a layout are kept
+  per session and per screen across restarts (NV-16, PER-25); **Reset
+  layout** returns to the default.
+- **NV-32** The chrome stays quiet. There is no status bar of text at the
+  top of the window, no "Working"/"Idle" badges in headers, and no button
+  that repeats something the pane or the palette already offers. A
+  session's state is its dot (● working, ◐ needs you, ○ idle, ✕ exited),
+  whose tooltip says the words. Actions live in the pane's ⋯ menu, its
+  right-click menu and ⌘K; a pane's title row holds its title, ⋯ and ✕.
+- **NV-33** Dialogs and pop-ups are kept for what needs a decision (a
+  destructive action, a form to fill). Anything else opens as a pane or a
+  toast, so the user is never stacked in modals.
+- **NV-34** Panes are virtualized and paused when hidden: a pane that isn't
+  visible renders nothing and its terminal keeps only its byte stream, so
+  ten panes cost no more than the visible ones.
+
 ### Resizable and collapsible panes
 
 ```text
