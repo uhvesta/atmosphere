@@ -120,6 +120,22 @@ impl Inbox {
             .publish_in(change, pb::event::Payload::Request(request.clone()), scope);
     }
 
+    /// Tells the feed of the grant `entry`'s answer made, if any, then of
+    /// the answered request.
+    fn tell_answer(&self, entry: &Entry) -> pb::InboxRequest {
+        let held = entry.request.borrow().clone();
+        if let Some(grant) = held.grant {
+            let scope = Scope {
+                channel: grant.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
+                session: entry.session.clone(),
+            };
+            self.feed
+                .publish_in(pb::Change::Created, pb::event::Payload::Grant(grant), scope);
+        }
+        self.tell(pb::Change::Updated, &entry.session, &held.request);
+        held.request
+    }
+
     /// The user behind `caller`, who has shown they are there.
     fn present_user(&self, caller: &Caller) -> Result<PresentUser, Status> {
         let principal = guard::principal(caller);
@@ -308,9 +324,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         entry
             .request
             .send_modify(|held| settle(held, decided, by, at));
-        let current = entry.request.borrow().request.clone();
-        self.tell(pb::Change::Updated, &entry.session, &current);
-        Ok(Response::new(current))
+        Ok(Response::new(self.tell_answer(entry)))
     }
 
     /// IN-6: answers the listed requests that are still pending and in
@@ -376,9 +390,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             entry
                 .request
                 .send_modify(|held| settle(held, decided, by, at));
-            let current = entry.request.borrow().request.clone();
-            self.tell(pb::Change::Updated, &entry.session, &current);
-            answered.push(current);
+            answered.push(self.tell_answer(entry));
         }
         Ok(Response::new(pb::AnswerAllResponse { answered, skipped }))
     }

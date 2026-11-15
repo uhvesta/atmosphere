@@ -702,3 +702,83 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
         );
     }
 }
+
+/// The next event's change and what it tells of: `Ok` a grant's id, `Err`
+/// a request's state.
+async fn next_told(events: &mut tonic::Streaming<pb::Event>) -> (i32, Result<pb::GrantId, i32>) {
+    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    match event.payload {
+        Some(pb::event::Payload::Grant(grant)) => (event.change, Ok(grant.id.unwrap())),
+        Some(pb::event::Payload::Request(request)) => (event.change, Err(request.state)),
+        other => panic!("expected a grant or a request, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_feed_tells_of_the_grant_an_approval_makes_and_its_revoking() {
+    let fixture = Fixture::start().await;
+    let mut users = feed(&fixture, Request::new(pb::SubscribeRequest::default())).await;
+    let mut agents = feed(&fixture, fixture.as_agent(pb::SubscribeRequest::default())).await;
+    let mut access_only = feed(
+        &fixture,
+        Request::new(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Access as i32],
+            ..Default::default()
+        }),
+    )
+    .await;
+    let mut other_session = feed(
+        &fixture,
+        Request::new(pb::SubscribeRequest {
+            sessions: vec![session(OTHER)],
+            ..Default::default()
+        }),
+    )
+    .await;
+
+    let id = fixture
+        .ask_ahead(pb::Capability::NetworkReach, network("localhost", 5432))
+        .await
+        .id
+        .unwrap();
+    fixture.answer(&id, approve()).await.unwrap();
+    let grant = fixture.grants().await[0].id.clone().unwrap();
+    // Covered by the grant: approved at once, so nothing new is told.
+    fixture
+        .ask_ahead(pb::Capability::NetworkReach, network("localhost", 5432))
+        .await;
+    fixture
+        .access()
+        .await
+        .revoke_grant(pb::RevokeGrantRequest {
+            grant: Some(grant.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let (created, updated, deleted) = (
+        pb::Change::Created as i32,
+        pb::Change::Updated as i32,
+        pb::Change::Deleted as i32,
+    );
+    let expected = vec![
+        (created, Err(pb::RequestState::Pending as i32)),
+        (created, Ok(grant.clone())),
+        (updated, Err(pb::RequestState::Approved as i32)),
+        (deleted, Ok(grant.clone())),
+    ];
+    for events in [&mut users, &mut agents] {
+        let mut told = Vec::new();
+        for _ in 0..expected.len() {
+            told.push(next_told(events).await);
+        }
+        assert_eq!(told, expected);
+    }
+    assert_eq!(next_told(&mut access_only).await, (created, Ok(grant.clone())));
+    assert_eq!(next_told(&mut access_only).await, (deleted, Ok(grant)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), other_session.message()).await.is_err(),
+        "a feed narrowed to another session hears of no grant"
+    );
+}

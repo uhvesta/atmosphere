@@ -156,6 +156,7 @@ struct Filter {
     machines: bool,
     views: bool,
     inbox: bool,
+    access: bool,
     channels: Vec<String>,
     sessions: Vec<String>,
 }
@@ -174,12 +175,14 @@ impl Filter {
             || (topics.is_empty() && request.channels.is_empty() && request.sessions.is_empty());
         let views = topics.is_empty() || topics.contains(&(pb::Topic::Views as i32));
         let inbox = topics.is_empty() || topics.contains(&(pb::Topic::Inbox as i32));
+        let access = topics.is_empty() || topics.contains(&(pb::Topic::Access as i32));
         Ok(Self {
             user,
             own_session,
             machines,
             views,
             inbox,
+            access,
             channels: request.channels.iter().map(|id| id.value.clone()).collect(),
             sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
         })
@@ -220,6 +223,8 @@ impl Filter {
             Some(pb::event::Payload::Request(_)) => {
                 self.inbox && self.sees_session(scope) && self.asked(scope)
             }
+            // Grants likewise, as ListGrants lists them.
+            Some(pb::event::Payload::Grant(_)) => self.access && self.sees_session(scope) && self.asked(scope),
             _ => false,
         }
     }

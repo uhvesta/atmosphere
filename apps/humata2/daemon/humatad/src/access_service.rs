@@ -1,6 +1,8 @@
 //! AccessService: the grants "Always let …" and approved ask-aheads made,
 //! listed and revoked (IN-19, IN-23). Grants live in the policy, in memory
-//! until the daemon stops. Rules, defaults and Explain aren't built yet.
+//! until the daemon stops. A revoked grant goes on the event feed; the
+//! Inbox tells of the ones answers make. Rules, defaults and Explain
+//! aren't built yet.
 
 use std::sync::Arc;
 
@@ -8,6 +10,7 @@ use humata2_access::{Call, Capability, GrantId, PolicyError, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use tonic::{Request, Response, Status};
 
+use crate::events::{Feed, Scope};
 use crate::grant_target;
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
@@ -15,11 +18,13 @@ use crate::status;
 
 pub(crate) struct Access {
     guard: Arc<Guard>,
+    /// Where revoked grants are told.
+    feed: Arc<Feed>,
 }
 
 impl Access {
-    pub(crate) fn new(guard: Arc<Guard>) -> Self {
-        Self { guard }
+    pub(crate) fn new(guard: Arc<Guard>, feed: Arc<Feed>) -> Self {
+        Self { guard, feed }
     }
 }
 
@@ -137,21 +142,29 @@ impl pb::access_service_server::AccessService for Access {
             return Err(no_grant(&value));
         };
         let principal = guard::principal(&caller);
-        self.guard.with_policy(|policy, context| {
+        let revoked = self.guard.with_policy(|policy, context| {
             let Some(user) = principal.present_user(context) else {
                 return Err(status::refused(&Refusal::UserOnly {
                     capability: Some(Capability::AccessChange),
                 }));
             };
-            policy.revoke_grant(&user, id).map(drop).map_err(|error| match error {
+            let revoked = policy.revoke_grant(&user, id).map_err(|error| match error {
                 PolicyError::UnknownGrant { .. } => no_grant(&value),
                 PolicyError::NeedsHost => status::refused(&Refusal::HostUnreachable),
                 other => status::internal(
                     format!("couldn't revoke grant {value}: {}", status::chain(&other)),
                     "",
                 ),
-            })
+            })?;
+            Ok(grant_target::grant(&revoked, policy.is_suspended(&revoked)))
         })?;
+        // The grant as it last stood, so the app can drop it.
+        let scope = Scope {
+            channel: revoked.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
+            session: revoked.requester.as_ref().map(|session| session.value.clone()).unwrap_or_default(),
+        };
+        self.feed
+            .publish_in(pb::Change::Deleted, pb::event::Payload::Grant(revoked), scope);
         Ok(Response::new(pb::RevokeGrantResponse {}))
     }
 

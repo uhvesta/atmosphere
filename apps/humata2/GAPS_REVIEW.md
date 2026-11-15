@@ -225,3 +225,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `daemon/humatad/src/inbox.rs`: Inbox holds the feed; `tell` publishes the InboxRequest in its channel and session, Created from AskUser and RequestAccess, Updated from AnswerRequest, AnswerAll and a withdrawal that changed it. `daemon/humatad/src/events.rs`: `Filter` passes requests by TOPIC_INBOX and the channels or sessions asked for, the user every one, an agent its own session's (`sees_session`, shared with views). `serve.rs` makes the feed before the Inbox.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: grants from approvals aren't on the feed yet (D90).
+
+### (this commit): grants on the event feed [minion F]
+- The app now hears at once of the standing permission an approval gives an agent, and of the user taking one away, without listing grants again. An agent hears only of its own session's.
+- `daemon/humatad/src/inbox.rs`: `tell_answer` publishes the grant an answer made (Created) before the answered request (Updated), for AnswerRequest and AnswerAll. `daemon/humatad/src/access_service.rs`: Access holds the feed; RevokeGrant publishes Deleted with the grant's last state. `daemon/humatad/src/events.rs`: `Filter` passes grants by TOPIC_ACCESS, the channels or sessions asked for, and `sees_session`.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
+- Look at: suspensions and grants ended with a session aren't told, since nothing makes them yet (D91).

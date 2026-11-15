@@ -701,5 +701,10 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 
 ## D90: Inbox requests on the event feed (proposed by minion F). Provisional
 - **Pick:** a new question or ask-ahead goes on the feed as a Created Event with the InboxRequest; each answer (AnswerRequest, AnswerAll) and each withdrawal is an Updated one. A call that changes nothing (a repeated withdrawal, a repeat with the same idempotency key, an ask-ahead a grant already covers) isn't told. The user sees every request, a session's agent its own session's, as ListRequests lists them; TOPIC_INBOX and the channels or sessions asked for narrow it. Recommendation: keep it.
-- The grant an approval makes isn't on the feed yet (TOPIC_ACCESS); the app reads it with ListGrants.
+- The grants approvals make are on the feed too (D91).
 - Reverse: `Inbox::tell` and its calls in `daemon/humatad/src/inbox.rs`, the Request arm of `Filter` in `daemon/humatad/src/events.rs`, and the feed passed to `Inbox::new` in `serve.rs`.
+
+## D91: Grants on the event feed (proposed by minion F). Provisional
+- **Pick:** the grant an approval makes (approving an ask-ahead, or "Always let …") is a Created Event with the Grant, told just before the Updated one for the answered request, so an app that sees the answer already has the grant. RevokeGrant tells a Deleted one carrying the grant as it last stood. The user sees every grant, a session's agent its own session's, as ListGrants lists them; TOPIC_ACCESS and the channels or sessions asked for narrow it. Recommendation: keep it.
+- Not told yet: a grant going suspended or back when a rule turns Never or away from it (rules can't be set over gRPC yet), and grants ended with their session or channel (nothing ends them yet).
+- Reverse: `Inbox::tell_answer` in `daemon/humatad/src/inbox.rs`, Access's `feed` and the publish in `revoke_grant` in `daemon/humatad/src/access_service.rs`, and the Grant arm of `Filter` in `daemon/humatad/src/events.rs`.
