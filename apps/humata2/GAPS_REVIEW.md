@@ -274,7 +274,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (66 tests pass), including `//apps/humata2/cli:views_test` and `//apps/humata2/daemon/humatad:review_test` (`the_user_lists_every_offered_view_newest_first_without_naming_a_session`).
 - Look at: views prepared in the same millisecond order by id, which is random; the list reads every session's views on each call, with no paging.
 
-### (this commit): an agent hears of the notes it may read [minion F]
+### 2845bc9f: an agent hears of the notes it may read [minion F]
 - An agent watching the event feed now hears of review notes on any session it may read, not only its own, so the feed agrees with ListComments.
 - `daemon/humatad/src/events.rs`: `Filter` keeps the caller, the guard and this daemon's machine; the Comment arm calls `reads_session`, which passes the user and an agent's own session and otherwise checks `Call::ReadSession` with the guard, counting only Allowed (D98). `serve.rs` builds `EventSvc` with the guard. `tests/review.rs` gains `agent_token_in` for a second session's agent.
 - Also checked, nothing to build: no RPC sets a channel rule and DeleteSession isn't served, so grants are never suspended or ended by a session ending; the views Journal is ListViews (VW-10), and `PreparedView.journal` is the SL-5 machine-journal position (OVERVIEW reworded).
