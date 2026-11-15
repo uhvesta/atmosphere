@@ -138,16 +138,16 @@ more, ST-2):
       devbox-1 never talks to gpu-box directly: devbox-1 ─▶ Mac ─▶ gpu-box
 ```
 
-- **AR-1** Every machine Humata uses runs one `humatad`. The Mac's daemon is
-  the source of truth for everything that can be centralized (SL-1); other
+- **AR-1** Every machine Humata uses runs one `humatad`. The host's daemon
+  (your Mac by default, or a Linux machine, AR-7) is the source of truth for everything that can be centralized (SL-1); other
   machines keep only clones and live agent context (SL-2).
 - **AR-2** The app, the `humata` command-line tool and the MCP server are all
   clients of the same gRPC API.
 - **AR-3** The app holds no session state that matters: quitting it changes
   nothing on any machine. View state the user expects back is kept by the
   host instead (AR-5).
-- **AR-4** Remote machines reach each other only through the Mac (for now).
-  Every cross-machine call is checked on the Mac against the channel's agent
+- **AR-4** Remote machines reach each other only through the host (for now).
+  Every cross-machine call is checked on the host against the channel's agent
   access rules. A call that stays on one machine is checked by that machine
   against its latest copy of the host's rules (AW-8). These checks cover
   calls made through Humata only (SEC-5).
@@ -351,9 +351,9 @@ is configurable per machine.
   under `sessions/` (LD-1).
 - **FC-6** On a remote machine where `gh` is signed in, Humata clones from
   GitHub with that machine's `gh`.
-- **FC-7** On a remote machine without a signed-in `gh`, the Mac makes a git
+- **FC-7** On a remote machine without a signed-in `gh`, the host makes a git
   bundle and sends it over the SSH link; pushes from that machine go back
-  through the Mac. The GitHub token never leaves the Mac.
+  through the host. The GitHub token never leaves the host.
 - **FC-8** `shared/` exists on every machine of the channel. An agent can copy
   files into it (rule-gated, see TP-4).
 - **FC-9** Humata shows no standing notice about a clone being behind main,
@@ -1332,7 +1332,7 @@ user builds a code-level understanding of the change.
   progress and state, and lets the user cancel one.
 - **FM-8** When the link drops, the transfer pauses and says why; on reconnect
   it continues from the last confirmed offset without user action.
-- **FM-9** Machine ↔ machine transfers go through the Mac (AR-4).
+- **FM-9** Machine ↔ machine transfers go through the host (AR-4).
 - **FM-10** The file manager can open any folder Humata owns on a machine
   (channel folders, `shared/`, session folders) as well as the user's home on
   that machine.
@@ -1632,8 +1632,12 @@ user builds a code-level understanding of the change.
 
 ## 16. Agents' view of the topology (MCP tools)
 
-Each `humatad` serves MCP tools to the agents on its machine. Tools that reach
-outside the session go through the Mac.
+Each `humatad` serves MCP tools to the agents on its machine. The MCP server
+(`humatad mcp`, one per agent) is a thin client: it proves which session it
+belongs to and passes each call to its machine's `humatad`, which decides.
+On the host the daemon acts itself; on any other machine it forwards calls
+that reach outside the session to the host. The host may be a Mac or a
+Linux machine (AR-7).
 
 - **TP-1** An agent can ask which machine it is on, which other machines the
   channel has, and which sessions run on each (title, agent, status).
@@ -1653,10 +1657,10 @@ outside the session go through the Mac.
   copy and a usage note (IN-10).
 - **TP-7** An agent can create, edit, move and delete board items on boards it
   may use (BD-9), and prepare views (VW-1).
-- **TP-8** Every cross-machine call goes through the Mac and is checked there
+- **TP-8** Every cross-machine call goes through the host and is checked there
   against the channel's rules; calls on anything the agent doesn't own become
   Inbox requests.
-- **TP-9** While the Mac is offline, calls behave as the table in AW-7 says.
+- **TP-9** While the host is unreachable, calls behave as the table in AW-7 says.
   The session keeps running either way. (provisional, D3)
 - **TP-10** While a call waits, Humata types nothing into the agent's
   terminal; the agent's CLI shows the call as it shows any waiting tool call.
@@ -1720,7 +1724,7 @@ outside the session go through the Mac.
   on the machine. The machine's page lists the names with **Set value…** and
   **Remove** (HO-13).
 - **HO-8** GitHub access uses the `gh` CLI; there is no GitHub OAuth app. The
-  Mac's GitHub token never leaves the Mac.
+  host's GitHub token never leaves the host.
 - **HO-9** Remote machines never talk to each other directly. Possibly later:
   direct machine-to-machine SSH under the same rules.
 - **HO-10** The bridge carries only Humata's own calls and file transfers.
@@ -2037,7 +2041,7 @@ daemon and, as far as physically possible, the machine.
  └─────────────────────────────────────────┘   └──────────────────────────────────┘
 ```
 
-- **SL-1** The host (the Mac running the app) is the source of truth for
+- **SL-1** The host (your Mac by default, or a Linux machine, AR-7) is the source of truth for
   everything that can be centralized: channels, session records and metadata,
   boards and item states, the Inbox and grants, comments, views, settings, PR
   review drafts, and the conversation mirror (LD-8).
@@ -2258,9 +2262,10 @@ daemon and, as far as physically possible, the machine.
 
 ## 21. Transport: gRPC streaming
 
-- **TR-1** `humatad` speaks gRPC (tonic). The app and the CLI reach the Mac's
-  daemon over a local unix socket.
-- **TR-2** The Mac reaches each remote daemon over one SSH connection per
+- **TR-1** `humatad` speaks gRPC (tonic). The app and the CLI reach the host's
+  daemon over a local unix socket, or over SSH when the host is another
+  machine (AR-7).
+- **TR-2** The host reaches each remote daemon over one SSH connection per
   machine, carrying gRPC either over a stdio tunnel or a forwarded unix
   socket. All calls for that machine are multiplexed on it.
 - **TR-3** Terminal output and events are server streams; terminal input and
@@ -2623,8 +2628,8 @@ the **default layout** for a screen, not the only one.
   written to project files; only their names cross. They reach the agents on
   their machine as environment variables (HO-13). Before a transcript is
   mirrored to the Mac, exact values are replaced (LD-21).
-- **SEC-2** The GitHub token never leaves the Mac. Remote clones without `gh`
-  use bundles and pushes through the Mac (FC-7).
+- **SEC-2** The GitHub token never leaves the host. Remote clones without `gh`
+  use bundles and pushes through the host (FC-7).
 - **SEC-3** Agents get only what the rules allow for calls made through
   Humata (SEC-5); a context-only fork can never write its parent's files
   through Humata.
