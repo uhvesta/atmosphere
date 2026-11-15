@@ -40,6 +40,11 @@ pub(crate) fn grant_id(grant: &Grant) -> pb::GrantId {
     }
 }
 
+/// The number in a grant's id as clients see it.
+pub(crate) fn grant_number(grant: &pb::Grant) -> Option<u64> {
+    grant.id.as_ref()?.value.parse().ok()
+}
+
 /// A grant as clients see it. `suspended` is true while its rule is Never.
 pub(crate) fn grant(grant: &Grant, suspended: bool) -> pb::Grant {
     pb::Grant {

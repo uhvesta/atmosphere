@@ -281,9 +281,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Link::Local,
     );
     let feed = Arc::new(Feed::default());
-    let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone(), feed.clone());
+    let inbox = Arc::new(Inbox::new(guard.clone(), store.clone(), machine.clone(), feed.clone()));
     let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
-    let access = Access::new(guard.clone(), feed.clone());
+    let access = Access::new(guard.clone(), feed.clone(), inbox.clone());
     let operations = Arc::new(Operations::new(feed.clone()));
     let machines = match role {
         pb::DaemonRole::Host => {
@@ -308,7 +308,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
         )
-        .add_service(pb::inbox_service_server::InboxServiceServer::new(inbox))
+        .add_service(pb::inbox_service_server::InboxServiceServer::from_arc(inbox))
         .add_service(pb::diff_service_server::DiffServiceServer::new(review.clone()))
         .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review.clone()))
         .add_service(pb::comment_service_server::CommentServiceServer::new(review.clone()))

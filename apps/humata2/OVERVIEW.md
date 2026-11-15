@@ -262,7 +262,8 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - Done: MCP `inbox_request` (D93).
 - Done: operations on the event feed (D94). Sessions and channels have nothing to tell: SessionService and ChannelService aren't built in humatad2.
 - Done: `by` on each event (D95).
-- On (minion F, resumed 2026-11-15): persisting the Inbox and grants (new store tables); the `humata views` CLI and include_forks; then grant suspensions and session-ended grants on the feed, the agent's notes feed matching ListComments, and a Journal entry for views. Waiting on an owner or proto call: Ask→Inbox (D38.6; no RPC can answer "pending" with a request id yet, and approval must run the held call, MCP.md TP-13); `last_start` push (no Event payload).
+- Done: the Inbox and grants kept across a restart (D96).
+- On (minion F, resumed 2026-11-15): the `humata views` CLI and include_forks; then grant suspensions and session-ended grants on the feed, the agent's notes feed matching ListComments, and a Journal entry for views. Waiting on an owner or proto call: Ask→Inbox (D38.6; no RPC can answer "pending" with a request id yet, and approval must run the held call, MCP.md TP-13); `last_start` push (no Event payload).
 - Trap: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_...`) can fail under the full parallel run; it passes alone.
 - Traps: OVERVIEW, GAPS_REVIEW and DECISIONS may hold minion C1's uncommitted edits; stage only my hunks from `git show HEAD:<file>`.
 
@@ -389,5 +390,6 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 ### MCP, access and other open items (I8, A5)
 - [ ] ReportService, script tokens (SEC-14), and the web listener.
 - [x] MCP `inbox_request` asks ahead through RequestAccess and answers `{decision, grant_id}` (D93): `//apps/humata2/daemon/humatad:mcp_test`.
-- [ ] Ask→Inbox (D38.6); persist the Inbox and grants.
+- [ ] Ask→Inbox (D38.6).
+- [x] The Inbox and grants kept across a restart: each request, its answer and its grant saved before anyone hears of them; grants rebuilt exactly as narrow, revoked ones stay revoked, new grant ids never reuse old ones (minion F, D96). Tests: `//apps/humata2/daemon/humatad:inbox_test` (`a_restart_keeps_the_inbox_and_the_grants_still_standing`), `//apps/humata2/daemon/store:inbox_test`.
 - [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64).

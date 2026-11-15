@@ -1,10 +1,11 @@
 //! AccessService: the grants "Always let …" and approved ask-aheads made,
-//! listed and revoked (IN-19, IN-23). Grants live in the policy, in memory
-//! until the daemon stops. A revoked grant goes on the event feed; the
-//! Inbox tells of the ones answers make. Rules, defaults and Explain
-//! aren't built yet.
+//! listed and revoked (IN-19, IN-23). Grants live in the policy, and the
+//! Inbox saves each with the request its answer made, so a restart keeps
+//! them (D96). A revoked grant goes on the event feed; the Inbox tells of
+//! the ones answers make. Rules, defaults and Explain aren't built yet.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use humata2_access::{Call, Capability, GrantId, PolicyError, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
@@ -14,17 +15,20 @@ use crate::events::{Feed, Scope};
 use crate::grant_target;
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
+use crate::inbox::Inbox;
 use crate::status;
 
 pub(crate) struct Access {
     guard: Arc<Guard>,
     /// Where revoked grants are told.
     feed: Arc<Feed>,
+    /// Where grants are kept across a restart.
+    inbox: Arc<Inbox>,
 }
 
 impl Access {
-    pub(crate) fn new(guard: Arc<Guard>, feed: Arc<Feed>) -> Self {
-        Self { guard, feed }
+    pub(crate) fn new(guard: Arc<Guard>, feed: Arc<Feed>, inbox: Arc<Inbox>) -> Self {
+        Self { guard, feed, inbox }
     }
 }
 
@@ -158,6 +162,8 @@ impl pb::access_service_server::AccessService for Access {
             })?;
             Ok(grant_target::grant(&revoked, policy.is_suspended(&revoked)))
         })?;
+        let request = revoked.granted_from.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+        self.inbox.revoked(&request, SystemTime::now()).await?;
         // The grant as it last stood, so the app can drop it.
         let scope = Scope {
             channel: revoked.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
@@ -193,6 +199,6 @@ fn no_grant(id: &str) -> Status {
         pb::EntityKind::Grant,
         id,
         format!("no grant {id} on this machine; it may have been revoked or ended with its session"),
-        "list the grants again and pick one from the list; grants are kept only until humatad2 stops",
+        "list the grants again and pick one from the list; a grant ends when it is revoked or its session is deleted",
     )
 }

@@ -43,6 +43,37 @@ message View {
   repeated string keys = 2;
 }
 
+// A request a session's agent made in the Inbox (D96). `request` is a
+// humata.v1.InboxRequest as it stands; `keys` are the "session/key"
+// idempotency keys of the calls that made it; `asked` is the
+// humata.v1.GrantTarget an ask-ahead named, from which a restart works out
+// again what the policy asks and grants. Empty for a question.
+message InboxEntry {
+  bytes request = 1;
+  repeated string keys = 2;
+  bytes asked = 3;
+  InboxGrant grant = 4;
+}
+
+// The grant an answer made, with what the policy keeps beside it.
+message InboxGrant {
+  // A humata.v1.Grant.
+  bytes grant = 1;
+  GrantedBy granted_by = 2;
+  string granted_on = 3;
+  bool on_host = 4;
+  // When the user revoked it; 0 while it stands.
+  int64 revoked_unix_ms = 5;
+}
+
+// How the user who made a grant showed they were there.
+enum GrantedBy {
+  GRANTED_BY_UNSPECIFIED = 0;
+  GRANTED_BY_CONFIRM_IN_APP = 1;
+  GRANTED_BY_CLI_LOGIN = 2;
+  GRANTED_BY_APPROVAL_PASSPHRASE = 3;
+}
+
 // What a review keeps so a restart doesn't change what a call does
 // (D86): the changes Undo can still take back, and the answers to calls
 // that carried an idempotency key, oldest first.

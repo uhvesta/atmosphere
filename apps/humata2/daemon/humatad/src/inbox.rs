@@ -1,12 +1,15 @@
 //! InboxService: questions an agent asks the user, access it asks for
 //! ahead (IN-26), the user's answers, and waiting for them (MCP.md §5).
 //! Approving an ask-ahead or answering "Always let …" makes a grant in the
-//! policy (IN-14, IN-22). Requests and grants live in memory until the
-//! daemon stops. Each new request and each change to one goes on the
-//! event feed.
+//! policy (IN-14, IN-22). Each request, its answer and the grant it made
+//! are saved before anyone hears of them, so a restart keeps the Inbox
+//! and the grants (D96). Each new request and each change to one goes on
+//! the event feed.
+
+mod kept;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use humata2_access::{
@@ -15,9 +18,10 @@ use humata2_access::{
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
+use humata2_store_proto::humata::store::v1 as stored;
 use pb::invalid_field::Problem;
 use prost::Message;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
@@ -62,7 +66,31 @@ struct Entry {
     /// What the policy asks the user, for an access request; `None` for a
     /// question.
     access: Option<AccessRequest>,
+    /// The target an ask-ahead named, as the agent sent it.
+    asked: Option<pb::GrantTarget>,
+    /// The "session/key" idempotency keys of the calls that made it.
+    keys: Vec<String>,
     request: watch::Sender<Held>,
+}
+
+impl Entry {
+    fn new(
+        id: String,
+        session: String,
+        access: Option<AccessRequest>,
+        asked: Option<pb::GrantTarget>,
+        key: Option<String>,
+        held: Held,
+    ) -> Self {
+        Self {
+            id,
+            session,
+            access,
+            asked,
+            keys: key.into_iter().collect(),
+            request: watch::channel(held).0,
+        }
+    }
 }
 
 /// A request as it stands, and the grant its answer made.
@@ -70,6 +98,9 @@ struct Entry {
 struct Held {
     request: pb::InboxRequest,
     grant: Option<pb::Grant>,
+    /// What the policy keeps beside the grant, as it's saved; its `grant`
+    /// is filled in only on the way to the store.
+    granted: Option<stored::InboxGrant>,
 }
 
 impl Held {
@@ -77,6 +108,7 @@ impl Held {
         Self {
             request,
             grant: None,
+            granted: None,
         }
     }
 }
@@ -85,24 +117,78 @@ impl Held {
 struct Decided {
     state: pb::RequestState,
     answer: pb::request_answer::Answer,
-    grant: Option<pb::Grant>,
+    grant: Option<(pb::Grant, stored::InboxGrant)>,
 }
 
 impl Inbox {
+    /// The Inbox as the store kept it, with the grants its answers made
+    /// back in the policy. Reads the store: call it before serving.
     pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>, machine: String, feed: Arc<Feed>) -> Self {
+        let state = kept::restore(&guard, &store, &machine);
         Self {
             guard,
             store,
             machine,
             feed,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(state),
         }
+    }
+
+    /// Saves `next` as `entry`'s request, and only then tells its waits.
+    /// When the store refuses, the grant the answer made, if any, is taken
+    /// back out of the policy, so what's in force is what a restart keeps.
+    async fn commit(
+        &self,
+        entry: &Entry,
+        next: Held,
+        user: Option<&PresentUser>,
+        doing: &str,
+    ) -> Result<(), Status> {
+        let record = kept::record(entry, &next);
+        let store = Arc::clone(&self.store);
+        let saved = tokio::task::spawn_blocking(move || store.put_inbox_request(&record))
+            .await
+            .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?;
+        if let Err(error) = saved {
+            let made = next.grant.as_ref().filter(|_| entry.request.borrow().grant.is_none());
+            if let (Some(user), Some(id)) = (user, made.and_then(grant_target::grant_number)) {
+                // It was just made, so taking it back can't fail for want
+                // of the host; if it did, a restart drops it anyway.
+                let _ = self
+                    .guard
+                    .with_policy(|policy, _| policy.revoke_grant(user, humata2_access::GrantId::new(id)));
+            }
+            return Err(status::store(error, &self.machine, doing));
+        }
+        entry.request.send_replace(next);
+        Ok(())
+    }
+
+    /// Marks the grant request `id`'s answer made as revoked, so a restart
+    /// doesn't bring it back.
+    pub(crate) async fn revoked(&self, id: &str, at: SystemTime) -> Result<(), Status> {
+        let state = self.state.lock().await;
+        let Some(entry) = state.requests.iter().find(|entry| entry.id == id) else {
+            return Ok(());
+        };
+        let mut next = entry.request.borrow().clone();
+        let Some(granted) = next.granted.as_mut() else {
+            return Ok(());
+        };
+        granted.revoked_unix_ms = kept::unix_ms(at);
+        let doing = format!(
+            "save that grant {} is revoked, so until you revoke it again after the next restart, that restart brings it back",
+            next.grant.as_ref().and_then(grant_target::grant_number).unwrap_or_default()
+        );
+        self.commit(entry, next, None, &doing).await
     }
 
     /// The request `id`, if `caller` may see it: the user sees every
     /// request, an agent its own session's.
-    fn find(&self, caller: &Caller, id: &str) -> Result<watch::Sender<Held>, Status> {
-        lock(&self.state)
+    async fn find(&self, caller: &Caller, id: &str) -> Result<watch::Sender<Held>, Status> {
+        self.state
+            .lock()
+            .await
             .requests
             .iter()
             .find(|entry| entry.id == id && sees(caller, entry))
@@ -169,12 +255,14 @@ impl Inbox {
         access: &AccessRequest,
         answer: &Answer,
         at: SystemTime,
-    ) -> Result<Option<pb::Grant>, Status> {
+    ) -> Result<Option<(pb::Grant, stored::InboxGrant)>, Status> {
         let approval = self
             .guard
             .with_policy(|policy, _| policy.approve(user, &RequestId::new(id), access, answer, at))
             .map_err(|error| grant_target::answer_failed(&error))?;
-        Ok(approval.grant.map(|grant| grant_target::grant(&grant, false)))
+        Ok(approval
+            .grant
+            .map(|grant| (grant_target::grant(&grant, false), kept::granted(&grant))))
     }
 
     /// What answering `entry` with `answer` does, before anything changes
@@ -263,7 +351,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let scope = request.scope.and_then(|scope| scope.scope);
-        let state = lock(&self.state);
+        let state = self.state.lock().await;
         let mut requests = Vec::new();
         let mut pending_count = 0;
         for entry in state.requests.iter().filter(|entry| sees(&caller, entry)) {
@@ -292,7 +380,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
     ) -> Result<Response<pb::InboxRequest>, Status> {
         let caller = identity::caller(&request)?;
         let id = id_of(request.into_inner().id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
-        let found = self.find(&caller, &id)?;
+        let found = self.find(&caller, &id).await?;
         let current = found.borrow().request.clone();
         Ok(Response::new(current))
     }
@@ -314,9 +402,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
             .answer
             .and_then(|answer| answer.answer)
             .ok_or_else(|| status::missing("answer"))?;
-        // Held while answering, so an answer, a second answer and a
-        // withdrawal can't interleave.
-        let state = lock(&self.state);
+        // Held while answering and saving, so an answer, a second answer
+        // and a withdrawal can't interleave.
+        let state = self.state.lock().await;
         let entry = state
             .requests
             .iter()
@@ -333,9 +421,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let at = SystemTime::now();
         let decided = self.decide(&user, entry, &current, answer, at)?;
         let by = answered_by(&caller, &user);
-        entry
-            .request
-            .send_modify(|held| settle(held, decided, by, at));
+        let mut next = entry.request.borrow().clone();
+        settle(&mut next, decided, by, at);
+        self.commit(entry, next, Some(&user), "save the answer").await?;
         Ok(Response::new(self.tell_answer(entry)))
     }
 
@@ -352,7 +440,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let request = request.into_inner();
         let scope = request.scope.and_then(|scope| scope.scope);
         let at = SystemTime::now();
-        let state = lock(&self.state);
+        let state = self.state.lock().await;
         let mut answered = Vec::new();
         let mut skipped = Vec::new();
         for id in request.ids {
@@ -399,9 +487,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 continue;
             };
             let by = answered_by(&caller, &user);
-            entry
-                .request
-                .send_modify(|held| settle(held, decided, by, at));
+            let mut next = entry.request.borrow().clone();
+            settle(&mut next, decided, by, at);
+            self.commit(entry, next, Some(&user), "save the answer").await?;
             answered.push(self.tell_answer(entry));
         }
         Ok(Response::new(pb::AnswerAllResponse { answered, skipped }))
@@ -442,7 +530,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let session = agent.session.id.to_string();
         let key = id_of(request.idempotency_key.map(|key| key.value))
             .map(|key| format!("{session}/{key}"));
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock().await;
         if let Some(made) = state.made_with(key.as_deref()) {
             return Ok(Response::new(made));
         }
@@ -450,8 +538,10 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let made = question(&id, agent, request.question, request.choices);
         let held = Held::new(made);
         let reply = settled(&held);
-        self.tell(pb::Change::Created, &session, &held.request);
-        state.add(key, id, session, None, held);
+        let entry = Entry::new(id, session, None, None, key, held.clone());
+        self.commit(&entry, held, None, "save the request").await?;
+        self.tell(pb::Change::Created, &entry.session, &entry.request.borrow().request);
+        state.add(entry);
         Ok(Response::new(reply))
     }
 
@@ -487,6 +577,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             })?,
         };
         let target = request.target.ok_or_else(|| status::missing("target"))?;
+        let asked_target = target.clone();
         // The target's session is looked up in the store, which blocks:
         // off the runtime's threads (TR-8).
         let call = {
@@ -502,7 +593,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let session = agent.session.id.to_string();
         let key = id_of(request.idempotency_key.map(|key| key.value))
             .map(|key| format!("{session}/{key}"));
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock().await;
         if let Some(made) = state.made_with(key.as_deref()) {
             return Ok(Response::new(made));
         }
@@ -562,8 +653,10 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let made = access_request(&id, agent, &asked, request.reason, decision);
         let held = Held::new(made);
         let reply = settled(&held);
-        self.tell(pb::Change::Created, &session, &held.request);
-        state.add(key, id, session, Some(asked), held);
+        let entry = Entry::new(id, session, Some(asked), Some(asked_target), key, held.clone());
+        self.commit(&entry, held, None, "save the request").await?;
+        self.tell(pb::Change::Created, &entry.session, &entry.request.borrow().request);
+        state.add(entry);
         Ok(Response::new(reply))
     }
 
@@ -578,7 +671,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let id = id_of(request.id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
-        let mut answers = self.find(&caller, &id)?.subscribe();
+        let mut answers = self.find(&caller, &id).await?.subscribe();
         let wait = Duration::from_secs(u64::from(request.wait_seconds));
         let (sender, receiver) = mpsc::channel(4);
         tokio::spawn(async move {
@@ -638,28 +731,22 @@ impl pb::inbox_service_server::InboxService for Inbox {
         }
         let id = id_of(request.into_inner().id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
         // Under the lock, so it can't land in the middle of an answer.
-        let state = lock(&self.state);
+        let state = self.state.lock().await;
         let entry = state
             .requests
             .iter()
             .find(|entry| entry.id == id && sees(&caller, entry))
             .ok_or_else(|| no_request(&id))?;
-        let withdrawn = entry.request.send_if_modified(|held| {
-            let current = &mut held.request;
-            if current.state != pb::RequestState::Pending as i32 {
-                return false;
-            }
-            current.state = pb::RequestState::Withdrawn as i32;
-            // The RPC carries no reason; the MCP server calls it only
-            // when the agent's call ended.
-            current.withdraw_reason = pb::WithdrawReason::CallEnded as i32;
-            current.revision = Some(next_revision(current));
-            true
-        });
-        let current = entry.request.borrow().request.clone();
-        if withdrawn {
-            self.tell(pb::Change::Updated, &entry.session, &current);
+        let mut next = entry.request.borrow().clone();
+        if next.request.state != pb::RequestState::Pending as i32 {
+            return Ok(Response::new(next.request));
         }
+        // The RPC carries no reason; the MCP server calls it only when the
+        // agent's call ended.
+        withdraw(&mut next.request, pb::WithdrawReason::CallEnded);
+        let current = next.request.clone();
+        self.commit(entry, next, None, "save the withdrawal").await?;
+        self.tell(pb::Change::Updated, &entry.session, &current);
         Ok(Response::new(current))
     }
 }
@@ -672,23 +759,11 @@ impl State {
         Some(settled(&entry.request.borrow()))
     }
 
-    fn add(
-        &mut self,
-        key: Option<String>,
-        id: String,
-        session: String,
-        access: Option<AccessRequest>,
-        held: Held,
-    ) {
-        self.requests.push(Entry {
-            id: id.clone(),
-            session,
-            access,
-            request: watch::channel(held).0,
-        });
-        if let Some(key) = key {
-            self.keys.insert(key, id);
+    fn add(&mut self, entry: Entry) {
+        for key in &entry.keys {
+            self.keys.insert(key.clone(), entry.id.clone());
         }
+        self.requests.push(entry);
     }
 }
 
@@ -887,7 +962,14 @@ fn settle(held: &mut Held, decided: Decided, by: pb::Actor, at: SystemTime) {
         by: Some(by),
     });
     request.revision = Some(next_revision(request));
-    held.grant = decided.grant;
+    (held.grant, held.granted) = decided.grant.unzip();
+}
+
+/// Withdraws a pending `request` for `reason`.
+fn withdraw(request: &mut pb::InboxRequest, reason: pb::WithdrawReason) {
+    request.state = pb::RequestState::Withdrawn as i32;
+    request.withdraw_reason = reason as i32;
+    request.revision = Some(next_revision(request));
 }
 
 fn next_revision(request: &pb::InboxRequest) -> pb::Revision {
@@ -1074,7 +1156,7 @@ fn no_request(id: &str) -> Status {
         pb::EntityKind::Request,
         id,
         format!("no Inbox request {id} is yours on this machine"),
-        "check the request id; requests are kept only until humatad2 stops",
+        "check the request id; a request goes when its session is deleted",
     )
 }
 
@@ -1082,6 +1164,3 @@ fn id_of(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}

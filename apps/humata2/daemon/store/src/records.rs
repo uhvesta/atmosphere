@@ -113,6 +113,19 @@ pub struct ViewRecord {
     pub updated_unix_ms: i64,
 }
 
+/// A request a session's agent made in the Inbox, and the grant its
+/// answer made, if any (D96). The store keeps what the daemon encodes
+/// without reading it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InboxRecord {
+    pub id: String,
+    pub session: String,
+    /// A `humata.store.v1.InboxEntry`, as the daemon encodes it.
+    pub entry: Vec<u8>,
+    pub created_unix_ms: i64,
+    pub updated_unix_ms: i64,
+}
+
 /// Everything needed to start an agent again in the same conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentLaunch {

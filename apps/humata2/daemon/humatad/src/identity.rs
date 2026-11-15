@@ -66,7 +66,7 @@ pub(crate) struct AgentCaller {
 }
 
 impl AgentCaller {
-    fn of(record: &SessionRecord, here: &str) -> Self {
+    pub(crate) fn of(record: &SessionRecord, here: &str) -> Self {
         Self {
             session: session_ref(record, here),
             agent: record.agent.clone(),

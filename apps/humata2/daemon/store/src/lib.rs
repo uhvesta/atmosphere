@@ -15,6 +15,7 @@ mod atomic;
 mod blob;
 mod error;
 pub mod fault;
+mod inbox;
 mod journal;
 mod last_good;
 mod records;
@@ -30,8 +31,8 @@ pub use error::StoreError;
 pub use journal::{Journal, JournalEntry};
 pub use last_good::{Change, LastGood, Restored, RowChange};
 pub use records::{
-    AgentLaunch, AgentRecord, AgentState, Interruption, Pointers, RepoPointer, ResumeFailure,
-    ReviewRecord, SessionRecord, TabKind, TabRecord, Told, ViewRecord,
+    AgentLaunch, AgentRecord, AgentState, InboxRecord, Interruption, Pointers, RepoPointer,
+    ResumeFailure, ReviewRecord, SessionRecord, TabKind, TabRecord, Told, ViewRecord,
 };
 pub use schema::SCHEMA_VERSION;
 pub use store::Store;

@@ -125,6 +125,20 @@ const MIGRATIONS: &[&str] = &["
         CHECK ((view IS NULL) <> (view_file IS NULL))
     ) STRICT;
     CREATE INDEX views_by_session ON views (session, prepared_unix_ms, id);
+", "
+    -- What a session's agent asked the user (IN-26) and how it was
+    -- answered, with the grant the answer made, so a restart keeps the
+    -- Inbox and the grants (D96). A session's go with it.
+    CREATE TABLE inbox_requests (
+        id TEXT PRIMARY KEY,
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        created_unix_ms INTEGER NOT NULL,
+        updated_unix_ms INTEGER NOT NULL,
+        entry BLOB,
+        entry_file TEXT,
+        CHECK ((entry IS NULL) <> (entry_file IS NULL))
+    ) STRICT;
+    CREATE INDEX inbox_requests_by_session ON inbox_requests (session);
 "];
 
 /// The schema this build writes and reads.

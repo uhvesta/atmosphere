@@ -490,6 +490,95 @@ async fn a_revoked_grant_makes_the_next_ask_wait_for_the_user() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_restart_keeps_the_inbox_and_the_grants_still_standing() {
+    let mut fixture = Fixture::start().await;
+    let question = fixture.ask("Which database?").await;
+    let folder = fixture
+        .ask_ahead(pb::Capability::FilesReadOtherSession, other_files("src"))
+        .await
+        .id
+        .unwrap();
+    fixture.answer(&folder, approve()).await.unwrap();
+    let revoked = fixture
+        .ask_ahead(pb::Capability::NetworkReach, network("localhost", 5432))
+        .await
+        .id
+        .unwrap();
+    fixture.answer(&revoked, approve()).await.unwrap();
+    let pending = fixture
+        .ask_ahead(pb::Capability::NetworkReach, network("example.com", 443))
+        .await
+        .id
+        .unwrap();
+    let before = fixture.grants().await;
+    let gone = before
+        .iter()
+        .find(|grant| grant.granted_from.as_ref() == Some(&revoked))
+        .and_then(|grant| grant.id.clone());
+    fixture
+        .access()
+        .await
+        .revoke_grant(pb::RevokeGrantRequest {
+            grant: gone,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let kept = fixture.grants().await;
+
+    fixture.daemon.restart().await;
+
+    let listed = fixture
+        .inbox()
+        .await
+        .list_requests(pb::ListRequestsRequest {
+            include_answered: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let states: Vec<_> = listed
+        .requests
+        .iter()
+        .map(|request| (request.id.clone().unwrap(), request.state()))
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            (question.clone(), pb::RequestState::Pending),
+            (folder, pb::RequestState::Approved),
+            (revoked, pb::RequestState::Approved),
+            (pending.clone(), pb::RequestState::Pending),
+        ]
+    );
+    assert_eq!(fixture.grants().await, kept, "only the grant still standing comes back");
+    // The folder grant covers what's under it and no more, as before.
+    let inside = fixture
+        .ask_ahead(pb::Capability::FilesReadOtherSession, other_files("src/ledger"))
+        .await;
+    let parent = fixture
+        .ask_ahead(pb::Capability::FilesReadOtherSession, other_files(""))
+        .await;
+    let again = fixture
+        .ask_ahead(pb::Capability::NetworkReach, network("localhost", 5432))
+        .await;
+    assert_eq!(inside.state(), pb::RequestState::Approved);
+    assert_eq!(parent.state(), pb::RequestState::Pending);
+    assert_eq!(again.state(), pb::RequestState::Pending, "a revoked grant stays revoked");
+    // What was pending can still be answered, and a new grant takes a new id.
+    fixture.answer(&question, reply("Postgres")).await.unwrap();
+    fixture.answer(&pending, approve()).await.unwrap();
+    let new = grant_in(&fixture.wait(&pending).await);
+    assert!(
+        before.iter().all(|old| old.id != new.id),
+        "grant {:?} was given out before the restart",
+        new.id
+    );
+    assert_eq!(fixture.wait(&question).await.state(), pb::RequestState::Answered);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn revoking_a_grant_that_isnt_there_is_not_found() {
     let fixture = Fixture::start().await;
 

@@ -40,6 +40,8 @@ pub(crate) enum Type {
     ReviewState = 3,
     /// `humata.store.v1.View`.
     View = 4,
+    /// `humata.store.v1.InboxEntry`, as the daemon encodes it.
+    InboxEntry = 5,
 }
 
 /// Why a blob's bytes can't be read back.
@@ -81,6 +83,7 @@ impl Type {
             Self::AgentLaunch => "an agent's launch record",
             Self::ReviewState => "a session's review",
             Self::View => "a prepared view",
+            Self::InboxEntry => "an Inbox request",
         }
     }
 }
