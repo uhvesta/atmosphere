@@ -52,18 +52,31 @@ pub fn page(
     ui: &Rc<Ui>,
     state: &AppState,
     channel_filter: Entity<InputState>,
+    board_inputs: &crate::board::Inputs,
     _window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     match &state.route {
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
+        Route::Board(_) => {
+            crate::board::page(ui, state, board_inputs, Look::of(cx)).into_any_element()
+        }
         Route::Inbox => crate::lists::inbox(ui, state, Look::of(cx)).into_any_element(),
         Route::Channel(id) => state.workspace.channel(id).map_or_else(
             || {
                 widgets::empty("This channel is gone.", "Pick another in the sidebar.")
                     .into_any_element()
             },
-            |channel| crate::channel::page(ui, state, channel, channel_filter, Look::of(cx)),
+            |channel| {
+                crate::channel::page(
+                    ui,
+                    state,
+                    channel,
+                    channel_filter,
+                    board_inputs,
+                    Look::of(cx),
+                )
+            },
         ),
         Route::Session(id) => state
             .workspace

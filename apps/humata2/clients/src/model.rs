@@ -583,6 +583,21 @@ pub struct Item {
     pub parent: Option<ItemId>,
 }
 
+/// Extra board details loaded alongside the compact card rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemDetails {
+    pub description: String,
+    pub request_summary: String,
+    pub session_label: Option<String>,
+    pub history: Vec<String>,
+    pub created_by: Option<SessionId>,
+    pub sessions: Vec<SessionId>,
+    pub request: Option<RequestId>,
+    pub requested_status: Option<ItemStatus>,
+    /// Day in the dashboard's fourteen-day reporting window, oldest first.
+    pub done_day: Option<u8>,
+}
+
 /// A path inside one repository clone belonging to a session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionFile {

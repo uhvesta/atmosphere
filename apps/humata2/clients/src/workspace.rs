@@ -21,6 +21,8 @@ pub struct Workspace {
     pub requests: Vec<Request>,
     /// Board items on every board.
     pub items: Vec<Item>,
+    /// Descriptions, ownership, history and approvals for board items.
+    pub item_details: BTreeMap<crate::model::ItemId, crate::model::ItemDetails>,
     /// Each session's changes.
     pub diffs: Vec<RepoDiff>,
     /// Files on the hosts.

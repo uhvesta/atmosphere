@@ -41,6 +41,7 @@ pub struct Shell {
     channel_filter_id: Option<ChannelId>,
     channel_filter_value: String,
     _channel_filter_subscription: Subscription,
+    board_inputs: crate::board::Inputs,
     _appearance: Subscription,
     viewport: f32,
 }
@@ -85,6 +86,7 @@ impl Shell {
                 }
             },
         );
+        let board_inputs = crate::board::Inputs::new(&ui, window, cx);
         let appearance = window.observe_window_appearance(|window, cx| {
             gpui_kit::component::theme::Theme::sync_system_appearance(Some(window), cx)
         });
@@ -105,6 +107,7 @@ impl Shell {
             channel_filter_id: None,
             channel_filter_value: String::new(),
             _channel_filter_subscription: channel_filter_subscription,
+            board_inputs,
             _appearance: appearance,
             viewport: 0.,
         }
@@ -311,6 +314,8 @@ impl Render for Shell {
                     .update(cx, |input, cx| input.set_value(query, window, cx));
             }
         }
+        self.ui
+            .read(|state| self.board_inputs.sync(state, window, cx));
         let ui = self.ui.clone();
         let body = match load {
             Load::Loading => col()
@@ -339,9 +344,16 @@ impl Render for Shell {
                     AppAction::Retry,
                 ))
                 .into_any_element(),
-            Load::Ready => self
-                .ui
-                .read(|state| pages::page(&ui, state, self.channel_filter.clone(), window, cx)),
+            Load::Ready => self.ui.read(|state| {
+                pages::page(
+                    &ui,
+                    state,
+                    self.channel_filter.clone(),
+                    &self.board_inputs,
+                    window,
+                    cx,
+                )
+            }),
         };
         let main = col()
             .id("main")
@@ -355,7 +367,10 @@ impl Render for Shell {
                     .into_any_element()
             } else {
                 self.ui.read(|state| {
-                    if let Route::Channel(id) = &state.route
+                    if matches!(state.route, Route::Board(_)) {
+                        crate::board::toolbar(&ui, state, &self.board_inputs, look)
+                            .into_any_element()
+                    } else if let Route::Channel(id) = &state.route
                         && let Some(channel) = state.workspace.channel(id)
                     {
                         crate::channel::header(&ui, state, channel, look).into_any_element()

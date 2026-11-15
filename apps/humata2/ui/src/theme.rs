@@ -67,6 +67,7 @@ pub(crate) struct Look {
     pub(crate) add: u32,
     pub(crate) del: u32,
     pub(crate) content: u32,
+    pub(crate) attention_bg: u32,
 }
 impl Look {
     pub(crate) fn of(cx: &App) -> Self {
@@ -88,6 +89,7 @@ impl Look {
                 add: 0x17301f,
                 del: 0x3a1d1d,
                 content: 0x1e1e1f,
+                attention_bg: 0x3a2c12,
             }
         } else {
             Self {
@@ -107,6 +109,7 @@ impl Look {
                 add: 0xe6f6ea,
                 del: 0xfdeaea,
                 content: 0xffffff,
+                attention_bg: 0xfff4e0,
             }
         }
     }

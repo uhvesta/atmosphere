@@ -537,6 +537,33 @@ impl Daemon for FakeDaemon {
                 found.answer = Some(answer);
                 let request = found.clone();
                 let session = request.session.clone();
+                if matches!(
+                    request.answer,
+                    Some(Answer::Approved | Answer::Always { .. })
+                ) {
+                    let changes: Vec<_> = inner
+                        .workspace
+                        .item_details
+                        .iter()
+                        .filter(|(_, detail)| detail.request.as_ref() == Some(&id))
+                        .filter_map(|(item, detail)| {
+                            detail.requested_status.map(|status| (item.clone(), status))
+                        })
+                        .collect();
+                    for (id, status) in changes {
+                        if let Some(item) =
+                            inner.workspace.items.iter_mut().find(|item| item.id == id)
+                        {
+                            item.status = status;
+                            let details = inner.workspace.item_details.entry(id).or_default();
+                            details.done_day = (status == ItemStatus::Done).then_some(13);
+                            details
+                                .history
+                                .insert(0, format!("Approved move to {} · now", status.name()));
+                        }
+                    }
+                    inner.emit(Event::Resync);
+                }
                 inner.emit(Event::Request(request));
                 let still = inner
                     .workspace
@@ -876,6 +903,11 @@ impl Daemon for FakeDaemon {
                         what: format!("Item {id}"),
                     })?;
                 found.status = status;
+                let details = inner.workspace.item_details.entry(id.clone()).or_default();
+                details.done_day = (status == ItemStatus::Done).then_some(13);
+                details
+                    .history
+                    .insert(0, format!("Moved to {} by you · now", status.name()));
                 inner.emit(Event::Resync);
                 Ok(())
             },

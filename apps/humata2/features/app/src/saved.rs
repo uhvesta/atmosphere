@@ -42,6 +42,8 @@ pub struct SavedUi {
     pub full_screens: BTreeMap<SessionId, FullScreen>,
     /// Each channel's selected tab, filters and folds.
     pub channels: BTreeMap<ChannelId, crate::channel::View>,
+    /// The Board representation and filters.
+    pub board: humata2_board::View,
     /// What the sidebar folded.
     pub folding: Folding,
     /// Settings.

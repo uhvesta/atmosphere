@@ -718,6 +718,41 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         parent: None,
     })
     .collect();
+    if let Some(item) = workspace
+        .items
+        .iter_mut()
+        .find(|i| i.id.as_str() == "PAY-3")
+    {
+        item.depends_on.push(ItemId::new("PAY-2"));
+    }
+    let request = workspace
+        .waiting()
+        .find(|r| r.session.as_str() == "ledger" && r.title.contains("PAY-3"))
+        .map(|r| r.id.clone());
+    workspace.item_details.insert(ItemId::new("PAY-3"), crate::model::ItemDetails {
+        request_summary: "Migration and backfill pass on staging; 3.1M rows in 4m12s.".into(),
+        description: "Split postings into ledger_entries and ledger_balances, backfill from the old table in batches, and keep both in step until cut-over.".into(),
+        history: vec!["Moved to In progress by Ledger schema migration · 1h".into(), "Created by you · Mon".into()],
+        sessions: vec![SessionId::new("ledger"), SessionId::new("brin")], request, requested_status: Some(ItemStatus::Done),
+        ..Default::default()
+    });
+    workspace.item_details.insert(
+        ItemId::new("PAY-9"),
+        crate::model::ItemDetails {
+            created_by: Some(SessionId::new("ledger")),
+            ..Default::default()
+        },
+    );
+    for (id, day) in [("PAY-2", 10), ("INF-1", 13)] {
+        workspace.item_details.insert(
+            ItemId::new(id),
+            crate::model::ItemDetails {
+                done_day: Some(day),
+                session_label: (id == "PAY-2").then(|| "Currency codes".into()),
+                ..Default::default()
+            },
+        );
+    }
     workspace.diffs = vec![
         RepoDiff { session: SessionId::new("ledger"), repo: "ledger".into(), base: "main".into(), files: vec![FileDiff {path: "migrations/0042_accounts.sql".into(),added:41,removed:0,lines:Vec::new()}],comments:Vec::new() },
         RepoDiff { session: SessionId::new("ledger"), repo: "api".into(), base: "main".into(), files: vec![

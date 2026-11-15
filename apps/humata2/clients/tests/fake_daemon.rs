@@ -169,3 +169,40 @@ fn reading_a_file_uses_its_sessions_clone_and_reports_offline() {
         Err(DaemonError::Offline { .. })
     ));
 }
+
+#[test]
+fn approving_an_item_transition_moves_only_its_item_and_denying_keeps_it() {
+    use humata2_clients::model::{Answer, ItemStatus};
+    for (answer, expected) in [
+        (Answer::Approved, ItemStatus::Done),
+        (Answer::Denied { reply: None }, ItemStatus::InProgress),
+    ] {
+        let workspace = fixture::design();
+        let request = workspace.item_details[&ItemId::new("PAY-3")]
+            .request
+            .clone()
+            .expect("board approval");
+        let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
+        block_on(daemon.answer(&request, answer)).expect("answer accepted");
+        let workspace = daemon.workspace();
+        assert_eq!(
+            workspace
+                .items
+                .iter()
+                .find(|i| i.id.as_str() == "PAY-3")
+                .unwrap()
+                .status,
+            expected
+        );
+        assert_eq!(
+            workspace
+                .items
+                .iter()
+                .find(|i| i.id.as_str() == "INF-2")
+                .unwrap()
+                .status,
+            ItemStatus::InProgress
+        );
+        assert!(workspace.waiting().all(|r| r.id != request));
+    }
+}

@@ -15,6 +15,7 @@ mod overlays;
 mod pages;
 mod lists;
 mod channel;
+mod board;
 mod session_tabs;
 mod panels;
 mod shell;

@@ -18,7 +18,7 @@ use humata2_app::{
     channel::{self, Action, History, Tab, View},
 };
 use humata2_clients::model::{
-    ActivityKind, Agent, Channel, ChannelId, ForkKind, Scope, SessionId, Status,
+    ActivityKind, Agent, Channel, ChannelId, ForkKind, SessionId, Status,
 };
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
@@ -772,6 +772,7 @@ pub(crate) fn page(
     state: &AppState,
     channel: &Channel,
     filter: Entity<InputState>,
+    board_inputs: &crate::board::Inputs,
     look: Look,
 ) -> AnyElement {
     let view = page_view(state, &channel.id);
@@ -781,14 +782,10 @@ pub(crate) fn page(
         Tab::Repos => repos(ui, state, channel, look),
         Tab::Inbox => lists::inbox(ui, state, look).into_any_element(),
         Tab::Board => col()
-            .p(px(20.))
-            .child(button(
-                ui,
-                "channel-open-board",
-                "Open channel board",
-                AppAction::Navigate(Route::Board(Scope::Channel(channel.id.clone()))),
-                look,
-            ))
+            .size_full()
+            .min_h_0()
+            .child(crate::board::toolbar(ui, state, board_inputs, look))
+            .child(crate::board::page(ui, state, board_inputs, look))
             .into_any_element(),
         Tab::Access => col()
             .p(px(20.))

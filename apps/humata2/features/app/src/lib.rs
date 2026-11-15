@@ -207,7 +207,15 @@ impl AppState {
             session: SessionState::default(),
             review: ReviewState::default(),
             inbox: InboxState::default(),
-            board: BoardState::default(),
+            board: BoardState {
+                scope: match &saved.route {
+                    Route::Board(scope) => scope.clone(),
+                    Route::Channel(id) => Scope::Channel(id.clone()),
+                    _ => Scope::Global,
+                },
+                view: saved.board.clone(),
+                ..Default::default()
+            },
             hosts: HostsState::default(),
             files: FilesState::default(),
             settings: SettingsState::default(),
@@ -260,6 +268,7 @@ impl AppState {
             layout: self.layout,
             full_screens: self.full_screens.clone(),
             channels: self.channel_pages.clone(),
+            board: self.board.view.clone(),
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
             review: self.review.saved.clone(),
@@ -1096,6 +1105,18 @@ impl App {
             AppAction::CloseNavigationOverlay => {
                 state.navigation_overlay = false;
                 Effect::none()
+            }
+            AppAction::Board(BoardAction::SetScope(scope)) => {
+                if matches!(state.route, Route::Board(_)) {
+                    state.route = Route::Board(scope.clone());
+                }
+                self.child(state, AppAction::Board(BoardAction::SetScope(scope)))
+            }
+            AppAction::Board(BoardAction::GlobalOnly(only)) => {
+                if matches!(state.route, Route::Board(_)) {
+                    state.route = Route::Board(Scope::Global);
+                }
+                self.child(state, AppAction::Board(BoardAction::GlobalOnly(only)))
             }
             AppAction::Channel(action) => {
                 let Route::Channel(id) = state.route.clone() else {
