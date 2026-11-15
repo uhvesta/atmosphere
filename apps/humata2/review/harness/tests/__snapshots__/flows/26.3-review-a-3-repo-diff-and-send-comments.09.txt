@@ -4,8 +4,7 @@ Group "Review" focused
   Status "Agent" value="Agent idle: comments go now."
     text "Agent idle: comments go now."
   text "2 not with the agent yet"
-  Status "Saved" value="Saving…"
-    text "Saving…"
+  Status "Saved" value="Saved"
   Button "Changed since viewed" unchecked
     text "Changed"
   Button "Commented" unchecked

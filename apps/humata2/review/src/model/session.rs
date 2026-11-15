@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::anchor::{Anchor, RenderedSpan, quote};
 use super::agent::{self, AgentAction, NoteId, Spot, Switch};
-use super::comments::{CommentBook, CommentId, Kind};
+use super::comments::{CommentBook, CommentId, Dispatch, Kind};
 use super::memory::ReviewMemory;
 use super::prepared::PreparedReview;
 use super::review::{FileChange, Review, SessionId, Side};
@@ -215,6 +215,13 @@ impl SessionReview {
         let result = change(&mut self.book);
         self.touch();
         result
+    }
+
+    /// Taking work changes the queue only when a delivery can start.
+    pub(crate) fn next_dispatch(&mut self) -> Option<Dispatch> {
+        let dispatch = self.book.next_dispatch()?;
+        self.touch();
+        Some(dispatch)
     }
 
     /// Changes what the pane remembers; the change is saved.

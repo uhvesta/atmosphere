@@ -2,8 +2,7 @@ Group "Review" focused
   Status "Review chat" value="Review chat answering: questions and comments wait for it."
     text "Review chat answering: questions and comments wait for it."
   text "1 not with the review chat yet"
-  Status "Saved" value="Saving…"
-    text "Saving…"
+  Status "Saved" value="Saved"
   Button "Changed since viewed" unchecked
     text "Changed"
   Button "Commented" unchecked

@@ -254,8 +254,8 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] Add syntect to the gpui-fast lock (code blocks are uncoloured on Fast), add a Flow scroll action, parse `secondary-` keystrokes, and add Fast-engine GUI tests.
 
 ### Review pane (`apps/humata2/review`; D53)
-- [ ] The `large` test mounts about 207 rows per scroll frame against a bound of 120. Cause unknown.
-- [ ] Goldens show "Saving…" because the test clock never passes the 300 ms debounce.
+- [x] `review:large` dispatches one scroll event per measured frame, instead of counting the scroll helper's two refreshes plus a third draw as one. Every one of 200 frames stays within 120 mounts; no production overdraw change was needed. Test: `//apps/humata2/review:large`.
+- [x] Review goldens show Saved after advancing test time, and an empty send queue no longer increments the revision after saving. The saved revision equals the displayed review's revision. Tests: `//apps/humata2/review:snapshots`, `//apps/humata2/review:flows`; all four image goldens inspected.
 - [ ] Embed `humata2_diff_view` and a MarkdownRenderer; today the pane has stubs for both.
 - [ ] The daemon remembers Type keys durably, so a send never repeats after a restart.
 - [ ] MCP relays `review_focus`, `review_note` and `review_prepare` to the pane.

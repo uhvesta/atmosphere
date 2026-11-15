@@ -39,11 +39,11 @@ Group "Review" 0,0 1280x900 bg #ffffff
           text "guide.txt" 36,280 65x19
           text "+1 −1" 109,280 36x19
     box 280,0 1000x32 bg #202328 border 0,0,1,0 #33373e
-      Status "Agent" 292,6 728x19
-        text "Agent idle: comments go now." 292,6 728x19
-      text "0 not with the agent yet" 1032,6 173x19
-      Status "Saved" 1217,6 51x19
-        text "Saving…" 1217,6 51x19
+      Status "Agent" 292,6 743x19
+        text "Agent idle: comments go now." 292,6 743x19
+      text "0 not with the agent yet" 1047,6 173x19
+      Status "Saved" 1232,6 36x19
+        text "Saved" 1232,6 36x19
     box 280,32 1000x31 bg #202328 border 0,0,1,0 #33373e
       Button "Choose base" 1036,36 112x22 bg #262a30 border 1 #33373e radius 4
         text "Compare with…" 1045,37 94x20

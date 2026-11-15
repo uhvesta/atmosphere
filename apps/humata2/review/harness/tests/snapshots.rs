@@ -47,6 +47,8 @@ fn show(cx: &mut TestAppContext, pane: &Entity<ReviewPane>, review: Review) {
 }
 
 fn capture(cx: &mut TestAppContext, window: AnyWindowHandle) -> (String, layout::Layout) {
+    cx.executor().advance_clock(std::time::Duration::from_millis(400));
+    cx.run_until_parked();
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);
@@ -63,6 +65,10 @@ fn a_review_across_two_repos_shows_each_kind_of_change(cx: &mut TestAppContext) 
     let (window, pane) = open_pane(cx, &fakes, WIDTH, HEIGHT);
     show(cx, &pane, small_review());
     let (tree, layout) = capture(cx, window);
+    let saved = fakes.saved(&session()).expect("the review was saved");
+    pane.read_with(cx, |pane, _| {
+        assert_eq!(saved.revision, pane.session(&session()).expect("session loaded").revision());
+    });
     snapshots.assert_text("small-review", &tree);
     snapshots.assert_layout("small-review", &layout);
 }
@@ -139,6 +145,8 @@ fn each_image_mode_draws_as_recorded() {
             pane.set_review(session(), images_only(), cx);
             pane.set_agent_state(session(), AgentState::Idle, cx);
         });
+        cx.run_until_parked();
+        cx.advance_clock(std::time::Duration::from_millis(400));
         cx.run_until_parked();
         let (image, layout) = cx
             .update_window(window, |_, window, cx| {

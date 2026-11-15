@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, Entity, ScrollDelta, TestAppContext, point, px};
+use gpui_kit::{AnyWindowHandle, Entity, InputEvent as _, ScrollDelta, ScrollEvent, TestAppContext, point, px};
 use humata2_review_harness::{Fakes, large_review, open_pane};
 use humata2_review_view::model::{AgentState, SessionId};
 use humata2_review_view::{MountStats, ReviewPane};
@@ -30,7 +30,14 @@ fn frame(cx: &mut TestAppContext, window: AnyWindowHandle, scroll: Option<f32>) 
     let start = Instant::now();
     cx.update_window(window, |_, window, cx| {
         if let Some(by) = scroll {
-            window.scroll("body", ScrollDelta::Pixels(point(px(0.), px(-by))), cx);
+            // TestWindowExt::scroll refreshes before and after dispatch; adding
+            // render_frame below used to count three frames as a single frame.
+            let position = window.find("body").bounds().center();
+            window.dispatch_event(ScrollEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-by))),
+                ..Default::default()
+            }.to_platform_input(), cx);
         }
         window.render_frame(cx);
     })
@@ -71,7 +78,10 @@ fn a_large_review_mounts_only_what_is_on_screen(cx: &mut TestAppContext) {
     // Scroll through 200 screens' worth, one small step at a time.
     let mut scrolls = Vec::new();
     for _ in 0..200 {
+        let before = stats(cx, &pane).mounted;
         scrolls.push(frame(cx, window, Some(HEIGHT)));
+        let mounted = stats(cx, &pane).mounted - before;
+        assert!(mounted <= ON_SCREEN, "one scroll frame mounts {mounted} rows");
     }
     let scrolled = stats(cx, &pane);
     let mounted_per_frame = (scrolled.mounted - again.mounted) / scrolls.len();

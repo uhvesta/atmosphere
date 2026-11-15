@@ -988,7 +988,7 @@ impl ReviewPane {
         let Some(review) = self.sessions.get_mut(session) else {
             return;
         };
-        let Some(dispatch) = review.change(|book| book.next_dispatch()) else {
+        let Some(dispatch) = review.next_dispatch() else {
             return;
         };
         let snapshot = review.snapshot();
