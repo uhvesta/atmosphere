@@ -1,0 +1,9 @@
+text "Shopping"
+Button "Decrement"
+Status "Count"
+  text "1"
+Button "Increment"
+TextInput "New item" value="milk" focused
+  text "milk"
+Button "Add"
+Button "Clear" disabled

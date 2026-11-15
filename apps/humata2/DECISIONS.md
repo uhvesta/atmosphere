@@ -222,3 +222,21 @@ Status: **open** (waiting for the user) · **decided**.
 ## D30: Image paste over remote sessions (I6, user request 2026-11-14). Decided 2026-11-14
 - **Owner:** copy, paste and image paste work for local and SSH sessions alike.
 - **How:** text paste goes through Ghostty's bracketed paste; an image paste is uploaded with `TerminalService.PasteImage` into the session's paste folder on its machine (0600, removed with the session) and its path is pasted. Remote programs' OSC 52 clipboard writes reach the Mac clipboard; OSC 52 reads are never answered without the user.
+
+## D31: Bug reports as infrastructure (I9, user request 2026-11-14). Provisional
+- **Owner's ask:** start recording, stop, annotate the screen (draw, comment, a general report), save everything to one folder and copy a report with the file paths to paste into an LLM.
+- **Options for frames:**
+  - (a) Capture our own GPUI frames off screen. No permission is needed, it works the same on macOS and Linux, and every frame lines up with the view tree.
+  - (b) An OS screen recording (ScreenCaptureKit, or the PipeWire portal on Linux). This captures other apps too, but needs a permission prompt and can leak whatever else is on screen.
+- **Provisional:** (a), with (b) as a later opt-in for bugs outside Humata's windows. Recording reuses the I3/I4 recorders (state diffs, view trees), so a report can be turned into a flow test.
+- **Affects:** I9, the gate G (now I1–I9), the CLI (`humata report`), and secrets handling (scrubbed before anything is written).
+- **Reverse:** drop I9 from the gate. Nothing else depends on it.
+
+## D32: Agent identity — local OAuth or one MCP per agent (I8, user idea 2026-11-14). Provisional
+- **Question:** should agents authenticate to Humata with local OAuth?
+- **Options:**
+  - (a) Keep what `api/MCP.md` already says: one stdio `humatad mcp` per agent process, bound to its session by a random `HUMATA_SESSION_TOKEN` that the daemon also checks against the holder's pid and start time. This is already one MCP per agent.
+  - (b) Serve MCP over HTTP on localhost with OAuth 2.1, which Claude Code and Codex support for HTTP servers. You get a consent screen and revocable tokens, but every agent start needs a browser step. Agents on headless remote machines can't do that, and OAuth adds nothing a pid-bound stdio token lacks.
+- **Provisional:** (a). Revisit (b) only if an agent we support can't run a stdio MCP server.
+- **Affects:** I8, MCP.md §1.
+- **Reverse:** add an HTTP transport beside stdio. Grants and checks stay in the daemon either way.

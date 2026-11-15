@@ -15,7 +15,7 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
   - Reducer actions, state and stores are fair to assert on, because they are the abstract model.
   - Private functions, call order and message wording are not.
 - **macOS and Linux from the start.** Every test suite runs on both.
-- **The infrastructure milestones (I1–I8) come first.** The desktop app (A1 onward) starts only after gate G is passed.
+- **The infrastructure milestones (I1–I9) come first.** The desktop app (A1 onward) starts only after gate G is passed.
 - **Each app milestone ships as a signed `humata2` release.** That's a big behavioural step you can install and try.
 
 ---
@@ -55,16 +55,16 @@ Choose by measurement, not reputation.
 - [ ] Measure on macOS and Linux, record the numbers, and write a decision you sign off. Fork or patch only if the numbers demand it.
 
 ## I3: Snapshot testing
-- [ ] State snapshots: TestStore steps recorded as readable text.
-- [ ] View snapshots: the rendered view as a semantic text tree (roles, labels, text, focus, enabled). These are stable across fonts and GPUs and are the default.
-- [ ] Image snapshots, on macOS only: headless rendering with a tolerance, for the few screens where pixels matter (the diff colours, the terminal, wrap). Linux runs the state, view and flow snapshots.
-- [ ] One command records and another verifies. Failures write the old image, the new image and their diff, to review side by side.
+- [x] State snapshots: TestStore steps recorded as readable text.
+- [x] View snapshots: the rendered view as a semantic text tree (roles, labels, text, focus, enabled). These are stable across fonts and GPUs and are the default.
+- [x] Image snapshots, on macOS only: headless rendering with a tolerance, for the few screens where pixels matter (the diff colours, the terminal, wrap). Linux runs the state, view and flow snapshots.
+- [x] One command records and another verifies. Failures write the old image, the new image and their diff, to review side by side.
 
 ## I4: Flow testing
-- [ ] A flow is a script of user actions (click, type, key, drag, paste) run against the real app state and views with fake services. Each step can take a snapshot.
-- [ ] Flows read like the spec's UX flows, and each is named after the spec flow it proves.
+- [x] A flow is a script of user actions (click, type, key, drag, paste) run against the real app state and views with fake services. Each step can take a snapshot.
+- [x] Flows read like the spec's UX flows, and each is named after the spec flow it proves.
 - [ ] The same flows run against real daemons (local machines and local VMs) as end-to-end tests.
-- [ ] Each flow run produces a reviewable artifact: its steps and snapshots in order.
+- [x] Each flow run produces a reviewable artifact: its steps and snapshots in order.
 
 ## I5: Testing guideline
 - [x] An Opus 5.5 xhigh agent writes `TESTING.md` covering:
@@ -116,8 +116,34 @@ Reuse what holds up from Humata 1's `humatad` (agent, wire, workspace, the SSH e
 - [ ] The `humata` CLI per `api/CLI.md`, running the same operations through the same checks.
 - [ ] Boundary suites: every tool and command, every refusal, and the capability matrix run as tests.
 
+## I9: Bug reports
+You start recording, use the app, stop, and get a report that an LLM can read. See D31.
+- [ ] Record and stop, from the menu, a shortcut or `humata report start|stop`. While recording, a dot shows in the title bar.
+- [ ] A recording captures:
+  - every reducer action with its state diff;
+  - the view tree at each step;
+  - frames of Humata's own windows, drawn by us, so no screen-recording permission is needed;
+  - daemon RPCs and errors for the same period;
+  - the app, OS and daemon versions.
+- [ ] On stop, a review screen:
+  - scrub through the frames;
+  - draw, box, arrow and comment on any frame, with comments pinned to the element under them (role and label from the view tree);
+  - fill in what happened, what you expected and anything general.
+- [ ] Saved under the app's data folder in `reports/<date>-<slug>/`:
+  - `report.md`;
+  - `actions.jsonl`;
+  - `frames/`;
+  - `annotated/`;
+  - `daemon.log`.
+- [ ] Secrets are scrubbed before saving: tokens, host variable values and paste-folder contents. Terminal text is kept only for the terminal you mark.
+- [ ] **Copy report** puts a prompt on the clipboard: the summary plus the absolute path of every file, ready to paste into any LLM.
+- [ ] Tests:
+  - a flow that records, annotates and copies the report;
+  - scrubbing proven against seeded secrets;
+  - the report folder checked as a snapshot.
+
 ## G: Gate before the app
-- [ ] I1–I8 are done and their suites pass on macOS and Linux.
+- [ ] I1–I9 are done and their suites pass on macOS and Linux.
 - [ ] Flow and snapshot tooling has proven itself on a throwaway screen.
 - [ ] You agree to start the app.
 

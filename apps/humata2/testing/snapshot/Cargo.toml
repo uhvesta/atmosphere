@@ -1,0 +1,20 @@
+[package]
+name = "humata2-snapshot"
+description = "State, view and image snapshots for Humata 2's tests, recorded and verified beside each test."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "humata2_snapshot"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+image.workspace = true
+tca-rust.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-pre-apple.workspace = true

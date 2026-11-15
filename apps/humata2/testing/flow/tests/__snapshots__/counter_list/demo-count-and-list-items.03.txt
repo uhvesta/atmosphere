@@ -1,0 +1,9 @@
+text "Shopping"
+Button "Decrement"
+Status "Count"
+  text "1"
+Button "Increment"
+TextInput "New item" value=""
+  text ""
+Button "Add" disabled
+Button "Clear" disabled

@@ -1,0 +1,12 @@
+text "Shopping"
+Button "Decrement"
+Status "Count"
+  text "2"
+Button "Increment"
+TextInput "New item" value="tea"
+  text "tea"
+Button "Add"
+List "Items"
+  ListItem "milk"
+  ListItem "eggs" selected
+Button "Clear"
