@@ -67,13 +67,13 @@ Choose by measurement, not reputation.
 - [ ] Each flow run produces a reviewable artifact: its steps and snapshots in order.
 
 ## I5: Testing guideline
-- [ ] An Opus 5.5 xhigh agent writes `TESTING.md` covering:
+- [x] An Opus 5.5 xhigh agent writes `TESTING.md` covering:
   - **gRPC:** contract tests from the protos, error mapping, resumable streams, idempotency.
   - **MCP:** each tool's schema, its tier (default, needs approval, never for agents), refusal shapes, and the capability matrix as tests.
   - **CLI:** exit codes, `--json` output, which actor it runs as.
   - **User-facing:** flows, view snapshots, image snapshots.
   - **What never to test:** wording, call order, private helpers.
-- [ ] Each rule has a worked example against a real Humata 2 boundary.
+- [x] Each rule has a worked example against a real Humata 2 boundary.
 - [ ] You sign it off. Every later milestone follows it.
 
 ## I6: Terminals

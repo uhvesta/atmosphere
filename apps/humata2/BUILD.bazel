@@ -1,0 +1,9 @@
+# Humata 2's top-level documents, linted like every other markdown file.
+filegroup(
+    name = "markdown",
+    srcs = [
+        "LAYOUT.md",
+        "TESTING.md",
+    ],
+    tags = ["markdown"],
+)

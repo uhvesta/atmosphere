@@ -17,6 +17,7 @@ The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) is le
 | `features/<name>` | `humata2_<name>` | One reducer per feature (sidebar, session, review, files, inbox, board, hosts, settings, palette, views). State, actions and effects only, no GUI. Tested with TestStore. |
 | `clients` | `humata2_clients` | The dependency clients features use (daemon, clock, clipboard, file system, keychain), each a trait with a live and a fake implementation. |
 | `ui` | `humata2_ui` | GPUI views for each feature and the one store bridge between tca and GPUI's executor. |
+| `terminal/grid` | `terminal_grid` | The cell types and the `Grid` trait a renderer reads, with no dependencies, so the view needs no engine (D22). |
 | `terminal/vt` | `ghostty_vt` | Safe Rust over libghostty-vt (D10). The view reads it through a `Grid` trait, so an `alacritty_terminal` fallback would only have to implement `Grid`. |
 | `terminal/view` | `humata2_terminal_view` | The GPUI grid view that draws any `Grid`. |
 | `desktop` | `humata2` binary | The app: windows, menus, wiring. |
@@ -36,6 +37,7 @@ The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) is le
 | Package | What it holds |
 |---|---|
 | `testing/snapshot` | State, view and image snapshots: record and verify commands. |
+| `testing/boundary` | `humata2_boundary`: real daemons on Unix sockets with the spec's fixture and fake outside services, for the gRPC, MCP and CLI suites (`TESTING.md` §3). |
 | `testing/flow` | The flow runner: scripts of user actions against real state and views with fake clients, or against real daemons. |
 | `testing/linux` | Runs any test target on Linux. It cross-compiles to static musl (`--config=linux_arm64`) on this Mac and runs the binary in the `humata2-linux` Lima VM. |
 | `spike/gui` | The I2 spike, built with cargo in its own workspace until gpui-kit moves into Bazel. |

@@ -6,7 +6,7 @@
 #   apps/humata2/testing/linux/run.sh //libs/tca-rust:all
 #
 # Create the VM once with:
-#   limactl create --name=humata2-linux --cpus=4 --memory=4 --disk=20 \
+#   limactl create --name=humata2-linux --cpus=2 --memory=4 --disk=20 \
 #     --vm-type=vz --mount-none template:ubuntu-lts && limactl start humata2-linux
 set -euo pipefail
 

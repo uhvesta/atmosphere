@@ -174,3 +174,51 @@ Status: **open** (waiting for the user) · **decided**.
 - **Provisional:** (a). Each match has the same reach and risk as the row it joins, and the table stays short.
 - **Affects:** IN-16, IN-17, SE-25, SL-7, BD-*, `CAPABILITY_GLOBAL_READ`, `CAPABILITY_FILES_READ_OTHER_SESSION`, `CAPABILITY_SESSION_START_*`, `CAPABILITY_SESSION_STOP_OTHER`; the deprecated `CAPABILITY_GLOBAL_BOARD_WRITE` and `CAPABILITY_OWN_COMMENTS_READ`.
 - **Reverse:** add the rows (b) and give each its own capability; grants made under the folded rows stay with the row they were made under.
+
+## D22: Who draws the terminal (OVERVIEW I6). Decided 2026-11-14
+- **Owner:** we write our own terminal view, built only on Ghostty (libghostty-vt), gpui-kit and GPUI. No third-party GPUI terminal widget (gpui-terminal, gpui_xterm, gpui-ghostty).
+- **How:** `ghostty_vt` (D10) parses and keeps the screen. A small `terminal/grid` crate holds the cell types and the `Grid` trait, so the view depends on no engine. `terminal/view` draws any `Grid` the way Ghostty's own renderer does: libghostty-vt's render state says which rows changed, only those rows are reshaped, backgrounds are painted as runs and text as shaped runs per style.
+- **Tests:** the view is tested headlessly with a fake `Grid` (view snapshots of rows, cursor and selection), with image snapshots of tricky output on macOS, and with a frame-time bench.
+- **Reverse:** a third-party view could still draw our `Grid`, since the view only reads that trait.
+
+## D23: Where presence comes from when a request has no `PresenceProof` (I5 testing). Open
+- **Problem:** many user-only or unverified-write RPCs (`SetMarks`, `ReorderPinned`, `SendQueuedNow`, `OpenMachineShell`, `OpenShellTab`, `Attach` with input, `SetViewState`, comment writes, `CreateItem`) have no `PresenceProof` field.
+- **Options:** (a) presence belongs to the connection (CLI login or a connection-level confirm), with the field used where it already exists; (b) add the field to every such request.
+- **Provisional:** (a). No proto change, and it matches SEC-11.
+- **Affects:** SEC-8..11, BOUNDARIES §6, TESTING §4 and §6.
+- **Reverse:** add `PresenceProof` to each request (additive).
+
+## D24: When `offset_trimmed` applies (I5 testing). Open
+- **Problem:** errors.proto has `offset_trimmed` (`OUT_OF_RANGE`, exit 11), but `Attach` falls back to a snapshot and `Subscribe` to `Resync`.
+- **Provisional:** `Attach` and `Subscribe` never fail with it; only offset resumes of `ReadFile`, `WriteFile` and `Upload` do. That keeps TR-4's fresh-screen promise.
+- **Reverse:** list which streams fail instead.
+
+## D25: The MCP error shape follows the proto (I5 testing). Open
+- **Problem:** MCP.md uses `retry.after` as a date-time and names like `denied.rule`; the proto has `RetryAdvice{after: Duration, same_key}`, `Denied{source, capability, …}` and `RevisionConflict{expected, actual}`.
+- **Provisional:** MCP `details` use the proto's field names; enum values are lowercase without the prefix (`never_rule`); `after` is now plus the duration; `same_key` is included. One source of truth.
+- **Reverse:** rename the proto fields to match MCP.md.
+
+## D26: CLI exit codes for kinds the table doesn't list (I5 testing). Open
+- **Problem:** CLI.md §7 has no row for server-side `invalid_field`, `outside_humata_folders` or `peer_version_unsupported`.
+- **Provisional:** `INVALID_ARGUMENT` kinds exit 2; the other precondition and `UNIMPLEMENTED` kinds exit 7; the table lists every kind, so the exit-code test can be complete.
+- **Reverse:** assign different codes.
+
+## D27: Script tokens and Ask-me capabilities (I5 testing). Open
+- **Problem:** TRACE.md says a token can't wait, so Ask-me is refused, but the CLI.md §8 example gives a token `channel_board_edit_others` (Ask-me by default), and no `Denied.Source` fits a token-scope refusal.
+- **Options:** (a) a capability listed on the token is a standing approval, except Never and user-only ones, with a new `SOURCE_TOKEN_SCOPE`; (b) refuse Ask-me capabilities when the token is created.
+- **Provisional:** (a). The user approves the scope when making the token, and the CLI example stays valid.
+- **Reverse:** refuse them in `CreateScriptToken` with `invalid_field` and fix the example.
+
+## D28: `WhoAmI` describes scripts and presence (I5 testing). Open
+- **Problem:** `WhoAmI` can't tell a script from a user, or an unverified CLI from a logged-in one.
+- **Provisional:** add `ScriptActor` to the `Actor` oneof and a presence state to `WhoAmIResponse` (additive).
+- **Reverse:** drop them and the TESTING §6.3 rows that use them.
+
+## D29: Idempotency edge cases (I5 testing). Open
+- **Problem:** reusing a key with a different request is unspecified, and the MCP key (JSON-RPC id plus launch nonce) collides if `humatad mcp` restarts within one launch.
+- **Provisional:** a reused key with a different request fails with `invalid_field` naming `idempotency_key`; each MCP process adds its own nonce.
+- **Reverse:** document another collision rule.
+
+## D30: Image paste over remote sessions (I6, user request 2026-11-14). Decided 2026-11-14
+- **Owner:** copy, paste and image paste work for local and SSH sessions alike.
+- **How:** text paste goes through Ghostty's bracketed paste; an image paste is uploaded with `TerminalService.PasteImage` into the session's paste folder on its machine (0600, removed with the session) and its path is pasted. Remote programs' OSC 52 clipboard writes reach the Mac clipboard; OSC 52 reads are never answered without the user.
