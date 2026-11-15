@@ -8,7 +8,8 @@
 //!
 //! Which codec a stream uses is [`choose`]n from the user's [`Preference`]
 //! (global or per machine, in [`Settings`]), the kind of [`Link`] and the
-//! codecs the other end said it supports.
+//! codecs the other end said it supports; a remote link's speed is
+//! measured from the transfers on it ([`Throughput`]).
 //!
 //! At rest, compressed data is a frame ([`encode_framed`],
 //! [`decode_framed`]): a binary header naming the codec, the message type
@@ -21,6 +22,7 @@ mod frame;
 mod policy;
 mod settings;
 mod sniff;
+mod throughput;
 
 pub use chunk::{CHUNK_MAX, Chunk, Decoder, Encoder, Header};
 pub use codec::Codec;
@@ -28,3 +30,4 @@ pub use error::{ChunkError, DecodeFailure, FrameError, SettingsError};
 pub use frame::{FRAME_MAGIC, FrameHeader, Framed, decode_framed, encode_framed, peek_framed};
 pub use policy::{Link, Preference, SLOW_LINK_BYTES_PER_SECOND, choose, ranked};
 pub use settings::{SETTINGS_FILE, Settings};
+pub use throughput::{Sample, Throughput};
