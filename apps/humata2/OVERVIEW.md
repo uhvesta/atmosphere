@@ -97,6 +97,8 @@ Reuse what holds up from Humata 1's `humatad` (agent, wire, workspace, the SSH e
   - **reboot:** the session record and scrollback are saved to disk and the agent resumes;
   - **crash:** resume is checked and the agent is told it was interrupted.
 - [ ] Kill-matrix test: kill each process at each point and show that the session either comes back or says exactly what was lost.
+- [ ] Restarts never lose state (PER-25–PER-31): power-cut tests for host, machine and both at every fault point, real VM hard resets, every multi-step operation finished or undone, a restart report for every restart, and the restart doctor skill with `humata doctor restarts`.
+- [ ] Links push and never poll (TR-7–TR-10): file notifications inside machines, link work off the UI thread, idle wakeups only for keepalives, and latency benches against a local VM.
 - [ ] Where state lives:
   - the Mac is the source of truth;
   - machines hold only clones and agent context, and report pointers (repo, branch, sha, pushed, dirty files);
@@ -105,7 +107,7 @@ Reuse what holds up from Humata 1's `humatad` (agent, wire, workspace, the SSH e
 - [ ] Machine providers: `create`, `connect` with `{cmd}`, `identity`, interactive login with takeover, install humatad, the systemd user service with an admin fallback. The Lima provider config makes local VMs for the tests.
 - [ ] Channels across machines and repos: main clones, per-session clones, branch prefix + slug, add and remove repos.
 - [ ] Moves, forks across machines, file transfers that pause and resume, trash, archive and restore, Storage, retention.
-- [ ] Skills sync, installing Humata's embedded CLIs and daemons on every added machine, and scripted sync rules (TS-1–TS-4).
+- [ ] Skills sync, installing Humata's embedded CLIs and daemons on the host from the app (TS-0) and on every added machine, and scripted sync rules (TS-1–TS-4).
 - [ ] Many clients at once (D34): two desktop clients and a CLI stay in sync, each seeing the others' changes as they happen; per-client view state lives on the host.
 - [ ] A self-hosted host (AR-7): humatad runs as the host on Linux, and the desktop client and CLI connect to it over SSH, so the same suites pass against a host in a local VM.
 - [ ] Web listener (D34): gRPC-web on loopback, off by default, Origin and Host checks, pairing with a revocable per-device key; boundary tests for unpaired, revoked and cross-origin callers.

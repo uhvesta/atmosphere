@@ -1550,6 +1550,14 @@ outside the session go through the Mac.
 
 ### Tools and scripted syncs (D49)
 
+- **TS-0** The desktop app installs the host's own copies the same way: on
+  first launch and on every launch after, it puts `humatad2`, `humata2_holder`
+  and `humata` from its bundle into `~/.humata2/bin` (checksums, atomic swap,
+  never under a live holder, as TS-1), registers `humatad2` as the launchd
+  login item (PER-20) and puts `humata` on the user's PATH. Nothing on the
+  host needs a separate installer, and an app update updates the daemon at
+  its next safe moment (PER-6). (D51)
+
 - **TS-1** Adding a machine, and every connect after, installs Humata's own
   binaries there automatically, with no prompt and no download: `humatad2`,
   `humata2_holder` and the `humata` CLI, into `~/.humata2/bin`, a folder only
@@ -1913,6 +1921,49 @@ daemon and, as far as physically possible, the machine.
 - **PER-24** Killing a holder (its process dies) is handled like tier 4 for
   that session alone.
 
+### Restarts never lose state (owner direction 2026-11-14, D52)
+
+- **PER-25** Turning any machine off at any instant (a closed lid, a power
+  cut, a crash or a reboot, of the host, a remote machine or both) loses
+  nothing the user had: sessions, tabs, layout, open panes and scroll
+  positions, composer and comment drafts, review comments and their send
+  queue, Inbox requests, answers and grants, journals, pins, settings, and
+  terminal output up to the last sync (500 ms at most). Whatever the user
+  did is on disk, fsynced, before Humata says it's done; high-rate state
+  (drafts, scroll) is saved at least once a second.
+- **PER-26** Turning it back on needs no action: the daemons start at login
+  (PER-18–PER-20), the host reconnects to every machine (PER-21), sessions
+  reattach or resume (PER-13–PER-16), and the app reopens its windows where
+  they were.
+- **PER-27** Every multi-step operation (adding a machine, installing tools,
+  takeover, sync rules, resume, fork and move, file transfers, the review
+  send queue, journal replay) is either finished or cleanly undone after a
+  restart at any step, never left half done. A review comment is sent to an
+  agent exactly once across restarts.
+- **PER-28** The test suite proves it: a power-cut simulation kills every
+  process and drops writes not yet fsynced at each fault point, for the host
+  alone, a machine alone and both; real hard resets of local VMs cover Linux
+  machines and a Linux host (AR-7). Each case checks that everything in
+  PER-25 came back or is reported as PER-29 says.
+- **PER-29** Every restart writes a **restart report** under the data
+  folder's `restarts/<time>/`, in the bug report format (D47, secrets
+  masked): what was running before, what was restored, and for anything
+  that wasn't, the step that failed, the error, the related log lines, the
+  versions, and the files it relied on (conversation files with sizes and
+  times, holder pid and scrollback files, store schema version). The app
+  shows one line per failed session linking to it.
+- **PER-30** Humata ships a **restart doctor** skill and `humata doctor
+  restarts [report]`. It reads restart reports, explains what went wrong and
+  where, tries repairs that can't lose anything (resume again, relaunch with
+  the recovered conversation id, reattach a found holder, restore the store
+  from its last good copy) and asks before anything that could. When it
+  can't repair, it writes a diagnosis with the cause and proposed fixes to
+  Humata itself, ready to file as a bug report.
+- **PER-31** The store keeps a last good copy (a periodic `VACUUM INTO`
+  snapshot, kept until a newer one checks out), so a damaged database is
+  restored, not lost; what changed after that copy is listed in the restart
+  report.
+
 ## 20. Async: working while the Mac is away
 
 - **AW-1** Sessions on remote machines keep working while the Mac is asleep,
@@ -1987,6 +2038,28 @@ daemon and, as far as physically possible, the machine.
   machines' streams: with one machine not answering, the app keeps
   responding to input and other machines' terminals keep updating at their
   usual rate.
+- **TR-7** Nothing polls across a link. Every change a peer needs (terminal
+  output, events, Inbox requests and answers, machine and session state,
+  pointer reports, transfer progress) is pushed on a stream the moment it
+  happens. Inside a machine, changes Humata doesn't make itself (agent
+  conversation files, clones' git state, `shared/`) are watched with the
+  OS's file notifications (FSEvents, inotify). A poll is allowed only where
+  no notification exists; each one is listed in `api/GRPC.md` with its
+  interval and backs off while nothing changes.
+- **TR-8** Link work never runs on the UI thread or blocks a request:
+  decoding, decompression, diffing and highlighting run on background
+  tasks, and the UI receives state ready to draw. Queues between them are
+  bounded; output and events keep their order, while state that only
+  matters at its latest value (progress, presence, scroll) is coalesced.
+- **TR-9** Idle costs nothing. With every machine connected and nothing
+  happening, the app and the daemons wake only for each link's keepalive
+  (an HTTP/2 PING at most every 30 s), which is also how a dead link is
+  noticed; no status is polled. Tests count wakeups and timers on a fake
+  clock; release benches measure idle CPU.
+- **TR-10** A link adds little over the network itself: a keystroke in a
+  remote terminal echoes within the SSH round trip plus 5 ms, and an event
+  on a machine reaches the app within the round trip plus 10 ms, measured
+  in release benches against a local VM.
 
 ## 22. Navigation and UI principles
 
