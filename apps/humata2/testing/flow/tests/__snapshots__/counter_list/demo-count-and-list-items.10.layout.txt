@@ -1,0 +1,16 @@
+window 360x320, test fonts
+box 0,0 360x320 bg #ffffff
+  text "Shopping" 8,8 344x26
+  Button "Decrement" 8,42 98x32 bg #ffffff border 1 #e5e5e5 radius 6
+  Status "Count" 114,42 10x32
+    text "1" 114,42 10x26
+  Button "Increment" 132,42 98x32 bg #ffffff border 1 #e5e5e5 radius 6
+  TextInput "New item" 8,82 200x24
+    text "" 9,83 198x26
+  Button "Add" 216,82 48x32 bg #ffffff80 border 1 #e5e5e580 radius 6
+  List "Items" 8,122 344x52
+    ListItem "milk" 8,122 344x26 bg #2f4a72
+      text "milk" 16,122 328x26
+    ListItem "eggs" 8,148 344x26
+      text "eggs" 16,148 328x26
+  Button "Clear" 8,182 344x32 bg #ffffff border 1 #e5e5e5 radius 6

@@ -937,9 +937,24 @@ fn flow_26_04_approve_an_inbox_request_after_opening_the_requester() {
 
 ### 8.2 View snapshots
 
-The default for anything a person sees. A view renders headless to a
-semantic text tree: roles, labels, text, focus, selection, enabled. No
-pixels, sizes, colours or fonts, so the tree is the same on every machine.
+A snapshot is the data under what is drawn, written as text, not a picture
+of it. Text is cheaper to record and compare, and an agent or a reviewer
+can read it and its diff directly. The view tree and the layout below are
+the default; an image (8.3) is the fallback for what only pixels show.
+
+The view tree is the default for anything a person sees. A view renders
+headless to a semantic text tree: roles, labels, text, focus, selection, enabled. It says
+what the view shows and does, with no pixels, sizes, colours or fonts, so
+the tree is the same on every machine and changes only when behaviour does.
+
+When how the view is laid out matters, add a layout snapshot
+(`layout::capture`, `assert_layout`). It is the same window with each
+element's, text's, background's and border's position and size in whole
+pixels, its colours, radii and clipping. It changes with any layout tweak,
+so take it where layout is what the test proves, rather than an image. Under
+`TestAppContext` it is one file for every OS. Only what it can't show
+(glyphs, text colour and font, icons, shadows) needs an image snapshot
+(8.3).
 
 ```text
 panel "Inbox" focused
@@ -968,7 +983,8 @@ fn an_inbox_card_names_the_action_requester_and_machine() {
 
 ### 8.3 Image snapshots
 
-Only where pixels are the behaviour: diff colours, the terminal (wide
+The fallback, only where pixels are the behaviour and neither the view tree
+nor the layout can say it: diff colours, the terminal (wide
 characters, emoji, scripts) and Wrap. macOS only, tagged `image`, rendered
 off screen with a fixed size, scale and bundled fonts, compared with a
 tolerance. A failure writes the old image, the new one and their diff to

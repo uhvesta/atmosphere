@@ -1,0 +1,38 @@
+[package]
+name = "humatad2"
+description = "Humata 2's daemon: the gRPC API on a Unix socket, and a stdio bridge to it."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Also depends on the protocol's Rust types and its tonic services, which
+# Bazel generates (//apps/humata2/api/proto:humata2_rust and :grpc here), so
+# this crate builds with Bazel only.
+[[bin]]
+name = "humatad2"
+path = "src/main.rs"
+
+[[bin]]
+name = "protoc-gen-tonic"
+path = "codegen/protoc_gen_tonic.rs"
+
+[dependencies]
+clap = { workspace = true }
+humata2-holder = { workspace = true }
+humata2-store = { workspace = true }
+prost = { workspace = true }
+protoc-gen-prost = { workspace = true }
+protoc-gen-tonic = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+hyper-util = { workspace = true }
+rustix = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }

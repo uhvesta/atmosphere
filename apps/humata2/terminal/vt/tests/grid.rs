@@ -58,28 +58,19 @@ fn a_new_line_does_not_mark_the_row_wrapped() {
 fn the_grid_trait_reads_the_viewport() {
     let mut terminal = terminal(4, 2);
     terminal.feed(b"hi");
+    terminal.sync();
 
-    let grid: &dyn GridProbe = &terminal;
-    assert_eq!(grid.probe_size(), Size { cols: 4, rows: 2 });
-    assert_eq!(grid.probe_row(0), "hi");
-    assert_eq!(grid.probe_row(5), "");
-}
-
-// `Grid::row` returns `impl Iterator`, so the trait isn't object safe; this
-// probe reads through it generically.
-trait GridProbe {
-    fn probe_size(&self) -> Size;
-    fn probe_row(&self, y: u16) -> String;
-}
-
-impl<G: Grid> GridProbe for G {
-    fn probe_size(&self) -> Size {
-        self.size()
-    }
-
-    fn probe_row(&self, y: u16) -> String {
-        text(&self.row(y).collect::<Vec<_>>())
-    }
+    assert_eq!(Grid::size(&terminal), Size { cols: 4, rows: 2 });
+    assert_eq!(text(&terminal.row(0).expect("row 0").cells), "hi");
+    assert!(terminal.row(5).is_none());
+    assert_eq!(
+        Grid::cursor(&terminal),
+        Cursor {
+            x: 2,
+            y: 0,
+            visible: true
+        }
+    );
 }
 
 #[test]

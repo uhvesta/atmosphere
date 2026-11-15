@@ -1,0 +1,19 @@
+[package]
+name = "terminal_grid"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100.0"
+publish = false
+
+[lib]
+name = "terminal_grid"
+path = "src/lib.rs"
+
+[features]
+# FakeGrid: a grid filled by hand, for tests and benchmarks of a renderer.
+fake = []
+
+[[test]]
+name = "fake"
+path = "tests/fake.rs"
+required-features = ["fake"]

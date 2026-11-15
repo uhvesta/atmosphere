@@ -1,119 +1,95 @@
+//! Turning libghostty-vt's cell values into [`Cell`]s. The types themselves
+//! live in `terminal_grid`, which the view reads without this crate.
+
+use terminal_grid::{Cell, CellWidth, Color, Underline};
+
+use crate::error::{Status, check};
 use crate::ffi;
 
-/// One column of a row: the text drawn there and how to draw it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Cell {
-    /// The grapheme cluster in the cell, such as `"a"`, `"日"`, `"e\u{301}"`
-    /// or a whole emoji ZWJ sequence; empty when the cell holds no text,
-    /// including the spacer after a wide character.
-    pub text: String,
-    pub width: CellWidth,
-    pub fg: Color,
-    pub bg: Color,
-    pub underline_color: Color,
-    pub bold: bool,
-    pub italic: bool,
-    pub faint: bool,
-    pub blink: bool,
-    pub inverse: bool,
-    pub invisible: bool,
-    pub strikethrough: bool,
-    pub overline: bool,
-    pub underline: Underline,
-}
+/// The cell `raw`, drawn in `style`, holding the grapheme cluster `text`.
+/// The grid reference and render state APIs both hand out these three, so
+/// both build cells here.
+pub(crate) fn cell_from(
+    raw: ffi::GhosttyCell,
+    style: &ffi::GhosttyStyle,
+    text: String,
+) -> Result<Cell, Status> {
+    let wide: i32 = cell_get(raw, ffi::CELL_DATA_WIDE)?;
+    let content: i32 = cell_get(raw, ffi::CELL_DATA_CONTENT_TAG)?;
 
-impl Cell {
-    /// How many columns the cell's text covers: 2 for a wide character, 1
-    /// for a narrow one and 0 for a spacer.
-    pub fn columns(&self) -> u8 {
-        match self.width {
-            CellWidth::Narrow => 1,
-            CellWidth::Wide => 2,
-            CellWidth::SpacerTail | CellWidth::SpacerHead => 0,
+    // A cell erased with a background color holds just that color.
+    let bg = match content {
+        ffi::CELL_CONTENT_BG_COLOR_PALETTE => {
+            Color::Palette(cell_get(raw, ffi::CELL_DATA_COLOR_PALETTE)?)
         }
-    }
-}
-
-/// How a cell relates to the characters around it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum CellWidth {
-    /// A character one column wide, or an empty cell.
-    #[default]
-    Narrow,
-    /// The first column of a character two columns wide.
-    Wide,
-    /// The second column of a wide character; draw nothing here.
-    SpacerTail,
-    /// The last column of a row whose wide character didn't fit and moved to
-    /// the next row; draw nothing here.
-    SpacerHead,
-}
-
-/// A color as the program set it. The view resolves [`Color::Default`] and
-/// palette entries against its theme.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Color {
-    /// The theme's foreground or background.
-    #[default]
-    Default,
-    /// One of the 256 palette entries, as set by SGR 30-37, 90-97 or 38;5.
-    Palette(u8),
-    /// A 24-bit color, as set by SGR 38;2.
-    Rgb { r: u8, g: u8, b: u8 },
-}
-
-impl Color {
-    pub(crate) fn from_style(color: ffi::GhosttyStyleColor) -> Self {
-        // SAFETY: the tag says which member of the union libghostty-vt set,
-        // and both members are plain bytes.
-        unsafe {
-            match color.tag {
-                ffi::STYLE_COLOR_PALETTE => Color::Palette(color.value.palette),
-                ffi::STYLE_COLOR_RGB => {
-                    let rgb = color.value.rgb;
-                    Color::Rgb {
-                        r: rgb.r,
-                        g: rgb.g,
-                        b: rgb.b,
-                    }
-                }
-                _ => Color::Default,
+        ffi::CELL_CONTENT_BG_COLOR_RGB => {
+            let rgb: ffi::GhosttyColorRgb = cell_get(raw, ffi::CELL_DATA_COLOR_RGB)?;
+            Color::Rgb {
+                r: rgb.r,
+                g: rgb.g,
+                b: rgb.b,
             }
         }
-    }
+        _ => color_from_style(style.bg_color),
+    };
+
+    let flags = style.flags;
+    Ok(Cell {
+        text,
+        width: match wide {
+            ffi::CELL_WIDE_WIDE => CellWidth::Wide,
+            ffi::CELL_WIDE_SPACER_TAIL => CellWidth::SpacerTail,
+            ffi::CELL_WIDE_SPACER_HEAD => CellWidth::SpacerHead,
+            _ => CellWidth::Narrow,
+        },
+        fg: color_from_style(style.fg_color),
+        bg,
+        underline_color: color_from_style(style.underline_color),
+        bold: flags & ffi::STYLE_FLAG_BOLD != 0,
+        italic: flags & ffi::STYLE_FLAG_ITALIC != 0,
+        faint: flags & ffi::STYLE_FLAG_FAINT != 0,
+        blink: flags & ffi::STYLE_FLAG_BLINK != 0,
+        inverse: flags & ffi::STYLE_FLAG_INVERSE != 0,
+        invisible: flags & ffi::STYLE_FLAG_INVISIBLE != 0,
+        strikethrough: flags & ffi::STYLE_FLAG_STRIKETHROUGH != 0,
+        overline: flags & ffi::STYLE_FLAG_OVERLINE != 0,
+        underline: underline_from_flags(flags),
+    })
 }
 
-/// The underline style SGR 4 and its sub-parameters set.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Underline {
-    #[default]
-    None,
-    Single,
-    Double,
-    Curly,
-    Dotted,
-    Dashed,
+fn cell_get<T: Default>(cell: ffi::GhosttyCell, data: ffi::GhosttyCellData) -> Result<T, Status> {
+    let mut out = T::default();
+    // SAFETY: callers pick `T` as the output type `data` documents.
+    check(unsafe { ffi::ghostty_cell_get(cell, data, (&raw mut out).cast()) })?;
+    Ok(out)
 }
 
-impl Underline {
-    pub(crate) fn from_flags(flags: u16) -> Self {
-        match (flags & ffi::STYLE_UNDERLINE_MASK) >> ffi::STYLE_UNDERLINE_SHIFT {
-            1 => Underline::Single,
-            2 => Underline::Double,
-            3 => Underline::Curly,
-            4 => Underline::Dotted,
-            5 => Underline::Dashed,
-            _ => Underline::None,
+fn color_from_style(color: ffi::GhosttyStyleColor) -> Color {
+    // SAFETY: the tag says which member of the union libghostty-vt set,
+    // and both members are plain bytes.
+    unsafe {
+        match color.tag {
+            ffi::STYLE_COLOR_PALETTE => Color::Palette(color.value.palette),
+            ffi::STYLE_COLOR_RGB => {
+                let rgb = color.value.rgb;
+                Color::Rgb {
+                    r: rgb.r,
+                    g: rgb.g,
+                    b: rgb.b,
+                }
+            }
+            _ => Color::Default,
         }
     }
 }
 
-/// A row of the screen.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Row {
-    /// One cell per column, left to right.
-    pub cells: Vec<Cell>,
-    /// Whether the row's text goes on in the next row, because it reached
-    /// the right edge rather than ending with a new line.
-    pub wrapped: bool,
+fn underline_from_flags(flags: u16) -> Underline {
+    match (flags & ffi::STYLE_UNDERLINE_MASK) >> ffi::STYLE_UNDERLINE_SHIFT {
+        1 => Underline::Single,
+        2 => Underline::Double,
+        3 => Underline::Curly,
+        4 => Underline::Dotted,
+        5 => Underline::Dashed,
+        _ => Underline::None,
+    }
 }

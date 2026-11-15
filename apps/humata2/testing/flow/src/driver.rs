@@ -2,6 +2,7 @@
 //! they would see.
 
 use humata2_snapshot::RgbaImage;
+use humata2_snapshot::layout::Layout;
 
 use crate::flow::Action;
 
@@ -29,6 +30,14 @@ pub trait Driver {
     ///
     /// When what is shown can't be read.
     fn view(&mut self) -> Result<String, Self::Error>;
+
+    /// How what is shown now is laid out, as a layout snapshot (see
+    /// [`humata2_snapshot::layout`]), or `None` when this driver can't tell.
+    ///
+    /// # Errors
+    ///
+    /// When it can tell but reading the layout failed.
+    fn layout(&mut self) -> Result<Option<Layout>, Self::Error>;
 
     /// What is shown now, drawn, or `None` when this driver can't draw
     /// pixels.

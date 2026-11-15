@@ -6,6 +6,10 @@
 //! - View snapshots ([`view::capture`]) write a drawn GPUI window as a tree of
 //!   roles, labels, text, focus and disabled controls. They don't depend on
 //!   fonts, GPUs or pixel sizes, so they are the default.
+//! - Layout snapshots ([`layout::capture`]) write the same window with where
+//!   each element, text, background and border sits, its size and its
+//!   colours, in whole pixels. They are for comparing how a view is laid
+//!   out; under `TestAppContext` they read the same on every OS.
 //! - Image snapshots (macOS only) compare a headless render with a tolerance.
 //!   On a mismatch they write the old image, the new one and their diff side
 //!   by side.
@@ -14,6 +18,7 @@
 //! them. See [`Mode`].
 
 mod diff;
+pub mod layout;
 mod mode;
 #[cfg(target_os = "macos")]
 mod pixels;

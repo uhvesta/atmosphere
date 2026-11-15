@@ -190,22 +190,27 @@ impl Snapshots {
     /// [`SnapshotError::Missing`] or [`SnapshotError::Mismatch`] when
     /// verifying, or an error reading or writing the files.
     pub fn check_text(&self, name: &str, actual: &str) -> Result<Outcome, SnapshotError> {
-        let file = format!("{}.txt", checked(name)?);
-        let path = self.directory.join(&file);
+        self.check_text_file(&format!("{}.txt", checked(name)?), actual)
+    }
+
+    /// Checks `actual` against the text snapshot in `file`, a name
+    /// [`checked`] already, or records it.
+    pub(crate) fn check_text_file(&self, file: &str, actual: &str) -> Result<Outcome, SnapshotError> {
+        let path = self.directory.join(file);
         let actual = normalize(actual);
         let recorded = read(&path)?.map(|bytes| normalize(&String::from_utf8_lossy(&bytes)));
         if recorded.as_deref() == Some(actual.as_str()) {
-            self.clear_failed(&[file.as_str()])?;
+            self.clear_failed(&[file])?;
             return Ok(Outcome::Matched);
         }
         match self.mode {
             Mode::Record => {
                 write(&path, actual.as_bytes())?;
-                self.clear_failed(&[file.as_str()])?;
+                self.clear_failed(&[file])?;
                 Ok(Outcome::Recorded)
             }
             Mode::Verify => {
-                let review = self.write_failed(&file, actual.as_bytes())?;
+                let review = self.write_failed(file, actual.as_bytes())?;
                 Err(match recorded {
                     None => SnapshotError::Missing { path, review },
                     Some(recorded) => SnapshotError::Mismatch {
@@ -227,7 +232,7 @@ impl Snapshots {
         }
     }
 
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
     pub(crate) fn path(&self, file: &str) -> PathBuf {
         self.directory.join(file)
     }

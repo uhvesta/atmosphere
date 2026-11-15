@@ -1,0 +1,41 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2's bug reports (I9) without a GUI: recordings and snapshots of
+# interactions, reducer actions, view and layout trees and daemon calls,
+# scrubbed of seeded secrets and terminal text, saved as text files an agent
+# can read, and turned into flow scripts. The desktop app and the CLI add
+# themselves to `visibility` when they start using it.
+rust_library(
+    name = "report",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_report",
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "report_unit_test",
+    crate = ":report",
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        crate_root = src,
+        deps = [
+            ":report",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

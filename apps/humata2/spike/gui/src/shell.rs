@@ -98,7 +98,7 @@ impl Shell {
             Screen::Terminal => {
                 if self.terminal.is_none() {
                     let animate = self.args.animate;
-                    self.terminal = Some(cx.new(|_| TerminalScreen::new(animate)));
+                    self.terminal = Some(cx.new(|cx| TerminalScreen::new(animate, window, cx)));
                 }
             }
         }

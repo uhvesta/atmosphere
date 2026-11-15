@@ -1,0 +1,31 @@
+[package]
+name = "terminal_view"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100.0"
+publish = false
+
+# Its own workspace, like the GUI spike: it builds with cargo while
+# gpui-kit's dependency tree is evaluated, and moves into Bazel with it.
+[workspace]
+
+[lib]
+name = "terminal_view"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit = "0.9.1"
+terminal_grid = { path = "../grid" }
+
+[dev-dependencies]
+gpui-kit = { version = "0.9.1", features = ["test-support"] }
+terminal_grid = { path = "../grid", features = ["fake"] }
+
+[[test]]
+name = "view"
+path = "tests/view.rs"
+
+[[bench]]
+name = "frame"
+path = "benches/frame.rs"
+harness = false

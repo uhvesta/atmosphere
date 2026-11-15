@@ -15,6 +15,7 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
   - Reducer actions, state and stores are fair to assert on, because they are the abstract model.
   - Private functions, call order and message wording are not.
 - **macOS and Linux from the start.** Every test suite runs on both.
+- **The app is only a client** of the Mac's daemon (AR-2, AR-3, D34). Any number of clients, desktop or web, can be open at once. App code outside `desktop/` builds for wasm, and CI checks it.
 - **The infrastructure milestones (I1–I9) come first.** The desktop app (A1 onward) starts only after gate G is passed.
 - **Each app milestone ships as a signed `humata2` release.** That's a big behavioural step you can install and try.
 
@@ -57,7 +58,7 @@ Choose by measurement, not reputation.
 ## I3: Snapshot testing
 - [x] State snapshots: TestStore steps recorded as readable text.
 - [x] View snapshots: the rendered view as a semantic text tree (roles, labels, text, focus, enabled). These are stable across fonts and GPUs and are the default.
-- [ ] Layout snapshots: the whole drawn tree as text, containers included, with rounded bounds, layout, padding, gap and colours, so a diff shows what moved, resized or restyled (owner request 2026-11-14).
+- [x] Layout snapshots: the whole drawn tree as text, containers included, with rounded bounds, layout, padding, gap and colours, so a diff shows what moved, resized or restyled (owner request 2026-11-14).
 - [x] Image snapshots, on macOS only: headless rendering with a tolerance, for the few screens where pixels matter (the diff colours, the terminal, wrap). Linux runs the state, view and flow snapshots.
 - [x] One command records and another verifies. Failures write the old image, the new image and their diff, to review side by side.
 
@@ -105,6 +106,9 @@ Reuse what holds up from Humata 1's `humatad` (agent, wire, workspace, the SSH e
 - [ ] Channels across machines and repos: main clones, per-session clones, branch prefix + slug, add and remove repos.
 - [ ] Moves, forks across machines, file transfers that pause and resume, trash, archive and restore, Storage, retention.
 - [ ] Skills sync.
+- [ ] Many clients at once (D34): two desktop clients and a CLI stay in sync, each seeing the others' changes as they happen; per-client view state lives on the host.
+- [ ] A self-hosted host (AR-7): humatad runs as the host on Linux, and the desktop client and CLI connect to it over SSH, so the same suites pass against a host in a local VM.
+- [ ] Web listener (D34): gRPC-web on loopback, off by default, Origin and Host checks, pairing with a revocable per-device key; boundary tests for unpaired, revoked and cross-origin callers.
 - [ ] Boundary tests on macOS and Linux, with local VMs as the remote machines.
 
 ## I8: MCP and CLI
@@ -153,6 +157,7 @@ A bug report is text an agent can read and act on: what you did, where, what the
 ## G: Gate before the app
 - [ ] I1–I9 are done and their suites pass on macOS and Linux.
 - [ ] Flow and snapshot tooling has proven itself on a throwaway screen.
+- [ ] `features/`, `ui/` and `terminal/` build for `wasm32-unknown-unknown`, and a throwaway screen runs in a browser against a local daemon while the desktop client is open (D34).
 - [ ] You agree to start the app.
 
 ---

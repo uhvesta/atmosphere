@@ -1,0 +1,24 @@
+[package]
+name = "humata2-holder"
+description = "Holds one terminal's pseudo-terminal and scrollback in its own process, so the program in it outlives humatad2."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_holder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "humata2_holder"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+rustix = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,8 +1,9 @@
 //! Image snapshots, macOS only: a headless render compared with a tolerance.
 //!
 //! Pixels depend on the GPU, the fonts installed and their versions, so an
-//! image snapshot is for what the view snapshot can't show: layout, colour,
-//! clipping. Linux runs the state, view and flow snapshots only.
+//! image snapshot is for what the view and layout snapshots can't show:
+//! glyphs, text colour, icons, shadows, anti-aliasing. Linux runs the state,
+//! view, layout and flow snapshots only.
 
 use std::io::Cursor;
 use std::sync::Arc;

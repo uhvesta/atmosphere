@@ -1,0 +1,44 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The cells, cursor, colors, selection and dirty rows a terminal renderer
+# reads, behind the Grid trait. ghostty_vt implements it; the GPUI view in
+# terminal/view draws it. No dependencies.
+rust_library(
+    name = "terminal_grid",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "terminal_grid",
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+# The same crate with FakeGrid, for renderer tests and benchmarks.
+rust_library(
+    name = "terminal_grid_fake",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_features = ["fake"],
+    crate_name = "terminal_grid",
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+rust_test(
+    name = "terminal_grid_test",
+    crate = ":terminal_grid_fake",
+)
+
+rust_test(
+    name = "fake_test",
+    srcs = ["tests/fake.rs"],
+    deps = [":terminal_grid_fake"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = ["README.md"],
+    tags = ["markdown"],
+)

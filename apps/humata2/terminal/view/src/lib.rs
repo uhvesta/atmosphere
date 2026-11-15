@@ -1,0 +1,32 @@
+//! Humata 2's terminal view: a `GPUI` view that draws any
+//! [`terminal_grid::Grid`] and sends what the user does to a
+//! [`TerminalHost`].
+//!
+//! It is written for Humata rather than taken from a third-party widget,
+//! and copies `Ghostty`'s renderer where it can:
+//!
+//! - `renderer/generic.zig` (`rebuildCells`, `rebuildRow`): only the rows
+//!   the grid marks dirty are planned and shaped again; the rest are drawn
+//!   from the last frame.
+//! - `renderer/cell.zig` and `rebuildRow`: per cell, a background, a glyph
+//!   and decorations, with inverse video and the selection swapping colors.
+//! - `font/shaper/run.zig`: text is shaped in runs that break on a style
+//!   change, at the selection's edges and around wide or complex cells.
+//! - `renderer/cursor.zig` (`style`) and `addCursor`: block, bar,
+//!   underline and an outlined block while unfocused; blinking.
+//!
+//! The planning (what to draw) lives in `frame` and `cursor` and is plain
+//! data, tested without a window; `view` only shapes and paints it.
+
+mod cursor;
+mod frame;
+mod host;
+mod keys;
+mod paste;
+mod theme;
+mod view;
+
+pub use host::{CellSize, TerminalHost};
+pub use paste::Paste;
+pub use theme::Theme;
+pub use view::{FrameStats, TerminalView};

@@ -79,6 +79,7 @@ fn event(id: String, kind: pb::session_event::Kind) -> pb::StreamItem {
             id,
             time_unix_ms: 0,
             kind: Some(kind),
+            ..Default::default()
         })),
     }
 }
@@ -174,6 +175,7 @@ impl Service for Rehearsal {
                 Kind::ListSessions(_) => {
                     Reply::Response(pb::response::Kind::Sessions(pb::Sessions {
                         sessions: vec![Rehearsal::session()],
+                        ..Default::default()
                     }))
                 }
                 Kind::WatchSession(watch) if watch.session_id == SESSION => {

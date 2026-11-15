@@ -104,7 +104,9 @@ impl Mods {
         self.0 & other.0 == other.0
     }
 
-    pub(crate) fn bits(self) -> u16 {
+    /// The bits libghostty-vt's `GhosttyMods` uses: Shift 1, Ctrl 2, Alt 4,
+    /// Super 8, Caps Lock 16, Num Lock 32.
+    pub fn bits(self) -> u16 {
         self.0
     }
 }

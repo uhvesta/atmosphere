@@ -70,6 +70,10 @@ impl Artifact {
         let _ = write!(self.body, "\n```text\n{}\n```\n", tree.trim_end());
     }
 
+    pub(crate) fn layout(&mut self, layout: &str) {
+        let _ = write!(self.body, "\nLayout:\n\n```text\n{}\n```\n", layout.trim_end());
+    }
+
     pub(crate) fn snapshot(&mut self, name: &str, outcome: &Result<Outcome, SnapshotError>) {
         match outcome {
             Ok(Outcome::Matched) => {

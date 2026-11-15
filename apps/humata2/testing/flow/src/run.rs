@@ -152,7 +152,7 @@ pub fn run<D: Driver>(
         recorded: 0,
     };
 
-    if flow.start() != Capture::None {
+    if flow.start().view() {
         artifact.section("Start");
         let name = format!("{slug}.00");
         if let Err(source) = run.capture(&name, flow.start(), &mut artifact)? {
@@ -230,7 +230,7 @@ impl<D: Driver> Run<'_, D> {
         capture: Capture,
         artifact: &mut Artifact,
     ) -> Result<Result<(), D::Error>, WriteError> {
-        if capture == Capture::None {
+        if !capture.view() {
             return Ok(Ok(()));
         }
         let tree = match self.driver.view() {
@@ -242,7 +242,20 @@ impl<D: Driver> Run<'_, D> {
         artifact.snapshot(name, &outcome);
         self.note(outcome);
 
-        if capture == Capture::ViewAndImage {
+        if capture.layout() {
+            let layout = match self.driver.layout() {
+                Ok(layout) => layout,
+                Err(error) => return Ok(Err(error)),
+            };
+            if let Some(layout) = layout {
+                artifact.layout(layout.text());
+                let outcome = self.snapshots.check_layout(name, &layout);
+                artifact.snapshot(&format!("{name}.layout"), &outcome);
+                self.note(outcome);
+            }
+        }
+
+        if capture.image() {
             let image = match self.driver.image() {
                 Ok(image) => image,
                 Err(error) => return Ok(Err(error)),
@@ -280,6 +293,7 @@ mod tests {
     use crate::flow::{Action, SpecFlow};
     use gpui_kit::Role;
     use humata2_snapshot::RgbaImage;
+    use humata2_snapshot::layout::Layout;
 
     #[derive(Debug, Error)]
     #[error("the fake driver was told to fail")]
@@ -305,6 +319,9 @@ mod tests {
         }
         fn view(&mut self) -> Result<String, Refused> {
             Ok(String::new())
+        }
+        fn layout(&mut self) -> Result<Option<Layout>, Refused> {
+            Ok(None)
         }
         fn image(&mut self) -> Result<Option<RgbaImage>, Refused> {
             Ok(None)

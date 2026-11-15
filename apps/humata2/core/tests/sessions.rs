@@ -206,6 +206,7 @@ impl Service for Listing {
                             ..Default::default()
                         },
                     ],
+                    ..Default::default()
                 }),
                 _ => humata_wire::error(pb::ErrorCode::Unspecified, "not in this test"),
             };

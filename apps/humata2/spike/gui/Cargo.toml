@@ -20,6 +20,8 @@ path = "src/main.rs"
 gpui-kit = "0.9.1"
 libc = "0.2.191"
 tca-rust = { path = "../../../../libs/tca-rust" }
+terminal_grid = { path = "../../terminal/grid", features = ["fake"] }
+terminal_view = { path = "../../terminal/view" }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt"] }
 

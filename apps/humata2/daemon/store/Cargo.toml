@@ -1,0 +1,19 @@
+[package]
+name = "humata2-store"
+description = "Humata 2's state on disk: sessions, tabs, pointers and the journal, each written atomically."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_store"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

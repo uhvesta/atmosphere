@@ -3,39 +3,29 @@
 //!
 //! A [`Terminal`] parses the bytes a program writes and keeps the screen:
 //! the visible grid, its scrollback, the cursor, modes and title. Humata 2's
-//! own view draws it through the [`Grid`] trait, which is all a renderer
-//! needs, so another engine (`alacritty_terminal`, the fallback D10 names)
-//! can stand behind the same view.
+//! own view draws it through the [`Grid`] trait from `terminal_grid`, which
+//! is all a renderer needs, so another engine (`alacritty_terminal`, the
+//! fallback D10 names) can stand behind the same view. The grid's types
+//! are re-exported here, so callers of this crate need only this crate.
 //!
-//! The crate draws nothing and starts no threads. A `Terminal` is `Send` but
-//! not `Sync`: libghostty-vt has no thread affinity, but a handle must only
-//! be used by one thread at a time.
+//! The crate draws nothing, touches no clipboard and starts no threads.
+//! What a program asks of the host (a title, the clipboard, an answer to a
+//! query) arrives as an [`Event`]. A `Terminal` is `Send` but not `Sync`:
+//! libghostty-vt has no thread affinity, but a handle must only be used by
+//! one thread at a time.
 
 mod cell;
+mod clipboard;
 mod error;
 mod ffi;
-mod input;
+mod render;
 mod terminal;
 
-pub use cell::{Cell, CellWidth, Color, Row, Underline};
+pub use clipboard::{ClipboardTarget, clipboard_read_reply};
 pub use error::{Error, Status};
-pub use input::{
-    Key, KeyAction, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, OptionAsAlt,
+pub use terminal::{Event, Match, Point, Scroll, Terminal};
+pub use terminal_grid::{
+    Cell, CellWidth, Color, Colors, Cursor, CursorShape, CursorStyle, Dirty, Grid, Key,
+    KeyAction, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, OptionAsAlt, Rgb, Row, Size,
+    Span, Underline, ViewportPoint,
 };
-pub use terminal::{Cursor, Event, Match, Point, Scroll, Size, Terminal};
-
-/// What a renderer reads to draw a terminal: its size, the rows in view and
-/// the cursor.
-pub trait Grid {
-    /// The grid's size in cells.
-    fn size(&self) -> Size;
-
-    /// The cells of row `y` of the viewport, 0 being the top row in view,
-    /// left to right. Each cell is one column: a wide character is a
-    /// [`CellWidth::Wide`] cell followed by a [`CellWidth::SpacerTail`]. A
-    /// row outside the viewport has no cells.
-    fn row(&self, y: u16) -> impl Iterator<Item = Cell>;
-
-    /// Where the cursor is, in viewport cells, and whether it is shown.
-    fn cursor(&self) -> Cursor;
-}

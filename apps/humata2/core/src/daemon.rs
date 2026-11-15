@@ -230,6 +230,7 @@ impl Daemon for LiveDaemon {
                 let client = inner.client().await?;
                 let request = pb::request::Kind::WatchSession(pb::WatchSession {
                     session_id: session,
+                    ..Default::default()
                 });
                 let (_, mut stream) = client
                     .stream(request)
@@ -373,7 +374,12 @@ impl From<pb::session_event::Kind> for EventKind {
             },
             Kind::Notice(notice) => Self::Notice { text: notice.text },
             Kind::Rewound(_) | Kind::RewindUndone(_) => Self::Rewritten,
-            Kind::Usage(_) | Kind::Checkpoint(_) | Kind::Saved(_) | Kind::Compacted(_) => {
+            Kind::Usage(_)
+            | Kind::Checkpoint(_)
+            | Kind::Saved(_)
+            | Kind::Compacted(_)
+            | Kind::Compacting(_)
+            | Kind::Subagent(_) => {
                 Self::Other
             }
         }

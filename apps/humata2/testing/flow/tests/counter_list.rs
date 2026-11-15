@@ -1,6 +1,7 @@
 //! Proves the snapshot and flow tools on a throwaway view: a counter with a
-//! list. One state snapshot, one view snapshot and one flow, plus an image
-//! snapshot on macOS. Everything runs headless; no window is shown.
+//! list. One state snapshot, one view snapshot, one layout snapshot and one
+//! flow, plus an image and a platform-font layout snapshot on macOS.
+//! Everything runs headless; no window is shown.
 //!
 //! The first run has nothing recorded, so run it once with
 //! `HUMATA2_SNAPSHOT=record`, read the files it writes in `__snapshots__/`,
@@ -15,7 +16,7 @@ use gpui_kit::test::TestWindowExt;
 // `gpui_kit::*` exports a `test` attribute; keep `#[test]` the standard one.
 use ::std::prelude::v1::test;
 use humata2_flow::{Flow, GpuiDriver, SpecFlow, artifact_root, run};
-use humata2_snapshot::{StateRecorder, snapshots, view};
+use humata2_snapshot::{StateRecorder, layout, snapshots, view};
 use tca::{Effect, LocalStore, Reducer, TestStore};
 use tokio::runtime::{Builder, Runtime};
 
@@ -286,6 +287,22 @@ fn the_view_shows_the_count_the_items_and_which_is_selected(cx: &mut TestAppCont
         .assert_text("view-with-items", &tree);
 }
 
+#[gpui_kit::test]
+fn the_view_lays_out_the_rows_with_the_selected_one_highlighted(cx: &mut TestAppContext) {
+    let window = open(cx, with_items());
+    let layout = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            layout::capture(window)
+        })
+        .expect("the window is open");
+
+    // Test fonts measure the same everywhere: one file, view-with-items.layout.txt.
+    snapshots!()
+        .expect("snapshots are kept beside this file")
+        .assert_layout("view-with-items", &layout);
+}
+
 /// Not a SPEC.md flow: the demo proves the runner itself.
 const COUNT_AND_LIST: SpecFlow = SpecFlow::new("demo", "Count and list items");
 
@@ -308,7 +325,7 @@ fn count_and_list_items(cx: &mut TestAppContext) {
         .key("enter")
         .snapshot()
         .click(Role::ListItem, "milk")
-        .snapshot()
+        .snapshot_layout()
         .click(Role::Button, "Clear")
         .snapshot();
 
@@ -331,15 +348,16 @@ fn the_view_draws_as_recorded() {
         })
         .expect("the headless window opens");
     cx.run_until_parked();
-    let image = cx
+    let (image, layout) = cx
         .update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.render_to_image()
+            (window.render_to_image(), layout::capture(window))
         })
-        .expect("the window is open")
-        .expect("Metal draws the window off screen");
+        .expect("the window is open");
+    let image = image.expect("Metal draws the window off screen");
 
-    snapshots!()
-        .expect("snapshots are kept beside this file")
-        .assert_image("view-with-items", &image, humata2_snapshot::Tolerance::default());
+    let snapshots = snapshots!().expect("snapshots are kept beside this file");
+    snapshots.assert_image("view-with-items", &image, humata2_snapshot::Tolerance::default());
+    // Measured with macOS's fonts, so kept as view-with-items.macos.layout.txt.
+    snapshots.assert_layout("view-with-items", &layout);
 }

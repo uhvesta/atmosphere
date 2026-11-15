@@ -35,6 +35,12 @@ service TerminalService {
   // one bracketed paste. User-only (TERMINAL_INPUT): an agent types into
   // another session with session_type and when = now.
   rpc SendQueuedNow(SendQueuedNowRequest) returns (SendQueuedNowResponse);
+  // An image pasted into a tab: saved on the session's machine, in a folder
+  // of the session's own (file 0600), and its path there returned. The
+  // client then types the path as Attach input, so the agent reads the
+  // file. Text pastes are plain input, never this. The files go when the
+  // session does. User-only (TERMINAL_INPUT). No SPEC id yet.
+  rpc PasteImage(PasteImageRequest) returns (PasteImageResponse);
 }
 
 message Tab {
@@ -253,4 +259,30 @@ message CancelQueuedTypingRequest {
 message CancelQueuedTypingResponse {
   // False: it had already been typed.
   bool cancelled = 1;
+}
+
+enum ImageFormat {
+  IMAGE_FORMAT_UNSPECIFIED = 0;
+  IMAGE_FORMAT_PNG = 1;
+  IMAGE_FORMAT_JPEG = 2;
+  IMAGE_FORMAT_GIF = 3;
+  IMAGE_FORMAT_WEBP = 4;
+  IMAGE_FORMAT_TIFF = 5;
+  IMAGE_FORMAT_HEIC = 6;
+}
+
+message PasteImageRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // The image as pasted, at most 32 MiB. Its first bytes must match
+  // `format`; a mismatch is invalid_field "data", BAD_FORMAT.
+  bytes data = 3;
+  // Unset or unknown is invalid_field "format", UNKNOWN_VALUE.
+  ImageFormat format = 4;
+}
+
+message PasteImageResponse {
+  // Absolute, on the session's machine: what to type into the tab.
+  string path = 1;
+  uint64 size_bytes = 2;
 }

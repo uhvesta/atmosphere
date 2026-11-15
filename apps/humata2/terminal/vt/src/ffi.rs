@@ -78,6 +78,13 @@ pub const TERMINAL_OPT_TITLE_CHANGED: GhosttyTerminalOption = 6;
 pub const TERMINAL_OPT_PWD_CHANGED: GhosttyTerminalOption = 26;
 pub const TERMINAL_OPT_SCROLLBACK_MAX_BYTES: GhosttyTerminalOption = 28;
 pub const TERMINAL_OPT_SCROLLBACK_MAX_LINES: GhosttyTerminalOption = 29;
+pub const TERMINAL_OPT_COLOR_FOREGROUND: GhosttyTerminalOption = 12;
+pub const TERMINAL_OPT_COLOR_BACKGROUND: GhosttyTerminalOption = 13;
+pub const TERMINAL_OPT_COLOR_CURSOR: GhosttyTerminalOption = 14;
+pub const TERMINAL_OPT_COLOR_PALETTE: GhosttyTerminalOption = 15;
+pub const TERMINAL_OPT_SELECTION: GhosttyTerminalOption = 22;
+pub const TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 27;
+pub const TERMINAL_OPT_CLIPBOARD_READ: GhosttyTerminalOption = 39;
 
 pub type GhosttyTerminalData = i32;
 pub const TERMINAL_DATA_COLS: GhosttyTerminalData = 1;
@@ -92,6 +99,20 @@ pub const TERMINAL_DATA_TITLE: GhosttyTerminalData = 12;
 pub const TERMINAL_DATA_PWD: GhosttyTerminalData = 13;
 pub const TERMINAL_DATA_TOTAL_ROWS: GhosttyTerminalData = 14;
 pub const TERMINAL_DATA_SCROLLBACK_ROWS: GhosttyTerminalData = 15;
+pub const TERMINAL_DATA_SELECTION: GhosttyTerminalData = 31;
+pub const TERMINAL_DATA_MODE: GhosttyTerminalData = 37;
+
+/// `GhosttyMode`: the mode number in the low 15 bits, and bit 15 set for
+/// an ANSI mode rather than a DEC private one.
+pub type GhosttyMode = u16;
+pub const MODE_BRACKETED_PASTE: GhosttyMode = 2004;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GhosttyTerminalModeConfig {
+    pub mode: GhosttyMode,
+    pub value: bool,
+}
 
 pub const SCREEN_PRIMARY: i32 = 0;
 pub const SCREEN_ALTERNATE: i32 = 1;
@@ -344,6 +365,149 @@ pub struct GhosttyMouseEncoderSize {
     pub padding_left: u32,
 }
 
+// terminal.h: clipboard requests (OSC 52, OSC 5522)
+
+pub type GhosttyClipboardLocation = i32;
+pub const CLIPBOARD_LOCATION_STANDARD: GhosttyClipboardLocation = 0;
+pub const CLIPBOARD_LOCATION_SELECTION: GhosttyClipboardLocation = 1;
+pub const CLIPBOARD_LOCATION_PRIMARY: GhosttyClipboardLocation = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyClipboardContent {
+    pub mime: GhosttyString,
+    pub data: GhosttyString,
+}
+
+#[repr(C)]
+pub struct GhosttyClipboardWrite {
+    pub location: GhosttyClipboardLocation,
+    pub contents: *const GhosttyClipboardContent,
+    pub contents_len: usize,
+    pub name: GhosttyString,
+    pub granted: bool,
+    pub can_remember: bool,
+    pub ctx: *const c_void,
+    pub reply: *const c_void,
+}
+
+#[repr(C)]
+pub struct GhosttyClipboardRead {
+    pub location: GhosttyClipboardLocation,
+    pub mimes: *const GhosttyString,
+    pub mimes_len: usize,
+    pub list: bool,
+    pub name: GhosttyString,
+    pub granted: bool,
+    pub can_remember: bool,
+    pub ctx: *const c_void,
+    pub reply: *const c_void,
+}
+
+pub type ClipboardWriteFn =
+    unsafe extern "C" fn(GhosttyTerminal, *mut c_void, *const GhosttyClipboardWrite);
+pub type ClipboardReadFn =
+    unsafe extern "C" fn(GhosttyTerminal, *mut c_void, *const GhosttyClipboardRead);
+
+// render.h
+
+#[repr(C)]
+pub struct RenderStateImpl {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct RowIteratorImpl {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct RowCellsImpl {
+    _private: [u8; 0],
+}
+
+pub type GhosttyRenderState = *mut RenderStateImpl;
+pub type GhosttyRenderStateRowIterator = *mut RowIteratorImpl;
+pub type GhosttyRenderStateRowCells = *mut RowCellsImpl;
+
+pub type GhosttyRenderStateDirty = i32;
+pub const RENDER_STATE_DIRTY_FALSE: GhosttyRenderStateDirty = 0;
+pub const RENDER_STATE_DIRTY_PARTIAL: GhosttyRenderStateDirty = 1;
+pub const RENDER_STATE_DIRTY_FULL: GhosttyRenderStateDirty = 2;
+
+pub type GhosttyRenderStateData = i32;
+pub const RENDER_STATE_DATA_COLS: GhosttyRenderStateData = 1;
+pub const RENDER_STATE_DATA_ROWS: GhosttyRenderStateData = 2;
+pub const RENDER_STATE_DATA_DIRTY: GhosttyRenderStateData = 3;
+pub const RENDER_STATE_DATA_ROW_ITERATOR: GhosttyRenderStateData = 4;
+pub const RENDER_STATE_DATA_CURSOR: GhosttyRenderStateData = 18;
+pub const RENDER_STATE_DATA_COLORS: GhosttyRenderStateData = 19;
+
+pub type GhosttyRenderStateOption = i32;
+pub const RENDER_STATE_OPT_DIRTY: GhosttyRenderStateOption = 1;
+
+pub type GhosttyRenderStateRowData = i32;
+pub const RENDER_STATE_ROW_DATA_DIRTY: GhosttyRenderStateRowData = 1;
+pub const RENDER_STATE_ROW_DATA_RAW: GhosttyRenderStateRowData = 2;
+pub const RENDER_STATE_ROW_DATA_CELLS: GhosttyRenderStateRowData = 3;
+pub const RENDER_STATE_ROW_DATA_SELECTION: GhosttyRenderStateRowData = 4;
+
+pub type GhosttyRenderStateRowOption = i32;
+pub const RENDER_STATE_ROW_OPT_DIRTY: GhosttyRenderStateRowOption = 1;
+
+pub type GhosttyRenderStateRowCellsData = i32;
+pub const RENDER_STATE_ROW_CELLS_DATA_RAW: GhosttyRenderStateRowCellsData = 1;
+pub const RENDER_STATE_ROW_CELLS_DATA_STYLE: GhosttyRenderStateRowCellsData = 2;
+pub const RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8: GhosttyRenderStateRowCellsData = 9;
+
+pub type GhosttyCursorStyle = i32;
+pub const CURSOR_STYLE_BAR: GhosttyCursorStyle = 0;
+pub const CURSOR_STYLE_BLOCK: GhosttyCursorStyle = 1;
+pub const CURSOR_STYLE_UNDERLINE: GhosttyCursorStyle = 2;
+pub const CURSOR_STYLE_BLOCK_HOLLOW: GhosttyCursorStyle = 3;
+
+/// A sized struct: set `size` to its own size before passing it.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GhosttyRenderStateRowSelection {
+    pub size: usize,
+    pub start_x: u16,
+    pub end_x: u16,
+}
+
+/// A sized struct: set `size` to its own size before passing it.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct GhosttyRenderStateCursor {
+    pub size: usize,
+    pub viewport_has_value: bool,
+    pub viewport_x: u16,
+    pub viewport_y: u16,
+    pub wide_tail: bool,
+    pub visible: bool,
+    pub blinking: bool,
+    pub password_input: bool,
+    pub visual_style: GhosttyCursorStyle,
+}
+
+/// A sized struct: set `size` to its own size before passing it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GhosttyRenderStateColors {
+    pub size: usize,
+    pub background: GhosttyColorRgb,
+    pub foreground: GhosttyColorRgb,
+    pub cursor: GhosttyColorRgb,
+    pub cursor_has_value: bool,
+    pub palette: [GhosttyColorRgb; 256],
+}
+
+/// `GhosttyBuffer`: bytes written, or on `OUT_OF_SPACE` the bytes needed.
+#[repr(C)]
+pub struct GhosttyBuffer {
+    pub ptr: *mut u8,
+    pub cap: usize,
+    pub len: usize,
+}
+
 unsafe extern "C" {
     pub fn ghostty_free(allocator: *const GhosttyAllocator, ptr: *mut u8, len: usize);
 
@@ -546,6 +710,66 @@ unsafe extern "C" {
         event: GhosttyMouseEvent,
         position: GhosttyMousePosition,
     ) -> GhosttyResult;
+
+    pub fn ghostty_render_state_new(
+        allocator: *const GhosttyAllocator,
+        state: *mut GhosttyRenderState,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_free(state: GhosttyRenderState);
+    pub fn ghostty_render_state_update(
+        state: GhosttyRenderState,
+        terminal: GhosttyTerminal,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_get(
+        state: GhosttyRenderState,
+        data: GhosttyRenderStateData,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_set(
+        state: GhosttyRenderState,
+        option: GhosttyRenderStateOption,
+        value: *const c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_clean(state: GhosttyRenderState) -> GhosttyResult;
+
+    pub fn ghostty_render_state_row_iterator_new(
+        allocator: *const GhosttyAllocator,
+        iterator: *mut GhosttyRenderStateRowIterator,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_row_iterator_free(iterator: GhosttyRenderStateRowIterator);
+    pub fn ghostty_render_state_row_iterator_next(iterator: GhosttyRenderStateRowIterator) -> bool;
+    pub fn ghostty_render_state_row_get(
+        iterator: GhosttyRenderStateRowIterator,
+        data: GhosttyRenderStateRowData,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_row_set(
+        iterator: GhosttyRenderStateRowIterator,
+        option: GhosttyRenderStateRowOption,
+        value: *const c_void,
+    ) -> GhosttyResult;
+
+    pub fn ghostty_render_state_row_cells_new(
+        allocator: *const GhosttyAllocator,
+        cells: *mut GhosttyRenderStateRowCells,
+    ) -> GhosttyResult;
+    pub fn ghostty_render_state_row_cells_free(cells: GhosttyRenderStateRowCells);
+    pub fn ghostty_render_state_row_cells_next(cells: GhosttyRenderStateRowCells) -> bool;
+    pub fn ghostty_render_state_row_cells_get(
+        cells: GhosttyRenderStateRowCells,
+        data: GhosttyRenderStateRowCellsData,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+
+    pub fn ghostty_paste_is_safe(data: *const u8, len: usize) -> bool;
+    pub fn ghostty_paste_encode(
+        data: *mut u8,
+        data_len: usize,
+        bracketed: bool,
+        buf: *mut u8,
+        buf_len: usize,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
 }
 
 #[cfg(test)]
@@ -566,5 +790,13 @@ mod tests {
         assert_eq!(size_of::<GhosttyStyle>(), 16);
         assert_eq!(size_of::<GhosttyTerminalScrollViewport>(), 24);
         assert_eq!(size_of::<GhosttyMouseEncoderSize>(), 40);
+        assert_eq!(size_of::<GhosttyTerminalModeConfig>(), 4);
+        assert_eq!(size_of::<GhosttyClipboardContent>(), 32);
+        assert_eq!(size_of::<GhosttyClipboardWrite>(), 64);
+        assert_eq!(size_of::<GhosttyClipboardRead>(), 72);
+        assert_eq!(size_of::<GhosttyRenderStateRowSelection>(), 16);
+        assert_eq!(size_of::<GhosttyRenderStateCursor>(), 24);
+        assert_eq!(size_of::<GhosttyRenderStateColors>(), 792);
+        assert_eq!(size_of::<GhosttyBuffer>(), 24);
     }
 }

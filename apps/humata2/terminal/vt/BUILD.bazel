@@ -1,7 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # Safe Rust over libghostty-vt, Ghostty's terminal core (D10): the grid,
-# scrollback, cursor, title, selection, search and key and mouse encoding.
+# scrollback, cursor, title, selection, search, paste, clipboard requests,
+# key and mouse encoding, and the render state behind terminal_grid's Grid.
 # The library itself is built by libghostty_vt.bzl.
 rust_library(
     name = "ghostty_vt",
@@ -9,6 +10,7 @@ rust_library(
     crate_name = "ghostty_vt",
     visibility = ["//apps/humata2:__subpackages__"],
     deps = [
+        "//apps/humata2/terminal/grid:terminal_grid",
         "@crates//:thiserror",
         "@libghostty_vt",
     ],

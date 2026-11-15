@@ -14,6 +14,11 @@ members = [
     "apps/humata2/core",
     "apps/humata2/bindgen",
     "apps/humata2/rehearsal",
+    "apps/humata2/daemon/access",
+    "apps/humata2/daemon/store",
+    "apps/humata2/daemon/holder",
+    "apps/humata2/daemon/humatad",
+    "apps/humata2/report",
     "libs/tca-rust",
 ]
 resolver = "3"
@@ -25,15 +30,21 @@ rust-version = "1.100.0"
 [workspace.dependencies]
 # Workspace crates.
 bootstrap = { path = "tools/bootstrap/lib" }
+humata2-store = { path = "apps/humata2/daemon/store" }
+humata2-holder = { path = "apps/humata2/daemon/holder" }
 
 # Third-party crates.
 bzip2 = "0.6.1"
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.11"
+# Humata 2 tests drive the daemon over a Unix socket with these.
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 plist = "1.10.3"
 prost = "0.14.5"
 prost-types = "0.14.5"
 protoc-gen-prost = "0.5.0"
+# Humata 2: gRPC services (D15), tonic over a Unix socket.
+protoc-gen-tonic = "0.5.0"
 rand = "0.10.3"
 rayon = "1.12.0"
 regex = "1.13.1"
@@ -53,6 +64,10 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
 tempfile = "3.27.0"
 tar = "0.4.46"
+tonic = "0.14.9"
+tonic-prost = "0.14.9"
+tokio-stream = { version = "0.1.19", features = ["net"] }
+tower = { version = "0.5.3", features = ["util"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "1.2.1"

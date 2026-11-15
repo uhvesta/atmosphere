@@ -222,7 +222,7 @@ fn focused(element: &ElementSnapshot) -> Result<bool, ViewError> {
     Ok(element.focused() == Some(true))
 }
 
-fn leaf(element: &ElementSnapshot) -> String {
+pub(crate) fn leaf(element: &ElementSnapshot) -> String {
     element
         .path()
         .last()

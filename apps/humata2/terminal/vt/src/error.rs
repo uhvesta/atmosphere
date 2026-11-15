@@ -139,4 +139,43 @@ pub enum Error {
         #[source]
         source: Status,
     },
+
+    #[error(
+        "Couldn't capture the terminal's screen for drawing; the system is probably out of \
+         memory. The last frame stays on screen; close other terminals and it redraws."
+    )]
+    Render {
+        #[source]
+        source: Status,
+    },
+
+    #[error("Couldn't set the terminal's {what}. Check the theme's colors and set them again.")]
+    Colors {
+        what: &'static str,
+        #[source]
+        source: Status,
+    },
+
+    #[error(
+        "Couldn't change the selection. The screen may have changed under it; select the \
+         text again."
+    )]
+    Selection {
+        #[source]
+        source: Status,
+    },
+
+    #[error("Couldn't prepare the pasted text for the program, so nothing was sent. Paste again.")]
+    Paste {
+        #[source]
+        source: Status,
+    },
+
+    #[error(
+        "The pasted text could run commands: it holds {line_breaks} line break(s) or the \
+         marker that ends a bracketed paste, and the program didn't ask for bracketed paste, \
+         so a break would act as Enter. Nothing was sent. Ask the user to confirm before \
+         pasting it anyway; removing the breaks is safe only if the text is meant as one line."
+    )]
+    UnsafePaste { line_breaks: usize },
 }

@@ -103,3 +103,42 @@ fn a_match_can_be_copied() {
         .expect("the selected text");
     assert_eq!(text, "https://example.com/x");
 }
+
+#[test]
+fn a_viewport_selection_copies_wide_characters_across_a_wrap() {
+    let mut terminal = Terminal::new(6, 3, 100).expect("a terminal");
+    terminal.feed("日本語ab".as_bytes());
+    assert_eq!(terminal.selected_text().expect("no error"), None);
+
+    terminal
+        .select(
+            ghostty_vt::ViewportPoint { x: 0, y: 0 },
+            ghostty_vt::ViewportPoint { x: 1, y: 1 },
+        )
+        .expect("a selection");
+
+    assert_eq!(
+        terminal.selected_text().expect("the selected text"),
+        Some("日本語ab".to_owned())
+    );
+
+    terminal.clear_selection().expect("no selection");
+    assert_eq!(terminal.selected_text().expect("no error"), None);
+}
+
+#[test]
+fn a_viewport_selection_keeps_real_line_breaks() {
+    let mut terminal = Terminal::new(10, 3, 100).expect("a terminal");
+    terminal.feed(b"one   \r\ntwo");
+    terminal
+        .select(
+            ghostty_vt::ViewportPoint { x: 0, y: 0 },
+            ghostty_vt::ViewportPoint { x: 2, y: 1 },
+        )
+        .expect("a selection");
+
+    assert_eq!(
+        terminal.selected_text().expect("the selected text"),
+        Some("one\ntwo".to_owned())
+    );
+}

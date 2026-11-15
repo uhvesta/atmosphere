@@ -104,17 +104,42 @@ impl fmt::Display for Action {
     }
 }
 
-/// What to snapshot after a step.
+/// What to snapshot after a step. Every snapshot includes the view; the
+/// layout and the image are added on request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Capture {
-    /// Nothing.
-    #[default]
-    None,
-    /// The view snapshot.
-    View,
-    /// The view snapshot, and on macOS an image snapshot too when the driver
-    /// can draw pixels.
-    ViewAndImage,
+pub struct Capture {
+    view: bool,
+    layout: bool,
+    image: bool,
+}
+
+impl Capture {
+    /// Whether anything is snapshot: the view snapshot always is when
+    /// anything is.
+    pub fn view(self) -> bool {
+        self.view
+    }
+
+    /// Whether a layout snapshot is taken too, when the driver can give
+    /// one.
+    pub fn layout(self) -> bool {
+        self.layout
+    }
+
+    /// Whether an image snapshot is taken too, on macOS, when the driver can
+    /// draw pixels.
+    pub fn image(self) -> bool {
+        self.image
+    }
+
+    /// Both captures' snapshots.
+    fn and(self, other: Self) -> Self {
+        Self {
+            view: self.view || other.view,
+            layout: self.layout || other.layout,
+            image: self.image || other.image,
+        }
+    }
 }
 
 /// An action and what to snapshot after it.
@@ -159,7 +184,7 @@ impl Flow {
     pub fn new(spec: SpecFlow) -> Self {
         Self {
             spec,
-            start: Capture::None,
+            start: Capture::default(),
             steps: Vec::new(),
         }
     }
@@ -208,7 +233,7 @@ impl Flow {
     pub fn then(mut self, action: Action) -> Self {
         self.steps.push(Step {
             action,
-            capture: Capture::None,
+            capture: Capture::default(),
         });
         self
     }
@@ -216,20 +241,40 @@ impl Flow {
     /// Takes a view snapshot after the last step, or before the first when
     /// there are no steps yet.
     pub fn snapshot(self) -> Self {
-        self.capture(Capture::View)
+        self.capture(Capture {
+            view: true,
+            ..Capture::default()
+        })
+    }
+
+    /// Takes a view snapshot and a layout snapshot after the last step, or
+    /// before the first when there are no steps yet.
+    pub fn snapshot_layout(self) -> Self {
+        self.capture(Capture {
+            view: true,
+            layout: true,
+            ..Capture::default()
+        })
     }
 
     /// Takes a view snapshot and, on macOS, an image snapshot after the last
     /// step, or before the first when there are no steps yet.
     pub fn snapshot_image(self) -> Self {
-        self.capture(Capture::ViewAndImage)
+        self.capture(Capture {
+            view: true,
+            image: true,
+            ..Capture::default()
+        })
     }
 
+    /// Adds `capture` to what the last step (or the start) snapshots, so
+    /// `.snapshot_layout().snapshot_image()` takes all three.
     fn capture(mut self, capture: Capture) -> Self {
-        match self.steps.last_mut() {
-            Some(step) => step.capture = capture,
-            None => self.start = capture,
-        }
+        let last = match self.steps.last_mut() {
+            Some(step) => &mut step.capture,
+            None => &mut self.start,
+        };
+        *last = last.and(capture);
         self
     }
 }
@@ -254,8 +299,21 @@ mod tests {
             .key("enter")
             .type_text("a")
             .snapshot_image();
-        assert_eq!(flow.start(), Capture::View);
-        let captures: Vec<Capture> = flow.steps().iter().map(Step::capture).collect();
-        assert_eq!(captures, [Capture::None, Capture::ViewAndImage]);
+        assert!(flow.start().view() && !flow.start().layout() && !flow.start().image());
+        let captures: Vec<bool> = flow.steps().iter().map(|step| step.capture().view()).collect();
+        assert_eq!(captures, [false, true]);
+        let last = flow.steps().last().map(Step::capture).unwrap_or_default();
+        assert!(last.image() && !last.layout());
+    }
+
+    #[test]
+    fn snapshots_asked_for_on_one_step_add_up() {
+        let flow = Flow::new(SpecFlow::new("demo", "Steps"))
+            .key("enter")
+            .snapshot_layout()
+            .snapshot_image()
+            .snapshot();
+        let capture = flow.steps().last().map(Step::capture).unwrap_or_default();
+        assert!(capture.view() && capture.layout() && capture.image());
     }
 }

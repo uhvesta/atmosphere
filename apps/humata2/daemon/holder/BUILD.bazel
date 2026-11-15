@@ -1,0 +1,54 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# One terminal's pseudo-terminal and scrollback, held in a process of its
+# own so the program in it outlives humatad2. Output carries byte offsets,
+# so a client that drops can reattach from where it was. Knows nothing
+# about gRPC: it speaks a small framed protocol on its own Unix socket.
+rust_library(
+    name = "holder",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "humata2_holder",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "@crates//:rustix",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_binary(
+    name = "humata2_holder",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        ":holder",
+        "@crates//:clap",
+        "@crates//:rustix",
+        "@crates//:tokio",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        data = [":humata2_holder"],
+        env = {"HUMATA2_HOLDER": "$(rootpath :humata2_holder)"},
+        deps = [
+            ":holder",
+            "@crates//:rustix",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

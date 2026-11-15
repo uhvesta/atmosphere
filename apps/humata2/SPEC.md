@@ -73,8 +73,8 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 | Prepared view | A review walkthrough or board view an agent prepared for you over MCP. Opened only if you choose to. |
 | Journal | Per session (with its forks): every view its agents prepared. |
 | Machine journal | A machine's own append-only list of writes and requests made while the host is away (SL-5). Not the Journal of views. |
-| Host | The Mac running the app. It holds the source of truth (SL-1). "Away" means a machine has no link to it. |
-| Bridge | This Mac. Every machine has one SSH link to it, and every call between machines goes through it. |
+| Host | The machine whose `humatad` holds the source of truth (SL-1): your Mac by default, or a machine you host (AR-7). Where this spec says "the Mac", read "the host". "Away" means a machine has no link to it. |
+| Bridge | The host. Every machine has one SSH link to it, and every call between machines goes through it. |
 | Turn | From a message reaching the agent until the agent waits for input again. How Humata learns a turn ended is per agent (SE-21). |
 | Own clones | The clones under a session's own folder (`sessions/<session>/`). A context-only fork has none until it gets its own copy (FK-9). |
 | Grant | An "Always let …" permission for one session and one target (IN-14, IN-22). |
@@ -150,6 +150,26 @@ more, ST-2):
   collapsed panes (NV-16), expand and collapse results (NV-19) and the
   pinned order (NV-25). After the app is quit, crashes or is reinstalled,
   each of these comes back as it was.
+- **AR-6** The app is only a client. Any number of clients can be connected to
+  one host at once: desktop apps, browsers (AR-8) and the CLI. Each sees the
+  others' changes as they happen, and none of them owns state. Durable view
+  state is kept per kind of client (desktop or web), and one client can copy
+  another's. Hover, selection and unsent drafts stay in the client. (D34)
+- **AR-7** The host can run anywhere. By default it is your Mac, but you can
+  host it yourself on a server or VM, and every client then connects to that
+  host: desktop apps and the CLI over SSH, browsers over HTTPS. Everything else
+  is unchanged. Machines link to the host, the host checks every cross-machine
+  call, and the host holds the source of truth. Moving the host to another
+  machine carries its state across, and nothing on the machines is lost.
+- **AR-8** The same app runs in a browser, built for the web and served by the
+  host. Serving it is off until the user turns it on. The host refuses
+  requests from other sites (Origin and Host checks).
+- **AR-9** A new client pairs once before it can do anything. The user
+  approves a short code from a client that is already paired, or from
+  `humata login`. A paired client acts as the user, present, like the desktop
+  app (BOUNDARIES §2.1). Pairings are listed in Settings, every one is
+  recorded, and each can be revoked, taking effect on the next call. Nothing an
+  agent can do creates or widens a pairing.
 
 ## 3. Channels and machines
 

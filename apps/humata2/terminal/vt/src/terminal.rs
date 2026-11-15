@@ -1,28 +1,16 @@
 use std::ffi::c_void;
 use std::ptr;
 
-use crate::Grid;
-use crate::cell::{Cell, CellWidth, Color, Row, Underline};
+use terminal_grid::{
+    Colors, Cursor, CursorStyle, Dirty, Grid, KeyEvent, MouseEvent, OptionAsAlt, Rgb, Row, Size,
+    Span, ViewportPoint,
+};
+
+use crate::cell::cell_from;
+use crate::clipboard::ClipboardTarget;
 use crate::error::{Error, Status, check};
 use crate::ffi;
-use crate::input::{KeyEvent, MouseEvent, OptionAsAlt};
-
-/// A grid size in cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Size {
-    pub cols: u16,
-    pub rows: u16,
-}
-
-/// The cursor's position in the active area (the bottom `rows` rows of the
-/// screen, which the viewport shows unless it is scrolled back) and whether
-/// the program shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cursor {
-    pub x: u16,
-    pub y: u16,
-    pub visible: bool,
-}
+use crate::render::RenderState;
 
 /// A cell on the screen: column `x` of row `y`, where row 0 is the oldest
 /// row of scrollback and the last row is the bottom of the active area.
@@ -65,12 +53,29 @@ pub enum Event {
     /// Bytes to write back to the program, such as the answer to a cursor
     /// position query. Send them to the pty in order.
     Reply(Vec<u8>),
+    /// The program asked to put `text` on a clipboard (OSC 52). Empty
+    /// `text` asks to clear it. Nothing was written: the host decides,
+    /// since over SSH the program may not be the user's to trust, and the
+    /// program gets no answer either way.
+    ClipboardWrite { target: ClipboardTarget, text: String },
+    /// The program asked to read a clipboard (OSC 52 with `?`). It has had
+    /// no answer: the host may ask the user, then write
+    /// [`clipboard_read_reply`](crate::clipboard_read_reply) to the pty,
+    /// with the text or with `None` to refuse. Never answer without the
+    /// user's say: it hands the clipboard to whatever runs in the session.
+    ClipboardReadRequested { target: ClipboardTarget },
 }
 
 /// Where callbacks put events while `ghostty_terminal_vt_write` runs.
 #[derive(Default)]
 struct Sink {
     events: Vec<Event>,
+    /// An OSC 52 read raised in this feed, whose automatic answer (an empty
+    /// clipboard) libghostty-vt is about to write; it is held back so the
+    /// host answers instead.
+    pending_read: Option<ClipboardTarget>,
+    /// Whether the automatic answer is still being written.
+    swallowing: bool,
 }
 
 /// Owns the sink's allocation, whose address libghostty-vt holds as the
@@ -88,6 +93,17 @@ impl SinkBox {
         // drop. `&mut self` means no feed (and so no callback) is running.
         unsafe { std::mem::take(&mut (*self.0).events) }
     }
+
+    /// Settles a clipboard read once a feed ends: one whose automatic
+    /// answer never came is still the host's to answer.
+    fn end_feed(&mut self) {
+        // SAFETY: as in `take`.
+        let sink = unsafe { &mut *self.0 };
+        if let Some(target) = sink.pending_read.take() {
+            sink.events.push(Event::ClipboardReadRequested { target });
+        }
+        sink.swallowing = false;
+    }
 }
 
 impl Drop for SinkBox {
@@ -99,13 +115,13 @@ impl Drop for SinkBox {
 }
 
 /// A handle from libghostty-vt, freed exactly once when dropped.
-struct Owned<T> {
-    ptr: *mut T,
+pub(crate) struct Owned<T> {
+    pub(crate) ptr: *mut T,
     free: unsafe extern "C" fn(*mut T),
 }
 
 impl<T> Owned<T> {
-    fn new(
+    pub(crate) fn new(
         create: impl FnOnce(*mut *mut T) -> ffi::GhosttyResult,
         free: unsafe extern "C" fn(*mut T),
     ) -> Result<Self, Status> {
@@ -126,10 +142,11 @@ impl<T> Drop for Owned<T> {
 /// A terminal: the screen, its scrollback and its modes, fed by the bytes a
 /// program writes.
 pub struct Terminal {
-    // Fields drop in order: the encoders, then the terminal, then the sink
-    // the terminal's callbacks write into.
+    // Fields drop in order: the encoders and render state, then the
+    // terminal, then the sink the terminal's callbacks write into.
     key_encoder: Owned<ffi::KeyEncoderImpl>,
     mouse_encoder: Owned<ffi::MouseEncoderImpl>,
+    render: RenderState,
     raw: Owned<ffi::TerminalImpl>,
     sink: SinkBox,
     cols: u16,
@@ -172,9 +189,11 @@ impl Terminal {
             ffi::ghostty_mouse_encoder_free,
         )
         .map_err(create)?;
+        let render = RenderState::new().map_err(create)?;
         let mut terminal = Terminal {
             key_encoder,
             mouse_encoder,
+            render,
             raw,
             sink: SinkBox::new(),
             cols,
@@ -236,6 +255,16 @@ impl Terminal {
             ffi::TERMINAL_OPT_WRITE_PTY,
             on_write_pty as ffi::WritePtyFn as *const c_void,
         )?;
+        set(
+            "clipboard write handler",
+            ffi::TERMINAL_OPT_CLIPBOARD_WRITE,
+            on_clipboard_write as ffi::ClipboardWriteFn as *const c_void,
+        )?;
+        set(
+            "clipboard read handler",
+            ffi::TERMINAL_OPT_CLIPBOARD_READ,
+            on_clipboard_read as ffi::ClipboardReadFn as *const c_void,
+        )?;
         Ok(())
     }
 
@@ -246,6 +275,7 @@ impl Terminal {
         // SAFETY: the handle is live; callbacks reach only the sink, which
         // no Rust reference covers while this runs.
         unsafe { ffi::ghostty_terminal_vt_write(self.raw.ptr, bytes.as_ptr(), bytes.len()) }
+        self.sink.end_feed();
     }
 
     /// The events raised since the last call, oldest first.
@@ -295,7 +325,10 @@ impl Terminal {
         }
     }
 
-    /// Where the cursor is and whether it is shown.
+    /// Where the cursor is in the active area (the bottom `rows` rows of
+    /// the screen, which the viewport shows unless it is scrolled back) and
+    /// whether the program shows it. [`Grid::cursor`] gives it in the
+    /// viewport instead.
     pub fn cursor(&self) -> Cursor {
         // Reads of a live handle fail only for an unknown data kind, so the
         // fallbacks never show.
@@ -388,6 +421,161 @@ impl Terminal {
             end: self.grid_ref(end)?,
             rectangle: false,
         };
+        self.copy_text(&selection)
+    }
+
+    /// Selects from `start` to `end` in the viewport, both included, in
+    /// reading order: the selection [`Grid::selection`] reports and
+    /// [`Terminal::selected_text`] copies. It stays on the same text as
+    /// output scrolls it up.
+    pub fn select(&mut self, start: ViewportPoint, end: ViewportPoint) -> Result<(), Error> {
+        let fail = |source| Error::Selection { source };
+        let selection = ffi::GhosttySelection {
+            start: self
+                .grid_ref_at(ffi::POINT_TAG_VIEWPORT, start.x, u32::from(start.y))
+                .map_err(fail)?,
+            end: self
+                .grid_ref_at(ffi::POINT_TAG_VIEWPORT, end.x, u32::from(end.y))
+                .map_err(fail)?,
+            rectangle: false,
+        };
+        // SAFETY: the refs are fresh; the terminal copies the selection.
+        check(unsafe {
+            ffi::ghostty_terminal_set(
+                self.raw.ptr,
+                ffi::TERMINAL_OPT_SELECTION,
+                (&raw const selection).cast(),
+            )
+        })
+        .map_err(fail)
+    }
+
+    /// Clears the selection.
+    pub fn clear_selection(&mut self) -> Result<(), Error> {
+        // SAFETY: NULL clears the selection.
+        check(unsafe {
+            ffi::ghostty_terminal_set(self.raw.ptr, ffi::TERMINAL_OPT_SELECTION, ptr::null())
+        })
+        .map_err(|source| Error::Selection { source })
+    }
+
+    /// The selected text as it would be copied, like
+    /// [`Terminal::selection_text`], or `None` when nothing is selected.
+    pub fn selected_text(&self) -> Result<Option<String>, Error> {
+        let mut selection = ffi::GhosttySelection::EMPTY;
+        // SAFETY: the output is a GhosttySelection, used before the
+        // terminal next changes.
+        let result = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw.ptr,
+                ffi::TERMINAL_DATA_SELECTION,
+                (&raw mut selection).cast(),
+            )
+        };
+        if result == ffi::NO_VALUE {
+            return Ok(None);
+        }
+        check(result).map_err(|source| Error::Selection { source })?;
+        self.copy_text(&selection).map(Some)
+    }
+
+    /// Whether the program turned on bracketed paste (mode 2004), so pasted
+    /// text arrives marked as pasted rather than typed.
+    pub fn is_bracketed_paste(&self) -> bool {
+        let mut mode = ffi::GhosttyTerminalModeConfig {
+            mode: ffi::MODE_BRACKETED_PASTE,
+            value: false,
+        };
+        // SAFETY: MODE reads and writes a GhosttyTerminalModeConfig.
+        let result = unsafe {
+            ffi::ghostty_terminal_get(self.raw.ptr, ffi::TERMINAL_DATA_MODE, (&raw mut mode).cast())
+        };
+        result == ffi::SUCCESS && mode.value
+    }
+
+    /// The bytes to send the program for pasted `text`: wrapped in
+    /// bracketed paste markers when the program asked for them, otherwise
+    /// with new lines sent as Enter, and control bytes such as ESC replaced
+    /// with spaces either way.
+    ///
+    /// Without bracketed paste, text holding a line break could run
+    /// commands the user didn't mean to, so it is refused with
+    /// [`Error::UnsafePaste`] unless `confirmed` says the user agreed.
+    pub fn paste(&self, text: &str, confirmed: bool) -> Result<Vec<u8>, Error> {
+        let bracketed = self.is_bracketed_paste();
+        // SAFETY: the pointer covers `len` bytes.
+        let safe = unsafe { ffi::ghostty_paste_is_safe(text.as_ptr(), text.len()) };
+        if !bracketed && !safe && !confirmed {
+            return Err(Error::UnsafePaste {
+                line_breaks: text.matches(['\n', '\r']).count(),
+            });
+        }
+        // The encoder rewrites its input in place, so it gets a copy.
+        let mut data = text.as_bytes().to_vec();
+        encode(|buf, len, written| {
+            // SAFETY: `data` and `buf` hold the lengths given.
+            unsafe {
+                ffi::ghostty_paste_encode(data.as_mut_ptr(), data.len(), bracketed, buf, len, written)
+            }
+        })
+        .map_err(|source| Error::Paste { source })
+    }
+
+    /// Sets the colors used where the program set none: the default
+    /// foreground, background and cursor, and the palette. Programs can
+    /// still change them (OSC 4, 10, 11, 12); [`Grid::colors`] reports what
+    /// is in effect.
+    pub fn set_default_colors(&mut self, colors: &Colors) -> Result<(), Error> {
+        let raw = self.raw.ptr;
+        let set = |what: &'static str, option, value: *const c_void| {
+            // SAFETY: each value below is the type the option documents and
+            // lives until the call returns; libghostty-vt copies it.
+            check(unsafe { ffi::ghostty_terminal_set(raw, option, value) })
+                .map_err(|source| Error::Colors { what, source })
+        };
+        let foreground = ffi_rgb(colors.foreground);
+        set(
+            "foreground",
+            ffi::TERMINAL_OPT_COLOR_FOREGROUND,
+            (&raw const foreground).cast(),
+        )?;
+        let background = ffi_rgb(colors.background);
+        set(
+            "background",
+            ffi::TERMINAL_OPT_COLOR_BACKGROUND,
+            (&raw const background).cast(),
+        )?;
+        match colors.cursor {
+            Some(cursor) => {
+                let cursor = ffi_rgb(cursor);
+                set(
+                    "cursor color",
+                    ffi::TERMINAL_OPT_COLOR_CURSOR,
+                    (&raw const cursor).cast(),
+                )?;
+            }
+            // NULL unsets it, so the cursor takes the color of the cell.
+            None => set("cursor color", ffi::TERMINAL_OPT_COLOR_CURSOR, ptr::null())?,
+        }
+        let palette = colors.palette.map(ffi_rgb);
+        set(
+            "palette",
+            ffi::TERMINAL_OPT_COLOR_PALETTE,
+            (&raw const palette).cast(),
+        )
+    }
+
+    /// Captures the viewport for drawing, as [`Grid::sync`] does, and says
+    /// why it couldn't.
+    pub fn refresh(&mut self) -> Result<(), Error> {
+        self.render
+            .update(self.raw.ptr)
+            .map_err(|source| Error::Render { source })
+    }
+
+    /// The selection's text as plain text, wrapped lines joined and
+    /// trailing blanks trimmed.
+    fn copy_text(&self, selection: &ffi::GhosttySelection) -> Result<String, Error> {
         let raw = self.raw.ptr;
         let format = |source| Error::Format { source };
         let formatter = Owned::new(
@@ -403,7 +591,7 @@ impl Terminal {
             (ffi::FORMATTER_OPT_EMIT, (&raw const plain).cast::<c_void>()),
             (ffi::FORMATTER_OPT_UNWRAP, (&raw const yes).cast()),
             (ffi::FORMATTER_OPT_TRIM, (&raw const yes).cast()),
-            (ffi::FORMATTER_OPT_SELECTION, (&raw const selection).cast()),
+            (ffi::FORMATTER_OPT_SELECTION, ptr::from_ref(selection).cast()),
         ] {
             // SAFETY: each value is the type its option documents.
             check(unsafe { ffi::ghostty_formatter_set(formatter.ptr, option, value) })
@@ -741,24 +929,66 @@ impl Terminal {
     }
 }
 
+/// The viewport as libghostty-vt's render state last captured it. Reads
+/// come from that snapshot, so they are cheap and see nothing written
+/// since the last [`Grid::sync`].
 impl Grid for Terminal {
-    fn size(&self) -> Size {
-        Terminal::size(self)
+    fn sync(&mut self) {
+        // This fails only when libghostty-vt is out of memory. The last
+        // snapshot stays and the next frame tries again; call
+        // `Terminal::refresh` to see the error.
+        let _ = self.refresh();
     }
 
-    fn row(&self, y: u16) -> impl Iterator<Item = Cell> {
-        self.viewport_row(y)
-            .map(|row| row.cells)
-            .unwrap_or_default()
-            .into_iter()
+    fn size(&self) -> Size {
+        self.render.size()
+    }
+
+    fn row(&self, y: u16) -> Option<&Row> {
+        self.render.row(y)
     }
 
     fn cursor(&self) -> Cursor {
-        Terminal::cursor(self)
+        self.render.cursor()
+    }
+
+    fn cursor_style(&self) -> CursorStyle {
+        self.render.cursor_style()
+    }
+
+    fn colors(&self) -> &Colors {
+        self.render.colors()
+    }
+
+    fn selection(&self, y: u16) -> Option<Span> {
+        self.render.selection(y)
+    }
+
+    fn dirty(&self) -> Dirty {
+        self.render.dirty()
+    }
+
+    fn is_row_dirty(&self, y: u16) -> bool {
+        self.render.is_row_dirty(y)
+    }
+
+    fn clear_dirty(&mut self) {
+        self.render.clear_dirty();
     }
 }
 
-fn read_cell(grid_ref: &ffi::GhosttyGridRef, codepoints: &mut Vec<u32>) -> Result<Cell, Status> {
+fn ffi_rgb(color: Rgb) -> ffi::GhosttyColorRgb {
+    ffi::GhosttyColorRgb {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+    }
+}
+
+fn read_cell(
+    grid_ref: &ffi::GhosttyGridRef,
+    codepoints: &mut Vec<u32>,
+) -> Result<terminal_grid::Cell, Status> {
     let mut raw_cell = 0;
     let mut style = ffi::GhosttyStyle::EMPTY;
     // SAFETY: the ref is fresh; the outputs are the documented types.
@@ -766,54 +996,7 @@ fn read_cell(grid_ref: &ffi::GhosttyGridRef, codepoints: &mut Vec<u32>) -> Resul
         check(ffi::ghostty_grid_ref_cell(grid_ref, &mut raw_cell))?;
         check(ffi::ghostty_grid_ref_style(grid_ref, &mut style))?;
     }
-    let wide: i32 = cell_get(raw_cell, ffi::CELL_DATA_WIDE)?;
-    let content: i32 = cell_get(raw_cell, ffi::CELL_DATA_CONTENT_TAG)?;
-
-    // A cell erased with a background color holds just that color.
-    let bg = match content {
-        ffi::CELL_CONTENT_BG_COLOR_PALETTE => {
-            Color::Palette(cell_get(raw_cell, ffi::CELL_DATA_COLOR_PALETTE)?)
-        }
-        ffi::CELL_CONTENT_BG_COLOR_RGB => {
-            let rgb: ffi::GhosttyColorRgb = cell_get(raw_cell, ffi::CELL_DATA_COLOR_RGB)?;
-            Color::Rgb {
-                r: rgb.r,
-                g: rgb.g,
-                b: rgb.b,
-            }
-        }
-        _ => Color::from_style(style.bg_color),
-    };
-
-    let flags = style.flags;
-    Ok(Cell {
-        text: graphemes(grid_ref, codepoints)?,
-        width: match wide {
-            ffi::CELL_WIDE_WIDE => CellWidth::Wide,
-            ffi::CELL_WIDE_SPACER_TAIL => CellWidth::SpacerTail,
-            ffi::CELL_WIDE_SPACER_HEAD => CellWidth::SpacerHead,
-            _ => CellWidth::Narrow,
-        },
-        fg: Color::from_style(style.fg_color),
-        bg,
-        underline_color: Color::from_style(style.underline_color),
-        bold: flags & ffi::STYLE_FLAG_BOLD != 0,
-        italic: flags & ffi::STYLE_FLAG_ITALIC != 0,
-        faint: flags & ffi::STYLE_FLAG_FAINT != 0,
-        blink: flags & ffi::STYLE_FLAG_BLINK != 0,
-        inverse: flags & ffi::STYLE_FLAG_INVERSE != 0,
-        invisible: flags & ffi::STYLE_FLAG_INVISIBLE != 0,
-        strikethrough: flags & ffi::STYLE_FLAG_STRIKETHROUGH != 0,
-        overline: flags & ffi::STYLE_FLAG_OVERLINE != 0,
-        underline: Underline::from_flags(flags),
-    })
-}
-
-fn cell_get<T: Default>(cell: ffi::GhosttyCell, data: ffi::GhosttyCellData) -> Result<T, Status> {
-    let mut out = T::default();
-    // SAFETY: callers pick `T` as the output type `data` documents.
-    check(unsafe { ffi::ghostty_cell_get(cell, data, (&raw mut out).cast()) })?;
-    Ok(out)
+    cell_from(raw_cell, &style, graphemes(grid_ref, codepoints)?)
 }
 
 fn graphemes(grid_ref: &ffi::GhosttyGridRef, codepoints: &mut Vec<u32>) -> Result<String, Status> {
@@ -872,15 +1055,33 @@ fn string_from(string: ffi::GhosttyString) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
-fn push_event(userdata: *mut c_void, event: Event) {
+fn with_sink(userdata: *mut c_void, f: impl FnOnce(&mut Sink)) {
     let sink = userdata.cast::<Sink>();
     if sink.is_null() {
         return;
     }
     // SAFETY: userdata is the SinkBox pointer, live for the terminal's
-    // lifetime; callbacks run on the thread inside `feed`, while no Rust
-    // reference to the sink exists.
-    unsafe { (*sink).events.push(event) }
+    // lifetime; callbacks run on the thread inside `feed`, while no other
+    // Rust reference to the sink exists.
+    f(unsafe { &mut *sink })
+}
+
+fn push_event(userdata: *mut c_void, event: Event) {
+    with_sink(userdata, |sink| sink.events.push(event));
+}
+
+/// The bytes of a string libghostty-vt lends for the length of a callback.
+///
+/// # Safety
+///
+/// `string` must point at `len` valid bytes for as long as the result is
+/// used.
+unsafe fn borrowed<'a>(string: &ffi::GhosttyString) -> &'a [u8] {
+    if string.ptr.is_null() || string.len == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's promise.
+    unsafe { std::slice::from_raw_parts(string.ptr, string.len) }
 }
 
 fn read_string(terminal: ffi::GhosttyTerminal, data: ffi::GhosttyTerminalData) -> String {
@@ -920,8 +1121,88 @@ unsafe extern "C" fn on_write_pty(
         return;
     }
     // SAFETY: libghostty-vt passes `len` valid bytes for this call.
-    let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
-    push_event(userdata, Event::Reply(bytes));
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    with_sink(userdata, |sink| {
+        // A clipboard read the callback left unanswered gets an empty
+        // clipboard from libghostty-vt, written right after it returns.
+        // Hold that back: the host answers with ClipboardReadRequested.
+        if let Some(target) = sink.pending_read.take()
+            && bytes.starts_with(b"\x1b]52;")
+        {
+            sink.events.push(Event::ClipboardReadRequested { target });
+            sink.swallowing = true;
+        }
+        if sink.swallowing {
+            if bytes.ends_with(b"\x07") || bytes.ends_with(b"\x1b\\") {
+                sink.swallowing = false;
+            }
+            return;
+        }
+        sink.events.push(Event::Reply(bytes.to_vec()));
+    });
+}
+
+unsafe extern "C" fn on_clipboard_write(
+    _terminal: ffi::GhosttyTerminal,
+    userdata: *mut c_void,
+    write: *const ffi::GhosttyClipboardWrite,
+) {
+    if write.is_null() {
+        return;
+    }
+    // SAFETY: the request and what it points to are lent for this call.
+    let write = unsafe { &*write };
+    let contents = if write.contents.is_null() || write.contents_len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: as above; `contents_len` entries follow `contents`.
+        unsafe { std::slice::from_raw_parts(write.contents, write.contents_len) }
+    };
+    let target = ClipboardTarget::from_location(write.location);
+    let text = if contents.is_empty() {
+        // No contents asks to clear the clipboard.
+        Some(String::new())
+    } else {
+        contents
+            .iter()
+            // SAFETY: the strings are lent for this call.
+            .find(|content| unsafe { borrowed(&content.mime) }.starts_with(b"text/"))
+            .map(|content| String::from_utf8_lossy(unsafe { borrowed(&content.data) }).into_owned())
+    };
+    // Returning without calling `reply` leaves the clipboard alone; the
+    // host writes it if it agrees. A write with no text is ignored.
+    if let Some(text) = text {
+        push_event(userdata, Event::ClipboardWrite { target, text });
+    }
+}
+
+unsafe extern "C" fn on_clipboard_read(
+    _terminal: ffi::GhosttyTerminal,
+    userdata: *mut c_void,
+    read: *const ffi::GhosttyClipboardRead,
+) {
+    if read.is_null() {
+        return;
+    }
+    // SAFETY: the request and what it points to are lent for this call.
+    let read = unsafe { &*read };
+    let mimes = if read.mimes.is_null() || read.mimes_len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: as above; `mimes_len` entries follow `mimes`.
+        unsafe { std::slice::from_raw_parts(read.mimes, read.mimes_len) }
+    };
+    // SAFETY: the strings are lent for this call.
+    let wants_text = mimes
+        .iter()
+        .any(|mime| unsafe { borrowed(mime) } == b"text/plain");
+    // Never answered here. An OSC 52 read becomes ClipboardReadRequested
+    // once libghostty-vt writes its empty answer (see on_write_pty); a
+    // Kitty clipboard read (OSC 5522) is refused with EPERM.
+    if wants_text && !read.list {
+        let target = ClipboardTarget::from_location(read.location);
+        with_sink(userdata, |sink| sink.pending_read = Some(target));
+    }
 }
 
 #[cfg(test)]

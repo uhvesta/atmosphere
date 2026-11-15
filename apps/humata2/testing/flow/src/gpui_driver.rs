@@ -1,11 +1,13 @@
 //! Plays flows in a GPUI window that is never shown: `TestAppContext` for
-//! view snapshots everywhere, `HeadlessAppContext` when pixels are wanted.
+//! view and layout snapshots everywhere, `HeadlessAppContext` when pixels are
+//! wanted.
 
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext, ClipboardItem, HeadlessAppContext, InvalidKeystrokeError,
     Keystroke, MouseButton, Pixels, Point, TestAppContext, Window,
 };
+use humata2_snapshot::layout::{self, Layout};
 use humata2_snapshot::{RgbaImage, view};
 use thiserror::Error;
 
@@ -201,6 +203,14 @@ impl<H: Host> Driver for GpuiDriver<'_, H> {
             view::capture(window)
         })??;
         Ok(tree)
+    }
+
+    fn layout(&mut self) -> Result<Option<Layout>, GpuiDriverError> {
+        let layout = self.window(|window, cx| {
+            window.render_frame(cx);
+            layout::capture(window)
+        })?;
+        Ok(Some(layout))
     }
 
     fn image(&mut self) -> Result<Option<RgbaImage>, GpuiDriverError> {

@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2's state on disk: session records, terminal tabs, pointers and the
+# journal of writes made while the host is away. Every file is written
+# atomically (temp file, fsync, rename, fsync of the folder) under a schema
+# version. Knows nothing about the network.
+rust_library(
+    name = "store",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_store",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":store",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

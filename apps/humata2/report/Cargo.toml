@@ -1,0 +1,19 @@
+[package]
+name = "humata2-report"
+description = "Humata 2's bug reports as text: recordings and snapshots of events, state, view and layout trees, scrubbed and saved for an agent to read or replay as a flow."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_report"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -14,11 +14,12 @@ the top or chosen at start with `--screen`:
   about 8% of lines 180 to 420 characters long, in a virtualised `list` that
   measures every row. The Wrap button (or `--wrap off`) switches wrapping, so
   rows go from one height to many.
-- **terminal**: a 200×60 cell grid painted by hand on a canvas: one quad per
-  run of background colour and one shaped text line per row. Output runs at
-  60 lines a second while Output is running (or with `--animate`). The grid
-  is read through `GridSource` (`size()`, `row(i)`), which libghostty-vt's
-  screen can implement later.
+- **terminal**: a 200×60 cell grid drawn by Humata 2's own terminal view
+  (`terminal/view`): one quad per run of background colour and one shaped
+  text piece per run of style, with only the rows that changed drawn again.
+  Output runs at 60 lines a second while Output is running (or with
+  `--animate`). The fake output is written into a `FakeGrid`; libghostty-vt's
+  terminal implements the same `Grid` trait.
 
 It uses GPUI's own `uniform_list` for the tree rather than gpui-component's
 Tree, because the Tree keeps its own expanded and selected state and the

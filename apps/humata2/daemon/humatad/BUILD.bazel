@@ -1,0 +1,103 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load(":tonic.bzl", "rust_tonic_services")
+
+# humatad2, Humata 2's daemon: serves the gRPC API (../../api/GRPC.md) on a
+# Unix socket, and `humatad2 bridge` carries a socket over stdio for SSH or
+# a provider's connect command. It only wires the parts together: state is
+# //apps/humata2/daemon/store, terminals are //apps/humata2/daemon/holder.
+
+# protoc-gen-tonic, the protoc plugin for tonic, built from the workspace's
+# pinned crate.
+rust_binary(
+    name = "protoc-gen-tonic",
+    srcs = ["codegen/protoc_gen_tonic.rs"],
+    deps = [
+        "@crates//:prost",
+        "@crates//:protoc-gen-prost",
+        "@crates//:protoc-gen-tonic",
+    ],
+)
+
+rust_tonic_services(
+    name = "tonic_gen",
+    package = "humata.v1",
+    plugin = ":protoc-gen-tonic",
+    proto = "//apps/humata2/api/proto:humata2_proto",
+)
+
+# The message types and the generated clients and servers, as one module.
+rust_library(
+    name = "grpc",
+    srcs = ["codegen/grpc.rs"],
+    compile_data = [":tonic_gen"],
+    crate_name = "humata2_grpc",
+    # The generated code is written for this edition.
+    edition = "2021",
+    rustc_env = {"HUMATA2_TONIC_RS": "$(execpath :tonic_gen)"},
+    # Generated code: clippy has nothing to say that we could act on.
+    tags = ["noclippy"],
+    deps = [
+        "//apps/humata2/api/proto:humata2_rust",
+        "@crates//:prost",
+        "@crates//:tonic",
+        "@crates//:tonic-prost",
+    ],
+)
+
+rust_binary(
+    name = "humatad2",
+    srcs = glob(["src/*.rs"]),
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        ":grpc",
+        "//apps/humata2/daemon/holder",
+        "//apps/humata2/daemon/store",
+        "@crates//:clap",
+        "@crates//:prost",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:uuid",
+    ],
+)
+
+# Each test starts humatad2 and humata2_holder as the real binaries and
+# talks to them over gRPC on a socket of its own.
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/common/*.rs"]),
+        crate_root = src,
+        data = [
+            ":humatad2",
+            "//apps/humata2/daemon/holder:humata2_holder",
+        ],
+        env = {
+            "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+            "HUMATAD2": "$(rootpath :humatad2)",
+        },
+        deps = [
+            ":grpc",
+            "//apps/humata2/daemon/store",
+            "@crates//:hyper-util",
+            "@crates//:prost",
+            "@crates//:rustix",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+            "@crates//:tokio-stream",
+            "@crates//:tonic",
+            "@crates//:tower",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "tonic.bzl",
+    ],
+    tags = ["starlark"],
+)

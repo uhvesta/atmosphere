@@ -1,0 +1,346 @@
+//! Taking a report: a [`Recording`] from start to stop, or a [`snapshot`]
+//! of one moment. Both give a [`Captured`], which is scrubbed before it can
+//! be written.
+
+use std::collections::VecDeque;
+
+use crate::change::{self, Hunk};
+use crate::event::{
+    ActionStep, Context, DaemonError, Event, Gesture, Interaction, Kind, LogLine, Rpc, TreeChange,
+    Trees,
+};
+
+/// How much a recording keeps before it folds its oldest events into its
+/// start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// The most events kept.
+    pub max_events: usize,
+    /// Roughly the most bytes the kept events hold.
+    pub max_bytes: usize,
+}
+
+impl Default for Limits {
+    /// 50,000 events or about 64 MiB, whichever is reached first.
+    fn default() -> Self {
+        Self {
+            max_events: 50_000,
+            max_bytes: 64 << 20,
+        }
+    }
+}
+
+/// A report taken and not yet scrubbed: its context, the state, view and
+/// layout at its start, the events in order, and the trees at its end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Captured {
+    pub(crate) kind: Kind,
+    pub(crate) context: Context,
+    /// When the start trees were taken: 0, or the time of the last event
+    /// folded into them.
+    pub(crate) start_ms: u64,
+    /// How many events were folded into the start because the recording
+    /// was full.
+    pub(crate) dropped: usize,
+    pub(crate) start: Trees,
+    pub(crate) events: Vec<Event>,
+    pub(crate) end_ms: u64,
+    pub(crate) end: Trees,
+}
+
+impl Captured {
+    /// A recording or a snapshot.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// Where it was taken.
+    pub fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// The trees at its start.
+    pub fn start(&self) -> &Trees {
+        &self.start
+    }
+
+    /// When the start trees were taken, in milliseconds since the report
+    /// started: 0 unless older events were folded into them.
+    pub fn start_ms(&self) -> u64 {
+        self.start_ms
+    }
+
+    /// How many of the oldest events were folded into the start because
+    /// the recording reached its [`Limits`]. A report that dropped events
+    /// starts mid-way, so its replay does too.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    /// The events, in order.
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    /// When it stopped, in milliseconds since it started.
+    pub fn end_ms(&self) -> u64 {
+        self.end_ms
+    }
+
+    /// The trees at its end.
+    pub fn end(&self) -> &Trees {
+        &self.end
+    }
+}
+
+/// The state, view and layout of one moment, as a report: the trees, the
+/// context, and no events.
+pub fn snapshot(context: Context, now: Trees) -> Captured {
+    let now = normal(&now);
+    Captured {
+        kind: Kind::Snapshot,
+        context,
+        start_ms: 0,
+        dropped: 0,
+        start: now.clone(),
+        events: Vec::new(),
+        end_ms: 0,
+        end: now,
+    }
+}
+
+/// `trees` with each line ending in one newline.
+fn normal(trees: &Trees) -> Trees {
+    Trees {
+        state: change::normal(&trees.state),
+        view: change::normal(&trees.view),
+        layout: change::normal(&trees.layout),
+    }
+}
+
+/// A recording in progress. Start it with the trees as they are, tell it
+/// each interaction, action, tree and daemon call in order, and stop it.
+///
+/// It keeps at most [`Limits`] of events. When a push goes over, the
+/// oldest events are folded into the start until it fits: their state,
+/// view and layout changes are applied to the start trees, and their
+/// interactions, calls and log lines are dropped and counted (see
+/// [`Captured::dropped`]). The end of a recording, where the problem
+/// usually shows, is never lost.
+///
+/// ```ignore
+/// let mut recording = Recording::start(context, trees, Limits::default());
+/// recording.interaction(120, Gesture::Click { target, button: Button::Left });
+/// recording.action(121, "AddTapped", &format!("{state:#?}"));
+/// recording.view(125, &view_snapshot);
+/// let captured = recording.stop(4_000);
+/// ```
+#[derive(Debug)]
+pub struct Recording {
+    context: Context,
+    limits: Limits,
+    start_ms: u64,
+    dropped: usize,
+    /// The start trees, as lines, so folding an event in is a splice.
+    base: Base,
+    events: VecDeque<Event>,
+    bytes: usize,
+    /// The trees as of the last event, which the next change is made
+    /// against.
+    current: Trees,
+}
+
+#[derive(Debug)]
+struct Base {
+    state: Vec<String>,
+    view: Vec<String>,
+    layout: Vec<String>,
+}
+
+impl Recording {
+    /// Starts recording, at time 0, with the trees as they are now.
+    pub fn start(context: Context, now: Trees, limits: Limits) -> Self {
+        let now = normal(&now);
+        Self {
+            context,
+            limits,
+            start_ms: 0,
+            dropped: 0,
+            base: Base {
+                state: change::lines(&now.state),
+                view: change::lines(&now.view),
+                layout: change::lines(&now.layout),
+            },
+            events: VecDeque::new(),
+            bytes: 0,
+            current: now,
+        }
+    }
+
+    /// The context, to add machines and sessions as they become involved.
+    pub fn context_mut(&mut self) -> &mut Context {
+        &mut self.context
+    }
+
+    /// How many of the oldest events have been folded into the start so
+    /// far, so the app can say the recording is full.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    /// Records what the person did.
+    pub fn interaction(&mut self, at_ms: u64, gesture: Gesture) {
+        self.push(Event::Interaction(Interaction { at_ms, gesture }));
+    }
+
+    /// Records a reducer action (as `{:?}` shows it) and the state after it
+    /// (as `{:#?}` shows it).
+    pub fn action(&mut self, at_ms: u64, action: &str, state: &str) {
+        let state = change::normal(state);
+        let change = change::diff(&self.current.state, &state);
+        self.current.state = state;
+        self.push(Event::Action(ActionStep {
+            at_ms,
+            action: action.to_owned(),
+            change,
+        }));
+    }
+
+    /// Records the view tree after a step. Nothing is recorded when it
+    /// didn't change.
+    pub fn view(&mut self, at_ms: u64, view: &str) {
+        let change = change::diff(&self.current.view, view);
+        if !change.is_empty() {
+            self.current.view = change::normal(view);
+            self.push(Event::View(TreeChange { at_ms, change }));
+        }
+    }
+
+    /// Records the layout tree after a step. Nothing is recorded when it
+    /// didn't change.
+    pub fn layout(&mut self, at_ms: u64, layout: &str) {
+        let change = change::diff(&self.current.layout, layout);
+        if !change.is_empty() {
+            self.current.layout = change::normal(layout);
+            self.push(Event::Layout(TreeChange { at_ms, change }));
+        }
+    }
+
+    /// Records a daemon call.
+    pub fn rpc(&mut self, rpc: Rpc) {
+        self.push(Event::Rpc(rpc));
+    }
+
+    /// Records an error a daemon reported.
+    pub fn daemon_error(&mut self, error: DaemonError) {
+        self.push(Event::DaemonError(error));
+    }
+
+    /// Records a line of a daemon's log.
+    pub fn log(&mut self, line: LogLine) {
+        self.push(Event::Log(line));
+    }
+
+    /// Stops at `at_ms`, with the trees as the last events left them.
+    pub fn stop(self, at_ms: u64) -> Captured {
+        Captured {
+            kind: Kind::Recording,
+            context: self.context,
+            start_ms: self.start_ms,
+            dropped: self.dropped,
+            start: Trees {
+                state: change::join(&self.base.state),
+                view: change::join(&self.base.view),
+                layout: change::join(&self.base.layout),
+            },
+            events: self.events.into(),
+            end_ms: at_ms,
+            end: self.current,
+        }
+    }
+
+    fn push(&mut self, event: Event) {
+        self.bytes += event.weight();
+        self.events.push_back(event);
+        while self.events.len() > self.limits.max_events || self.bytes > self.limits.max_bytes {
+            let Some(oldest) = self.events.pop_front() else {
+                break;
+            };
+            self.bytes -= oldest.weight();
+            self.fold(oldest);
+        }
+    }
+
+    /// Moves `event` into the start trees.
+    fn fold(&mut self, event: Event) {
+        self.start_ms = event.at_ms();
+        self.dropped += 1;
+        let (lines, hunks): (&mut Vec<String>, &[Hunk]) = match &event {
+            Event::Action(step) => (&mut self.base.state, &step.change),
+            Event::View(change) => (&mut self.base.view, &change.change),
+            Event::Layout(change) => (&mut self.base.layout, &change.change),
+            Event::Interaction(_) | Event::Rpc(_) | Event::DaemonError(_) | Event::Log(_) => return,
+        };
+        // Each change was made against the text the one before it left,
+        // starting from the base, so it always applies.
+        let applied = change::apply(lines, hunks);
+        debug_assert!(applied.is_ok(), "a folded change didn't apply: {applied:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trees(n: usize) -> Trees {
+        let lines = |what: &str| (0..n).map(|i| format!("{what} {i}\n")).collect::<String>();
+        Trees {
+            state: lines("item"),
+            view: lines("ListItem"),
+            layout: lines("ListItem at"),
+        }
+    }
+
+    /// The start trees with every kept change applied, as a replay would
+    /// rebuild them.
+    fn rebuilt(captured: &Captured) -> Trees {
+        let mut state = change::lines(&captured.start.state);
+        let mut view = change::lines(&captured.start.view);
+        let mut layout = change::lines(&captured.start.layout);
+        for event in &captured.events {
+            let applied = match event {
+                Event::Action(step) => change::apply(&mut state, &step.change),
+                Event::View(tree) => change::apply(&mut view, &tree.change),
+                Event::Layout(tree) => change::apply(&mut layout, &tree.change),
+                _ => Ok(()),
+            };
+            assert!(applied.is_ok(), "{applied:?}");
+        }
+        Trees {
+            state: change::join(&state),
+            view: change::join(&view),
+            layout: change::join(&layout),
+        }
+    }
+
+    #[test]
+    fn a_full_recording_still_rebuilds_its_end_from_its_start() {
+        let limits = Limits {
+            max_events: 7,
+            max_bytes: usize::MAX,
+        };
+        let mut recording = Recording::start(Context::default(), trees(0), limits);
+        for n in 1..=20 {
+            let at = n as u64 * 10;
+            let now = trees(n);
+            recording.action(at, "Add", &now.state);
+            recording.view(at + 1, &now.view);
+            recording.layout(at + 2, &now.layout);
+        }
+        let captured = recording.stop(500);
+        assert!(captured.events.len() <= 7);
+        assert_eq!(captured.dropped, 60 - captured.events.len());
+        assert_eq!(captured.end, trees(20));
+        assert_eq!(rebuilt(&captured), captured.end);
+    }
+}
