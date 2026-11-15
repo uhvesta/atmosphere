@@ -102,3 +102,4 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: opened ASK (daemon lane), manager minion ASK (Opus 5.5).
 - 2026-11-15 main: ASK batch 1 reported (T1–T5, decisions A1–A11). Main applied seams S1 (errors.proto ApprovalPending=57), S2 (mod rules_kept), S3 (serve.rs restore + Access store + inbox to ChannelSvc/SessionSvc; DaemonError::RulesKept), S4 (events Rules filter). S5 deferred. Gate 1 ASK running.
 - 2026-11-15 main: gate 1 ASK: main fixed its own RulesKept {0} and added exit_codes pending arm; build pass; humatad+cli 28/29, store+sessions pass; matrix_test 3 cases fail (--wait ends pending after deny; MCP went quiet). Sent to minion ASK.
+- 2026-11-15 main: gate 2 ASK: 45/45 pass. Committed ASK batch 1 as 4d873e4c (D126). ASK stays open: batch 2 next.
