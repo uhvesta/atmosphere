@@ -113,15 +113,19 @@ impl Report {
     }
 }
 
-/// Where flow artifacts go: `HUMATA2_FLOW_OUT` when it is set, otherwise
-/// `humata2-flows` inside `default`, such as a test's
-/// `env!("CARGO_TARGET_TMPDIR")`. Each flow gets a directory in it, named
-/// after its spec flow.
+/// Where flow artifacts go: `HUMATA2_FLOW_OUT` when it is set; otherwise
+/// `humata2-flows` inside Bazel's undeclared test outputs under `bazel
+/// test`, or inside `default`, such as a test's
+/// `option_env!("CARGO_TARGET_TMPDIR")`, which Bazel doesn't set. Each flow
+/// gets a directory in it, named after its spec flow.
 pub fn artifact_root(default: &Path) -> PathBuf {
-    match std::env::var_os(OUT_VARIABLE) {
-        Some(out) if !out.is_empty() => PathBuf::from(out),
-        _ => default.join("humata2-flows"),
+    let var = |name| std::env::var_os(name).filter(|value| !value.is_empty());
+    if let Some(out) = var(OUT_VARIABLE) {
+        return PathBuf::from(out);
     }
+    var("TEST_UNDECLARED_OUTPUTS_DIR")
+        .map_or_else(|| default.to_owned(), PathBuf::from)
+        .join("humata2-flows")
 }
 
 /// Plays `flow` through `driver`, checks each snapshot it asks for against

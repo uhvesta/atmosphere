@@ -1,0 +1,76 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The I2 GUI spike once per engine (D57): `spike` on ordinary GPUI,
+# `spike_fast` on GPUI Fast. Test-only, as it draws the terminal from
+# FakeGrid. The binaries open a window on screen; see README.md.
+ENGINES = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+[
+    rust_library(
+        name = "lib" + engine,
+        testonly = True,
+        srcs = glob(
+            ["src/*.rs"],
+            exclude = ["src/main.rs"],
+        ),
+        crate_name = "humata2_gui_spike",
+        crate_root = "src/lib.rs",
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            gpui_kit,
+            "//apps/humata2/terminal/grid:terminal_grid_fake",
+            "//apps/humata2/terminal/view:terminal_view" + engine + "_fake",
+            "//libs/tca-rust:tca",
+            "@crates//:libc",
+            "@crates//:thiserror",
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]
+
+[
+    rust_binary(
+        name = "spike" + engine,
+        testonly = True,
+        srcs = ["src/main.rs"],
+        crate_name = "humata2_gui_spike_bin",
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            gpui_kit,
+            ":lib" + engine,
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]
+
+# Headless: the unit tests and tests/tree.rs open no window.
+[
+    rust_test(
+        name = "lib" + engine + "_test",
+        crate = ":lib" + engine,
+    )
+    for engine in ENGINES
+]
+
+[
+    rust_test(
+        name = "tree" + engine + "_test",
+        srcs = ["tests/tree.rs"],
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            gpui_kit,
+            ":lib" + engine,
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

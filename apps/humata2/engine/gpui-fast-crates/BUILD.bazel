@@ -1,0 +1,12 @@
+# The manifest and lockfiles MODULE.bazel reads for @crates_gpui_fast.
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+    "cargo-bazel-lock.json",
+])
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -10,8 +10,13 @@ publish.workspace = true
 name = "humata2_flow"
 path = "src/lib.rs"
 
+[features]
+# Build and test against GPUI Fast instead of ordinary GPUI.
+fast = ["humata2-engine/fast", "humata2-snapshot/fast"]
+
 [dependencies]
 gpui-kit.workspace = true
+humata2-engine.workspace = true
 humata2-snapshot.workspace = true
 image.workspace = true
 thiserror.workspace = true

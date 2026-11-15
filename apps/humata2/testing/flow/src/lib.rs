@@ -17,5 +17,5 @@ mod run;
 
 pub use driver::Driver;
 pub use flow::{Action, Capture, Flow, SpecFlow, Step, Target};
-pub use gpui_driver::{GpuiDriver, GpuiDriverError, Host};
+pub use gpui_driver::{FrameMode, GpuiDriver, GpuiDriverError, Host};
 pub use run::{FlowError, Report, artifact_root, run};

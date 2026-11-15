@@ -27,7 +27,7 @@ mod store;
 pub mod view;
 
 #[cfg(target_os = "macos")]
-pub use crate::pixels::{Tolerance, headless_context};
+pub use crate::pixels::{Tolerance, headless_context, headless_context_with};
 pub use image::RgbaImage;
 pub use mode::{Mode, ModeError};
 pub use state::StateRecorder;

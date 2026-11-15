@@ -15,7 +15,7 @@ use gpui_kit::base::TestTextExt;
 use gpui_kit::test::TestWindowExt;
 // `gpui_kit::*` exports a `test` attribute; keep `#[test]` the standard one.
 use ::std::prelude::v1::test;
-use humata2_flow::{Flow, GpuiDriver, SpecFlow, artifact_root, run};
+use humata2_flow::{Flow, FrameMode, GpuiDriver, SpecFlow, artifact_root, run};
 use humata2_snapshot::{StateRecorder, layout, snapshots, view};
 use tca::{Effect, LocalStore, Reducer, TestStore};
 use tokio::runtime::{Builder, Runtime};
@@ -306,10 +306,8 @@ fn the_view_lays_out_the_rows_with_the_selected_one_highlighted(cx: &mut TestApp
 /// Not a SPEC.md flow: the demo proves the runner itself.
 const COUNT_AND_LIST: SpecFlow = SpecFlow::new("demo", "Count and list items");
 
-#[gpui_kit::test]
-fn count_and_list_items(cx: &mut TestAppContext) {
-    let window = open(cx, Tally::default());
-    let flow = Flow::new(COUNT_AND_LIST)
+fn count_and_list_flow() -> Flow {
+    Flow::new(COUNT_AND_LIST)
         .snapshot()
         .click(Role::Button, "Increment")
         .click(Role::Button, "Increment")
@@ -327,12 +325,31 @@ fn count_and_list_items(cx: &mut TestAppContext) {
         .click(Role::ListItem, "milk")
         .snapshot_layout()
         .click(Role::Button, "Clear")
-        .snapshot();
+        .snapshot()
+}
 
+#[gpui_kit::test]
+fn count_and_list_items(cx: &mut TestAppContext) {
+    let window = open(cx, Tally::default());
     let snapshots = snapshots!().expect("snapshots are kept beside this file");
-    let out = artifact_root(std::path::Path::new(env!("CARGO_TARGET_TMPDIR")));
+    let out = artifact_root(&target_tmp());
     let mut driver = GpuiDriver::new(cx, window);
-    match run(&flow, &mut driver, &snapshots, &out) {
+    match run(&count_and_list_flow(), &mut driver, &snapshots, &out) {
+        Ok(report) => println!("flow artifact: {}", report.artifact().display()),
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// The same flow drawn only as the app draws, checked against the same
+/// snapshots: what natural frames leave on screen is what a full refresh
+/// shows.
+#[gpui_kit::test]
+fn count_and_list_items_in_natural_frames(cx: &mut TestAppContext) {
+    let window = open(cx, Tally::default());
+    let snapshots = snapshots!().expect("snapshots are kept beside this file");
+    let out = artifact_root(&target_tmp()).join("natural-frames");
+    let mut driver = GpuiDriver::with_frames(cx, window, FrameMode::Natural);
+    match run(&count_and_list_flow(), &mut driver, &snapshots, &out) {
         Ok(report) => println!("flow artifact: {}", report.artifact().display()),
         Err(error) => panic!("{error}"),
     }
@@ -360,4 +377,10 @@ fn the_view_draws_as_recorded() {
     snapshots.assert_image("view-with-items", &image, humata2_snapshot::Tolerance::default());
     // Measured with macOS's fonts, so kept as view-with-items.macos.layout.txt.
     snapshots.assert_layout("view-with-items", &layout);
+}
+
+/// Cargo's scratch directory for this test, or the system's under Bazel,
+/// which sends artifacts to its test outputs instead (see `artifact_root`).
+fn target_tmp() -> std::path::PathBuf {
+    option_env!("CARGO_TARGET_TMPDIR").map_or_else(std::env::temp_dir, std::path::PathBuf::from)
 }

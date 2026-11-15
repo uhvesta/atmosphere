@@ -1,0 +1,41 @@
+[package]
+name = "humata2-engine"
+description = "The one place Humata 2's GPUI code picks its engine: app start-up, headless contexts and the engine's identity."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_engine"
+path = "src/lib.rs"
+
+[features]
+# GPUI Fast instead of ordinary GPUI. Every crate in one build sees the same
+# engine, because gpui-kit is one crate; this feature only has to agree with
+# it, and the build fails when it doesn't.
+fast = ["gpui-kit/gpui-fast", "dep:fast_apple"]
+# Headless contexts and the test-only window APIs. Tests and benchmarks only.
+test-support = [
+    "gpui-kit/test-support",
+    "pre_apple/test-support",
+    "fast_apple?/test-support",
+]
+
+[dependencies]
+gpui-kit.workspace = true
+thiserror.workspace = true
+
+# Each engine's macOS text system, named directly so a headless context can be
+# made off the main thread (the platform's own constructor needs it). Pinned to
+# the versions gpui-kit 0.9.1 uses, so each stays the one copy of its crate.
+[target.'cfg(target_os = "macos")'.dependencies]
+pre_apple = { package = "gpui-pre-apple", version = "=0.3.12", features = ["font-kit"] }
+fast_apple = { package = "gpui-fast-apple", version = "=0.1.14", features = ["font-kit"], optional = true }
+
+# benches/frames.rs builds only in Bazel, as //apps/humata2/engine:frames_bench.
+[[bench]]
+name = "frames"
+path = "benches/frames.rs"
+harness = false
+required-features = ["test-support"]

@@ -1,0 +1,31 @@
+# The crates Bazel builds GPUI Fast targets from, as the @crates_gpui_fast
+# repository (MODULE.bazel). crate_universe resolves one feature set per crate
+# in a repository, so ordinary GPUI (@crates) and GPUI Fast can't share one:
+# gpui-kit's `gpui-fast` feature would reach every target. Only the crates a
+# GPUI target names belong here; the rest come from @crates.
+#
+# Its own workspace and lockfile. Versions follow the root Cargo.lock: after
+# changing gpui-kit there, copy the root Cargo.lock here and run
+# `CARGO_BAZEL_REPIN=1 bazel mod tidy`, which updates both.
+[workspace]
+resolver = "3"
+
+[package]
+name = "humata2-gpui-fast-crates"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100.0"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+# The same features @crates resolves for ordinary GPUI, plus gpui-fast.
+gpui-kit = { version = "=0.9.1", features = ["gpui-fast", "test-support"] }
+# Shares its types with GPUI's (`render_to_image`), so GPUI Fast targets that
+# handle images take it from here (the testing tools' image snapshots).
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui-fast-apple = { version = "=0.1.14", features = ["font-kit", "test-support"] }

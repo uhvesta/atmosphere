@@ -1,0 +1,88 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
+
+# humata2_flow once per engine: `flow` on ordinary GPUI, `flow_fast` on GPUI
+# Fast (D57). Test-only, as the snapshot tools it uses.
+ENGINES = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+# GPUI's own `image` crate, so screenshots pass between them as one type.
+IMAGE = {
+    "": "@crates//:image",
+    "_fast": "@crates_gpui_fast//:image",
+}
+
+[
+    rust_library(
+        name = "flow" + engine,
+        testonly = True,
+        srcs = glob(["src/*.rs"]),
+        crate_features = ["fast"] if engine else [],
+        crate_name = "humata2_flow",
+        visibility = [
+            "//apps/humata2/clients:__subpackages__",
+            "//apps/humata2/desktop:__subpackages__",
+            "//apps/humata2/diff:__subpackages__",
+            "//apps/humata2/features:__subpackages__",
+            "//apps/humata2/markdown:__subpackages__",
+            "//apps/humata2/review:__subpackages__",
+            "//apps/humata2/terminal:__subpackages__",
+            "//apps/humata2/ui:__subpackages__",
+        ],
+        deps = [
+            gpui_kit,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/testing/snapshot:snapshot" + engine,
+            IMAGE[engine],
+            "@crates//:thiserror",
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]
+
+[
+    rust_test(
+        name = "flow" + engine + "_test",
+        crate = ":flow" + engine,
+    )
+    for engine in ENGINES
+]
+
+# The snapshot kinds on a counter-and-list view; `bazel run
+# :counter_list_record` records its snapshots.
+[
+    humata2_snapshot_test(
+        name = "counter_list" + engine,
+        srcs = ["tests/counter_list.rs"],
+        deps = [
+            gpui_kit,
+            ":flow" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/testing/snapshot:snapshot" + engine,
+            "//libs/tca-rust:tca",
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]
+
+[
+    rust_test(
+        name = "natural_frames" + engine + "_test",
+        srcs = ["tests/natural_frames.rs"],
+        deps = [
+            gpui_kit,
+            ":flow" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -15,15 +15,13 @@ publish = false
 [workspace.dependencies]
 # Workspace crates.
 humata2-snapshot = { path = "snapshot" }
+# The engine boundary: which GPUI engine, headless contexts, natural frames.
+humata2-engine = { path = "../engine", features = ["test-support"] }
 tca-rust = { path = "../../../libs/tca-rust" }
 
 # Third-party crates. The repository's .cargo/config.toml keeps cargo from
 # taking any version published less than 3 days ago.
 gpui-kit = { version = "0.9.1", features = ["test-support"] }
-# gpui-kit's macOS text system, named directly so a headless context can be
-# made off the main thread (gpui-kit's own constructor needs the main thread).
-# Pinned to the gpui-pre version gpui-kit 0.9.1 uses, so they stay one crate.
-gpui-pre-apple = { version = "=0.3.12", features = ["font-kit", "test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt"] }

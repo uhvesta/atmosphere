@@ -2,6 +2,8 @@
 //! arrow keys and the Expand all and Collapse all buttons change the
 //! reducer's state, and the rows drawn follow it.
 
+// `#[gpui_kit::test]` expands to paths under `gpui`.
+use gpui_kit::gpui;
 use gpui_kit::test::{TestQueryExt, TestWindowExt};
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, Entity, Point, Role, TestAppContext, Window,

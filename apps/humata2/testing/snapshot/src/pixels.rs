@@ -6,9 +6,9 @@
 //! view, layout and flow snapshots only.
 
 use std::io::Cursor;
-use std::sync::Arc;
 
 use gpui_kit::HeadlessAppContext;
+use humata2_engine::{EngineError, Resources};
 use image::{ImageFormat, Rgba, RgbaImage};
 
 use crate::mode::Mode;
@@ -62,17 +62,31 @@ impl Default for Tolerance {
     }
 }
 
-/// A headless GPUI context that renders with Metal, off screen. No window
-/// is shown and it runs on any thread, so it works under `cargo test`.
-/// gpui-kit is initialized in it.
+/// A headless GPUI context that renders with Metal, off screen, on the
+/// engine this build uses (see [`humata2_engine::Backend`]). No window is
+/// shown and it runs on any thread, so it works under `cargo test`.
+/// gpui-kit is initialized in it, with gpui-kit's own assets.
+///
+/// # Panics
+///
+/// Never in practice: only bundled fonts can fail to load, and this
+/// context has none. Use [`headless_context_with`] to add fonts.
+#[must_use]
 pub fn headless_context() -> HeadlessAppContext {
-    let mut cx = HeadlessAppContext::with_platform(
-        Arc::new(gpui_apple::AppleTextSystem::new()),
-        Arc::new(gpui_kit::assets::Assets),
-        gpui_kit::platform::current_headless_renderer,
-    );
-    cx.update(gpui_kit::init);
-    cx
+    match headless_context_with(&Resources::new(gpui_kit::assets::Assets)) {
+        Ok(cx) => cx,
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// [`headless_context`] with the app's own assets and fonts, so text and
+/// icons draw as they do in the app.
+///
+/// # Errors
+///
+/// [`EngineError::Fonts`] when a bundled font can't be loaded.
+pub fn headless_context_with(resources: &Resources) -> Result<HeadlessAppContext, EngineError> {
+    humata2_engine::headless(resources)
 }
 
 impl Snapshots {
@@ -128,7 +142,7 @@ impl Snapshots {
 
         let new = self.write_failed(&format!("{name}.new.png"), &png(actual, &path)?)?;
         let (Some(recorded), Some(comparison)) = (recorded, comparison) else {
-            return Err(SnapshotError::Missing { path, review: new });
+            return Err(self.missing(path, new));
         };
         self.write_failed(&format!("{name}.old.png"), &png(&recorded, &path)?)?;
         match comparison {

@@ -1,0 +1,17 @@
+# Humata 2's GUI testing tools in Bazel: snapshot/ (humata2_snapshot), flow/
+# (humata2_flow), and defs.bzl's humata2_snapshot_test for tests that keep
+# snapshots. See TESTING.md one directory up.
+
+exports_files(
+    ["defs.bzl"],
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "defs.bzl",
+    ],
+    tags = ["starlark"],
+)

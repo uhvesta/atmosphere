@@ -4,6 +4,12 @@
 //! When a check fails, what the test produced goes to that directory's
 //! `.failed/`, which ignores itself in git, so it can be read beside the
 //! recorded snapshot.
+//!
+//! Under `bazel test` the snapshots are read from the test's runfiles (its
+//! `data`) and failed output goes to Bazel's undeclared test outputs, at the
+//! same path below them; recording is refused there. `bazel run` sets
+//! BUILD_WORKSPACE_DIRECTORY, so a `_record` target run that way reads and
+//! writes the source tree.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,7 +30,13 @@ const CONTEXT: usize = 3;
 #[derive(Clone, Debug)]
 pub struct Snapshots {
     directory: PathBuf,
+    /// Where failed checks' output goes: `.failed/` beside the snapshots,
+    /// or Bazel's undeclared test outputs under `bazel test`.
+    failed: PathBuf,
     mode: Mode,
+    /// Under `bazel test`, the test file these are the snapshots of, so a
+    /// missing snapshot can say when the whole directory wasn't declared.
+    runfiles_of: Option<PathBuf>,
 }
 
 /// What a check did.
@@ -45,12 +57,33 @@ pub enum SnapshotError {
 
     #[error(
         "could not find the test file {file} from {manifest_directory}, so there is nowhere to \
-         keep its snapshots. Build the test with cargo from its workspace, or set \
-         BUILD_WORKSPACE_DIRECTORY to the repository root when the build tool runs it elsewhere"
+         keep its snapshots. Run it with `bazel test`, or `bazel run` its `_record` target, \
+         which sets BUILD_WORKSPACE_DIRECTORY to the repository root"
     )]
     TestFileNotFound {
         file: PathBuf,
         manifest_directory: PathBuf,
+    },
+
+    #[error(
+        "HUMATA2_SNAPSHOT=record can't write snapshots under `bazel test`: the test runs in a \
+         sandbox, and anything it wrote would not reach the source tree. Record with \
+         `bazel run` on the test's `_record` target instead, which writes into the \
+         repository, then read `git diff` of the __snapshots__ directory before committing"
+    )]
+    RecordUnderBazelTest,
+
+    #[error(
+        "the snapshots for {file} are not in the test's runfiles (looked in {directory}). If \
+         they are recorded, add them to the test's `data`, as `humata2_snapshot_test` in \
+         //apps/humata2/testing:defs.bzl does. If none are recorded yet, read what the test \
+         produced at {review}, then record them with `bazel run` on the test's `_record` \
+         target and commit them"
+    )]
+    NotInRunfiles {
+        file: PathBuf,
+        directory: PathBuf,
+        review: PathBuf,
     },
 
     #[error(
@@ -61,16 +94,18 @@ pub enum SnapshotError {
 
     #[error(
         "there is no snapshot at {path} yet. What the test produced is at {review}. Read it; if \
-         it is what the test should produce, run the test again with HUMATA2_SNAPSHOT=record to \
-         save it, then commit the new file"
+         it is what the test should produce, record it (`bazel run` the \
+         test's `_record` target) to save it, \
+         then commit the new file"
     )]
     Missing { path: PathBuf, review: PathBuf },
 
     #[error(
         "the snapshot at {path} does not match what the test produced (- recorded, + now):\n\
          {diff}\
-         What the test produced is at {review}. If the change is intended, run the test again \
-         with HUMATA2_SNAPSHOT=record, then read `git diff` of the __snapshots__ directory \
+         What the test produced is at {review}. If the change is intended, re-record it (`bazel run` the \
+         test's `_record` target), \
+         then read `git diff` of the __snapshots__ directory \
          before committing it. Don't re-record just to make the test pass: that accepts \
          whatever the code does now, bugs included"
     )]
@@ -83,8 +118,9 @@ pub enum SnapshotError {
     #[error(
         "the image at {path} is {recorded_width}x{recorded_height} but the test drew \
          {width}x{height}. Old and new, side by side, are at {review}. If the view's size \
-         changed on purpose, run the test again with HUMATA2_SNAPSHOT=record and look at the \
-         new image before committing it. Don't re-record just to make the test pass: that \
+         changed on purpose, re-record it (`bazel run` the \
+         test's `_record` target) \
+         and look at the new image before committing it. Don't re-record just to make the test pass: that \
          accepts whatever the code draws now, bugs included"
     )]
     ImageSize {
@@ -99,8 +135,9 @@ pub enum SnapshotError {
     #[error(
         "the image at {path} differs from what the test drew in {differing} of {total} pixels, \
          more than the {allowed} allowed. Old, new and their diff (changed pixels in red) are \
-         side by side at {review}. If the change is intended, run the test again with \
-         HUMATA2_SNAPSHOT=record and look at the new image before committing it. Don't \
+         side by side at {review}. If the change is intended, re-record it (`bazel run` the \
+         test's `_record` target) \
+         and look at the new image before committing it. Don't \
          re-record just to make the test pass, and don't widen the tolerance to hide a real \
          change: both accept whatever the code draws now, bugs included"
     )]
@@ -131,8 +168,9 @@ pub enum SnapshotError {
 
     #[error(
         "the snapshot at {path} is not a PNG image that can be read: {source}. If it was \
-         damaged, restore it from git; if it was never valid, delete it and record it again \
-         with HUMATA2_SNAPSHOT=record, then look at the new image before committing it"
+         damaged, restore it from git; if it was never valid, delete it and \
+         record it (`bazel run` the \
+         test's `_record` target), then look at the new image before committing it"
     )]
     DecodeImage {
         path: PathBuf,
@@ -159,23 +197,69 @@ impl Snapshots {
     /// [`SnapshotError::TestFileNotFound`].
     pub fn beside(file: &str, manifest_directory: &str) -> Result<Self, SnapshotError> {
         let mode = Mode::from_env()?;
-        let test_file = locate(Path::new(file), Path::new(manifest_directory))?;
-        let stem = test_file
+        let var = |name: &str| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        Self::placed(Path::new(file), Path::new(manifest_directory), mode, var)
+    }
+
+    /// [`beside`](Self::beside), reading the environment through `var`.
+    fn placed(
+        file: &Path,
+        manifest_directory: &Path,
+        mode: Mode,
+        var: impl Fn(&str) -> Option<PathBuf>,
+    ) -> Result<Self, SnapshotError> {
+        let stem = file
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let parent = test_file.parent().unwrap_or(Path::new("."));
-        Ok(Self::at(parent.join(DIRECTORY).join(stem), mode))
+        let snapshots_of = |test_file: &Path| {
+            test_file
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(DIRECTORY)
+                .join(&stem)
+        };
+        // `bazel test`, not `bazel run`: read from the runfiles, write
+        // failures to the undeclared outputs.
+        if let (None, Some(runfiles)) = (var("BUILD_WORKSPACE_DIRECTORY"), var("TEST_SRCDIR")) {
+            if mode == Mode::Record {
+                return Err(SnapshotError::RecordUnderBazelTest);
+            }
+            let workspace = var("TEST_WORKSPACE").unwrap_or_else(|| PathBuf::from("_main"));
+            let directory = snapshots_of(&runfiles.join(workspace).join(file));
+            let failed = var("TEST_UNDECLARED_OUTPUTS_DIR")
+                .map_or_else(|| directory.join(FAILED), |out| snapshots_of(&out.join(file)));
+            return Ok(Self {
+                directory,
+                failed,
+                mode,
+                runfiles_of: Some(file.to_owned()),
+            });
+        }
+        let test_file = locate(file, manifest_directory, var("BUILD_WORKSPACE_DIRECTORY"))?;
+        Ok(Self::at(snapshots_of(&test_file), mode))
     }
 
     fn at(directory: PathBuf, mode: Mode) -> Self {
-        Self { directory, mode }
+        Self {
+            failed: directory.join(FAILED),
+            directory,
+            mode,
+            runfiles_of: None,
+        }
     }
 
     /// The same snapshots in another mode.
     #[cfg(test)]
     pub(crate) fn with_mode(&self, mode: Mode) -> Self {
-        Self::at(self.directory.clone(), mode)
+        Self {
+            mode,
+            ..self.clone()
+        }
     }
 
     /// Whether checks record or verify.
@@ -212,7 +296,7 @@ impl Snapshots {
             Mode::Verify => {
                 let review = self.write_failed(file, actual.as_bytes())?;
                 Err(match recorded {
-                    None => SnapshotError::Missing { path, review },
+                    None => self.missing(path, review),
                     Some(recorded) => SnapshotError::Mismatch {
                         diff: diff::render(&diff::lines(&recorded, &actual), CONTEXT, "    "),
                         path,
@@ -239,10 +323,23 @@ impl Snapshots {
 
     /// Writes a failed check's output to `.failed/`, which ignores itself in
     /// git, and returns its path.
+    /// The error for a snapshot at `path` that isn't recorded, with what the
+    /// test produced at `review`: under `bazel test`, when none of the
+    /// file's snapshots are in the runfiles, that they weren't declared.
+    pub(crate) fn missing(&self, path: PathBuf, review: PathBuf) -> SnapshotError {
+        match &self.runfiles_of {
+            Some(file) if !self.directory.is_dir() => SnapshotError::NotInRunfiles {
+                file: file.clone(),
+                directory: self.directory.clone(),
+                review,
+            },
+            _ => SnapshotError::Missing { path, review },
+        }
+    }
+
     pub(crate) fn write_failed(&self, file: &str, bytes: &[u8]) -> Result<PathBuf, SnapshotError> {
-        let failed = self.directory.join(FAILED);
-        write(&failed.join(".gitignore"), b"*\n")?;
-        let path = failed.join(file);
+        write(&self.failed.join(".gitignore"), b"*\n")?;
+        let path = self.failed.join(file);
         write(&path, bytes)?;
         Ok(path)
     }
@@ -250,7 +347,7 @@ impl Snapshots {
     /// Removes what earlier failed checks of these files left in `.failed/`.
     pub(crate) fn clear_failed(&self, files: &[&str]) -> Result<(), SnapshotError> {
         for file in files {
-            let path = self.directory.join(FAILED).join(file);
+            let path = self.failed.join(file);
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -280,13 +377,16 @@ pub(crate) fn checked(name: &str) -> Result<&str, SnapshotError> {
 /// Finds the test file `file!()` names. Cargo gives it relative to the
 /// workspace root, which is an ancestor of the manifest directory; Bazel's
 /// `bazel run` gives it relative to BUILD_WORKSPACE_DIRECTORY.
-fn locate(file: &Path, manifest_directory: &Path) -> Result<PathBuf, SnapshotError> {
+fn locate(
+    file: &Path,
+    manifest_directory: &Path,
+    workspace: Option<PathBuf>,
+) -> Result<PathBuf, SnapshotError> {
     if file.is_absolute() {
         if file.is_file() {
             return Ok(file.to_owned());
         }
     } else {
-        let workspace = std::env::var_os("BUILD_WORKSPACE_DIRECTORY").map(PathBuf::from);
         let roots = workspace
             .iter()
             .map(PathBuf::as_path)
@@ -356,6 +456,81 @@ pub(crate) mod tests {
 
     pub(crate) fn snapshots(label: &str, mode: Mode) -> Snapshots {
         Snapshots::at(scratch(label), mode)
+    }
+
+    /// An environment like `bazel test`'s, with runfiles and outputs in
+    /// fresh directories.
+    fn bazel_test(label: &str) -> (PathBuf, PathBuf, impl Fn(&str) -> Option<PathBuf>) {
+        let (runfiles, outputs) = (scratch(&format!("{label}-runfiles")), scratch(&format!("{label}-out")));
+        let env = {
+            let (runfiles, outputs) = (runfiles.clone(), outputs.clone());
+            move |name: &str| match name {
+                "TEST_SRCDIR" => Some(runfiles.clone()),
+                "TEST_WORKSPACE" => Some(PathBuf::from("_main")),
+                "TEST_UNDECLARED_OUTPUTS_DIR" => Some(outputs.clone()),
+                _ => None,
+            }
+        };
+        (runfiles, outputs, env)
+    }
+
+    #[test]
+    fn under_bazel_test_snapshots_come_from_the_runfiles_and_failures_go_to_the_outputs() {
+        let (runfiles, outputs, env) = bazel_test("bazel");
+        let file = Path::new("pkg/tests/view.rs");
+        let recorded = runfiles.join("_main/pkg/tests/__snapshots__/view");
+        write(&recorded.join("tree.txt"), b"a\n").expect("the fixture is written");
+
+        let snapshots = Snapshots::placed(file, Path::new("/gone"), Mode::Verify, env)
+            .expect("the runfiles hold the snapshots");
+        assert_eq!(snapshots.check_text("tree", "a\n").ok(), Some(Outcome::Matched));
+        let Some(SnapshotError::Mismatch { review, .. }) = snapshots.check_text("tree", "b\n").err()
+        else {
+            panic!("expected a mismatch");
+        };
+        assert!(review.starts_with(&outputs), "{review:?} is outside the test outputs");
+        assert_eq!(std::fs::read_to_string(review).ok().as_deref(), Some("b\n"));
+        assert_eq!(
+            std::fs::read_to_string(recorded.join("tree.txt")).ok().as_deref(),
+            Some("a\n")
+        );
+    }
+
+    #[test]
+    fn under_bazel_test_recording_and_undeclared_snapshots_are_refused() {
+        let (_, _, env) = bazel_test("refused");
+        let file = Path::new("pkg/tests/view.rs");
+        let recording = Snapshots::placed(file, Path::new("/gone"), Mode::Record, &env).err();
+        assert!(matches!(recording, Some(SnapshotError::RecordUnderBazelTest)), "{recording:?}");
+        let undeclared = Snapshots::placed(file, Path::new("/gone"), Mode::Verify, &env)
+            .expect("a test that takes no snapshot needs none declared")
+            .check_text("tree", "a")
+            .err();
+        assert!(matches!(undeclared, Some(SnapshotError::NotInRunfiles { .. })), "{undeclared:?}");
+    }
+
+    #[test]
+    fn under_bazel_run_snapshots_are_kept_in_the_source_tree() {
+        let workspace = scratch("bazel-run");
+        let file = Path::new("pkg/tests/view.rs");
+        write(&workspace.join(file), b"// test\n").expect("the fixture is written");
+        let env = {
+            let workspace = workspace.clone();
+            move |name: &str| match name {
+                "BUILD_WORKSPACE_DIRECTORY" => Some(workspace.clone()),
+                "TEST_SRCDIR" => Some(PathBuf::from("/runfiles")),
+                _ => None,
+            }
+        };
+        let snapshots = Snapshots::placed(file, Path::new("/gone"), Mode::Record, env)
+            .expect("the test file is in the workspace");
+        assert_eq!(snapshots.check_text("tree", "a\n").ok(), Some(Outcome::Recorded));
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("pkg/tests/__snapshots__/view/tree.txt"))
+                .ok()
+                .as_deref(),
+            Some("a\n")
+        );
     }
 
     #[test]

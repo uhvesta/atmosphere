@@ -10,11 +10,13 @@ publish.workspace = true
 name = "humata2_snapshot"
 path = "src/lib.rs"
 
+[features]
+# Build and test against GPUI Fast instead of ordinary GPUI.
+fast = ["humata2-engine/fast"]
+
 [dependencies]
 gpui-kit.workspace = true
+humata2-engine.workspace = true
 image.workspace = true
 tca-rust.workspace = true
 thiserror.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-gpui-pre-apple.workspace = true

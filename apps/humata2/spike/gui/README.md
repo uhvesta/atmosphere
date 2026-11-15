@@ -25,37 +25,49 @@ It uses GPUI's own `uniform_list` for the tree rather than gpui-component's
 Tree, because the Tree keeps its own expanded and selected state and the
 spike's point is that the reducer owns it.
 
-The spike is its own cargo workspace, outside Bazel for now.
+It builds with Bazel, once per engine (D57): `:spike` on ordinary GPUI and
+`:spike_fast` on GPUI Fast.
 
 ## Build
 
 ```sh
-cd apps/humata2/spike/gui
-cargo build --release
+bazel build -c opt //apps/humata2/spike/gui:spike //apps/humata2/spike/gui:spike_fast
 ```
+
+The commands below run the binary with `bazel run -c opt`, which builds it
+first. From the repository root, `S=//apps/humata2/spike/gui:spike` (or
+`:spike_fast`).
 
 ## Run
 
 ```sh
-target/release/humata2-gui-spike                      # opens on the tree
-target/release/humata2-gui-spike --screen diff --wrap off
-target/release/humata2-gui-spike --screen terminal --animate
-target/release/humata2-gui-spike --exit-after-ms 3000 # quits after 3 s
-target/release/humata2-gui-spike --help
+bazel run -c opt $S                      # opens on the tree
+bazel run -c opt $S -- --screen diff --wrap off
+bazel run -c opt $S -- --screen terminal --animate
+bazel run -c opt $S -- --exit-after-ms 3000 # quits after 3 s
+bazel run -c opt $S -- --help
 ```
 
 ## Benchmarks
 
-Each benchmark prints one JSON line on stdout and quits. Run them on the
-release build, with the window on screen and nothing else busy.
+Each benchmark prints one JSON line on stdout and quits. Run them in the
+optimised build (`-c opt`), with the window on screen and nothing else busy.
+
+To compare the engines (D57), run each benchmark below with `S` set to
+`//apps/humata2/spike/gui:spike` and then to
+`//apps/humata2/spike/gui:spike_fast`. They open a window on screen. The same
+cases measured headless, without the GPU or the display, are
+`bazel run -c opt //apps/humata2/engine:frames_bench` and
+`//apps/humata2/terminal/view:frame_bench` (each with a `_fast` twin); they
+are no substitute for these.
 
 ### Scroll: frame times while scrolling
 
 ```sh
-target/release/humata2-gui-spike --screen tree --bench scroll
-target/release/humata2-gui-spike --screen diff --bench scroll
-target/release/humata2-gui-spike --screen diff --bench scroll --wrap off
-target/release/humata2-gui-spike --screen terminal --bench scroll --bench-secs 10
+bazel run -c opt $S -- --screen tree --bench scroll
+bazel run -c opt $S -- --screen diff --bench scroll
+bazel run -c opt $S -- --screen diff --bench scroll --wrap off
+bazel run -c opt $S -- --screen terminal --bench scroll --bench-secs 10
 ```
 
 The tree opens every channel first, then scrolls all 5,000 rows. The diff
@@ -79,8 +91,8 @@ The first 10 frames are left out, while the screen settles.
 ### Idle: CPU and memory while nothing happens
 
 ```sh
-target/release/humata2-gui-spike --screen tree --bench idle
-target/release/humata2-gui-spike --screen terminal --bench idle --idle-ms 10000
+bazel run -c opt $S -- --screen tree --bench idle
+bazel run -c opt $S -- --screen terminal --bench idle --idle-ms 10000
 ```
 
 Waits `--idle-ms` (default 10,000) after the first paint, then reports:
@@ -99,7 +111,7 @@ Add `--animate` on the terminal to measure it running rather than idle.
 ### Start: time to the first frame
 
 ```sh
-target/release/humata2-gui-spike --screen tree --bench start
+bazel run -c opt $S -- --screen tree --bench start
 ```
 
 ```json
@@ -113,7 +125,7 @@ target/release/humata2-gui-spike --screen tree --bench start
 ## Tests
 
 ```sh
-cargo test
+bazel test //apps/humata2/spike/gui/...
 ```
 
 `tests/tree.rs` opens the tree in a headless window (gpui-kit's

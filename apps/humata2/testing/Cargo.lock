@@ -2608,6 +2608,7 @@ dependencies = [
  "gpui-component",
  "gpui-fast",
  "gpui-fast-platform",
+ "gpui-fast-web",
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-macros",
@@ -2622,6 +2623,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb5abe0bbd8f9226170c8726e529f6574519e297e9ed1bde86d5fd4d3536079a"
 dependencies = [
  "anyhow",
+ "gpui-fast",
  "gpui-pre",
  "gpui-pre-reqwest",
  "log",
@@ -3341,10 +3343,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "humata2-engine"
+version = "0.0.0"
+dependencies = [
+ "gpui-fast-apple",
+ "gpui-kit",
+ "gpui-pre-apple",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "humata2-flow"
 version = "0.0.0"
 dependencies = [
  "gpui-kit",
+ "humata2-engine",
  "humata2-snapshot",
  "image",
  "tca-rust",
@@ -3357,7 +3370,7 @@ name = "humata2-snapshot"
 version = "0.0.0"
 dependencies = [
  "gpui-kit",
- "gpui-pre-apple",
+ "humata2-engine",
  "image",
  "tca-rust",
  "thiserror 2.0.21",

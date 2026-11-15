@@ -1,12 +1,20 @@
 //! Plays flows in a GPUI window that is never shown: `TestAppContext` for
 //! view and layout snapshots everywhere, `HeadlessAppContext` when pixels are
 //! wanted.
+//!
+//! A driver draws its frames one of two ways ([`FrameMode`]). Full refresh,
+//! the default, builds every view again before each event and capture, as
+//! gpui-kit's test helpers do; it hides a view that forgot to notify. Natural
+//! frames draw as the app does, so what a flow snapshots is what the
+//! engine's retention left on screen (see [`humata2_engine::frame`]).
 
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext, ClipboardItem, HeadlessAppContext, InvalidKeystrokeError,
     Keystroke, MouseButton, Pixels, Point, TestAppContext, Window,
 };
+use humata2_engine::frame;
+use humata2_engine::parity::{self, Comparison};
 use humata2_snapshot::layout::{self, Layout};
 use humata2_snapshot::{RgbaImage, view};
 use thiserror::Error;
@@ -48,6 +56,25 @@ pub enum GpuiDriverError {
         #[source]
         source: InvalidKeystrokeError,
     },
+
+    #[error(
+        "could not play {key:?} with natural frames: {source}. Check the flow's keys and text \
+         against what the focused control takes"
+    )]
+    Frame {
+        key: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error(
+        "the window drawn as the app draws it differs from the same window rebuilt from scratch, \
+         so the app would show something stale here. Usually a view changed what it shows \
+         without calling cx.notify(); find the view whose elements differ below and notify \
+         where it changes. Don't snapshot with refreshed frames to make this pass: that hides \
+         the bug. {report}"
+    )]
+    Stale { report: String },
 
     #[error(transparent)]
     View(#[from] view::ViewError),
@@ -129,18 +156,64 @@ impl Host for HeadlessAppContext {
     }
 }
 
+/// How a [`GpuiDriver`] draws its frames.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameMode {
+    /// Refresh the whole window before each event and capture, so every
+    /// view is built again: gpui-kit's test helpers. A diagnostic; it hides
+    /// a view that forgot to notify.
+    #[default]
+    FullRefresh,
+    /// Draw only as the app would: real events, each followed by a natural
+    /// frame (see [`humata2_engine::frame`]). Before a step's snapshots,
+    /// the last natural frame is checked against the window refreshed
+    /// ([`humata2_engine::parity::against_refresh`]), and a difference fails
+    /// the step; the snapshots then read the refreshed frame, which matched.
+    /// Scroll layers are turned off, so painted quads and glyphs compare
+    /// exactly; `humata2_engine::parity::Pair` covers scroll layers.
+    Natural,
+}
+
 /// Plays flows in one window of a GPUI context that shows nothing on
 /// screen. Clicks and drags go to the middle of the control a [`Target`]
 /// names, as a pointer would.
 pub struct GpuiDriver<'a, H: Host> {
     host: &'a mut H,
     window: AnyWindowHandle,
+    frames: FrameMode,
+    name: String,
+    /// Natural frames: whether the window is set up for them yet.
+    prepared: bool,
+    /// Natural frames: whether this step's frame was checked already.
+    checked: bool,
 }
 
 impl<'a, H: Host> GpuiDriver<'a, H> {
-    /// Plays flows in `window`, which `host` opened.
+    /// Plays flows in `window`, which `host` opened, with full refreshes.
     pub fn new(host: &'a mut H, window: AnyWindowHandle) -> Self {
-        Self { host, window }
+        Self::with_frames(host, window, FrameMode::FullRefresh)
+    }
+
+    /// Plays flows in `window`, which `host` opened, drawing frames as
+    /// `frames` says.
+    pub fn with_frames(host: &'a mut H, window: AnyWindowHandle, frames: FrameMode) -> Self {
+        let platform = if host.draws_pixels() {
+            "gpui headless, drawn with the platform's GPU off screen"
+        } else {
+            "gpui test platform, nothing drawn"
+        };
+        let drawn = match frames {
+            FrameMode::FullRefresh => "every frame refreshed",
+            FrameMode::Natural => "natural frames",
+        };
+        Self {
+            host,
+            window,
+            frames,
+            name: format!("{platform}; {drawn}"),
+            prepared: false,
+            checked: false,
+        }
     }
 
     fn window<R>(
@@ -155,14 +228,15 @@ impl<H: Host> Driver for GpuiDriver<'_, H> {
     type Error = GpuiDriverError;
 
     fn name(&self) -> &str {
-        if self.host.draws_pixels() {
-            "gpui headless, drawn with the platform's GPU off screen"
-        } else {
-            "gpui test platform, nothing drawn"
-        }
+        &self.name
     }
 
     fn perform(&mut self, action: &Action) -> Result<(), GpuiDriverError> {
+        if self.frames == FrameMode::Natural {
+            self.prepare()?;
+            self.checked = false;
+            return self.perform_naturally(action);
+        }
         match action {
             Action::Click(target) => self.window(|window, cx| {
                 let at = locate(window, target, cx)?;
@@ -198,29 +272,21 @@ impl<H: Host> Driver for GpuiDriver<'_, H> {
     }
 
     fn view(&mut self) -> Result<String, GpuiDriverError> {
-        let tree = self.window(|window, cx| {
-            window.render_frame(cx);
-            view::capture(window)
-        })??;
-        Ok(tree)
+        self.frame_to_capture()?;
+        Ok(self.window(|window, _| view::capture(window))??)
     }
 
     fn layout(&mut self) -> Result<Option<Layout>, GpuiDriverError> {
-        let layout = self.window(|window, cx| {
-            window.render_frame(cx);
-            layout::capture(window)
-        })?;
-        Ok(Some(layout))
+        self.frame_to_capture()?;
+        Ok(Some(self.window(|window, _| layout::capture(window))?))
     }
 
     fn image(&mut self) -> Result<Option<RgbaImage>, GpuiDriverError> {
         if !self.host.draws_pixels() {
             return Ok(None);
         }
-        let image = self.window(|window, cx| {
-            window.render_frame(cx);
-            window.render_to_image()
-        })?;
+        self.frame_to_capture()?;
+        let image = self.window(|window, _| window.render_to_image())?;
         image
             .map(Some)
             .map_err(|error| GpuiDriverError::Render {
@@ -229,9 +295,113 @@ impl<H: Host> Driver for GpuiDriver<'_, H> {
     }
 }
 
+impl<H: Host> GpuiDriver<'_, H> {
+    /// Natural frames: turns scroll layers off and draws a first natural
+    /// frame, once.
+    fn prepare(&mut self) -> Result<(), GpuiDriverError> {
+        if self.prepared {
+            return Ok(());
+        }
+        self.window(|window, cx| {
+            // Turning scroll layers off works on both engines.
+            let _ = humata2_engine::window::set_scroll_layers(window, false);
+            frame::natural_frame(window, cx);
+        })?;
+        self.prepared = true;
+        Ok(())
+    }
+
+    /// Draws the frame a capture reads: a refreshed one, or with natural
+    /// frames the last natural frame, checked once a step against a refresh.
+    fn frame_to_capture(&mut self) -> Result<(), GpuiDriverError> {
+        match self.frames {
+            FrameMode::FullRefresh => self.window(|window, cx| window.render_frame(cx)),
+            FrameMode::Natural => {
+                self.prepare()?;
+                if self.checked {
+                    return Ok(());
+                }
+                let pixels = self.host.draws_pixels();
+                let comparison = Comparison {
+                    channel_tolerance: 2,
+                    painted: true,
+                };
+                let report = self
+                    .window(|window, cx| parity::against_refresh(window, cx, pixels, comparison))?
+                    .map_err(|source| GpuiDriverError::Render {
+                        source: Box::new(source),
+                    })?;
+                if !report.matches() {
+                    return Err(GpuiDriverError::Stale {
+                        report: report.to_string(),
+                    });
+                }
+                self.checked = true;
+                Ok(())
+            }
+        }
+    }
+
+    /// [`Driver::perform`] with natural frames: real events, each followed
+    /// by a natural frame, then the step's tasks and one more natural frame
+    /// for what they changed.
+    fn perform_naturally(&mut self, action: &Action) -> Result<(), GpuiDriverError> {
+        match action {
+            Action::Click(target) => self.window(|window, cx| {
+                let at = find(window, target)?;
+                frame::click(window, at, MouseButton::Left, cx);
+                Ok::<(), GpuiDriverError>(())
+            })??,
+            Action::Type(text) => self.window(|window, cx| {
+                frame::type_text(window, text, cx).map_err(|error| frame_error(text, error))
+            })??,
+            Action::Key(key) => self.window(|window, cx| {
+                frame::press(window, key, cx).map_err(|error| frame_error(key, error))
+            })??,
+            Action::Drag { from, to } => self.window(|window, cx| {
+                let start = find(window, from)?;
+                let end = find(window, to)?;
+                frame::drag(window, start, end, 8, cx);
+                Ok::<(), GpuiDriverError>(())
+            })??,
+            Action::Paste(text) => self.window(|window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                frame::press(window, "secondary-v", cx)
+                    .map_err(|error| frame_error("secondary-v", error))
+            })??,
+        }
+        self.host.settle();
+        self.window(|window, cx| {
+            frame::natural_frame(window, cx);
+        })?;
+        Ok(())
+    }
+}
+
+/// A key or text the natural-frame input couldn't press.
+fn frame_error(key: &str, error: frame::FrameError) -> GpuiDriverError {
+    match error {
+        frame::FrameError::InvalidKey { key, source } => GpuiDriverError::InvalidKey { key, source },
+        other => GpuiDriverError::Frame {
+            key: key.to_owned(),
+            source: Box::new(other),
+        },
+    }
+}
+
+/// The middle of the one visible element `target` names, in the last frame
+/// drawn, without drawing.
+fn find(window: &Window, target: &Target) -> Result<Point<Pixels>, GpuiDriverError> {
+    pick(window, target)
+}
+
 /// The middle of the one visible element `target` names.
 fn locate(window: &mut Window, target: &Target, cx: &mut App) -> Result<Point<Pixels>, GpuiDriverError> {
     window.render_frame(cx);
+    pick(window, target)
+}
+
+fn pick(window: &Window, target: &Target) -> Result<Point<Pixels>, GpuiDriverError> {
     let candidates: Vec<_> = window
         .find_all_by_role(target.role())
         .into_iter()

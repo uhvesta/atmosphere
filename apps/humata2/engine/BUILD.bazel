@@ -1,0 +1,83 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The one place Humata 2's GPUI code picks its engine (D57). Each engine is
+# its own target, built from its own crate repository, so ordinary GPUI and
+# GPUI Fast never meet in one binary: `engine` and `engine_fast` for apps,
+# `engine_test_support` and `engine_fast_test_support` for headless tests.
+ENGINES = {
+    "": {
+        "deps": ["@crates//:gpui-kit"],
+        "features": [],
+        "macos_deps": {"@crates//:gpui-pre-apple-0.3.12": "pre_apple"},
+    },
+    "_fast": {
+        "deps": ["@crates_gpui_fast//:gpui-kit"],
+        "features": ["fast"],
+        "macos_deps": {"@crates_gpui_fast//:gpui-fast-apple": "fast_apple"},
+    },
+}
+
+[
+    rust_library(
+        name = "engine" + engine + variant,
+        testonly = variant != "",
+        srcs = glob(["src/*.rs"]),
+        aliases = config["macos_deps"],
+        crate_features = config["features"] + (["test-support"] if variant else []),
+        crate_name = "humata2_engine",
+        visibility = ["//apps/humata2:__subpackages__"],
+        deps = config["deps"] + ["@crates//:thiserror"] + select({
+            "@platforms//os:macos": list(config["macos_deps"].keys()),
+            "//conditions:default": [],
+        }),
+    )
+    for engine, config in ENGINES.items()
+    for variant in [
+        "",
+        "_test_support",
+    ]
+]
+
+[
+    rust_test(
+        name = "engine" + engine + "_test",
+        crate = ":engine" + engine + "_test_support",
+        # A test doesn't take its crate's features.
+        crate_features = config["features"] + ["test-support"],
+    )
+    for engine, config in ENGINES.items()
+]
+
+# Natural frames, observation and parity on each engine (tests/parity.rs);
+# headless, nothing is shown.
+[
+    rust_test(
+        name = "parity" + engine + "_test",
+        srcs = ["tests/parity.rs"],
+        crate_features = config["features"],
+        deps = config["deps"] + [":engine" + engine + "_test_support"],
+    )
+    for engine, config in ENGINES.items()
+]
+
+# Headless frame costs on each engine (benches/frames.rs), one JSON line a
+# case. Measure in an optimised build:
+#   bazel run -c opt //apps/humata2/engine:frames_bench
+#   bazel run -c opt //apps/humata2/engine:frames_bench_fast
+[
+    rust_binary(
+        name = "frames_bench" + engine,
+        testonly = True,
+        srcs = ["benches/frames.rs"],
+        crate_features = config["features"],
+        crate_name = "frames",
+        deps = config["deps"] + [":engine" + engine + "_test_support"],
+    )
+    for engine, config in ENGINES.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

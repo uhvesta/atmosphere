@@ -37,8 +37,7 @@ test. This file says how to run these tools.
   same flows against real daemons.
 - `flow/tests/counter_list.rs` tries each kind of snapshot on a small
   counter-and-list view.
-- `linux/run.sh` runs Bazel test targets in the Linux VM. It is not part
-  of this Cargo workspace.
+- `linux/run.sh` runs Bazel test targets in the Linux VM.
 
 ## Nothing is shown on screen
 
@@ -50,11 +49,11 @@ windows with `show: false` and `focus: false`, as the demo does.
 
 ## Running
 
-From this directory:
+Everything builds and runs through Bazel; don't run cargo.
 
 ```sh
-cargo test                           # check every snapshot
-HUMATA2_SNAPSHOT=record cargo test   # write snapshots that are missing or changed
+bazel test //apps/humata2/testing/...                    # check every snapshot
+bazel run //apps/humata2/testing/flow:counter_list_record # record one test's snapshots
 ```
 
 Snapshots sit beside the test that takes them, in
@@ -62,24 +61,28 @@ Snapshots sit beside the test that takes them, in
 `<name>.layout.txt` for layout, `<name>.png` for images. Commit them with
 the test.
 
-**The first run fails** because nothing is recorded yet. Run it once with
-`HUMATA2_SNAPSHOT=record`, read every file it wrote, and commit them.
+**The first run fails** because nothing is recorded yet. `bazel run` the
+test's `_record` target once, read every file it wrote, and commit them.
 
 ## When a snapshot fails
 
-The failure message gives the snapshot's path and a diff. The files to
-review go in `__snapshots__/<test>/.failed/`, which is already ignored by
-git:
+The failure message gives the snapshot's path and a diff. What the test
+produced goes to the test's undeclared outputs, in
+`bazel-testlogs/<package>/<test>/test.outputs/`, at the snapshot's path
+below the repository:
 
 - text: `<name>.txt` or `<name>.layout.txt`, what the test saw;
 - image: `<name>.old.png`, `<name>.new.png`, `<name>.diff.png` (changed
   pixels in red over a faded copy of the old image) and `<name>.review.png`
   (all three side by side).
 
+A `_record` run that fails, or a store made outside Bazel, writes them to
+`__snapshots__/<test>/.failed/` instead, which is already ignored by git.
+
 If the change is intended, re-record and read the diff before committing:
 
 ```sh
-HUMATA2_SNAPSHOT=record cargo test <test name>
+bazel run //apps/humata2/diff:diff_view_test_record
 git diff -- '**/__snapshots__/**'
 ```
 
@@ -91,11 +94,12 @@ result and no test will catch it.
 
 A flow writes its run to `<root>/<section>-<title>/flow.md`, plus PNGs when
 the driver draws pixels. `<root>` is `HUMATA2_FLOW_OUT` when that is set.
-Otherwise it is `target/tmp/humata2-flows`. A run deletes its own directory
-before it starts. The artifact is written whether the flow passes or fails,
-so you can read a failing run up to the step that broke. The test prints
-where it wrote the artifact. Use `cargo test -- --nocapture` to see that
-line.
+Otherwise it is `humata2-flows` in the test's undeclared outputs under
+`bazel test` (`bazel-testlogs/<package>/<test>/test.outputs/`). A run
+deletes its own directory before it starts. The artifact is written
+whether the flow passes or fails, so you can read a failing run up to the
+step that broke. The test prints where it wrote the artifact; add
+`--test_output=all` to see that line.
 
 Each step's view snapshot is named `<section>-<title>.<step>`, with `00`
 for the start; its layout is `<section>-<title>.<step>.layout.txt` and its
@@ -120,7 +124,52 @@ styles of elements that paint nothing. Image snapshots cover those.
 
 ## Bazel
 
-These crates build with Cargo for now and move into Bazel together with
-gpui-kit. Under `bazel test` the source tree is read-only, so record with
-`bazel run` on the test target. The snapshot store finds the source tree
-through `BUILD_WORKSPACE_DIRECTORY`.
+Each crate is built once per GUI engine (D57): `:snapshot` and `:flow` on
+ordinary GPUI, `:snapshot_fast` and `:flow_fast` on GPUI Fast, which turns
+on the crates' `fast` feature. They are `testonly` and visible to the
+Humata 2 UI packages (clients, desktop, diff, features, markdown, review,
+terminal, ui).
+
+- `//apps/humata2/testing/snapshot:snapshot`, `:snapshot_fast`
+- `//apps/humata2/testing/flow:flow`, `:flow_fast`
+- `humata2_snapshot_test` in `//apps/humata2/testing:defs.bzl`, for any
+  test that takes snapshots.
+
+`humata2_snapshot_test(name, srcs, deps, ...)` is a `rust_test` whose data
+is the `__snapshots__/<test file stem>/` directory beside each source, and
+it adds `<name>_record`, the same test with `HUMATA2_SNAPSHOT=record`,
+tagged `manual`:
+
+```python
+load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
+
+humata2_snapshot_test(
+    name = "diff_view_test",
+    srcs = ["tests/diff_view.rs"],
+    deps = ["//apps/humata2/testing/flow", "//apps/humata2/testing/snapshot"],
+)
+```
+
+```sh
+bazel test //apps/humata2/diff:diff_view_test          # check
+bazel run //apps/humata2/diff:diff_view_test_record    # record into the source tree
+git diff -- '**/__snapshots__/**'                      # read before committing
+```
+
+Under `bazel test` the store reads the snapshots from the runfiles and
+refuses to record, as the source tree is read-only there. A failed check
+writes its `.failed` files, and a flow its artifacts, to the test's
+undeclared outputs, `bazel-testlogs/<package>/<name>/test.outputs/`.
+Under `bazel run` the store finds the source tree through
+`BUILD_WORKSPACE_DIRECTORY` and writes there.
+`flow/BUILD.bazel` uses the macro for `counter_list` and `counter_list_fast`.
+
+## Engines and frames
+
+The `_fast` targets run the same tests on GPUI Fast. A driver
+made with `GpuiDriver::new` draws each step with a full refresh, which
+builds every view again. `GpuiDriver::with_frames(cx, window,
+FrameMode::Natural)` draws the frames the app would draw itself and checks
+each against a full refresh, so a view that changed without `cx.notify()`
+fails with `GpuiDriverError::Stale` on GPUI Fast, which reuses views that
+weren't notified (D58). `flow/tests/natural_frames.rs` shows both.

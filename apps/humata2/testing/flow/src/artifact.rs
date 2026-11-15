@@ -124,8 +124,13 @@ impl Artifact {
             "# Flow {}\n\n\
              - Result: {result}\n\
              - Played by: {}\n\
+             - GUI engine: {}\n\
              - Snapshot mode: {}\n{}",
-            self.spec, self.driver, self.mode, self.body
+            self.spec,
+            self.driver,
+            humata2_engine::Backend::current(),
+            self.mode,
+            self.body
         );
         let path = self.directory.join(FILE);
         std::fs::write(&path, text).map_err(|source| WriteError::Io {
