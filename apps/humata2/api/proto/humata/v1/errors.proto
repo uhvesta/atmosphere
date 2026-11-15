@@ -1,0 +1,484 @@
+// The error model. Every failed call returns a google.rpc.Status whose
+// details hold exactly one humata.v1.Error. Clients branch on Error.kind,
+// never on the status code alone or on message text. GRPC.md maps each kind
+// to its status code; MCP.md and CLI.md render the same Error as JSON.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "humata/v1/capabilities.proto";
+import "humata/v1/common.proto";
+
+message Error {
+  // What failed, naming the thing ("Couldn't move “API rate limiter” to
+  // gpu-box: copying the conversation failed").
+  string message = 1;
+  // What the person can do. When the obvious fix is unsafe or incomplete it
+  // says so (see HostKeyChanged, ChecksumMismatch, UnpushedWork).
+  string fix = 2;
+  // Set when retrying the same call can succeed.
+  RetryAdvice retry = 3;
+
+  oneof kind {
+    NotFound not_found = 10;
+    MachineOffline machine_offline = 11;
+    HostUnreachable host_unreachable = 12;
+    Denied denied = 13;
+    UserOnly user_only = 14;
+    PresenceRequired presence_required = 15;
+    IdentityMismatch identity_mismatch = 16;
+    RevisionConflict revision_conflict = 17;
+    PlanStale plan_stale = 18;
+    NameTaken name_taken = 19;
+    InvalidField invalid_field = 20;
+    UnpushedWork unpushed_work = 21;
+    SessionBusy session_busy = 22;
+    ParentReadOnly parent_read_only = 23;
+    MainCloneReadOnly main_clone_read_only = 24;
+    OutsideHumataFolders outside_humata_folders = 25;
+    DiskFull disk_full = 26;
+    RateLimited rate_limited = 27;
+    GitHubCliProblem github_cli = 28;
+    GitFailed git_failed = 29;
+    PushRefused push_refused = 30;
+    SshFailed ssh_failed = 31;
+    HostKeyChanged host_key_changed = 32;
+    ChecksumMismatch checksum_mismatch = 33;
+    ResumeFailed resume_failed = 34;
+    AgentLacksFeature agent_lacks_feature = 35;
+    ProviderStepFailed provider_step_failed = 36;
+    ProviderIdentityInvalid provider_identity_invalid = 37;
+    LoginNeedsUser login_needs_user = 38;
+    PeerVersionUnsupported peer_version_unsupported = 39;
+    OffsetTrimmed offset_trimmed = 40;
+    NotCancellable not_cancellable = 41;
+    AlreadyAnswered already_answered = 42;
+    RequestWithdrawn request_withdrawn = 43;
+    UserAway user_away = 44;
+    NotInChannel not_in_channel = 45;
+    PrClosed pr_closed = 46;
+    ReviewPartlyPosted review_partly_posted = 47;
+    SkillNameClash skill_name_clash = 48;
+    LingerUnavailable linger_unavailable = 49;
+    DaemonAlreadyRunning daemon_already_running = 50;
+    DaemonNotRunning daemon_not_running = 51;
+    JournalEntryRejected journal_entry_rejected = 52;
+    RepoNotVisible repo_not_visible = 53;
+    StepFailed step_failed = 54;
+    // A bug in Humata. The only kind without a fix the person can apply;
+    // it names the log to attach to a report.
+    Internal internal = 99;
+  }
+}
+
+message RetryAdvice {
+  // Wait at least this long first (rate limits, a machine reconnecting).
+  google.protobuf.Duration after = 1;
+  // Retry with the same IdempotencyKey: the first attempt may have applied.
+  bool same_key = 2;
+}
+
+enum EntityKind {
+  ENTITY_KIND_UNSPECIFIED = 0;
+  ENTITY_KIND_CHANNEL = 1;
+  ENTITY_KIND_SESSION = 2;
+  ENTITY_KIND_MACHINE = 3;
+  ENTITY_KIND_BOARD_ITEM = 4;
+  ENTITY_KIND_REQUEST = 5;
+  ENTITY_KIND_GRANT = 6;
+  ENTITY_KIND_COMMENT = 7;
+  ENTITY_KIND_VIEW = 8;
+  ENTITY_KIND_OPERATION = 9;
+  ENTITY_KIND_TRANSFER = 10;
+  ENTITY_KIND_TRASH_ITEM = 11;
+  ENTITY_KIND_FILE = 12;
+  ENTITY_KIND_PROVIDER = 13;
+  ENTITY_KIND_AGENT = 14;
+  ENTITY_KIND_TAB = 15;
+  ENTITY_KIND_PULL_REQUEST = 16;
+}
+
+message NotFound {
+  EntityKind kind = 1;
+  string id = 2;
+  // True when it existed and is in trash or was archived.
+  bool in_trash = 3;
+}
+
+message MachineOffline {
+  MachineId machine = 1;
+  string machine_name = 2;
+  google.protobuf.Timestamp since = 3;
+  // Sessions there keep running (HO-5); the fix says so.
+}
+
+// Returned on a machine when the host (the Mac) can't be reached and the
+// call needs it (cross-machine, or a read of host-only state).
+message HostUnreachable {
+  google.protobuf.Timestamp since = 1;
+}
+
+message Denied {
+  enum Source {
+    SOURCE_UNSPECIFIED = 0;
+    SOURCE_NEVER_RULE = 1;    // IN-18: denied at once, nothing in the Inbox
+    SOURCE_USER_DENIED = 2;   // IN-13
+    SOURCE_HARD_LIMIT = 3;    // IN-20 context-only fork writing its parent
+    SOURCE_AWAY_SKIP = 4;     // AW-4 "Skip the step"
+  }
+  Source source = 1;
+  Capability capability = 2;
+  RequestId request = 3;
+  // "Deny and reply…": the user's note, given to the agent as its result.
+  string user_note = 4;
+}
+
+// The operation is the user's alone (BOUNDARIES.md, user-only tier).
+message UserOnly {
+  Capability capability = 1;
+}
+
+// A user-only call came from the CLI without proof that the person is
+// there. The app confirms while the host is reachable; the approval
+// passphrase works on a machine while it is away. A "type yes" prompt on a
+// TTY is not offered: an agent can drive a pseudo-terminal.
+message PresenceRequired {
+  enum Method {
+    METHOD_UNSPECIFIED = 0;
+    METHOD_CONFIRM_IN_APP = 1;
+    // `humata login` in this terminal first (CliAuthService).
+    METHOD_CLI_LOGIN = 2;
+    METHOD_APPROVAL_PASSPHRASE = 3;
+  }
+  repeated Method accepted = 1;
+  // True when the caller runs inside a Humata-held terminal: no method
+  // works there (BOUNDARIES.md §2.3).
+  bool caller_in_session_terminal = 2;
+}
+
+// A caller presented a session token that doesn't belong to its process
+// tree, or a peer asserted a session the host places on another machine.
+message IdentityMismatch {
+  SessionId claimed = 1;
+  MachineId claimed_machine = 2;
+}
+
+message RevisionConflict {
+  EntityKind kind = 1;
+  string id = 2;
+  Revision expected = 3;
+  Revision actual = 4;
+}
+
+message PlanStale {
+  // What changed since the plan, in the plan's own words ("2 more
+  // uncommitted files in acme/api").
+  repeated string changes = 1;
+}
+
+message NameTaken {
+  EntityKind kind = 1;
+  string name = 2;
+  string suggestion = 3;
+}
+
+message InvalidField {
+  enum Problem {
+    PROBLEM_UNSPECIFIED = 0;
+    PROBLEM_MISSING = 1;
+    PROBLEM_TOO_LONG = 2;
+    PROBLEM_BAD_FORMAT = 3;
+    PROBLEM_UNKNOWN_VALUE = 4;
+    PROBLEM_OUT_OF_RANGE = 5;
+    PROBLEM_NOT_ALLOWED_HERE = 6;
+  }
+  // Proto field path, e.g. "repos[1].repo.owner".
+  string field = 1;
+  Problem problem = 2;
+}
+
+message UnpushedWork {
+  message Repo {
+    RepoRef repo = 1;
+    string branch = 2;
+    uint32 dirty_files = 3;
+    uint32 unpushed_commits = 4;
+    bool never_pushed = 5;
+  }
+  SessionId session = 1;
+  repeated Repo repos = 2;
+  // The fix offers "Commit, push and open a PR" and never suggests the
+  // deleting choice alone: it says that choice loses the work.
+}
+
+message SessionBusy {
+  SessionId session = 1;
+  OperationId running = 2;
+  string running_title = 3;   // "Moving to gpu-box"
+}
+
+// IN-20 / FK-7: a context-only fork never writes its parent's files.
+message ParentReadOnly {
+  SessionId fork = 1;
+  SessionId parent = 2;
+}
+
+// FC-2.
+message MainCloneReadOnly {
+  RepoRef repo = 1;
+  MachineId machine = 2;
+}
+
+// A path left Humata's folders (".." or a symlink out).
+message OutsideHumataFolders {
+  string path = 1;
+}
+
+message DiskFull {
+  MachineId machine = 1;
+  string path = 2;
+  uint64 needed_bytes = 3;
+  uint64 free_bytes = 4;
+  // The fix points at the Storage page and says that deleting clones with
+  // unpushed work loses it.
+}
+
+message RateLimited {
+  enum Service {
+    SERVICE_UNSPECIFIED = 0;
+    SERVICE_GITHUB = 1;
+  }
+  Service service = 1;
+  google.protobuf.Timestamp resets_at = 2;
+  // The fix says to wait until resets_at.
+}
+
+message GitHubCliProblem {
+  enum Problem {
+    PROBLEM_UNSPECIFIED = 0;
+    PROBLEM_NOT_INSTALLED = 1;
+    PROBLEM_NOT_SIGNED_IN = 2;
+    PROBLEM_SCOPE_MISSING = 3;
+    PROBLEM_API_ERROR = 4;
+  }
+  Problem problem = 1;
+  MachineId machine = 2;
+  string missing_scope = 3;
+  uint32 http_status = 4;
+}
+
+message GitFailed {
+  enum Step {
+    STEP_UNSPECIFIED = 0;
+    STEP_CLONE = 1;
+    STEP_FETCH = 2;
+    STEP_BUNDLE = 3;
+    STEP_CHECKOUT = 4;
+    STEP_COMMIT = 5;
+    STEP_PUSH = 6;
+  }
+  Step step = 1;
+  RepoRef repo = 2;
+  MachineId machine = 3;
+  int32 exit_code = 4;
+  string stderr_tail = 5;
+}
+
+message PushRefused {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    REASON_REVIEW_READ_ONLY = 1;   // PR-7
+    REASON_NON_FAST_FORWARD = 2;
+    REASON_PROTECTED_BRANCH = 3;
+  }
+  Reason reason = 1;
+  RepoRef repo = 2;
+  string branch = 3;
+}
+
+message SshFailed {
+  enum Problem {
+    PROBLEM_UNSPECIFIED = 0;
+    PROBLEM_UNREACHABLE = 1;
+    PROBLEM_AUTH_FAILED = 2;
+    PROBLEM_TIMEOUT = 3;
+    PROBLEM_NO_SHELL = 4;   // MP-18
+  }
+  Problem problem = 1;
+  MachineId machine = 2;
+  string address = 3;
+}
+
+// The fix never says just "accept the new key": it says that if the machine
+// wasn't rebuilt someone may be intercepting, and only then how to re-pin.
+message HostKeyChanged {
+  MachineId machine = 1;
+  string expected_fingerprint = 2;
+  string presented_fingerprint = 3;
+}
+
+// The fix says the bad copy was removed and the source is untouched, to retry,
+// and that a repeat means the source is changing or a disk is failing.
+message ChecksumMismatch {
+  TransferId transfer = 1;
+  string path = 2;
+  string expected_sha256 = 3;
+  string actual_sha256 = 4;
+}
+
+message ResumeFailed {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    REASON_CONVERSATION_FILE_MISSING = 1;
+    REASON_AGENT_STARTED_ANOTHER_CONVERSATION = 2;
+    REASON_AGENT_EXITED = 3;
+    REASON_AGENT_NOT_INSTALLED = 4;
+    REASON_FOLDER_MISSING = 5;
+  }
+  SessionId session = 1;
+  Reason reason = 2;
+  int32 exit_code = 3;
+}
+
+message AgentLacksFeature {
+  enum Feature {
+    FEATURE_UNSPECIFIED = 0;
+    FEATURE_CONTEXT_FORK = 1;
+    FEATURE_RESUME = 2;
+    FEATURE_TURN_SIGNAL = 3;
+  }
+  AgentId agent = 1;
+  Feature feature = 2;
+}
+
+message ProviderStepFailed {
+  enum Step {
+    STEP_UNSPECIFIED = 0;
+    STEP_CREATE = 1;
+    STEP_CONNECT = 2;
+    STEP_IDENTITY = 3;
+    STEP_START = 4;
+    STEP_STOP = 5;
+    STEP_DELETE = 6;
+    STEP_STATUS = 7;
+  }
+  ProviderId provider = 1;
+  Step step = 2;
+  int32 exit_code = 3;
+  string output_tail = 4;
+}
+
+// MP-11.
+message ProviderIdentityInvalid {
+  ProviderId provider = 1;
+  string field = 2;   // "ssh.host_key"
+  InvalidField.Problem problem = 3;
+}
+
+// MP-13: the connect command waits for a person.
+message LoginNeedsUser {
+  ProviderId provider = 1;
+  MachineId machine = 2;
+}
+
+message PeerVersionUnsupported {
+  MachineId machine = 1;
+  string peer_version = 2;
+  string supported_min = 3;
+  string supported_max = 4;
+}
+
+// A stream resumed from an offset older than what is kept (scrollback
+// limit, event retention). The stream continues from a snapshot instead.
+message OffsetTrimmed {
+  uint64 requested = 1;
+  uint64 earliest_kept = 2;
+}
+
+message NotCancellable {
+  OperationId operation = 1;
+  string step = 2;   // "Resuming on gpu-box"
+}
+
+message AlreadyAnswered {
+  RequestId request = 1;
+  Timestamped answered = 2;
+  bool approved = 3;
+}
+
+// The agent stopped waiting (its call was cancelled, it was interrupted or
+// it exited) before the answer.
+message RequestWithdrawn {
+  RequestId request = 1;
+}
+
+// AW-4 "Skip the step" applied; the agent can retry once the user is back.
+message UserAway {
+  ChannelId channel = 1;
+}
+
+message NotInChannel {
+  ChannelId channel = 1;
+  EntityKind kind = 2;
+  string id = 3;
+}
+
+message PrClosed {
+  PullRequestRef pr = 1;
+  bool merged = 2;
+}
+
+// PR-13: per PR, what posted and what didn't. Drafts that didn't post stay.
+message ReviewPartlyPosted {
+  repeated PullRequestRef posted = 1;
+  repeated PullRequestRef failed = 2;
+}
+
+message SkillNameClash {
+  string name = 1;
+  repeated string sources = 2;
+}
+
+// PER-18: the exact admin command is in fix.
+message LingerUnavailable {
+  string user = 1;
+}
+
+// PER-7.
+message DaemonAlreadyRunning {
+  int32 pid = 1;
+  string socket = 2;
+}
+
+message DaemonNotRunning {
+  string socket = 1;
+}
+
+// A journaled write the host refused on replay (e.g. the item was deleted
+// meanwhile). Delivered as an event; the write is kept in history.
+message JournalEntryRejected {
+  JournalPosition position = 1;
+  Error cause = 2;
+}
+
+// CH-3: gh on the Mac can't see the repo.
+message RepoNotVisible {
+  RepoRef repo = 1;
+}
+
+// A step of a long-running operation failed for a reason with no kind of
+// its own. Its cause, when known, is one of the kinds above.
+message StepFailed {
+  OperationId operation = 1;
+  string step = 2;
+  Error cause = 3;
+  // MV-3: what was left as it was ("nothing was deleted").
+  string left_as_is = 4;
+}
+
+message Internal {
+  string incident_id = 1;
+  string log_path = 2;
+}

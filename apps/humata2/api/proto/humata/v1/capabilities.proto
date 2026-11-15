@@ -1,0 +1,134 @@
+// The closed set of capabilities every call is checked against. One list for
+// gRPC, MCP and the CLI; BOUNDARIES.md has the full table (scope, default,
+// who may hold it) and the coverage matrix.
+syntax = "proto3";
+
+package humata.v1;
+
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+
+  // ----- Agent rules: shown on a channel's Agent access tab (IN-17). -----
+  // Each has a channel-level Allow / Ask me / Never and may get scoped
+  // "Always let …" grants (IN-14).
+
+  // Machines of its channel, sessions on each (title, agent, status), the
+  // channel board and Activity. Default Allow. (TP-1; added row.)
+  CAPABILITY_CHANNEL_READ = 1;
+  // Other channels and the Global board. Default Ask me. (Added row.)
+  CAPABILITY_GLOBAL_READ = 2;
+  // Its own session board: add, edit, move, delete. Default Allow.
+  CAPABILITY_OWN_BOARD_WRITE = 3;
+  // Channel board: add items. Default Allow.
+  CAPABILITY_CHANNEL_BOARD_ADD = 4;
+  // Channel board: edit, move or delete items it created. Default Allow.
+  CAPABILITY_CHANNEL_BOARD_EDIT_OWN = 5;
+  // Channel board: edit, move or delete anyone else's items. Default Ask me.
+  CAPABILITY_CHANNEL_BOARD_EDIT_OTHERS = 6;
+  // Global board: anything. Default Ask me.
+  CAPABILITY_GLOBAL_BOARD_WRITE = 7;
+  // Write its own files into the channel's shared/ on its machine.
+  // Default Allow. (FC-8; added row.)
+  CAPABILITY_SHARED_WRITE = 8;
+  // Prepare views and mark them ready (VW-1). Default Allow.
+  CAPABILITY_VIEWS_PREPARE = 9;
+  // Draft PR review comments and a review summary (PR-9, PR-12).
+  // Default Allow.
+  CAPABILITY_REVIEW_DRAFT = 10;
+  // Read the comments sent to its own session (q2). Default Allow.
+  CAPABILITY_OWN_COMMENTS_READ = 11;
+  // Ask the user a question in the Inbox. Default Allow. (Added row.)
+  CAPABILITY_INBOX_ASK = 12;
+  // Read another session's files on the same machine. Default Ask me.
+  CAPABILITY_FILES_READ_OTHER_SESSION = 13;
+  // Read files on another machine (bridged). Default Ask me.
+  CAPABILITY_FILES_READ_OTHER_MACHINE = 14;
+  // Copy files into its clone or shared/ from another session or machine.
+  // Default Ask me.
+  CAPABILITY_FILES_COPY_IN = 15;
+  // Send a note or question to another session. Default Ask me.
+  CAPABILITY_SESSION_NOTE = 16;
+  // Type into another session's terminal. Default Ask me.
+  CAPABILITY_SESSION_TYPE = 17;
+  // Start or fork sessions on its own machine. Default Ask me.
+  CAPABILITY_SESSION_START_SAME_MACHINE = 18;
+  // Start or fork sessions on another machine. Default Ask me.
+  CAPABILITY_SESSION_START_OTHER_MACHINE = 19;
+  // Reach a machine outside its clones (q7). Default Ask me. Only Humata's
+  // bridge is gated; see BOUNDARIES.md on what a same-user agent can reach.
+  CAPABILITY_NETWORK_REACH = 20;
+  // Stop, archive or delete any session but itself. Default Never.
+  CAPABILITY_SESSION_STOP_OTHER = 21;
+  // Change channel settings or repos (not access: that is user-only).
+  // Default Never.
+  CAPABILITY_CHANNEL_CHANGE = 22;
+
+  // ----- Escalation-only rules (every other action; default Ask me). -----
+
+  // Rename itself, add or drop a repo, spec files, Give it its own copy.
+  CAPABILITY_OWN_SESSION_MANAGE = 30;
+  // Stop, archive or delete itself.
+  CAPABILITY_OWN_SESSION_END = 31;
+  // Move a session (itself or another) to another machine.
+  CAPABILITY_SESSION_MOVE = 32;
+  // Push its branch and open a PR (MV-12). Review sessions use the PR-8
+  // switch instead, which only the user sets.
+  CAPABILITY_GIT_PUSH = 33;
+  // Start a PR review (PR-1).
+  CAPABILITY_PR_REVIEW_START = 34;
+  // Add a machine, run a provider's create/start/stop, reconnect, sync
+  // skills.
+  CAPABILITY_MACHINE_PROVISION = 35;
+  // Remove or forget a machine, run a provider's delete. Default Never.
+  CAPABILITY_MACHINE_DESTROY = 36;
+  // Restore something from trash.
+  CAPABILITY_TRASH_RESTORE = 37;
+  // Create a channel.
+  CAPABILITY_CHANNEL_CREATE = 38;
+
+  // ----- User-only: no rule, never granted, no MCP tool. -----
+
+  // Answer Inbox requests (approve, deny, reply, always).
+  CAPABILITY_INBOX_ANSWER = 50;
+  // Change rules, grants, While I'm away and default access.
+  CAPABILITY_ACCESS_CHANGE = 51;
+  // Change Settings (agents and their launch commands, defaults, prefix,
+  // retention, skills, notifications, long lines).
+  CAPABILITY_SETTINGS_CHANGE = 52;
+  // Pin, unpin, mark or clear VIP (NV-20).
+  CAPABILITY_MARKS_CHANGE = 53;
+  // Submit a PR review to GitHub; set "Let the agent push" (PR-8, PR-12).
+  CAPABILITY_PR_SUBMIT = 54;
+  // The user's own review state: Mark reviewed, unread marks, view offers
+  // (Later, Not now, Revert, Keep), the user's comments and sending them.
+  CAPABILITY_USER_REVIEW_STATE = 55;
+  // Empty trash.
+  CAPABILITY_TRASH_EMPTY = 56;
+  // Host variable values, SSH host key pins, provider TOML.
+  CAPABILITY_HOST_SECRETS = 57;
+
+  // ----- Daemon to daemon. -----
+
+  // A machine reporting pointers, mirror, status and journal for sessions
+  // the host places on it, and forwarding its agents' calls.
+  CAPABILITY_PEER_REPORT = 70;
+  // The host controlling a machine it enrolled.
+  CAPABILITY_HOST_CONTROL = 71;
+}
+
+// A rule's setting for one capability in one channel.
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  DECISION_ALLOW = 1;
+  DECISION_ASK = 2;
+  DECISION_NEVER = 3;
+}
+
+// What a capability is checked against.
+enum CapabilityScope {
+  CAPABILITY_SCOPE_UNSPECIFIED = 0;
+  CAPABILITY_SCOPE_SESSION = 1;  // the caller's own session
+  CAPABILITY_SCOPE_CHANNEL = 2;  // the caller's channel
+  CAPABILITY_SCOPE_MACHINE = 3;  // a machine
+  CAPABILITY_SCOPE_GLOBAL = 4;   // everything
+}

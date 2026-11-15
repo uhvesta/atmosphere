@@ -1,0 +1,55 @@
+// The first call on every connection, and who the daemon decided you are.
+syntax = "proto3";
+
+package humata.v1;
+
+import "humata/v1/common.proto";
+
+service DaemonService {
+  // Versions, role and features. Clients call it first and refuse to go on
+  // when api_major differs.
+  rpc GetServerInfo(GetServerInfoRequest) returns (ServerInfo);
+  // The principal this connection was bound to (BOUNDARIES.md §2). Callers
+  // can't choose it; there is no field to.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+}
+
+enum DaemonRole {
+  DAEMON_ROLE_UNSPECIFIED = 0;
+  // The Mac: source of truth (SL-1).
+  DAEMON_ROLE_HOST = 1;
+  // Any other machine: clones and live context only (SL-2).
+  DAEMON_ROLE_MACHINE = 2;
+}
+
+// Optional behaviour a peer may lack. Unknown values are ignored.
+enum Feature {
+  FEATURE_UNSPECIFIED = 0;
+  FEATURE_ZSTD_STREAMS = 1;
+  FEATURE_VM_TIER = 2;
+  FEATURE_CRIU = 3;
+  FEATURE_GH_SIGNED_IN = 4;
+}
+
+message GetServerInfoRequest {}
+
+message ServerInfo {
+  // This API is humata.v1; api_major is 1 for its whole life.
+  uint32 api_major = 1;
+  // Grows with every additive change; clients gate new calls on it.
+  uint32 api_minor = 2;
+  string daemon_version = 3;
+  DaemonRole role = 4;
+  MachineId machine = 5;
+  repeated Feature features = 6;
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  Actor actor = 1;
+  // For an agent: its channel. Empty for the user.
+  ChannelId channel = 2;
+  // True when user-only calls on this connection can be confirmed.
+  bool presence_possible = 3;
+}

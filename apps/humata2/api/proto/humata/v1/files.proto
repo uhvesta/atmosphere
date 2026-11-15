@@ -1,0 +1,318 @@
+// Files, transfers and trash (RV-9..13, FM-1..15, LD-6..7). Every location
+// is a Humata-owned root plus a relative path; nothing outside them can be
+// named (FC-1, FM-10). Executed by the machine that has the files; the host
+// relays and checks every cross-machine call (AR-4, FM-9).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
+
+service FileService {
+  rpc ListDirectory(ListDirectoryRequest) returns (ListDirectoryResponse);
+  rpc Stat(StatRequest) returns (FileEntry);
+  // Chunks in order from offset; resume with the last offset received.
+  rpc ReadFile(ReadFileRequest) returns (stream FileChunk);
+  // Creates or replaces one file in a writable root (own clone, shared/).
+  // First message carries the header; the file appears only when complete
+  // and its checksum matches.
+  rpc WriteFile(stream WriteFileMessage) returns (FileEntry);
+  rpc CreateFolder(CreateFolderRequest) returns (FileEntry);
+  rpc Rename(RenameRequest) returns (FileEntry);
+  // FM-3: to the machine's Humata trash.
+  rpc MoveToTrash(MoveToTrashRequest) returns (MoveToTrashResponse);
+  // RV-11 "Go to file…" across a session's repos.
+  rpc FindFiles(FindFilesRequest) returns (FindFilesResponse);
+}
+
+service TransferService {
+  // FM-2, FM-6, FM-14: copy or move between any two locations, chunked,
+  // resumable and checksummed; across machines through the host.
+  rpc StartTransfer(StartTransferRequest) returns (Transfer);
+  // FM-4 from Finder: the app streams the bytes up.
+  rpc Upload(stream UploadMessage) returns (Transfer);
+  rpc ListTransfers(ListTransfersRequest) returns (ListTransfersResponse);
+  rpc WatchTransfer(WatchTransferRequest) returns (stream Transfer);
+  rpc PauseTransfer(TransferControlRequest) returns (Transfer);
+  rpc ResumeTransfer(TransferControlRequest) returns (Transfer);
+  // Removes what reached the destination; the source is untouched.
+  rpc CancelTransfer(TransferControlRequest) returns (Transfer);
+}
+
+service TrashService {
+  rpc ListTrash(ListTrashRequest) returns (ListTrashResponse);
+  rpc RestoreFromTrash(RestoreFromTrashRequest) returns (RestoreFromTrashResponse);
+  rpc PlanEmptyTrash(PlanEmptyTrashRequest) returns (EmptyTrashPlan);
+  // LD-7. User-only.
+  rpc EmptyTrash(EmptyTrashRequest) returns (EmptyTrashResponse);
+}
+
+// ---------------------------------------------------------------------------
+
+message FileLocation {
+  MachineId machine = 1;
+  oneof root {
+    SessionClone session_clone = 2;
+    ChannelShared channel_shared = 3;
+    MainClone main_clone = 4;          // read-only (FC-2)
+    ChannelFolder channel_folder = 5;  // FM-10, FM-11
+  }
+  // Relative to the root; "..", absolute paths and symlinks out fail with
+  // Error.outside_humata_folders.
+  string path = 6;
+}
+
+message SessionClone {
+  SessionId session = 1;
+  RepoRef repo = 2;
+}
+
+message ChannelShared { ChannelId channel = 1; }
+
+message MainClone {
+  ChannelId channel = 1;
+  RepoRef repo = 2;
+}
+
+message ChannelFolder { ChannelId channel = 1; }
+
+message FileEntry {
+  FileLocation location = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_FILE = 1;
+    KIND_FOLDER = 2;
+    KIND_SYMLINK = 3;
+  }
+  Kind kind = 2;
+  uint64 size = 3;
+  google.protobuf.Timestamp modified_at = 4;
+  // RV-10: changed against the session's base.
+  bool changed = 5;
+  bool writable = 6;
+}
+
+message ListDirectoryRequest {
+  FileLocation location = 1;
+  PageRequest page = 2;
+}
+
+message ListDirectoryResponse {
+  repeated FileEntry entries = 1;
+  PageResponse page = 2;
+}
+
+message StatRequest { FileLocation location = 1; }
+
+message ReadFileRequest {
+  FileLocation location = 1;
+  uint64 offset = 2;
+  // 0: to the end.
+  uint64 max_bytes = 3;
+  // Shown on the Inbox card when reading another session's files asks.
+  string reason = 4;
+}
+
+message FileChunk {
+  uint64 offset = 1;
+  bytes data = 2;
+  // On the last chunk: the whole file's SHA-256.
+  string sha256 = 3;
+  bool last = 4;
+}
+
+message WriteFileHeader {
+  IdempotencyKey idempotency_key = 1;
+  FileLocation location = 2;
+  uint64 size = 3;
+  string sha256 = 4;
+  bool replace = 5;
+}
+
+message WriteFileMessage {
+  oneof message {
+    WriteFileHeader header = 1;
+    FileChunk chunk = 2;
+  }
+}
+
+message CreateFolderRequest {
+  IdempotencyKey idempotency_key = 1;
+  FileLocation location = 2;
+}
+
+message RenameRequest {
+  IdempotencyKey idempotency_key = 1;
+  FileLocation location = 2;
+  string new_name = 3;
+}
+
+message MoveToTrashRequest {
+  IdempotencyKey idempotency_key = 1;
+  repeated FileLocation locations = 2;
+}
+
+message MoveToTrashResponse {
+  repeated TrashItemId items = 1;
+}
+
+message FindFilesRequest {
+  SessionId session = 1;
+  string query = 2;
+  PageRequest page = 3;
+}
+
+message FindFilesResponse {
+  repeated FileEntry entries = 1;
+  PageResponse page = 2;
+}
+
+// ---------------------------------------------------------------------------
+
+enum TransferMode {
+  TRANSFER_MODE_UNSPECIFIED = 0;
+  TRANSFER_MODE_COPY = 1;
+  // Deletes the source only after every file is verified (FM-14).
+  TRANSFER_MODE_MOVE = 2;
+}
+
+enum OnExisting {
+  ON_EXISTING_UNSPECIFIED = 0;
+  ON_EXISTING_FAIL = 1;
+  ON_EXISTING_REPLACE = 2;   // the replaced file goes to trash
+  ON_EXISTING_KEEP_BOTH = 3;
+}
+
+enum TransferState {
+  TRANSFER_STATE_UNSPECIFIED = 0;
+  TRANSFER_STATE_RUNNING = 1;
+  TRANSFER_STATE_PAUSED = 2;
+  // FM-8, FM-13: an end or the host went offline; resumes on its own.
+  TRANSFER_STATE_WAITING_FOR_MACHINE = 3;
+  TRANSFER_STATE_VERIFYING = 4;
+  TRANSFER_STATE_DONE = 5;
+  TRANSFER_STATE_FAILED = 6;
+  TRANSFER_STATE_CANCELLED = 7;
+}
+
+message Transfer {
+  TransferId id = 1;
+  repeated FileLocation sources = 2;
+  FileLocation destination = 3;
+  TransferMode mode = 4;
+  TransferState state = 5;
+  uint64 done_bytes = 6;
+  uint64 total_bytes = 7;
+  uint32 done_files = 8;
+  uint32 total_files = 9;
+  // Why it is paused or failed, as an Error (checksum_mismatch,
+  // machine_offline, disk_full, …).
+  Error problem = 10;
+  google.protobuf.Timestamp started_at = 11;
+  uint64 version = 12;
+}
+
+message StartTransferRequest {
+  IdempotencyKey idempotency_key = 1;
+  repeated FileLocation sources = 2;
+  // A folder.
+  FileLocation destination = 3;
+  TransferMode mode = 4;
+  OnExisting on_existing = 5;
+  string reason = 6;
+}
+
+message UploadHeader {
+  IdempotencyKey idempotency_key = 1;
+  FileLocation destination = 2;
+  string name = 3;
+  uint64 size = 4;
+  string sha256 = 5;
+  OnExisting on_existing = 6;
+  // Resume an upload the stream dropped.
+  TransferId resume = 7;
+}
+
+message UploadMessage {
+  oneof message {
+    UploadHeader header = 1;
+    FileChunk chunk = 2;
+  }
+}
+
+message ListTransfersRequest {
+  bool active_only = 1;
+  PageRequest page = 2;
+}
+
+message ListTransfersResponse {
+  repeated Transfer transfers = 1;
+  PageResponse page = 2;
+}
+
+message WatchTransferRequest {
+  TransferId id = 1;
+  uint64 from_version = 2;
+}
+
+message TransferControlRequest {
+  IdempotencyKey idempotency_key = 1;
+  TransferId id = 2;
+}
+
+// ---------------------------------------------------------------------------
+
+message TrashItem {
+  TrashItemId id = 1;
+  MachineId machine = 2;
+  // As shown: "session “API rate limiter” (record, conversation, 2 clones)".
+  string description = 3;
+  uint64 bytes = 4;
+  google.protobuf.Timestamp deleted_at = 5;
+  google.protobuf.Timestamp empties_at = 6;   // +30 days (LD-7)
+  Actor deleted_by = 7;
+  EntityRef was = 8;
+}
+
+message ListTrashRequest {
+  MachineId machine = 1;
+  PageRequest page = 2;
+}
+
+message ListTrashResponse {
+  repeated TrashItem items = 1;
+  uint64 total_bytes = 2;
+  PageResponse page = 3;
+}
+
+message RestoreFromTrashRequest {
+  IdempotencyKey idempotency_key = 1;
+  TrashItemId id = 2;
+}
+
+message RestoreFromTrashResponse {
+  EntityRef restored = 1;
+}
+
+message PlanEmptyTrashRequest { MachineId machine = 1; }
+
+message EmptyTrashPlan {
+  MachineId machine = 1;
+  uint64 frees_bytes = 2;
+  uint32 items = 3;
+  PlanToken token = 4;
+}
+
+message EmptyTrashRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId machine = 2;
+  PlanToken plan = 3;
+  PresenceProof presence = 4;
+}
+
+message EmptyTrashResponse {
+  uint64 freed_bytes = 1;
+}

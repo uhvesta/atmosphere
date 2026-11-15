@@ -1,0 +1,233 @@
+// Types shared by every humata.v1 service. See ../../../GRPC.md for the
+// rules these follow (ids, revisions, idempotency, paging, offsets).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// ---------------------------------------------------------------------------
+// Ids. Each is its own message so a SessionId can never be passed where a
+// ChannelId is expected. Values are opaque to clients: compare, never parse.
+// ---------------------------------------------------------------------------
+
+message ChannelId { string value = 1; }      // "ch_<ulid>"
+message SessionId { string value = 1; }      // "se_<ulid>"
+message MachineId { string value = 1; }      // "ma_<ulid>"; This Mac included
+message RequestId { string value = 1; }      // Inbox request, "rq_<ulid>"
+message GrantId { string value = 1; }        // an "Always let …" grant
+message CommentId { string value = 1; }
+message ViewId { string value = 1; }
+message OperationId { string value = 1; }
+message TransferId { string value = 1; }
+message TrashItemId { string value = 1; }
+message TabId { string value = 1; }          // a terminal tab of a session
+message QueuedTypingId { string value = 1; } // text waiting for a turn end
+message JournalEntryId { string value = 1; } // "<machine>.<seq>", for display
+
+// A board item's id as people see it ("PAY-7"). Items created in a machine's
+// journal while the host is away get a provisional id ("~devbox-1.3") that
+// the host replaces on replay; BoardItemChanged carries both.
+message BoardItemId { string value = 1; }
+
+// An agent as defined in Settings › Agents (built-in or user-added).
+message AgentId { string value = 1; }        // "claude", "codex", "zsh", …
+
+// A provider as named in Settings › Machine providers.
+message ProviderId { string value = 1; }
+
+// A GitHub repository.
+message RepoRef {
+  string owner = 1;
+  string name = 2;
+}
+
+// A pull request on GitHub.
+message PullRequestRef {
+  RepoRef repo = 1;
+  uint32 number = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Mutations.
+// ---------------------------------------------------------------------------
+
+// Chosen by the caller, one per user intent (UUIDv7 recommended). Retrying a
+// mutation with the same key returns the first result and does nothing
+// again. The host keeps keys for 30 days; journal replays are deduplicated by
+// JournalPosition instead, which never expires.
+message IdempotencyKey { string value = 1; }
+
+// Every mutable entity carries a revision. Mutations name the revision they
+// were made against; a stale one fails with Error.revision_conflict.
+message Revision { uint64 value = 1; }
+
+// A plan a destructive call was confirmed against (archive, delete, remove
+// or forget a machine, drop a repo, empty trash, submit a review). Returned
+// by the Plan* call; the executing call fails with Error.plan_stale when
+// what the plan listed has changed since.
+message PlanToken { string value = 1; }
+
+// Where a write ended up.
+enum Delivery {
+  DELIVERY_UNSPECIFIED = 0;
+  // Applied on the host; the response holds the result.
+  DELIVERY_APPLIED = 1;
+  // The host was unreachable: written to the machine's append-only journal
+  // and applied on reconnect (SL-5). The final result arrives as an event.
+  DELIVERY_JOURNALED = 2;
+}
+
+// A write accepted into a machine's journal.
+message JournalPosition {
+  MachineId machine = 1;
+  uint64 seq = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Paging and streams.
+// ---------------------------------------------------------------------------
+
+message PageRequest {
+  // 0 means the server's default (50). The server may return fewer.
+  uint32 page_size = 1;
+  // Empty for the first page; otherwise a previous next_page_token. Tokens
+  // pin the snapshot the first page was read from.
+  string page_token = 2;
+}
+
+message PageResponse {
+  // Empty on the last page.
+  string next_page_token = 1;
+}
+
+// A position in the host's event sequence (EventService). Strictly
+// increasing, never reused.
+message EventSeq { uint64 value = 1; }
+
+// ---------------------------------------------------------------------------
+// Shared vocabulary.
+// ---------------------------------------------------------------------------
+
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  SESSION_STATUS_STARTING = 1;
+  SESSION_STATUS_WORKING = 2;
+  SESSION_STATUS_NEEDS_INPUT = 3;
+  SESSION_STATUS_IDLE = 4;
+  SESSION_STATUS_EXITED = 5;
+  // The session's machine can't be reached; the session may well be running.
+  SESSION_STATUS_OFFLINE = 6;
+  SESSION_STATUS_MOVING = 7;
+  SESSION_STATUS_RESUME_FAILED = 8;
+  SESSION_STATUS_ARCHIVED = 9;
+  // The agent's adapter gives no turn signal; the session is running.
+  SESSION_STATUS_RUNNING_UNKNOWN_TURN = 10;
+}
+
+enum ForkKind {
+  FORK_KIND_UNSPECIFIED = 0;
+  FORK_KIND_CODE_AND_CONTEXT = 1;
+  FORK_KIND_CODE_ONLY = 2;
+  FORK_KIND_CONTEXT_ONLY = 3;
+}
+
+enum BoardColumn {
+  BOARD_COLUMN_UNSPECIFIED = 0;
+  BOARD_COLUMN_BACKLOG = 1;
+  BOARD_COLUMN_TO_DO = 2;
+  BOARD_COLUMN_IN_PROGRESS = 3;
+  BOARD_COLUMN_IN_REVIEW = 4;
+  BOARD_COLUMN_DONE = 5;
+}
+
+enum DiffSide {
+  DIFF_SIDE_UNSPECIFIED = 0;
+  DIFF_SIDE_OLD = 1;
+  DIFF_SIDE_NEW = 2;
+}
+
+// Inclusive, 1-based source lines.
+message LineRange {
+  uint32 first = 1;
+  uint32 last = 2;
+}
+
+// A file inside one of a session's clones, by repo and repo-relative path.
+message RepoPath {
+  RepoRef repo = 1;
+  string path = 2;
+}
+
+// One board (BD-1).
+message BoardRef {
+  oneof board {
+    GlobalBoard global = 1;
+    ChannelId channel = 2;
+    SessionId session = 3;
+  }
+}
+
+message GlobalBoard {}
+
+// Something that can be pinned, marked VIP, linked to or audited.
+message EntityRef {
+  oneof entity {
+    ChannelId channel = 1;
+    SessionId session = 2;
+    MachineId machine = 3;
+    BoardItemId board_item = 4;
+    RequestId request = 5;
+    CommentId comment = 6;
+    ViewId view = 7;
+    // A PR review session; pinned and VIP apply to it as a session.
+    SessionId pr_review = 8;
+  }
+}
+
+// Who did something, as shown in history, audit and "by <session>" chips.
+// Derived by the daemon; never accepted from a caller.
+message Actor {
+  oneof actor {
+    UserActor user = 1;
+    AgentActor agent = 2;
+    SystemActor system = 3;
+  }
+}
+
+message UserActor {
+  enum Via {
+    VIA_UNSPECIFIED = 0;
+    VIA_APP = 1;
+    VIA_CLI_ON_HOST = 2;
+    VIA_CLI_ON_MACHINE = 3;
+  }
+  Via via = 1;
+  MachineId machine = 2;
+}
+
+message AgentActor {
+  SessionId session = 1;
+  MachineId machine = 2;
+  AgentId agent = 3;
+  // The session's title when the action happened.
+  string session_title = 4;
+}
+
+message SystemActor {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    REASON_RETENTION_RULE = 1;   // LD-16..18
+    REASON_TRASH_EXPIRY = 2;     // LD-7
+    REASON_BOOT_RECONCILE = 3;   // PER-13
+    REASON_PR_POLL = 4;          // PR-15
+    REASON_SKILLS_AUTO_SYNC = 5; // SK-3
+    REASON_JOURNAL_REPLAY = 6;   // SL-5
+  }
+  Reason reason = 1;
+}
+
+message Timestamped {
+  google.protobuf.Timestamp at = 1;
+  Actor by = 2;
+}

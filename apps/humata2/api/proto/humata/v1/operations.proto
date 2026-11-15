@@ -1,0 +1,135 @@
+// Long-running operations: start, fork, move, archive with push, restore,
+// rebuild, add or remove a machine, provider steps, skills sync, PR review
+// start and update. The starting call returns an Operation at once; its
+// steps are watched here. Closing a stream never cancels an operation.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
+
+service OperationService {
+  rpc GetOperation(GetOperationRequest) returns (Operation);
+  // Finds the operation a mutation with this key started, so a client that
+  // lost the response can pick it up again.
+  rpc FindOperation(FindOperationRequest) returns (Operation);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  // The operation as it is, then every change, then the stream ends when it
+  // finishes. Resume with from_version.
+  rpc WatchOperation(WatchOperationRequest) returns (stream Operation);
+  // Stops at the next step boundary and undoes what the operation's kind
+  // says it undoes (GRPC.md §7). Fails with Error.not_cancellable once the
+  // operation is past its point of no return.
+  rpc CancelOperation(CancelOperationRequest) returns (Operation);
+  // HO-2, MP-20 "Try again": runs a FAILED operation again from its failed
+  // step, keeping the steps already done. Same id; version goes on.
+  rpc RetryOperation(RetryOperationRequest) returns (Operation);
+}
+
+message RetryOperationRequest {
+  OperationId id = 1;
+  IdempotencyKey idempotency_key = 2;
+}
+
+enum OperationKind {
+  OPERATION_KIND_UNSPECIFIED = 0;
+  OPERATION_KIND_START_SESSION = 1;
+  OPERATION_KIND_FORK_SESSION = 2;
+  OPERATION_KIND_MOVE_SESSION = 3;
+  OPERATION_KIND_ARCHIVE_SESSION = 4;
+  OPERATION_KIND_RESTORE_SESSION = 5;
+  OPERATION_KIND_REBUILD_SESSION = 6;
+  OPERATION_KIND_GIVE_OWN_COPY = 7;
+  OPERATION_KIND_PUSH_AND_OPEN_PR = 8;
+  OPERATION_KIND_ADD_REPO = 9;
+  OPERATION_KIND_ADD_MACHINE = 10;
+  OPERATION_KIND_REMOVE_MACHINE = 11;
+  OPERATION_KIND_CHANGE_ROOT = 12;
+  OPERATION_KIND_PROVIDER_CREATE = 13;
+  OPERATION_KIND_PROVIDER_ACTION = 14;
+  OPERATION_KIND_SKILLS_SYNC = 15;
+  OPERATION_KIND_START_PR_REVIEW = 16;
+  OPERATION_KIND_UPDATE_PR_CLONE = 17;
+  OPERATION_KIND_SUBMIT_PR_REVIEW = 18;
+}
+
+enum OperationState {
+  OPERATION_STATE_UNSPECIFIED = 0;
+  OPERATION_STATE_RUNNING = 1;
+  OPERATION_STATE_SUCCEEDED = 2;
+  OPERATION_STATE_FAILED = 3;
+  OPERATION_STATE_CANCELLED = 4;
+}
+
+enum StepState {
+  STEP_STATE_UNSPECIFIED = 0;
+  STEP_STATE_WAITING = 1;
+  STEP_STATE_RUNNING = 2;
+  STEP_STATE_DONE = 3;
+  STEP_STATE_FAILED = 4;
+  STEP_STATE_SKIPPED = 5;
+  STEP_STATE_UNDONE = 6;
+}
+
+message OperationStep {
+  // Stable per kind, e.g. "copy_conversation"; GRPC.md §7 lists them.
+  string key = 1;
+  // As shown: "Copying the conversation".
+  string title = 2;
+  StepState state = 3;
+  uint64 done_units = 4;
+  uint64 total_units = 5;
+  // Kept output of a failed step (MP-20, HO-2).
+  string output_tail = 6;
+}
+
+message Operation {
+  OperationId id = 1;
+  OperationKind kind = 2;
+  EntityRef target = 3;
+  OperationState state = 4;
+  repeated OperationStep steps = 5;
+  // Set when state is FAILED.
+  Error error = 6;
+  // False once past the point of no return.
+  bool cancellable = 7;
+  IdempotencyKey idempotency_key = 8;
+  google.protobuf.Timestamp started_at = 9;
+  google.protobuf.Timestamp finished_at = 10;
+  Actor started_by = 11;
+  // Bumped on every change; WatchOperation resumes from it.
+  uint64 version = 12;
+  // What the operation made, when it succeeded.
+  oneof result {
+    SessionId session = 20;
+    MachineId machine = 21;
+    PullRequestRef pull_request = 22;
+  }
+}
+
+message GetOperationRequest { OperationId id = 1; }
+message FindOperationRequest { IdempotencyKey idempotency_key = 1; }
+
+message ListOperationsRequest {
+  // Unset: every operation the caller may see.
+  EntityRef target = 1;
+  bool running_only = 2;
+  PageRequest page = 3;
+}
+
+message ListOperationsResponse {
+  repeated Operation operations = 1;
+  PageResponse page = 2;
+}
+
+message WatchOperationRequest {
+  OperationId id = 1;
+  uint64 from_version = 2;
+}
+
+message CancelOperationRequest {
+  OperationId id = 1;
+  IdempotencyKey idempotency_key = 2;
+}

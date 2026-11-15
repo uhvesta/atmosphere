@@ -1,0 +1,281 @@
+// Channels, their repos and machines, and the Activity feed (CH-1..23).
+// Host only.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/common.proto";
+import "humata/v1/operations.proto";
+
+service ChannelService {
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+  rpc GetChannel(GetChannelRequest) returns (Channel);
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  // Renames the channel; its folder name stays (FC-1, like FC-17).
+  rpc RenameChannel(RenameChannelRequest) returns (Channel);
+  // CH-3: repos gh on the Mac can see, fuzzy-matched.
+  rpc SearchGitHubRepos(SearchGitHubReposRequest) returns (SearchGitHubReposResponse);
+  // CH-6, CH-18, CH-19. One AddRepo operation making main clones.
+  rpc AddRepo(AddRepoRequest) returns (Operation);
+  // CH-22: lists the sessions using it and their unpushed work.
+  rpc PlanRemoveRepo(PlanRemoveRepoRequest) returns (RemoveRepoPlan);
+  rpc RemoveRepo(RemoveRepoRequest) returns (Channel);
+  // CH-7.
+  rpc AddMachine(AddChannelMachineRequest) returns (Operation);
+  // CH-8: every session on it needs a move or archive decision.
+  rpc PlanRemoveMachine(PlanRemoveChannelMachineRequest) returns (RemoveChannelMachinePlan);
+  rpc RemoveMachine(RemoveChannelMachineRequest) returns (Operation);
+  // CH-9: one row per repo, one column per machine.
+  rpc GetGrid(GetGridRequest) returns (ChannelGrid);
+  // Not in the spec (REVIEW.md): refuses while live sessions remain;
+  // moves the channel's records to trash.
+  rpc PlanDeleteChannel(PlanDeleteChannelRequest) returns (DeleteChannelPlan);
+  rpc DeleteChannel(DeleteChannelRequest) returns (DeleteChannelResponse);
+}
+
+service ActivityService {
+  // CH-15, HM-2. Newest first. Unset channel: every channel.
+  rpc ListActivity(ListActivityRequest) returns (ListActivityResponse);
+  // CH-17: clears the session's unread mark for this user.
+  rpc MarkSeen(MarkSeenRequest) returns (MarkSeenResponse);
+}
+
+message Channel {
+  ChannelId id = 1;
+  string name = 2;
+  // CH-2: derived once, never renamed.
+  string folder = 3;
+  repeated RepoRef repos = 4;
+  repeated MachineId machines = 5;
+  // ST-13 override; unset uses the default.
+  optional string branch_prefix = 6;
+  // ST-15 override.
+  AgentId default_agent = 7;
+  string default_model = 8;
+  // PR-2: the built-in PR reviews channel.
+  bool is_pr_reviews = 9;
+  uint32 live_sessions = 10;
+  uint32 pending_requests = 11;
+  uint32 unread_sessions = 12;
+  Revision revision = 13;
+  google.protobuf.Timestamp created_at = 14;
+}
+
+message CreateChannelRequest {
+  IdempotencyKey idempotency_key = 1;
+  string name = 2;
+  repeated RepoRef repos = 3;
+  repeated MachineId machines = 4;
+}
+
+message CreateChannelResponse {
+  Channel channel = 1;
+  // CH-5: folders and main clones on every machine.
+  Operation setup = 2;
+}
+
+message GetChannelRequest { ChannelId id = 1; }
+
+message ListChannelsRequest { PageRequest page = 1; }
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+  PageResponse page = 2;
+}
+
+message RenameChannelRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId id = 2;
+  string name = 3;
+  Revision expected_revision = 4;
+}
+
+message SearchGitHubReposRequest {
+  string query = 1;
+  PageRequest page = 2;
+}
+
+message GitHubRepo {
+  RepoRef repo = 1;
+  string description = 2;
+  bool is_private = 3;
+  string default_branch = 4;
+  google.protobuf.Timestamp pushed_at = 5;
+}
+
+message SearchGitHubReposResponse {
+  repeated GitHubRepo repos = 1;
+  PageResponse page = 2;
+}
+
+message AddRepoRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  RepoRef repo = 3;
+}
+
+message SessionWork {
+  SessionId session = 1;
+  string title = 2;
+  uint32 dirty_files = 3;
+  uint32 unpushed_commits = 4;
+}
+
+message RemoveRepoPlan {
+  ChannelId channel = 1;
+  RepoRef repo = 2;
+  // Empty: removal is allowed at once (CH-22).
+  repeated SessionWork sessions = 3;
+  PlanToken token = 4;
+}
+
+message PlanRemoveRepoRequest {
+  ChannelId channel = 1;
+  RepoRef repo = 2;
+}
+
+message RemoveRepoRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  RepoRef repo = 3;
+  PlanToken plan = 4;
+}
+
+message AddChannelMachineRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  MachineId machine = 3;
+}
+
+message PlanRemoveChannelMachineRequest {
+  ChannelId channel = 1;
+  MachineId machine = 2;
+}
+
+// What to do with one session on a machine that leaves (CH-8, LD-10).
+message SessionDisposition {
+  SessionId session = 1;
+  oneof disposition {
+    MachineId move_to = 2;
+    ArchiveChoice archive = 3;
+  }
+}
+
+// MV-9's three answers, minus Cancel.
+enum ArchiveChoice {
+  ARCHIVE_CHOICE_UNSPECIFIED = 0;
+  // Only valid without unpushed work.
+  ARCHIVE_CHOICE_ARCHIVE = 1;
+  ARCHIVE_CHOICE_COMMIT_PUSH_PR_THEN_ARCHIVE = 2;
+  ARCHIVE_CHOICE_ARCHIVE_AND_DELETE_WORK = 3;
+}
+
+message RemoveChannelMachinePlan {
+  ChannelId channel = 1;
+  MachineId machine = 2;
+  repeated SessionWork sessions = 3;
+  PlanToken token = 4;
+}
+
+message RemoveChannelMachineRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  MachineId machine = 3;
+  // One per session the plan listed; missing ones fail with invalid_field.
+  repeated SessionDisposition dispositions = 4;
+  PlanToken plan = 5;
+}
+
+message GetGridRequest { ChannelId channel = 1; }
+
+message GridCell {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_READY = 1;
+    STATE_CLONING = 2;
+    STATE_FAILED = 3;
+    STATE_MACHINE_OFFLINE = 4;
+  }
+  RepoRef repo = 1;
+  MachineId machine = 2;
+  State state = 3;
+  uint32 sessions = 4;
+}
+
+message ChannelGrid {
+  ChannelId channel = 1;
+  repeated GridCell cells = 2;
+}
+
+message PlanDeleteChannelRequest { ChannelId channel = 1; }
+
+message DeleteChannelPlan {
+  ChannelId channel = 1;
+  // Must be empty: archive or move them first.
+  repeated SessionWork live_sessions = 2;
+  uint32 archived_sessions = 3;
+  uint32 board_items = 4;
+  uint32 pending_requests = 5;
+  PlanToken token = 6;
+}
+
+message DeleteChannelRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  PlanToken plan = 3;
+  PresenceProof presence = 4;
+}
+
+message DeleteChannelResponse {
+  TrashItemId trash_item = 1;
+}
+
+// ---------------------------------------------------------------------------
+
+enum ActivityKind {
+  ACTIVITY_KIND_UNSPECIFIED = 0;
+  ACTIVITY_KIND_SESSION_STARTED = 1;
+  ACTIVITY_KIND_FORKED = 2;
+  ACTIVITY_KIND_MOVED = 3;
+  ACTIVITY_KIND_ARCHIVED = 4;
+  ACTIVITY_KIND_RESTORED = 5;
+  ACTIVITY_KIND_DELETED = 6;
+  ACTIVITY_KIND_EXITED = 7;
+  ACTIVITY_KIND_RESUMED = 8;
+  ACTIVITY_KIND_RESUME_FAILED = 9;
+  ACTIVITY_KIND_PR_OPENED = 10;
+  ACTIVITY_KIND_REPO_ADDED = 11;
+  ACTIVITY_KIND_REPO_REMOVED = 12;
+  ACTIVITY_KIND_MACHINE_ADDED = 13;
+  ACTIVITY_KIND_MACHINE_REMOVED = 14;
+  ACTIVITY_KIND_RETENTION = 15;   // LD-18
+  ACTIVITY_KIND_REQUEST_ANSWERED = 16;
+}
+
+message ActivityEvent {
+  uint64 seq = 1;
+  ChannelId channel = 2;
+  ActivityKind kind = 3;
+  // As shown: "Forked “parent” → “fork” (code only)".
+  string text = 4;
+  repeated EntityRef links = 5;
+  Timestamped at = 6;
+}
+
+message ListActivityRequest {
+  ChannelId channel = 1;
+  PageRequest page = 2;
+}
+
+message ListActivityResponse {
+  repeated ActivityEvent events = 1;
+  PageResponse page = 2;
+}
+
+message MarkSeenRequest {
+  SessionId session = 1;
+}
+
+message MarkSeenResponse {}

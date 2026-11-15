@@ -1,0 +1,157 @@
+// Boards (BD-1..10). Host only. From a machine whose host is away, agents'
+// writes are journaled (SL-5) and replayed; conflicts follow GRPC.md §9.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/common.proto";
+
+service BoardService {
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  rpc GetItem(GetItemRequest) returns (BoardItem);
+  rpc CreateItem(CreateItemRequest) returns (WriteItemResponse);
+  // Changes only the fields set in the patch.
+  rpc UpdateItem(UpdateItemRequest) returns (WriteItemResponse);
+  // Column and position within it.
+  rpc MoveItem(MoveItemRequest) returns (WriteItemResponse);
+  // Leaves a tombstone in history; an edit replayed against an older
+  // revision doesn't bring the item back.
+  rpc DeleteItem(DeleteItemRequest) returns (WriteItemResponse);
+  // BD-3 "its history", including writes that lost a conflict (SL-6).
+  rpc GetItemHistory(GetItemHistoryRequest) returns (GetItemHistoryResponse);
+}
+
+message BoardItem {
+  BoardItemId id = 1;
+  BoardRef board = 2;
+  ChannelId channel = 3;   // unset for Global items
+  string title = 4;
+  string description = 5;
+  BoardColumn column = 6;
+  // Order within the column; smaller first.
+  string rank = 7;
+  // Any session of its channel, or none (BD-3).
+  SessionId assigned_session = 8;
+  // BD-3 ownership: you, or the agent session that made it.
+  Actor created_by = 9;
+  google.protobuf.Timestamp created_at = 10;
+  Timestamped updated = 11;
+  // NV-20, this user's marks.
+  bool pinned = 12;
+  bool vip = 13;
+  Revision revision = 14;
+  // Set when the item was made in a journal; id is then the final one.
+  BoardItemId provisional_id = 15;
+}
+
+// BD-5 and BD-7 scopes.
+message BoardView {
+  oneof view {
+    BoardRef board = 1;
+    ChannelId channel_with_sessions = 2;
+    SessionId session_with_forks = 3;
+    GlobalWithChannels global_with_channels = 4;
+  }
+}
+
+message GlobalWithChannels {
+  // BD-7 filter: unset Everything; global_only; or one channel.
+  bool global_only = 1;
+  ChannelId channel = 2;
+}
+
+message ListItemsRequest {
+  BoardView view = 1;
+  // Empty: every column.
+  repeated BoardColumn columns = 2;
+  PageRequest page = 3;
+}
+
+message ListItemsResponse {
+  repeated BoardItem items = 1;
+  // Per column, for the headers (BD-1).
+  repeated ColumnCount counts = 2;
+  PageResponse page = 3;
+}
+
+message ColumnCount {
+  BoardColumn column = 1;
+  uint32 items = 2;
+}
+
+message GetItemRequest { BoardItemId id = 1; }
+
+message CreateItemRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardRef board = 2;
+  string title = 3;
+  BoardColumn column = 4;
+  string description = 5;
+  SessionId assigned_session = 6;
+  // Shown on the Inbox card when the rule asks.
+  string reason = 7;
+}
+
+message ItemPatch {
+  optional string title = 1;
+  optional string description = 2;
+  // Set with clear_assignment false to assign; clear_assignment true for
+  // Nobody.
+  SessionId assigned_session = 3;
+  bool clear_assignment = 4;
+}
+
+message UpdateItemRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  ItemPatch patch = 3;
+  Revision expected_revision = 4;
+  string reason = 5;
+}
+
+message MoveItemRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  BoardColumn column = 3;
+  // Place after this item in the column; unset: at the top.
+  BoardItemId after = 4;
+  Revision expected_revision = 5;
+  string reason = 6;
+}
+
+message DeleteItemRequest {
+  IdempotencyKey idempotency_key = 1;
+  BoardItemId id = 2;
+  Revision expected_revision = 3;
+  string reason = 4;
+}
+
+message WriteItemResponse {
+  Delivery delivery = 1;
+  // Set when applied.
+  BoardItem item = 2;
+  // Set when journaled; the item's id is provisional until replay.
+  JournalPosition journal = 3;
+  BoardItemId provisional_id = 4;
+}
+
+message ItemHistoryEntry {
+  Timestamped at = 1;
+  // As shown: "status To do → In review".
+  string change = 2;
+  // A journaled write that lost to a later one (SL-6).
+  bool lost_conflict = 3;
+  JournalPosition journal = 4;
+  Revision revision = 5;
+}
+
+message GetItemHistoryRequest {
+  BoardItemId id = 1;
+  PageRequest page = 2;
+}
+
+message GetItemHistoryResponse {
+  repeated ItemHistoryEntry entries = 1;
+  PageResponse page = 2;
+}

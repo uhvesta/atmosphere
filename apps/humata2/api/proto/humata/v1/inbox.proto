@@ -1,0 +1,338 @@
+// The Inbox (IN-1..15). Requests are made only by the daemon, from an
+// agent's call that a rule sent to Ask me, or by an agent's question
+// (InboxAsk over MCP). Clients list, read and answer them; answering is
+// user-only. Served by the host; while the host is away a machine serves
+// the requests in its own journal (AW-3, AW-5).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/capabilities.proto";
+import "humata/v1/common.proto";
+
+service InboxService {
+  rpc ListRequests(ListRequestsRequest) returns (ListRequestsResponse);
+  rpc GetRequest(GetRequestRequest) returns (InboxRequest);
+  // Approve, deny, deny with a note, answer a question, or approve and add
+  // the card's scoped grant. Fails with Error.already_answered when another
+  // client answered first, and Error.request_withdrawn when the agent
+  // stopped waiting.
+  rpc AnswerRequest(AnswerRequestRequest) returns (InboxRequest);
+  // IN-6. Applies only to the ids listed, which must be what the user saw:
+  // requests that arrived since are left pending. Never adds grants.
+  rpc AnswerAll(AnswerAllRequest) returns (AnswerAllResponse);
+
+  // ----- Agent side (MCP inbox_*). The requester is always the caller's
+  // own session; no field names it. -----
+
+  // A question for the user (INBOX_ASK). Waits like any request (MCP.md §4).
+  rpc AskUser(AskUserRequest) returns (WaitResponse);
+  // Ask ahead for a capability on a target, e.g. before a long plan, so the
+  // user answers once. The grant offered is the card's usual one (IN-14).
+  rpc RequestAccess(RequestAccessRequest) returns (WaitResponse);
+  // Keep waiting on a request this session made. Returns at the answer, or
+  // with PENDING at the deadline. Streams keepalives meanwhile.
+  rpc WaitForAnswer(WaitForAnswerRequest) returns (stream WaitResponse);
+  // The agent no longer needs it; the card greys out (WITHDRAWN).
+  rpc WithdrawRequest(WithdrawRequestRequest) returns (InboxRequest);
+}
+
+message AskUserRequest {
+  IdempotencyKey idempotency_key = 1;
+  string question = 2;
+  // Up to 4 one-tap answers; the user can always reply in words.
+  repeated string choices = 3;
+  uint32 wait_seconds = 4;
+}
+
+message RequestAccessRequest {
+  IdempotencyKey idempotency_key = 1;
+  Capability capability = 2;
+  GrantTarget target = 3;
+  string reason = 4;
+  uint32 wait_seconds = 5;
+}
+
+message WaitForAnswerRequest {
+  RequestId id = 1;
+  uint32 wait_seconds = 2;
+}
+
+message WaitResponse {
+  RequestId id = 1;
+  RequestState state = 2;
+  // Set when answered: the reply, the deny note, or the grant made.
+  RequestAnswer answer = 3;
+  // A keepalive while still pending; the stream's last message has it false.
+  bool keepalive = 4;
+  // Held in the machine's journal while the host is away (AW-3).
+  bool journaled = 5;
+}
+
+message WithdrawRequestRequest {
+  IdempotencyKey idempotency_key = 1;
+  RequestId id = 2;
+}
+
+enum RequestState {
+  REQUEST_STATE_UNSPECIFIED = 0;
+  REQUEST_STATE_PENDING = 1;
+  REQUEST_STATE_APPROVED = 2;
+  REQUEST_STATE_DENIED = 3;
+  REQUEST_STATE_ANSWERED = 4;    // a question with a reply
+  REQUEST_STATE_WITHDRAWN = 5;   // the agent stopped waiting
+}
+
+enum RequestKind {
+  REQUEST_KIND_UNSPECIFIED = 0;
+  REQUEST_KIND_BOARD = 1;
+  REQUEST_KIND_FILES = 2;
+  REQUEST_KIND_SESSION = 3;   // note, question, type, start, fork, move, end
+  REQUEST_KIND_BRIDGE = 4;    // cross-machine copy or read, network
+  REQUEST_KIND_QUESTION = 5;  // a question for the user
+  REQUEST_KIND_CHANNEL = 6;
+  REQUEST_KIND_MACHINE = 7;
+}
+
+// IN-9 item 7.
+enum Undo {
+  UNDO_UNSPECIFIED = 0;
+  UNDO_CAN_BE_UNDONE = 1;
+  UNDO_CANNOT_BE_UNDONE = 2;
+}
+
+message InboxRequest {
+  RequestId id = 1;
+  ChannelId channel = 2;
+  RequestKind kind = 3;
+  RequestState state = 4;
+  // IN-9 item 1.
+  AgentActor requester = 5;
+  // IN-9 item 2: "Read 3 files of “Ledger schema migration”".
+  string action_title = 6;
+  // IN-9 item 3, in the agent's words.
+  string reason = 7;
+  // IN-9 item 4.
+  RequestPreview preview = 8;
+  // IN-9 item 5: the agent's last steps from its adapter, pending call last.
+  // Empty when the agent's adapter can't report them.
+  repeated string recent_steps = 9;
+  // IN-9 item 6.
+  Capability capability = 10;
+  Decision rule_decision = 11;
+  Undo undo = 12;
+  // IN-9 item 8: the "Always let …" button, exactly as the card offers it.
+  // Unset for questions and for capabilities that take no grants.
+  AlwaysOption always = 13;
+  google.protobuf.Timestamp created_at = 14;
+  RequestAnswer answer = 15;
+  Timestamped answered = 16;
+  // Made in a machine's journal while the host was away.
+  JournalPosition journal = 17;
+  // NV-22: the requester session is VIP for this user.
+  bool vip = 18;
+  Revision revision = 19;
+}
+
+message AlwaysOption {
+  // "Always let this session read files of “Ledger schema migration”".
+  string label = 1;
+  GrantTarget target = 2;
+}
+
+// IN-10.
+message RequestPreview {
+  oneof preview {
+    BoardChangePreview board_change = 1;
+    NewBoardItemPreview new_board_item = 2;
+    FileAccessPreview file_access = 3;
+    CommandPreview command = 4;
+    TypingPreview typing = 5;
+    NewSessionPreview new_session = 6;
+    CrossMachineCopyPreview cross_machine_copy = 7;
+    MessagePreview message = 8;
+    QuestionPreview question = 9;
+    MovePreview move = 10;
+  }
+}
+
+message FieldChange {
+  string field = 1;     // "status"
+  string before = 2;    // "To do"
+  string after = 3;     // "In review"
+}
+
+message BoardChangePreview {
+  BoardItemId item = 1;
+  string item_title = 2;
+  repeated FieldChange changes = 3;
+  bool deletes_item = 4;
+}
+
+message NewBoardItemPreview {
+  BoardRef board = 1;
+  string title = 2;
+  BoardColumn column = 3;
+  string description = 4;
+}
+
+message FileAccessPreview {
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_READ_THIS_CALL = 1;
+    MODE_COPY_INTO_CLONE = 2;
+    MODE_COPY_INTO_SHARED = 3;
+  }
+  SessionId source_session = 1;
+  MachineId source_machine = 2;
+  Mode mode = 3;
+  repeated RepoPath paths = 4;
+}
+
+message CommandPreview {
+  MachineId machine = 1;
+  string command = 2;
+  string notes = 3;
+}
+
+message TypingPreview {
+  SessionId target = 1;
+  AgentId target_agent = 2;
+  repeated string last_lines = 3;
+  string text = 4;
+}
+
+message NewSessionPreview {
+  enum RepoCopy {
+    REPO_COPY_UNSPECIFIED = 0;
+    REPO_COPY_NEW_BRANCH_FROM_MAIN = 1;
+    REPO_COPY_BRANCH_AND_UNCOMMITTED = 2;
+    REPO_COPY_READS_PARENT = 3;   // context-only fork
+  }
+  message Repo {
+    RepoRef repo = 1;
+    RepoCopy copy = 2;
+    uint64 clone_bytes = 3;
+  }
+  AgentId agent = 1;
+  string model = 2;
+  MachineId machine = 3;
+  ForkKind fork_kind = 4;    // UNSPECIFIED for a new session
+  repeated Repo repos = 5;
+  // "A new agent's usage": stated in words, since Humata has no price feed.
+  string usage_note = 6;
+}
+
+message CrossMachineCopyPreview {
+  MachineId source_machine = 1;
+  string source_path = 2;
+  MachineId destination_machine = 3;
+  string destination_path = 4;
+  uint64 bytes = 5;
+  uint32 files = 6;
+}
+
+message MessagePreview {
+  SessionId target = 1;
+  bool is_question = 2;
+  string text = 3;
+}
+
+message QuestionPreview {
+  string question = 1;
+  // Optional answers the agent offered; the user may also write their own.
+  repeated string choices = 2;
+}
+
+message MovePreview {
+  SessionId session = 1;
+  MachineId from = 2;
+  MachineId to = 3;
+  uint64 bytes = 4;
+}
+
+message RequestAnswer {
+  oneof answer {
+    Approve approve = 1;
+    Deny deny = 2;
+    // IN-14: approve and add the card's grant, as offered.
+    AlwaysLet always = 3;
+    // A question's reply; becomes the result of the agent's call.
+    Reply reply = 4;
+  }
+}
+
+message Approve {}
+
+message Deny {
+  // "Deny and reply…" when set.
+  string note = 1;
+}
+
+message AlwaysLet {
+  // Must equal the request's AlwaysOption.target; anything wider fails
+  // with Error.invalid_field.
+  GrantTarget target = 1;
+}
+
+message Reply {
+  string text = 1;
+}
+
+message InboxScope {
+  oneof scope {
+    GlobalInbox global = 1;
+    ChannelId channel = 2;
+    SessionInbox session = 3;
+  }
+}
+
+message GlobalInbox {}
+
+message SessionInbox {
+  SessionId session = 1;
+  // IN-2 "With its forks".
+  bool with_forks = 2;
+}
+
+message ListRequestsRequest {
+  InboxScope scope = 1;
+  // IN-7: include answered and withdrawn.
+  bool include_answered = 2;
+  PageRequest page = 3;
+}
+
+message ListRequestsResponse {
+  // VIP first (NV-22), then oldest first.
+  repeated InboxRequest requests = 1;
+  uint32 pending_count = 2;
+  PageResponse page = 3;
+}
+
+message GetRequestRequest { RequestId id = 1; }
+
+message AnswerRequestRequest {
+  IdempotencyKey idempotency_key = 1;
+  RequestId id = 2;
+  RequestAnswer answer = 3;
+  // The revision the user saw; a request whose preview changed (e.g. the
+  // agent's target moved) fails with Error.revision_conflict.
+  Revision expected_revision = 4;
+  PresenceProof presence = 5;
+}
+
+message AnswerAllRequest {
+  IdempotencyKey idempotency_key = 1;
+  InboxScope scope = 2;
+  repeated RequestId ids = 3;
+  bool approve = 4;   // false: Deny all
+  PresenceProof presence = 5;
+}
+
+message AnswerAllResponse {
+  repeated InboxRequest answered = 1;
+  // Already answered elsewhere or withdrawn; left as they were.
+  repeated RequestId skipped = 2;
+}

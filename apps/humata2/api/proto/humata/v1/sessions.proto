@@ -1,0 +1,475 @@
+// Sessions: start, fork, move, archive, restore, delete, rebuild, repos,
+// spec mode, push, notes and questions between sessions. The host owns the
+// record (SL-1); the session's machine runs it and reports pointers (SL-3).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/common.proto";
+import "humata/v1/operations.proto";
+import "humata/v1/channels.proto";
+
+service SessionService {
+  // SE-1..4. Returns at once; the operation writes and fsyncs the record
+  // (PER-11), makes the clones, launches the agent.
+  rpc StartSession(StartSessionRequest) returns (StartSessionResponse);
+  // FC-15: the branch names Start or Fork would use, with suffixes.
+  rpc PreviewBranchNames(PreviewBranchNamesRequest) returns (PreviewBranchNamesResponse);
+  rpc GetSession(GetSessionRequest) returns (Session);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  // FC-17: never renames the branch.
+  rpc RenameSession(RenameSessionRequest) returns (Session);
+  // Stops the agent; the session stays (SE-14 then offers Resume).
+  rpc StopSession(StopSessionRequest) returns (Session);
+  // SE-15, PER-15.
+  rpc ResumeSession(ResumeSessionRequest) returns (Operation);
+  // FK-3: the turns a fork may start before. From the agent's adapter.
+  rpc ListTurns(ListTurnsRequest) returns (ListTurnsResponse);
+  // FK-4: the text preview and cost the dialog shows.
+  rpc PreviewFork(ForkSessionRequest) returns (ForkPreview);
+  rpc ForkSession(ForkSessionRequest) returns (Operation);
+  // FK-9.
+  rpc GiveOwnCopy(GiveOwnCopyRequest) returns (Operation);
+  // MV-1..6.
+  rpc MoveSession(MoveSessionRequest) returns (Operation);
+  // MV-8, MV-9: forks that keep running and unpushed work per repo.
+  rpc PlanArchive(PlanArchiveRequest) returns (ArchivePlan);
+  rpc ArchiveSession(ArchiveSessionRequest) returns (Operation);
+  // LD-4.
+  rpc RestoreSession(RestoreSessionRequest) returns (Operation);
+  // LD-5: to trash, after the unpushed-work check.
+  rpc PlanDelete(PlanDeleteRequest) returns (DeletePlan);
+  rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+  // SL-4, LD-11: rebuild an archived-by-forget session on another machine.
+  rpc RebuildSession(RebuildSessionRequest) returns (Operation);
+  // CH-21.
+  rpc AddRepoToSession(AddRepoToSessionRequest) returns (Operation);
+  // CH-23.
+  rpc PlanDropRepo(PlanDropRepoRequest) returns (DropRepoPlan);
+  rpc DropRepo(DropRepoRequest) returns (Session);
+  // SM-1, SM-2.
+  rpc SetSpecMode(SetSpecModeRequest) returns (Session);
+  // MV-12: per repo branch and change totals.
+  rpc PlanPush(PlanPushRequest) returns (PushPlan);
+  rpc PushAndOpenPullRequests(PushAndOpenPullRequestsRequest) returns (Operation);
+  // LD-3: an archived session's conversation, read-only, from the mirror.
+  rpc ReadConversation(ReadConversationRequest) returns (ReadConversationResponse);
+  // TP-5. Typed into the target as one message naming the sender, when its
+  // turn ends.
+  rpc SendNote(SendNoteRequest) returns (SendNoteResponse);
+  // TP-5. The call returns when the target answers (AnswerQuestion) or
+  // declines, or when the question expires.
+  rpc AskSession(AskSessionRequest) returns (AskSessionResponse);
+  // Called by the target agent (MCP session_answer) for a question typed
+  // into its terminal.
+  rpc AnswerQuestion(AnswerQuestionRequest) returns (AnswerQuestionResponse);
+}
+
+message SessionRepo {
+  RepoRef repo = 1;
+  string branch = 2;
+  string path = 3;
+  bool main_clone = 4;
+}
+
+// SL-3: what the machine last reported for one repo of a session.
+message Pointer {
+  RepoRef repo = 1;
+  string path = 2;
+  string branch = 3;
+  string head_sha = 4;
+  string upstream = 5;          // "origin/uhvesta/flaky-test-hunt"; empty if none
+  bool pushed = 6;              // HEAD is on the upstream
+  uint32 unpushed_commits = 7;
+  uint32 dirty_files = 8;
+  google.protobuf.Timestamp reported_at = 9;
+}
+
+message ForkOrigin {
+  SessionId parent = 1;
+  ForkKind kind = 2;
+  // 0: from now. n: before turn n.
+  uint32 before_turn = 3;
+}
+
+message PullRequestBinding {
+  repeated PullRequestRef pull_requests = 1;
+  // PR-8. Only the user sets it.
+  bool push_allowed = 2;
+}
+
+message ArchiveSummary {
+  message Repo {
+    RepoRef repo = 1;
+    string branch = 2;
+    string last_pushed_sha = 3;
+    repeated FileChange files = 4;
+  }
+  google.protobuf.Timestamp archived_at = 1;
+  repeated Repo repos = 2;
+  // LD-11: archived because its machine was forgotten.
+  bool machine_lost = 3;
+  // What was lost, from the last pointers.
+  repeated SessionWork lost = 4;
+}
+
+message FileChange {
+  string path = 1;
+  uint32 added = 2;
+  uint32 removed = 3;
+}
+
+message Session {
+  SessionId id = 1;
+  ChannelId channel = 2;
+  string title = 3;
+  AgentId agent = 4;
+  string model = 5;
+  MachineId machine = 6;
+  SessionStatus status = 7;
+  repeated SessionRepo repos = 8;
+  repeated Pointer pointers = 9;
+  ForkOrigin fork_origin = 10;
+  repeated SessionId forks = 11;
+  // PER-12, pinned at launch.
+  string conversation_id = 12;
+  bool spec_mode = 13;
+  repeated RepoPath spec_files = 14;
+  PullRequestBinding pull_request = 15;
+  ArchiveSummary archive = 16;
+  BoardItemId board_item = 17;
+  google.protobuf.Timestamp started_at = 18;
+  google.protobuf.Timestamp last_output_at = 19;
+  int32 exit_code = 20;
+  uint32 pending_requests = 21;
+  bool unread = 22;
+  // NV-20, this user's marks.
+  bool pinned = 23;
+  bool vip = 24;
+  // The session's own operation in progress, if any; others fail with
+  // Error.session_busy meanwhile.
+  OperationId running_operation = 25;
+  Revision revision = 26;
+}
+
+message RepoChoice {
+  RepoRef repo = 1;
+  // False: "Leave this repo out" (FC-4).
+  bool include = 2;
+}
+
+message StartSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  string title = 3;
+  AgentId agent = 4;
+  string model = 5;
+  MachineId machine = 6;
+  repeated RepoChoice repos = 7;
+  // Typed once the agent starts; empty starts at the prompt.
+  string first_message = 8;
+  BoardItemId board_item = 9;
+  repeated RepoPath spec_files = 10;
+}
+
+message StartSessionResponse {
+  SessionId session = 1;
+  Operation operation = 2;
+}
+
+message PreviewBranchNamesRequest {
+  ChannelId channel = 1;
+  string title = 2;
+  MachineId machine = 3;
+  repeated RepoRef repos = 4;
+}
+
+message PreviewBranchNamesResponse {
+  message Name {
+    RepoRef repo = 1;
+    string branch = 2;
+    // FC-14: why a suffix was added, when one was.
+    string suffix_reason = 3;
+  }
+  repeated Name names = 1;
+}
+
+message GetSessionRequest { SessionId id = 1; }
+
+message ListSessionsRequest {
+  // Unset: every channel the caller may read.
+  ChannelId channel = 1;
+  MachineId machine = 2;
+  bool include_archived = 3;
+  PageRequest page = 4;
+}
+
+message ListSessionsResponse {
+  // Tree order: parents before forks (CH-12).
+  repeated Session sessions = 1;
+  PageResponse page = 2;
+}
+
+message RenameSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  string title = 3;
+  Revision expected_revision = 4;
+}
+
+message StopSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+}
+
+message ResumeSessionRequest {
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_RESUME = 1;                     // pinned conversation id
+    MODE_START_FRESH_WITH_SUMMARY = 2;   // PER-15
+  }
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  Mode mode = 3;
+}
+
+message ListTurnsRequest {
+  SessionId session = 1;
+  PageRequest page = 2;
+}
+
+message Turn {
+  uint32 index = 1;
+  string user_text = 2;   // first line of what was asked
+  google.protobuf.Timestamp at = 3;
+}
+
+message ListTurnsResponse {
+  repeated Turn turns = 1;
+  PageResponse page = 2;
+}
+
+message ForkSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId parent = 2;
+  ForkKind kind = 3;
+  // 0: from now.
+  uint32 before_turn = 4;
+  string title = 5;
+  AgentId agent = 6;
+  string model = 7;
+  MachineId machine = 8;
+}
+
+message ForkPreview {
+  string text = 1;
+  repeated PreviewBranchNamesResponse.Name branches = 2;
+  uint64 copy_bytes = 3;
+  // FK-6: a different agent or no context forks; the summary is seeded.
+  bool seeded_with_summary = 4;
+}
+
+message GiveOwnCopyRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId fork = 2;
+}
+
+message MoveSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  MachineId to = 3;
+}
+
+message PlanArchiveRequest { SessionId id = 1; }
+
+message ArchivePlan {
+  SessionId id = 1;
+  uint32 forks_keep_running = 2;
+  repeated UnpushedRepo unpushed = 3;
+  repeated ArchiveChoice choices = 4;
+  // PR-17: undrafted review comments that would be dropped.
+  uint32 unsubmitted_drafts = 5;
+  PlanToken token = 6;
+}
+
+message UnpushedRepo {
+  RepoRef repo = 1;
+  string branch = 2;
+  uint32 dirty_files = 3;
+  uint32 unpushed_commits = 4;
+  bool never_pushed = 5;
+}
+
+message ArchiveSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  ArchiveChoice choice = 3;
+  PlanToken plan = 4;
+}
+
+message RestoreSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  MachineId machine = 3;
+}
+
+message PlanDeleteRequest { SessionId id = 1; }
+
+message DeletePlan {
+  SessionId id = 1;
+  repeated UnpushedRepo unpushed = 2;
+  PlanToken token = 3;
+}
+
+message DeleteSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  PlanToken plan = 3;
+}
+
+message DeleteSessionResponse {
+  TrashItemId trash_item = 1;
+}
+
+message RebuildSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  MachineId machine = 3;
+}
+
+message AddRepoToSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  RepoRef repo = 3;
+}
+
+message PlanDropRepoRequest {
+  SessionId id = 1;
+  RepoRef repo = 2;
+}
+
+message DropRepoPlan {
+  SessionId id = 1;
+  UnpushedRepo work = 2;
+  PlanToken token = 3;
+}
+
+message DropRepoRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  RepoRef repo = 3;
+  PlanToken plan = 4;
+}
+
+message SetSpecModeRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  bool enabled = 3;
+  repeated RepoPath files = 4;
+  Revision expected_revision = 5;
+}
+
+message PlanPushRequest { SessionId id = 1; }
+
+message PushPlan {
+  message Repo {
+    RepoRef repo = 1;
+    string branch = 2;
+    uint32 dirty_files = 3;
+    uint32 unpushed_commits = 4;
+    uint32 added = 5;
+    uint32 removed = 6;
+    // An open PR for this branch already exists.
+    PullRequestRef existing = 7;
+  }
+  SessionId id = 1;
+  repeated Repo repos = 2;
+  PlanToken token = 3;
+}
+
+message PushChoice {
+  RepoRef repo = 1;
+  // Commit uncommitted files first with this message; empty: don't commit.
+  string commit_message = 2;
+  bool open_pull_request = 3;
+  string pr_title = 4;
+  string pr_body = 5;
+}
+
+message PushAndOpenPullRequestsRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId id = 2;
+  repeated PushChoice repos = 3;
+  PlanToken plan = 4;
+}
+
+message ReadConversationRequest {
+  SessionId id = 1;
+  PageRequest page = 2;
+}
+
+message TranscriptEntry {
+  enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_USER = 1;
+    ROLE_AGENT = 2;
+    ROLE_TOOL = 3;
+  }
+  Role role = 1;
+  string text = 2;
+  google.protobuf.Timestamp at = 3;
+}
+
+message ReadConversationResponse {
+  repeated TranscriptEntry entries = 1;
+  PageResponse page = 2;
+}
+
+message SendNoteRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId to = 2;
+  string text = 3;
+  // Shown on the Inbox card when the rule asks.
+  string reason = 4;
+}
+
+message SendNoteResponse {
+  Delivery delivery = 1;
+  JournalPosition journal = 2;
+  // True once typed into the target; false while queued for its turn end.
+  bool typed = 3;
+}
+
+message AskSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId to = 2;
+  string question = 3;
+  string reason = 4;
+  // 0: the default, 30 minutes.
+  uint32 timeout_seconds = 5;
+}
+
+// A question between sessions, "qu_<ulid>".
+message QuestionId { string value = 1; }
+
+message AskSessionResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_ANSWERED = 1;
+    OUTCOME_DECLINED = 2;
+    OUTCOME_EXPIRED = 3;
+  }
+  Outcome outcome = 1;
+  string answer = 2;
+}
+
+message AnswerQuestionRequest {
+  IdempotencyKey idempotency_key = 1;
+  // The id typed into the terminal with the question.
+  QuestionId question = 2;
+  string answer = 3;
+  bool decline = 4;
+}
+
+message AnswerQuestionResponse {}

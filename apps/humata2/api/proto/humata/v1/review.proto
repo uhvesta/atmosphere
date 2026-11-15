@@ -1,0 +1,530 @@
+// Diffs, the one comment model (SM-13), PR reviews and prepared views.
+// Diffs are computed on the session's machine; comments, drafts and views
+// live on the host (SL-1).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
+import "humata/v1/operations.proto";
+
+service DiffService {
+  // RV-1, RV-2: per repo, per file totals.
+  rpc GetDiff(GetDiffRequest) returns (GetDiffResponse);
+  // RV-3, RV-17: one file's hunks, with outdated/draft markers left to
+  // CommentService.
+  rpc GetFileDiff(GetFileDiffRequest) returns (FileDiff);
+  // RV-6. User-only: it decides what the user sees as new.
+  rpc MarkReviewed(MarkReviewedRequest) returns (MarkReviewedResponse);
+}
+
+service CommentService {
+  rpc ListComments(ListCommentsRequest) returns (ListCommentsResponse);
+  // The user's comments, and the agent's PR drafts (PR-9).
+  rpc CreateComment(CreateCommentRequest) returns (Comment);
+  rpc EditComment(EditCommentRequest) returns (Comment);
+  rpc DropComment(DropCommentRequest) returns (DropCommentResponse);
+  // SM-7 Re-attach.
+  rpc ReattachComment(ReattachCommentRequest) returns (Comment);
+  // RV-5, SM-9, SM-10: one bracketed paste, now or at turn end. Only
+  // terminal-bound drafts; PR drafts post with SubmitReview.
+  rpc SendComments(SendCommentsRequest) returns (SendCommentsResponse);
+  rpc ResolveComment(ResolveCommentRequest) returns (Comment);
+  // SM-11: back to draft.
+  rpc ReopenComment(ReopenCommentRequest) returns (Comment);
+}
+
+service PullRequestReviewService {
+  // PR-1, PR-3: title, author, branches, size, checks.
+  rpc ResolvePullRequest(ResolvePullRequestRequest) returns (PullRequestInfo);
+  // PR-4..6.
+  rpc StartReview(StartReviewRequest) returns (Operation);
+  // PR-15 on demand; the host also polls.
+  rpc CheckHeads(CheckHeadsRequest) returns (CheckHeadsResponse);
+  // PR-16.
+  rpc UpdateClone(UpdateCloneRequest) returns (Operation);
+  // PR-8. User-only.
+  rpc SetPushAllowed(SetPushAllowedRequest) returns (SetPushAllowedResponse);
+  // PR-12: drafts per PR, the drafted summary, verdict choices.
+  rpc PlanSubmit(PlanSubmitRequest) returns (SubmitPlan);
+  // PR-12..14. User-only. One review per PR; partial failure keeps the
+  // unposted drafts (Error.review_partly_posted).
+  rpc SubmitReview(SubmitReviewRequest) returns (SubmitReviewResponse);
+  // The agent's draft of the review summary (PR-12).
+  rpc DraftSummary(DraftSummaryRequest) returns (DraftSummaryResponse);
+}
+
+service ViewService {
+  // VW-1. Makes a draft view; nothing shows until MarkReady.
+  rpc PrepareView(PrepareViewRequest) returns (PreparedView);
+  // Replace a view's content while it is still a draft.
+  rpc ReviseView(ReviseViewRequest) returns (PreparedView);
+  // VW-2: the offer bar appears.
+  rpc MarkReady(MarkReadyRequest) returns (PreparedView);
+  // VW-10.
+  rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
+  // VW-4..9. User-only. The pre-open screen state for Revert is kept by
+  // the app, not here (REVIEW.md).
+  rpc SetViewState(SetViewStateRequest) returns (PreparedView);
+}
+
+// ---------------------------------------------------------------------------
+
+message DiffBase {
+  oneof base {
+    OriginMain origin_main = 1;            // where the branch started
+    UncommittedOnly uncommitted_only = 2;
+    SinceLastReviewed since_last_reviewed = 3;
+    SinceFork since_fork = 4;
+    SessionId other_session = 5;           // its branch, per repo
+    PullRequestBase pull_request_base = 6; // PR-10
+  }
+}
+
+message OriginMain {}
+message UncommittedOnly {}
+message SinceLastReviewed {}
+message SinceFork {}
+message PullRequestBase {}
+
+enum ChangeKind {
+  CHANGE_KIND_UNSPECIFIED = 0;
+  CHANGE_KIND_ADDED = 1;
+  CHANGE_KIND_MODIFIED = 2;
+  CHANGE_KIND_DELETED = 3;
+  CHANGE_KIND_RENAMED = 4;
+}
+
+message FileSummary {
+  string path = 1;
+  string old_path = 2;
+  ChangeKind change = 3;
+  uint32 added = 4;
+  uint32 removed = 5;
+  bool binary = 6;
+}
+
+message RepoDiff {
+  RepoRef repo = 1;
+  string branch = 2;
+  PullRequestRef pull_request = 3;
+  uint32 added = 4;
+  uint32 removed = 5;
+  repeated FileSummary files = 6;
+}
+
+message GetDiffRequest {
+  SessionId session = 1;
+  DiffBase base = 2;
+  // Empty: every repo of the session.
+  repeated RepoRef repos = 3;
+}
+
+message GetDiffResponse {
+  repeated RepoDiff repos = 1;
+  // RV-7: false means "No changes yet".
+  bool any_changes = 2;
+}
+
+message DiffLine {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CONTEXT = 1;
+    KIND_ADDED = 2;
+    KIND_REMOVED = 3;
+  }
+  Kind kind = 1;
+  uint32 old_line = 2;
+  uint32 new_line = 3;
+  string text = 4;
+}
+
+message Hunk {
+  string header = 1;
+  repeated DiffLine lines = 2;
+}
+
+message GetFileDiffRequest {
+  SessionId session = 1;
+  DiffBase base = 2;
+  RepoPath file = 3;
+  // RV-21: the whole new file with changes marked.
+  bool full_file = 4;
+}
+
+message FileDiff {
+  RepoPath file = 1;
+  FileSummary summary = 2;
+  repeated Hunk hunks = 3;
+  string old_blob_sha = 4;
+  string new_blob_sha = 5;
+}
+
+message MarkReviewedRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  PresenceProof presence = 3;
+}
+
+message MarkReviewedResponse {}
+
+// ---------------------------------------------------------------------------
+
+enum CommentStatus {
+  COMMENT_STATUS_UNSPECIFIED = 0;
+  COMMENT_STATUS_DRAFT = 1;
+  COMMENT_STATUS_QUEUED = 2;     // SM-10, waiting for the turn end
+  COMMENT_STATUS_SENT = 3;       // typed into the terminal
+  COMMENT_STATUS_ADDRESSED = 4;  // its passage changed after it was sent
+  COMMENT_STATUS_POSTED = 5;     // PR draft posted to GitHub
+  COMMENT_STATUS_RESOLVED = 6;
+}
+
+message CommentAnchor {
+  RepoPath file = 1;
+  LineRange lines = 2;
+  DiffSide side = 3;
+  // SM-6: the quoted passage, used to re-anchor.
+  string quoted = 4;
+  // The blob the lines refer to.
+  string blob_sha = 5;
+  // SM-7: true when the passage is gone.
+  bool detached = 6;
+  // PR-16: the line changed since the draft.
+  bool outdated = 7;
+}
+
+message CommentDestination {
+  oneof destination {
+    SessionTerminal terminal = 1;
+    PullRequestRef pull_request = 2;
+  }
+}
+
+message SessionTerminal {}
+
+message Comment {
+  CommentId id = 1;
+  SessionId session = 2;
+  CommentAnchor anchor = 3;
+  string text = 4;
+  Actor author = 5;
+  CommentDestination destination = 6;
+  CommentStatus status = 7;
+  // PR-14: link to the posted comment.
+  string posted_url = 8;
+  google.protobuf.Timestamp created_at = 9;
+  Revision revision = 10;
+}
+
+message ListCommentsRequest {
+  SessionId session = 1;
+  // Empty: every status but RESOLVED (SM-12).
+  repeated CommentStatus statuses = 2;
+  RepoPath file = 3;
+  PageRequest page = 4;
+}
+
+message ListCommentsResponse {
+  repeated Comment comments = 1;
+  // SM-15 badge.
+  uint32 draft_count = 2;
+  PageResponse page = 3;
+}
+
+message CreateCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  CommentAnchor anchor = 3;
+  string text = 4;
+  CommentDestination destination = 5;
+}
+
+message EditCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  string text = 3;
+  Revision expected_revision = 4;
+}
+
+message DropCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  Revision expected_revision = 3;
+}
+
+message DropCommentResponse {}
+
+message ReattachCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  CommentAnchor anchor = 3;
+  Revision expected_revision = 4;
+}
+
+message SendCommentsRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // The drafts the user saw; others stay drafts.
+  repeated CommentId ids = 3;
+}
+
+message SendCommentsResponse {
+  repeated Comment comments = 1;
+  bool queued = 2;
+}
+
+message ResolveCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  Revision expected_revision = 3;
+}
+
+message ReopenCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  Revision expected_revision = 3;
+}
+
+// ---------------------------------------------------------------------------
+
+message ResolvePullRequestRequest {
+  oneof ref {
+    string url = 1;            // https://github.com/acme/api/pull/482
+    PullRequestRef pr = 2;     // parsed owner/repo#n
+  }
+}
+
+enum PullRequestState {
+  PULL_REQUEST_STATE_UNSPECIFIED = 0;
+  PULL_REQUEST_STATE_OPEN = 1;
+  PULL_REQUEST_STATE_MERGED = 2;
+  PULL_REQUEST_STATE_CLOSED = 3;
+}
+
+message PullRequestInfo {
+  PullRequestRef pr = 1;
+  string title = 2;
+  string author = 3;
+  string base_branch = 4;
+  string head_branch = 5;
+  string head_sha = 6;
+  uint32 files = 7;
+  uint32 added = 8;
+  uint32 removed = 9;
+  PullRequestState state = 10;
+  // "3 passed, 1 failing".
+  string checks = 11;
+}
+
+message StartReviewRequest {
+  IdempotencyKey idempotency_key = 1;
+  repeated PullRequestRef prs = 2;
+  MachineId machine = 3;
+  AgentId agent = 4;
+  string model = 5;
+  string first_message = 6;
+  // PR-8 in the dialog.
+  bool push_allowed = 7;
+  PresenceProof presence = 8;
+}
+
+message CheckHeadsRequest { SessionId session = 1; }
+
+message HeadChange {
+  PullRequestRef pr = 1;
+  uint32 new_commits = 2;
+  bool force_pushed = 3;
+  PullRequestState state = 4;
+}
+
+message CheckHeadsResponse {
+  repeated HeadChange changes = 1;
+  google.protobuf.Timestamp checked_at = 2;
+}
+
+message UpdateCloneRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+}
+
+message SetPushAllowedRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  bool allowed = 3;
+  PresenceProof presence = 4;
+}
+
+message SetPushAllowedResponse {}
+
+enum Verdict {
+  VERDICT_UNSPECIFIED = 0;
+  VERDICT_COMMENT = 1;
+  VERDICT_APPROVE = 2;
+  VERDICT_REQUEST_CHANGES = 3;
+}
+
+message PlanSubmitRequest { SessionId session = 1; }
+
+message SubmitPlan {
+  message PerPullRequest {
+    PullRequestRef pr = 1;
+    repeated Comment drafts = 2;
+    string drafted_summary = 3;
+  }
+  SessionId session = 1;
+  repeated PerPullRequest pull_requests = 2;
+  PlanToken token = 3;
+}
+
+message ReviewSubmission {
+  PullRequestRef pr = 1;
+  Verdict verdict = 2;
+  string summary = 3;
+  // The drafts to post; the rest stay drafts.
+  repeated CommentId drafts = 4;
+}
+
+message SubmitReviewRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  repeated ReviewSubmission reviews = 3;
+  PlanToken plan = 4;
+  PresenceProof presence = 5;
+}
+
+message SubmitReviewResponse {
+  message Result {
+    PullRequestRef pr = 1;
+    string review_url = 2;
+    // Set when this PR's review didn't post.
+    Error error = 3;
+  }
+  repeated Result results = 1;
+}
+
+message DraftSummaryRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  PullRequestRef pr = 3;
+  string summary = 4;
+}
+
+message DraftSummaryResponse {
+  Delivery delivery = 1;
+  JournalPosition journal = 2;
+}
+
+// ---------------------------------------------------------------------------
+
+enum ViewState {
+  VIEW_STATE_UNSPECIFIED = 0;
+  VIEW_STATE_DRAFT = 1;              // prepared, not ready
+  VIEW_STATE_WAITING = 2;            // "Waiting for you"
+  VIEW_STATE_LATER = 3;
+  VIEW_STATE_NOT_NOW = 4;
+  VIEW_STATE_OPENED = 5;
+  VIEW_STATE_REVERTED = 6;
+  VIEW_STATE_OPENED_AND_CLOSED = 7;
+  VIEW_STATE_KEPT = 8;
+}
+
+message ReviewWalkthrough {
+  message Step {
+    RepoPath file = 1;
+    LineRange lines = 2;
+    string note = 3;
+  }
+  repeated Step steps = 1;
+}
+
+message BoardViewOffer {
+  // Must be a channel board scope of the session's channel (VW-1).
+  oneof scope {
+    ChannelId channel = 1;
+    ChannelId channel_with_sessions = 2;
+    SessionId session_with_forks = 3;
+    SessionId one_session = 4;
+  }
+}
+
+// A pull request the agent prepared for the user to open (not in the spec;
+// the coordinator's default grant includes "prepare a PR"). Opening it runs
+// SessionService.PlanPush and PushAndOpenPullRequests as the user: preparing
+// pushes nothing.
+message PullRequestDraft {
+  message PerRepo {
+    RepoRef repo = 1;
+    string title = 2;
+    string body = 3;
+    string base_branch = 4;
+    bool draft = 5;
+  }
+  repeated PerRepo repos = 1;
+}
+
+message PreparedView {
+  ViewId id = 1;
+  SessionId session = 2;
+  string title = 3;
+  string summary = 4;
+  oneof content {
+    ReviewWalkthrough review = 5;
+    BoardViewOffer board = 6;
+    PullRequestDraft pull_request = 12;
+  }
+  AgentActor prepared_by = 7;
+  google.protobuf.Timestamp prepared_at = 8;
+  ViewState state = 9;
+  Revision revision = 10;
+  JournalPosition journal = 11;
+}
+
+message PrepareViewRequest {
+  IdempotencyKey idempotency_key = 1;
+  string title = 2;
+  string summary = 3;
+  oneof content {
+    ReviewWalkthrough review = 4;
+    BoardViewOffer board = 5;
+    PullRequestDraft pull_request = 6;
+  }
+}
+
+message ReviseViewRequest {
+  IdempotencyKey idempotency_key = 1;
+  ViewId id = 2;
+  string title = 3;
+  string summary = 4;
+  oneof content {
+    ReviewWalkthrough review = 5;
+    BoardViewOffer board = 6;
+    PullRequestDraft pull_request = 8;
+  }
+  Revision expected_revision = 7;
+}
+
+message MarkReadyRequest {
+  IdempotencyKey idempotency_key = 1;
+  ViewId id = 2;
+}
+
+message ListViewsRequest {
+  SessionId session = 1;
+  bool include_forks = 2;
+  PageRequest page = 3;
+}
+
+message ListViewsResponse {
+  repeated PreparedView views = 1;
+  PageResponse page = 2;
+}
+
+message SetViewStateRequest {
+  IdempotencyKey idempotency_key = 1;
+  ViewId id = 2;
+  ViewState state = 3;
+}

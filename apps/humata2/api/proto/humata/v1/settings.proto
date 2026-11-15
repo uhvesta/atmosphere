@@ -1,0 +1,250 @@
+// Settings (ST-1..16), pinned and VIP marks (NV-20..23) and the app's view
+// state (SE-13, NV-16, NV-19). All live on the host (SL-1). Every write here
+// is user-only: no capability lets an agent call them, and MCP has no tool
+// for them (BOUNDARIES.md §5). Default access and While I'm away defaults
+// (ST-4, ST-6) are AccessService.Get/SetDefaultRules.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/common.proto";
+
+service SettingsService {
+  rpc GetSettings(GetSettingsRequest) returns (Settings);
+  // Changes only the sections set. Takes effect at once in every client
+  // (SettingsChanged event); ST-7 keeps each view's top line in place.
+  rpc UpdateSettings(UpdateSettingsRequest) returns (Settings);
+  rpc GetChannelSettings(GetChannelSettingsRequest) returns (ChannelSettings);
+  rpc UpdateChannelSettings(UpdateChannelSettingsRequest) returns (ChannelSettings);
+}
+
+service AgentService {
+  // ST-1: built-in and user-added agents, with what each supports.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  // ST-2. User-only.
+  rpc AddAgent(AddAgentRequest) returns (AgentDefinition);
+  // ST-1 Edit. User-only. Running sessions keep the command they started
+  // with; the change applies to the next start, fork or resume.
+  rpc UpdateAgent(UpdateAgentRequest) returns (AgentDefinition);
+}
+
+service MarkService {
+  // NV-20. User-only: agents can't set or clear marks.
+  rpc SetMarks(SetMarksRequest) returns (Marks);
+  // NV-21: the Pinned section, in the user's order.
+  rpc ListPinned(ListPinnedRequest) returns (ListPinnedResponse);
+  // Order within Pinned.
+  rpc ReorderPinned(ReorderPinnedRequest) returns (ListPinnedResponse);
+}
+
+// Fold state, pane sizes, scroll positions and which rows are shown, kept
+// on the host so they survive the app quitting (AR-3) and follow the user to
+// a second client. Opaque to the daemon.
+service ViewStateService {
+  rpc GetViewState(GetViewStateRequest) returns (GetViewStateResponse);
+  rpc PutViewState(PutViewStateRequest) returns (PutViewStateResponse);
+}
+
+// ---------------------------------------------------------------------------
+
+enum LongLines {
+  LONG_LINES_UNSPECIFIED = 0;
+  LONG_LINES_WRAP = 1;   // default
+  LONG_LINES_SCROLL = 2;
+}
+
+message TerminalSettings {
+  string font = 1;
+  float font_size = 2;
+  // Empty: follows the system.
+  string theme = 3;
+  // Kept on each machine (ST-3).
+  uint32 scrollback_lines = 4;
+}
+
+message DefaultAgent {
+  AgentId agent = 1;
+  string model = 2;
+}
+
+message RetentionRules {
+  // 0: off (LD-16 default).
+  uint32 archive_pr_reviews_after_days = 1;
+  uint32 archive_idle_sessions_after_days = 2;
+}
+
+message SkillsSettings {
+  bool auto_sync = 1;
+  repeated MachineId opted_out = 2;
+  repeated string exclude_patterns = 3;
+}
+
+message NotificationSettings {
+  // Local time, "22:00".."07:30"; empty: no quiet hours.
+  string quiet_from = 1;
+  string quiet_until = 2;
+  // NV-23.
+  bool vip_breaks_quiet_hours = 3;
+}
+
+message MachineSettings {
+  MachineId machine = 1;
+  string root = 2;   // changed with MachineService.ChangeRoot
+  bool vm_tier = 3;  // changed with MachineService.SetVmTier
+}
+
+message Settings {
+  DefaultAgent default_agent = 1;       // ST-15
+  TerminalSettings terminal = 2;        // ST-3
+  repeated MachineSettings machines = 3;   // ST-5, read-only here
+  string branch_prefix = 4;             // ST-13; empty allowed
+  bool branch_prefix_is_default = 5;    // the gh login + "/"
+  RetentionRules retention_defaults = 6;   // ST-14
+  LongLines long_lines = 7;             // ST-7
+  SkillsSettings skills = 8;            // ST-16
+  NotificationSettings notifications = 9;
+  Revision revision = 10;
+}
+
+message GetSettingsRequest {}
+
+message UpdateSettingsRequest {
+  IdempotencyKey idempotency_key = 1;
+  // Only the sections present are replaced.
+  DefaultAgent default_agent = 2;
+  TerminalSettings terminal = 3;
+  optional string branch_prefix = 4;
+  RetentionRules retention_defaults = 5;
+  optional LongLines long_lines = 6;
+  SkillsSettings skills = 7;
+  NotificationSettings notifications = 8;
+  Revision expected_revision = 9;
+  PresenceProof presence = 10;
+}
+
+message ChannelSettings {
+  ChannelId channel = 1;
+  // Unset: the global default.
+  DefaultAgent default_agent = 2;
+  optional string branch_prefix = 3;    // FC-12
+  RetentionRules retention = 4;         // LD-16
+  Revision revision = 5;
+}
+
+message GetChannelSettingsRequest { ChannelId channel = 1; }
+
+message UpdateChannelSettingsRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  DefaultAgent default_agent = 3;
+  bool clear_default_agent = 4;
+  optional string branch_prefix = 5;
+  bool clear_branch_prefix = 6;
+  RetentionRules retention = 7;
+  Revision expected_revision = 8;
+  PresenceProof presence = 9;
+}
+
+// ---------------------------------------------------------------------------
+
+message AgentDefinition {
+  AgentId id = 1;
+  string name = 2;
+  bool built_in = 3;
+  string launch_command = 4;
+  // Names only; values come from host variables (SEC-1).
+  repeated string variables = 5;
+  // Templates with {conversation_id} and {new_conversation_id}.
+  string resume_arguments = 6;
+  string fork_arguments = 7;
+  // ST-1: a context fork needs the agent to copy its conversation under a
+  // new id; without it only code-only forks are offered.
+  bool supports_context_fork = 8;
+  bool supports_resume = 9;
+  // SM-10, PER-17, FK-3: whether Humata can tell when a turn ends.
+  bool supports_turn_signal = 10;
+  repeated string models = 11;
+  Revision revision = 12;
+}
+
+message ListAgentsRequest {}
+
+message ListAgentsResponse { repeated AgentDefinition agents = 1; }
+
+message AddAgentRequest {
+  IdempotencyKey idempotency_key = 1;
+  AgentDefinition agent = 2;
+  PresenceProof presence = 3;
+}
+
+message UpdateAgentRequest {
+  IdempotencyKey idempotency_key = 1;
+  AgentDefinition agent = 2;
+  Revision expected_revision = 3;
+  PresenceProof presence = 4;
+}
+
+// ---------------------------------------------------------------------------
+
+message Marks {
+  EntityRef entity = 1;
+  bool pinned = 2;
+  bool vip = 3;
+  Revision revision = 4;
+}
+
+message SetMarksRequest {
+  IdempotencyKey idempotency_key = 1;
+  // Sessions, channels, machines, PR reviews and board items (NV-20); any
+  // other kind fails with invalid_field.
+  EntityRef entity = 2;
+  optional bool pinned = 3;
+  optional bool vip = 4;
+}
+
+message PinnedEntry {
+  EntityRef entity = 1;
+  string title = 2;
+  // NV-21: the event shown there, if any ("needs input · 2m").
+  string event = 3;
+  google.protobuf.Timestamp event_at = 4;
+  bool vip = 5;
+}
+
+message ListPinnedRequest {}
+
+message ListPinnedResponse {
+  repeated PinnedEntry entries = 1;
+  Revision revision = 2;
+}
+
+message ReorderPinnedRequest {
+  IdempotencyKey idempotency_key = 1;
+  repeated EntityRef order = 2;
+  Revision expected_revision = 3;
+}
+
+// ---------------------------------------------------------------------------
+
+message ViewStateEntry {
+  // Namespaced by the app: "session/<id>/rows", "diff/<id>/folds",
+  // "panes/main". At most 64 KiB each.
+  string key = 1;
+  bytes value = 2;
+  Revision revision = 3;
+}
+
+message GetViewStateRequest {
+  // Prefix match.
+  repeated string key_prefixes = 1;
+}
+
+message GetViewStateResponse { repeated ViewStateEntry entries = 1; }
+
+message PutViewStateRequest {
+  repeated ViewStateEntry entries = 1;
+}
+
+message PutViewStateResponse { repeated ViewStateEntry entries = 1; }

@@ -1,0 +1,524 @@
+// Machines, providers and skills sync (HO-1..9, MP-1..22, SK-1..8,
+// LD-10..15, LD-19..20). The registry (hosts.json) lives on the host; each
+// call that touches a machine is carried out there over the peer link.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/channels.proto";
+import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
+import "humata/v1/operations.proto";
+
+service MachineService {
+  rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse);
+  // HO-4: the machine page, health card included. Health is read live when
+  // the machine is online and is otherwise the last copy, with its time.
+  rpc GetMachine(GetMachineRequest) returns (MachineDetail);
+  // HO-1, MP-10: plain SSH host or ~/.ssh/config alias. Steps: connect,
+  // check, install, start, find_agents.
+  rpc AddSshMachine(AddSshMachineRequest) returns (Operation);
+  // HO-6 Reconnect now. Returns once the attempt ends either way.
+  rpc ReconnectMachine(ReconnectMachineRequest) returns (Machine);
+  // LD-10, for a reachable machine: every session on it, in every channel,
+  // must get a disposition.
+  rpc PlanRemoveMachine(PlanRemoveMachineRequest) returns (RemoveMachinePlan);
+  rpc RemoveMachine(RemoveMachineRequest) returns (Operation);
+  // LD-11, for a machine that is gone: lists the work lost per session from
+  // the last pointers. Never contacts the machine.
+  rpc PlanForgetMachine(PlanForgetMachineRequest) returns (ForgetMachinePlan);
+  rpc ForgetMachine(ForgetMachineRequest) returns (ForgetMachineResponse);
+  // FC-10, ST-5. Moves the Humata folders; refused while sessions run there.
+  rpc ChangeRoot(ChangeRootRequest) returns (Operation);
+  // PER-8. User-only.
+  rpc SetVmTier(SetVmTierRequest) returns (Machine);
+  // LD-13, LD-14: measured now, not cached.
+  rpc GetStorage(GetStorageRequest) returns (StorageReport);
+  // LD-15: a running session's cache is cleared only with confirm_running.
+  rpc ClearBuildCache(ClearBuildCacheRequest) returns (ClearBuildCacheResponse);
+  rpc TrimLogs(TrimLogsRequest) returns (TrimLogsResponse);
+  // HO-7, SEC-1: names only.
+  rpc ListHostVariables(ListHostVariablesRequest) returns (ListHostVariablesResponse);
+  // Write-only: the value goes to the machine and is never returned by any
+  // call. User-only; the spec does not yet say where values are entered.
+  rpc SetHostVariable(SetHostVariableRequest) returns (SetHostVariableResponse);
+  // MP-9 after Error.host_key_changed. User-only, with presence: accepting
+  // a changed key is how an interception would get in.
+  rpc TrustNewHostKey(TrustNewHostKeyRequest) returns (Machine);
+}
+
+service ProviderService {
+  rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  // MP-2: the TOML from Settings › Machine providers. Set is user-only and
+  // validates before saving; nothing is saved when any problem is found.
+  rpc GetProvidersConfig(GetProvidersConfigRequest) returns (ProvidersConfig);
+  rpc SetProvidersConfig(SetProvidersConfigRequest) returns (SetProvidersConfigResponse);
+  // MP-4, MP-19: params must be the provider's declared ones. Steps: create,
+  // identity, connect, check, install, service, register.
+  rpc CreateMachine(CreateMachineRequest) returns (Operation);
+  // MP-21: start, stop, status, delete (delete runs RemoveMachine first).
+  rpc RunProviderAction(RunProviderActionRequest) returns (Operation);
+  // MP-20 "Delete what was made" after a failed CreateMachine.
+  rpc DeleteWhatWasMade(DeleteWhatWasMadeRequest) returns (Operation);
+  // MP-12..15: the connect command in a real terminal in the dialog, on the
+  // Mac. User-only: an agent can never type into a login.
+  rpc InteractiveLogin(stream LoginClientMessage) returns (stream LoginServerMessage);
+  // MP-17. User-only.
+  rpc MakeUnattended(MakeUnattendedRequest) returns (Machine);
+}
+
+service SkillsService {
+  // SK-5: what a sync would add, update and remove, and name clashes.
+  rpc PreviewSkillsSync(PreviewSkillsSyncRequest) returns (SkillsSyncPlan);
+  // SK-2. A machine's first sync needs that machine's plan token (SK-5).
+  rpc SyncSkills(SyncSkillsRequest) returns (Operation);
+  // SK-5 clash pick. User-only.
+  rpc ResolveSkillClash(ResolveSkillClashRequest) returns (ResolveSkillClashResponse);
+}
+
+// ---------------------------------------------------------------------------
+
+enum Reachability {
+  REACHABILITY_UNSPECIFIED = 0;
+  REACHABILITY_ONLINE = 1;
+  REACHABILITY_CONNECTING = 2;
+  // HO-5: the link is down; sessions may well be running.
+  REACHABILITY_OFFLINE = 3;
+  // MP-16: interactive machine whose login lapsed.
+  REACHABILITY_NEEDS_LOGIN = 4;
+  // MP-21: the provider's status says stopped.
+  REACHABILITY_STOPPED = 5;
+  // MP-9: the pinned host key no longer matches; nothing is sent.
+  REACHABILITY_HOST_KEY_CHANGED = 6;
+}
+
+message Machine {
+  MachineId id = 1;
+  string name = 2;
+  // As shown: "devbox-1.internal" or "via hcloud".
+  string address = 3;
+  bool is_this_mac = 4;
+  Reachability reachability = 5;
+  string os = 6;
+  string arch = 7;
+  string daemon_version = 8;
+  uint32 latency_ms = 9;
+  uint32 session_count = 10;
+  ProviderId provider = 11;   // unset for plain SSH
+  google.protobuf.Timestamp last_seen_at = 12;
+  google.protobuf.Timestamp next_retry_at = 13;
+  bool pinned = 14;
+  bool vip = 15;
+  bool vm_tier = 16;
+  string root = 17;
+  Revision revision = 18;
+}
+
+message ListMachinesRequest { PageRequest page = 1; }
+
+message ListMachinesResponse {
+  repeated Machine machines = 1;
+  PageResponse page = 2;
+}
+
+message GetMachineRequest { MachineId id = 1; }
+
+message MachineHealth {
+  google.protobuf.Timestamp read_at = 1;
+  string gh_user = 2;           // empty: gh not signed in
+  repeated string gh_scopes = 3;
+  repeated AgentId agents_installed = 4;
+  uint64 disk_free_bytes = 5;
+  uint64 disk_total_bytes = 6;
+  repeated string variable_names = 7;
+  bool linger_enabled = 8;      // PER-18
+  bool skills_auto_sync = 9;    // SK-3 per-machine opt-out
+  Error skills_sync_problem = 10;   // SK-8, when the last sync failed
+}
+
+message MachineFolder {
+  ChannelId channel = 1;
+  string path = 2;
+}
+
+// HO-4 "what its agents can reach through the Mac with each rule's setting".
+message MachineReach {
+  ChannelId channel = 1;
+  repeated Rule rules = 2;
+}
+
+message MachineDetail {
+  Machine machine = 1;
+  MachineHealth health = 2;
+  repeated MachineFolder folders = 3;
+  repeated SessionId sessions = 4;
+  repeated MachineReach reach = 5;
+  // MP-2: only actions whose command the provider defines.
+  repeated ProviderAction actions = 6;
+}
+
+message AddSshMachineRequest {
+  IdempotencyKey idempotency_key = 1;
+  // An alias from ~/.ssh/config or user@host[:port].
+  string ssh_host = 2;
+  string name = 3;
+  // Default ~/Humata (FC-10).
+  string root = 4;
+}
+
+message ReconnectMachineRequest { MachineId id = 1; }
+
+message PlanRemoveMachineRequest { MachineId id = 1; }
+
+message RemoveMachinePlan {
+  MachineId machine = 1;
+  repeated SessionWork sessions = 2;
+  repeated ChannelId channels = 3;
+  // MP-21: the provider's delete runs afterwards.
+  bool runs_provider_delete = 4;
+  PlanToken token = 5;
+}
+
+message RemoveMachineRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  repeated SessionDisposition dispositions = 3;
+  PlanToken plan = 4;
+  PresenceProof presence = 5;
+}
+
+message PlanForgetMachineRequest { MachineId id = 1; }
+
+message LostWork {
+  SessionId session = 1;
+  string title = 2;
+  // From the last pointers (SL-3), with their time.
+  uint32 dirty_files = 3;
+  uint32 unpushed_commits = 4;
+  google.protobuf.Timestamp pointers_at = 5;
+}
+
+message ForgetMachinePlan {
+  MachineId machine = 1;
+  repeated LostWork lost = 2;
+  PlanToken token = 3;
+}
+
+message ForgetMachineRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  PlanToken plan = 3;
+  PresenceProof presence = 4;
+}
+
+message ForgetMachineResponse {
+  // Archived from the host's records; each can be rebuilt (SL-4).
+  repeated SessionId archived = 1;
+}
+
+message ChangeRootRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  string root = 3;
+  PresenceProof presence = 4;
+}
+
+message SetVmTierRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  bool on = 3;
+  PresenceProof presence = 4;
+}
+
+message GetStorageRequest { MachineId id = 1; }
+
+enum StorageKind {
+  STORAGE_KIND_UNSPECIFIED = 0;
+  STORAGE_KIND_SESSION_CLONES = 1;
+  STORAGE_KIND_MAIN_CLONES = 2;
+  STORAGE_KIND_BUILD_CACHE = 3;
+  STORAGE_KIND_TRASH = 4;
+  STORAGE_KIND_LOGS = 5;
+}
+
+enum StorageAction {
+  STORAGE_ACTION_UNSPECIFIED = 0;
+  STORAGE_ACTION_NONE = 1;      // main clones of a channel using the machine
+  STORAGE_ACTION_ARCHIVE = 2;   // SessionService.PlanArchive
+  STORAGE_ACTION_CLEAR = 3;     // ClearBuildCache
+  STORAGE_ACTION_EMPTY = 4;     // TrashService.PlanEmptyTrash
+  STORAGE_ACTION_TRIM = 5;      // TrimLogs
+}
+
+message StorageRow {
+  StorageKind kind = 1;
+  string what = 2;
+  EntityRef entity = 3;
+  // For build caches: the folder, relative to the session folder.
+  string path = 4;
+  uint64 bytes = 5;
+  google.protobuf.Timestamp last_used_at = 6;
+  StorageAction action = 7;
+}
+
+// LD-17: sessions a retention rule skipped, and why.
+message RetentionSkip {
+  SessionId session = 1;
+  string reason = 2;
+}
+
+message StorageReport {
+  MachineId machine = 1;
+  google.protobuf.Timestamp measured_at = 2;
+  uint64 free_bytes = 3;
+  uint64 total_bytes = 4;
+  repeated StorageRow rows = 5;
+  repeated RetentionSkip retention_skips = 6;
+}
+
+message ClearBuildCacheRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  string path = 3;
+  // LD-15: required when the session is running.
+  bool confirm_running = 4;
+}
+
+message ClearBuildCacheResponse { uint64 freed_bytes = 1; }
+
+message TrimLogsRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+}
+
+message TrimLogsResponse { uint64 freed_bytes = 1; }
+
+message ListHostVariablesRequest { MachineId id = 1; }
+
+message ListHostVariablesResponse {
+  repeated string names = 1;
+}
+
+message SetHostVariableRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  string name = 3;
+  // Never logged, journaled, audited or echoed. Empty removes it.
+  string value = 4;
+  PresenceProof presence = 5;
+}
+
+message SetHostVariableResponse {}
+
+message TrustNewHostKeyRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  // The fingerprint from Error.host_key_changed, so the user accepts the key
+  // they were shown and not one that changed again since.
+  string new_fingerprint = 3;
+  PresenceProof presence = 4;
+}
+
+// ---------------------------------------------------------------------------
+
+enum ProviderAction {
+  PROVIDER_ACTION_UNSPECIFIED = 0;
+  PROVIDER_ACTION_START = 1;
+  PROVIDER_ACTION_STOP = 2;
+  PROVIDER_ACTION_STATUS = 3;
+  PROVIDER_ACTION_DELETE = 4;
+}
+
+message ProviderParam {
+  string name = 1;
+  string prompt = 2;
+  string default_value = 3;
+}
+
+message Provider {
+  ProviderId id = 1;
+  string label = 2;
+  repeated ProviderParam params = 3;
+  // Host variable names passed to its commands (MP-4); values never shown.
+  repeated string env = 4;
+  bool has_create = 5;
+  enum Reach {
+    REACH_UNSPECIFIED = 0;
+    REACH_CONNECT = 1;
+    REACH_IDENTITY = 2;
+  }
+  Reach reach = 6;
+  repeated ProviderAction actions = 7;
+  bool interactive = 8;
+  MachineId run_on = 9;   // unset: the Mac (MP-5)
+  bool built_in = 10;     // the Lima example (MP-22)
+}
+
+message ListProvidersRequest {}
+
+message ListProvidersResponse { repeated Provider providers = 1; }
+
+message GetProvidersConfigRequest {}
+
+message ProvidersConfig {
+  string toml = 1;
+  Revision revision = 2;
+}
+
+message SetProvidersConfigRequest {
+  IdempotencyKey idempotency_key = 1;
+  string toml = 2;
+  Revision expected_revision = 3;
+  PresenceProof presence = 4;
+}
+
+message ProviderConfigProblem {
+  ProviderId provider = 1;
+  string field = 2;
+  uint32 line = 3;
+  Error error = 4;
+}
+
+message SetProvidersConfigResponse {
+  // Non-empty: nothing was saved.
+  repeated ProviderConfigProblem problems = 1;
+  Revision revision = 2;
+}
+
+message CreateMachineRequest {
+  IdempotencyKey idempotency_key = 1;
+  ProviderId provider = 2;
+  string name = 3;
+  // Declared params only; any other key fails with invalid_field.
+  map<string, string> params = 4;
+}
+
+message RunProviderActionRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId machine = 2;
+  ProviderAction action = 3;
+  // DELETE: the RemoveMachine plan and dispositions it runs first.
+  RemoveMachineRequest remove = 4;
+  PresenceProof presence = 5;
+}
+
+message DeleteWhatWasMadeRequest {
+  IdempotencyKey idempotency_key = 1;
+  // The failed CreateMachine operation.
+  OperationId operation = 2;
+}
+
+message LoginClientMessage {
+  oneof message {
+    LoginOpen open = 1;
+    bytes input = 2;
+    LoginResize resize = 3;
+    // "Done, I'm logged in": Humata starts the takeover (MP-15).
+    LoginDone done = 4;
+    LoginCancel cancel = 5;
+  }
+}
+
+message LoginOpen {
+  oneof target {
+    MachineId machine = 1;       // MP-16 Log in on an existing machine
+    OperationId operation = 2;   // a connect step of AddSsh/CreateMachine
+  }
+  uint32 cols = 3;
+  uint32 rows = 4;
+}
+
+message LoginResize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+message LoginDone {}
+message LoginCancel {}
+
+message LoginServerMessage {
+  oneof message {
+    bytes output = 1;
+    // MP-13: what Humata saw that needs a person.
+    string prompt_seen = 2;
+    // MP-15: the sync marker was seen; the link is the daemon's from here.
+    LoginReady ready = 3;
+    Error failed = 4;
+  }
+}
+
+message LoginReady {
+  MachineId machine = 1;
+  // MP-17: offered next.
+  bool can_make_unattended = 2;
+}
+
+message MakeUnattendedRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId machine = 2;
+  enum Method {
+    METHOD_UNSPECIFIED = 0;
+    METHOD_AUTHORIZED_KEY = 1;
+    METHOD_KEEP_CACHED_TOKEN = 2;
+  }
+  Method method = 3;
+  PresenceProof presence = 4;
+}
+
+// ---------------------------------------------------------------------------
+
+message SkillChange {
+  // Agent folder ("claude", "copilot") and skill name.
+  string agent = 1;
+  string skill = 2;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_ADD = 1;
+    KIND_UPDATE = 2;
+    KIND_REMOVE = 3;   // only from the Humata-managed folder (SK-4)
+  }
+  Kind kind = 3;
+}
+
+message SkillClash {
+  string agent = 1;
+  string skill = 2;
+  enum Use {
+    USE_UNSPECIFIED = 0;   // not picked yet: the machine-local one is used
+    USE_SYNCED = 1;
+    USE_LOCAL = 2;
+  }
+  Use current = 3;
+}
+
+message PreviewSkillsSyncRequest { MachineId machine = 1; }
+
+message SkillsSyncPlan {
+  MachineId machine = 1;
+  bool first_sync = 2;
+  repeated SkillChange changes = 3;
+  repeated SkillClash clashes = 4;
+  // SK-6: files left out as secret-looking or excluded, by count.
+  uint32 excluded_files = 5;
+  PlanToken token = 6;
+}
+
+message SyncSkillsRequest {
+  IdempotencyKey idempotency_key = 1;
+  // Empty: every machine (SK-2).
+  repeated MachineId machines = 2;
+  // Required for machines whose first sync this is.
+  repeated PlanToken plans = 3;
+}
+
+message ResolveSkillClashRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId machine = 2;
+  string agent = 3;
+  string skill = 4;
+  SkillClash.Use use = 5;
+}
+
+message ResolveSkillClashResponse {}

@@ -1,0 +1,475 @@
+// Host <-> machine link (AR-4, TR-2, SL-3..6, LD-8, AW-3..6). Served by each
+// remote humatad on the stdio of `humatad serve --stdio`, which the host
+// starts over SSH (MP-7). Never served on a unix socket: no local client,
+// agent or CLI can call these. The host is the gRPC client; machine-to-host
+// traffic rides the Uplink stream the host opens.
+//
+// A machine also serves TerminalService, FileService and DiffService on the
+// same link, so the host can relay the app's calls; the host has already
+// checked access, and the machine trusts the caller it was started by.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/capabilities.proto";
+import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
+import "humata/v1/inbox.proto";
+import "humata/v1/sessions.proto";
+
+service PeerService {
+  // First call on every link. Fails with Error.identity_mismatch when the
+  // machine's enrollment doesn't match the host's record (a re-imaged or
+  // swapped machine, LD-12) and with peer_version_unsupported outside N-2.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+
+  // One per link, for its life. Ordered both ways; each side acks what it
+  // has made durable, and both resume from the acks after a reconnect.
+  rpc Uplink(stream HostToMachine) returns (stream MachineToHost);
+
+  // Holders (PER-1, PER-5, PER-11..17). The host writes the session record
+  // first (SL-1); the machine fsyncs its own copy before launching (PER-11).
+  rpc LaunchSession(LaunchSessionRequest) returns (LaunchSessionResponse);
+  rpc StopHolder(StopHolderRequest) returns (StopHolderResponse);
+  // PER-13..15: verified resume; returns Error.resume_failed with the
+  // reason, never a silent fresh start.
+  rpc ResumeHolder(ResumeHolderRequest) returns (LaunchSessionResponse);
+  rpc ListHolders(ListHoldersRequest) returns (ListHoldersResponse);
+
+  // Clones (FC-3..9, MV-2, FK-5, SL-4). With gh on the machine it clones
+  // from GitHub; without, from a bundle the host streams in (SEC-2).
+  rpc PrepareClone(PrepareCloneRequest) returns (PrepareCloneResponse);
+  rpc ReceiveBundle(stream BundleChunk) returns (ReceiveBundleResponse);
+  rpc CreateBundle(CreateBundleRequest) returns (stream BundleChunk);
+  // FC-7: the host pushes with its own token; the machine only packs.
+  rpc CreatePushPack(CreatePushPackRequest) returns (stream BundleChunk);
+
+  // Conversations (FK-2, MV-3, SL-4). Import rewrites paths from the old
+  // folder to the new and, for a fork, gives the copy a new id.
+  rpc ExportConversation(ExportConversationRequest) returns (stream ConversationChunk);
+  rpc ImportConversation(stream ImportConversationMessage) returns (ImportConversationResponse);
+
+  // SK-1..7: writes only into the Humata-managed skills folder.
+  rpc ApplySkills(stream SkillsMessage) returns (ApplySkillsResponse);
+
+  // HO-1 check, HO-4 health, LD-13 storage.
+  rpc Probe(ProbeRequest) returns (ProbeResponse);
+}
+
+// ---------------------------------------------------------------------------
+
+message HelloRequest {
+  MachineId expected_machine = 1;
+  uint32 host_api_major = 2;
+  uint32 host_api_minor = 3;
+  // Random; the machine answers with HMAC-SHA256(enrollment_key, nonce).
+  bytes nonce = 4;
+  // MP-15 interactive takeover marker, when the link came up that way.
+  string sync_marker = 5;
+}
+
+message HelloResponse {
+  MachineId machine = 1;
+  bytes proof = 2;
+  string daemon_version = 3;
+  uint32 api_major = 4;
+  uint32 api_minor = 5;
+  // Highest journal seq written; the host replays up to it (SL-5).
+  uint64 journal_high_water = 6;
+  // Holders running now, found after a daemon restart (PER-5).
+  repeated SessionId running = 7;
+  google.protobuf.Timestamp booted_at = 8;
+}
+
+// ---------------------------------------------------------------------------
+
+message HostToMachine {
+  oneof message {
+    UplinkAck ack = 1;
+    ForwardedResult result = 2;
+    PolicySnapshot policy = 3;
+    InboxAnswerRelay answer = 4;
+    RequestWithdrawnRelay withdrawn = 5;
+    UplinkResume resume = 6;
+    PushResult push_result = 7;
+  }
+}
+
+message MachineToHost {
+  oneof message {
+    UplinkAck ack = 1;
+    PointersReport pointers = 2;
+    MirrorChunk mirror = 3;
+    SessionStatusReport status = 4;
+    JournalEntry journal = 5;
+    ForwardedCall call = 6;
+    ForwardedCallCancel cancel = 7;
+    LocalAnswer local_answer = 8;
+    PushRequested push = 9;
+    UplinkResume resume = 10;
+  }
+}
+
+// What the sender has made durable. The host acks journal seqs once the
+// entry is applied or rejected; the machine acks policy revisions and relayed
+// answers once stored.
+message UplinkAck {
+  uint64 journal_through = 1;
+  // Per session: mirror bytes stored on the host.
+  repeated MirrorOffset mirror = 2;
+  uint64 policy_revision = 3;
+  uint64 answers_through = 4;
+}
+
+message MirrorOffset {
+  SessionId session = 1;
+  uint64 offset = 2;
+}
+
+// First message each way after Hello, saying where to resume.
+message UplinkResume {
+  UplinkAck from = 1;
+}
+
+// SL-3. Full set per session each time, so a lost one costs nothing.
+message PointersReport {
+  SessionId session = 1;
+  repeated Pointer pointers = 2;
+  google.protobuf.Timestamp at = 3;
+}
+
+// LD-8: the conversation file, append-only, offset-keyed.
+message MirrorChunk {
+  SessionId session = 1;
+  string conversation_id = 2;
+  uint64 offset = 3;
+  bytes data = 4;
+  // The agent rewrote the file (compaction): the host starts a new
+  // generation and keeps the old one in history.
+  bool rewritten = 5;
+}
+
+message SessionStatusReport {
+  SessionId session = 1;
+  SessionStatus status = 2;
+  // From the agent's adapter; unknown when it gives none (SM-10).
+  enum Turn {
+    TURN_UNSPECIFIED = 0;
+    TURN_UNKNOWN = 1;
+    TURN_IDLE = 2;
+    TURN_WORKING = 3;
+    TURN_WAITING_ON_TOOL = 4;
+  }
+  Turn turn = 3;
+  int32 exit_code = 4;
+  Error problem = 5;   // resume_failed, disk_full
+}
+
+// The agent a forwarded call or journal entry speaks for. The host accepts
+// it only for sessions it has placed on this machine: a machine can't act
+// for a session elsewhere (Error.identity_mismatch).
+message AgentPrincipal {
+  SessionId session = 1;
+  // Which MCP process: its pid and start time, for the audit only.
+  uint32 pid = 2;
+}
+
+// SL-5: an MCP write made while the host was unreachable, accepted under the
+// last PolicySnapshot (GRPC.md §9).
+message JournalEntry {
+  uint64 seq = 1;
+  google.protobuf.Timestamp at = 2;
+  AgentPrincipal principal = 3;
+  // The MCP operation id ("board.item_update") and its request, as the
+  // gRPC request message it maps to.
+  string operation = 4;
+  bytes request = 5;
+  // The entity revision the agent last saw; the host uses it to tell a
+  // conflict from a plain update (SL-6).
+  Revision base_revision = 6;
+  // The policy the machine judged it under.
+  uint64 policy_revision = 7;
+  // Ids the machine gave things it made ("~devbox-1.3").
+  repeated BoardItemId provisional_ids = 8;
+}
+
+// A client call the machine can't answer itself: an MCP tool, or `humata`
+// on the machine. The host runs it as that principal and answers with
+// ForwardedResult. Cancelled when the caller goes away; a mutation already
+// started is not undone (GRPC.md §7).
+message ForwardedCall {
+  uint64 call_id = 1;
+  oneof principal {
+    AgentPrincipal agent = 2;
+    // `humata` run by the user over SSH on the machine (AW-5), with the
+    // presence it proved there.
+    MachineUser user = 3;
+  }
+  // Full gRPC method name, "/humata.v1.BoardService/UpdateItem".
+  string method = 4;
+  bytes request = 5;
+  google.protobuf.Timestamp deadline = 6;
+  IdempotencyKey idempotency_key = 7;
+}
+
+message MachineUser {
+  // Approval passphrase, checked by the host (never by the machine).
+  PresenceProof presence = 1;
+  // Not inside any Humata session's terminal (PresenceRequired otherwise).
+  bool outside_sessions = 2;
+}
+
+message ForwardedCallCancel { uint64 call_id = 1; }
+
+message ForwardedResult {
+  uint64 call_id = 1;
+  oneof outcome {
+    bytes response = 2;
+    Error error = 3;
+    // An Inbox request was made; the call stays open until it is answered.
+    RequestId pending = 4;
+  }
+}
+
+// What a machine needs to judge its agents' calls while the host is away
+// (GRPC.md §9). Sent on every change; versioned; the machine applies it only
+// forward.
+message PolicySnapshot {
+  uint64 revision = 1;
+  google.protobuf.Timestamp at = 2;
+  repeated ChannelRules channels = 3;
+  // Grants for sessions on this machine only.
+  repeated Grant grants = 4;
+  // Board items the machine's sessions own or may edit, with revisions, so
+  // journaled edits can be checked for ownership (BD-9).
+  repeated OwnedItem owned_items = 5;
+  // The capabilities whose Ask is decided by AwayRule while the host is away.
+  repeated Capability low_risk = 6;
+}
+
+message OwnedItem {
+  BoardItemId item = 1;
+  SessionId owner = 2;
+  Revision revision = 3;
+}
+
+// AW-6: answered in one place, answered everywhere.
+message InboxAnswerRelay {
+  uint64 seq = 1;
+  RequestId request = 2;
+  RequestAnswer answer = 3;
+  Actor by = 4;
+  google.protobuf.Timestamp at = 5;
+}
+
+message RequestWithdrawnRelay {
+  uint64 seq = 1;
+  RequestId request = 2;
+}
+
+// AW-5: the user answered a journaled request on the machine while the host
+// was away. The machine already acted on it; the host records it, and the
+// first answer recorded at the site holding the call wins (GRPC.md §9).
+message LocalAnswer {
+  RequestId request = 1;
+  RequestAnswer answer = 2;
+  google.protobuf.Timestamp at = 3;
+}
+
+// FC-7: a session's `git push` on a machine without gh.
+message PushRequested {
+  uint64 push_id = 1;
+  SessionId session = 2;
+  RepoRef repo = 3;
+  repeated string refs = 4;
+}
+
+message PushResult {
+  uint64 push_id = 1;
+  Error error = 2;   // unset: pushed
+}
+
+// ---------------------------------------------------------------------------
+
+message LaunchSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  string folder = 3;
+  AgentId agent = 4;
+  repeated string argv = 5;
+  repeated string variable_names = 6;
+  // PER-12.
+  string conversation_id = 7;
+  uint32 cols = 8;
+  uint32 rows = 9;
+  // humatad mcp is given this; it binds the server to the session.
+  bytes session_token = 10;
+}
+
+message LaunchSessionResponse {
+  SessionId session = 1;
+  TabId agent_tab = 2;
+  uint32 holder_pid = 3;
+}
+
+message StopHolderRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+}
+
+message StopHolderResponse {
+  int32 exit_code = 1;
+}
+
+message ResumeHolderRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  string conversation_id = 3;
+  // PER-14: what to tell the agent once it has resumed.
+  string resume_note = 4;
+  bytes session_token = 5;
+}
+
+message ListHoldersRequest {}
+
+message ListHoldersResponse {
+  repeated SessionId running = 1;
+}
+
+message PrepareCloneRequest {
+  IdempotencyKey idempotency_key = 1;
+  string path = 2;
+  RepoRef repo = 3;
+  string branch = 4;
+  string base_sha = 5;
+  enum Method {
+    METHOD_UNSPECIFIED = 0;
+    METHOD_GH = 1;
+    // Wait for ReceiveBundle with this clone's path.
+    METHOD_BUNDLE = 2;
+    // FC-5: local clone of the channel's main clone.
+    METHOD_FROM_MAIN = 3;
+  }
+  Method method = 6;
+  bool read_only = 7;   // main clones (FC-2), PR reviews (PR-7)
+}
+
+message PrepareCloneResponse {
+  Pointer pointer = 1;
+}
+
+message BundleChunk {
+  // First chunk only.
+  string path = 1;
+  uint64 offset = 2;
+  bytes data = 3;
+  string sha256 = 4;   // last chunk: the whole bundle's
+  bool last = 5;
+}
+
+message ReceiveBundleResponse {
+  Pointer pointer = 1;
+}
+
+message CreateBundleRequest {
+  string path = 1;
+  // Everything not on the remote, plus uncommitted work as a commit on a
+  // side ref (MV-2), so a move loses nothing.
+  bool include_uncommitted = 2;
+}
+
+message CreatePushPackRequest {
+  uint64 push_id = 1;
+  string path = 2;
+  repeated string refs = 3;
+}
+
+message ExportConversationRequest {
+  SessionId session = 1;
+  string conversation_id = 2;
+  uint64 offset = 3;
+}
+
+message ConversationChunk {
+  uint64 offset = 1;
+  bytes data = 2;
+  string sha256 = 3;
+  bool last = 4;
+}
+
+message ImportConversationHeader {
+  SessionId session = 1;
+  AgentId agent = 2;
+  // For a fork, a new id; for a move, the same id.
+  string conversation_id = 3;
+  string old_folder = 4;
+  string new_folder = 5;
+}
+
+message ImportConversationMessage {
+  oneof message {
+    ImportConversationHeader header = 1;
+    ConversationChunk chunk = 2;
+  }
+}
+
+message ImportConversationResponse {
+  string conversation_id = 1;
+  uint32 paths_rewritten = 2;
+}
+
+message SkillsManifestEntry {
+  string agent = 1;
+  string path = 2;
+  string sha256 = 3;
+  uint64 size = 4;
+}
+
+message SkillsMessage {
+  oneof message {
+    // First message: the full intended state; files not listed are removed
+    // from the managed folder only.
+    SkillsManifest manifest = 1;
+    SkillsFile file = 2;
+  }
+}
+
+message SkillsManifest {
+  uint64 version = 1;
+  repeated SkillsManifestEntry entries = 2;
+}
+
+message SkillsFile {
+  string agent = 1;
+  string path = 2;
+  uint64 offset = 3;
+  bytes data = 4;
+  bool last = 5;
+}
+
+message ApplySkillsResponse {
+  uint64 version = 1;
+  // SK-5: same-name skills made on the machine.
+  repeated string clashes = 2;
+}
+
+message ProbeRequest {
+  bool measure_storage = 1;   // LD-14: only when the page opens
+}
+
+message ProbeResponse {
+  string os = 1;
+  string arch = 2;
+  string git_version = 3;
+  string gh_user = 4;
+  repeated string gh_scopes = 5;
+  repeated AgentId agents_installed = 6;
+  uint64 disk_free_bytes = 7;
+  uint64 disk_total_bytes = 8;
+  repeated string variable_names = 9;
+  bool linger_enabled = 10;
+  // Sizes by Humata folder, when measured.
+  map<string, uint64> folder_bytes = 11;
+}

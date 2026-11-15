@@ -1,0 +1,351 @@
+// Agent access: rules, scoped grants, While I'm away, the audit log, and
+// the proof of presence user-only calls need. Served by the host only; each
+// machine gets a read-only PolicySnapshot over the peer link (peer.proto).
+// Every Set*/Revoke* call here needs CAPABILITY_ACCESS_CHANGE, which no agent
+// can hold (BOUNDARIES.md §5).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/capabilities.proto";
+import "humata/v1/common.proto";
+
+service AccessService {
+  // The catalog: every capability with its scope, default and whether
+  // agents can hold it. Same for every caller.
+  rpc ListCapabilities(ListCapabilitiesRequest) returns (ListCapabilitiesResponse);
+  rpc GetChannelRules(GetChannelRulesRequest) returns (ChannelRules);
+  rpc SetChannelRule(SetChannelRuleRequest) returns (ChannelRules);
+  rpc SetAwayRule(SetAwayRuleRequest) returns (ChannelRules);
+  // ST-4 and ST-6: what new channels start with.
+  rpc GetDefaultRules(GetDefaultRulesRequest) returns (DefaultRules);
+  rpc SetDefaultRules(SetDefaultRulesRequest) returns (DefaultRules);
+  rpc ListGrants(ListGrantsRequest) returns (ListGrantsResponse);
+  rpc RevokeGrant(RevokeGrantRequest) returns (RevokeGrantResponse);
+  // What would happen if this session did this now, and why. Agents may ask
+  // only about themselves (the "What this agent may do" card, SE-20).
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
+  // Settings › Security: the passphrase that proves presence on a machine
+  // while the host is away. Stored as an Argon2id hash on each machine.
+  rpc SetApprovalPassphrase(SetApprovalPassphraseRequest) returns (SetApprovalPassphraseResponse);
+}
+
+// How `humata` proves it is the person and not an agent (BOUNDARIES.md
+// §2.2). Not in the spec; added because process ancestry alone can be
+// escaped by a double fork.
+service CliAuthService {
+  // `humata login`: confirmed in the app (or with the approval passphrase
+  // while the host is away). Binds the terminal session that ran it (its
+  // session id, session leader start time and controlling tty) for at most
+  // 12 hours. Processes in that terminal session are the present user.
+  rpc BeginCliSession(BeginCliSessionRequest) returns (CliSession);
+  rpc EndCliSession(EndCliSessionRequest) returns (EndCliSessionResponse);
+  rpc ListCliSessions(ListCliSessionsRequest) returns (ListCliSessionsResponse);
+  // A token for scripts: a fixed set of agent-holdable capabilities on
+  // named channels, never a user-only one. User-only and needs presence.
+  rpc CreateScriptToken(CreateScriptTokenRequest) returns (CreateScriptTokenResponse);
+  rpc ListScriptTokens(ListScriptTokensRequest) returns (ListScriptTokensResponse);
+  rpc RevokeScriptToken(RevokeScriptTokenRequest) returns (RevokeScriptTokenResponse);
+}
+
+message BeginCliSessionRequest {
+  PresenceProof presence = 1;
+  // Shorter is allowed; longer than 12 hours fails with invalid_field.
+  uint32 hours = 2;
+}
+
+message CliSession {
+  string id = 1;
+  MachineId machine = 2;
+  // As shown in the confirmation: "Terminal, ttys004".
+  string terminal = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message EndCliSessionRequest { string id = 1; }
+message EndCliSessionResponse {}
+message ListCliSessionsRequest {}
+message ListCliSessionsResponse { repeated CliSession sessions = 1; }
+
+message CreateScriptTokenRequest {
+  IdempotencyKey idempotency_key = 1;
+  string name = 2;
+  // Only capabilities with agents_may_hold; others fail with invalid_field.
+  repeated Capability capabilities = 3;
+  repeated ChannelId channels = 4;
+  // At most 90 days.
+  uint32 days = 5;
+  PresenceProof presence = 6;
+}
+
+message CreateScriptTokenResponse {
+  string token_id = 1;
+  // Shown once. Stored by the host only as a hash.
+  string token = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message ListScriptTokensRequest {}
+message ListScriptTokensResponse {
+  message Entry {
+    string token_id = 1;
+    string name = 2;
+    repeated Capability capabilities = 3;
+    repeated ChannelId channels = 4;
+    google.protobuf.Timestamp expires_at = 5;
+    google.protobuf.Timestamp last_used_at = 6;
+  }
+  repeated Entry tokens = 1;
+}
+
+message RevokeScriptTokenRequest {
+  string token_id = 1;
+  PresenceProof presence = 2;
+}
+message RevokeScriptTokenResponse {}
+
+service AuditService {
+  // Every allowed-without-asking action, every answer and every user-only
+  // change (IN-8), newest first.
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
+}
+
+// ---------------------------------------------------------------------------
+
+// Proof that a person, not an agent, made a user-only call from the CLI.
+// The app's own connection needs none. See BOUNDARIES.md §2.3.
+message PresenceProof {
+  oneof proof {
+    // Host only: the daemon shows a confirmation in the app naming the
+    // command and its terminal, and holds the call until it is answered.
+    ConfirmInApp confirm_in_app = 1;
+    // Machines while the host is away (AW-5).
+    string approval_passphrase = 2;
+  }
+}
+
+message ConfirmInApp {}
+
+message CapabilityInfo {
+  Capability capability = 1;
+  CapabilityScope scope = 2;
+  // As listed on the Agent access tab.
+  string title = 3;
+  // The default for new channels before ST-4 changes it. UNSPECIFIED for
+  // user-only and peer capabilities.
+  Decision default_decision = 4;
+  // False for user-only and peer capabilities: no rule, no grant.
+  bool agents_may_hold = 5;
+  // False when the decision is fixed (e.g. own clones are always Allow).
+  bool rule_editable = 6;
+  // True when AW-4 "Allow low-risk kinds" may include it.
+  bool may_be_low_risk = 7;
+}
+
+message ListCapabilitiesRequest {}
+message ListCapabilitiesResponse { repeated CapabilityInfo capabilities = 1; }
+
+message Rule {
+  Capability capability = 1;
+  Decision decision = 2;
+  // Grants under this rule. Suspended while the rule is Never.
+  repeated Grant grants = 3;
+}
+
+enum AwayMode {
+  AWAY_MODE_UNSPECIFIED = 0;
+  AWAY_MODE_WAIT = 1;
+  AWAY_MODE_SKIP = 2;
+  AWAY_MODE_ALLOW_LOW_RISK = 3;
+}
+
+message AwayRule {
+  AwayMode mode = 1;
+  // With ALLOW_LOW_RISK: the kinds the user counts as low-risk. Only
+  // capabilities with may_be_low_risk; cross-machine ones can't run while
+  // the host is away whatever this says (GRPC.md §9).
+  repeated Capability low_risk = 2;
+}
+
+message ChannelRules {
+  ChannelId channel = 1;
+  repeated Rule rules = 2;
+  AwayRule away = 3;
+  Revision revision = 4;
+}
+
+message GetChannelRulesRequest { ChannelId channel = 1; }
+
+message SetChannelRuleRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  Capability capability = 3;
+  Decision decision = 4;
+  Revision expected_revision = 5;
+  PresenceProof presence = 6;
+}
+
+message SetAwayRuleRequest {
+  IdempotencyKey idempotency_key = 1;
+  ChannelId channel = 2;
+  AwayRule away = 3;
+  Revision expected_revision = 4;
+  PresenceProof presence = 5;
+}
+
+message DefaultRules {
+  repeated Rule rules = 1;
+  AwayRule away = 2;
+  Revision revision = 3;
+}
+
+message GetDefaultRulesRequest {}
+
+message SetDefaultRulesRequest {
+  IdempotencyKey idempotency_key = 1;
+  repeated Rule rules = 2;
+  AwayRule away = 3;
+  Revision expected_revision = 4;
+  PresenceProof presence = 5;
+}
+
+// What an "Always let …" covers. Exactly the requester and the target the
+// card named (IN-14); never a wider kind of target than the request had.
+message GrantTarget {
+  oneof target {
+    SessionId session = 1;        // note, type, read files of that session
+    MachineId machine = 2;        // read files on, start sessions on it
+    BoardItemId board_item = 3;   // edit or move that item
+    BoardRef board = 4;           // add to that board
+    PathScope path = 5;           // read or copy under this prefix
+    NetworkTarget network = 6;    // q7
+  }
+}
+
+message PathScope {
+  MachineId machine = 1;
+  SessionId session = 2;
+  // Repo-relative prefix; empty path means the whole repo.
+  RepoPath prefix = 3;
+}
+
+message NetworkTarget {
+  string host = 1;
+  uint32 port = 2;
+}
+
+message Grant {
+  GrantId id = 1;
+  ChannelId channel = 2;
+  Capability capability = 3;
+  // The session it was granted to. Forks and moved copies keep the session
+  // id only for moves (MV-5); forks start with no grants.
+  SessionId requester = 4;
+  GrantTarget target = 5;
+  RequestId granted_from = 6;
+  google.protobuf.Timestamp granted_at = 7;
+  google.protobuf.Timestamp last_used_at = 8;
+  // True while the rule is Never (Never outranks grants).
+  bool suspended = 9;
+}
+
+message ListGrantsRequest {
+  ChannelId channel = 1;
+  // Optional filters.
+  SessionId requester = 2;
+  Capability capability = 3;
+  PageRequest page = 4;
+}
+
+message ListGrantsResponse {
+  repeated Grant grants = 1;
+  PageResponse page = 2;
+}
+
+message RevokeGrantRequest {
+  IdempotencyKey idempotency_key = 1;
+  GrantId grant = 2;
+  PresenceProof presence = 3;
+}
+
+message RevokeGrantResponse {}
+
+// The order the checker applies: a hard limit, then user-only, then a
+// Never rule, then a grant, then the rule's Allow or Ask.
+enum DecisionSource {
+  DECISION_SOURCE_UNSPECIFIED = 0;
+  DECISION_SOURCE_OWNED = 1;           // IN-16: its own session and items
+  DECISION_SOURCE_RULE = 2;
+  DECISION_SOURCE_GRANT = 3;
+  DECISION_SOURCE_HARD_LIMIT = 4;      // IN-20
+  DECISION_SOURCE_USER_ONLY = 5;
+  DECISION_SOURCE_AWAY_RULE = 6;
+}
+
+message ExplainRequest {
+  // Unset for an agent: itself. The user may name any session.
+  SessionId session = 1;
+  Capability capability = 2;
+  GrantTarget target = 3;
+}
+
+message ExplainResponse {
+  // ALLOW, ASK or NEVER as it would apply now.
+  Decision decision = 1;
+  DecisionSource source = 2;
+  GrantId grant = 3;
+  // True when the host is away and AW-4 would apply instead.
+  bool host_away = 4;
+  AwayMode away_mode = 5;
+}
+
+message SetApprovalPassphraseRequest {
+  IdempotencyKey idempotency_key = 1;
+  // Empty clears it: then nothing user-only can be done on a machine while
+  // the host is away.
+  string passphrase = 2;
+  PresenceProof presence = 3;
+}
+
+message SetApprovalPassphraseResponse {}
+
+// ---------------------------------------------------------------------------
+
+enum AuditOutcome {
+  AUDIT_OUTCOME_UNSPECIFIED = 0;
+  AUDIT_OUTCOME_APPLIED = 1;
+  AUDIT_OUTCOME_FAILED = 2;
+  AUDIT_OUTCOME_DENIED = 3;
+  AUDIT_OUTCOME_JOURNALED = 4;
+  AUDIT_OUTCOME_REJECTED_ON_REPLAY = 5;
+}
+
+message AuditEntry {
+  uint64 seq = 1;
+  google.protobuf.Timestamp at = 2;
+  Actor actor = 3;
+  Capability capability = 4;
+  EntityRef target = 5;
+  // As shown in the log: "read acme/api/src/ledger.rs in “Ledger schema”".
+  string summary = 6;
+  DecisionSource source = 7;
+  GrantId grant = 8;
+  RequestId request = 9;
+  AuditOutcome outcome = 10;
+  JournalPosition journal = 11;
+}
+
+message ListAuditRequest {
+  // Unset: everything (global Inbox log). Set: that channel or session.
+  ChannelId channel = 1;
+  SessionId session = 2;
+  // Only these sources; empty means all.
+  repeated DecisionSource sources = 3;
+  PageRequest page = 4;
+}
+
+message ListAuditResponse {
+  repeated AuditEntry entries = 1;
+  PageResponse page = 2;
+}

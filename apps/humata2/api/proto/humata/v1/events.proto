@@ -1,0 +1,129 @@
+// The host's change feed (TR-3, TR-4). One ordered sequence per host; every
+// committed change to host state is one event. Clients read lists once, then
+// follow this feed instead of polling. Terminal bytes are not events
+// (TerminalService.Attach); transfers and operations appear here only as
+// state changes, not per chunk.
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/access.proto";
+import "humata/v1/boards.proto";
+import "humata/v1/channels.proto";
+import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
+import "humata/v1/files.proto";
+import "humata/v1/hosts.proto";
+import "humata/v1/inbox.proto";
+import "humata/v1/operations.proto";
+import "humata/v1/review.proto";
+import "humata/v1/sessions.proto";
+import "humata/v1/settings.proto";
+
+service EventService {
+  // Events after `after`, then live ones. The stream never ends on its own.
+  // When `after` is older than the oldest event kept, the first message is
+  // Resync and the stream continues from the present (GRPC.md §6).
+  // Events the caller may not see are left out; seq numbers then skip.
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+}
+
+message SubscribeRequest {
+  // Unset: from now.
+  EventSeq after = 1;
+  // Empty: everything the caller may see.
+  repeated ChannelId channels = 2;
+  repeated SessionId sessions = 3;
+  repeated Topic topics = 4;
+}
+
+enum Topic {
+  TOPIC_UNSPECIFIED = 0;
+  TOPIC_SESSIONS = 1;
+  TOPIC_CHANNELS = 2;
+  TOPIC_MACHINES = 3;
+  TOPIC_BOARDS = 4;
+  TOPIC_INBOX = 5;
+  TOPIC_ACCESS = 6;
+  TOPIC_COMMENTS = 7;
+  TOPIC_VIEWS = 8;
+  TOPIC_OPERATIONS = 9;
+  TOPIC_TRANSFERS = 10;
+  TOPIC_ACTIVITY = 11;
+  TOPIC_MARKS = 12;
+  TOPIC_SETTINGS = 13;
+  TOPIC_JOURNAL = 14;
+}
+
+enum Change {
+  CHANGE_UNSPECIFIED = 0;
+  CHANGE_CREATED = 1;
+  CHANGE_UPDATED = 2;
+  CHANGE_DELETED = 3;   // the snapshot is the last state, then a tombstone
+}
+
+message Event {
+  EventSeq seq = 1;
+  google.protobuf.Timestamp at = 2;
+  Actor by = 3;
+  Change change = 4;
+  // Set when the change came from a journal replay (SL-5).
+  JournalPosition journal = 5;
+  // The entity as it is after the change.
+  oneof payload {
+    Session session = 10;
+    Channel channel = 11;
+    Machine machine = 12;
+    BoardItem board_item = 13;
+    InboxRequest request = 14;
+    Grant grant = 15;
+    Comment comment = 16;
+    PreparedView view = 17;
+    Operation operation = 18;
+    Transfer transfer = 19;
+    ActivityEvent activity = 20;
+    Marks marks = 21;
+    Settings settings = 22;
+    ChannelRules rules = 23;
+    JournalReplayed journal_replayed = 24;
+    ProvisionalIdResolved provisional_id_resolved = 25;
+    PointersUpdated pointers = 26;
+    Resync resync = 27;
+  }
+}
+
+// AW-6: one machine's journal has been replayed up to `through`.
+message JournalReplayed {
+  MachineId machine = 1;
+  uint64 through_seq = 2;
+  uint32 applied = 3;
+  // Applied, then overwritten by a later write (SL-6); kept in history.
+  uint32 lost_conflicts = 4;
+  repeated JournalRejection rejected = 5;
+}
+
+// A journaled write the host refused on replay (the rule changed, the item
+// was deleted, the session ended). The agent is told through its session.
+message JournalRejection {
+  JournalPosition position = 1;
+  string operation = 2;   // the MCP operation id, "board.item_update"
+  Error error = 3;
+}
+
+message ProvisionalIdResolved {
+  BoardItemId provisional = 1;
+  BoardItemId final = 2;
+}
+
+// SL-3. Sent when a session's pointers change, coalesced to at most one per
+// session per second.
+message PointersUpdated {
+  SessionId session = 1;
+  repeated Pointer pointers = 2;
+}
+
+message Resync {
+  // The oldest seq still kept. Refetch lists, then continue from this stream.
+  EventSeq earliest = 1;
+}
