@@ -471,6 +471,14 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             .requests
             .push(request(id, session, channel, RequestKind::Command, title));
     }
+    workspace.file_contents.insert((SessionId::new("ledger"), "api".into(), "src/client.rs".into()),
+        "use crate::ledger::{Entry, Ledger};\n\npub fn insert_entry(ledger: &mut Ledger, entry: Entry) {\n    ledger.insert(entry.clone());\n    ledger.insert_legacy(entry);\n}\n".into());
+    if ledger_status == Status::NeedsYou {
+        workspace.views.push(PreparedView {
+            title: "Review: ledger schema".into(), session: SessionId::new("ledger"),
+            body: "A guided walk through the 3 files, risky parts first.\n\n1. api/src/client.rs — keep the dual write in one transaction.\n2. migrations/0042_accounts.sql — check the account key.\n3. backfill.sql — batches, timings and rollback.".into(), accepted: false,
+        });
+    }
     workspace.items = [
         (
             "PAY-12",
@@ -736,6 +744,7 @@ fn session(
         active: "1 min ago".to_owned(),
         transcript: transcript(title, agent),
         shells: Vec::new(),
+        terminal_agents: Default::default(),
         archived: false,
         recovery: None,
     }
@@ -1302,4 +1311,41 @@ fn journal() -> Vec<JournalEntry> {
         entry("14 min ago", None, "ci-runner went offline"),
         entry("1 h ago", Some("s-theme"), "Opened #87 Dark mode tokens"),
     ]
+}
+
+/// Deterministic output from a second program in the sample session.
+pub(crate) fn extra_terminal(agent: Agent, repo: &str, branch: &str) -> Vec<Line> {
+    let mut lines = vec![Line {
+        from: Speaker::System,
+        text: format!("~/src/{repo} ({branch}) $ {}", agent.command()),
+    }];
+    if agent == Agent::Codex {
+        lines.extend(
+            [
+                (
+                    Speaker::You,
+                    "> Review the migration Claude is writing; don't edit files.",
+                ),
+                (Speaker::Agent, ""),
+                (Speaker::Agent, "• Read migrations/0042_accounts.sql"),
+                (Speaker::Agent, "• Read api/src/client.rs"),
+                (Speaker::Agent, ""),
+                (
+                    Speaker::Agent,
+                    "  The dual write isn't in a transaction: a crash between",
+                ),
+                (
+                    Speaker::Agent,
+                    "  insert_entry and insert_legacy leaves them out of step.",
+                ),
+                (Speaker::Agent, "• Working (41s • esc to interrupt)"),
+            ]
+            .into_iter()
+            .map(|(from, text)| Line {
+                from,
+                text: text.into(),
+            }),
+        );
+    }
+    lines
 }

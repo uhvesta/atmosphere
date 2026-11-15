@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::model::{
     Channel, ChannelId, FileEntry, Item, JournalEntry, Machine, MachineId, PreparedView,
-    PullRequest, RepoDiff, Request, Session, SessionFile, SessionId, Skill, Spec, Transfer, Trashed,
+    PullRequest, RepoDiff, Request, Session, SessionFile, SessionId, Skill, Spec, Transfer,
+    Trashed,
 };
 
 /// What every daemon the app talks to holds, merged.
@@ -26,6 +27,8 @@ pub struct Workspace {
     pub files: Vec<FileEntry>,
     /// Repository paths in each session’s own clones, including unchanged files.
     pub session_files: BTreeMap<SessionId, Vec<SessionFile>>,
+    /// Text returned by the fake host's file reader, keyed by session/repo/path.
+    pub file_contents: BTreeMap<(SessionId, String, String), String>,
     /// Copies between hosts.
     pub transfers: Vec<Transfer>,
     /// What can still be restored.

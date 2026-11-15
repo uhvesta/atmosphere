@@ -20,15 +20,25 @@ fn block_on<T>(future: impl Future<Output = T>) -> T {
 #[test]
 fn reconnecting_a_host_reattaches_resumes_or_explains_each_session() {
     let daemon = FakeDaemon::new(fixture::standard(), Arc::new(TestClock::new()));
-    let outcomes = block_on(daemon.reconnect(&MachineId::new("ci-runner")))
-        .expect("the host reconnects");
+    let outcomes =
+        block_on(daemon.reconnect(&MachineId::new("ci-runner"))).expect("the host reconnects");
     assert!(outcomes.contains(&(SessionId::new("s-tf"), Recovery::Reattached)));
     assert!(outcomes.contains(&(SessionId::new("s-runner"), Recovery::Resumed)));
-    assert!(outcomes.iter().any(|(id, recovery)| id.as_str() == "s-backup"
-        && matches!(recovery, Recovery::Recoverable { .. })));
+    assert!(
+        outcomes
+            .iter()
+            .any(|(id, recovery)| id.as_str() == "s-backup"
+                && matches!(recovery, Recovery::Recoverable { .. }))
+    );
     let workspace = daemon.workspace();
-    assert!(workspace.machine(&MachineId::new("ci-runner")).is_some_and(|m| m.online));
-    let tf = workspace.session(&SessionId::new("s-tf")).expect("s-tf exists");
+    assert!(
+        workspace
+            .machine(&MachineId::new("ci-runner"))
+            .is_some_and(|m| m.online)
+    );
+    let tf = workspace
+        .session(&SessionId::new("s-tf"))
+        .expect("s-tf exists");
     assert_ne!(tf.status, Status::Offline);
 }
 
@@ -58,7 +68,10 @@ fn a_dependency_that_would_make_a_cycle_is_refused() {
 fn a_scripted_failure_fails_only_the_next_call() {
     let daemon = FakeDaemon::new(fixture::standard(), Arc::new(TestClock::new()));
     daemon.fail_next(Operation::Load, "the link dropped");
-    assert!(matches!(block_on(daemon.load()), Err(DaemonError::Scripted { .. })));
+    assert!(matches!(
+        block_on(daemon.load()),
+        Err(DaemonError::Scripted { .. })
+    ));
     assert!(block_on(daemon.load()).is_ok());
 }
 
@@ -114,4 +127,45 @@ fn a_fork_starts_with_its_parents_clone_listing() {
         assert_eq!(workspace.session_files.get(&fork), Some(&before));
         assert_eq!(workspace.session_files.get(&parent), Some(&before));
     }
+}
+
+#[test]
+fn a_second_agent_attaches_once_while_shells_are_independent() {
+    use humata2_clients::{Terminals, model::Agent};
+    let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+    let id = SessionId::new("ledger");
+    let (first, _) = block_on(daemon.open(&id, Agent::Codex)).expect("codex starts");
+    let (again, _) = block_on(daemon.open(&id, Agent::Codex)).expect("codex attaches");
+    assert_eq!(first, again);
+    let (main, _) = block_on(daemon.open(&id, Agent::Claude)).expect("main attaches");
+    assert_eq!(main, 0);
+    let (shell, _) = block_on(daemon.open(&id, Agent::Shell)).expect("shell starts");
+    let (other, _) = block_on(daemon.open(&id, Agent::Shell)).expect("another shell starts");
+    assert_ne!(shell, other);
+    assert_eq!(
+        daemon
+            .workspace()
+            .session(&id)
+            .unwrap()
+            .terminal_agents
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn reading_a_file_uses_its_sessions_clone_and_reports_offline() {
+    let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+    let id = SessionId::new("ledger");
+    let text = block_on(daemon.read_file(&id, "api", "src/client.rs")).expect("file exists");
+    assert!(text.contains("pub fn insert_entry"));
+    assert!(matches!(
+        block_on(daemon.read_file(&SessionId::new("brin"), "api", "src/client.rs")),
+        Err(DaemonError::NotFound { .. })
+    ));
+    daemon.take_offline(&MachineId::new("devbox-1"));
+    assert!(matches!(
+        block_on(daemon.read_file(&id, "api", "src/client.rs")),
+        Err(DaemonError::Offline { .. })
+    ));
 }

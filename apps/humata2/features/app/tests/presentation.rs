@@ -99,3 +99,37 @@ fn half_screen_and_wide_again_restore_sizes_without_saving_automatic_folds() {
     assert!(!no_panel.sidebar_hidden);
     assert_eq!(no_panel.panel, 0.);
 }
+
+#[test]
+fn a_restart_restores_both_tab_groups_and_the_selected_file() {
+    use humata2_session::{Tab, TabGroup};
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    let id = SessionId::new("ledger");
+    state.route = Route::Session(id.clone());
+    let view = SessionView {
+        groups: vec![
+            TabGroup {
+                tabs: vec![Tab::Terminal(0), Tab::Terminal(1)],
+                selected: 1,
+            },
+            TabGroup {
+                tabs: vec![Tab::File {
+                    repo: "api".into(),
+                    path: "src/client.rs".into(),
+                }],
+                selected: 0,
+            },
+        ],
+        focused_group: 1,
+        tab: 1,
+        ..Default::default()
+    };
+    state.session.views.insert(id.clone(), view.clone());
+    saved::Saver::new(clients.storage.clone())
+        .save(1, &state.saved())
+        .expect("save tabs");
+    let restored = AppState::launch(&clients);
+    assert_eq!(restored.session.views.get(&id), Some(&view));
+    assert_eq!(restored.session.open, Some(id));
+}

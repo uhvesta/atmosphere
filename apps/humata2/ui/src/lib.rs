@@ -13,6 +13,7 @@ pub mod record;
 mod chrome;
 mod overlays;
 mod pages;
+mod session_tabs;
 mod panels;
 mod shell;
 mod sidebar;

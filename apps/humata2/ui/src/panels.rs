@@ -1057,11 +1057,11 @@ fn files(
                         ui,
                         "files-open-big",
                         "Open big",
-                        AppAction::Session(SessionAction::ToggleWiden),
+                        AppAction::Session(SessionAction::OpenFile),
                         look,
                         false,
                     )
-                    .disabled(full),
+                    .disabled(state.session.view().is_none_or(|v| v.file.is_none())),
                 )
                 .child(
                     Button::new("files-open-editor")

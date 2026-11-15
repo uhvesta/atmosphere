@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use humata2_clients::Workspace;
+use humata2_clients::{Workspace, model::SessionId};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
@@ -26,6 +26,8 @@ pub struct ViewsState {
     pub workspace: Arc<Workspace>,
     /// What was decided.
     pub decisions: Decisions,
+    /// Offers hidden until the next visit to their session.
+    pub later: BTreeSet<String>,
     /// The view showing, by title.
     pub showing: Option<String>,
 }
@@ -39,6 +41,7 @@ impl ViewsState {
             .iter()
             .filter(|view| {
                 !view.accepted
+                    && !self.later.contains(&view.title)
                     && !self.decisions.accepted.contains(&view.title)
                     && !self.decisions.dismissed.contains(&view.title)
             })
@@ -65,6 +68,10 @@ pub enum ViewsAction {
     Restore(Decisions),
     /// Open it: opt in and show the view.
     Accept(String),
+    /// Hide this offer for the current visit.
+    Later(String),
+    /// Return to a session: show offers deferred there again.
+    Return(SessionId),
     /// Not now: drop the offer.
     Dismiss(String),
     /// Show an opted-in view.
@@ -90,6 +97,19 @@ impl Reducer for Views {
             ViewsAction::Accept(title) => {
                 state.decisions.accepted.insert(title.clone());
                 state.showing = Some(title);
+            }
+            ViewsAction::Later(title) => {
+                state.later.insert(title);
+            }
+            ViewsAction::Return(session) => {
+                for view in state
+                    .workspace
+                    .views
+                    .iter()
+                    .filter(|v| v.session == session)
+                {
+                    state.later.remove(&view.title);
+                }
             }
             ViewsAction::Dismiss(title) => {
                 state.decisions.dismissed.insert(title);

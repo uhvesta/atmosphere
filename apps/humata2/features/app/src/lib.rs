@@ -575,6 +575,7 @@ impl App {
         )];
         match state.route.clone() {
             Route::Session(id) => {
+                effects.push(self.child(state, AppAction::Views(ViewsAction::Return(id.clone()))));
                 effects
                     .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
                 effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
@@ -860,6 +861,10 @@ impl App {
                 if state.navigation_overlay {
                     state.navigation_overlay = false;
                     return Effect::none();
+                }
+                if state.session.terminal_menu.is_some() {
+                    return self
+                        .child(state, AppAction::Session(SessionAction::TerminalMenu(None)));
                 }
                 if state.session.fork.is_some() {
                     return self.child(state, AppAction::Session(SessionAction::CancelFork));
@@ -1169,6 +1174,27 @@ impl App {
                         effect.and(self.child(state, AppAction::Review(ReviewAction::Open(id))))
                     }
                     _ => effect,
+                }
+            }
+            AppAction::Views(action @ (ViewsAction::Accept(_) | ViewsAction::Open(_))) => {
+                let (ViewsAction::Accept(title) | ViewsAction::Open(title)) = &action else {
+                    return Effect::none();
+                };
+                let title = title.clone();
+                let session = state
+                    .workspace
+                    .views
+                    .iter()
+                    .find(|v| v.title == title)
+                    .map(|v| v.session.clone());
+                let effect = self.child(state, AppAction::Views(action));
+                if let Some(id) = session {
+                    let arrive = self.navigate(state, Route::Session(id));
+                    effect
+                        .and(arrive)
+                        .and(self.child(state, AppAction::Session(SessionAction::OpenView(title))))
+                } else {
+                    effect
                 }
             }
             action @ (AppAction::Sidebar(_)

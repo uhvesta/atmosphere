@@ -113,6 +113,17 @@ pub enum Agent {
 }
 
 impl Agent {
+    /// The program name used for its terminal tab.
+    #[must_use]
+    pub const fn command(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Copilot => "copilot",
+            Self::OpenCode => "opencode",
+            Self::Shell => "zsh",
+        }
+    }
     /// Every agent, in menu order.
     pub const ALL: [Self; 5] = [
         Self::Claude,
@@ -271,6 +282,8 @@ pub struct Session {
     pub transcript: Vec<Line>,
     /// Its extra terminal tabs (SE-8), after the agent's.
     pub shells: Vec<String>,
+    /// Extra terminals running agents, by tab index; absent entries are shells.
+    pub terminal_agents: std::collections::BTreeMap<usize, Agent>,
     /// Whether it was archived.
     pub archived: bool,
     /// What happened to it when its host came back (PER-26), until the

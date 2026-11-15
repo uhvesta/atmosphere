@@ -72,6 +72,7 @@ Button "Session actions"
 Tab "claude" selected
 Tab "zsh"
 Tab "dev server"
+Button "New terminal"
 Log "Login v2 terminal"
   text "Claude started · Login v2"
   text "Please work on: Login v2"

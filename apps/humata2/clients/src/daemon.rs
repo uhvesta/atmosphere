@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 
 use crate::fixture;
 use crate::model::{
-    Agent, Answer, ChannelId, Channel, Comment, ForkKind, Item, ItemId, ItemKind, ItemStatus,
-    Line, MachineId, Recovery, RequestId, Scope, Session, SessionId, Speaker, Status, Transfer,
+    Agent, Answer, Channel, ChannelId, Comment, ForkKind, Item, ItemId, ItemKind, ItemStatus, Line,
+    MachineId, Recovery, RequestId, Scope, Session, SessionId, Speaker, Status, Transfer,
     TransferId, TransferState, Turn,
 };
 use crate::workspace::Workspace;
@@ -88,7 +88,9 @@ pub enum DaemonError {
         machine: MachineId,
     },
     /// What was asked about is gone.
-    #[error("{what} no longer exists. It may have been archived or deleted from another window; reload to see what is there now")]
+    #[error(
+        "{what} no longer exists. It may have been archived or deleted from another window; reload to see what is there now"
+    )]
     NotFound {
         /// What was asked about.
         what: String,
@@ -113,6 +115,8 @@ pub enum DaemonError {
 
 /// What the app asks of the daemons.
 pub trait Daemon: Send + Sync + 'static {
+    /// Reads a text file in this session's own repository clone.
+    fn read_file(&self, session: &SessionId, repo: &str, path: &str) -> Reply<String>;
     /// Everything there is, merged across hosts.
     fn load(&self) -> Reply<Workspace>;
     /// Follows what changes, from now on.
@@ -145,8 +149,12 @@ pub trait Daemon: Send + Sync + 'static {
         title: &str,
     ) -> Reply<SessionId>;
     /// Makes a channel.
-    fn create_channel(&self, name: &str, repos: Vec<String>, machines: Vec<MachineId>)
-    -> Reply<ChannelId>;
+    fn create_channel(
+        &self,
+        name: &str,
+        repos: Vec<String>,
+        machines: Vec<MachineId>,
+    ) -> Reply<ChannelId>;
     /// Moves a board item to a column.
     fn move_item(&self, item: &ItemId, status: ItemStatus) -> Reply<()>;
     /// Adds a board item.
@@ -162,6 +170,9 @@ pub trait Daemon: Send + Sync + 'static {
 /// The terminals of sessions: typing into tabs other than the agent's.
 /// Their output arrives as [`Event::Output`].
 pub trait Terminals: Send + Sync + 'static {
+    /// Starts a shell, or attaches the one terminal already running this agent.
+    fn open(&self, session: &SessionId, agent: Agent) -> Reply<(usize, Session)>;
+
     /// Types `text` and Enter into tab `tab` of `session`.
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()>;
 }
@@ -452,28 +463,24 @@ impl Daemon for FakeDaemon {
         let shared = self.shared.clone();
         let step = self.step;
         let this = self.clone();
-        let ack = self.reply(
-            Some(Operation::Send),
-            format!("send {session} {text:?}"),
-            {
-                let id = id.clone();
-                let text = text.clone();
-                move |inner| {
-                    let found = inner.session_mut(&id)?;
-                    if !found.status.accepts_input() {
-                        return Err(DaemonError::Refused {
-                            what: format!("Typing into {id}"),
-                            reason: "the session has exited. Resume it first".to_owned(),
-                        });
-                    }
-                    found.status = Status::Working;
-                    found.turn = Turn::Running;
-                    inner.changed(&id);
-                    inner.output(&id, 0, Speaker::You, &text);
-                    Ok(())
+        let ack = self.reply(Some(Operation::Send), format!("send {session} {text:?}"), {
+            let id = id.clone();
+            let text = text.clone();
+            move |inner| {
+                let found = inner.session_mut(&id)?;
+                if !found.status.accepts_input() {
+                    return Err(DaemonError::Refused {
+                        what: format!("Typing into {id}"),
+                        reason: "the session has exited. Resume it first".to_owned(),
+                    });
                 }
-            },
-        );
+                found.status = Status::Working;
+                found.turn = Turn::Running;
+                inner.changed(&id);
+                inner.output(&id, 0, Speaker::You, &text);
+                Ok(())
+            }
+        });
         Box::pin(async move {
             ack.await?;
             for line in answer_lines(&text) {
@@ -801,6 +808,7 @@ impl Daemon for FakeDaemon {
                         text: format!("{} started · {title}", agent.name()),
                     }],
                     shells: Vec::new(),
+                    terminal_agents: Default::default(),
                     archived: false,
                     recovery: None,
                 });
@@ -827,7 +835,12 @@ impl Daemon for FakeDaemon {
                         reason: "it needs a name. Type one and try again".to_owned(),
                     });
                 }
-                if inner.workspace.channels.iter().any(|found| found.name == name) {
+                if inner
+                    .workspace
+                    .channels
+                    .iter()
+                    .any(|found| found.name == name)
+                {
                     return Err(DaemonError::Refused {
                         what: format!("Creating #{name}"),
                         reason: "a channel with that name exists. Pick another name".to_owned(),
@@ -870,27 +883,31 @@ impl Daemon for FakeDaemon {
 
     fn create_item(&self, scope: Scope, title: &str) -> Reply<ItemId> {
         let title = title.trim().to_owned();
-        self.reply(None, format!("create item {scope:?} {title:?}"), move |inner| {
-            if title.is_empty() {
-                return Err(DaemonError::Refused {
-                    what: "Adding an item".to_owned(),
-                    reason: "it needs a title. Type one and try again".to_owned(),
+        self.reply(
+            None,
+            format!("create item {scope:?} {title:?}"),
+            move |inner| {
+                if title.is_empty() {
+                    return Err(DaemonError::Refused {
+                        what: "Adding an item".to_owned(),
+                        reason: "it needs a title. Type one and try again".to_owned(),
+                    });
+                }
+                let id = ItemId::new(inner.id("N"));
+                inner.workspace.items.push(Item {
+                    id: id.clone(),
+                    scope,
+                    kind: ItemKind::Task,
+                    title,
+                    status: ItemStatus::Todo,
+                    depends_on: Vec::new(),
+                    session: None,
+                    parent: None,
                 });
-            }
-            let id = ItemId::new(inner.id("N"));
-            inner.workspace.items.push(Item {
-                id: id.clone(),
-                scope,
-                kind: ItemKind::Task,
-                title,
-                status: ItemStatus::Todo,
-                depends_on: Vec::new(),
-                session: None,
-                parent: None,
-            });
-            inner.emit(Event::Resync);
-            Ok(id)
-        })
+                inner.emit(Event::Resync);
+                Ok(id)
+            },
+        )
     }
 
     fn add_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()> {
@@ -955,6 +972,25 @@ impl Daemon for FakeDaemon {
         )
     }
 
+    fn read_file(&self, session: &SessionId, repo: &str, path: &str) -> Reply<String> {
+        let key = (session.clone(), repo.to_owned(), path.to_owned());
+        self.reply(
+            None,
+            format!("read {session} {repo}/{path}"),
+            move |inner| {
+                inner.session_mut(&key.0)?;
+                inner
+                    .workspace
+                    .file_contents
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| DaemonError::NotFound {
+                        what: format!("File {}/{} in {}", key.1, key.2, key.0),
+                    })
+            },
+        )
+    }
+
     fn retry_transfer(&self, transfer: &TransferId) -> Reply<()> {
         let id = transfer.clone();
         self.reply(None, format!("retry {transfer}"), move |inner| {
@@ -975,22 +1011,63 @@ impl Daemon for FakeDaemon {
 }
 
 impl Terminals for FakeDaemon {
+    fn open(&self, session: &SessionId, agent: Agent) -> Reply<(usize, Session)> {
+        let id = session.clone();
+        self.reply(
+            None,
+            format!("open {session} {}", agent.command()),
+            move |inner| {
+                let session = inner.session_mut(&id)?;
+                let existing = if agent == Agent::Shell {
+                    None
+                } else if session.agent == agent {
+                    Some(0)
+                } else {
+                    session
+                        .terminal_agents
+                        .iter()
+                        .find_map(|(tab, found)| (*found == agent).then_some(*tab))
+                };
+                let tab = existing.unwrap_or_else(|| {
+                    session.shells.push(agent.command().to_owned());
+                    let tab = session.shells.len();
+                    if agent != Agent::Shell {
+                        session.terminal_agents.insert(tab, agent);
+                    }
+                    tab
+                });
+                let snapshot = session.clone();
+                inner.changed(&id);
+                if existing.is_none() {
+                    for line in fixture::extra_terminal(agent, &snapshot.repo, &snapshot.branch) {
+                        inner.output(&id, tab, line.from, &line.text);
+                    }
+                }
+                Ok((tab, snapshot))
+            },
+        )
+    }
+
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()> {
         let id = session.clone();
         let text = text.to_owned();
-        self.reply(None, format!("write {session} {tab} {text:?}"), move |inner| {
-            inner.session_mut(&id)?;
-            inner.output(&id, tab, Speaker::You, &format!("$ {text}"));
-            let echo = match text.trim() {
-                "ls" => "notes.md  todo.txt".to_owned(),
-                "pwd" => "~/humata".to_owned(),
-                "" => String::new(),
-                other => format!("zsh: command not found: {other}"),
-            };
-            if !echo.is_empty() {
-                inner.output(&id, tab, Speaker::Tool, &echo);
-            }
-            Ok(())
-        })
+        self.reply(
+            None,
+            format!("write {session} {tab} {text:?}"),
+            move |inner| {
+                inner.session_mut(&id)?;
+                inner.output(&id, tab, Speaker::You, &format!("$ {text}"));
+                let echo = match text.trim() {
+                    "ls" => "notes.md  todo.txt".to_owned(),
+                    "pwd" => "~/humata".to_owned(),
+                    "" => String::new(),
+                    other => format!("zsh: command not found: {other}"),
+                };
+                if !echo.is_empty() {
+                    inner.output(&id, tab, Speaker::Tool, &echo);
+                }
+                Ok(())
+            },
+        )
     }
 }

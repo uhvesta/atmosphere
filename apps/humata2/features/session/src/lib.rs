@@ -7,10 +7,13 @@
 //! daemon's event stream and is appended to [`SessionState::live`], so a
 //! line doesn't copy the workspace.
 
+mod tabs;
+pub use tabs::{Tab, TabGroup};
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use humata2_clients::model::{ForkKind, Line, SessionId, Skill, Speaker, Turn};
+use humata2_clients::model::{Agent, ForkKind, Line, Session, SessionId, Skill, Speaker, Turn};
 use humata2_clients::{Clients, DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
@@ -66,6 +69,12 @@ impl Panel {
 pub struct SessionView {
     /// The terminal tab: 0 is the agent, then its shells.
     pub tab: usize,
+    /// One or two tab groups, migrated from the terminal selection on open.
+    #[serde(default)]
+    pub groups: Vec<TabGroup>,
+    /// Which group receives new tabs and keyboard focus.
+    #[serde(default)]
+    pub focused_group: usize,
     /// The side panel, if open.
     pub panel: Option<Panel>,
     /// Whether the panel takes the whole page (RV-2).
@@ -106,6 +115,12 @@ pub struct SessionState {
     /// Output that arrived after the session's last snapshot, per session
     /// and terminal tab.
     pub live: HashMap<(SessionId, usize), Arc<Vec<Line>>>,
+    /// The group whose plus menu is open.
+    pub terminal_menu: Option<usize>,
+    /// Whether a new terminal is being started.
+    pub opening_terminal: bool,
+    /// Loaded text files, keyed by session/repository/path.
+    pub file_contents: BTreeMap<(SessionId, String, String), Result<String, DaemonError>>,
     /// Whether a message is on its way.
     pub sending: bool,
     /// The fork dialog, if open (FK-1).
@@ -181,6 +196,34 @@ pub enum SessionAction {
     Snapshot(SessionId),
     /// A terminal tab was picked.
     SelectTab(usize),
+    /// Pick a tab in a particular group.
+    SelectGroupTab { group: usize, index: usize },
+    /// Open or close a group's plus menu.
+    TerminalMenu(Option<usize>),
+    /// Start/attach a program in the focused group or in the second group.
+    OpenTerminal { agent: Agent, split: bool },
+    /// The new terminal is ready, even if the person changed sessions meanwhile.
+    TerminalOpened {
+        session: SessionId,
+        group: usize,
+        split: bool,
+        result: Result<(usize, Session), DaemonError>,
+    },
+    /// Open the selected Files path as a tab.
+    OpenFile,
+    /// Text came back from the session's host.
+    FileLoaded {
+        session: SessionId,
+        repo: String,
+        path: String,
+        result: Result<String, DaemonError>,
+    },
+    /// Open an opted-in prepared view in this session.
+    OpenView(String),
+    /// Close a tab; its process keeps running.
+    CloseTab { group: usize, index: usize },
+    /// Join a group's tabs into the other group.
+    CloseGroup(usize),
     /// A panel tab was picked, or the open one closed with `None`.
     SetPanel(Option<Panel>),
     /// The panel was widened or narrowed again.
@@ -263,6 +306,19 @@ impl Sessions {
         })
     }
 
+    fn read_file(&self, session: SessionId, repo: String, path: String) -> Effect<SessionAction> {
+        let daemon = self.clients.daemon.clone();
+        Effect::future(async move {
+            let result = daemon.read_file(&session, &repo, &path).await;
+            SessionAction::FileLoaded {
+                session,
+                repo,
+                path,
+                result,
+            }
+        })
+    }
+
     fn done(
         &self,
         work: impl FnOnce(&dyn humata2_clients::Daemon) -> humata2_clients::Reply<()>,
@@ -307,15 +363,18 @@ impl Reducer for Sessions {
                     .filter(|(_, view)| !view.queue.is_empty())
                     .map(|(id, _)| id.clone())
                     .collect();
-                let effects: Vec<_> = waiting
-                    .iter()
-                    .map(|id| self.flush(state, id))
-                    .collect();
+                let effects: Vec<_> = waiting.iter().map(|id| self.flush(state, id)).collect();
                 return Effect::merge(effects);
             }
             SessionAction::Restore(views) => state.views = views,
             SessionAction::Open(id) => {
-                state.views.entry(id.clone()).or_default();
+                let shells = state.workspace.session(&id).map_or(0, |s| s.shells.len());
+                state
+                    .views
+                    .entry(id.clone())
+                    .or_default()
+                    .ensure_groups(shells);
+                state.terminal_menu = None;
                 state.open = Some(id.clone());
                 state.fork = None;
                 state.error = None;
@@ -323,9 +382,22 @@ impl Reducer for Sessions {
                     .workspace
                     .session(&id)
                     .is_some_and(|session| session.unread > 0 || session.recovery.is_some());
+                let mut effects = Vec::new();
                 if unread {
-                    return self.done(|daemon| daemon.mark_read(&id));
+                    effects.push(self.done(|daemon| daemon.mark_read(&id)));
                 }
+                for tab in state
+                    .views
+                    .get(&id)
+                    .into_iter()
+                    .flat_map(|v| v.groups.iter())
+                    .flat_map(|g| g.tabs.iter())
+                {
+                    if let Tab::File { repo, path } = tab {
+                        effects.push(self.read_file(id.clone(), repo.clone(), path.clone()));
+                    }
+                }
+                return Effect::merge(effects);
             }
             SessionAction::Output { session, tab, line } => {
                 let lines = state.live.entry((session, tab)).or_default();
@@ -340,13 +412,154 @@ impl Reducer for Sessions {
                 state.live.remove(&(session, 0));
             }
             SessionAction::SelectTab(tab) => {
-                let tabs = state
-                    .open
-                    .as_ref()
-                    .and_then(|id| state.workspace.session(id))
-                    .map_or(1, |session| session.shells.len() + 1);
+                let shells = open_session(state).map_or(0, |s| s.shells.len());
                 if let Some(view) = state.view_mut() {
-                    view.tab = tab.min(tabs - 1);
+                    view.ensure_groups(shells);
+                    let tab = Tab::Terminal(tab.min(shells));
+                    let group = view
+                        .groups
+                        .iter()
+                        .position(|g| g.tabs.contains(&tab))
+                        .unwrap_or(view.focused_group);
+                    view.show_tab(tab, group, false);
+                }
+            }
+            SessionAction::SelectGroupTab { group, index } => {
+                let mut file = None;
+                if let Some(view) = state.view_mut()
+                    && let Some(g) = view.groups.get_mut(group)
+                    && index < g.tabs.len()
+                {
+                    g.selected = index;
+                    view.focused_group = group;
+                    match &g.tabs[index] {
+                        Tab::Terminal(tab) => view.tab = *tab,
+                        Tab::File { repo, path } => file = Some((repo.clone(), path.clone())),
+                        Tab::View(_) => {}
+                    }
+                }
+                state.terminal_menu = None;
+                if let (Some(id), Some((repo, path))) = (state.open.clone(), file) {
+                    return self.read_file(id, repo, path);
+                }
+            }
+            SessionAction::TerminalMenu(group) => state.terminal_menu = group,
+            SessionAction::OpenTerminal { agent, split } => {
+                if state.opening_terminal {
+                    return Effect::none();
+                }
+                let Some(session) = state.open.clone() else {
+                    return Effect::none();
+                };
+                let group = state
+                    .terminal_menu
+                    .or_else(|| state.view().map(|v| v.focused_group))
+                    .unwrap_or(0);
+                state.terminal_menu = None;
+                state.opening_terminal = true;
+                let terminals = self.clients.terminals.clone();
+                return Effect::future(async move {
+                    let result = terminals.open(&session, agent).await;
+                    SessionAction::TerminalOpened {
+                        session,
+                        group,
+                        split,
+                        result,
+                    }
+                });
+            }
+            SessionAction::TerminalOpened {
+                session,
+                group,
+                split,
+                result,
+            } => {
+                state.opening_terminal = false;
+                match result {
+                    Ok((tab, snapshot)) => {
+                        let shells = snapshot.shells.len();
+                        if let Some(existing) = Arc::make_mut(&mut state.workspace)
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.id == session)
+                        {
+                            *existing = snapshot;
+                        }
+                        let view = state.views.entry(session).or_default();
+                        view.ensure_groups(shells);
+                        view.show_tab(Tab::Terminal(tab), group, split);
+                    }
+                    Err(error) => state.error = Some(error.to_string()),
+                }
+            }
+            SessionAction::OpenFile => {
+                let Some(session) = state.open.clone() else {
+                    return Effect::none();
+                };
+                let shells = open_session(state).map_or(0, |s| s.shells.len());
+                let Some(view) = state.view_mut() else {
+                    return Effect::none();
+                };
+                let Some((repo, path)) = view.file.clone() else {
+                    return Effect::none();
+                };
+                view.ensure_groups(shells);
+                view.show_tab(
+                    Tab::File {
+                        repo: repo.clone(),
+                        path: path.clone(),
+                    },
+                    view.focused_group,
+                    false,
+                );
+                return self.read_file(session, repo, path);
+            }
+            SessionAction::FileLoaded {
+                session,
+                repo,
+                path,
+                result,
+            } => {
+                state.file_contents.insert((session, repo, path), result);
+            }
+            SessionAction::OpenView(title) => {
+                let shells = open_session(state).map_or(0, |s| s.shells.len());
+                if let Some(view) = state.view_mut() {
+                    view.ensure_groups(shells);
+                    view.show_tab(Tab::View(title), view.focused_group, false);
+                }
+            }
+            SessionAction::CloseTab { group, index } => {
+                let split = state.view().is_some_and(|v| v.groups.len() == 2);
+                if let Some(view) = state.view_mut()
+                    && let Some(g) = view.groups.get_mut(group)
+                    && index < g.tabs.len()
+                {
+                    if g.tabs.len() == 1 && split {
+                        view.groups.remove(group);
+                        view.focused_group = 0;
+                        if let Some(Tab::Terminal(tab)) = view.selected(0) {
+                            view.tab = *tab;
+                        }
+                    } else if g.tabs.len() == 1 {
+                        g.tabs[0] = Tab::Terminal(0);
+                        g.selected = 0;
+                        view.tab = 0;
+                    } else {
+                        g.tabs.remove(index);
+                        if index < g.selected {
+                            g.selected -= 1;
+                        }
+                        g.selected = g.selected.min(g.tabs.len() - 1);
+                        if let Some(Tab::Terminal(tab)) = view.selected(view.focused_group) {
+                            view.tab = *tab;
+                        }
+                    }
+                }
+            }
+            SessionAction::CloseGroup(group) => {
+                if let Some(view) = state.view_mut() {
+                    view.close_group(group);
                 }
             }
             SessionAction::SetPanel(panel) => {
@@ -370,11 +583,15 @@ impl Reducer for Sessions {
                 }
             }
             SessionAction::SelectFile { repo, path } => {
-                let exists = state.open.as_ref()
+                let exists = state
+                    .open
+                    .as_ref()
                     .and_then(|id| state.workspace.session_files.get(id))
-                    .is_some_and(|files| files.iter().any(|file| {
-                        !file.folder && file.repo == repo && file.path == path
-                    }));
+                    .is_some_and(|files| {
+                        files
+                            .iter()
+                            .any(|file| !file.folder && file.repo == repo && file.path == path)
+                    });
                 if exists && let Some(view) = state.view_mut() {
                     view.file = Some((repo, path));
                 }

@@ -477,9 +477,16 @@ fn session_files_filter_fold_and_restore_without_showing_other_clones() {
     assert!(!app.contains("session-file acme/api/src/client.rs"));
     app.click("session-folder acme/api/src");
     assert!(app.contains("session-file acme/api/src/lib.rs"));
+    app.click("session-file acme/api/src/client.rs");
     app.click("files-open-big");
-    assert!(app.contains("panel-full-screen"));
-    app.click("show-terminal");
+    assert!(app.contains("session-file"));
+    assert!(
+        app.ui
+            .read(|s| matches!(s.session.view().expect("view").selected(0),
+        Some(humata2_session::Tab::File {path,..}) if path=="src/client.rs"))
+    );
+    app.click("terminal-tab 0");
+    assert!(app.contains("terminal"));
     assert!(app.contains("session-files"));
 }
 

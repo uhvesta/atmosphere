@@ -11,11 +11,21 @@ use humata2_clients::{Clients, Workspace, fixture};
 use humata2_engine::Resources;
 use humata2_session::{Panel, SessionAction};
 use humata2_sidebar::{RowKey, SidebarAction};
-use humata2_snapshot::{Tolerance, snapshots, view};
+use humata2_snapshot::{Mode, Snapshots, Tolerance, snapshots, view};
 use humata2_ui::{bridge::Ui, record::Recorder};
 use std::sync::Arc;
 use tca::TestClock;
 use tokio::runtime::Runtime;
+
+// Recording must include even small controls that fit within the verify
+// tolerance, so the image sent for visual review is the current render.
+fn image_tolerance(snapshots: &Snapshots) -> Tolerance {
+    if snapshots.mode() == Mode::Record {
+        Tolerance::EXACT
+    } else {
+        Tolerance::default()
+    }
+}
 
 struct App {
     runtime: Runtime,
@@ -74,6 +84,14 @@ impl App {
         self.send(AppAction::Navigate(Route::Session(SessionId::new(session))));
         self.send(AppAction::Session(SessionAction::SetPanel(Some(panel))));
     }
+    fn file_tab(&mut self) {
+        self.send(AppAction::Session(SessionAction::SelectFile {
+            repo: "api".into(),
+            path: "src/client.rs".into(),
+        }));
+        self.send(AppAction::Session(SessionAction::OpenFile));
+        self.send(AppAction::Session(SessionAction::SelectTab(0)));
+    }
     fn draw(&mut self) {
         self.cx
             .update_window(self.window, |_, window, cx| window.render_frame(cx))
@@ -92,7 +110,7 @@ impl App {
             .cx
             .capture_screenshot(self.window)
             .expect("headless image");
-        snapshots.assert_image(name, &image, Tolerance::default());
+        snapshots.assert_image(name, &image, image_tolerance(&snapshots));
     }
     fn contains(&mut self, id: &str) -> bool {
         self.draw();
@@ -197,6 +215,7 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
         let mut app = App::new(workspace);
         app.cx.update(|cx| Theme::change(mode, None, cx));
         app.open("ledger", Panel::Changes);
+        app.file_tab();
         app.send(AppAction::Review(
             humata2_review::ReviewAction::SelectFile {
                 repo: "api".into(),
@@ -238,7 +257,7 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
             .cx
             .capture_screenshot(app.window)
             .expect("headless image");
-        snapshots.assert_image(name, &image, Tolerance::default());
+        snapshots.assert_image(name, &image, image_tolerance(&snapshots));
     }
 }
 
@@ -393,6 +412,7 @@ fn session_lifecycle_and_full_screen_reference_images() {
             "ledger",
         ))));
         app.send(AppAction::Session(SessionAction::SetPanel(panel)));
+        app.file_tab();
         if let Some(full) = full {
             app.send(AppAction::ToggleFullScreen(full));
         }
@@ -494,4 +514,86 @@ fn terminal_tabs_show_only_the_selected_terminals_live_output() {
     assert!(capture(&mut app).contains("shell-result: 42"));
     app.click("terminal-tab 0");
     assert!(!capture(&mut app).contains("shell-result: 42"));
+}
+
+/// SE-8: Open big creates a file tab; selecting/closing it keeps the terminals.
+#[test]
+fn files_open_in_the_tab_row_and_close_back_to_the_terminal() {
+    use humata2_session::Tab;
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Files);
+    app.click("session-file api/src/client.rs");
+    app.click("files-open-big");
+    assert!(app.contains("session-file"));
+    assert!(app.ui.read(|s|matches!(s.session.view().unwrap().selected(0),Some(Tab::File {path,..}) if path=="src/client.rs")));
+    app.snapshot("file-tab-open");
+    app.click("terminal-tab 0");
+    assert!(app.contains("terminal"));
+    app.click("file-tab-0-2");
+    app.click("close-tab-0-2");
+    assert!(!app.contains("session-file"));
+    assert!(app.contains("terminal"));
+}
+
+/// D76: plus opens a program; splitting twice still leaves just two groups.
+#[test]
+fn the_plus_menu_splits_once_and_joining_keeps_the_program_running() {
+    let mut workspace = fixture::design();
+    workspace.views.clear();
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Info);
+    app.send(AppAction::Session(SessionAction::SetPanel(None)));
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    for channel in ["pr-reviews", "web"] {
+        app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
+            humata2_clients::model::ChannelId::new(channel),
+        ))));
+    }
+    app.click("add-tab-0");
+    assert!(app.contains("new-terminal-menu"));
+    app.click("split-terminal-0-codex");
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 2);
+    assert!(app.contains("terminal-secondary"));
+    app.snapshot("14-two-tab-groups");
+    app.click("add-tab-1");
+    app.click("split-terminal-1-codex");
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 2);
+    let shells = app.ui.read(|s| {
+        s.workspace
+            .session(&SessionId::new("ledger"))
+            .unwrap()
+            .shells
+            .len()
+    });
+    app.click("close-group-1");
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 1);
+    assert_eq!(
+        app.ui.read(|s| s
+            .workspace
+            .session(&SessionId::new("ledger"))
+            .unwrap()
+            .shells
+            .len()),
+        shells
+    );
+    assert!(app.contains("terminal-tab 2"));
+}
+
+/// VW-2/4/6: the offer waits for consent; Later returns, Open it creates a tab.
+#[test]
+fn prepared_views_wait_for_open_and_later_returns_on_the_next_visit() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Inbox);
+    assert!(app.contains("offer-open"));
+    assert!(!app.contains("prepared-view-content"));
+    app.click("offer-later");
+    assert!(!app.contains("offer-open"));
+    app.click("rail-home");
+    app.click("sidebar-session-ledger");
+    assert!(app.contains("offer-open"));
+    app.click("offer-open");
+    assert!(app.contains("prepared-view-content"));
+    assert!(!app.contains("offer-open"));
+    app.click("terminal-tab 0");
+    assert!(app.contains("terminal"));
 }

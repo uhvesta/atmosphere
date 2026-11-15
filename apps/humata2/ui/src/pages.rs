@@ -339,86 +339,16 @@ pub(crate) fn session_header(
         ))
 }
 fn session_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Div {
-    let active = state.session.view().map_or(0, |x| x.tab);
-    let names = std::iter::once(
-        match session.agent {
-            Agent::Claude => "claude",
-            Agent::Codex => "codex",
-            Agent::Copilot => "copilot",
-            Agent::OpenCode => "opencode",
-            Agent::Shell => "zsh",
-        }
-        .to_owned(),
-    )
-    .chain(session.shells.clone());
-    col()
-        .size_full()
-        .child(
-            row()
-                .id("terminal-tabs")
-                .overflow_x_scroll()
-                .h(px(32.))
-                .flex_shrink_0()
-                .bg(rgb(look.panel))
-                .border_b_1()
-                .border_color(rgb(look.line))
-                .children(names.enumerate().map(|(index, name)| {
-                    let ui = ui.clone();
-                    row()
-                        .id(SharedString::from(format!("terminal-tab {index}")))
-                        .role(Role::Tab)
-                        .aria_label(name.clone())
-                        .aria_selected(active == index)
-                        .h_full()
-                        .flex_shrink_0()
-                        .px(px(12.))
-                        .gap(px(6.))
-                        .border_r_1()
-                        .border_color(rgb(look.line))
-                        .when(active == index, |x| x.bg(rgb(look.term)))
-                        .text_size(px(12.))
-                        .text_color(rgb(if active == index {
-                            look.text
-                        } else {
-                            look.secondary
-                        }))
-                        .child(if index == 0 {
-                            chrome::status(session.status).into_any_element()
-                        } else {
-                            chrome::icon(IconName::SquareTerminal, look.secondary, 12.)
-                                .into_any_element()
-                        })
-                        .child(name)
-                        .on_click(move |_, _, cx| {
-                            ui.send(AppAction::Session(SessionAction::SelectTab(index)), cx)
-                        })
-                        .test_support()
-                }))
-                .child(div().flex_1())
-                .when(session.status == Status::Offline, |bar| {
-                    bar.child(
-                        row()
-                            .mr(px(12.))
-                            .gap(px(5.))
-                            .text_size(px(11.5))
-                            .text_color(rgb(look.secondary))
-                            .child(chrome::icon(IconName::WifiOff, look.secondary, 12.))
-                            .child("disconnected"),
-                    )
-                }),
-        )
-        .children(state.session.error.clone().map(|error| {
-            widgets::error_banner(
-                ui,
-                "session-error",
-                error,
-                AppAction::Session(SessionAction::DismissError),
-            )
-        }))
-        .child(terminal_body(ui, state, session, look))
+    crate::session_tabs::body(ui, state, session, look)
 }
-fn terminal_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> impl IntoElement {
-    let tab = state.session.view().map_or(0, |view| view.tab);
+pub(crate) fn terminal_body(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    session: &Session,
+    tab: usize,
+    group: usize,
+    look: Look,
+) -> impl IntoElement {
     let base = if tab == 0 {
         session.transcript.as_slice()
     } else {
@@ -430,7 +360,7 @@ fn terminal_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -
         .get(&(session.id.clone(), tab))
         .map_or(&[][..], |lines| lines.as_slice());
     col()
-        .id("terminal")
+        .id(if group==0 { SharedString::from("terminal") } else { SharedString::from("terminal-secondary") })
         .role(Role::Log)
         .aria_label(format!("{} terminal", session.title))
         .flex_1()
@@ -468,7 +398,7 @@ fn terminal_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -
         .when(tab>0 || !matches!(session.status,Status::Exited{..}|Status::NeedsYou),|body|body.child(
             col().gap(px(2.)).opacity(if session.status==Status::Offline{0.5}else{1.})
                 .child(row().px(px(8.)).py(px(4.)).border_1().border_color(rgb(look.term_dim)).rounded(px(4.)).gap(px(2.))
-                    .child(if tab==0&&session.agent!=Agent::Shell {"> "}else{"$ "}).when(session.status!=Status::Offline,|x|x.child(div().w(px(7.)).h(px(15.)).bg(rgb(look.term_text)))))
+                    .child(if (tab==0&&session.agent!=Agent::Shell)||session.terminal_agents.contains_key(&tab) {"> "}else{"$ "}).when(session.status!=Status::Offline,|x|x.child(div().w(px(7.)).h(px(15.)).bg(rgb(look.term_text)))))
                 .when(tab==0&&session.agent!=Agent::Shell,|body|body.child(div().text_color(rgb(look.term_dim)).child("  ⏵⏵ accept edits on (shift+tab to cycle)")))
         ))
         .test_support()
