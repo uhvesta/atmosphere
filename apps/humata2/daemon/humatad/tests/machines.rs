@@ -482,11 +482,13 @@ async fn the_feed_tells_an_operation_from_its_start_to_how_it_ended() {
     let adding = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap().into_inner();
     let watched = host.watch(&adding).await;
     let mut told = Vec::new();
+    let mut by = Vec::new();
     loop {
         let event = next_event(&mut feed).await;
         let Some(pb::event::Payload::Operation(operation)) = event.payload.clone() else {
             panic!("expected an operation, got {event:?}");
         };
+        by.push(event.by.clone().and_then(|by| by.actor));
         told.push((event.change(), operation));
         if told.last().is_some_and(|(_, operation)| state_of(operation) != pb::OperationState::Running) {
             break;
@@ -496,6 +498,9 @@ async fn the_feed_tells_an_operation_from_its_start_to_how_it_ended() {
     assert_eq!(told[0].0, pb::Change::Created);
     assert_eq!(told[0].1.id, adding.id);
     assert!(told[1..].iter().all(|(change, _)| *change == pb::Change::Updated));
+    // The user started it; its steps are the daemon's own.
+    assert!(matches!(by[0], Some(pb::actor::Actor::User(_))), "{:?}", by[0]);
+    assert!(by[1..].iter().all(Option::is_none));
     assert!(told.windows(2).all(|pair| pair[0].1.version < pair[1].1.version));
     assert_eq!(told.last().map(|(_, operation)| operation), watched.last());
     // The user's operation belongs to no channel.

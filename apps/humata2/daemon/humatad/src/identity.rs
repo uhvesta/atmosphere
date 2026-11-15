@@ -144,6 +144,35 @@ pub(crate) fn mark_peer(mut request: http::Request<Body>) -> http::Request<Body>
     request
 }
 
+/// Who `caller` is, as events and records name them. A user's CLI login
+/// says nothing of the machine it's on here, so its `via` is unset.
+pub(crate) fn actor(caller: &Caller) -> pb::Actor {
+    use pb::actor::Actor;
+    let actor = match caller {
+        Caller::User(via) => Actor::User(pb::UserActor {
+            via: match via {
+                UserVia::App => pb::user_actor::Via::App,
+                UserVia::CliLogin { .. } => pb::user_actor::Via::Unspecified,
+            } as i32,
+            machine: None,
+        }),
+        Caller::Agent(agent) => Actor::Agent(pb::AgentActor {
+            session: Some(pb::SessionId {
+                value: agent.session.id.as_str().to_owned(),
+            }),
+            machine: Some(pb::MachineId {
+                value: agent.session.machine.as_str().to_owned(),
+            }),
+            agent: Some(pb::AgentId {
+                value: agent.agent.clone(),
+            }),
+            session_title: agent.title.clone(),
+        }),
+        Caller::Peer => Actor::System(pb::SystemActor { reason: 0 }),
+    };
+    pb::Actor { actor: Some(actor) }
+}
+
 /// The caller the interceptor found for `request`.
 pub(crate) fn caller<T>(request: &Request<T>) -> Result<Caller, Status> {
     request.extensions().get::<Caller>().cloned().ok_or_else(unchecked)

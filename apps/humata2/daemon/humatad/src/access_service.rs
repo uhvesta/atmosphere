@@ -164,7 +164,12 @@ impl pb::access_service_server::AccessService for Access {
             session: revoked.requester.as_ref().map(|session| session.value.clone()).unwrap_or_default(),
         };
         self.feed
-            .publish_in(pb::Change::Deleted, pb::event::Payload::Grant(revoked), scope);
+            .publish_in(
+                pb::Change::Deleted,
+                pb::event::Payload::Grant(revoked),
+                scope,
+                Some(identity::actor(&caller)),
+            );
         Ok(Response::new(pb::RevokeGrantResponse {}))
     }
 

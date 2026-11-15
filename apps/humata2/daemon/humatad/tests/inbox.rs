@@ -626,10 +626,18 @@ async fn feed(fixture: &Fixture, request: Request<pb::SubscribeRequest>) -> toni
 }
 
 /// The next request event's change, request id and state.
-async fn next_request(events: &mut tonic::Streaming<pb::Event>) -> (i32, pb::RequestId, i32) {
+/// The next event's change, request, its state, and who made the change:
+/// the asking session's agent, the user, or no one (the daemon).
+async fn next_request(events: &mut tonic::Streaming<pb::Event>) -> (i32, pb::RequestId, i32, &'static str) {
     let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    let by = match event.by.and_then(|by| by.actor) {
+        Some(pb::actor::Actor::Agent(agent)) if agent.session == Some(session(ASKER)) => "asker",
+        Some(pb::actor::Actor::User(_)) => "user",
+        None => "daemon",
+        Some(other) => panic!("unexpected actor {other:?}"),
+    };
     match event.payload {
-        Some(pb::event::Payload::Request(request)) => (event.change, request.id.unwrap(), request.state),
+        Some(pb::event::Payload::Request(request)) => (event.change, request.id.unwrap(), request.state, by),
         other => panic!("expected an Inbox request, got {other:?}"),
     }
 }
@@ -679,11 +687,11 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
     let (created, updated) = (pb::Change::Created as i32, pb::Change::Updated as i32);
     let pending = pb::RequestState::Pending as i32;
     let expected = vec![
-        (created, answered.clone(), pending),
-        (updated, answered, pb::RequestState::Answered as i32),
-        (created, withdrawn.clone(), pending),
-        (updated, withdrawn, pb::RequestState::Withdrawn as i32),
-        (created, last, pending),
+        (created, answered.clone(), pending, "asker"),
+        (updated, answered, pb::RequestState::Answered as i32, "user"),
+        (created, withdrawn.clone(), pending, "asker"),
+        (updated, withdrawn, pb::RequestState::Withdrawn as i32, "asker"),
+        (created, last, pending, "asker"),
     ];
     for events in [&mut users, &mut agents, &mut inbox_only] {
         let mut told = Vec::new();

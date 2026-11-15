@@ -190,16 +190,23 @@ impl Review {
 
     /// Saves the review, then tells WatchReviewChanges about change `seq`
     /// and the event feed about each note it made, changed or took away.
-    async fn publish(&self, record: &SessionRecord, review: &SessionReview, seq: u64) -> Result<(), Status> {
+    /// `caller` made the change.
+    async fn publish(
+        &self,
+        caller: &Caller,
+        record: &SessionRecord,
+        review: &SessionReview,
+        seq: u64,
+    ) -> Result<(), Status> {
         let saved = self.save(&record.id, review).await;
         review.changed.send_replace(seq);
-        self.tell_notes(record, review);
+        self.tell_notes(record, review, &identity::actor(caller));
         saved
     }
 
     /// Tells the feed how the notes differ from when it was last told:
     /// Created, Updated, or Deleted with the note as it last stood.
-    fn tell_notes(&self, record: &SessionRecord, review: &SessionReview) {
+    fn tell_notes(&self, record: &SessionRecord, review: &SessionReview, by: &pb::Actor) {
         let now = notes_now(review, &record.id);
         // Held while publishing, so two calls tell in the order they saw.
         let mut told = lock(&review.told);
@@ -214,11 +221,21 @@ impl Review {
                 Some(before) if before != comment => pb::Change::Updated,
                 Some(_) => continue,
             };
-            feed.publish_in(change, pb::event::Payload::Comment(comment.clone()), scope());
+            feed.publish_in(
+                change,
+                pb::event::Payload::Comment(comment.clone()),
+                scope(),
+                Some(by.clone()),
+            );
         }
         for (id, comment) in told.iter() {
             if !now.contains_key(id) {
-                feed.publish_in(pb::Change::Deleted, pb::event::Payload::Comment(comment.clone()), scope());
+                feed.publish_in(
+                    pb::Change::Deleted,
+                    pb::event::Payload::Comment(comment.clone()),
+                    scope(),
+                    Some(by.clone()),
+                );
             }
         }
         *told = now;
@@ -370,7 +387,7 @@ impl pb::diff_service_server::DiffService for Review {
             moved
         };
         match self.refresh_notes(&clones, &review, &diffs).await? {
-            Some(seq) => self.publish(&record, &review, seq).await?,
+            Some(seq) => self.publish(&caller, &record, &review, seq).await?,
             None if moved => self.save(&record.id, &review).await?,
             None => {}
         }
@@ -568,7 +585,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             wire::change_to_pb(&change, at)
         };
         remember(&review, idempotency, Answer::Focused(change.clone()));
-        self.publish(&record, &review, change.seq).await?;
+        self.publish(&caller, &record, &review, change.seq).await?;
         Ok(Response::new(change))
     }
 
@@ -591,7 +608,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             chat.at.insert(change.seq, at);
             wire::change_to_pb(&change, at)
         };
-        self.publish(&record, &review, change.seq).await?;
+        self.publish(&caller, &record, &review, change.seq).await?;
         Ok(Response::new(change))
     }
 
@@ -750,7 +767,7 @@ impl pb::comment_service_server::CommentService for Review {
         if let Some(comment) = &comment {
             remember(&review, idempotency, Answer::Comment(comment.clone()));
         }
-        self.publish(&record, &review, seq).await?;
+        self.publish(&caller, &record, &review, seq).await?;
         let comment =
             comment.ok_or_else(|| status::internal("a new note made no note".to_owned(), ""))?;
         Ok(Response::new(comment))
@@ -778,7 +795,7 @@ impl pb::comment_service_server::CommentService for Review {
         if let Some(comment) = &comment {
             remember(&review, idempotency, Answer::Comment(comment.clone()));
         }
-        self.publish(&record, &review, seq).await?;
+        self.publish(&caller, &record, &review, seq).await?;
         let comment = comment
             .ok_or_else(|| status::internal("an edited note made no note".to_owned(), ""))?;
         Ok(Response::new(comment))
@@ -807,7 +824,7 @@ impl pb::comment_service_server::CommentService for Review {
             undo_id: change.undo_id.clone(),
         };
         remember(&review, idempotency, Answer::Dropped(answer.clone()));
-        self.publish(&record, &review, change.seq).await?;
+        self.publish(&caller, &record, &review, change.seq).await?;
         Ok(Response::new(answer))
     }
 
@@ -887,7 +904,7 @@ impl pb::view_service_server::ViewService for Review {
             ..pb::PreparedView::default()
         };
         remember(&review, idempotency, Answer::Prepared(answer.clone()));
-        self.publish(&record, &review, change.seq).await?;
+        self.publish(&caller, &record, &review, change.seq).await?;
         Ok(Response::new(answer))
     }
 

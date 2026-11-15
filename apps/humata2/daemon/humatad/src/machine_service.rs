@@ -110,16 +110,16 @@ impl Work {
         };
         for (name, machine) in &now {
             match shown.get(name) {
-                None => self.feed.publish(pb::Change::Created, pb::event::Payload::Machine(machine.clone())),
+                None => self.feed.publish(pb::Change::Created, pb::event::Payload::Machine(machine.clone()), None),
                 Some(before) if before != machine => {
-                    self.feed.publish(pb::Change::Updated, pb::event::Payload::Machine(machine.clone()));
+                    self.feed.publish(pb::Change::Updated, pb::event::Payload::Machine(machine.clone()), None);
                 }
                 Some(_) => {}
             }
         }
         for (name, machine) in shown.iter() {
             if !now.contains_key(name) {
-                self.feed.publish(pb::Change::Deleted, pb::event::Payload::Machine(machine.clone()));
+                self.feed.publish(pb::Change::Deleted, pb::event::Payload::Machine(machine.clone()), None);
             }
         }
         *shown = now;

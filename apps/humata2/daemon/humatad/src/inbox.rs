@@ -116,8 +116,19 @@ impl Inbox {
             channel: request.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
             session: session.to_owned(),
         };
+        // The asker made and withdraws it (D38.10); the answer is the
+        // answerer's; a time-out is the daemon's.
+        let by = match pb::RequestState::try_from(request.state) {
+            Ok(pb::RequestState::Pending) => requester(request),
+            Ok(pb::RequestState::Withdrawn)
+                if request.withdraw_reason == pb::WithdrawReason::CallEnded as i32 =>
+            {
+                requester(request)
+            }
+            _ => request.answered.as_ref().and_then(|answered| answered.by.clone()),
+        };
         self.feed
-            .publish_in(change, pb::event::Payload::Request(request.clone()), scope);
+            .publish_in(change, pb::event::Payload::Request(request.clone()), scope, by);
     }
 
     /// Tells the feed of the grant `entry`'s answer made, if any, then of
@@ -129,8 +140,9 @@ impl Inbox {
                 channel: grant.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
                 session: entry.session.clone(),
             };
+            let by = held.request.answered.as_ref().and_then(|answered| answered.by.clone());
             self.feed
-                .publish_in(pb::Change::Created, pb::event::Payload::Grant(grant), scope);
+                .publish_in(pb::Change::Created, pb::event::Payload::Grant(grant), scope, by);
         }
         self.tell(pb::Change::Updated, &entry.session, &held.request);
         held.request
@@ -882,6 +894,13 @@ fn next_revision(request: &pb::InboxRequest) -> pb::Revision {
     pb::Revision {
         value: request.revision.as_ref().map_or(0, |revision| revision.value) + 1,
     }
+}
+
+/// The agent that asked `request`.
+fn requester(request: &pb::InboxRequest) -> Option<pb::Actor> {
+    request.requester.clone().map(|agent| pb::Actor {
+        actor: Some(pb::actor::Actor::Agent(agent)),
+    })
 }
 
 /// Who answered: the user, the way they reached this daemon.

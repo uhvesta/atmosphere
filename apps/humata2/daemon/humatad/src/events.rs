@@ -71,23 +71,36 @@ impl Default for Feed {
 }
 
 impl Feed {
-    /// Adds one change to the feed, numbered after the last.
-    pub(crate) fn publish(&self, change: pb::Change, payload: pb::event::Payload) {
-        self.publish_scoped(change, payload, None);
+    /// Adds one change to the feed, numbered after the last. `by` is who
+    /// made it; unset, the daemon did (D95).
+    pub(crate) fn publish(&self, change: pb::Change, payload: pb::event::Payload, by: Option<pb::Actor>) {
+        self.publish_scoped(change, payload, None, by);
     }
 
     /// Adds one change of something in `scope`'s channel and session.
-    pub(crate) fn publish_in(&self, change: pb::Change, payload: pb::event::Payload, scope: Scope) {
-        self.publish_scoped(change, payload, Some(scope));
+    pub(crate) fn publish_in(
+        &self,
+        change: pb::Change,
+        payload: pb::event::Payload,
+        scope: Scope,
+        by: Option<pb::Actor>,
+    ) {
+        self.publish_scoped(change, payload, Some(scope), by);
     }
 
-    fn publish_scoped(&self, change: pb::Change, payload: pb::event::Payload, scope: Option<Scope>) {
+    fn publish_scoped(
+        &self,
+        change: pb::Change,
+        payload: pb::event::Payload,
+        scope: Option<Scope>,
+        by: Option<pb::Actor>,
+    ) {
         let mut kept = lock(&self.kept);
         let event = Arc::new(Published {
             event: pb::Event {
                 seq: Some(pb::EventSeq { value: kept.next }),
                 at: Some(now()),
-                by: None,
+                by,
                 change: change as i32,
                 journal: None,
                 payload: Some(payload),

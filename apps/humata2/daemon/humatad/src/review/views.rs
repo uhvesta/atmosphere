@@ -19,7 +19,7 @@ use tonic::{Code, Status};
 
 use super::{Review, blocking, idempotency, own_session};
 use crate::events::Scope;
-use crate::identity::Caller;
+use crate::identity::{self, Caller};
 use crate::status;
 
 /// A view keeps the idempotency keys of this many of the calls that made
@@ -125,7 +125,7 @@ impl Review {
             },
             view,
         };
-        self.put(held, key, Some((pb::Change::Created, &record.channel))).await
+        self.put(held, key, Some((pb::Change::Created, &record.channel)), caller).await
     }
 
     /// ReviseView: new parts for a draft the caller prepared.
@@ -173,7 +173,7 @@ impl Review {
             return Ok(held.view);
         }
         let told = changed.then_some((pb::Change::Updated, record.channel.as_str()));
-        self.put(held, key, told).await
+        self.put(held, key, told, caller).await
     }
 
     /// MarkReady: the draft is offered (VW-2). An offered view stays as
@@ -197,7 +197,7 @@ impl Review {
             return Ok(held.view);
         }
         let told = offered.then_some((pb::Change::Updated, record.channel.as_str()));
-        self.put(held, key, told).await
+        self.put(held, key, told, caller).await
     }
 
     /// ListViews: a session's views, newest first. Drafts only to the
@@ -271,7 +271,7 @@ impl Review {
         }
         let channel = session.channel.to_string();
         let told = moved.then_some((pb::Change::Updated, channel.as_str()));
-        self.put(held, key, told).await
+        self.put(held, key, told, caller).await
     }
 
     /// The caller's own view `id`, with its session: only a session's
@@ -331,6 +331,7 @@ impl Review {
         mut held: Held,
         key: Option<String>,
         told: Option<(pb::Change, &str)>,
+        caller: &Caller,
     ) -> Result<pb::PreparedView, Status> {
         if let Some(key) = key {
             let keys = &mut held.record.keys;
@@ -352,7 +353,12 @@ impl Review {
                 channel: channel.to_owned(),
                 session,
             };
-            self.inner.feed.publish_in(change, pb::event::Payload::View(held.view.clone()), scope);
+            self.inner.feed.publish_in(
+                change,
+                pb::event::Payload::View(held.view.clone()),
+                scope,
+                Some(identity::actor(caller)),
+            );
         }
         Ok(held.view)
     }

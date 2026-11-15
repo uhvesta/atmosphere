@@ -127,7 +127,7 @@ impl Operations {
             idempotency_key: key.clone(),
             started_at: Some(now()),
             finished_at: None,
-            started_by: Some(actor(caller)),
+            started_by: Some(identity::actor(caller)),
             version: 1,
             result: None,
         };
@@ -151,7 +151,8 @@ impl Operations {
         if let Some(key) = key {
             table.by_key.insert(key.value, id);
         }
-        tracked.tell(pb::Change::Created, operation);
+        let by = operation.started_by.clone();
+        tracked.tell(pb::Change::Created, operation, by);
         Ok(Started::New(Progress { tracked }))
     }
 
@@ -274,13 +275,15 @@ impl Progress {
         self.tracked.operation.send_modify(|operation| {
             edit(operation);
             operation.version += 1;
-            self.tracked.tell(pb::Change::Updated, operation.clone());
+            self.tracked.tell(pb::Change::Updated, operation.clone(), None);
         });
     }
 }
 
 impl Tracked {
-    fn tell(&self, change: pb::Change, operation: pb::Operation) {
+    /// `by` is the caller that started it; the work's own steps are the
+    /// daemon's.
+    fn tell(&self, change: pb::Change, operation: pb::Operation, by: Option<pb::Actor>) {
         let payload = pb::event::Payload::Operation(operation);
         match &self.scope {
             Some((channel, session)) => self.feed.publish_in(
@@ -290,8 +293,9 @@ impl Tracked {
                     channel: channel.clone(),
                     session: session.clone(),
                 },
+                by,
             ),
-            None => self.feed.publish(change, payload),
+            None => self.feed.publish(change, payload, by),
         }
     }
 }
@@ -305,30 +309,6 @@ fn waiting(step: OpStep) -> pb::OperationStep {
         total_units: 0,
         output_tail: String::new(),
     }
-}
-
-fn actor(caller: &Caller) -> pb::Actor {
-    use pb::actor::Actor;
-    let actor = match caller {
-        Caller::User(_) => Actor::User(pb::UserActor {
-            via: pb::user_actor::Via::Unspecified as i32,
-            machine: None,
-        }),
-        Caller::Agent(agent) => Actor::Agent(pb::AgentActor {
-            session: Some(pb::SessionId {
-                value: agent.session.id.as_str().to_owned(),
-            }),
-            machine: Some(pb::MachineId {
-                value: agent.session.machine.as_str().to_owned(),
-            }),
-            agent: Some(pb::AgentId {
-                value: agent.agent.clone(),
-            }),
-            session_title: agent.title.clone(),
-        }),
-        Caller::Peer => Actor::System(pb::SystemActor { reason: 0 }),
-    };
-    pb::Actor { actor: Some(actor) }
 }
 
 fn state(operation: &pb::Operation) -> pb::OperationState {
