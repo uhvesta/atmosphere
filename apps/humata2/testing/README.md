@@ -30,7 +30,8 @@ test. This file says how to run these tools.
     `Snapshots::assert_image` compares pixels drawn off screen against a
     PNG, with a per-channel and per-pixel `Tolerance`.
 - `flow/` (`humata2-flow`) plays a SPEC.md flow as a script of user
-  actions (click, type, key, drag, paste). It snapshots the steps you mark
+  actions (click, type, key, drag, scroll, paste). `.scroll(target, x, y)`
+  uses pixel deltas; negative y moves down the content. It snapshots the steps you mark
   (`.snapshot()` for the view, `.snapshot_layout()` to add the layout,
   `.snapshot_image()` to add pixels) and writes the whole run to `flow.md`
   for review. `GpuiDriver` plays a flow in a GPUI window; the `Driver` trait lets a later driver play the

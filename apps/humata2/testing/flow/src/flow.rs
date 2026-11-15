@@ -107,6 +107,8 @@ pub enum Action {
     Key(String),
     /// Drags from the middle of one control to the middle of another.
     Drag { from: Target, to: Target },
+    /// Scrolls at a control in pixels, preserving GPUI's delta sign.
+    Scroll { target: Target, x: i32, y: i32 },
     /// Puts text on the clipboard and presses `secondary-v`.
     Paste(String),
 }
@@ -118,6 +120,7 @@ impl fmt::Display for Action {
             Self::Type(text) => write!(f, "type {text:?}"),
             Self::Key(key) => write!(f, "press {key}"),
             Self::Drag { from, to } => write!(f, "drag {from} to {to}"),
+            Self::Scroll { target, x, y } => write!(f, "scroll {target} by ({x}, {y}) pixels"),
             Self::Paste(text) => write!(f, "paste {text:?}"),
         }
     }
@@ -241,6 +244,11 @@ impl Flow {
     /// Drags from one control to another.
     pub fn drag(self, from: Target, to: Target) -> Self {
         self.then(Action::Drag { from, to })
+    }
+
+    /// Scrolls at `target` by a pixel delta; negative y moves down the content.
+    pub fn scroll(self, target: Target, x: i32, y: i32) -> Self {
+        self.then(Action::Scroll { target, x, y })
     }
 
     /// Pastes `text`.

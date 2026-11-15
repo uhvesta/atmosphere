@@ -1,8 +1,7 @@
 # Humata 2's snapshot and flow testing tools.
 #
-# Its own workspace: gpui-kit is not in Bazel yet, so these crates build with
-# cargo, as the GUI spike does. They move into Bazel with gpui-kit; see
-# README.md. testing/linux is a script, not a crate, and stays out of here.
+# Source manifests for dependency resolution. Build, test and lint only
+# through Bazel; see README.md. testing/linux is a script, not a crate.
 [workspace]
 resolver = "3"
 members = ["snapshot", "flow"]

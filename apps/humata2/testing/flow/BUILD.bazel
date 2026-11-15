@@ -86,3 +86,15 @@ filegroup(
     srcs = ["BUILD.bazel"],
     tags = ["starlark"],
 )
+
+[
+    rust_test(
+        name = "scroll" + engine + "_test",
+        srcs = ["tests/scroll.rs"],
+        deps = [
+            ":flow" + engine,
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]

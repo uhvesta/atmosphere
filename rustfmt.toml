@@ -1,0 +1,3 @@
+# Provisional: format touched Rust files only; no repository-wide rewrite.
+edition = "2024"
+max_width = 100

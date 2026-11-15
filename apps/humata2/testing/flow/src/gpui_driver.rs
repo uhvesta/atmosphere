@@ -262,6 +262,11 @@ impl<H: Host> Driver for GpuiDriver<'_, H> {
                 window.drag(start, end, cx);
                 Ok::<(), GpuiDriverError>(())
             })??,
+            Action::Scroll { target, x, y } => self.window(|window, cx| {
+                let at = locate(window, target, cx)?;
+                frame::scroll(window, at, point(px(*x as f32), px(*y as f32)), cx);
+                Ok::<(), GpuiDriverError>(())
+            })??,
             Action::Paste(text) => self.window(|window, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                 window.press("secondary-v", cx);
@@ -362,6 +367,11 @@ impl<H: Host> GpuiDriver<'_, H> {
                 let start = find(window, from)?;
                 let end = find(window, to)?;
                 frame::drag(window, start, end, 8, cx);
+                Ok::<(), GpuiDriverError>(())
+            })??,
+            Action::Scroll { target, x, y } => self.window(|window, cx| {
+                let at = find(window, target)?;
+                frame::scroll(window, at, point(px(*x as f32), px(*y as f32)), cx);
                 Ok::<(), GpuiDriverError>(())
             })??,
             Action::Paste(text) => self.window(|window, cx| {

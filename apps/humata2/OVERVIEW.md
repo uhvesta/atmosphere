@@ -238,7 +238,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 ### Desktop UI (I2, A10; D72, D74)
 - [x] ~~Render the pane tree~~: built in a7c6cf3c, then dropped on the owner's direction (2026-11-15, D74 revised). The window is a left sidebar, the screen in the middle, and the open session's side panel on the right.
 - [x] Drag the sidebar's and the side panel's dividers to resize them (past the narrowest hides them; a double-click resets them); ⌥⌘0 and the palette's "Toggle side panel" hide or show the panel. Each session keeps its own panel when you switch screens and come back. Test: `desktop:shell_test` (`a_sessions_side_panel_hides_shows_and_survives_switching_screens`).
-- [ ] Give the side panel real content (Changes, Inbox, Files, Board, Info); today it shows its title and an empty state.
+- [ ] Give the side panel real content (Changes, Inbox, Files, Board, Info); today it shows its title and an empty state (minion C: left for the next context after items 1–4; Files and Info also lack dedicated approved content frames in design 01–12, so do not invent their layouts).
 - [ ] A divider drag isn't covered by a test yet (needs mouse events in the headless driver); check it in a real window.
 - [x] Removed `features/layout`, `AppState.panes`, the saved `panes` field (old saved files still load; serde ignores it) and the Reset toast's Undo button, on the owner's call (2026-11-15). Test: `desktop:shell_test`.
 - [ ] Settings › Layout, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
@@ -250,8 +250,11 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
   - [x] The selection toolbar's buttons act on press, using the selection cached when the toolbar was drawn, because pressing clears the text's selection first. Copy now reaches the clipboard.
   - [x] Copy as Markdown: flow targets can aim at a control's start (`Target::at_start`). A selection starting at a block's first visible character takes in its opening markup, and one ending at its last takes in the closing markup (`with_block_markup`), so it copies as `# Gallery`.
   - [ ] Comment on selection: dragging paragraph 2 → heading 3 gives no toolbar, because gpui-base's `SourceRangeSelection::merge` turns the whole selection Unmapped when one block can't map (`text/node.rs` in gpui-base 0.9.1). Tried 2026-11-15 and reverted: a patch making `source_range_for_segments` bridge rendered gaps didn't bring the toolbar back, so the Unmapped comes from somewhere else (a block-level Unmapped, the `first.rendered.start` path, or the paragraph's `selected_source_range`). The repin it needed also changed code and inline-code rendering in `headless:snapshots`. Next: log which block returns Unmapped before patching again.
-- [ ] Read the goldens, record `headless:timing` numbers, run buildifier, and give the markdown decision a number (it proposed D75).
-- [ ] Add syntect to the gpui-fast lock (code blocks are uncoloured on Fast), add a Flow scroll action, parse `secondary-` keystrokes, and add Fast-engine GUI tests.
+- [x] Inspected both Markdown image goldens and the current render, recorded `headless:timing` figures and limitations in D78, and ran Bazel-managed buildifier. Timing target: `//apps/humata2/markdown/headless:timing` (`-c opt --test_arg=--nocapture`).
+- [ ] The two Markdown pixel checks differ from their stored goldens by about 19,700 pixels each: current fenced/inline code is monospace, stored references use proportional text. Semantic snapshots and streamed/one-shot pixels pass (minion C: left references intact for owner review; no rendering change was made here).
+- [ ] Margin comments clip long text horizontally in the annotated gallery (minion C: observed in the stored golden; needs a layout choice before restyling).
+- [x] Flow scroll actions dispatch pixel deltas at an accessible target in refreshed and natural frames, and the long Markdown scroll flow uses them. `secondary-` parsing already uses the platform OS; new tests prove dispatch on both engines. Tests: `//apps/humata2/testing/flow:scroll_test`, `:scroll_fast_test`, and `//apps/humata2/markdown/headless:flows --test_arg=the_scroll_wheel_moves_a_long_document_and_only_visible_blocks_are_drawn`.
+- [ ] Add syntect to the gpui-fast lock and Markdown Fast GUI suites (minion C: dependency repinning is excluded; flow infrastructure itself is tested on both engines).
 
 ### Review pane (`apps/humata2/review`; D53)
 - [x] `review:large` dispatches one scroll event per measured frame, instead of counting the scroll helper's two refreshes plus a third draw as one. Every one of 200 frames stays within 120 mounts; no production overdraw change was needed. Test: `//apps/humata2/review:large`.
@@ -282,9 +285,10 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] Run `engine:frames_bench_fast`, `terminal/view:frame_bench{,_fast}` and the ui-prototype `markdown_frame_costs`. Fast can't become the default until it has numbers.
 - [ ] Re-measure plain GPUI on a quiet machine (loaded run: idle p99 30.6 ms; 20k diff p99 22.2 ms).
 - [ ] Real-window GPU benchmarks; verify IME, clipboard and VoiceOver.
-- [ ] Investigate `Click("board-card-0")`, which once hit the 12-frame settle limit.
-- [ ] Remove the stale `apps/humata2/testing/Cargo.lock`. The ui-prototype README/UX_FLOWS still show cargo commands; that's the other session's to fix.
-- [ ] Enforce rustfmt (there is no rustfmt.toml yet).
+- [ ] Investigate `Click("board-card-0")`, which once hit the 12-frame settle limit (minion C: that control and parity journey occur only in the excluded, concurrently edited `ui-prototype`; no matching control exists in the permitted desktop/testing code).
+- [x] Removed the stale `apps/humata2/testing/Cargo.lock` and corrected its workspace manifest comment; Bazel targets remain the build/test path. Tests: `//apps/humata2/testing/flow:scroll_test`, `:scroll_fast_test`, `:natural_frames_test`, `:natural_frames_fast_test`. The ui-prototype documentation remains the other session's work.
+- [x] Proposed a minimal root `rustfmt.toml` (edition 2024, width 100) in D79; checked the two new test files with Bazel-managed rustfmt. No tree reformat.
+- [ ] Decide on enforcing/migrating rustfmt across the existing tree (minion C: D79 is Provisional; awaiting owner choice).
 
 ### Daemon and persistence (I7; PER-25–PER-31, D71)
 - [x] The last good copy no longer waits on file events (Bazel's darwin sandbox delivered none): the store calls `Store::on_commit` hooks after each committed write, and humatad's keeper debounces those. Tests: `daemon/humatad:humatad2_unit_test` (`a_copy_is_saved_once_writes_go_quiet`, no longer ignored), `daemon/store:records_test` (`each_committed_write_is_told_and_a_refused_one_is_not`).

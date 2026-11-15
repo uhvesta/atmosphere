@@ -14,7 +14,7 @@ use gpui_kit::gpui;
 use gpui_kit::Focusable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, Entity, Role, ScrollDelta, TestAppContext, point, px};
+use gpui_kit::{AnyWindowHandle, Entity, Role, TestAppContext, point, px};
 use humata2_flow::{Flow, GpuiDriver, SpecFlow, Target, artifact_root, run};
 use humata2_markdown::{AnchorStatus, AnchorTarget, MarkdownEvent, MarkdownOptions};
 use humata2_markdown_headless::{GALLERY, Pane, gallery_options, init, open};
@@ -177,11 +177,12 @@ fn the_scroll_wheel_moves_a_long_document_and_only_visible_blocks_are_drawn(cx: 
     assert!(before.blocks_aligned);
     assert!(before.labelled_blocks > 0 && before.labelled_blocks < 40, "{before:?}");
 
-    cx.update_window(window, |_, window, cx| {
-        window.scroll("md-view", ScrollDelta::Pixels(point(px(0.), px(-3000.))), cx);
-    })
-    .expect("the window is open");
-    cx.run_until_parked();
+    play(
+        cx,
+        window,
+        Flow::new(SpecFlow::new("26.20", "Scroll a long spec"))
+            .scroll(Target::new(Role::Document, "Long"), 0, -3000),
+    );
     frame(cx, window);
     assert!(!first(cx), "the first paragraph scrolled away");
     let after = pane.read_with(cx, |pane, cx| pane.view.read(cx).stats());
