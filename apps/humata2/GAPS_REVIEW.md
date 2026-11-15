@@ -175,7 +175,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/...` (53 tests pass); `bazel test //apps/humata2/daemon/humatad:humatad2_unit_test --test_filter=peer_client --runs_per_test=20` passed.
 - Look at: no code writes the host's key yet, so outside tests no link starts (OVERVIEW gap); `CommandDial` is untested against real SSH; a wrong proof shows as OFFLINE (D83).
 
-### (this commit): enrollment keys written at add time, and the link's state on Machine (Machines) [minion E]
+### 3a147ba4: enrollment keys written at add time, and the link's state on Machine (Machines) [minion E]
 - New `daemon/machines/src/enroll.rs`: a fresh 32-byte hex key per add. The `install` step sends it on stdin to a script that writes `~/.humata2/state/enrollment-key` (umask 077, temp file renamed over it); once setup is done the host writes `<state>/peer-keys/<machine>` (0600, 0700 folder, synced and renamed). `Purpose::Enroll`, `SetupError::Enroll`, `ManageError::SavePeerKey`/`DeletePeerKey`. Reconnect enrolls only a machine the host has no key for, with no reinstall or restart. Removal and an undone add delete the host copy.
 - `machine_service.rs`: `Seen` per machine (reachability, `daemon_version`, `last_seen_at`, `next_retry_at`) on an injected clock; `LinkEvent::Down` carries the retry delay. A wrong proof either way is the new `REACHABILITY_IDENTITY_MISMATCH` (hosts.proto) with no retry.
 - `humatad/tests/machines.rs`: the bundle's humatad2 runs the real binary, so after an add the link really comes up over the fake ssh, and comes up again after a daemon restart on the same state.
