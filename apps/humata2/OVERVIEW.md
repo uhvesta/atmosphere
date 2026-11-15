@@ -296,7 +296,9 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [x] Wire humatad to the store's restart work: `Store::open_or_restore` with `Restored` passed to reconcile, `save_last_good` after writes go quiet (30 s, at most 10 min) on a blocking thread, `ReviveConfig.reports` filled, and one `NotBroughtBack` line per agent or shell that didn't come back in `ServerInfo.last_start`. Test: `daemon/humatad:restart_test` (`a_shell_that_cant_come_back_is_one_line_and_the_others_still_do`, `a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so`).
 - [ ] Show `last_start`'s lines (and a restore's losses) in the app, as the goldens draw it.
 - [ ] A resume redone after a crash skips the "you were interrupted" note when the conversation already holds it, and then only checks that the agent came up, stayed up and opened no other conversation (D71). Find a stronger check if one exists.
-- [ ] Recheck `terminal_test` (once failed with `SizeOutOfRange { claimed: 2097152 }`) and `restart_test` (once Unauthenticated), and fix the flaky `humatad2_unit_test`.
+- [x] Rechecked `terminal_test`: 2097152 is `SNAPSHOT_MAX`, a whole 2 MiB snapshot sent as one chunk, past the decoder's 1 MiB `CHUNK_MAX`; snapshots now go in pieces (5c795563), covered by `a_big_snapshot_comes_in_pieces_to_a_client_that_decodes`. Passed 65 runs (`--runs_per_test=40 --local_test_jobs=16` plus 25).
+- [x] Fixed the flaky `humatad2_unit_test`: its idle-daemon test counted wakes while the start's background reconcile (and, before 71c9071b, file events for the last good copy) could still land in either window. It now waits for the restart report first. Passed 40 runs at 16 jobs.
+- [ ] `restart_test`'s one Unauthenticated wasn't reproduced in 65 runs. Its daemon runs `--admin`, where a call with no credential is the user, so that call must have reached a daemon without it (or carried a stale token). Watch for it.
 
 ### Machines (I7, A3; D61)
 - [ ] Restart the service only when checksums change, not on every connect.

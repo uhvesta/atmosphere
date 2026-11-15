@@ -663,6 +663,13 @@ mod tests {
             (parks() - before, heard)
         }
 
+        /// Whether a restart report with its `restart.json` is in `reports`.
+        fn reconciled(reports: &std::path::Path) -> bool {
+            std::fs::read_dir(reports).is_ok_and(|entries| {
+                entries.flatten().any(|entry| entry.path().join("restart.json").is_file())
+            })
+        }
+
         fn parks() -> u64 {
             tokio::runtime::Handle::current()
                 .metrics()
@@ -702,6 +709,13 @@ mod tests {
             to.write_all(PREFACE).await.unwrap();
             to.write_all(&frame(SETTINGS, 0, 0, &[])).await.unwrap();
             get_server_info(&mut from, &mut to).await;
+            // The start brings sessions back beside serving, and its last
+            // step writes the restart report. Wakes from that work landing
+            // in one window or the other made this test flaky: wait for it.
+            let reports = dir.path().join("state").join("restarts");
+            while !reconciled(&reports) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
 
             // Waking a few times to wait at all is much the same for a
             // minute as for ten hours: a long wait is refiled through the
