@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2's capability checks (BOUNDARIES.md §3, TRACE.md §2): given who is
+# calling, what it wants to do and to what, the call is allowed, becomes an
+# Inbox request, waits for the Mac, or is refused with a reason and a fix.
+# Holds the channel rules, the While I'm away rules and the grants. Pure
+# policy: no I/O, no gRPC, no async; the daemon converts to and from the
+# generated proto types.
+rust_library(
+    name = "access",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_access",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = ["@crates//:thiserror"],
+)
+
+rust_test(
+    name = "access_unit_test",
+    crate = ":access",
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        crate_root = src,
+        deps = [":access"],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

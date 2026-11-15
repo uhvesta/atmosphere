@@ -57,6 +57,7 @@ Choose by measurement, not reputation.
 ## I3: Snapshot testing
 - [x] State snapshots: TestStore steps recorded as readable text.
 - [x] View snapshots: the rendered view as a semantic text tree (roles, labels, text, focus, enabled). These are stable across fonts and GPUs and are the default.
+- [ ] Layout snapshots: the whole drawn tree as text, containers included, with rounded bounds, layout, padding, gap and colours, so a diff shows what moved, resized or restyled (owner request 2026-11-14).
 - [x] Image snapshots, on macOS only: headless rendering with a tolerance, for the few screens where pixels matter (the diff colours, the terminal, wrap). Linux runs the state, view and flow snapshots.
 - [x] One command records and another verifies. Failures write the old image, the new image and their diff, to review side by side.
 
@@ -117,28 +118,35 @@ Reuse what holds up from Humata 1's `humatad` (agent, wire, workspace, the SSH e
 - [ ] Boundary suites: every tool and command, every refusal, and the capability matrix run as tests.
 
 ## I9: Bug reports
-You start recording, use the app, stop, and get a report that an LLM can read. See D31.
-- [ ] Record and stop, from the menu, a shortcut or `humata report start|stop`. While recording, a dot shows in the title bar.
-- [ ] A recording captures:
-  - every reducer action with its state diff;
-  - the view tree at each step;
-  - frames of Humata's own windows, drawn by us, so no screen-recording permission is needed;
-  - daemon RPCs and errors for the same period;
-  - the app, OS and daemon versions.
-- [ ] On stop, a review screen:
-  - scrub through the frames;
-  - draw, box, arrow and comment on any frame, with comments pinned to the element under them (role and label from the view tree);
-  - fill in what happened, what you expected and anything general.
+A bug report is text an agent can read and act on: what you did, where, what the app showed, and what changed, with enough detail to replay it. There are no videos and no pictures. There are two kinds, and both are saved as a folder. See D31.
+- **Recording:** you start, use the app, stop. It captures every event in between.
+- **Snapshot:** one moment, taken with a shortcut.
+
+- [ ] Start and stop a recording, or take a snapshot, from the menu, a shortcut or `humata report record|stop|snapshot`. While recording, a dot shows in the title bar.
+- [ ] A recording captures, as text and in order:
+  - each interaction (click, key, scroll, drag, paste), naming its target by role, label and path in the view tree (for example `Button "Add" in List "Items" in channel #web`);
+  - each reducer action with its state diff;
+  - the view and layout trees at the start, then the change after each step;
+  - daemon RPCs and errors in the same period;
+  - the app, OS, daemon versions, window size and the machines and sessions involved.
+- [ ] A snapshot captures the state, the view tree and the layout tree at that moment, plus the same versions and context.
+- [ ] After either, a short form:
+  - what happened;
+  - what you expected;
+  - comments pinned to elements you pick (saved as the element's path, not as a picture).
 - [ ] Saved under the app's data folder in `reports/<date>-<slug>/`:
-  - `report.md`;
-  - `actions.jsonl`;
-  - `frames/`;
-  - `annotated/`;
+  - `report.md`, the summary and form;
+  - `events.jsonl`;
+  - `state.txt`;
+  - `view.txt`;
+  - `layout.txt`;
   - `daemon.log`.
+- [ ] A recording replays as a flow test (I4) against fake services, so a report can become a regression test.
 - [ ] Secrets are scrubbed before saving: tokens, host variable values and paste-folder contents. Terminal text is kept only for the terminal you mark.
 - [ ] **Copy report** puts a prompt on the clipboard: the summary plus the absolute path of every file, ready to paste into any LLM.
 - [ ] Tests:
-  - a flow that records, annotates and copies the report;
+  - flows that record, take a snapshot, fill the form and copy each kind of report;
+  - a saved recording replays to the same end state;
   - scrubbing proven against seeded secrets;
   - the report folder checked as a snapshot.
 

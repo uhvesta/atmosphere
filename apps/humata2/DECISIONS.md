@@ -223,13 +223,13 @@ Status: **open** (waiting for the user) · **decided**.
 - **Owner:** copy, paste and image paste work for local and SSH sessions alike.
 - **How:** text paste goes through Ghostty's bracketed paste; an image paste is uploaded with `TerminalService.PasteImage` into the session's paste folder on its machine (0600, removed with the session) and its path is pasted. Remote programs' OSC 52 clipboard writes reach the Mac clipboard; OSC 52 reads are never answered without the user.
 
-## D31: Bug reports as infrastructure (I9, user request 2026-11-14). Provisional
-- **Owner's ask:** start recording, stop, annotate the screen (draw, comment, a general report), save everything to one folder and copy a report with the file paths to paste into an LLM.
-- **Options for frames:**
-  - (a) Capture our own GPUI frames off screen. No permission is needed, it works the same on macOS and Linux, and every frame lines up with the view tree.
-  - (b) An OS screen recording (ScreenCaptureKit, or the PipeWire portal on Linux). This captures other apps too, but needs a permission prompt and can leak whatever else is on screen.
-- **Provisional:** (a), with (b) as a later opt-in for bugs outside Humata's windows. Recording reuses the I3/I4 recorders (state diffs, view trees), so a report can be turned into a flow test.
-- **Affects:** I9, the gate G (now I1–I9), the CLI (`humata report`), and secrets handling (scrubbed before anything is written).
+## D31: Bug reports as infrastructure (I9, user request 2026-11-14). Decided 2026-11-14
+- **Owner's ask:** reports are text an agent can understand, not videos or pictures. A report holds the event log and enough context to recreate what happened and where.
+- **Kinds:**
+  - a **recording**: interactions, actions with state diffs, view and layout tree changes, and daemon RPCs between start and stop;
+  - a **snapshot**: state, view and layout trees at one moment.
+- **How:** it reuses the I3/I4 recorders, so the event format is the flow format and a recording replays as a flow test. Elements are named by role, label and tree path. Secrets are scrubbed before anything is written.
+- **Affects:** I9, the gate G (now I1–I9), the CLI (`humata report`), and I3's layout snapshot, which reports depend on.
 - **Reverse:** drop I9 from the gate. Nothing else depends on it.
 
 ## D32: Agent identity — local OAuth or one MCP per agent (I8, user idea 2026-11-14). Provisional
@@ -240,3 +240,24 @@ Status: **open** (waiting for the user) · **decided**.
 - **Provisional:** (a). Revisit (b) only if an agent we support can't run a stdio MCP server.
 - **Affects:** I8, MCP.md §1.
 - **Reverse:** add an HTTP transport beside stdio. Grants and checks stay in the daemon either way.
+
+## D33: Gaps found while writing the access checks (I8, `daemon/access`). Open
+Each item is a provisional pick in `humata2_access`. Reversing one is a local change in that crate unless noted.
+1. **Script tokens and Ask-me capabilities.** TRACE §2 says a token refuses Ask me, but CLI.md's triage example lists an Ask-me capability. Pick: any capability listed in the token is allowed, because the list is the user's approval; unlisted ones are refused; `NetworkReach` is always refused (HO-11). Reverse: refuse `Tier::AskMe` in `check_script`. (Overlaps D27.)
+2. **Proto sources are missing.** `Denied.Source` and `DecisionSource` lack script-token, other-channel, peer-link, user, local-read and review-push. Pick: the Rust enums have them. Reverse: add them to the protos (additive).
+3. **What a CLI without presence may read.** The matrix says this machine only; BOUNDARIES §2.2 and CLI §2 say every channel. Pick: local files, session records, channel boards and channel reads; writes and the global board need presence.
+4. **User-only calls while away.** Pick: answering Inbox requests with the passphrase, and typing into a terminal of a session on this machine; everything else is `HostUnreachable`.
+5. **What Skip applies to.** Pick: GRPC §9.3, so Skip also refuses allowed calls that need the Mac.
+6. **How Skip is reported.** Pick: `user_away`; `SOURCE_AWAY_SKIP` is unused.
+7. **Asking, while away, for something only the Mac can do.** Pick: it waits (or gives `HostUnreachable` under Skip), and is never answerable on the machine.
+8. **"Always let" when one file is read.** Pick: it offers the folder holding the file.
+9. **Capabilities with no "Always let" target** (GlobalRead, PrReviewStart, OwnSession*, SessionMove, TrashRestore, ChannelCreate, SessionStopOther, ChannelChange). Pick: they offer none, and approving with one gives `NoStandingApproval`.
+10. **Agents reaching other channels.** Pick: reading needs `GlobalRead`; anything else is refused, and the fix says to ask the user.
+11. **Agents writing other sessions' or machines' folders.** Pick: refused as a hard limit; the fix says to use its own folders.
+12. **Asking ahead.** Pick: refused for capabilities with no "Always let"; it still asks when the rule is Allow.
+13. **Token calls with no channel** (global, network, push, machine). Pick: no channel listing is needed.
+14. **Deprecated grant targets and capabilities.** Pick: not modelled.
+15. **Proto `PathScope` can't say which folder a path is in.** Pick: the Rust type carries the folder kind. Reverse: add a root field to the proto.
+16. **Copying into `shared/`.** Pick: the copy-in or local-fetch capability alone governs it.
+17. **An agent's claimed machine not matching its session.** Pick: left to the daemon.
+18. **Where rules and grants change.** Pick: only on the Mac (AW-8). A grant made on a machine is replayed on the Mac with a new id and keeps its record.

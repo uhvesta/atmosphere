@@ -1,0 +1,14 @@
+[package]
+name = "humata2-access"
+description = "Humata 2's capability checks: for an actor, an action and its target, allowed, asked through the Inbox, or refused with a reason and a fix."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_access"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = { workspace = true }
