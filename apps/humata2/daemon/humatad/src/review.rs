@@ -332,9 +332,10 @@ impl pb::diff_service_server::DiffService for Review {
             }
             moved
         };
-        let refreshed = self.refresh_notes(&clones, &review, &diffs).await?;
-        if moved || refreshed {
-            self.save(&record.id, &review).await?;
+        match self.refresh_notes(&clones, &review, &diffs).await? {
+            Some(seq) => self.publish(&record.id, &review, seq).await?,
+            None if moved => self.save(&record.id, &review).await?,
+            None => {}
         }
         Ok(Response::new(pb::GetDiffResponse {
             any_changes: diffs.iter().any(|diff| !diff.files.is_empty()),
@@ -908,11 +909,17 @@ impl Review {
 
     /// Marks the session's notes outdated where `diffs` changed the lines
     /// they quote, and moves the ones whose lines only moved (RV-34,
-    /// PR-26). Returns whether any note changed.
-    async fn refresh_notes(&self, clones: &Clones, review: &SessionReview, diffs: &[RepoDiff]) -> Result<bool, Status> {
+    /// PR-26). Returns the last change's seq when any note changed, for
+    /// the app's feed.
+    async fn refresh_notes(
+        &self,
+        clones: &Clones,
+        review: &SessionReview,
+        diffs: &[RepoDiff],
+    ) -> Result<Option<u64>, Status> {
         let notes: Vec<_> = lock(&review.chat).chat.notes().map(|note| note.note.clone()).collect();
         if notes.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         let mut states = vec![None; notes.len()];
         for diff in diffs {
@@ -931,10 +938,14 @@ impl Review {
         let before: Vec<UserNote> = chat.chat.notes().cloned().collect();
         // A note made or dropped meanwhile: the next GetDiff refreshes them.
         if !before.iter().map(|note| &note.note).eq(notes.iter()) {
-            return Ok(false);
+            return Ok(None);
         }
-        chat.chat.refresh_notes(&states);
-        Ok(!chat.chat.notes().eq(before.iter()))
+        let changed = chat.chat.refresh_notes(&states);
+        let at = now();
+        for change in &changed {
+            chat.at.insert(change.seq, at);
+        }
+        Ok(changed.last().map(|change| change.seq))
     }
 
     /// The session and note a note's comment id names: `<session>/note-N`,

@@ -683,11 +683,33 @@ async fn a_later_diff_marks_notes_whose_lines_changed_outdated_and_moves_the_res
         [(changed.clone(), 3, 3, false), (kept.clone(), 5, 5, false)],
         "nothing changes until a diff is shown"
     );
+    let mut feed = chat(&daemon)
+        .await
+        .watch_review_changes(pb::WatchReviewChangesRequest {
+            session: Some(session()),
+            after_seq: 0,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut next = async || tokio::time::timeout(WAIT, feed.message()).await.unwrap().unwrap().unwrap();
+    let made = [next().await.seq, next().await.seq];
     get_diff(&daemon, uncommitted()).await;
 
     let expected = [(changed, 3, 3, true), (kept, 6, 6, false)];
     assert_eq!(note_places(&list_notes(&daemon, all_notes()).await), expected);
     assert_eq!(note_places(&context(&daemon).await.notes), expected);
+    let mut fed = Vec::new();
+    for _ in 0..2 {
+        let change = next().await;
+        assert!(change.seq > made[1], "a note going outdated or moving is a new change");
+        assert_eq!((change.tool.as_str(), change.undo_id.as_str()), ("diff", ""), "nobody can undo a diff");
+        match change.change {
+            Some(pb::review_change::Change::Note(note)) => fed.push(note),
+            other => panic!("expected a note, got {other:?}"),
+        }
+    }
+    assert_eq!(note_places(&fed), expected, "the app's feed hears of both");
 
     daemon.restart().await;
     assert_eq!(note_places(&list_notes(&daemon, all_notes()).await), expected, "a restart keeps it");

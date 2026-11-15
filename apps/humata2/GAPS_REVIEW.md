@@ -207,3 +207,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `daemon/store`: fifth migration adds `views`; `views.rs` has `put_view`, `view`, `views` (newest first), each a `View` blob (store.proto) with the PreparedView bytes and idempotency keys. `daemon/humatad/src/review/views.rs`: PrepareView, ReviseView, MarkReady, ListViews and SetViewState with their checks; `review.rs` routes non-chat PrepareView there and shares `checked_plan` with the chat path. `daemon/humatad/src/mcp.rs`: `view_prepare`, `view_revise`, `view_mark_ready`, `views_list` (board `"session"`/`"channel"`/`{session}`; `"global"` refused).
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: no push of offers to the app, `include_forks` ignored, no CLI (D87).
+
+### (this commit): a note going outdated reaches the app's review feed (review_diff wiring) [minion F]
+- When the code under a note changes, the app now hears at once that the note went outdated (or moved down), instead of only on its next read.
+- `daemon/review_diff/src/chat.rs`: `ReviewChat::refresh_notes` returns a `Change` per note that went outdated or moved (`ChangeTool::Diff`, no undo id, a new seq); `wire.rs` names it `"diff"`. `daemon/humatad/src/review.rs`: GetDiff publishes them (save, then the feed). `review.proto`'s `tool` comment lists `"diff"`.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass; `machines_test` flaked once under load and passed alone).
+- Look at: the app's pane must not offer Undo on a `diff` change (D88).

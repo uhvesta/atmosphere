@@ -856,6 +856,7 @@ pub fn change_to_pb(change: &Change, at: i64) -> pb::ReviewChange {
         ChangeTool::Tool(tool) => (tool.tool_name().to_owned(), String::new()),
         ChangeTool::Undo { undid: 0 } => ("undo".to_owned(), String::new()),
         ChangeTool::Undo { undid } => ("undo".to_owned(), format!("change-{undid}")),
+        ChangeTool::Diff => ("diff".to_owned(), String::new()),
     };
     let what = match &change.what {
         ChangeKind::Focus(place) => place.as_ref().map(|place| C::Focus(place_to_pb(place))),

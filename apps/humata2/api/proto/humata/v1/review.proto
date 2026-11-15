@@ -865,7 +865,8 @@ message ReviewChange {
   // Increases per review; WatchReviewChanges resumes after it.
   uint64 seq = 2;
   // "review_focus", "review_note", "review_note_edit", "review_note_drop",
-  // "review_prepare", or "undo".
+  // "review_prepare", "undo", or "diff": a later diff marked a note
+  // outdated or moved it (RV-34); a "diff" change has no undo_id.
   string tool = 3;
   // For the chat line: `refund.rs:140`.
   string summary = 4;

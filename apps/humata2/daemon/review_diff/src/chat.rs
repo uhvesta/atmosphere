@@ -192,6 +192,9 @@ pub struct Change {
 pub enum ChangeTool {
     Tool(ChatTool),
     Undo { undid: u64 },
+    /// A later diff marked a note outdated or moved it (RV-34); it has no
+    /// undo id, since nobody made it.
+    Diff,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -663,16 +666,15 @@ impl ReviewChat {
 
     /// Marks notes outdated from their states against the current diff
     /// ([`crate::Checkout::note_states_blocking`], in [`Self::notes`]
-    /// order), and moves the ones whose lines only moved. Returns the ids
-    /// that became outdated.
-    pub fn refresh_notes(&mut self, states: &[Option<NoteState>]) -> Vec<String> {
-        let mut newly = Vec::new();
+    /// order), and moves the ones whose lines only moved. Returns a
+    /// change for each note that went outdated or moved, for the app's
+    /// feed; Undo can't take them back.
+    pub fn refresh_notes(&mut self, states: &[Option<NoteState>]) -> Vec<Change> {
+        let mut changed = Vec::new();
         for (note, state) in self.notes.values_mut().zip(states) {
+            let before = note.clone();
             match state {
-                Some(NoteState::Outdated) if !note.outdated => {
-                    note.outdated = true;
-                    newly.push(note.id.clone());
-                }
+                Some(NoteState::Outdated) => note.outdated = true,
                 Some(NoteState::Current { first, last }) => {
                     if let NoteTarget::Lines {
                         first: f, last: l, ..
@@ -682,10 +684,26 @@ impl ReviewChat {
                         *l = *last;
                     }
                 }
-                _ => {}
+                None | Some(NoteState::OnFile | NoteState::Gone) => {}
+            }
+            if *note != before {
+                changed.push(note.clone());
             }
         }
-        newly
+        changed
+            .into_iter()
+            .map(|note| {
+                self.next_seq += 1;
+                self.push(Change {
+                    undo_id: String::new(),
+                    seq: self.next_seq,
+                    tool: ChangeTool::Diff,
+                    summary: note_summary(&note.note),
+                    what: ChangeKind::Note(note),
+                    highlights: self.view.highlights.clone(),
+                })
+            })
+            .collect()
     }
 
     fn record(
@@ -938,9 +956,15 @@ mod tests {
     fn a_note_whose_lines_changed_is_marked_outdated_once() {
         let mut chat = ReviewChat::default();
         assert!(chat.note("Claude Code", line_note("refund.rs", 140), everywhere).is_ok());
-        assert_eq!(chat.refresh_notes(&[Some(NoteState::Outdated)]).len(), 1);
+        let changed = chat.refresh_notes(&[Some(NoteState::Outdated)]);
+        assert!(
+            matches!(changed.as_slice(), [Change { tool: ChangeTool::Diff, what: ChangeKind::Note(note), .. }] if note.outdated),
+            "{changed:?}"
+        );
         assert!(chat.refresh_notes(&[Some(NoteState::Outdated)]).is_empty());
         assert!(chat.notes().all(|note| note.outdated));
+        assert_eq!(chat.changes_after(0).count(), 2, "the app's feed hears of it");
+        assert!(chat.undo(&changed[0].undo_id).is_err(), "nobody can undo a diff");
     }
 
     #[test]

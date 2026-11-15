@@ -689,3 +689,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - The store keeps each view as a `View` blob (the PreparedView bytes and its last 16 idempotency keys) in a `views` table that goes with its session, so a restart keeps drafts and answers and a repeated key returns the first view.
 - Open: offers aren't pushed to the app (no event topic or Journal entry), `include_forks` is ignored, views live on the daemon that runs the session, not the Mac (VW-12), and there's no CLI.
 - Reverse: the fifth migration and `views.rs` in `daemon/store`, `View` in `api/proto/humata/store/v1/store.proto`, and `daemon/humatad/src/review/views.rs` with the ViewService arms in `review.rs`.
+
+## D88: A note going outdated is a review change nobody can undo (proposed by minion F). Provisional
+- **Pick:** when a GetDiff marks a note outdated or moves its lines, each such note is a ReviewChange on WatchReviewChanges with tool `"diff"`, the note as it now is, a new seq and an empty undo_id; Undo can't take it back, since the code changed, not the agent. Recommendation: keep it; the app shows it without Undo.
+- Reverse: `ChangeTool::Diff` and `ReviewChat::refresh_notes` in `daemon/review_diff/src/chat.rs`, and `refresh_notes` in `daemon/humatad/src/review.rs`.

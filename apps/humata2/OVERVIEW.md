@@ -251,7 +251,9 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 ### Pick up here (minion F)
 - Done: review chat Undo and idempotency keys across a restart (D86).
 - Done: draft views in ViewService, the store and MCP (D87); open: their push to the app, include_forks and a CLI.
-- On: next open daemon/CLI/MCP items that need no UI, Linux batch, repin or owner call (a note going outdated on WatchReviewChanges, then the event feed).
+- Done: a note going outdated or moving is a WatchReviewChanges change (D88).
+- On: next open daemon/CLI/MCP items that need no UI, Linux batch, repin or owner call (the event feed next).
+- Trap: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_...`) can fail under the full parallel run; it passes alone.
 - Traps: OVERVIEW, GAPS_REVIEW and DECISIONS may hold minion C1's uncommitted edits; stage only my hunks from `git show HEAD:<file>`.
 
 ### Desktop UI (I2, A10; D72, D74)
@@ -296,7 +298,8 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] An offered view isn't pushed to the app (no EventService topic or Journal entry yet; `journal` is unset), so the offer bar must ListViews; ListViews ignores `include_forks` and pages; views live on the daemon that runs the session, not the Mac (VW-12); there is no `humata views` CLI (D87).
 - [ ] CommentAnchor has no hunk target, so `review_note`'s `hunk_at` becomes a one-line note on that line (D80).
 - [x] Each GetDiff marks notes outdated whose quoted lines changed, and moves the ones whose lines only moved; the review is saved, so a restart keeps it (RV-34, PR-26; minion E). Test: `//apps/humata2/daemon/humatad:review_test` (`a_later_diff_marks_notes_whose_lines_changed_outdated_and_moves_the_rest`).
-- [ ] A note going outdated isn't a change on WatchReviewChanges; the app sees it on its next ListComments or GetReviewContext.
+- [x] A note a later GetDiff marks outdated or moves is a change on WatchReviewChanges (tool `diff`, the note as it now is, no undo id), saved with the review (minion F, D88). Tests: `//apps/humata2/daemon/humatad:review_test` (`a_later_diff_marks_notes_whose_lines_changed_outdated_and_moves_the_rest`), `//apps/humata2/daemon/review_diff:review_diff_unit_test` (`a_note_whose_lines_changed_is_marked_outdated_once`).
+- [ ] The app's review pane must show a `diff` change without an Undo button (D88).
 - [x] MCP dispatches `review_context` and `review_focus` to ReviewChatService for the caller's own session. Test: `//apps/humata2/daemon/humatad:mcp_test` (`the_review_chats_agent_shows_the_user_a_place_and_reads_it_back`).
 - [x] MCP dispatches `review_note`, `review_note_edit`, `review_note_drop` and `review_prepare` to CommentService and ViewService. Test: `//apps/humata2/daemon/humatad:mcp_test` (`the_review_chats_agent_leaves_notes_and_orders_the_review`).
 - [x] The store keeps each session's review (`reviews` table, a `ReviewState` blob): the chat's view, notes and switches, the last shown diffs, the last change and note numbers and whether the view was reported, so a restart keeps the review chat, never reuses a note id, and Mark reviewed still snapshots what was shown. Tests: `//apps/humata2/daemon/store:reviews_test`, `//apps/humata2/daemon/review_diff:notes_test` (`a_restored_chat_never_reuses_a_note_or_change_id`), `//apps/humata2/daemon/humatad:review_test` (`the_agents_notes_are_kept_through_a_restart_and_never_reuse_an_id`).
