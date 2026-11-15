@@ -10,20 +10,21 @@ pub mod bridge;
 pub mod keys;
 pub mod record;
 
+mod board;
+mod channel;
 mod chrome;
+mod code_wrap;
+mod hosts;
+mod lists;
 mod overlays;
 mod pages;
-mod lists;
-mod channel;
-mod board;
-mod hosts;
-mod settings;
-mod session_tabs;
 mod panels;
+mod session_tabs;
+mod settings;
 mod shell;
 mod sidebar;
-mod theme;
 mod terminals;
+mod theme;
 mod widgets;
 
 use std::borrow::Cow;

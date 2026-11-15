@@ -1313,3 +1313,65 @@ fn clicking_a_split_terminal_focuses_that_group() {
     }));
     assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 2);
 }
+
+/// ST-8: a wrapped line keeps its number aligned to its first visual row.
+#[test]
+fn wrapped_changes_align_the_gutter_and_switch_back_to_one_scrolling_row() {
+    use humata2_review::ReviewAction as R;
+    let mut workspace = fixture::design();
+    let file = workspace
+        .diffs
+        .iter_mut()
+        .find(|d| d.repo == "api")
+        .unwrap()
+        .files
+        .iter_mut()
+        .find(|f| f.path == "src/client.rs")
+        .unwrap();
+    file.lines
+        .iter_mut()
+        .find(|l| l.kind == humata2_clients::model::LineKind::Removed)
+        .unwrap()
+        .text = format!("        {}.await?;", "long_identifier_".repeat(8));
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(R::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let gutter = window.find("change-gutter-2").bounds();
+            let code = window.find("change-code-2-0").bounds();
+            assert!((f32::from(gutter.origin.y - code.origin.y)).abs() < 0.5);
+            assert!(window.find("change-line-2").bounds().size.height > gutter.size.height);
+        })
+        .unwrap();
+    app.snapshot("changes-wrapped-long-line");
+    app.send(AppAction::Review(R::ToggleWrap));
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let line = window.find("change-line-2").bounds();
+            let gutter = window.find("change-gutter-2").bounds();
+            assert!((f32::from(line.size.height - gutter.size.height)).abs() < 0.5);
+        })
+        .unwrap();
+    app.send(AppAction::Review(R::ToggleWrap));
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("changes-wrapped-long-line-dark");
+    app.send(AppAction::Settings(
+        humata2_settings::SettingsAction::FontSize(8),
+    ));
+    app.send(AppAction::Pane(PaneAction::Drag(PaneId::Panel, 220.)));
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let gutter = window.find("change-gutter-2").bounds();
+            let code = window.find("change-code-2-0").bounds();
+            assert!((f32::from(gutter.origin.y - code.origin.y)).abs() < 0.5);
+            assert!(f32::from(gutter.size.height) >= 24.5);
+        })
+        .unwrap();
+}

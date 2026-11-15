@@ -34,6 +34,8 @@ rust_library(
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
         "@crates//:tokio",
+        "@crates//:unicode-segmentation",
+        "@crates//:unicode-width",
     ] + ["//apps/humata2/features/%s" % feature for feature in FEATURES],
 )
 

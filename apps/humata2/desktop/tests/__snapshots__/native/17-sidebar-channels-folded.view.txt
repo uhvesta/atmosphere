@@ -51,18 +51,46 @@ Complementary "Changes"
   text "api/src/client.rs"
   Code "api/src/client.rs"
     text "@@ -40,7 +40,12 @@ impl Client {"
-    text "40"
-    text "      pub async fn post(&self, entry: Entry)"
-    text "−         self.db.insert_legacy(&entry).await?;"
-    text "41"
-    text "41"
-    text "+         let tx = self.db.begin().await?;"
-    text "42"
-    text "+         tx.insert_entry(&entry).await?;"
-    text "43"
-    text "+         tx.insert_legacy(&entry).await?;"
-    text "44"
-    text "+         tx.commit().await?;"
+    #change-line-1
+      #change-gutter-1
+        text "40"
+      text " "
+      #change-code-1-0
+        text "    pub async fn post(&self, entry: Entry"
+      #change-code-1-1
+        text ")"
+    #change-line-2
+      #change-gutter-2
+        text "41"
+      text "−"
+      #change-code-2-0
+        text "        self.db.insert_legacy(&entry).awa"
+      #change-code-2-1
+        text "it?;"
+    #change-line-3
+      #change-gutter-3
+        text "41"
+      text "+"
+      #change-code-3-0
+        text "        let tx = self.db.begin().await?;"
+    #change-line-4
+      #change-gutter-4
+        text "42"
+      text "+"
+      #change-code-4-0
+        text "        tx.insert_entry(&entry).await?;"
+    #change-line-5
+      #change-gutter-5
+        text "43"
+      text "+"
+      #change-code-5-0
+        text "        tx.insert_legacy(&entry).await?;"
+    #change-line-6
+      #change-gutter-6
+        text "44"
+      text "+"
+      #change-code-6-0
+        text "        tx.commit().await?;"
     text "You"
     text "Wrap the two writes in one transaction so a crash can't leave them out of step."
     text "You"

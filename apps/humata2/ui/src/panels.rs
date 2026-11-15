@@ -20,7 +20,9 @@ use humata2_session::{Panel, SessionAction};
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::code_wrap;
 use crate::theme::Look;
+use unicode_width::UnicodeWidthStr;
 const GREEN: u32 = 0x30d158;
 const ORANGE: u32 = 0xff9f0a;
 const RED: u32 = 0xff453a;
@@ -178,7 +180,35 @@ fn selected<'a>(
                 .find_map(|diff| diff.files.first().map(|file| (*diff, file)))
         })
 }
-fn changes(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
+fn changes(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    full: bool,
+    look: Look,
+    width: f32,
+    window: &Window,
+) -> Div {
+    let font_size = f32::from(state.settings.preferences.font_size) - 0.5;
+    let line_height = font_size + 5.5;
+    let run = TextRun {
+        len: 1,
+        font: Font {
+            family: "Menlo".into(),
+            ..Default::default()
+        },
+        color: rgb(look.term_text).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let cell_width = f32::from(
+        window
+            .text_system()
+            .shape_line("M".into(), px(font_size), &[run], None)
+            .width,
+    )
+    .max(1.);
+
     let diffs: Vec<_> = state
         .workspace
         .diffs
@@ -300,6 +330,29 @@ fn changes(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
         .min_w_0()
         .min_h_0()
         .when_some(picked, |view, (diff, file)| {
+            let digits = file
+                .lines
+                .iter()
+                .flat_map(|l| [l.old, l.new])
+                .flatten()
+                .max()
+                .unwrap_or(1)
+                .to_string()
+                .len();
+            let gutter_width = 34_f32.max((digits as f32 + 1.) * cell_width);
+            let code_width =
+                width - if full { 300. } else { 0. } - gutter_width - 2. * cell_width - 2.;
+            let columns = ((code_width / cell_width).floor().max(4.)) as usize;
+            let scrolling_width = file
+                .lines
+                .iter()
+                .filter(|l| l.kind != LineKind::Hunk)
+                .map(|l| code_wrap::unwrapped(&l.text).display.width())
+                .max()
+                .unwrap_or(0) as f32
+                * cell_width
+                + gutter_width
+                + 2. * cell_width;
             let name = format!("{}/{}", diff.repo, file.path);
             view.child(
                 row()
@@ -328,10 +381,11 @@ fn changes(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                         col()
                             .py(px(6.))
                             .font_family("Menlo")
-                            .text_size(px(f32::from(state.settings.preferences.font_size) - 0.5))
-                            .line_height(px(17.))
+                            .text_size(px(font_size))
+                            .line_height(px(line_height))
                             .bg(rgb(look.term))
-                            .children(file.lines.iter().map(|line| {
+                            .when(!state.review.wrap, |body| body.min_w(px(scrolling_width)))
+                            .children(file.lines.iter().enumerate().map(|(index, line)| {
                                 let (sign, bg) = match line.kind {
                                     LineKind::Added => ("+", Some(look.add)),
                                     LineKind::Removed => ("−", Some(look.del)),
@@ -340,30 +394,67 @@ fn changes(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                                 if line.kind == LineKind::Hunk {
                                     return text(line.text.clone())
                                         .px(px(10.))
-                                        .text_color(rgb(look.term_dim));
+                                        .whitespace_nowrap()
+                                        .text_color(rgb(look.term_dim))
+                                        .into_any_element();
                                 }
                                 let number = if line.kind == LineKind::Removed {
                                     line.old
                                 } else {
                                     line.new
                                 };
+                                let fragments = if state.review.wrap {
+                                    code_wrap::wrapped(&line.text, columns)
+                                } else {
+                                    vec![code_wrap::unwrapped(&line.text)]
+                                };
                                 row()
+                                    .id(SharedString::from(format!("change-line-{index}")))
+                                    .items_start()
+                                    .w_full()
+                                    .min_h(px(line_height))
                                     .when_some(bg, |row, bg| row.bg(rgb(bg)))
                                     .child(
                                         text(number.map_or_else(String::new, |n| n.to_string()))
-                                            .w(px(34.))
+                                            .w(px(gutter_width))
+                                            .h(px(line_height))
                                             .flex()
                                             .justify_end()
                                             .pr(px(8.))
                                             .text_color(rgb(look.term_dim))
-                                            .flex_shrink_0(),
+                                            .flex_shrink_0()
+                                            .id(SharedString::from(format!(
+                                                "change-gutter-{index}"
+                                            )))
+                                            .test_support(),
                                     )
                                     .child(
-                                        text(format!("{sign} {}", line.text))
-                                            .when(!state.review.wrap, |x| x.whitespace_nowrap())
-                                            .when(state.review.wrap, |x| x.flex_1().min_w_0())
+                                        text(sign)
+                                            .w(px(2. * cell_width))
+                                            .h(px(line_height))
+                                            .flex_shrink_0()
                                             .text_color(rgb(look.term_text)),
                                     )
+                                    .child(col().flex_1().min_w_0().children(
+                                        fragments.into_iter().enumerate().map(
+                                            |(part, fragment)| {
+                                                div()
+                                                    .id(SharedString::from(format!(
+                                                        "change-code-{index}-{part}"
+                                                    )))
+                                                    .h(px(line_height))
+                                                    .whitespace_nowrap()
+                                                    .text_color(rgb(look.term_text))
+                                                    .child(fragment.display)
+                                                    .test_text(
+                                                        line.text[fragment.source].to_owned(),
+                                                    )
+                                                    .test_support()
+                                            },
+                                        ),
+                                    ))
+                                    .test_support()
+                                    .into_any_element()
                             })),
                     )
                     .children(
@@ -1234,6 +1325,7 @@ pub(crate) fn panel(
     width: f32,
     full: bool,
     file_filter: Entity<InputState>,
+    window: &Window,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let look = Look::of(cx);
@@ -1243,7 +1335,7 @@ pub(crate) fn panel(
         .as_ref()
         .and_then(|id| state.workspace.session(id));
     let body = match (panel, session) {
-        (Panel::Changes, _) => changes(ui, state, full, look),
+        (Panel::Changes, _) => changes(ui, state, full, look, width, window),
         (Panel::Inbox, _) => inbox(ui, state, full, look),
         (Panel::Board, Some(session)) => board(ui, state, session, full, look),
         (Panel::Journal, _) => journal(ui, state, full, look),

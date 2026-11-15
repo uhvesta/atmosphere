@@ -27,3 +27,5 @@ humata2-sidebar = { path = "../features/sidebar" }
 humata2-views = { path = "../features/views" }
 tca-rust = { workspace = true }
 tokio = { workspace = true }
+unicode-segmentation = "=1.13.3"
+unicode-width = "=0.2.3"

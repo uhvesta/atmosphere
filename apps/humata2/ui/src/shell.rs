@@ -590,6 +590,7 @@ impl Render for Shell {
                                     panel_width,
                                     false,
                                     self.file_filter.clone(),
+                                    window,
                                     cx,
                                 )
                             }))
@@ -637,6 +638,7 @@ impl Render for Shell {
                             viewport,
                             true,
                             self.file_filter.clone(),
+                            window,
                             cx,
                         )
                     })
