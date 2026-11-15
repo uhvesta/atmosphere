@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::check::{self, Facts};
 use crate::error::{Remedy, SetupError, ValuesError};
 use crate::identity::{self, HostKey, Identity};
-use crate::install::{self, InstallProblem, Payload};
+use crate::install::{self, InstallProblem, Installed, InstalledFile, Payload};
 use crate::known_hosts;
 use crate::link::Link;
 use crate::name::MachineName;
@@ -132,6 +132,26 @@ pub struct Ready {
     pub link: Link,
     pub facts: Facts,
     pub service: ServiceKind,
+    /// Files whose new copy waits beside the old one because a holder runs
+    /// (TS-1); the next connect after the holders end swaps them in.
+    pub staged: Vec<InstalledFile>,
+}
+
+/// One file the install step still has to do.
+#[derive(Debug, Clone)]
+enum Pending {
+    /// Send the bytes.
+    Send(Payload),
+    /// A verified copy is already staged there; move it in.
+    Promote(Payload),
+}
+
+impl Pending {
+    fn payload(&self) -> &Payload {
+        match self {
+            Self::Send(payload) | Self::Promote(payload) => payload,
+        }
+    }
 }
 
 /// One machine's setup.
@@ -147,7 +167,8 @@ pub struct Setup {
     link: Option<Link>,
     identity: Option<Identity>,
     facts: Option<Facts>,
-    pending: Vec<Payload>,
+    pending: Vec<Pending>,
+    staged: Vec<InstalledFile>,
     service: Option<ServiceKind>,
 }
 
@@ -229,6 +250,7 @@ impl Setup {
             identity: None,
             facts: None,
             pending: Vec::new(),
+            staged: Vec::new(),
             service: None,
         }
     }
@@ -363,6 +385,7 @@ impl Setup {
                         link: link.clone(),
                         facts: facts.clone(),
                         service,
+                        staged: self.staged.clone(),
                     }),
                     _ => None,
                 };
@@ -521,9 +544,16 @@ impl Setup {
         let output = runner.run(&invocation).map_err(Failed::new)?;
         let machine = self.machine.clone();
         if output.exit.success() {
-            return match Platform::from_uname(&String::from_utf8_lossy(&output.stdout)) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return match Platform::from_uname(&stdout) {
                 Some(_) => Ok(Done::Next(Step::Check)),
-                None => Err(Failed::with_output(SetupError::BadProbe { machine }, &output)),
+                None => {
+                    let error = match Platform::unknown_uname(&stdout) {
+                        Some(uname) => SetupError::UnsupportedPlatform { machine, uname },
+                        None => SetupError::BadProbe { machine },
+                    };
+                    Err(Failed::with_output(error, &output))
+                }
             };
         }
         let text = output.text();
@@ -624,13 +654,25 @@ impl Setup {
             _ => ServiceKind::for_machine(&facts)
                 .ok_or_else(|| Failed::new(SetupError::NoServiceManager { machine: machine.clone() }))?,
         };
-        let payloads = builds
-            .payloads(found)
-            .ok_or_else(|| Failed::new(SetupError::NoBuild { platform: found }))?;
-        self.pending = payloads
-            .into_iter()
-            .filter(|payload| facts.installed(payload.file()) != Some(payload.sha256()))
-            .collect();
+        let payloads = builds.payloads(found).map_err(Failed::new)?;
+        self.pending.clear();
+        self.staged.clear();
+        for payload in payloads {
+            let file = payload.file();
+            if facts.installed(file) == Some(payload.sha256()) {
+                continue;
+            }
+            if facts.staged(file) == Some(payload.sha256()) {
+                if facts.holders && file.waits_for_holders() {
+                    // Still in use: it stays staged, and nothing is sent.
+                    self.staged.push(file);
+                } else {
+                    self.pending.push(Pending::Promote(payload));
+                }
+                continue;
+            }
+            self.pending.push(Pending::Send(payload));
+        }
         self.service = Some(service);
         self.facts = Some(facts);
         Ok(Done::Next(if self.pending.is_empty() {
@@ -640,30 +682,49 @@ impl Setup {
         }))
     }
 
-    /// Installs the next file that differs from the build; one per call.
+    /// Installs the next file that differs from the build, or moves in a
+    /// staged copy; one per call.
     fn install(&mut self, runner: &dyn Runner) -> Result<Done, Failed> {
-        let Some(payload) = self.pending.first() else {
+        let Some(pending) = self.pending.first().cloned() else {
             return Ok(Done::Next(Step::Service));
         };
+        let payload = pending.payload();
         let link = self.require_link()?;
-        let invocation = link
-            .script(
+        let invocation = match &pending {
+            Pending::Send(payload) => link.script(
                 &install::script(payload, &install::nonce()),
                 Purpose::Install,
                 Some(INSTALL_TIMEOUT),
                 Some(Arc::clone(payload.bytes())),
-            )
-            .map_err(Failed::new)?;
+            ),
+            Pending::Promote(payload) => link.script(
+                &install::promote_script(payload.file(), payload.sha256()),
+                Purpose::Promote,
+                Some(CHECK_TIMEOUT),
+                None,
+            ),
+        }
+        .map_err(Failed::new)?;
         let output = runner.run(&invocation).map_err(Failed::new)?;
-        if !output.exit.success() {
-            return Err(Failed::with_output(
-                SetupError::Install {
-                    machine: self.machine.clone(),
-                    file: payload.file(),
-                    problem: InstallProblem::from_exit(output.exit),
-                },
-                &output,
-            ));
+        let file = payload.file();
+        match Installed::from_exit(output.exit) {
+            Some(Installed::Swapped) => {}
+            Some(Installed::Staged) => self.staged.push(file),
+            None => {
+                let problem = InstallProblem::from_exit(output.exit);
+                if matches!(pending, Pending::Promote(_)) {
+                    // The staged copy went or was damaged: send it whole.
+                    self.pending[0] = Pending::Send(payload.clone());
+                }
+                return Err(Failed::with_output(
+                    SetupError::Install {
+                        machine: self.machine.clone(),
+                        file,
+                        problem,
+                    },
+                    &output,
+                ));
+            }
         }
         self.pending.remove(0);
         Ok(Done::Next(if self.pending.is_empty() {

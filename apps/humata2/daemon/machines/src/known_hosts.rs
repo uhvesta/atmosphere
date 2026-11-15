@@ -43,6 +43,19 @@ pub(crate) fn keys_for(text: &str, machine: &MachineName) -> Vec<HostKey> {
 /// of it. Two pins at once may lose one; the daemon runs them one at a
 /// time.
 pub(crate) fn pin(path: &Path, machine: &MachineName, key: &HostKey) -> Result<(), KnownHostsError> {
+    replace(path, machine, Some(key))
+}
+
+/// Forgets `machine`'s host key, when a machine is removed or adding it is
+/// undone. Nothing to forget is fine.
+pub(crate) fn unpin(path: &Path, machine: &MachineName) -> Result<(), KnownHostsError> {
+    if pinned(path, machine)?.is_none() {
+        return Ok(());
+    }
+    replace(path, machine, None)
+}
+
+fn replace(path: &Path, machine: &MachineName, key: Option<&HostKey>) -> Result<(), KnownHostsError> {
     let alias = alias(machine);
     let old = read(path)?;
     let mut text: String = old
@@ -50,7 +63,9 @@ pub(crate) fn pin(path: &Path, machine: &MachineName, key: &HostKey) -> Result<(
         .filter(|line| line.split_whitespace().next() != Some(alias.as_str()))
         .flat_map(|line| [line, "\n"])
         .collect();
-    text.push_str(&format!("{alias} {} {}\n", key.algorithm(), key.key()));
+    if let Some(key) = key {
+        text.push_str(&format!("{alias} {} {}\n", key.algorithm(), key.key()));
+    }
 
     let write_failed = |source| KnownHostsError::Write {
         path: path.to_owned(),
@@ -126,6 +141,20 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn unpinning_forgets_only_that_machine() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("known_hosts");
+        unpin(&path, &machine("box-1")).unwrap();
+        pin(&path, &machine("box-1"), &key(KEY)).unwrap();
+        pin(&path, &machine("box-2"), &key(OTHER)).unwrap();
+
+        unpin(&path, &machine("box-1")).unwrap();
+
+        assert_eq!(pinned(&path, &machine("box-1")).unwrap(), None);
+        assert_eq!(pinned(&path, &machine("box-2")).unwrap(), Some(key(OTHER)));
     }
 
     #[test]

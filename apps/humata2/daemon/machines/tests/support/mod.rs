@@ -8,7 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use humata2_machines::{
-    Builds, Exit, InstalledFile, Invocation, Output, Payload, Platform, Purpose, RunError, Runner,
+    Builds, BuildsError, Exit, InstalledFile, Invocation, Output, Payload, Platform, Purpose, RunError,
+    Runner,
 };
 
 /// Answers each [`Purpose`] from its own queue, in order.
@@ -82,16 +83,20 @@ impl FakeBuilds {
 }
 
 impl Builds for FakeBuilds {
-    fn payloads(&self, _platform: Platform) -> Option<Vec<Payload>> {
-        self.0.clone()
+    fn payloads(&self, platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        self.0.clone().ok_or_else(|| BuildsError::NoBuild {
+            platform,
+            shipped: String::new(),
+        })
     }
 }
 
-/// A fake humatad2 and holder.
+/// A fake humatad2, holder and `humata`.
 pub fn payloads() -> Vec<Payload> {
     vec![
         Payload::new(InstalledFile::Humatad, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 1\n"[..])),
+        Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 2\n"[..])),
     ]
 }
 
@@ -104,6 +109,8 @@ pub struct CheckFacts {
     pub systemd: bool,
     pub cron: bool,
     pub installed: Vec<(InstalledFile, String)>,
+    pub staged: Vec<(InstalledFile, String)>,
+    pub holders: bool,
 }
 
 impl Default for CheckFacts {
@@ -116,6 +123,8 @@ impl Default for CheckFacts {
             systemd: true,
             cron: true,
             installed: Vec::new(),
+            staged: Vec::new(),
+            holders: false,
         }
     }
 }
@@ -133,7 +142,11 @@ impl CheckFacts {
             yes(self.cron),
             yes(self.cron),
         );
-        for file in [InstalledFile::Humatad, InstalledFile::Holder] {
+        out.push_str(&format!("humata2.holders={}\n", yes(self.holders)));
+        for (file, sha) in &self.staged {
+            out.push_str(&format!("humata2.staged.{}={sha}\n", file.file_name()));
+        }
+        for file in InstalledFile::ALL {
             let sha = self
                 .installed
                 .iter()

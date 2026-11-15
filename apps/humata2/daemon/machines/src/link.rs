@@ -269,7 +269,7 @@ fn ssh_args(
         // A file streamed during takeover may hold `\n~.`.
         "EscapeChar=none".to_owned(),
         "ConnectTimeout=10".to_owned(),
-        "ServerAliveInterval=15".to_owned(),
+        "ServerAliveInterval=30".to_owned(),
         "ServerAliveCountMax=4".to_owned(),
     ];
     if let Some(file) = known_hosts_file {

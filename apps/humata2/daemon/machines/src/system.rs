@@ -14,8 +14,6 @@ use crate::error::RunError;
 use crate::name::BASELINE;
 use crate::runner::{EnvValue, Exit, Invocation, Output, Runner};
 
-/// How often the runner checks whether the command has ended.
-const POLL: Duration = Duration::from_millis(20);
 /// How long output may keep arriving after the command ends, from children
 /// it left behind holding its pipes.
 const DRAIN: Duration = Duration::from_secs(2);
@@ -50,6 +48,14 @@ impl<'a> SystemRunner<'a> {
 enum Stream {
     Out,
     Err,
+}
+
+/// What the runner waits for.
+enum Event {
+    Chunk(Stream, Vec<u8>),
+    /// One of the pipes closed.
+    Closed,
+    Exited(io::Result<ExitStatus>),
 }
 
 impl Runner for SystemRunner<'_> {
@@ -112,33 +118,19 @@ impl Runner for SystemRunner<'_> {
             read_into(Stream::Err, stderr, sender.clone());
             open += 1;
         }
-        drop(sender);
+        // The child's end comes as a message too, from a thread blocked in
+        // wait(): nothing here wakes up to ask (TR-9).
+        let waiter = sender;
+        thread::spawn(move || {
+            let _ = waiter.send(Event::Exited(child.wait()));
+        });
 
         let deadline = invocation.timeout.map(|timeout| Instant::now() + timeout);
+        let mut timed_out = false;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut ended: Option<(Exit, Instant)> = None;
         loop {
-            if ended.is_none() {
-                match child.try_wait() {
-                    Ok(Some(status)) => ended = Some((exit_of(status), Instant::now() + DRAIN)),
-                    Ok(None) => {
-                        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                            kill(group);
-                            let _ = child.wait();
-                            ended = Some((Exit::TimedOut, Instant::now() + DRAIN));
-                        }
-                    }
-                    Err(source) => {
-                        kill(group);
-                        let _ = child.wait();
-                        return Err(RunError::Wait {
-                            program: invocation.program.clone(),
-                            source,
-                        });
-                    }
-                }
-            }
             if let Some((exit, drain_until)) = ended {
                 if open == 0 || Instant::now() >= drain_until {
                     redact(&mut stdout, &secrets);
@@ -150,12 +142,18 @@ impl Runner for SystemRunner<'_> {
                     });
                 }
             }
-            if open == 0 {
-                thread::sleep(POLL);
-                continue;
-            }
-            match receiver.recv_timeout(POLL) {
-                Ok((stream, Some(chunk))) => {
+            // Wakes only for a message, the timeout, or the end of draining.
+            let wake_at = match ended {
+                Some((_, drain_until)) => Some(drain_until),
+                None if timed_out => None,
+                None => deadline,
+            };
+            let event = match wake_at {
+                Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
+                None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match event {
+                Ok(Event::Chunk(stream, chunk)) => {
                     let buffer = match stream {
                         Stream::Out => &mut stdout,
                         Stream::Err => &mut stderr,
@@ -163,19 +161,43 @@ impl Runner for SystemRunner<'_> {
                     let room = MAX_OUTPUT.saturating_sub(buffer.len());
                     buffer.extend_from_slice(&chunk[..chunk.len().min(room)]);
                 }
-                Ok((_, None)) => open -= 1,
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => open = 0,
+                Ok(Event::Closed) => open -= 1,
+                Ok(Event::Exited(Ok(status))) => {
+                    let exit = if timed_out { Exit::TimedOut } else { exit_of(status) };
+                    ended = Some((exit, Instant::now() + DRAIN));
+                }
+                Ok(Event::Exited(Err(source))) => {
+                    kill(group);
+                    return Err(RunError::Wait {
+                        program: invocation.program.clone(),
+                        source,
+                    });
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if ended.is_none() && !timed_out {
+                        // The waiter reports the end once the kill lands.
+                        kill(group);
+                        timed_out = true;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Every sender is gone, the waiter's included, so its
+                    // message was already handled.
+                    open = 0;
+                    if ended.is_none() {
+                        ended = Some((if timed_out { Exit::TimedOut } else { Exit::Code(-1) }, Instant::now()));
+                    }
+                }
             }
         }
     }
 }
 
-/// Sends what `reader` yields, then `None` when it ends.
+/// Sends what `reader` yields, then [`Event::Closed`] when it ends.
 fn read_into(
     stream: Stream,
     mut reader: impl Read + Send + 'static,
-    sender: Sender<(Stream, Option<Vec<u8>>)>,
+    sender: Sender<Event>,
 ) {
     thread::spawn(move || {
         let mut buffer = [0u8; 16 * 1024];
@@ -183,7 +205,7 @@ fn read_into(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if sender.send((stream, Some(buffer[..n].to_vec()))).is_err() {
+                    if sender.send(Event::Chunk(stream, buffer[..n].to_vec())).is_err() {
                         return;
                     }
                 }
@@ -191,7 +213,7 @@ fn read_into(
                 Err(_) => break,
             }
         }
-        let _ = sender.send((stream, None));
+        let _ = sender.send(Event::Closed);
     });
 }
 

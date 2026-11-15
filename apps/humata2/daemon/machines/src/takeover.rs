@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crate::error::TakeoverError;
-use crate::install::{self, Builds, InstallProblem, InstalledFile, Payload};
+use crate::install::{self, Builds, InstallProblem, Installed, InstalledFile, Payload};
 use crate::link::BIN_DIR;
 use crate::name::MachineName;
 use crate::platform::{Arch, Os, Platform};
@@ -229,7 +229,7 @@ impl Takeover {
                 };
                 let words: Vec<&str> = rest.split_whitespace().collect();
                 let platform = match words.as_slice() {
-                    [os, arch, _, _] => Os::parse(os)
+                    [os, arch, shas @ ..] if shas.len() == InstalledFile::ALL.len() => Os::parse(os)
                         .zip(Arch::parse(arch))
                         .map(|(os, arch)| Platform { os, arch }),
                     _ => None,
@@ -241,8 +241,9 @@ impl Takeover {
                 };
                 let installed: BTreeMap<InstalledFile, &str> =
                     InstalledFile::ALL.into_iter().zip(words[2..].iter().copied()).collect();
-                let Some(payloads) = builds.payloads(platform) else {
-                    return self.fail(TakeoverError::NoBuild { platform });
+                let payloads = match builds.payloads(platform) {
+                    Ok(payloads) => payloads,
+                    Err(error) => return self.fail(error.into()),
                 };
                 self.platform = Some(platform);
                 self.pending = payloads
@@ -266,7 +267,9 @@ impl Takeover {
                     return Vec::new();
                 };
                 match rest.trim().parse::<i32>() {
-                    Ok(0) => {
+                    // Swapped, or staged beside the old copy while a holder
+                    // runs: either way this file is done for now.
+                    Ok(code) if Installed::from_exit(Exit::Code(code)).is_some() => {
                         self.pending.retain(|payload| payload.file() != file);
                         self.next()
                     }
@@ -396,7 +399,8 @@ impl Takeover {
     }
 }
 
-/// Prints `HUMATA_FACTS_<n> <os> <arch> <sha> <sha>`. Markers are put
+/// Prints `HUMATA_FACTS_<n> <os> <arch>` and one SHA-256 (or `none`) per
+/// [`InstalledFile`]. Markers are put
 /// together by `printf`, so the terminal's echo of the typed line never
 /// matches them.
 fn facts_script(n: &str) -> String {
@@ -405,7 +409,8 @@ fn facts_script(n: &str) -> String {
         .map(|file| format!("\"$(s {})\"", file.file_name()))
         .collect();
     format!(
-        r#"s() {{ f="$HOME/{BIN_DIR}/$1"; [ -f "$f" ] || {{ echo none; return; }}; {{ sha256sum "$f" 2>/dev/null || shasum -a 256 "$f" 2>/dev/null || echo none; }} | cut -d ' ' -f 1; }}; printf '%s_%s_%s %s %s %s %s\n' HUMATA FACTS {n} "$(uname -s)" "$(uname -m)" {}"#,
+        r#"s() {{ f="$HOME/{BIN_DIR}/$1"; [ -f "$f" ] || {{ echo none; return; }}; {{ sha256sum "$f" 2>/dev/null || shasum -a 256 "$f" 2>/dev/null || echo none; }} | cut -d ' ' -f 1; }}; printf '%s_%s_%s %s %s{}\n' HUMATA FACTS {n} "$(uname -s)" "$(uname -m)" {}"#,
+        " %s".repeat(files.len()),
         files.join(" ")
     )
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::install::{InstallProblem, InstalledFile};
+use crate::install::{BuildsError, InstallProblem, InstalledFile};
 use crate::name::MachineName;
 use crate::platform::Platform;
 use crate::provider::Action;
@@ -295,6 +295,10 @@ pub enum SetupError {
     )]
     BadProbe { machine: MachineName },
     #[error(
+        "{machine} is `{uname}`, a platform Humata 2 has no build for; it sets up Linux machines on x86_64 or aarch64. Use one of those"
+    )]
+    UnsupportedPlatform { machine: MachineName, uname: String },
+    #[error(
         "the machine check on {machine} failed ({exit}) or printed nothing Humata can read; the output is below"
     )]
     CheckFailed { machine: MachineName, exit: Exit },
@@ -318,8 +322,8 @@ pub enum SetupError {
         "{machine} has neither systemd user services nor `setsid` and `crontab`, so humatad2 can't keep running there; install systemd or cron there, or use another machine"
     )]
     NoServiceManager { machine: MachineName },
-    #[error("this Humata has no humatad2 build for {platform}; use a machine of a supported platform")]
-    NoBuild { platform: Platform },
+    #[error(transparent)]
+    Builds(#[from] BuildsError),
     #[error("installing {file} on {machine} failed: {problem}")]
     Install { machine: MachineName, file: InstalledFile, problem: InstallProblem },
     #[error(
@@ -353,8 +357,8 @@ pub enum TakeoverError {
         .waited.as_secs_f32()
     )]
     NoShell { machine: MachineName, waited: Duration, output_tail: String },
-    #[error("this Humata has no humatad2 build for {platform}; use a machine of a supported platform")]
-    NoBuild { platform: Platform },
+    #[error(transparent)]
+    Builds(#[from] BuildsError),
     #[error("installing {file} over the login failed: {problem}")]
     Install { file: InstalledFile, problem: InstallProblem },
     #[error(

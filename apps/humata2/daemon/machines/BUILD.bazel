@@ -30,7 +30,10 @@ rust_test(
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
-        srcs = [src] + glob(["tests/support/*.rs"]),
+        srcs = [src] + glob([
+            "tests/support/*.rs",
+            "testing/*.rs",
+        ]),
         crate_root = src,
         deps = [
             ":machines",
@@ -45,6 +48,21 @@ rust_test(
         ],
     )
 ]
+
+# A machine behind a fake `ssh` (testing/fake_machine.rs), for the
+# daemon's tests: no network and never the real ~/.ssh.
+rust_library(
+    name = "fake_machine",
+    testonly = True,
+    srcs = ["testing/fake_machine.rs"],
+    crate_name = "humata2_fake_machine",
+    crate_root = "testing/fake_machine.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":machines",
+        "@crates//:tempfile",
+    ],
+)
 
 # Waits on a real timeout: a second or so of wall-clock time.
 rust_test(

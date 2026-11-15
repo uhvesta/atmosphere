@@ -6,12 +6,16 @@
 //! daemon's; this crate hands it a ready link.
 
 mod base64;
+mod bundle;
 mod check;
 mod error;
+mod hosts;
 mod identity;
 mod install;
 mod known_hosts;
 mod link;
+mod local;
+mod manage;
 mod name;
 mod platform;
 mod provider;
@@ -28,8 +32,14 @@ pub use error::{
     QuoteError, Remedy, RunError, SetupError, TakeoverError, ValuesError,
 };
 pub use identity::{parse_identity, HostKey, Identity, SshAccess, SshTarget};
-pub use install::{Builds, InstallProblem, InstalledFile, Payload};
+pub use bundle::{Bundle, MANIFEST};
+pub use hosts::{EntryState, HostEntry, Hosts, HostsError};
+pub use install::{Builds, BuildsError, InstallProblem, InstalledFile, Payload};
 pub use link::Link;
+pub use local::{install_local, Holders, LocalInstallError, LocalReport, RunningHolders};
+pub use manage::{
+    AddSsh, Drive, Machines, MachinesConfig, ManageError, OpStep, PlannedAdd, Recovered, StepEvent, DEFAULT_ROOT,
+};
 pub use name::MachineName;
 pub use platform::{Arch, Os, Platform};
 pub use provider::{parse_status, Action, MachineStatus, Param, Provider, Reach};

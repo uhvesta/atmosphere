@@ -23,6 +23,8 @@ pub enum Purpose {
     Check,
     /// Streaming one file in.
     Install,
+    /// Moving a staged file into place once no holder runs.
+    Promote,
     /// Writing and starting the user service.
     Service,
     /// Stopping humatad2 and removing its service and files (cancelling

@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use humata2_machines::{
-    Builds, Exit, InstallProblem, InstalledFile, MachineName, Payload, Platform, Takeover,
+    Builds, BuildsError, Exit, InstallProblem, InstalledFile, MachineName, Payload, Platform, Takeover,
     TakeoverAction, TakeoverError,
 };
 
@@ -22,8 +22,8 @@ const GUARD: Duration = Duration::from_secs(60);
 struct AnyPlatform(Vec<Payload>);
 
 impl Builds for AnyPlatform {
-    fn payloads(&self, _platform: Platform) -> Option<Vec<Payload>> {
-        Some(self.0.clone())
+    fn payloads(&self, _platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        Ok(self.0.clone())
     }
 }
 
@@ -45,6 +45,7 @@ fn files_with_bridge(body: &str) -> Vec<Payload> {
     vec![
         Payload::new(InstalledFile::Humatad, Arc::from(humatad.as_bytes())),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
+        Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
     ]
 }
 
@@ -127,7 +128,7 @@ impl Shell {
 
 /// What the takeover ended with, and the files it sent.
 enum End {
-    Ready(Platform, Vec<u8>),
+    Ready(Vec<u8>),
     Failed(TakeoverError),
 }
 
@@ -161,8 +162,8 @@ fn run_takeover(
                     sent.push(payload.file());
                     shell.write(&mangle(payload.bytes()));
                 }
-                TakeoverAction::Ready { platform, leftover } => {
-                    return (End::Ready(platform, leftover), sent);
+                TakeoverAction::Ready { leftover, .. } => {
+                    return (End::Ready(leftover), sent);
                 }
                 TakeoverAction::Failed(error) => return (End::Failed(error), sent),
             }
@@ -183,10 +184,10 @@ fn the_files_are_installed_and_the_shell_becomes_the_bridge() {
 
     let (end, sent) = run(&mut shell, &AnyPlatform(files.clone()), <[u8]>::to_vec);
 
-    let End::Ready(_, mut received) = end else {
+    let End::Ready(mut received) = end else {
         panic!("the takeover failed");
     };
-    assert_eq!(sent, [InstalledFile::Humatad, InstalledFile::Holder]);
+    assert_eq!(sent, InstalledFile::ALL);
     for payload in &files {
         let installed = home.path().join(".humata2/bin").join(payload.file().file_name());
         assert_eq!(std::fs::read(installed).unwrap(), &payload.bytes()[..]);

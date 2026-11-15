@@ -164,6 +164,18 @@ pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null || {{ echo "
 /// user service or crontab entry, and the files in `~/.humata2/bin`. State,
 /// folders and lingering stay. It exits 0 when nothing was there.
 pub(crate) fn remove_script() -> String {
+    let files: Vec<String> = crate::install::InstalledFile::ALL
+        .iter()
+        .flat_map(|file| {
+            let name = file.file_name();
+            [
+                format!("\"$HOME/{BIN_DIR}/{name}\""),
+                format!("\"$HOME/{BIN_DIR}/{}\"", file.staged_name()),
+                format!("\"$HOME/{BIN_DIR}\"/.{name}.*.new"),
+            ]
+        })
+        .collect();
+    let files = files.join(" ");
     format!(
         r#"{HELPERS}if command -v systemctl >/dev/null 2>&1 && [ -f "$unit_dir/humatad2.service" ]; then
   systemctl --user disable --now humatad2.service >/dev/null 2>&1
@@ -172,7 +184,7 @@ pub(crate) fn remove_script() -> String {
 fi
 drop_cron || exit 1
 stray
-rm -f "$HOME/{BIN_DIR}/humatad2" "$HOME/{BIN_DIR}/humata2_holder" || exit 1
+rm -f {files} || exit 1
 rmdir "$HOME/{BIN_DIR}" 2>/dev/null
 exit 0
 "#
@@ -304,6 +316,8 @@ exec {real} 0.2
             fs::create_dir_all(&installed).unwrap();
             fs::write(installed.join("humatad2"), "").unwrap();
             fs::write(installed.join("humata2_holder"), "").unwrap();
+            fs::write(installed.join("humata"), "").unwrap();
+            fs::write(installed.join(".humata.staged"), "").unwrap();
             fs::create_dir_all(home.join(".humata2/state")).unwrap();
             Self {
                 _folder: folder,
@@ -451,6 +465,8 @@ exec {real} 0.2
             assert_eq!(machine.crontab(), OTHER_CRON);
             assert!(!machine.home.join(BIN_DIR).join("humatad2").exists());
             assert!(!machine.home.join(BIN_DIR).join("humata2_holder").exists());
+            assert!(!machine.home.join(BIN_DIR).join("humata").exists());
+            assert!(!machine.home.join(BIN_DIR).join(".humata.staged").exists());
             assert!(machine.home.join(".humata2/state").is_dir());
         }
     }

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::install::InstalledFile;
+use crate::install::{InstalledFile, HOLDERS_FN};
 use crate::link::BIN_DIR;
 use crate::platform::{Arch, Os, Platform};
 
@@ -26,13 +26,23 @@ pub struct Facts {
     pub linger: bool,
     pub crontab: bool,
     pub setsid: bool,
+    /// A `humata2_holder` of the user runs, so files that wait for holders
+    /// are staged rather than swapped.
+    pub holders: bool,
     installed: BTreeMap<InstalledFile, String>,
+    staged: BTreeMap<InstalledFile, String>,
 }
 
 impl Facts {
     /// The SHA-256 of `file` as installed now; none when it isn't there.
     pub fn installed(&self, file: InstalledFile) -> Option<&str> {
         self.installed.get(&file).map(String::as_str)
+    }
+
+    /// The SHA-256 of the copy of `file` waiting for no holder to run; none
+    /// when none waits.
+    pub fn staged(&self, file: InstalledFile) -> Option<&str> {
+        self.staged.get(&file).map(String::as_str)
     }
 }
 
@@ -60,10 +70,16 @@ fact crontab "$(has crontab)"
 fact setsid "$(has setsid)"
 "#,
     );
+    script.push_str(HOLDERS_FN);
+    script.push_str("if holders; then fact holders yes; else fact holders no; fi\n");
     for file in InstalledFile::ALL {
         let name = file.file_name();
         script.push_str(&format!(
             "if [ -f \"$HOME/{BIN_DIR}/{name}\" ]; then fact sha.{name} \"$(sha \"$HOME/{BIN_DIR}/{name}\")\"; else fact sha.{name} none; fi\n"
+        ));
+        let staged = file.staged_name();
+        script.push_str(&format!(
+            "if [ -f \"$HOME/{BIN_DIR}/{staged}\" ]; then fact staged.{name} \"$(sha \"$HOME/{BIN_DIR}/{staged}\")\"; fi\n"
         ));
     }
     script
@@ -81,15 +97,20 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
     let user = facts.get("user").filter(|user| {
         !user.is_empty() && !user.chars().any(|c| c.is_whitespace() || c.is_control())
     })?;
-    let mut installed = BTreeMap::new();
-    for file in InstalledFile::ALL {
-        let key = format!("sha.{}", file.file_name());
-        if let Some(sha) = facts.get(key.as_str()) {
-            if sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
-                installed.insert(file, sha.to_ascii_lowercase());
+    let shas = |prefix: &str| {
+        let mut found = BTreeMap::new();
+        for file in InstalledFile::ALL {
+            let key = format!("{prefix}.{}", file.file_name());
+            if let Some(sha) = facts.get(key.as_str()) {
+                if sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    found.insert(file, sha.to_ascii_lowercase());
+                }
             }
         }
-    }
+        found
+    };
+    let installed = shas("sha");
+    let staged = shas("staged");
     Some(Facts {
         platform: Platform {
             os: Os::parse(facts.get("os")?)?,
@@ -104,7 +125,9 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         linger: yes("linger"),
         crontab: yes("crontab"),
         setsid: yes("setsid"),
+        holders: yes("holders"),
         installed,
+        staged,
     })
 }
 

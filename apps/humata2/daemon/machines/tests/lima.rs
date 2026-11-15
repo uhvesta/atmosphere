@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use humata2_machines::{
-    parse_status, Action, Builds, InstalledFile, Invocation, MachineName, MachineStatus, Output,
+    parse_status, Action, Builds, BuildsError, InstalledFile, Invocation, MachineName, MachineStatus, Output,
     Payload, Platform, Progress, Provider, Purpose, Ready, RunError, Runner, Setup, SetupError,
     SystemRunner,
 };
@@ -18,8 +18,8 @@ const MACHINE: &str = "machines-e2e";
 struct Fakes;
 
 impl Builds for Fakes {
-    fn payloads(&self, _platform: Platform) -> Option<Vec<Payload>> {
-        Some(vec![
+    fn payloads(&self, _platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        Ok(vec![
             // Stays running as `humatad2 serve --role machine`, so the
             // service step sees it start and removing it can find it.
             Payload::new(
@@ -27,6 +27,7 @@ impl Builds for Fakes {
                 Arc::from(&b"#!/bin/sh\nwhile :; do sleep 1; done\n"[..]),
             ),
             Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
+            Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         ])
     }
 }

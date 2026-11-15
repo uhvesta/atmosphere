@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use humata2_machines::{
-    Exit, IdentityError, InstallProblem, InstalledFile, Link, MachineName, Progress, Provider,
+    BuildsError, Exit, IdentityError, InstallProblem, InstalledFile, Link, MachineName, Progress, Provider,
     Purpose, Remedy, RetryPolicy, ServiceKind, Setup, SetupError, SshAccess, SshTarget, Step,
     ValuesError,
 };
@@ -61,6 +61,7 @@ fn answer_up_to_service(runner: &FakeRunner, facts: &CheckFacts) {
         .ok(Purpose::Create, "")
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &facts.stdout())
+        .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "");
 }
@@ -116,9 +117,11 @@ fn files_already_installed_are_not_sent_again() {
 #[test]
 fn only_the_file_that_differs_is_sent() {
     let runner = FakeRunner::new();
-    let holder = payloads().pop().unwrap();
     let facts = CheckFacts {
-        installed: vec![(InstalledFile::Holder, holder.sha256().to_owned())],
+        installed: payloads()[1..]
+            .iter()
+            .map(|payload| (payload.file(), payload.sha256().to_owned()))
+            .collect(),
         ..CheckFacts::default()
     };
     runner
@@ -149,6 +152,7 @@ fn connect_retries_with_growing_waits_while_the_machine_boots() {
         .answer(Purpose::Probe, Exit::Code(255), "", "Connection refused")
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &CheckFacts::default().stdout())
+        .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Service, "");
@@ -278,7 +282,7 @@ fn a_try_again_after_a_failure_runs_the_same_step() {
 
     assert!(matches!(first, Progress::Failed(ref failure) if failure.step == Step::Service));
     assert!(matches!(second, Progress::Ready(_)), "{second:?}");
-    assert_eq!(runner.ran(Purpose::Install).len(), 2);
+    assert_eq!(runner.ran(Purpose::Install).len(), 3);
 }
 
 #[test]
@@ -292,6 +296,7 @@ fn an_identity_machine_is_reached_over_ssh_with_humatas_host_keys() {
         )
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &CheckFacts::default().stdout())
+        .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Service, "");
@@ -429,7 +434,7 @@ fn a_platform_without_a_build_fails_the_check() {
     let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::none());
 
     assert!(
-        matches!(progress, Progress::Failed(ref failure) if matches!(failure.error, SetupError::NoBuild { .. })),
+        matches!(progress, Progress::Failed(ref failure) if matches!(failure.error, SetupError::Builds(BuildsError::NoBuild { .. }))),
         "{progress:?}"
     );
 }
