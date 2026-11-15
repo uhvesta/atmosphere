@@ -54,7 +54,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/store:all //apps/humata2/daemon/revive:all` (new `a_write_killed_before_it_was_renamed_into_place_leaves_nothing_once_reopened`, `a_restore_killed_part_way_is_finished_when_the_store_opens_again`; kill and power-cut matrices gain `revive.resume.telling`/`told` and count the note).
 - Look at: the weaker check when the note is skipped; the note is matched as plain text in the conversation file.
 
-### (this commit): design goldens replace the N1 mocks (N1; D76)
+### d0be4475: design goldens replace the N1 mocks (N1; D76)
 - `desktop/tests/directions*` becomes `desktop/tests/design.rs` and `design/*.rs`; target `design_test`. 33 frames in `tests/__snapshots__/design/` keep the owner's picks and drop the rest (tabs-on-top and stacked-pane switchers, the lines tree, the channel overview, Home columns, the Inbox stream).
 - New: the expanded Board panel draws the kanban lanes (12); the split is two tab groups with the same tab row as a lone terminal (14); New session picks an agent TUI or a plain terminal (31); the header keeps the panel toggle.
 - OVERVIEW: the goldens are a reference document and the UI target; platforms are macOS, Linux and web; the N1 picks and build items.
