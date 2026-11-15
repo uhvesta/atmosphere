@@ -1,0 +1,92 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The GPUI grid view, once per engine (D57): `terminal_view` on ordinary GPUI
+# from @crates, `terminal_view_fast` on GPUI Fast from @crates_gpui_fast. The
+# source names no engine; only its gpui-kit differs.
+GPUI_KIT = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+[
+    rust_library(
+        name = "terminal_view" + engine,
+        srcs = glob(["src/*.rs"]),
+        crate_name = "terminal_view",
+        visibility = [
+            "//apps/humata2/desktop:__subpackages__",
+            "//apps/humata2/terminal/pane:__pkg__",
+            "//apps/humata2/ui:__subpackages__",
+            "//apps/humata2/ui-prototype:__pkg__",
+        ],
+        deps = [
+            "//apps/humata2/terminal/grid:terminal_grid",
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+# The view's headless tests, on each engine. They need FakeGrid, so they
+# build the view against terminal_grid_fake.
+[
+    rust_library(
+        name = "terminal_view" + engine + "_fake",
+        testonly = True,
+        srcs = glob(["src/*.rs"]),
+        crate_name = "terminal_view",
+        # The GUI spike draws a FakeGrid too.
+        visibility = ["//apps/humata2/spike/gui:__pkg__"],
+        deps = [
+            "//apps/humata2/terminal/grid:terminal_grid_fake",
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+[
+    rust_test(
+        name = "terminal_view" + engine + "_test",
+        crate = ":terminal_view" + engine + "_fake",
+    )
+    for engine in GPUI_KIT
+]
+
+[
+    rust_test(
+        name = "view" + engine + "_test",
+        srcs = ["tests/view.rs"],
+        deps = [
+            ":terminal_view" + engine + "_fake",
+            "//apps/humata2/terminal/grid:terminal_grid_fake",
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+# How long a 200×60 terminal frame takes headless (benches/frame.rs), on
+# each engine. Measure in an optimised build:
+#   bazel run -c opt //apps/humata2/terminal/view:frame_bench
+#   bazel run -c opt //apps/humata2/terminal/view:frame_bench_fast
+[
+    rust_binary(
+        name = "frame_bench" + engine,
+        testonly = True,
+        srcs = ["benches/frame.rs"],
+        crate_name = "frame",
+        deps = [
+            ":terminal_view" + engine + "_fake",
+            "//apps/humata2/terminal/grid:terminal_grid_fake",
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

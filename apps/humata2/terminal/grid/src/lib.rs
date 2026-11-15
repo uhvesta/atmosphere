@@ -81,6 +81,29 @@ impl Span {
     }
 }
 
+/// Where the viewport sits in the history, in rows, for a scrollbar: the
+/// whole history is `total` rows, of which `len` rows from `offset` are in
+/// view. At the bottom, `offset + len == total`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Scrollbar {
+    pub total: u64,
+    pub offset: u64,
+    pub len: u64,
+}
+
+impl Scrollbar {
+    /// Whether the viewport shows the newest rows, so new output keeps it
+    /// at the bottom.
+    pub fn at_bottom(self) -> bool {
+        self.offset.saturating_add(self.len) >= self.total
+    }
+
+    /// Whether there is history to scroll through.
+    pub fn scrollable(self) -> bool {
+        self.total > self.len
+    }
+}
+
 /// What changed since the renderer last called [`Grid::clear_dirty`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Dirty {
@@ -134,4 +157,10 @@ pub trait Grid {
 
     /// Marks everything drawn. Call after a frame has been painted.
     fn clear_dirty(&mut self);
+
+    /// Where the viewport sits in the history, or `None` for a grid
+    /// without one; the view then draws no scrollbar.
+    fn scrollbar(&self) -> Option<Scrollbar> {
+        None
+    }
 }

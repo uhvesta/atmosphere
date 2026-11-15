@@ -178,4 +178,13 @@ pub enum Error {
          pasting it anyway; removing the breaks is safe only if the text is meant as one line."
     )]
     UnsafePaste { line_breaks: usize },
+
+    #[error(
+        "Couldn't encode the focus change for the program, so it wasn't told. It catches up \
+         on the next focus change."
+    )]
+    EncodeFocus {
+        #[source]
+        source: Status,
+    },
 }

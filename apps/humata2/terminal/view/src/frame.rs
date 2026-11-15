@@ -12,6 +12,8 @@
 
 use terminal_grid::{Cell, CellWidth, Color, Colors, Rgb, Row, Span, Underline};
 
+use crate::boxes::{self, Drawing};
+
 /// How a row's colors are worked out, from the view's theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Style {
@@ -75,6 +77,19 @@ pub(crate) struct RowPlan {
     pub fills: Vec<Fill>,
     pub pieces: Vec<Piece>,
     pub decorations: Vec<Decoration>,
+    /// Box-drawing and block characters, drawn by the view rather than
+    /// the font.
+    pub drawings: Vec<Drawn>,
+}
+
+/// A box-drawing or block character at column `col`, drawn as rectangles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Drawn {
+    pub col: u16,
+    pub cols: u16,
+    pub drawing: Drawing,
+    pub color: Rgb,
+    pub alpha: f32,
 }
 
 /// The colors a cell is drawn in, after inverse video and selection.
@@ -166,6 +181,21 @@ pub(crate) fn plan_row(row: &Row, selection: Option<Span>, colors: &Colors, styl
             }
             continue;
         }
+        if let Some(drawing) = single_char(&cell.text).and_then(boxes::drawing) {
+            // Text in the same style may carry on past it, with a space
+            // where it is drawn.
+            plan.drawings.push(Drawn {
+                col,
+                cols,
+                drawing,
+                color: drawn.fg,
+                alpha,
+            });
+            if open.is_some() {
+                gap += cols;
+            }
+            continue;
+        }
         let alone = stands_alone(cell);
         match open.as_mut() {
             Some(piece) if !alone && piece.style == text_style => {
@@ -249,6 +279,13 @@ fn decorate(
     }
 }
 
+/// The cell's text when it is one scalar.
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let first = chars.next()?;
+    chars.next().is_none().then_some(first)
+}
+
 /// Whether a cell must be shaped on its own: a wide character, so it
 /// lands on its two columns whatever the fallback font's advance; a
 /// cluster of more than one scalar, so a combining mark or emoji sequence
@@ -321,6 +358,30 @@ mod tests {
         let plan = plan_row(&row(cells), None, &Colors::default(), &STYLE);
         assert_eq!(pieces(&plan), vec![(0, "ls -l")]);
         assert!(plan.fills.is_empty(), "default backgrounds aren't filled per row");
+    }
+
+    #[::std::prelude::v1::test]
+    fn box_characters_are_drawn_and_text_carries_on_around_them() {
+        let red = Cell {
+            fg: Color::Palette(1),
+            ..Cell::default()
+        };
+        let cells = vec![
+            text("│"),
+            text("a"),
+            text("─"),
+            text("b"),
+            styled("█", red),
+            text("╱"),
+        ];
+        let plan = plan_row(&row(cells), None, &Colors::default(), &STYLE);
+        // The diagonal is the font's, and joins the text before it; the
+        // line, the rule and the block are drawn, each in its own cell's
+        // color.
+        assert_eq!(pieces(&plan), vec![(1, "a b ╱")]);
+        let drawn: Vec<(u16, Rgb)> = plan.drawings.iter().map(|drawn| (drawn.col, drawn.color)).collect();
+        let colors = Colors::default();
+        assert_eq!(drawn, vec![(0, colors.foreground), (2, colors.foreground), (4, colors.palette[1])]);
     }
 
     #[::std::prelude::v1::test]

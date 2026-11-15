@@ -2,6 +2,22 @@ use terminal_grid::{Grid, KeyEvent, Mods, MouseEvent, Size, ViewportPoint};
 
 use crate::paste::Paste;
 
+/// Where to move the viewport in the history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollTo {
+    /// To the oldest row.
+    Top,
+    /// To the newest output, which then keeps the view at the bottom.
+    Bottom,
+    /// Up by a screen, toward older output.
+    PageUp,
+    /// Down by a screen.
+    PageDown,
+    /// So that history row `n` (0 being the oldest, as in
+    /// [`terminal_grid::Scrollbar::offset`]) is the top row in view.
+    Row(u64),
+}
+
 /// The size of a cell, in pixels.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CellSize {
@@ -44,6 +60,25 @@ pub trait TerminalHost<G: Grid> {
     /// order they dragged; `None` clears the selection.
     fn select(&mut self, grid: &mut G, selection: Option<(ViewportPoint, ViewportPoint)>) {
         let _ = (grid, selection);
+    }
+
+    /// The user selected the block of cells with `start` and `end` as
+    /// opposite corners (Option-drag on a Mac, Alt-drag elsewhere). A host
+    /// that can't select a block selects in reading order.
+    fn select_rectangle(&mut self, grid: &mut G, start: ViewportPoint, end: ViewportPoint) {
+        self.select(grid, Some((start, end)));
+    }
+
+    /// The user moved through the history with a key or the scrollbar.
+    fn scroll_to(&mut self, grid: &mut G, to: ScrollTo) {
+        let _ = (grid, to);
+    }
+
+    /// Text the input method committed, such as a composed Chinese or
+    /// Japanese word, or an accented letter typed with a dead key. Send it
+    /// as typed; it never carries control characters.
+    fn text(&mut self, grid: &mut G, text: &str) {
+        let _ = (grid, text);
     }
 
     /// The text to copy, from the selection; `None` copies nothing.

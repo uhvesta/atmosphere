@@ -6,7 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # The library itself is built by libghostty_vt.bzl.
 rust_library(
     name = "ghostty_vt",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "ghostty_vt",
     visibility = ["//apps/humata2:__subpackages__"],
     deps = [

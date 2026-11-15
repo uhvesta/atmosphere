@@ -1,5 +1,6 @@
 use terminal_grid::{
-    Cell, CellWidth, Color, Colors, Dirty, FakeGrid, Grid, Rgb, Row, Span, ViewportPoint,
+    Cell, CellWidth, Color, Colors, Dirty, FakeGrid, Grid, Rgb, Row, Scrollbar, Span,
+    ViewportPoint,
 };
 
 fn text(grid: &FakeGrid, y: u16) -> String {
@@ -145,4 +146,34 @@ fn palette_colors_resolve_through_the_palette() {
         colors.resolve(Color::Rgb { r: 1, g: 2, b: 3 }),
         Some(Rgb { r: 1, g: 2, b: 3 })
     );
+}
+
+#[test]
+fn a_rectangular_selection_takes_the_same_columns_of_each_row() {
+    let mut grid = FakeGrid::new(6, 4);
+    grid.clear_dirty();
+
+    grid.select_rectangle(ViewportPoint { x: 4, y: 2 }, ViewportPoint { x: 1, y: 1 });
+
+    assert_eq!(grid.selection(0), None);
+    assert_eq!(grid.selection(1), Some(Span { start: 1, end: 4 }));
+    assert_eq!(grid.selection(2), Some(Span { start: 1, end: 4 }));
+    assert_eq!(grid.selection(3), None);
+}
+
+#[test]
+fn a_scrollbar_change_redraws_everything() {
+    let mut grid = FakeGrid::new(4, 2);
+    assert_eq!(grid.scrollbar(), None, "a fake has no history until given one");
+    grid.clear_dirty();
+
+    let scrolled = Scrollbar { total: 10, offset: 3, len: 2 };
+    grid.set_scrollbar(Some(scrolled));
+
+    assert_eq!(grid.scrollbar(), Some(scrolled));
+    assert_eq!(grid.dirty(), Dirty::Full);
+    assert!(!scrolled.at_bottom());
+    assert!(Scrollbar { total: 10, offset: 8, len: 2 }.at_bottom());
+    assert!(scrolled.scrollable());
+    assert!(!Scrollbar { total: 2, offset: 0, len: 2 }.scrollable());
 }

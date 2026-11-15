@@ -14,19 +14,24 @@
 //!   change, at the selection's edges and around wide or complex cells.
 //! - `renderer/cursor.zig` (`style`) and `addCursor`: block, bar,
 //!   underline and an outlined block while unfocused; blinking.
+//! - `font/sprite/draw/box.zig`: box-drawing and block characters are
+//!   drawn as rectangles on whole device pixels, not taken from the font,
+//!   so boxes join across cells.
 //!
 //! The planning (what to draw) lives in `frame` and `cursor` and is plain
 //! data, tested without a window; `view` only shapes and paints it.
 
+mod boxes;
 mod cursor;
 mod frame;
 mod host;
 mod keys;
 mod paste;
+mod selection;
 mod theme;
 mod view;
 
-pub use host::{CellSize, TerminalHost};
+pub use host::{CellSize, ScrollTo, TerminalHost};
 pub use paste::Paste;
 pub use theme::Theme;
-pub use view::{FrameStats, TerminalView};
+pub use view::{FrameStats, HistoryPoint, Mark, TerminalView};

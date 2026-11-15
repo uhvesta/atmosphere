@@ -5,11 +5,16 @@
 use gpui_kit::{Keystroke, Modifiers, PlatformInfo};
 use terminal_grid::{Key, Mods};
 
+use crate::host::ScrollTo;
+
 /// What a key press does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KeyIntent {
     Copy,
     Paste,
+    /// Move through the history: Cmd with Page Up, Page Down, Home or End
+    /// on a Mac, Shift with them elsewhere, as in `Ghostty`.
+    Scroll(ScrollTo),
     /// A key for the program, with the text it types.
     Send {
         key: Key,
@@ -53,6 +58,7 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
             return match key {
                 "c" if !m.shift => KeyIntent::Copy,
                 "v" if !m.shift => KeyIntent::Paste,
+                _ if !m.shift => scroll_key(key).map_or(KeyIntent::Ignore, KeyIntent::Scroll),
                 _ => KeyIntent::Ignore,
             };
         }
@@ -64,6 +70,11 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
         },
         Platform::Other if m.shift && !m.control && !m.alt && key == "insert" => {
             return KeyIntent::Paste;
+        }
+        Platform::Other if m.shift && !m.control && !m.alt && !m.platform => {
+            if let Some(to) = scroll_key(key) {
+                return KeyIntent::Scroll(to);
+            }
         }
         _ => {}
     }
@@ -99,6 +110,17 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
         consumed_mods,
         text,
         unshifted,
+    }
+}
+
+/// Where a history key scrolls to.
+fn scroll_key(key: &str) -> Option<ScrollTo> {
+    match key {
+        "pageup" => Some(ScrollTo::PageUp),
+        "pagedown" => Some(ScrollTo::PageDown),
+        "home" => Some(ScrollTo::Top),
+        "end" => Some(ScrollTo::Bottom),
+        _ => None,
     }
 }
 
@@ -296,6 +318,30 @@ mod tests {
         assert_eq!(text, "A");
         assert_eq!(consumed_mods, Mods::SHIFT);
         assert_eq!(unshifted, Some('a'));
+    }
+
+    #[::std::prelude::v1::test]
+    fn history_keys_scroll_the_view_instead_of_reaching_the_program() {
+        let cases = [
+            ("cmd-pageup", Platform::Mac, ScrollTo::PageUp),
+            ("cmd-pagedown", Platform::Mac, ScrollTo::PageDown),
+            ("cmd-home", Platform::Mac, ScrollTo::Top),
+            ("cmd-end", Platform::Mac, ScrollTo::Bottom),
+            ("shift-pageup", Platform::Other, ScrollTo::PageUp),
+            ("shift-end", Platform::Other, ScrollTo::Bottom),
+        ];
+        for (source, platform, to) in cases {
+            assert_eq!(intent(&stroke(source), platform), KeyIntent::Scroll(to), "{source}");
+        }
+        // Without the modifier the program gets the key, as `less` wants.
+        assert!(matches!(
+            intent(&stroke("pageup"), Platform::Mac),
+            KeyIntent::Send { key: Key::PageUp, .. }
+        ));
+        assert!(matches!(
+            intent(&stroke("shift-pageup"), Platform::Mac),
+            KeyIntent::Send { key: Key::PageUp, .. }
+        ));
     }
 
     #[::std::prelude::v1::test]

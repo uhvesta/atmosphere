@@ -4,7 +4,8 @@
 //! window, so it measures planning, shaping and building the scene, not
 //! the GPU.
 //!
-//! Run with `cargo bench --bench frame`; prints one line per case.
+//! Run with `bazel run -c opt //apps/humata2/terminal/view:frame_bench`
+//! (`:frame_bench_fast` for GPUI Fast); prints one line per case.
 
 use std::time::{Duration, Instant};
 

@@ -1,24 +1,26 @@
 [package]
 name = "terminal_view"
 version = "0.0.0"
-edition = "2024"
-rust-version = "1.100.0"
+edition.workspace = true
+rust-version.workspace = true
 publish = false
-
-# Its own workspace, like the GUI spike: it builds with cargo while
-# gpui-kit's dependency tree is evaluated, and moves into Bazel with it.
-[workspace]
 
 [lib]
 name = "terminal_view"
 path = "src/lib.rs"
 
 [dependencies]
-gpui-kit = "0.9.1"
+gpui-kit = { workspace = true }
 terminal_grid = { path = "../grid" }
 
+[features]
+# Draw with GPUI Fast. The view names no engine; this only lets its own tests
+# and benchmark run on Fast (`cargo test -p terminal_view --features fast`).
+fast = ["gpui-kit/gpui-fast", "humata2-engine/fast"]
+
 [dev-dependencies]
-gpui-kit = { version = "0.9.1", features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
+humata2-engine = { path = "../../engine", features = ["test-support"] }
 terminal_grid = { path = "../grid", features = ["fake"] }
 
 [[test]]

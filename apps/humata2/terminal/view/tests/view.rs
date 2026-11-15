@@ -6,16 +6,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui_kit::test::TestWindowExt;
+// `#[gpui_kit::test]` expands to paths under `gpui`.
+use gpui_kit::gpui;
+use gpui_kit::test::{ClickOptions, TestWindowExt};
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, ClipboardEntry, ClipboardItem, Entity, Focusable, Image,
-    ImageFormat, Pixels, Point, ScrollDelta, TestAppContext, Window, WindowBounds, WindowOptions,
+    ImageFormat, Modifiers, Pixels, Point, ScrollDelta, TestAppContext, Window, WindowBounds, WindowOptions,
     point, px, size,
 };
 use terminal_grid::{
-    Cell, FakeGrid, Grid, Key, KeyAction, KeyEvent, Mods, Row, Size, ViewportPoint,
+    Cell, Cursor, CursorStyle, FakeGrid, Grid, Key, KeyAction, KeyEvent, Mods, Row, Scrollbar, Size, ViewportPoint,
 };
-use terminal_view::{CellSize, Paste, TerminalHost, TerminalView, Theme};
+use terminal_view::{CellSize, HistoryPoint, Mark, Paste, ScrollTo, TerminalHost, TerminalView, Theme};
 
 const COLS: u16 = 40;
 const ROWS: u16 = 10;
@@ -28,6 +30,8 @@ struct Log {
     pastes: Vec<Paste>,
     resizes: Vec<Size>,
     focus: Vec<bool>,
+    scrolled_to: Vec<ScrollTo>,
+    texts: Vec<String>,
 }
 
 /// A host over a [`FakeGrid`]: selecting selects in the grid, copying
@@ -79,6 +83,18 @@ impl TerminalHost<FakeGrid> for TestHost {
     fn focus(&mut self, _: &mut FakeGrid, focused: bool) {
         self.0.borrow_mut().focus.push(focused);
     }
+
+    fn select_rectangle(&mut self, grid: &mut FakeGrid, start: ViewportPoint, end: ViewportPoint) {
+        grid.select_rectangle(start, end);
+    }
+
+    fn scroll_to(&mut self, _: &mut FakeGrid, to: ScrollTo) {
+        self.0.borrow_mut().scrolled_to.push(to);
+    }
+
+    fn text(&mut self, _: &mut FakeGrid, text: &str) {
+        self.0.borrow_mut().texts.push(text.to_owned());
+    }
 }
 
 type View = Entity<TerminalView<FakeGrid>>;
@@ -100,6 +116,12 @@ fn open(cx: &mut TestAppContext, grid: FakeGrid) -> (AnyWindowHandle, View, Rc<R
         })
         .expect("the test window opens")
     });
+    // The test platform opens windows inactive and activates them on a
+    // later turn of the executor; focus changes in an inactive window are
+    // not reported.
+    cx.update_window(handle, |_, window, _| window.activate_window())
+        .expect("the test window is open");
+    cx.run_until_parked();
     (handle, view, log)
 }
 
@@ -364,6 +386,134 @@ fn small_pixel_scrolls_add_up_to_a_row(cx: &mut TestAppContext) {
         assert!(log.borrow().scrolls.is_empty());
         window.scroll("terminal", step, cx);
         assert_eq!(log.borrow().scrolls, vec![1]);
+    })
+    .expect("the test window is open");
+}
+
+fn selected(view: &View, cx: &gpui_kit::App) -> Vec<Option<(u16, u16)>> {
+    let grid = view.read(cx).grid();
+    (0..3).map(|y| grid.selection(y).map(|span| (span.start, span.end))).collect()
+}
+
+#[gpui_kit::test]
+fn a_double_click_selects_a_word_and_a_triple_click_a_line(cx: &mut TestAppContext) {
+    let (handle, view, _) = open(cx, grid_with(&["ls ~/src/humata-2 --all", "next"]));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let terminal = window.find("terminal").bounds().origin;
+        let at = cell_center(&view, window, 8, 0, cx) - terminal;
+        window.click_with_options("terminal", ClickOptions::new().with_offset(at).with_count(2), cx);
+        window.render_frame(cx);
+        // A path is one word: `/`, `~`, `-` and `.` don't break it.
+        assert_eq!(selected(&view, cx), vec![Some((3, 16)), None, None]);
+
+        window.click_with_options("terminal", ClickOptions::new().with_offset(at).with_count(3), cx);
+        window.render_frame(cx);
+        assert_eq!(selected(&view, cx), vec![Some((0, COLS - 1)), None, None]);
+    })
+    .expect("the test window is open");
+}
+
+#[gpui_kit::test]
+fn an_alt_drag_selects_a_block(cx: &mut TestAppContext) {
+    let (handle, view, _) = open(cx, grid_with(&["abcdef", "ghijkl", "mnopqr"]));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let from = cell_center(&view, window, 1, 0, cx);
+        let to = cell_center(&view, window, 3, 2, cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::ModifiersChanged(gpui_kit::ModifiersChangedEvent {
+                modifiers: Modifiers::alt(),
+                capslock: Default::default(),
+            }),
+            cx,
+        );
+        window.drag(from, to, cx);
+        window.render_frame(cx);
+        assert_eq!(selected(&view, cx), vec![Some((1, 3)); 3]);
+    })
+    .expect("the test window is open");
+}
+
+#[gpui_kit::test]
+fn history_keys_and_the_scrollbar_move_through_the_history(cx: &mut TestAppContext) {
+    let mut grid = grid_with(&["older output"]);
+    grid.set_scrollbar(Some(Scrollbar {
+        total: 1000,
+        offset: 990,
+        len: u64::from(ROWS),
+    }));
+    let (handle, view, log) = open(cx, grid);
+    cx.update_window(handle, |_, window, cx| {
+        focus(&view, window, cx);
+        let (up, top) = if cfg!(target_os = "macos") {
+            ("cmd-pageup", "cmd-home")
+        } else {
+            ("shift-pageup", "shift-home")
+        };
+        window.press(up, cx);
+        window.press(top, cx);
+        assert_eq!(log.borrow().scrolled_to, vec![ScrollTo::PageUp, ScrollTo::Top]);
+        // The keys went to the history, not the program.
+        assert!(log.borrow().keys.is_empty());
+
+        // Dragging the thumb from the bottom to the top of the track asks
+        // for the first rows.
+        log.borrow_mut().scrolled_to.clear();
+        let bounds = window.find("terminal").bounds();
+        let x = bounds.origin.x + bounds.size.width - px(3.);
+        let bottom = point(x, bounds.origin.y + bounds.size.height - px(2.));
+        let top = point(x, bounds.origin.y);
+        window.drag(bottom, top, cx);
+        let rows = log.borrow().scrolled_to.clone();
+        assert_eq!(rows.last(), Some(&ScrollTo::Row(0)), "{rows:?}");
+        assert!(view.read(cx).grid().selection(0).is_none(), "the drag didn't select");
+    })
+    .expect("the test window is open");
+}
+
+#[gpui_kit::test]
+fn with_blinking_off_no_blink_is_scheduled(cx: &mut TestAppContext) {
+    let mut grid = grid_with(&[]);
+    grid.set_cursor_style(CursorStyle {
+        blinking: true,
+        ..CursorStyle::default()
+    });
+    grid.set_cursor(Cursor {
+        x: 0,
+        y: 0,
+        visible: true,
+    });
+    let (handle, view, _) = open(cx, grid);
+    cx.update_window(handle, |_, window, cx| {
+        focus(&view, window, cx);
+        // Gaining focus restarts the blink, on the frame after.
+        window.render_frame(cx);
+        assert!(view.read(cx).is_blink_scheduled());
+        view.update(cx, |view, cx| view.set_cursor_blink(false, cx));
+        window.render_frame(cx);
+        assert!(!view.read(cx).is_blink_scheduled());
+    })
+    .expect("the test window is open");
+}
+
+#[gpui_kit::test]
+fn marks_in_view_draw_their_rows_again(cx: &mut TestAppContext) {
+    let (handle, view, _) = open(cx, grid_with(&["find me", "and me"]));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let mark = |row| Mark {
+            start: HistoryPoint { row, col: 0 },
+            end: HistoryPoint { row, col: 3 },
+            current: row == 1,
+        };
+        view.update(cx, |view, cx| view.set_marks(vec![mark(1), mark(0)], cx));
+        window.render_frame(cx);
+        // Kept in history order whatever order they came in.
+        let rows: Vec<_> = view.read(cx).marks().iter().map(|mark| mark.start.row).collect();
+        assert_eq!(rows, vec![0, 1]);
+        assert!(view.read(cx).stats().rows_rebuilt >= 2);
     })
     .expect("the test window is open");
 }

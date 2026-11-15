@@ -1,5 +1,6 @@
 use crate::{
-    Cell, CellWidth, Colors, Cursor, CursorStyle, Dirty, Grid, Row, Size, Span, ViewportPoint,
+    Cell, CellWidth, Colors, Cursor, CursorStyle, Dirty, Grid, Row, Scrollbar, Size, Span,
+    ViewportPoint,
 };
 
 /// A grid filled by hand, for tests and benchmarks of a renderer. Every
@@ -17,6 +18,7 @@ pub struct FakeGrid {
     dirty_rows: Vec<bool>,
     full: bool,
     syncs: u64,
+    scrollbar: Option<Scrollbar>,
 }
 
 impl FakeGrid {
@@ -37,6 +39,7 @@ impl FakeGrid {
             dirty_rows: vec![true; usize::from(rows)],
             full: true,
             syncs: 0,
+            scrollbar: None,
         }
     }
 
@@ -192,6 +195,32 @@ impl FakeGrid {
         }
     }
 
+    /// Selects the block of cells with `start` and `end` as opposite
+    /// corners, as a rectangular selection does. Rows whose selection
+    /// changed are dirty.
+    pub fn select_rectangle(&mut self, start: ViewportPoint, end: ViewportPoint) {
+        let right = self.size.cols.saturating_sub(1);
+        let (top, bottom) = (start.y.min(end.y), start.y.max(end.y));
+        let span = Span {
+            start: start.x.min(end.x).min(right),
+            end: start.x.max(end.x).min(right),
+        };
+        for y in 0..self.size.rows {
+            let selected = (top..=bottom).contains(&y).then_some(span);
+            self.set_selection(y, selected);
+        }
+    }
+
+    /// Sets where the viewport sits in a history the fake doesn't hold, so
+    /// a renderer draws a scrollbar. Changing it dirties everything, as
+    /// scrolling the viewport does.
+    pub fn set_scrollbar(&mut self, scrollbar: Option<Scrollbar>) {
+        if self.scrollbar != scrollbar {
+            self.scrollbar = scrollbar;
+            self.full = true;
+        }
+    }
+
     /// Sets row `y`'s selected columns directly.
     pub fn set_selection(&mut self, y: u16, span: Option<Span>) {
         if let Some(slot) = self.selection.get_mut(usize::from(y))
@@ -262,6 +291,10 @@ impl Grid for FakeGrid {
     fn clear_dirty(&mut self) {
         self.full = false;
         self.dirty_rows.fill(false);
+    }
+
+    fn scrollbar(&self) -> Option<Scrollbar> {
+        self.scrollbar
     }
 }
 

@@ -1,0 +1,95 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# A terminal session's pane and tab strip over ghostty_vt, once per engine
+# (D49): `terminal_pane` on ordinary GPUI, `terminal_pane_fast` on GPUI Fast.
+# Bazel only, like ghostty_vt, whose Zig library Cargo can't build.
+ENGINES = {
+    "": {
+        "engine": "//apps/humata2/engine:engine_test_support",
+        "gpui_kit": "@crates//:gpui-kit",
+    },
+    "_fast": {
+        "engine": "//apps/humata2/engine:engine_fast_test_support",
+        "gpui_kit": "@crates_gpui_fast//:gpui-kit",
+    },
+}
+
+[
+    rust_library(
+        name = "terminal_pane" + engine,
+        srcs = glob(["src/*.rs"]),
+        crate_name = "terminal_pane",
+        visibility = [
+            "//apps/humata2/desktop:__subpackages__",
+            "//apps/humata2/features/session:__pkg__",
+            "//apps/humata2/ui:__subpackages__",
+        ],
+        deps = [
+            "//apps/humata2/terminal/grid:terminal_grid",
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "@crates//:regex",
+            "@crates//:thiserror",
+            config["gpui_kit"],
+        ],
+    )
+    for engine, config in ENGINES.items()
+]
+
+[
+    rust_test(
+        name = "terminal_pane" + engine + "_test",
+        crate = ":terminal_pane" + engine,
+    )
+    for engine in ENGINES
+]
+
+# Flows through real input in headless windows (tests/*.rs), on each engine.
+[
+    rust_test(
+        name = src.removeprefix("tests/").removesuffix(".rs") + engine + "_test",
+        srcs = [
+            src,
+            "tests/support/mod.rs",
+        ],
+        crate_root = src,
+        data = glob(
+            ["tests/__snapshots__/**"],
+            allow_empty = True,
+        ),
+        deps = [
+            ":terminal_pane" + engine,
+            "//apps/humata2/terminal/grid:terminal_grid",
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "@crates//:image",
+            config["engine"],
+            config["gpui_kit"],
+        ],
+    )
+    for engine, config in ENGINES.items()
+    for src in glob(["tests/*.rs"])
+]
+
+# Release timings, headless: `bazel run -c opt //apps/humata2/terminal/pane:stream_bench`.
+[
+    rust_binary(
+        name = "stream" + engine + "_bench",
+        testonly = True,
+        srcs = ["benches/stream.rs"],
+        deps = [
+            ":terminal_pane" + engine,
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            config["engine"],
+            config["gpui_kit"],
+        ],
+    )
+    for engine, config in ENGINES.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

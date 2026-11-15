@@ -12,6 +12,10 @@ use crate::error::{Error, Status, check};
 use crate::ffi;
 use crate::render::RenderState;
 
+mod view_support;
+
+pub use view_support::DecMode;
+
 /// A cell on the screen: column `x` of row `y`, where row 0 is the oldest
 /// row of scrollback and the last row is the bottom of the active area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -970,6 +974,10 @@ impl Grid for Terminal {
 
     fn is_row_dirty(&self, y: u16) -> bool {
         self.render.is_row_dirty(y)
+    }
+
+    fn scrollbar(&self) -> Option<terminal_grid::Scrollbar> {
+        Terminal::scrollbar(self)
     }
 
     fn clear_dirty(&mut self) {

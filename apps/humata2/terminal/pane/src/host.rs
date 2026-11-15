@@ -1,0 +1,347 @@
+//! The bridge from the view to a session: what the user does, encoded by
+//! `ghostty_vt` the way the program asked for it, written to the pty.
+
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use ghostty_vt::{
+    DecMode, Error as VtError, Key, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, OptionAsAlt,
+    Scroll, Size, Terminal, ViewportPoint,
+};
+use gpui_kit::ImageFormat;
+use terminal_view::{CellSize, Paste, ScrollTo, TerminalHost};
+
+use crate::error::PaneError;
+
+/// Where a pane sends the program's input: the session's pty, local or
+/// across the daemon's link. The pane never blocks on it.
+pub trait Pty {
+    /// Bytes for the program, in order: typed keys, pastes, mouse reports
+    /// and the terminal's answers to the program's queries.
+    fn write(&mut self, bytes: &[u8]);
+
+    /// The pane now shows `size` cells of `cell` pixels; tell the program
+    /// (`TIOCSWINSZ`, so it gets `SIGWINCH`).
+    fn resize(&mut self, size: Size, cell: CellSize);
+}
+
+/// Something the pane leaves to the app.
+#[derive(Debug)]
+pub enum PaneEvent {
+    /// The program set its title (OSC 0 or 2), for the tab.
+    TitleChanged(String),
+    /// The program's working directory (OSC 7).
+    PwdChanged(String),
+    Bell,
+    /// The program asked to set a clipboard (OSC 52). Remote programs'
+    /// writes reach the Mac's clipboard (D30); empty `text` clears it.
+    ClipboardWrite {
+        target: ghostty_vt::ClipboardTarget,
+        text: String,
+    },
+    /// The program asked to read a clipboard (OSC 52 `?`). Never answer
+    /// without the user's say (D30); answer with
+    /// [`TerminalPane::answer_clipboard_read`](crate::TerminalPane::answer_clipboard_read).
+    ClipboardReadRequested { target: ghostty_vt::ClipboardTarget },
+    /// An image was pasted. Upload it to the session's paste folder and
+    /// paste its path with [`TerminalPane::paste_text`](crate::TerminalPane::paste_text)
+    /// (D30, `TerminalService.PasteImage`).
+    PasteImage { format: ImageFormat, bytes: Vec<u8> },
+    /// Files were pasted; the app decides whether to type their paths or
+    /// upload them first, as for a remote session.
+    PasteFiles(Vec<PathBuf>),
+    /// Something the user did was lost; show it, the session goes on.
+    Failed(PaneError),
+    /// The user pressed ⌘\\ (Ctrl+Shift+\\ off the Mac): split this pane
+    /// with a new shell beside it (NV-30). The pane tree does the split.
+    SplitRequested,
+}
+
+/// A paste held back until the user agrees: without bracketed paste, a
+/// line break runs what came before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPaste {
+    pub text: String,
+    pub line_breaks: usize,
+}
+
+/// What the host and the pane share.
+pub(crate) struct Shared {
+    pub(crate) pty: Box<dyn Pty>,
+    /// Off while the session's machine is offline (SE-16): input is
+    /// dropped, never queued to arrive out of context later.
+    pub(crate) connected: bool,
+    pub(crate) pending_paste: Option<PendingPaste>,
+    pub(crate) events: Vec<PaneEvent>,
+    pub(crate) cell: CellSize,
+}
+
+impl Shared {
+    pub(crate) fn new(pty: Box<dyn Pty>) -> Rc<RefCell<Shared>> {
+        Rc::new(RefCell::new(Shared {
+            pty,
+            connected: true,
+            pending_paste: None,
+            events: Vec::new(),
+            cell: CellSize::default(),
+        }))
+    }
+
+    pub(crate) fn send(&mut self, bytes: &[u8]) {
+        if self.connected && !bytes.is_empty() {
+            self.pty.write(bytes);
+        }
+    }
+
+    fn fail(&mut self, error: PaneError) {
+        self.events.push(PaneEvent::Failed(error));
+    }
+}
+
+/// [`TerminalHost`] for a [`Terminal`]: keys, mouse and pastes in the
+/// program's encodings; scrolling, selection and copy in the engine.
+pub(crate) struct GhosttyHost {
+    pub(crate) shared: Rc<RefCell<Shared>>,
+}
+
+/// Puts the viewport back on the newest output, as typing does in
+/// Ghostty (`scroll-to-bottom = keystroke`).
+fn follow_output(grid: &mut Terminal) -> Result<(), VtError> {
+    match grid.scrollbar() {
+        Some(bar) if !bar.at_bottom() => grid.scroll_viewport(Scroll::Bottom),
+        _ => Ok(()),
+    }
+}
+
+impl GhosttyHost {
+    /// The bytes for one wheel step: a mouse report when the program
+    /// takes the mouse, arrow keys on the alternate screen when it asked
+    /// for those (mode 1007, as `less` and `vim` do), otherwise nothing.
+    fn wheel_bytes(
+        grid: &mut Terminal,
+        up: bool,
+        at: ViewportPoint,
+        mods: Mods,
+        cell: CellSize,
+    ) -> Result<Option<Vec<u8>>, PaneError> {
+        if grid.is_mouse_tracking() {
+            let event = MouseEvent {
+                action: MouseAction::Press,
+                button: Some(if up { MouseButton::Four } else { MouseButton::Five }),
+                mods,
+                x: (f32::from(at.x) + 0.5) * cell.width,
+                y: (f32::from(at.y) + 0.5) * cell.height,
+            };
+            return grid
+                .encode_mouse(&event)
+                .map(Some)
+                .map_err(|source| PaneError::Mouse { source });
+        }
+        if grid.is_alternate_screen() && grid.is_mode_set(DecMode::AlternateScroll) {
+            let key = if up { Key::ArrowUp } else { Key::ArrowDown };
+            return grid
+                .encode_key(&KeyEvent::press(key))
+                .map(Some)
+                .map_err(|source| PaneError::Key { source });
+        }
+        Ok(None)
+    }
+}
+
+/// With Option acting as Alt on a Mac, the key's own character instead
+/// of the one macOS typed (`ƒ` for Option+F), so the program gets ESC and
+/// the letter. GPUI doesn't say which Option key is held, so the left-only
+/// and right-only settings act as on.
+fn option_as_alt_text(grid: &Terminal, event: &KeyEvent<'_>) -> Option<String> {
+    if !cfg!(target_os = "macos")
+        || grid.option_as_alt() == OptionAsAlt::Off
+        || !event.mods.contains(Mods::ALT)
+        || event.mods.contains(Mods::CTRL)
+        || event.mods.contains(Mods::SUPER)
+    {
+        return None;
+    }
+    let c = event.unshifted?;
+    Some(if event.mods.contains(Mods::SHIFT) {
+        c.to_uppercase().collect()
+    } else {
+        c.to_string()
+    })
+}
+
+impl TerminalHost<Terminal> for GhosttyHost {
+    fn key(&mut self, grid: &mut Terminal, event: KeyEvent<'_>) {
+        let mut shared = self.shared.borrow_mut();
+        if !shared.connected {
+            return;
+        }
+        let alt_text = option_as_alt_text(grid, &event);
+        let event = match &alt_text {
+            Some(text) => KeyEvent {
+                text,
+                consumed_mods: Mods::NONE,
+                ..event
+            },
+            None => event,
+        };
+        match grid.encode_key(&event) {
+            Ok(bytes) if !bytes.is_empty() => {
+                if let Err(source) = follow_output(grid) {
+                    shared.fail(PaneError::Scroll { source });
+                }
+                shared.send(&bytes);
+            }
+            Ok(_) => {}
+            Err(source) => shared.fail(PaneError::Key { source }),
+        }
+    }
+
+    fn mouse(&mut self, grid: &mut Terminal, event: MouseEvent) -> bool {
+        if !grid.is_mouse_tracking() {
+            return false;
+        }
+        let mut shared = self.shared.borrow_mut();
+        match grid.encode_mouse(&event) {
+            Ok(bytes) => shared.send(&bytes),
+            Err(source) => shared.fail(PaneError::Mouse { source }),
+        }
+        true
+    }
+
+    fn scroll(&mut self, grid: &mut Terminal, lines: i32, at: ViewportPoint, mods: Mods) {
+        let mut shared = self.shared.borrow_mut();
+        let cell = shared.cell;
+        let up = lines > 0;
+        let mut sent_to_program = false;
+        for _ in 0..lines.unsigned_abs() {
+            match GhosttyHost::wheel_bytes(grid, up, at, mods, cell) {
+                Ok(Some(bytes)) => {
+                    sent_to_program = true;
+                    shared.send(&bytes);
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    shared.fail(error);
+                    return;
+                }
+            }
+        }
+        if sent_to_program {
+            return;
+        }
+        let delta = -(lines as isize);
+        if let Err(source) = grid.scroll_viewport(Scroll::Delta(delta)) {
+            shared.fail(PaneError::Scroll { source });
+        }
+    }
+
+    fn select(&mut self, grid: &mut Terminal, selection: Option<(ViewportPoint, ViewportPoint)>) {
+        let result = match selection {
+            Some((start, end)) => grid.select(start, end),
+            None => grid.clear_selection(),
+        };
+        if let Err(source) = result {
+            self.shared.borrow_mut().fail(PaneError::Select { source });
+        }
+    }
+
+    fn select_rectangle(&mut self, grid: &mut Terminal, start: ViewportPoint, end: ViewportPoint) {
+        if let Err(source) = grid.select_rectangle(start, end) {
+            self.shared.borrow_mut().fail(PaneError::Select { source });
+        }
+    }
+
+    fn scroll_to(&mut self, grid: &mut Terminal, to: ScrollTo) {
+        let page = isize::try_from(grid.size().rows.max(1)).unwrap_or(1);
+        let scroll = match to {
+            ScrollTo::Top => Scroll::Top,
+            ScrollTo::Bottom => Scroll::Bottom,
+            ScrollTo::PageUp => Scroll::Delta(-page),
+            ScrollTo::PageDown => Scroll::Delta(page),
+            ScrollTo::Row(row) => Scroll::Row(usize::try_from(row).unwrap_or(usize::MAX)),
+        };
+        if let Err(source) = grid.scroll_viewport(scroll) {
+            self.shared.borrow_mut().fail(PaneError::Scroll { source });
+        }
+    }
+
+    fn text(&mut self, grid: &mut Terminal, text: &str) {
+        let mut shared = self.shared.borrow_mut();
+        if !shared.connected {
+            return;
+        }
+        if let Err(source) = follow_output(grid) {
+            shared.fail(PaneError::Scroll { source });
+        }
+        shared.send(text.as_bytes());
+    }
+
+    fn copy(&mut self, grid: &mut Terminal) -> Option<String> {
+        match grid.selected_text() {
+            Ok(text) => text.filter(|text| !text.is_empty()),
+            Err(source) => {
+                self.shared.borrow_mut().fail(PaneError::Select { source });
+                None
+            }
+        }
+    }
+
+    fn paste(&mut self, grid: &mut Terminal, paste: Paste) {
+        let mut shared = self.shared.borrow_mut();
+        if !shared.connected {
+            return;
+        }
+        match paste {
+            Paste::Text(text) => paste_text(&mut shared, grid, text, false),
+            Paste::Image { format, bytes } => {
+                shared.events.push(PaneEvent::PasteImage { format, bytes });
+            }
+            Paste::Files(paths) => shared.events.push(PaneEvent::PasteFiles(paths)),
+        }
+    }
+
+    fn resize(&mut self, grid: &mut Terminal, size: Size, cell: CellSize) {
+        let mut shared = self.shared.borrow_mut();
+        shared.cell = cell;
+        // Pixels as whole numbers, at least one, for the engine's mouse
+        // and image maths.
+        let width = cell.width.round().max(1.0) as u32;
+        let height = cell.height.round().max(1.0) as u32;
+        match grid.resize_with_cell_size(size.cols, size.rows, width, height) {
+            Ok(()) => shared.pty.resize(size, cell),
+            Err(source) => shared.fail(PaneError::Resize {
+                cols: size.cols,
+                rows: size.rows,
+                source,
+            }),
+        }
+    }
+
+    fn focus(&mut self, grid: &mut Terminal, focused: bool) {
+        let mut shared = self.shared.borrow_mut();
+        match grid.focus_report(focused) {
+            Ok(Some(bytes)) => shared.send(&bytes),
+            Ok(None) => {}
+            Err(source) => shared.fail(PaneError::Focus { source }),
+        }
+    }
+}
+
+/// Sends `text` as a paste, or holds it for the user to confirm when it
+/// could run commands they didn't mean to.
+pub(crate) fn paste_text(shared: &mut Shared, grid: &mut Terminal, text: String, confirmed: bool) {
+    match grid.paste(&text, confirmed) {
+        Ok(bytes) => {
+            if let Err(source) = follow_output(grid) {
+                shared.fail(PaneError::Scroll { source });
+            }
+            shared.pending_paste = None;
+            shared.send(&bytes);
+        }
+        Err(VtError::UnsafePaste { line_breaks }) => {
+            shared.pending_paste = Some(PendingPaste { text, line_breaks });
+        }
+        Err(source) => shared.fail(PaneError::Paste { source }),
+    }
+}
