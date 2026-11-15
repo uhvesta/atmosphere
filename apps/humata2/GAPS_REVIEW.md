@@ -40,3 +40,8 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Owner call 2026-11-15: `features/layout` is gone, with `AppState.panes`, `AppAction::Panes`, `SavedUi.panes` and `ToastAction` (its only button was Undo reset). Toasts are text only. Repinned with `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
 - Verified: `bazel test //apps/humata2/desktop/... //apps/humata2/ui/...`.
 - Look at: a saved `humata2-ui.json` with a `panes` key still loads (`#[serde(default)]`, unknown keys ignored).
+
+### (this commit): N1 native look directions
+- `desktop/tests/directions.rs` draws three still mocks of the same window (not the app) for the owner to pick from: `a-light.png`, `b-dark.png`, `c-xcode.png`.
+- Verified: `bazel test //apps/humata2/desktop:directions_test`.
+- Look at: the mocks fake vibrancy with flat colours; the real window would use the system's sidebar material.

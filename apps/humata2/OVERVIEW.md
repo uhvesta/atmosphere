@@ -214,7 +214,7 @@ A bug report is text an agent can read and act on: what you did, where, what the
 
 ## N1: A native macOS look and feel (next, owner 2026-11-15)
 The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so it looks and feels as Apple/macOS-native as we can get, while staying a chat-workspace app with channels and sessions.
-- [ ] Propose first, then build: a short visual direction (sidebar material and vibrancy, system font sizes and weights, SF Symbols-style icons, the unified title bar with toolbar items, native-feeling list selection, sheets and popovers, light and dark following the system). Show it as headless snapshots for the owner to pick from before restyling every screen.
+- [ ] Waiting on the owner's pick (2026-11-15): three directions are drawn as still mocks in `desktop/tests/__snapshots__/directions/` (A light, Mail-style; B dark, same layout; C dark, Xcode-style navigator tabs and a centred title), by `bazel test //apps/humata2/desktop:directions_test`. Each has a full-height sidebar under the traffic lights with the system font, rounded selection, a unified toolbar and a segmented inspector on the right. Then build it: (sidebar material and vibrancy, system font sizes and weights, SF Symbols-style icons, the unified title bar with toolbar items, native-feeling list selection, sheets and popovers, light and dark following the system). Show it as headless snapshots for the owner to pick from before restyling every screen.
 - [ ] Restyle the shell (rail, sidebar, top bar, side panel), then each screen, re-recording snapshots only after the owner signs off on the look.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
 
