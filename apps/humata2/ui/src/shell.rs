@@ -12,11 +12,13 @@ use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, Load, PaneAction, Route};
 use humata2_clients::model::Scope;
 use humata2_sidebar::SidebarAction;
+use humata2_layout::{Axis, Direction, LayoutAction};
 
 use crate::bridge::{Part, Ui};
 use crate::keys;
 use crate::overlays::Overlays;
 use crate::pages;
+use crate::panes;
 use crate::sidebar::Sidebar;
 use crate::theme::{self, color};
 use crate::widgets::{self, col, row};
@@ -152,8 +154,8 @@ fn rail(ui: &Rc<Ui>, route: &Route, waiting: usize) -> impl IntoElement {
             let badge = (screen.label == "Inbox" && waiting > 0).then(|| {
                 div()
                     .absolute()
-                    .top(px(2.))
-                    .right(px(2.))
+                    .top(px(-4.))
+                    .right(px(-8.))
                     .min_w(px(16.))
                     .h(px(16.))
                     .px_1()
@@ -258,7 +260,13 @@ impl Render for Shell {
                 .child(div().id("load-error").role(Role::Alert).aria_label(message.clone()).child(message).test_support())
                 .child(widgets::primary(&ui, "retry", "Try again", AppAction::Retry))
                 .into_any_element(),
-            Load::Ready => self.ui.read(|state| pages::page(&ui, state, window, cx)),
+            Load::Ready => self.ui.read(|state| {
+                if state.panes.tree().count() > 1 {
+                    panes::panes(&ui, state)
+                } else {
+                    pages::page(&ui, state, window, cx)
+                }
+            }),
         };
         let main = col()
             .id("main")
@@ -303,6 +311,30 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &keys::FocusSidebar, window, cx| {
                 window.focus(&this.sidebar_focus, cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::SplitPane, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::SplitFocused(Axis::Horizontal)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::SplitPaneDown, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::SplitFocused(Axis::Vertical)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::ClosePane, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::CloseFocused), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::FocusLeft, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Left)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::FocusRight, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Right)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::FocusUp, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Up)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::FocusDown, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Down)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::UndoLayout, _, cx| {
+                this.send(AppAction::Panes(LayoutAction::Undo), cx);
             }))
             .child(rail(&ui, &route, waiting))
             .when(!collapsed, |shell| shell.child(self.sidebar.clone()))

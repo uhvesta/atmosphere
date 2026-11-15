@@ -12,6 +12,7 @@ pub mod record;
 
 mod overlays;
 mod pages;
+mod panes;
 mod shell;
 mod sidebar;
 mod theme;

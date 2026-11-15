@@ -217,9 +217,10 @@ A bug report is text an agent can read and act on: what you did, where, what the
 Work that was started but isn't finished, grouped by area. Each item is open until its tests pass and a real run works. Run builds and tests only through Bazel (`export PATH=$PWD/.tools/bin:$PATH`), never cargo.
 
 ### Desktop UI (I2, A10; D72, D74)
-- [ ] Render `state.panes.tree()`. The layout state and shortcuts exist, but nothing draws the panes, so the shortcuts do nothing. Build it on gpui-component's dock, with the layout state as the source of truth.
+- [x] Render `state.panes.tree()` (`ui/src/panes.rs`): splits draw as rows and columns, and each pane has a header to focus or close it. Split, close, focus-toward and undo shortcuts are handled. Test: `desktop:shell_test`.
+- [ ] Drag a divider to resize, drag a pane onto another pane's edge to move it, and give non-Home/Agent panes real content.
 - [ ] The Panes sidebar, Settings › Layout › Panes, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
-- [ ] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
+- [x] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
 
 ### Markdown (`apps/humata2/markdown`)
 - [ ] Fix `headless:flows` (3 of 7 fail, all in `src/view.rs`):

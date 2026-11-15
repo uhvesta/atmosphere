@@ -32,6 +32,8 @@ humata2_snapshot_test(
     deps = [
         "//apps/humata2/clients",
         "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/layout",
         "//apps/humata2/testing/snapshot",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",

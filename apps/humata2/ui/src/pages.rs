@@ -68,7 +68,7 @@ fn session_row(ui: &Rc<Ui>, session: &Session, index: usize, group: &'static str
         .test_support()
 }
 
-fn home(ui: &Rc<Ui>, state: &AppState) -> impl IntoElement {
+pub(crate) fn home(ui: &Rc<Ui>, state: &AppState) -> impl IntoElement {
     let needs: Vec<&Session> = state
         .workspace
         .sessions
@@ -93,13 +93,18 @@ fn home(ui: &Rc<Ui>, state: &AppState) -> impl IntoElement {
         .size_full()
         .overflow_y_scroll()
         .p_6()
-        .gap_6()
-        .max_w(px(880.))
-        .child(section("Needs you", "home-needs", needs, "Nothing is waiting on you."))
-        .child(section("Working", "home-working", working, "No agent is working right now."))
+        .child(
+            col()
+                .w_full()
+                .max_w(px(880.))
+                .mx_auto()
+                .gap_6()
+                .child(section("Needs you", "home-needs", needs, "Nothing is waiting on you."))
+                .child(section("Working", "home-working", working, "No agent is working right now.")),
+        )
 }
 
-fn terminal(session: &Session) -> impl IntoElement {
+pub(crate) fn terminal(session: &Session) -> impl IntoElement {
     col()
         .id("terminal")
         .role(Role::Log)
