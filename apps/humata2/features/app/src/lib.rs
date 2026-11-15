@@ -19,7 +19,7 @@ use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_files::{Files, FilesAction, FilesState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
-use humata2_layout::{Axis, Context, Layout as Panes, LayoutAction, LayoutState};
+use humata2_layout::{Context, Layout as Panes, LayoutAction, LayoutState};
 use humata2_palette::{Command, Palette, PaletteAction, PaletteState};
 use humata2_review::{Review, ReviewAction, ReviewState};
 use humata2_session::{Panel, SessionAction, SessionState, Sessions};
@@ -619,12 +619,7 @@ impl App {
                     }
                 }
             }
-            Command::SplitPane => self.child(state, AppAction::Panes(LayoutAction::SplitFocused(Axis::Horizontal))),
-            Command::SplitPaneDown => self.child(state, AppAction::Panes(LayoutAction::SplitFocused(Axis::Vertical))),
-            Command::ClosePane => self.child(state, AppAction::Panes(LayoutAction::CloseFocused)),
-            Command::UndoLayout => self.child(state, AppAction::Panes(LayoutAction::Undo)),
-            Command::ResetLayout => self.child(state, AppAction::Panes(LayoutAction::Reset)),
-            Command::TogglePanes => {
+            Command::TogglePanel => {
                 state.layout.toggle(PaneId::Panel);
                 Effect::none()
             }

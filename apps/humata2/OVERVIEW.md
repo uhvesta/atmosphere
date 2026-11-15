@@ -212,6 +212,12 @@ A bug report is text an agent can read and act on: what you did, where, what the
 - [ ] Every spec flow passes as a flow test on macOS and Linux.
 - [ ] Humata 2 can replace Humata 1 day to day.
 
+## N1: A native macOS look and feel (next, owner 2026-11-15)
+The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so it looks and feels as Apple/macOS-native as we can get, while staying a chat-workspace app with channels and sessions.
+- [ ] Propose first, then build: a short visual direction (sidebar material and vibrancy, system font sizes and weights, SF Symbols-style icons, the unified title bar with toolbar items, native-feeling list selection, sheets and popovers, light and dark following the system). Show it as headless snapshots for the owner to pick from before restyling every screen.
+- [ ] Restyle the shell (rail, sidebar, top bar, side panel), then each screen, re-recording snapshots only after the owner signs off on the look.
+- [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
+
 ## Known gaps (2026-11-15)
 
 **Keep this file current.** Everyone working on Humata 2, agents included, takes work from this file, and in the same commit as the code: ticks what is done and verified (with the Bazel target that proves it), splits partly done items to show what's left, and adds newly found gaps. Each commit also gets an entry in `GAPS_REVIEW.md` so it can be reviewed.
@@ -219,9 +225,12 @@ A bug report is text an agent can read and act on: what you did, where, what the
 Work that was started but isn't finished, grouped by area. Each item is open until its tests pass and a real run works. Run builds and tests only through Bazel (`export PATH=$PWD/.tools/bin:$PATH`), never cargo.
 
 ### Desktop UI (I2, A10; D72, D74)
-- [x] Render `state.panes.tree()` (`ui/src/panes.rs`): splits draw as rows and columns, and each pane has a header to focus or close it. Split, close, focus-toward and undo shortcuts are handled. Test: `desktop:shell_test`.
-- [ ] Drag a divider to resize, drag a pane onto another pane's edge to move it, and give non-Home/Agent panes real content.
-- [ ] The Panes sidebar, Settings › Layout › Panes, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
+- [x] ~~Render the pane tree~~: built in a7c6cf3c, then dropped on the owner's direction (2026-11-15, D74 revised). The window is a left sidebar, the screen in the middle, and the open session's side panel on the right.
+- [x] Drag the sidebar's and the side panel's dividers to resize them (past the narrowest hides them; a double-click resets them); ⌥⌘0 and the palette's "Toggle side panel" hide or show the panel. Each session keeps its own panel when you switch screens and come back. Test: `desktop:shell_test` (`a_sessions_side_panel_hides_shows_and_survives_switching_screens`).
+- [ ] Give the side panel real content (Changes, Inbox, Files, Board, Info); today it shows its title and an empty state.
+- [ ] A divider drag isn't covered by a test yet (needs mouse events in the headless driver); check it in a real window.
+- [ ] Remove `features/layout` and `AppState.panes` (still reduced on every route change, never drawn), or keep them only if the owner wants splits back later. Ask in the next decision wave.
+- [ ] Settings › Layout, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
 - [x] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
 
 ### Markdown (`apps/humata2/markdown`)
@@ -229,7 +238,7 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
   - [x] Toggling Source and back with the keyboard: `toggle_mode` moves focus to the new text view.
   - [x] The selection toolbar's buttons act on press, using the selection cached when the toolbar was drawn, because pressing clears the text's selection first. Copy now reaches the clipboard.
   - [x] Copy as Markdown: flow targets can aim at a control's start (`Target::at_start`). A selection starting at a block's first visible character takes in its opening markup, and one ending at its last takes in the closing markup (`with_block_markup`), so it copies as `# Gallery`.
-  - [ ] Comment on selection: dragging paragraph 2 → heading 3 gives no toolbar, because gpui-base's `SourceRangeSelection::merge` turns the whole selection Unmapped when one block can't map (`text/node.rs` in gpui-base 0.9.1). Needs a gpui-base patch through `crate.annotation(patches = …)` (as `apps/humata2/diff/patches` does) that falls back to the block's whole source span.
+  - [ ] Comment on selection: dragging paragraph 2 → heading 3 gives no toolbar, because gpui-base's `SourceRangeSelection::merge` turns the whole selection Unmapped when one block can't map (`text/node.rs` in gpui-base 0.9.1). Tried 2026-11-15 and reverted: a patch making `source_range_for_segments` bridge rendered gaps didn't bring the toolbar back, so the Unmapped comes from somewhere else (a block-level Unmapped, the `first.rendered.start` path, or the paragraph's `selected_source_range`). The repin it needed also changed code and inline-code rendering in `headless:snapshots`. Next: log which block returns Unmapped before patching again.
 - [ ] Read the goldens, record `headless:timing` numbers, run buildifier, and give the markdown decision a number (it proposed D75).
 - [ ] Add syntect to the gpui-fast lock (code blocks are uncoloured on Fast), add a Flow scroll action, parse `secondary-` keystrokes, and add Fast-engine GUI tests.
 

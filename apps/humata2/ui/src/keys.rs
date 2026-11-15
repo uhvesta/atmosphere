@@ -47,24 +47,8 @@ gpui_kit::actions!(
         Last,
         /// Enter in the sidebar: open the row.
         Open,
-        /// ⌘\: split the focused pane side by side.
-        SplitPane,
-        /// ⇧⌘\: split it stacked.
-        SplitPaneDown,
-        /// ⌘W: close the focused pane.
-        ClosePane,
-        /// ⌥⌘←: focus the pane on the left, outside the sidebar.
-        FocusLeft,
-        /// ⌥⌘→: the pane on the right.
-        FocusRight,
-        /// ⌥⌘↑: the pane above.
-        FocusUp,
-        /// ⌥⌘↓: the pane below.
-        FocusDown,
-        /// ⌘Z outside a text field: undo the last layout change.
-        UndoLayout,
-        /// ⌥⌘0: hide or show the Panes sidebar.
-        TogglePanes,
+        /// ⌥⌘0: hide or show the session's side panel.
+        TogglePanel,
     ]
 );
 
@@ -113,17 +97,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("cmd-2", GoInbox, None),
         KeyBinding::new("cmd-3", GoBoard, None),
         KeyBinding::new("cmd-l", FocusSidebar, None),
-        KeyBinding::new("alt-cmd-0", TogglePanes, None),
-        KeyBinding::new("cmd-\\", SplitPane, None),
-        KeyBinding::new("shift-cmd-\\", SplitPaneDown, None),
-        KeyBinding::new("cmd-w", ClosePane, None),
-        KeyBinding::new("alt-cmd-left", FocusLeft, None),
-        KeyBinding::new("alt-cmd-right", FocusRight, None),
-        KeyBinding::new("alt-cmd-up", FocusUp, None),
-        KeyBinding::new("alt-cmd-down", FocusDown, None),
-        // Text fields bind ⌘Z in their own, deeper context, so typing
-        // undoes typing there and this only runs outside them.
-        KeyBinding::new("cmd-z", UndoLayout, None),
+        KeyBinding::new("alt-cmd-0", TogglePanel, None),
         KeyBinding::new("up", Up, sidebar),
         KeyBinding::new("down", Down, sidebar),
         KeyBinding::new("left", Out, sidebar),

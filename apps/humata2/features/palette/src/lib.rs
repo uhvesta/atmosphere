@@ -49,18 +49,8 @@ pub enum Command {
     Pull(u32),
     /// Start recording a bug report (I9).
     Record,
-    /// Split the focused pane side by side.
-    SplitPane,
-    /// Split the focused pane stacked.
-    SplitPaneDown,
-    /// Close the focused pane.
-    ClosePane,
-    /// Undo the last layout change.
-    UndoLayout,
-    /// Put the screen's panes back to its default layout (NV-31a).
-    ResetLayout,
-    /// Show or hide the Panes sidebar.
-    TogglePanes,
+    /// Show or hide the session's side panel.
+    TogglePanel,
 }
 
 /// One line of the palette.
@@ -233,12 +223,7 @@ impl PaletteState {
             (Command::ExpandAll, "Expand all", "⌥⌘→"),
             (Command::CollapseAll, "Collapse all", "⌥⌘←"),
             (Command::ToggleSidebar, "Toggle sidebar", "⌘0"),
-            (Command::TogglePanes, "Toggle Panes sidebar", "⌥⌘0"),
-            (Command::SplitPane, "Split pane", "⌘\\"),
-            (Command::SplitPaneDown, "Split pane down", "⇧⌘\\"),
-            (Command::ClosePane, "Close pane", "⌘W"),
-            (Command::UndoLayout, "Undo layout change", "⌘Z"),
-            (Command::ResetLayout, "Reset layout", ""),
+            (Command::TogglePanel, "Toggle side panel", "⌥⌘0"),
             (Command::Record, "Record a bug report", ""),
         ]
         .into_iter()

@@ -11,14 +11,13 @@ use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, Load, PaneAction, Route};
 use humata2_clients::model::Scope;
+use humata2_session::Panel;
 use humata2_sidebar::SidebarAction;
-use humata2_layout::{Axis, Direction, LayoutAction};
 
 use crate::bridge::{Part, Ui};
 use crate::keys;
 use crate::overlays::Overlays;
 use crate::pages;
-use crate::panes;
 use crate::sidebar::Sidebar;
 use crate::theme::{self, color};
 use crate::widgets::{self, col, row};
@@ -30,6 +29,8 @@ pub struct Shell {
     sidebar_focus: FocusHandle,
     overlays: Entity<Overlays>,
     focus: FocusHandle,
+    /// The side whose divider is being dragged.
+    dragging: Option<PaneId>,
 }
 
 impl Shell {
@@ -54,6 +55,7 @@ impl Shell {
             sidebar_focus,
             overlays,
             focus,
+            dragging: None,
         }
     }
 
@@ -231,8 +233,75 @@ fn top_bar(ui: &Rc<Ui>, title: String, can_go_back: bool, sidebar_hidden: bool) 
         )
 }
 
+impl Shell {
+    /// The strip between `pane` and the main area: drag it to resize the
+    /// pane, past its narrowest to hide it; double-click to reset it.
+    fn divider(&self, pane: PaneId, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = match pane {
+            PaneId::Sidebar => "sidebar-divider",
+            PaneId::Panel => "panel-divider",
+        };
+        div()
+            .id(id)
+            .role(Role::Splitter)
+            .aria_label(format!("Resize the {}", pane.name()))
+            .w(px(theme::DIVIDER))
+            .ml(px(-theme::DIVIDER / 2.))
+            .mr(px(-theme::DIVIDER / 2.))
+            .h_full()
+            .flex_shrink_0()
+            .cursor_col_resize()
+            .hover(|divider| divider.bg(color(theme::LINE)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        this.dragging = None;
+                        this.send(AppAction::Pane(PaneAction::Reset(pane)), cx);
+                    } else {
+                        this.dragging = Some(pane);
+                    }
+                }),
+            )
+            .test_support()
+    }
+}
+
+/// The open session's side panel, on the right.
+fn side_panel(panel: Panel, width: f32) -> impl IntoElement {
+    col()
+        .id("side-panel")
+        .role(Role::Complementary)
+        .aria_label(panel.name())
+        .w(px(width))
+        .h_full()
+        .flex_shrink_0()
+        .bg(color(theme::SIDE))
+        .border_l_1()
+        .border_color(color(theme::LINE))
+        .child(
+            row()
+                .h(px(theme::TOP_BAR))
+                .flex_shrink_0()
+                .px_3()
+                .border_b_1()
+                .border_color(color(theme::LINE))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(panel.name()),
+        )
+        .child(widgets::empty("Nothing here yet.", "This panel is being built."))
+        .test_support()
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = f32::from(window.viewport_size().width);
+        let (panel, panel_width) = self.ui.read(|state| {
+            let panel = state.panel().filter(|_| !state.layout.panel.collapsed);
+            let (_, width) = state.layout.widths(viewport - theme::RAIL_WIDTH, panel.is_some());
+            (panel, width)
+        });
         let (route, load, can_go_back, collapsed, title, waiting, restore_error) = self.ui.read(|state| {
             (
                 state.route.clone(),
@@ -260,13 +329,7 @@ impl Render for Shell {
                 .child(div().id("load-error").role(Role::Alert).aria_label(message.clone()).child(message).test_support())
                 .child(widgets::primary(&ui, "retry", "Try again", AppAction::Retry))
                 .into_any_element(),
-            Load::Ready => self.ui.read(|state| {
-                if state.panes.tree().count() > 1 {
-                    panes::panes(&ui, state)
-                } else {
-                    pages::page(&ui, state, window, cx)
-                }
-            }),
+            Load::Ready => self.ui.read(|state| pages::page(&ui, state, window, cx)),
         };
         let main = col()
             .id("main")
@@ -312,33 +375,36 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &keys::FocusSidebar, window, cx| {
                 window.focus(&this.sidebar_focus, cx);
             }))
-            .on_action(cx.listener(|this, _: &keys::SplitPane, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::SplitFocused(Axis::Horizontal)), cx);
+            .on_action(cx.listener(|this, _: &keys::TogglePanel, _, cx| {
+                this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), cx);
             }))
-            .on_action(cx.listener(|this, _: &keys::SplitPaneDown, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::SplitFocused(Axis::Vertical)), cx);
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                let Some(pane) = this.dragging else { return };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.dragging = None;
+                    return;
+                }
+                let x = f32::from(event.position.x);
+                let width = match pane {
+                    PaneId::Sidebar => x - theme::RAIL_WIDTH,
+                    PaneId::Panel => viewport - x,
+                };
+                this.send(AppAction::Pane(PaneAction::Drag(pane, width)), cx);
             }))
-            .on_action(cx.listener(|this, _: &keys::ClosePane, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::CloseFocused), cx);
-            }))
-            .on_action(cx.listener(|this, _: &keys::FocusLeft, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Left)), cx);
-            }))
-            .on_action(cx.listener(|this, _: &keys::FocusRight, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Right)), cx);
-            }))
-            .on_action(cx.listener(|this, _: &keys::FocusUp, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Up)), cx);
-            }))
-            .on_action(cx.listener(|this, _: &keys::FocusDown, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::FocusToward(Direction::Down)), cx);
-            }))
-            .on_action(cx.listener(|this, _: &keys::UndoLayout, _, cx| {
-                this.send(AppAction::Panes(LayoutAction::Undo), cx);
-            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.dragging = None),
+            )
             .child(rail(&ui, &route, waiting))
-            .when(!collapsed, |shell| shell.child(self.sidebar.clone()))
+            .when(!collapsed, |shell| {
+                shell.child(self.sidebar.clone()).child(self.divider(PaneId::Sidebar, cx))
+            })
             .child(main)
+            .when_some(panel, |shell, panel| {
+                shell
+                    .child(self.divider(PaneId::Panel, cx))
+                    .child(side_panel(panel, panel_width))
+            })
             .child(self.overlays.clone())
     }
 }

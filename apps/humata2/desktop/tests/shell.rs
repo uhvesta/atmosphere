@@ -7,8 +7,9 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, Bounds, HeadlessAppContext, WindowBounds, WindowOptions, point, px, size};
 use humata2_clients::{Clients, fixture};
 use humata2_engine::Resources;
-use humata2_app::AppAction;
-use humata2_layout::{Axis, LayoutAction};
+use humata2_app::layout::PaneId;
+use humata2_app::{AppAction, PaneAction, Route};
+use humata2_session::{Panel, SessionAction};
 use humata2_snapshot::{Tolerance, snapshots, view};
 use humata2_ui::bridge::Ui;
 use humata2_ui::record::Recorder;
@@ -62,20 +63,23 @@ fn home_on_the_standard_fakes() {
     snapshots.assert_image("home", &image, Tolerance::default());
 }
 
-/// The close buttons the panes' headers show.
-fn pane_headers(tree: &str) -> usize {
-    tree.lines().filter(|line| line.trim_start().starts_with("Button \"Close ")).count()
+
+/// Whether the window draws the session's side panel.
+fn shows_panel(tree: &str) -> bool {
+    tree.lines().any(|line| line.trim_start().starts_with("Complementary "))
 }
 
 #[test]
-fn splitting_draws_two_panes_and_closing_one_goes_back() {
+fn a_sessions_side_panel_hides_shows_and_survives_switching_screens() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a current-thread runtime starts");
     let mut cx = humata2_engine::headless(&Resources::new(humata2_ui::Assets)).expect("the headless context starts");
     cx.update(humata2_ui::init);
-    let (clients, _fakes) = Clients::fake(fixture::standard(), Arc::new(TestClock::new()));
+    let workspace = fixture::standard();
+    let session = workspace.sessions.first().expect("the fakes have a session").id.clone();
+    let (clients, _fakes) = Clients::fake(workspace, Arc::new(TestClock::new()));
     let ui = Ui::new(runtime.handle(), clients, Recorder::new());
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -97,13 +101,23 @@ fn splitting_draws_two_panes_and_closing_one_goes_back() {
         .expect("the window is open")
         .expect("the view can be read")
     };
-    assert_eq!(pane_headers(&capture(&mut cx)), 0, "one pane draws as the plain screen");
+    let send = |action: AppAction, cx: &mut HeadlessAppContext| {
+        cx.update(|cx| ui.send(action, cx));
+        settle(&runtime, cx);
+    };
+    send(AppAction::Navigate(Route::Session(session.clone())), &mut cx);
+    assert!(!shows_panel(&capture(&mut cx)), "a session opens without a panel");
 
-    cx.update(|cx| ui.send(AppAction::Panes(LayoutAction::SplitFocused(Axis::Horizontal)), cx));
-    settle(&runtime, &cx);
-    assert_eq!(pane_headers(&capture(&mut cx)), 2, "a split shows both panes");
+    send(AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))), &mut cx);
+    assert!(shows_panel(&capture(&mut cx)), "opening the Changes panel shows it on the right");
 
-    cx.update(|cx| ui.send(AppAction::Panes(LayoutAction::CloseFocused), cx));
-    settle(&runtime, &cx);
-    assert_eq!(pane_headers(&capture(&mut cx)), 0, "closing one goes back to the plain screen");
+    send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), &mut cx);
+    assert!(!shows_panel(&capture(&mut cx)), "⌥⌘0 hides it");
+    send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), &mut cx);
+    assert!(shows_panel(&capture(&mut cx)), "and shows it again");
+
+    send(AppAction::Navigate(Route::Home), &mut cx);
+    assert!(!shows_panel(&capture(&mut cx)), "Home has no side panel");
+    send(AppAction::Navigate(Route::Session(session)), &mut cx);
+    assert!(shows_panel(&capture(&mut cx)), "going back to the session brings its panel back");
 }

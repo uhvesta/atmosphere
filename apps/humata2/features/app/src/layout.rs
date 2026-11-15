@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub enum PaneId {
     /// The sidebar, on the left.
     Sidebar,
-    /// The Panes sidebar, on the right (NV-29).
+    /// The open session's side panel, on the right.
     Panel,
 }
 
@@ -47,7 +47,7 @@ impl PaneId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Sidebar => "sidebar",
-            Self::Panel => "Panes sidebar",
+            Self::Panel => "side panel",
         }
     }
 }

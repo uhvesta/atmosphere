@@ -36,6 +36,7 @@ Navigation "Sidebar"
     Button "Fold"
   TreeItem "Shell"
   Button "New session" description="New session  ⌘N"
+Splitter "Resize the sidebar"
 Heading "Home"
 Button "Back" description="Back  ⌘[" disabled
 Button "Search" description="Command palette  ⌘K"
