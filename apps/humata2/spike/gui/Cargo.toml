@@ -1,0 +1,27 @@
+[package]
+name = "humata2-gui-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: the GUI spike builds with cargo while gpui-kit's
+# dependency tree is evaluated, before it moves into Bazel.
+[workspace]
+
+[lib]
+name = "humata2_gui_spike"
+path = "src/lib.rs"
+
+[[bin]]
+name = "humata2-gui-spike"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = "0.9.1"
+libc = "0.2.191"
+tca-rust = { path = "../../../../libs/tca-rust" }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt"] }
+
+[dev-dependencies]
+gpui-kit = { version = "0.9.1", features = ["test-support"] }

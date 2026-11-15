@@ -151,6 +151,10 @@ message Session {
   // Error.session_busy meanwhile.
   OperationId running_operation = 25;
   Revision revision = 26;
+  // SE-21: where this session's turn ends come from.
+  TurnEndSource turn_end = 27;
+  // SEC-6: launched or last resumed contained.
+  bool contained = 28;
 }
 
 message RepoChoice {
@@ -402,6 +406,9 @@ message PushAndOpenPullRequestsRequest {
   SessionId id = 2;
   repeated PushChoice repos = 3;
   PlanToken plan = 4;
+  // VW-13: the pull request view this came from, if any; its fields are
+  // what was shown, edited.
+  ViewId from_view = 5;
 }
 
 message ReadConversationRequest {

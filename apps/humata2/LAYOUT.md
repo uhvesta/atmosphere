@@ -17,8 +17,8 @@ The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) is le
 | `features/<name>` | `humata2_<name>` | One reducer per feature (sidebar, session, review, files, inbox, board, hosts, settings, palette, views). State, actions and effects only, no GUI. Tested with TestStore. |
 | `clients` | `humata2_clients` | The dependency clients features use (daemon, clock, clipboard, file system, keychain), each a trait with a live and a fake implementation. |
 | `ui` | `humata2_ui` | GPUI views for each feature and the one store bridge between tca and GPUI's executor. |
-| `terminal/vt` | `ghostty_vt` | Safe Rust over libghostty-vt (D10), behind a `Terminal` trait. |
-| `terminal/view` | `humata2_terminal_view` | The GPUI grid view that draws any `Terminal`. |
+| `terminal/vt` | `ghostty_vt` | Safe Rust over libghostty-vt (D10). The view reads it through a `Grid` trait, so an `alacritty_terminal` fallback would only have to implement `Grid`. |
+| `terminal/view` | `humata2_terminal_view` | The GPUI grid view that draws any `Grid`. |
 | `desktop` | `humata2` binary | The app: windows, menus, wiring. |
 
 ## Daemon and boundaries

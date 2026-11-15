@@ -106,8 +106,8 @@ message RevokeScriptTokenRequest {
 message RevokeScriptTokenResponse {}
 
 service AuditService {
-  // Every allowed-without-asking action, every answer and every user-only
-  // change (IN-8), newest first.
+  // Every allowed-without-asking action, every answer, every user-only
+  // change and every refused identity (SEC-15) (IN-8), newest first.
   rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
 }
 
@@ -212,27 +212,86 @@ message SetDefaultRulesRequest {
 
 // What an "Always let …" covers. Exactly the requester and the target the
 // card named (IN-14); never a wider kind of target than the request had.
+// IN-22 fixes one kind of target per kind of action:
+//
+//   read or copy another session's files   path (session + folder)
+//   read or copy files on another machine  path (machine + folder)
+//   note, question or typing               session
+//   start or fork a session                agent_on_machine
+//   edit, move or delete others' items     board
+//   network connection                     network (machine, host, port)
+//   push or pull request                   repo_branch
+//   machines                               machine_action
+//
+// The daemon builds the target from the call; AlwaysLet must equal it.
 message GrantTarget {
   oneof target {
-    SessionId session = 1;        // note, type, read files of that session
-    MachineId machine = 2;        // read files on, start sessions on it
-    BoardItemId board_item = 3;   // edit or move that item
-    BoardRef board = 4;           // add to that board
-    PathScope path = 5;           // read or copy under this prefix
-    NetworkTarget network = 6;    // q7
+    // Note, question or typing into that session.
+    SessionId session = 1;
+    // Not offered by IN-22; machine-wide grants are path (machine, empty
+    // prefix) or agent_on_machine. Accepted only on grants made before.
+    MachineId machine = 2 [deprecated = true];
+    // Not offered by IN-22 (others' items are granted per board).
+    BoardItemId board_item = 3 [deprecated = true];
+    // Edit, move or delete others' items on that board; add to that board.
+    BoardRef board = 4;
+    // Read or copy under this folder of that session or machine.
+    PathScope path = 5;
+    // HO-11: a port forward from that machine to host:port.
+    NetworkTarget network = 6;
+    // Start or fork a session on that machine with that agent.
+    AgentOnMachine agent_on_machine = 7;
+    // session_push for that repo and branch (IN-24).
+    RepoBranch repo_branch = 8;
+    // One machine action on one machine (MP-24).
+    MachineAction machine_action = 9;
   }
 }
 
 message PathScope {
   MachineId machine = 1;
+  // Unset for files on another machine that belong to no session.
   SessionId session = 2;
-  // Repo-relative prefix; empty path means the whole repo.
+  // The folder asked for, repo-relative; empty path means the whole repo.
   RepoPath prefix = 3;
 }
 
 message NetworkTarget {
   string host = 1;
   uint32 port = 2;
+  // The machine the forward opens from: the requester's own (HO-11).
+  MachineId machine = 3;
+}
+
+message AgentOnMachine {
+  MachineId machine = 1;
+  AgentId agent = 2;
+}
+
+message RepoBranch {
+  RepoRef repo = 1;
+  string branch = 2;
+}
+
+enum MachineActionKind {
+  MACHINE_ACTION_KIND_UNSPECIFIED = 0;
+  MACHINE_ACTION_KIND_ADD = 1;          // add over SSH
+  MACHINE_ACTION_KIND_CREATE = 2;       // a provider's create
+  MACHINE_ACTION_KIND_START = 3;
+  MACHINE_ACTION_KIND_STOP = 4;
+  MACHINE_ACTION_KIND_RECONNECT = 5;
+  MACHINE_ACTION_KIND_SYNC_SKILLS = 6;
+  MACHINE_ACTION_KIND_REMOVE = 7;
+  MACHINE_ACTION_KIND_FORGET = 8;
+  MACHINE_ACTION_KIND_DELETE = 9;       // a provider's delete
+}
+
+message MachineAction {
+  // Unset for ADD and CREATE, which name the machine to be.
+  MachineId machine = 1;
+  // For ADD (the SSH host) and CREATE (provider and name).
+  string new_machine = 2;
+  MachineActionKind action = 3;
 }
 
 message Grant {
@@ -302,13 +361,22 @@ message ExplainResponse {
 
 message SetApprovalPassphraseRequest {
   IdempotencyKey idempotency_key = 1;
-  // Empty clears it: then nothing user-only can be done on a machine while
-  // the host is away.
+  // SEC-13: at least 5 words; fewer fails with invalid_field. Empty with
+  // generate unset clears it: then nothing user-only can be done on a
+  // machine while the host is away.
   string passphrase = 2;
   PresenceProof presence = 3;
+  // Humata picks 5 random words and returns them once.
+  bool generate = 4;
 }
 
-message SetApprovalPassphraseResponse {}
+message SetApprovalPassphraseResponse {
+  // Set only when generate was: shown once, never stored in clear.
+  string generated = 1;
+  // Machines that got the new hash; offline ones get it when they return.
+  repeated MachineId updated = 2;
+  repeated MachineId pending = 3;
+}
 
 // ---------------------------------------------------------------------------
 

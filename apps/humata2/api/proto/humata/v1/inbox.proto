@@ -1,4 +1,4 @@
-// The Inbox (IN-1..15). Requests are made only by the daemon, from an
+// The Inbox (IN-1..15, IN-25, IN-26; waiting per TP-11..15). Requests are made only by the daemon, from an
 // agent's call that a rule sent to Ask me, or by an agent's question
 // (InboxAsk over MCP). Clients list, read and answer them; answering is
 // user-only. Served by the host; while the host is away a machine serves
@@ -11,6 +11,7 @@ import "google/protobuf/timestamp.proto";
 import "humata/v1/access.proto";
 import "humata/v1/capabilities.proto";
 import "humata/v1/common.proto";
+import "humata/v1/errors.proto";
 
 service InboxService {
   rpc ListRequests(ListRequestsRequest) returns (ListRequestsResponse);
@@ -27,22 +28,29 @@ service InboxService {
   // ----- Agent side (MCP inbox_*). The requester is always the caller's
   // own session; no field names it. -----
 
-  // A question for the user (INBOX_ASK). Waits like any request (MCP.md §4).
+  // A question for the user (INBOX_ASK, IN-25). Waits like any request
+  // (TP-11): wait_seconds defaults to 45 and is at most 600. A repeat with
+  // the same idempotency key returns the same request (TP-14).
   rpc AskUser(AskUserRequest) returns (WaitResponse);
-  // Ask ahead for a capability on a target, e.g. before a long plan, so the
-  // user answers once. The grant offered is the card's usual one (IN-14).
+  // IN-26: ask ahead for a capability on a target, e.g. before a long plan,
+  // so the user answers once. Approving adds the card's grant (IN-14);
+  // a capability whose rule is Never is denied at once (IN-18), and a
+  // user-only one fails with Error.user_only (IN-23).
   rpc RequestAccess(RequestAccessRequest) returns (WaitResponse);
-  // Keep waiting on a request this session made. Returns at the answer, or
-  // with PENDING at the deadline. Streams keepalives meanwhile.
+  // TP-12: keep waiting on a request this session made. Returns what the
+  // original call would have: its result once approved and run (TP-13), the
+  // denial with its note, or PENDING at the deadline. Streams a keepalive
+  // every 15 seconds meanwhile.
   rpc WaitForAnswer(WaitForAnswerRequest) returns (stream WaitResponse);
-  // The agent no longer needs it; the card greys out (WITHDRAWN).
+  // The agent no longer needs it; the card greys out (WITHDRAWN, TP-15).
   rpc WithdrawRequest(WithdrawRequestRequest) returns (InboxRequest);
 }
 
 message AskUserRequest {
   IdempotencyKey idempotency_key = 1;
   string question = 2;
-  // Up to 4 one-tap answers; the user can always reply in words.
+  // Up to 4 one-tap answers (IN-25); more fails with invalid_field. The
+  // user can always reply in words.
   repeated string choices = 3;
   uint32 wait_seconds = 4;
 }
@@ -69,6 +77,15 @@ message WaitResponse {
   bool keepalive = 4;
   // Held in the machine's journal while the host is away (AW-3).
   bool journaled = 5;
+  // TP-12, TP-13: when an approved action has run, its result, encoded as
+  // the response message the original call returns (result_type names it,
+  // e.g. "humata.v1.ReadFilesResponse"), or the error it failed with.
+  bytes result = 6;
+  string result_type = 7;
+  Error error = 8;
+  // The result is kept until then (24 hours after it ran), then dropped;
+  // waiting after that returns the state without a result.
+  google.protobuf.Timestamp result_kept_until = 9;
 }
 
 message WithdrawRequestRequest {
@@ -83,6 +100,18 @@ enum RequestState {
   REQUEST_STATE_DENIED = 3;
   REQUEST_STATE_ANSWERED = 4;    // a question with a reply
   REQUEST_STATE_WITHDRAWN = 5;   // the agent stopped waiting
+}
+
+// TP-15: why a request was withdrawn.
+enum WithdrawReason {
+  WITHDRAW_REASON_UNSPECIFIED = 0;
+  WITHDRAW_REASON_AGENT = 1;            // inbox_withdraw
+  WITHDRAW_REASON_SESSION_STOPPED = 2;
+  WITHDRAW_REASON_SESSION_ARCHIVED = 3;
+  WITHDRAW_REASON_SESSION_DELETED = 4;
+  // The MCP process exited with the call open and no PENDING returned.
+  WITHDRAW_REASON_CALL_ENDED = 5;
+  WITHDRAW_REASON_CHANNEL_DELETED = 6;  // CH-25
 }
 
 enum RequestKind {
@@ -134,6 +163,8 @@ message InboxRequest {
   // NV-22: the requester session is VIP for this user.
   bool vip = 18;
   Revision revision = 19;
+  // Set when state is WITHDRAWN.
+  WithdrawReason withdraw_reason = 20;
 }
 
 message AlwaysOption {
@@ -155,7 +186,40 @@ message RequestPreview {
     MessagePreview message = 8;
     QuestionPreview question = 9;
     MovePreview move = 10;
+    NetworkPreview network = 11;
+    PushPreview push = 12;
+    AccessAheadPreview access_ahead = 13;
   }
+}
+
+// HO-11: what a port forward card shows.
+message NetworkPreview {
+  // The machine it opens from: the requester's own.
+  MachineId machine = 1;
+  string host = 2;
+  uint32 port = 3;
+  // Always true: it stays open until the session stops.
+  bool until_session_stops = 4;
+}
+
+// IN-24: a session_push card.
+message PushPreview {
+  message Repo {
+    RepoRef repo = 1;
+    string branch = 2;
+    uint32 commits = 3;
+    // Empty when only pushing.
+    string pull_request_title = 4;
+  }
+  repeated Repo repos = 1;
+}
+
+// IN-26: what the agent asks ahead for.
+message AccessAheadPreview {
+  Capability capability = 1;
+  GrantTarget target = 2;
+  // In words: "Read files under src/ledger of “Ledger schema migration”".
+  string target_label = 3;
 }
 
 message FieldChange {

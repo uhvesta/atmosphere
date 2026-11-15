@@ -4,7 +4,8 @@ This file holds the access model behind [GRPC.md](GRPC.md),
 [MCP.md](MCP.md) and [CLI.md](CLI.md): the principals and how each one is
 proved, the capability tiers, how grants are made and removed, where each
 check runs (with the host and with the host away), and why no agent can
-widen its own access. §9 traces the spec to the API.
+widen its own access. [TRACE.md](TRACE.md) traces every requirement that
+crosses a boundary to the API.
 
 ## 1. Threat model
 
@@ -16,19 +17,23 @@ widen its own access. §9 traces the spec to the API.
   can read and write the user's files, Humata's state on disk, `~/.ssh` and
   `~/.config/gh`, and can open network connections directly. The rules in
   Agent access are checked on every Humata call, but nothing stops a
-  same-uid process from not using Humata. REVIEW.md C1 says what the spec
-  must decide; this design makes the gap explicit and testable instead of
-  hiding it:
+  same-uid process from not using Humata. SEC-5 says so, and the Agent
+  access tab and each uncontained session's Info panel say it in its words
+  (`Session.contained`, `WhoAmIResponse.contained`). The design keeps the
+  gap explicit and testable:
   - every rule is enforced at the daemon for every MCP and CLI call;
   - the one call path that could turn a same-uid process into the user
-    (the CLI) needs presence (§2.3);
-  - an optional **Contain agents** setting (not in the spec; proposed in
-    REVIEW.md C1) would start each agent inside an OS sandbox
-    (`sandbox-exec` profile on macOS, Landlock plus a network namespace on
-    Linux). The sandbox allows writes only inside the session folder and
-    `shared/`, denies reads of Humata's own folders, `~/.ssh` and the gh
-    config, and denies network except Humata's bridge socket. Only then do
-    "Never" and the network rule become a boundary instead of a convention.
+    (the CLI) needs presence (§2.3, SEC-9, SEC-10);
+  - **Contain agents** (SEC-6, provisional D1) is off by default, set in
+    Settings › Security (`SecuritySettings.contain_agents`) with a
+    per-channel override (`ChannelSettings.contain_agents`), and applies
+    when a session next launches or resumes. A contained agent starts
+    inside an OS sandbox (`sandbox-exec` profile on macOS, Landlock plus a
+    network namespace on Linux) that allows writes only inside its session
+    folder and `shared/`, fails reads of other sessions' folders, Humata's
+    own folders, `~/.ssh` and the gh config, and allows no network but its
+    daemon's socket. Only for contained agents are "Never" and the network
+    rule a boundary rather than a convention (HO-12).
 - **Peers.** A remote machine is trusted for the sessions the host placed on
   it and nothing else. A machine compromised by root can lie about its own
   sessions, but it can't act for sessions on other machines, read the host's
@@ -123,12 +128,17 @@ exactly one capability against one target. Tiers:
 
 | Tier | Meaning | Capabilities |
 | --- | --- | --- |
-| Owned | Always allowed on the caller's own session, its clones, its session board and items it created (IN-16). Not a rule; no setting turns it off | own session reads, own clone read and write, own session board, own views, own requests |
-| Default | A rule, Allow for new channels (IN-17 and the narrow set). The user may set Ask me or Never | CHANNEL_READ, OWN_BOARD_WRITE, CHANNEL_BOARD_ADD, CHANNEL_BOARD_EDIT_OWN, SHARED_WRITE, VIEWS_PREPARE, REVIEW_DRAFT, OWN_COMMENTS_READ, INBOX_ASK |
-| Needs approval | A rule, Ask me for new channels; "Always let …" may add a scoped grant | GLOBAL_READ, CHANNEL_BOARD_EDIT_OTHERS, GLOBAL_BOARD_WRITE, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, NETWORK_REACH, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, PR_REVIEW_START, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE |
-| Needs approval, Never by default | As above, but denied at once until the user changes the rule | SESSION_STOP_OTHER, CHANNEL_CHANGE, MACHINE_DESTROY |
-| User-only | No rule, no grant, no MCP tool | INBOX_ANSWER, ACCESS_CHANGE, SETTINGS_CHANGE, MARKS_CHANGE, PR_SUBMIT, USER_REVIEW_STATE, TRASH_EMPTY, HOST_SECRETS, and the interactive and machine-level calls in §5 |
+| No rule (owned) | IN-16's set only: its own session (title, status, repos, branches), reading and writing its own clones, its own views and its own requests, comments sent to it (D21), its own port forwards. Not a rule; no setting turns it off. A context-only fork reads its parent's clones here but never writes them (IN-20) | none: checked as "the target is the caller's own" |
+| Default Allow | A rule, Allow for new channels (IN-17). The user may set Ask me or Never | OWN_BOARD_WRITE, CHANNEL_READ, CHANNEL_BOARD_ADD, CHANNEL_BOARD_EDIT_OWN, SHARED_WRITE, FILES_FETCH_LOCAL, VIEWS_PREPARE, REVIEW_DRAFT, INBOX_ASK |
+| Ask me | A rule, Ask me for new channels; "Always let …" may add an IN-22 grant | CHANNEL_BOARD_EDIT_OTHERS, GLOBAL_READ, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, PR_REVIEW_START, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE |
+| Ask me, no Allow | As Ask me, but the rule offers only Ask me and Never (D20); never low-risk, never approved on a machine while the Mac is away (HO-11) | NETWORK_REACH |
+| Never by default | A rule, Never for new channels: denied at once with the rule named (IN-18) until the user changes it | SESSION_STOP_OTHER, CHANNEL_CHANGE, MACHINE_DESTROY |
+| User-only | No rule, no grant, no MCP tool, no Inbox request (SEC-7, IN-23); from the CLI, presence | INBOX_ANSWER, ACCESS_CHANGE, SETTINGS_CHANGE, MARKS_CHANGE, PR_SUBMIT, USER_REVIEW_STATE, TRASH_EMPTY, HOST_SECRETS, CHANNEL_DELETE, MACHINE_SETTINGS, TERMINAL_INPUT |
 | Peer | Only on the peer link | PEER_REPORT, HOST_CONTROL |
+
+`GLOBAL_BOARD_WRITE` and `OWN_COMMENTS_READ` are deprecated (D21): the
+Global board is part of the GLOBAL_READ row and comments to its own session
+are a no-rule read. A rule stored under either is read as its new row.
 
 Hard limits that no rule or grant lifts:
 
@@ -139,16 +149,35 @@ Hard limits that no rule or grant lifts:
 - Every path resolves inside a Humata root after following symlinks, and
   never into `.humata/` or `.humatad/`: `outside_humata_folders`.
 - A PR review session pushes only when the user set PR-8; GIT_PUSH grants
-  don't apply to it.
+  don't apply to it (IN-24).
+- The user's own **Push and open PR(s)** (MV-12, VW-13) needs no rule:
+  GIT_PUSH is checked only for an agent's `session_push`.
+- No call takes the caller's identity as an argument (SEC-15). An identity
+  used from outside its session's process tree is refused with
+  `identity_mismatch`, replaced at the next resume and recorded in Activity
+  (`IDENTITY_MISUSED`).
 
 ## 4. Asking, grants and their lifetime
 
 - A call whose rule is Ask me becomes an Inbox request with the preview
-  (IN-9, IN-10) and the one "Always let …" scope the daemon computes for
-  that capability: this session plus the narrowest target the call names
-  (the session read from, the machine, the board). The agent doesn't choose
-  the offered scope; `inbox_request` names a target, and the daemon narrows
-  it to the same standard scope.
+  (IN-9, IN-10) and the one "Always let …" target IN-22 fixes for that kind
+  of action. The agent doesn't choose the offered target; `inbox_request`
+  (IN-26) names one, and the daemon narrows it to the same standard target:
+
+  | Kind of action | Capabilities | `GrantTarget` |
+  | --- | --- | --- |
+  | Read or copy another session's files | FILES_READ_OTHER_SESSION, FILES_COPY_IN | `path` {session, folder asked for} |
+  | Read or copy files on another machine | FILES_READ_OTHER_MACHINE, FILES_COPY_IN | `path` {machine, folder asked for} |
+  | Note, question or typing into another session | SESSION_NOTE, SESSION_TYPE | `session` |
+  | Start or fork a session | SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE | `agent_on_machine` |
+  | Edit, move or delete others' items | CHANNEL_BOARD_EDIT_OTHERS, GLOBAL_READ (boards) | `board` |
+  | Network connection | NETWORK_REACH | `network` {machine, host, port} |
+  | Push or pull request | GIT_PUSH | `repo_branch` |
+  | Machines | MACHINE_PROVISION, MACHINE_DESTROY | `machine_action` |
+
+  Other Ask me capabilities (OWN_SESSION_MANAGE, OWN_SESSION_END,
+  SESSION_MOVE, PR_REVIEW_START, TRASH_RESTORE, CHANNEL_CREATE, GLOBAL_READ
+  reads) offer no "Always let …": each approval is one call.
 - Grants are made only by `AnswerRequest` with `AlwaysLet`, from the app or
   a present user, and its target must equal the card's offer
   (`invalid_field` otherwise). No other call writes a grant.
@@ -163,7 +192,9 @@ Hard limits that no rule or grant lifts:
 - While I'm away (AW-4): Wait, Skip, or Allow low-risk. Low-risk kinds can
   only be chosen among capabilities with `may_be_low_risk`, which excludes
   anything that crosses machines, the network rule, typing, and every
-  Never-by-default capability.
+  Never-by-default capability (AW-11).
+- An "Always let …" given on a machine while the Mac is away applies there
+  at once and becomes the same grant on the Mac at replay (AW-12).
 
 ## 5. User-only operations
 
@@ -174,20 +205,27 @@ authentication module can construct (from the app's connection, a CLI login
 or a checked proof), so a handler for one of these can't be reached with an
 agent principal by mistake.
 
-- Answer Inbox requests, one or all (IN-12..14, IN-6).
+SEC-7's list, each with its capability:
+
+- Answer Inbox requests, one or all (IN-12..14, IN-6): INBOX_ANSWER.
 - Change rules, While I'm away, default access, grants, the approval
-  passphrase, CLI logins and script tokens.
-- Settings, agents and their launch commands (ST-*), channel settings that
-  aren't CHANNEL_CHANGE.
-- Pin, unpin, VIP (NV-20..23); view state (SE-13, NV-16, NV-19).
-- Submit a PR review; "Let the agent push" (PR-8, PR-12).
+  passphrase, CLI logins and script tokens (IN-23, SEC-13, SEC-14):
+  ACCESS_CHANGE.
+- Settings, agents and their launch commands (ST-*), Contain agents
+  (SEC-6), providers (MP-23), channel settings that aren't CHANNEL_CHANGE:
+  SETTINGS_CHANGE.
+- Pin, unpin, VIP, the pinned order (NV-20..25); view state (AR-5):
+  MARKS_CHANGE.
+- Submit a PR review; "Let the agent push" (PR-8, PR-12): PR_SUBMIT.
 - The user's review state: Mark reviewed, view offers (VW-*), the user's
-  comments and sending them (SM-*).
-- Empty trash; arbitrary transfers in the file manager (FM-*).
-- Host variable values, SSH host key trust, provider TOML, provider login,
-  making a login unattended (SEC-1, MP-*).
-- A machine shell (HO-4), changing a machine's root or VM tier, interactive
-  terminal attach (AW-2), and opening a shell tab in a session.
+  comments and sending them (SM-*): USER_REVIEW_STATE.
+- Empty trash; arbitrary transfers in the file manager (FM-*): TRASH_EMPTY.
+- Host variable values, set and remove (HO-13), SSH host key trust, provider
+  login, making a login unattended (SEC-1, MP-*): HOST_SECRETS.
+- Delete a channel (CH-25): CHANNEL_DELETE.
+- Change a machine's root or VM tier (FC-10, PER-8): MACHINE_SETTINGS.
+- A machine shell (HO-4), attaching with input (AW-2), opening a shell tab,
+  Send now on a session's queue (SE-23): TERMINAL_INPUT.
 - Reading the audit log and the raw event stream.
 
 ## 6. No tool lets an agent widen its own grant
@@ -284,45 +322,13 @@ Behaviour tests, not wording tests:
 
 ## 9. Coverage and trace
 
-| Spec | gRPC (proto) | MCP | CLI |
-| --- | --- | --- | --- |
-| §3 CH channels and machines | ChannelService, ActivityService (channels) | `topology_get`, `channels_list`, `channel_create`, channel changes (Never) | `channels`, `topology`, `activity` |
-| §4 FC folders and clones | SessionService.GiveOwnCopy, FileService, PeerService.PrepareClone | `file_*`, `files_*` | `files`, `session own-copy` |
-| §5 SE sessions and terminals | SessionService, TerminalService | `session_*`, `whoami` | `session`, `attach`, `ls` |
-| §6 FK forks | SessionService.PreviewFork, ForkSession | `session_fork` | `session fork` |
-| §7 MV moving and archiving | MoveSession, Plan/ArchiveSession, RestoreSession | `session_move`, `session_archive` | `session move`, `archive`, `restore` |
-| §8 LD lifecycle and disk | Plan/DeleteSession, TrashService, MachineService.GetStorage, ClearBuildCache, TrimLogs | `session_delete`, `trash_restore` | `session delete`, `trash`, `host storage` |
-| §9 RV review | DiffService, CommentService (review) | `comments_list`, own diff via `file_read` | `diff`, `comment` |
-| §10 PR reviews | PullRequestReviewService | `pr_review_start`, `review_draft*`, `review_summary_draft` | `review` |
-| §11 SM spec mode and comments | SetSpecMode, CommentService | `session_spec_mode`, `comments_list` | `session spec`, `comment` |
-| §12 FM files and transfers | FileService, TransferService | `file_fetch`, `files_copy_in` | `files`, `cp`, `mv`, `transfers` |
-| §13 BD boards | BoardService | `board_*` | `board` |
-| §14 IN Inbox and access | InboxService, AccessService, AuditService | `inbox_*`, `access_explain` | `inbox`, `access`, `audit` |
-| §15 VW views | ViewService | `view_*`, `views_list` | `views`, `view` |
-| §16 TP topology | DaemonService.WhoAmI, SessionService.SendNote/AskSession/AnswerQuestion | MCP.md §6 | `topology`, `session note/ask` |
-| §17 HO, SK hosts and skills | MachineService, SkillsService, TerminalService.OpenMachineShell | `machine_*`, `skills_sync` | `host`, `skills sync`, `shell` |
-| §18 MP providers | ProviderService | `machine_create`, `machine_start/stop` | `provider` |
-| §19 SL, PER state and resume | PeerService (pointers, mirror, journal), EventService, SessionService.RebuildSession | `journal_status`, envelope `outcome` | `ops`, `events` |
-| §20 AW away | InboxService on machines, PresenceProof passphrase | MCP.md §4, §5 | `inbox`, `login`, `attach` |
-| §21 TR transport | GRPC.md §2, §6 | stdio | sockets |
-| §22 NV-18, NV-19 Expand/Collapse all | none: UI only | none | none |
-| §22 NV-20..23 pinned and VIP | MarkService (settings) | none (user-only) | `pin`, `vip`, `pinned` |
-| §24 ST settings | SettingsService, AgentService, AccessService defaults | none (user-only) | `settings`, `agents` |
-| §25 SEC | §1, §2, §8 here | | |
+[TRACE.md](TRACE.md) lists every requirement that crosses a boundary with
+its RPCs, MCP tools and CLI commands, the capability matrix per actor and
+tier, and the gaps still open. Every RPC answers some requirement there;
+two kinds of API answer the spec's needs without one requirement naming
+them:
 
-API that no requirement asks for (kept, flagged for the spec owner):
-
-- `PullRequestDraft` in views: the coordinator's "prepare a PR"; the spec
-  has review and board views only (VW-*).
-- `PlanDeleteChannel` / `DeleteChannel`: the spec never deletes a channel
-  (REVIEW.md H7).
-- `SetHostVariable`: the spec lists variables (SEC-1) but has no place to
-  enter a value.
-- `RequestAccess` (`inbox_request`): asking ahead, so a long plan is
-  approved once.
-- `ViewStateService`, `ReorderPinned`: where the spec's UI state lives once
-  the app holds none (AR-3, NV-21).
-- `CliAuthService`: CLI login and script tokens (§2.2), needed because the
-  spec doesn't say how the CLI proves a person.
-- Session-board todos: the coordinator's "edit todos" maps to the session
-  board (OWN_BOARD_WRITE); the spec has no separate todo list.
+- `CliAuthService` (`humata login`, script tokens) is how SEC-10, SEC-11
+  and SEC-14 are carried out.
+- Session-board items are the agent's todos (OWN_BOARD_WRITE); the spec
+  has no separate todo list.

@@ -53,6 +53,9 @@ enum OperationKind {
   OPERATION_KIND_START_PR_REVIEW = 16;
   OPERATION_KIND_UPDATE_PR_CLONE = 17;
   OPERATION_KIND_SUBMIT_PR_REVIEW = 18;
+  // CH-24. Steps: stop_agents, withdraw_requests, trash:<machine> per
+  // machine, remove_record.
+  OPERATION_KIND_DELETE_CHANNEL = 19;
 }
 
 enum OperationState {

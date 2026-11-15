@@ -179,7 +179,7 @@ swift_deps.configure_package(
         "perl -pi -e 's|grammar_functor\\.cc\"|grammar_functor_source.h\"|' Libraries/MLXCXGrammar/grammar_functor_wrapper.cc",
     ],
 )
-use_repo(swift_deps, "swift_package", "swiftpkg_mlx_swift", "swiftpkg_mlx_swift_lm", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing", "swiftpkg_swift_transformers")
+use_repo(swift_deps, "swift_package", "swiftpkg_mlx_swift_lm", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing", "swiftpkg_swift_transformers")
 
 # Google's LiteRT-LM, which runs downloaded models for Lifr: its Swift API
 # and prebuilt runtime, pinned by SHA-256. See
@@ -259,6 +259,12 @@ mermaid_js(name = "mermaid_js")
 ghostty_kit = use_repo_rule("//apps/humata/features/terminal/ghostty:ghostty_kit.bzl", "ghostty_kit")
 
 ghostty_kit(name = "ghostty_kit")
+
+# libghostty-vt, Humata 2's terminal core, built from its pinned source for
+# macOS and Linux. See apps/humata2/terminal/vt/libghostty_vt.bzl.
+libghostty_vt = use_repo_rule("//apps/humata2/terminal/vt:libghostty_vt.bzl", "libghostty_vt")
+
+libghostty_vt(name = "libghostty_vt")
 
 # Claude Code, one repository per platform, each fetched only when a build
 # for that platform uses it. See apps/humata/claude/claude.bzl.

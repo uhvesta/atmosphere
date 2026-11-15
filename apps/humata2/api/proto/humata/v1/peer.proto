@@ -141,6 +141,9 @@ message PointersReport {
 }
 
 // LD-8: the conversation file, append-only, offset-keyed.
+// LD-21: before data leaves the machine, every exact value of its host
+// variables is replaced with ‹NAME›. Offsets count the scrubbed bytes, so
+// the host's copy is the scrubbed one and never holds a value.
 message MirrorChunk {
   SessionId session = 1;
   string conversation_id = 2;
@@ -149,6 +152,8 @@ message MirrorChunk {
   // The agent rewrote the file (compaction): the host starts a new
   // generation and keeps the old one in history.
   bool rewritten = 5;
+  // Names whose values were replaced in this chunk; never the values.
+  repeated string scrubbed_names = 6;
 }
 
 message SessionStatusReport {
@@ -234,8 +239,9 @@ message ForwardedResult {
 }
 
 // What a machine needs to judge its agents' calls while the host is away
-// (GRPC.md §9). Sent on every change; versioned; the machine applies it only
-// forward.
+// (GRPC.md §9, AW-8). Sent on every change; versioned; the machine applies
+// it only forward. Nothing on the machine can change it: only a newer
+// snapshot from the host replaces it.
 message PolicySnapshot {
   uint64 revision = 1;
   google.protobuf.Timestamp at = 2;

@@ -1,4 +1,4 @@
-// Channels, their repos and machines, and the Activity feed (CH-1..23).
+// Channels, their repos and machines, and the Activity feed (CH-1..25).
 // Host only.
 syntax = "proto3";
 
@@ -29,9 +29,14 @@ service ChannelService {
   rpc RemoveMachine(RemoveChannelMachineRequest) returns (Operation);
   // CH-9: one row per repo, one column per machine.
   rpc GetGrid(GetGridRequest) returns (ChannelGrid);
-  // Not in the spec (REVIEW.md): refuses while live sessions remain;
-  // moves the channel's records to trash.
+  // CH-24: every live and archived session, its board items, its pending
+  // requests and each session's uncommitted or unpushed work (as MV-9).
   rpc PlanDeleteChannel(PlanDeleteChannelRequest) returns (DeleteChannelPlan);
+  // CH-24, CH-25, NV-27. User-only (CHANNEL_DELETE), with presence; no
+  // agent tool and no Inbox request exist for it. Fails with unpushed_work
+  // while a listed session has such work, unless delete_unpushed_work.
+  // Runs the DELETE_CHANNEL operation: stops the agents, withdraws the
+  // requests, sends every machine's folders to that machine's trash.
   rpc DeleteChannel(DeleteChannelRequest) returns (DeleteChannelResponse);
 }
 
@@ -213,12 +218,20 @@ message PlanDeleteChannelRequest { ChannelId channel = 1; }
 
 message DeleteChannelPlan {
   ChannelId channel = 1;
-  // Must be empty: archive or move them first.
+  // Live sessions with their work; they are stopped and sent to trash.
   repeated SessionWork live_sessions = 2;
   uint32 archived_sessions = 3;
   uint32 board_items = 4;
   uint32 pending_requests = 5;
   PlanToken token = 6;
+  // CH-24 lists them, not just counts.
+  repeated SessionWork archived = 7;
+  repeated BoardItemId board_item_ids = 8;
+  repeated RequestId pending_request_ids = 9;
+  // Machines whose folders go to their trash.
+  repeated MachineId machines = 10;
+  // Offline ones get it when they return (the operation waits on them).
+  repeated MachineId offline_machines = 11;
 }
 
 message DeleteChannelRequest {
@@ -226,10 +239,16 @@ message DeleteChannelRequest {
   ChannelId channel = 2;
   PlanToken plan = 3;
   PresenceProof presence = 4;
+  // CH-24 "Delete that work": required when any listed session has
+  // uncommitted or unpushed work.
+  bool delete_unpushed_work = 5;
 }
 
 message DeleteChannelResponse {
+  // The Mac's trash item; restoring it within 30 days brings the channel
+  // back with its sessions archived.
   TrashItemId trash_item = 1;
+  Operation operation = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +271,8 @@ enum ActivityKind {
   ACTIVITY_KIND_MACHINE_REMOVED = 14;
   ACTIVITY_KIND_RETENTION = 15;   // LD-18
   ACTIVITY_KIND_REQUEST_ANSWERED = 16;
+  // SEC-15: a session's identity was used from outside its process tree.
+  ACTIVITY_KIND_IDENTITY_MISUSED = 17;
 }
 
 message ActivityEvent {

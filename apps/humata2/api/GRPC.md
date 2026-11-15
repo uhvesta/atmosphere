@@ -85,6 +85,7 @@ a machine checks only calls it answers alone, using the host's last
 | DiffService, CommentService, ViewService, PullRequestReviewService (review) | host for comments, views, drafts, review state; the machine computes diffs | host socket; forwarded; comment and view drafts journaled | |
 | OperationService (operations) | host | host socket; forwarded | |
 | MachineService, ProviderService, SkillsService (hosts) | host | host socket only for user-only calls; forwarded otherwise | Provider commands run on the Mac or `run_on` (MP-5) |
+| BridgeService (hosts) | host; the forward's two ends are the session's machine and the Mac | host socket; forwarded from the session's machine | HO-10, HO-11: the only way anything but Humata's own calls crosses the bridge |
 | SettingsService, AgentService, MarkService, ViewStateService (settings) | host | host socket | User-only writes (BOUNDARIES.md §5) |
 | EventService (events) | host | host socket; machine socket relays a filtered feed | |
 | PeerService (peer) | each remote machine | peer link only | §8 |
@@ -110,18 +111,24 @@ the response to a call that started an operation finds it with
 
 ### 5.3 Revisions
 
-Every mutable entity has a `Revision`. Updates name the revision they were
-made against in `expected_revision`; a stale one fails with
-`revision_conflict`, which carries the current revision so the client can
-show the newer state and ask again. Unset `expected_revision` means "apply
-whatever is there now" and is allowed only for fields that last-writer-wins
-already covers (board item fields, marks, view state).
+Every mutable entity has a `Revision` that goes up with each change (SL-7).
+Updates name the revision they were made against in `expected_revision`; a
+stale one fails with `revision_conflict`, which carries the current revision
+so the client can show the newer state and ask again. Unset
+`expected_revision` means "apply whatever is there now" and is allowed only
+for fields that last-writer-wins already covers (board item fields, marks,
+view state); the earlier value is then kept in history.
+
+Deletes are tombstones kept in history (SL-8). An edit or move that names a
+deleted item fails with `not_found` whose fix says it was deleted, and the
+attempt is kept in history; it never brings the item back.
 
 ### 5.4 Plans before destructive calls
 
-Archive, delete, drop a repo, remove a repo or machine from a channel, remove
-or forget a machine, empty trash, change a root, and submit a review are two
-calls: `Plan*` returns what will happen (unpushed work, sessions affected,
+Archive, delete a session, delete a channel (CH-24), drop a repo, remove a
+repo or machine from a channel, remove or forget a machine, empty trash,
+change a root (`PlanChangeRoot`), import a provider (MP-23) and submit a
+review are two calls (NV-27): `Plan*` returns what will happen (unpushed work, sessions affected,
 bytes freed) and a `PlanToken`; the executing call passes the token back and
 fails with `plan_stale` if anything the plan listed has changed since. This
 turns the confirmation dialog into a check instead of a race: the user
@@ -179,7 +186,7 @@ Rules:
 
 Long work (start, fork, move, archive with push, restore, rebuild, give own
 copy, push and open PRs, add repo, add/remove machine, change root, provider
-steps, skills sync, PR review start/update/submit) returns an `Operation` at
+steps, skills sync, PR review start/update/submit, delete a channel) returns an `Operation` at
 once. Its steps have stable keys, shown as the progress list the spec draws.
 
 - Closing a stream or dropping a connection never cancels a mutation. Only
@@ -208,10 +215,11 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
 | CHANGE_ROOT | `copy`, `verify`, `switch`, `retire_old` | `switch` | Removes the copy |
 | PROVIDER_CREATE | `create`, `identity`, `connect`, `check`, `install`, `service`, `register` | `create` once it ran | Before `create` finished: nothing. After: offers Delete what was made (MP-20) |
 | PROVIDER_ACTION | `run` | `run` | — |
-| SKILLS_SYNC | per machine `diff`, `upload`, `swap` | `swap` | Removes the staged copy |
+| SKILLS_SYNC | per machine `diff`, `upload`, `swap`; an offline machine's steps are skipped and named (SK-10) | `swap` (the whole set at once, SK-9) | Removes the staged copy |
 | START_PR_REVIEW | `resolve:<pr>`…, `clone:<pr>`…, `launch` | `launch` | Removes clones |
 | UPDATE_PR_CLONE | `fetch`, `reset`, `reattach_drafts` | `reset` | Nothing changed |
 | SUBMIT_PR_REVIEW | `post:<pr>`… | first `post` | Finishes; a failure after the first post returns `review_partly_posted` naming which PRs got it |
+| DELETE_CHANNEL | `stop_agents`, `withdraw_requests`, `trash:<machine>`…, `remove_record` | `stop_agents` | Before: nothing. After: finishes; offline machines' `trash:` steps wait for them; restoring the Mac's trash item undoes it within 30 days (CH-24) |
 
 ## 8. The peer link
 
@@ -252,13 +260,16 @@ asleep, off or offline all look the same from the machine (AW-1). What
 follows applies to calls from the machine's own clients (its agents' MCP
 servers and `humata` run there).
 
-### 9.1 What the spec asks, and where it conflicts
+### 9.1 What the spec asks
 
-TP-9 says cross-machine calls wait and writes that need no answer are
-journaled. AW-4 says requests that would ask follow the While I'm away rule.
-SL-5 says MCP writes, Inbox requests included, are journaled; SL-6 says
-conflicts resolve last writer wins. These overlap; this section is how the
-API reconciles them. REVIEW.md C3 lists what the spec still needs to decide.
+AW-7 says what each call does with the Mac away, AW-8 that the machine
+judges calls against its last copy of the policy, AW-9 that journaled
+writes are checked again at replay, AW-10 that the first answer wins, AW-11
+what low-risk can never include and AW-12 how a grant given on the machine
+reaches the Mac. SL-5 says only AW-7's journaled writes and requests made on
+the machine are journaled; SL-6 to SL-8 say how replays meet the host's
+state. The sections below implement them; none of D3's open picks is
+decided here.
 
 ### 9.2 The machine's copy of the policy
 
@@ -280,7 +291,7 @@ is no call for it there.
 | Host-state writes the snapshot allows (own board, channel board add, edit its own items, comment and view drafts, `inbox_ask`) | applied | **journaled**: response `{outcome: journaled}` with provisional ids |
 | Anything the snapshot says Never, or a hard limit | denied | denied |
 | An Ask on something on this machine (another session's files here, start or fork here, type into a session here) | Inbox request; the call waits | per the away rule: **Wait** (request journaled, the call waits, answerable on the machine), **Skip** (denied with `user_away`), **Allow low-risk** (applied if the kind is low-risk and journaled for the record, else Wait) |
-| Anything that needs another machine or GitHub through the Mac (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push via the Mac) | applied or asked | **waits** (TP-9) or, under Skip, denied with `host_unreachable`. Never allowed offline, even as low-risk: the host must route it |
+| Anything that needs another machine or GitHub through the Mac (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | applied or asked | **waits** (TP-9) or, under Skip, denied with `host_unreachable`. Never low-risk (AW-11): the host must route it. A port forward can't be approved on the machine (HO-11) |
 | User-only calls | per BOUNDARIES.md | only answering requests the machine holds, with the approval passphrase |
 
 ### 9.4 Answers
@@ -302,8 +313,9 @@ returns (AW-3).
   answered and how. Last-writer-wins never applies to answers: an approval
   that ran can't be taken back by a later deny, and treating them as
   last-writer-wins would show a deny for something that happened.
-- "Always let" from a local answer creates its grant on the host at replay,
-  with the same scope rules (IN-14), so the snapshot carries it from then on.
+- AW-12: "Always let" from a local answer applies on the machine at once and
+  creates its grant on the host at replay, with the same target (IN-22), so
+  the snapshot carries it from then on.
 
 ### 9.5 Board and comment conflicts (SL-6)
 
@@ -361,7 +373,7 @@ code is for generic handling; clients branch on `Error.kind`, never on text.
 | `ABORTED` | `revision_conflict`, `plan_stale`, `already_answered` |
 | `FAILED_PRECONDITION` | `unpushed_work`, `session_busy`, `agent_lacks_feature`, `resume_failed`, `request_withdrawn`, `user_away`, `pr_closed`, `skill_name_clash`, `login_needs_user`, `host_key_changed`, `not_cancellable`, `journal_entry_rejected`, `linger_unavailable`, `daemon_already_running`, `daemon_not_running`, `repo_not_visible`, `github_cli` (not signed in, missing scope), `provider_identity_invalid` |
 | `UNAVAILABLE` | `machine_offline`, `host_unreachable`, `ssh_failed` |
-| `RESOURCE_EXHAUSTED` | `disk_full`, `rate_limited` (its `fix` says to wait until `resets_at`; a token only raises the limit, it doesn't lift this one) |
+| `RESOURCE_EXHAUSTED` | `disk_full`, `rate_limited` (its `fix` says to wait until `resets_at`; a token only raises the limit, it doesn't lift this one), `passphrase_locked` (SEC-13: five wrong tries; its `fix` says to wait until `until` or answer from the app, and that trying again early does not shorten the lock) |
 | `OUT_OF_RANGE` | `offset_trimmed` |
 | `UNIMPLEMENTED` | `peer_version_unsupported` |
 | `DATA_LOSS` | `checksum_mismatch` (its `fix` says the bad copy was removed and the source is untouched) |

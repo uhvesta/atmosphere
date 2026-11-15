@@ -154,3 +154,23 @@ Status: **open** (waiting for the user) · **decided**.
 ## D19: Dependency freshness. Decided 2026-11-14
 - **Owner:** use the latest versions, Rust 1.100, and nothing published less than 3 days ago.
 - **How:** `.cargo/config.toml` sets `global-min-publish-age = "3 days"`.
+
+## D20: The network rule offers no Allow (I0.2 boundaries). Open
+- **Problem:** IN-17 gives "Open a network connection through the Mac" the usual Allow / Ask me / Never. HO-11 says a port forward opens only when the user approves it, low-risk rules never cover it and it can't be approved while the Mac is away. Allow would open one with no approval.
+- **Options:**
+  - (a) The rule offers Ask me and Never only. "Always let …" on its card is the user's standing approval for that machine, host and port (IN-22).
+  - (b) Keep Allow and say it overrides HO-11.
+  - (c) Keep Allow but treat it as Ask me.
+- **Provisional:** (a). It is the only reading that keeps HO-11 true; (c) shows a choice that does nothing.
+- **Affects:** IN-17 (the row's choices), HO-11, HO-12, AW-7; `CAPABILITY_NETWORK_REACH`.
+- **Reverse:** add Allow to the row and drop the check that refuses it.
+
+## D21: Actions the IN-17 table has no row for (I0.2 boundaries). Open
+- **Problem:** some agent calls cross a boundary but match no IN-17 row: reading comments sent to its own session, reading the Global board apart from other channels, restoring or rebuilding an archived session, archiving another session, and watching another session's terminal read-only.
+- **Options:**
+  - (a) Fold each into the nearest row: comments to its own session are a read of its own session (IN-16, no rule); the Global board and other channels share the row "Global board, or other channels and their boards: anything"; restore and rebuild go through the start or fork rows for that machine; archiving another session goes through "Stop or delete any session but itself"; a read-only watch goes through "Read another session's files".
+  - (b) Add a row for each, with Ask me as default.
+  - (c) Refuse each to agents until the spec names a rule.
+- **Provisional:** (a). Each match has the same reach and risk as the row it joins, and the table stays short.
+- **Affects:** IN-16, IN-17, SE-25, SL-7, BD-*, `CAPABILITY_GLOBAL_READ`, `CAPABILITY_FILES_READ_OTHER_SESSION`, `CAPABILITY_SESSION_START_*`, `CAPABILITY_SESSION_STOP_OTHER`; the deprecated `CAPABILITY_GLOBAL_BOARD_WRITE` and `CAPABILITY_OWN_COMMENTS_READ`.
+- **Reverse:** add the rows (b) and give each its own capability; grants made under the folded rows stay with the row they were made under.

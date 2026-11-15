@@ -1,4 +1,4 @@
-// Terminals (SE-8..10, SE-16, PER-1..3, AW-2). Served by the machine that
+// Terminals (SE-8..10, SE-16, SE-21..25, PER-1..3, AW-2). Served by the machine that
 // holds the session; the host relays the app's streams to remote machines
 // over the peer link, one HTTP/2 stream per attached tab.
 syntax = "proto3";
@@ -27,6 +27,14 @@ service TerminalService {
   rpc Type(TypeRequest) returns (TypeResponse);
   // Withdraws text still waiting for a turn end.
   rpc CancelQueuedTyping(CancelQueuedTypingRequest) returns (CancelQueuedTypingResponse);
+  // SE-23: what is queued for a session (comments, notes, queued typing,
+  // the IN-12 line), oldest first, and whether each waits on a turn end
+  // that is not certain.
+  rpc ListQueued(ListQueuedRequest) returns (ListQueuedResponse);
+  // SE-23 Send now: types one queued message, or all, now, each whole as
+  // one bracketed paste. User-only (TERMINAL_INPUT): an agent types into
+  // another session with session_type and when = now.
+  rpc SendQueuedNow(SendQueuedNowRequest) returns (SendQueuedNowResponse);
 }
 
 message Tab {
@@ -86,7 +94,10 @@ message AttachOpen {
   TabId tab = 2;
   // Resume from here; 0 or older than earliest_offset gets a Snapshot.
   uint64 from_offset = 3;
-  // Watching only: input is refused.
+  // SE-25: watching only. Input is refused and the attach does not count
+  // as a writer (other_writers). Without it, an attach with input is
+  // user-only (TERMINAL_INPUT); an agent's read-only attach to another
+  // session goes through FILES_READ_OTHER_SESSION (D21).
   bool read_only = 4;
   uint32 cols = 5;
   uint32 rows = 6;
@@ -155,7 +166,8 @@ message TerminalState {
   Writable writable = 1;
   SessionStatus status = 2;
   int32 exit_code = 3;
-  // Other clients attached with input (the app, a `humata attach`).
+  // SE-24: other clients attached with input (the app, a `humata attach`);
+  // read-only attaches are not counted (SE-25).
   uint32 other_writers = 4;
 }
 
@@ -181,8 +193,9 @@ message TypeRequest {
   enum When {
     WHEN_UNSPECIFIED = 0;
     WHEN_NOW = 1;
-    // SM-10. Fails with Error.agent_lacks_feature(TURN_SIGNAL) when the
-    // agent's adapter can't tell; the caller then picks NOW.
+    // SM-10, SE-23. With hooks it is typed at the turn end on its own.
+    // With the output fallback, or in a plain shell, it is queued as
+    // "waiting: turn end not certain" until Send now, and never fails.
     WHEN_TURN_ENDS = 2;
   }
   IdempotencyKey idempotency_key = 1;
@@ -197,6 +210,38 @@ message TypeResponse {
   // Set while queued (When = TURN_ENDS and the agent is mid-turn).
   QueuedTypingId queued = 1;
   bool typed = 2;
+  // SE-23: queued, and waits for Send now rather than a turn end.
+  bool turn_end_uncertain = 3;
+}
+
+message QueuedMessage {
+  QueuedTypingId id = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_COMMENTS = 1;
+    KIND_NOTE = 2;
+    KIND_TYPING = 3;
+    KIND_APPROVAL_LINE = 4;   // IN-12
+  }
+  Kind kind = 2;
+  string preview = 3;
+  google.protobuf.Timestamp queued_at = 4;
+  bool turn_end_uncertain = 5;
+}
+
+message ListQueuedRequest { SessionId session = 1; }
+
+message ListQueuedResponse { repeated QueuedMessage messages = 1; }
+
+message SendQueuedNowRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // Empty: all of them, in order.
+  repeated QueuedTypingId ids = 3;
+}
+
+message SendQueuedNowResponse {
+  repeated QueuedTypingId typed = 1;
 }
 
 message CancelQueuedTypingRequest {

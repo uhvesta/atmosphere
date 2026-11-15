@@ -52,4 +52,6 @@ message WhoAmIResponse {
   ChannelId channel = 2;
   // True when user-only calls on this connection can be confirmed.
   bool presence_possible = 3;
+  // SEC-6: for an agent, whether its session runs contained.
+  bool contained = 4;
 }

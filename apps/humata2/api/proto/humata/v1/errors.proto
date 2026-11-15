@@ -67,6 +67,7 @@ message Error {
     JournalEntryRejected journal_entry_rejected = 52;
     RepoNotVisible repo_not_visible = 53;
     StepFailed step_failed = 54;
+    PassphraseLocked passphrase_locked = 55;
     // A bug in Humata. The only kind without a fix the person can apply;
     // it names the log to attach to a report.
     Internal internal = 99;
@@ -136,6 +137,8 @@ message Denied {
 }
 
 // The operation is the user's alone (BOUNDARIES.md, user-only tier).
+// IN-23, SEC-7: no rule lets an agent do this. Denied at once; nothing is
+// added to the Inbox.
 message UserOnly {
   Capability capability = 1;
 }
@@ -160,6 +163,9 @@ message PresenceRequired {
 
 // A caller presented a session token that doesn't belong to its process
 // tree, or a peer asserted a session the host places on another machine.
+// SEC-15: a session's identity was used from outside its process tree.
+// The call is refused, the identity is replaced at the session's next
+// resume, and Activity records IDENTITY_MISUSED.
 message IdentityMismatch {
   SessionId claimed = 1;
   MachineId claimed_machine = 2;
@@ -417,6 +423,13 @@ message RequestWithdrawn {
 // AW-4 "Skip the step" applied; the agent can retry once the user is back.
 message UserAway {
   ChannelId channel = 1;
+}
+
+// SEC-13: five wrong passphrase tries lock it on this machine for 15
+// minutes. Fix: wait until `until`, or answer from the app on the Mac.
+message PassphraseLocked {
+  MachineId machine = 1;
+  google.protobuf.Timestamp until = 2;
 }
 
 message NotInChannel {

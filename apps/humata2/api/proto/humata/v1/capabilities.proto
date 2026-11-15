@@ -8,16 +8,22 @@ package humata.v1;
 enum Capability {
   CAPABILITY_UNSPECIFIED = 0;
 
-  // ----- Agent rules: shown on a channel's Agent access tab (IN-17). -----
-  // Each has a channel-level Allow / Ask me / Never and may get scoped
-  // "Always let …" grants (IN-14).
+  // ----- Agent rules: one row each on a channel's Agent access tab
+  // (IN-17), in the spec's order. Each has a channel-level Allow / Ask me /
+  // Never and may get scoped "Always let …" grants (IN-14, IN-22). What
+  // needs no rule at all (IN-16: its own session, its own clones, its own
+  // views and requests) has no capability; DecisionSource.OWNED reports it.
+  // -----
 
-  // Machines of its channel, sessions on each (title, agent, status), the
-  // channel board and Activity. Default Allow. (TP-1; added row.)
+  // "See its channel": machines of its channel, sessions on each (title,
+  // agent, status), the channel board and Activity. Default Allow. (TP-1)
   CAPABILITY_CHANNEL_READ = 1;
-  // Other channels and the Global board. Default Ask me. (Added row.)
+  // "Global board, or other channels and their boards: anything". Default
+  // Ask me. One row in IN-17, so this one capability covers reads and
+  // writes there (D21); GLOBAL_BOARD_WRITE is no longer checked.
   CAPABILITY_GLOBAL_READ = 2;
-  // Its own session board: add, edit, move, delete. Default Allow.
+  // Its own session board: add, edit, move, delete. Default Allow. A rule,
+  // not part of the no-rule set (IN-16).
   CAPABILITY_OWN_BOARD_WRITE = 3;
   // Channel board: add items. Default Allow.
   CAPABILITY_CHANNEL_BOARD_ADD = 4;
@@ -25,8 +31,10 @@ enum Capability {
   CAPABILITY_CHANNEL_BOARD_EDIT_OWN = 5;
   // Channel board: edit, move or delete anyone else's items. Default Ask me.
   CAPABILITY_CHANNEL_BOARD_EDIT_OTHERS = 6;
-  // Global board: anything. Default Ask me.
-  CAPABILITY_GLOBAL_BOARD_WRITE = 7;
+  // Replaced by GLOBAL_READ, which IN-17 makes one row with other
+  // channels (D21). Never offered, never checked; kept so the number is
+  // not reused.
+  CAPABILITY_GLOBAL_BOARD_WRITE = 7 [deprecated = true];
   // Write its own files into the channel's shared/ on its machine.
   // Default Allow. (FC-8; added row.)
   CAPABILITY_SHARED_WRITE = 8;
@@ -35,11 +43,15 @@ enum Capability {
   // Draft PR review comments and a review summary (PR-9, PR-12).
   // Default Allow.
   CAPABILITY_REVIEW_DRAFT = 10;
-  // Read the comments sent to its own session (q2). Default Allow.
-  CAPABILITY_OWN_COMMENTS_READ = 11;
-  // Ask the user a question in the Inbox. Default Allow. (Added row.)
+  // Comments sent to its own session are part of reading its own session
+  // (IN-16, no rule; D21). Never offered, never checked; kept so the
+  // number is not reused.
+  CAPABILITY_OWN_COMMENTS_READ = 11 [deprecated = true];
+  // "Ask you a question, or ask ahead for access" (IN-25, IN-26). Default
+  // Allow. Asking ahead for a user-only action fails with user_only.
   CAPABILITY_INBOX_ASK = 12;
-  // Read another session's files on the same machine. Default Ask me.
+  // Read another session's files on the same machine, or watch its
+  // terminal read-only (D21). Default Ask me.
   CAPABILITY_FILES_READ_OTHER_SESSION = 13;
   // Read files on another machine (bridged). Default Ask me.
   CAPABILITY_FILES_READ_OTHER_MACHINE = 14;
@@ -50,20 +62,31 @@ enum Capability {
   CAPABILITY_SESSION_NOTE = 16;
   // Type into another session's terminal. Default Ask me.
   CAPABILITY_SESSION_TYPE = 17;
-  // Start or fork sessions on its own machine. Default Ask me.
+  // Start or fork sessions on its own machine; also restore or rebuild an
+  // archived session there, which launches an agent (D21). Default Ask me.
   CAPABILITY_SESSION_START_SAME_MACHINE = 18;
-  // Start or fork sessions on another machine. Default Ask me.
+  // The same on another machine. Default Ask me.
   CAPABILITY_SESSION_START_OTHER_MACHINE = 19;
-  // Reach a machine outside its clones (q7). Default Ask me. Only Humata's
-  // bridge is gated; see BOUNDARIES.md on what a same-user agent can reach.
+  // "Open a network connection through the Mac": a port forward over the
+  // bridge (HO-10..12, BridgeService). Ask me or Never only: HO-11 opens a
+  // forward only on the user's approval, so the rule has no Allow, an
+  // "Always let …" for one machine, host and port is the standing approval,
+  // and it is never low-risk (D20). An uncontained agent can open its own
+  // connections from its machine whatever this says (SEC-5, HO-12).
   CAPABILITY_NETWORK_REACH = 20;
-  // Stop, archive or delete any session but itself. Default Never.
-  CAPABILITY_SESSION_STOP_OTHER = 21;
-  // Change channel settings or repos (not access: that is user-only).
+  // "Stop or delete any session but itself", archive included (D21).
   // Default Never.
+  CAPABILITY_SESSION_STOP_OTHER = 21;
+  // Change channel settings or repos (not access: that is user-only; not
+  // deleting the channel: that is CHANNEL_DELETE). Default Never.
   CAPABILITY_CHANNEL_CHANGE = 22;
+  // "Fetch files from shared/, the channel folder or a main clone on its
+  // machine into its own clone" (file_fetch). Default Allow.
+  CAPABILITY_FILES_FETCH_LOCAL = 23;
 
-  // ----- Escalation-only rules (every other action; default Ask me). -----
+  // ----- More IN-17 rows (default Ask me unless noted). These were
+  // escalation-only before the spec listed them; they are ordinary rules
+  // now. -----
 
   // Rename itself, add or drop a repo, spec files, Give it its own copy.
   CAPABILITY_OWN_SESSION_MANAGE = 30;
@@ -71,15 +94,17 @@ enum Capability {
   CAPABILITY_OWN_SESSION_END = 31;
   // Move a session (itself or another) to another machine.
   CAPABILITY_SESSION_MOVE = 32;
-  // Push its branch and open a PR (MV-12). Review sessions use the PR-8
-  // switch instead, which only the user sets.
+  // Push its branch or open a PR through Humata (session_push, IN-24).
+  // Only agents are checked against it: the user's own Push and open PR(s)
+  // needs no rule. Review sessions follow PR-7 and PR-8 instead, and no
+  // grant of this lets them push.
   CAPABILITY_GIT_PUSH = 33;
   // Start a PR review (PR-1).
   CAPABILITY_PR_REVIEW_START = 34;
-  // Add a machine, run a provider's create/start/stop, reconnect, sync
-  // skills.
+  // "Add, create, start or stop machines; sync skills" (MP-24), and
+  // Reconnect now.
   CAPABILITY_MACHINE_PROVISION = 35;
-  // Remove or forget a machine, run a provider's delete. Default Never.
+  // "Remove, forget or delete machines" (MP-24). Default Never.
   CAPABILITY_MACHINE_DESTROY = 36;
   // Restore something from trash.
   CAPABILITY_TRASH_RESTORE = 37;
@@ -88,12 +113,16 @@ enum Capability {
 
   // ----- User-only: no rule, never granted, no MCP tool. -----
 
+  // SEC-7's list, one value per entry. IN-23: an agent's attempt is denied
+  // at once with user_only and adds nothing to the Inbox.
+
   // Answer Inbox requests (approve, deny, reply, always).
   CAPABILITY_INBOX_ANSWER = 50;
-  // Change rules, grants, While I'm away and default access.
+  // Change rules, grants, While I'm away, default access, the approval
+  // passphrase, CLI logins and script tokens.
   CAPABILITY_ACCESS_CHANGE = 51;
-  // Change Settings (agents and their launch commands, defaults, prefix,
-  // retention, skills, notifications, long lines).
+  // Change Settings (agents and their launch commands, providers, defaults,
+  // prefix, retention, skills, notifications, long lines, Contain agents).
   CAPABILITY_SETTINGS_CHANGE = 52;
   // Pin, unpin, mark or clear VIP (NV-20).
   CAPABILITY_MARKS_CHANGE = 53;
@@ -106,6 +135,13 @@ enum Capability {
   CAPABILITY_TRASH_EMPTY = 56;
   // Host variable values, SSH host key pins, provider TOML.
   CAPABILITY_HOST_SECRETS = 57;
+  // Delete a channel (CH-25). An agent has no way to ask for it.
+  CAPABILITY_CHANNEL_DELETE = 58;
+  // Change a machine's Humata root or VM tier.
+  CAPABILITY_MACHINE_SETTINGS = 59;
+  // Open a shell (a session's shell tab or a machine shell) or attach to a
+  // terminal with input. Read-only attach is not this (SE-25).
+  CAPABILITY_TERMINAL_INPUT = 60;
 
   // ----- Daemon to daemon. -----
 

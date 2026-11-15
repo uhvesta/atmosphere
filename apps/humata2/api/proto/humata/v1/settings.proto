@@ -1,5 +1,6 @@
-// Settings (ST-1..16), pinned and VIP marks (NV-20..23) and the app's view
-// state (SE-13, NV-16, NV-19). All live on the host (SL-1). Every write here
+// Settings (ST-1..17, SEC-6, SEC-13), pinned and VIP marks (NV-20..26) and
+// the app's view state (AR-5: panels, tabs, folds, scroll positions,
+// filters, pane widths, expanded results, pinned order). All live on the host (SL-1). Every write here
 // is user-only: no capability lets an agent call them, and MCP has no tool
 // for them (BOUNDARIES.md §5). Default access and While I'm away defaults
 // (ST-4, ST-6) are AccessService.Get/SetDefaultRules.
@@ -35,13 +36,16 @@ service MarkService {
   rpc SetMarks(SetMarksRequest) returns (Marks);
   // NV-21: the Pinned section, in the user's order.
   rpc ListPinned(ListPinnedRequest) returns (ListPinnedResponse);
-  // Order within Pinned.
+  // NV-25: order within Pinned, by drag there or from the palette. A newly
+  // pinned item goes at the end.
   rpc ReorderPinned(ReorderPinnedRequest) returns (ListPinnedResponse);
 }
 
-// Fold state, pane sizes, scroll positions and which rows are shown, kept
-// on the host so they survive the app quitting (AR-3) and follow the user to
-// a second client. Opaque to the daemon.
+// AR-5: open panels and tabs, folds, scroll positions, filters (SE-13),
+// pane widths and collapsed panes (NV-16) and expanded results (NV-19), kept
+// on the host so they survive the app quitting, crashing or being
+// reinstalled, and follow the user to a second client. Opaque to the
+// daemon. The pinned order is MarkService's, not here.
 service ViewStateService {
   rpc GetViewState(GetViewStateRequest) returns (GetViewStateResponse);
   rpc PutViewState(PutViewStateRequest) returns (PutViewStateResponse);
@@ -106,6 +110,14 @@ message Settings {
   SkillsSettings skills = 8;            // ST-16
   NotificationSettings notifications = 9;
   Revision revision = 10;
+  SecuritySettings security = 11;       // SEC-6
+}
+
+message SecuritySettings {
+  // SEC-6 Contain agents; off by default. A change applies when a session
+  // next launches or resumes. The approval passphrase is
+  // AccessService.SetApprovalPassphrase (SEC-13).
+  bool contain_agents = 1;
 }
 
 message GetSettingsRequest {}
@@ -122,6 +134,7 @@ message UpdateSettingsRequest {
   NotificationSettings notifications = 8;
   Revision expected_revision = 9;
   PresenceProof presence = 10;
+  SecuritySettings security = 11;
 }
 
 message ChannelSettings {
@@ -131,6 +144,8 @@ message ChannelSettings {
   optional string branch_prefix = 3;    // FC-12
   RetentionRules retention = 4;         // LD-16
   Revision revision = 5;
+  // SEC-6 per-channel override; unset: the global setting.
+  optional bool contain_agents = 6;
 }
 
 message GetChannelSettingsRequest { ChannelId channel = 1; }
@@ -145,6 +160,8 @@ message UpdateChannelSettingsRequest {
   RetentionRules retention = 7;
   Revision expected_revision = 8;
   PresenceProof presence = 9;
+  optional bool contain_agents = 10;
+  bool clear_contain_agents = 11;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +184,10 @@ message AgentDefinition {
   bool supports_turn_signal = 10;
   repeated string models = 11;
   Revision revision = 12;
+  // SE-21, shown in Settings › Agents.
+  TurnEndSource turn_end_source = 13;
 }
+
 
 message ListAgentsRequest {}
 

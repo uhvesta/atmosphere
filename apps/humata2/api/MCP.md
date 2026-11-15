@@ -102,36 +102,51 @@ schema already rejects. Agents branch on `error.kind`, never on the text.
 
 `denied` names the rule and says only the user can change it in Agent
 access; it never suggests retrying (IN-18). `user_only` says the action is
-the user's and how to ask for it (`inbox_ask`). `rate_limited` says to wait
-until `retry.after`.
+the user's, that no rule lets an agent do it (IN-23), and that the agent can
+tell the user what it needs with `inbox_ask`; it adds nothing to the Inbox.
+`rate_limited` says to wait until `retry.after`.
 
-## 4. Waiting for the user
+## 4. Waiting for the user (TP-10..15)
 
 When a call needs an answer (a rule says Ask me, or the call is `inbox_ask`
 or `session_ask`), the daemon makes an Inbox request and the tool call stays
 open.
 
-- The server sends `notifications/progress` every 15 s when the client gave
+- TP-11: the server sends `notifications/progress` every 15 s when the client gave
   a `progressToken`, so clients that reset their timeout on progress keep
   waiting. Many clients don't; so each waiting tool takes `wait_seconds`
   (default 45, at most 600) and returns `{outcome: "pending", request_id}`
   when it passes. The request stays in the Inbox.
-- `inbox_wait {request_id, wait_seconds?}` waits again and returns the same
+- TP-12: `inbox_wait {request_id, wait_seconds?}` waits again and returns the same
   envelope the original call would have: the result once approved, `denied`
-  with the user's note, or `pending` again.
-- **Approval runs the call**, under the original idempotency key, whether or
+  with the user's note, or `pending` again (WaitResponse.result or .error).
+- TP-13: **approval runs the call**, under the original idempotency key, whether or
   not the agent is waiting at that moment. The result is kept for 24 hours
-  for `inbox_wait`, and a line is typed into the agent's terminal when its
-  turn ends (IN-12). An agent that gets `pending` must not repeat the call
-  with a new key; repeating it with the same key returns the same request.
-- A request is **withdrawn** (the card greys out and can't be answered) when
+  for `inbox_wait` (`result_kept_until`), and a line is typed into the
+  agent's terminal when its turn ends (IN-12, SE-23). TP-14: an agent that
+  gets `pending` must not repeat the call with a new key; repeating it with
+  the same key returns the same request.
+- TP-15: a request is **withdrawn** (the card greys out and can't be answered) when
   the agent calls `inbox_withdraw`, when its session stops, archives or is
   deleted, or when its MCP process exits while the call is still open and
   no `pending` was returned. A request that returned `pending` survives the
-  MCP process: a resumed agent can still `inbox_wait` on it.
+  MCP process: a resumed agent can still `inbox_wait` on it. The card
+  records why (`InboxRequest.withdraw_reason`).
+- TP-10: while a call waits Humata types nothing into the agent's terminal.
 - While the host is away, requests follow the channel's While I'm away rule
-  (GRPC.md §9.3): Wait (the call waits; the user can answer on the machine
-  with `humata inbox`), Skip (fails with `user_away`), or Allow low-risk.
+  (AW-7, GRPC.md §9.3):
+
+  | Away rule | What a call that would ask does |
+  | --- | --- |
+  | Wait (default) | waits as above; the user can answer on the machine with `humata login` + `humata inbox` (SEC-13) |
+  | Skip the step | fails at once with `user_away`; nothing is queued (AW-4) |
+  | Allow low-risk | the low-risk set (AW-10) runs and is journaled for review; anything else waits |
+
+  Never-rule and user-only calls are refused the same way with the host
+  away. `network_connect` is never low-risk and can't be approved on the
+  machine while the Mac is away (HO-11, AW-11): under Wait and Allow
+  low-risk it waits for the Mac; under Skip it fails at once.
+  Rules, grants and the away rule are the last copy the Mac sent (AW-8).
 
 ## 5. Offline behaviour, per tool
 
@@ -164,48 +179,47 @@ Wait       = wait_seconds?: int
 
 ### 6.1 Default: allowed for its own session and channel
 
-These work without asking under the default rules (IN-16, IN-17 and the
-coordinator's narrow set: board items and its todos, preparing a PR or a
-review view and marking it ready, creating, reading and fetching the files it
-needs, reading its channel's topology, and asking the user). A user can still
-set any rule to Ask me or Never.
+"none" in the capability column is IN-16's own-session set: no rule
+applies and none can be set. Everything else is a rule whose default is
+Allow (IN-17); a user can set any of those to Ask me or Never.
 
 | Tool | Op / gRPC | Capability | Input → output | Side effects | Host away |
 | --- | --- | --- | --- | --- | --- |
 | `whoami` | `daemon.whoami` / WhoAmI | none | `{}` → `{session, channel, machine, agent, host_reachable, policy_as_of}` | none | local |
-| `session_info` | `session.get` / GetSession(self) | owned | `{}` → `{title, status, repos:[{repo, branch, head, pushed, dirty}], fork_of?, spec_mode}` | none | local |
+| `session_info` | `session.get` / GetSession(self) | none | `{}` → `{title, status, repos:[{repo, branch, head, pushed, dirty}], fork_of?, spec_mode}` | none | local |
 | `topology_get` | `channel.topology` / WhoAmI + GetChannel + ListSessions | CHANNEL_READ | `{}` → `{this_machine, machines:[{id, name, reachability, sessions:[{id, title, agent, status}]}]}` (TP-1) | none | stale |
 | `access_explain` | `access.explain` / Explain | none (self only) | `{capability, target?}` → `{decision, source, grant_id?, host_away, away_mode}` | none | local (from policy copy) |
-| `board_items_list` | `board.items_list` / ListItems | owned (session board); CHANNEL_READ (channel board) | `{board, columns?: Column[], page_token?}` → `{items: Item[], counts, next_page_token?}` | none | stale |
+| `board_items_list` | `board.items_list` / ListItems | OWN_BOARD_WRITE rule's read (session board); CHANNEL_READ (channel board) | `{board, columns?: Column[], page_token?}` → `{items: Item[], counts, next_page_token?}` | none | stale |
 | `board_item_get` | `board.item_get` / GetItem | as list | `{id}` → `Item` | none | stale |
 | `board_item_history` | `board.item_history` / GetItemHistory | as list | `{id, page_token?}` → `{entries:[{at, by, change, lost_conflict}]}` | none | stale |
 | `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board, title, column?, description?, assignee?: SessionId, reason?}` → `Item` (journaled: `{provisional_id}`) | adds an item | journal |
-| `board_item_update` | `board.item_update` / UpdateItem | owned; CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, title?, description?, assignee?: SessionId \| null, expected_revision?, reason?}` → `Item` | changes fields given | journal |
+| `board_item_update` | `board.item_update` / UpdateItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, title?, description?, assignee?: SessionId \| null, expected_revision?, reason?}` → `Item` | changes fields given | journal |
 | `board_item_move` | `board.item_move` / MoveItem | as update | `{id, column, after?: ItemId, expected_revision?, reason?}` → `Item` | moves it | journal |
-| `board_item_delete` | `board.item_delete` / DeleteItem | owned (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made (IN-17 lists edit and move only: REVIEW.md M14) | `{id, expected_revision?, reason?}` → `{deleted: true}` | tombstone, kept in history | journal |
+| `board_item_delete` | `board.item_delete` / DeleteItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, expected_revision?, reason?}` → `{deleted: true}` | tombstone, kept in history | journal |
 | `view_prepare` | `view.prepare` / PrepareView | VIEWS_PREPARE | `{title, summary, content: {review: {steps:[{repo, path, lines, note}]}} \| {board: scope} \| {pull_request: {repos:[{repo, title, body, base_branch, draft}]}}}` → `{view_id, state: "draft"}` | a draft view; nothing opens | journal |
 | `view_revise` | `view.revise` / ReviseView | VIEWS_PREPARE, own views | `{view_id, title?, summary?, content?, expected_revision?}` → view | replaces the draft | journal |
 | `view_mark_ready` | `view.mark_ready` / MarkReady | VIEWS_PREPARE, own views | `{view_id}` → `{state: "waiting"}` | the offer appears (VW-2); preparing a PR pushes nothing | journal |
-| `views_list` | `view.list` / ListViews(self) | owned | `{include_forks?}` → `{views:[{id, title, state}]}` | none | stale |
+| `views_list` | `view.list` / ListViews(self) | none | `{include_forks?}` → `{views:[{id, title, state}]}` | none | stale |
 | `review_draft` | `review.draft` / CreateComment(dest PR) | REVIEW_DRAFT, PR review sessions only | `{pr: "owner/repo#n", path, lines: {first, last}, side?: "old"\|"new", quoted, text}` → `{comment_id, status: "draft"}` | a draft, never posted (PR-12) | journal |
 | `review_draft_edit` | `review.draft_edit` / EditComment | REVIEW_DRAFT, own drafts | `{comment_id, text, expected_revision?}` → comment | | journal |
 | `review_draft_drop` | `review.draft_drop` / DropComment | REVIEW_DRAFT, own drafts | `{comment_id}` → `{dropped: true}` | | journal |
 | `review_summary_draft` | `review.summary_draft` / DraftSummary | REVIEW_DRAFT | `{pr, summary}` → `{}` | the drafted summary the user edits | journal |
-| `comments_list` | `comment.list` / ListComments(self) | OWN_COMMENTS_READ | `{status?: ("sent"\|"queued"\|"addressed")[], path?}` → `{comments:[{id, path, lines, quoted, text, status}]}` (q2) | none | stale |
-| `files_list` | `file.list` / ListDirectory | owned (own clones, `shared/` and the channel folder on its machine) | `{location: Location, page_token?}` → `{entries:[{path, kind, size, changed, writable}]}` | none | local |
-| `file_read` | `file.read` / ReadFile | owned (as above) | `{location, offset?, max_bytes?}` → `{text \| base64, size, sha256, truncated}` | none | local |
-| `files_find` | `file.find` / FindFiles(self) | owned | `{query}` → `{entries}` | none | local |
-| `file_write` | `file.write` / WriteFile | owned (own clone); SHARED_WRITE (`shared/`) | `{location, text \| base64, replace?: bool}` → `{path, size, sha256}` | creates or replaces one file; a replaced file goes to trash | local |
+| `comments_list` | `comment.list` / ListComments(self) | none (a read of its own session, D21) | `{status?: ("sent"\|"queued"\|"addressed")[], path?}` → `{comments:[{id, path, lines, quoted, text, status}]}` (q2) | none | stale |
+| `files_list` | `file.list` / ListDirectory | none (own clones, `shared/` and the channel folder on its machine) | `{location: Location, page_token?}` → `{entries:[{path, kind, size, changed, writable}]}` | none | local |
+| `file_read` | `file.read` / ReadFile | none (as above) | `{location, offset?, max_bytes?}` → `{text \| base64, size, sha256, truncated}` | none | local |
+| `files_find` | `file.find` / FindFiles(self) | none | `{query}` → `{entries}` | none | local |
+| `file_write` | `file.write` / WriteFile | none (own clone); SHARED_WRITE (`shared/`) | `{location, text \| base64, replace?: bool}` → `{path, size, sha256}` | creates or replaces one file; a replaced file goes to trash | local |
 | `folder_create` | `file.folder_create` / CreateFolder | as write | `{location}` → `{path}` | | local |
-| `file_fetch` | `file.fetch` / StartTransfer(copy) | owned: from `shared/`, the channel folder or a main clone on its machine into its own clone | `{source: Location, destination: Location, on_existing?: "fail"\|"replace"\|"keep_both"}` → `{transfer_id, files, bytes}` | copies | local |
-| `inbox_ask` | `inbox.ask` / AskUser | INBOX_ASK | `{question, choices?: string[], wait_seconds?}` → `{reply, choice?}` | a question card | waits; journaled with the host away, answerable on the machine |
-| `inbox_request` | `inbox.request` / RequestAccess | INBOX_ASK | `{capability, target, reason, wait_seconds?}` → `{decision, grant_id?}` | a request card offering the usual scoped grant | as `inbox_ask` |
-| `inbox_wait` | `inbox.wait` / WaitForAnswer | own requests | `{request_id, wait_seconds?}` → the original call's envelope | none | local while journaled, else host |
-| `inbox_withdraw` | `inbox.withdraw` / WithdrawRequest | own requests | `{request_id}` → `{state: "withdrawn"}` | the card greys out | journal |
-| `inbox_mine` | `inbox.mine` / ListRequests(self) | own requests | `{pending_only?}` → `{requests:[{id, action_title, state, created_at}]}` | none | local + stale |
-| `session_answer` | `session.answer` / AnswerQuestion | owned (questions asked of it) | `{question_id, answer}` → `{}` | returns to the asking agent's call (TP-5) | host |
-| `journal_status` | `journal.status` | owned | `{}` → `{host_reachable, entries:[{seq, operation, state: "waiting"\|"applied"\|"lost_conflict"\|"rejected", error?}]}` | none | local |
-| `operation_get` | `operation.get` / GetOperation | operations it started | `{operation_id}` → `{kind, state, steps:[{key, title, state}]}` | none | stale |
+| `file_fetch` | `file.fetch` / StartTransfer(copy) | FILES_FETCH_LOCAL: from `shared/`, the channel folder or a main clone on its machine into its own clone | `{source: Location, destination: Location, on_existing?: "fail"\|"replace"\|"keep_both"}` → `{transfer_id, files, bytes}` | copies | local |
+| `inbox_ask` | `inbox.ask` / AskUser | INBOX_ASK | `{question, choices?: string[] (at most 4), wait_seconds?}` → `{reply, choice?}` | a question card (IN-25) | waits; journaled with the host away, answerable on the machine |
+| `inbox_request` | `inbox.request` / RequestAccess | INBOX_ASK | `{capability, target, reason, wait_seconds?}` → `{decision, grant_id?}` | IN-26: a card naming the action, target and reason; approving makes the IN-22 grant for that target. A Never rule is denied at once; a user-only capability fails with `user_only` | as `inbox_ask` |
+| `inbox_wait` | `inbox.wait` / WaitForAnswer | none (own requests) | `{request_id, wait_seconds?}` → the original call's envelope | none | local while journaled, else host |
+| `inbox_withdraw` | `inbox.withdraw` / WithdrawRequest | none (own requests) | `{request_id}` → `{state: "withdrawn"}` | the card greys out | journal |
+| `inbox_mine` | `inbox.mine` / ListRequests(self) | none (own requests) | `{pending_only?}` → `{requests:[{id, action_title, state, created_at}]}` | none | local + stale |
+| `session_answer` | `session.answer` / AnswerQuestion | none (questions asked of it) | `{question_id, answer}` → `{}` | returns to the asking agent's call (TP-5) | host |
+| `journal_status` | `journal.status` | none | `{}` → `{host_reachable, entries:[{seq, operation, state: "waiting"\|"applied"\|"lost_conflict"\|"rejected", error?}]}` | none | local |
+| `operation_get` | `operation.get` / GetOperation | none (operations it started) |
+| `network_close` | `bridge.close` / ClosePortForward | none (its own forwards) | `{forward_id}` → `{}` | closes the forward early | local | `{operation_id}` → `{kind, state, steps:[{key, title, state}]}` | none | stale |
 
 ### 6.2 Needs approval
 
@@ -216,11 +230,11 @@ rule named until the user changes the rule (IN-18).
 
 | Tool | Op / gRPC | Capability (default) | Input → output | Side effects | Host away |
 | --- | --- | --- | --- | --- | --- |
-| `channels_list` | `channel.list` / ListChannels | GLOBAL_READ (Ask) | `{}` → `{channels:[{id, name, machines, sessions}]}` | none | stale |
+| `channels_list` | `channel.list` / ListChannels | GLOBAL_READ (Ask; Global board and other channels are one row, D21) | `{}` → `{channels:[{id, name, machines, sessions}]}` | none | stale |
 | `board_items_list` (global or another channel) | as 6.1 | GLOBAL_READ (Ask) | as 6.1 | none | stale |
 | `board_item_create/update/move/delete` on another's channel item | as 6.1 | CHANNEL_BOARD_EDIT_OTHERS (Ask) | as 6.1 | as 6.1 | per away rule |
-| `board_item_*` on the Global board | as 6.1 | GLOBAL_BOARD_WRITE (Ask) | as 6.1 | as 6.1 | per away rule |
-| `files_list`, `file_read` in another session, same machine | as 6.1 | FILES_READ_OTHER_SESSION (Ask) | `location.session` set | none | per away rule (local) |
+| `board_item_*` on the Global board or another channel's board | as 6.1 | GLOBAL_READ (Ask): "Global board, or other channels and their boards: anything" | as 6.1 | as 6.1 | per away rule |
+| `files_list`, `file_read` in another session, same machine | as 6.1 | FILES_READ_OTHER_SESSION (Ask); also `humata attach --read-only` of another session (D21) | `location.session` set | none | per away rule (local) |
 | `files_list`, `file_read` on another machine | as 6.1 | FILES_READ_OTHER_MACHINE (Ask) | `location.machine` set | none | host |
 | `files_copy_in` | `file.copy_in` / StartTransfer | FILES_COPY_IN (Ask) | `{sources: Location[], destination: Location (own clone or shared/), on_existing?, reason?}` → `{transfer_id}` | copies into its own clone or `shared/` only (TP-4) | host (other machine) / per away rule (same machine) |
 | `session_note` | `session.note` / SendNote | SESSION_NOTE (Ask) | `{session, text, when?: "now"\|"turn_end"}` → `{delivered: "typed"\|"queued"}` | typed into the target's terminal as one message naming the sender (TP-5) | host for another machine; per away rule here |
@@ -228,16 +242,17 @@ rule named until the user changes the rule (IN-18).
 | `session_type` | `session.type` / Type | SESSION_TYPE (Ask) | `{session, text, when?: "now"\|"turn_end"}` → `{typed, queued_id?}` | keystrokes as one bracketed paste | as note |
 | `session_start` | `session.start` / StartSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask) | `{machine, agent?, model?, repos?: string[], title?, first_message?, reason}` → `{operation_id, session}` | a new session in its channel | per away rule / host |
 | `session_fork` | `session.fork` / ForkSession(self) | as start (Ask) | `{machine, kind: "code_and_context"\|"code_only"\|"context_only", repos?, title?, first_message?, reason}` → `{operation_id, session}` | a fork of itself (TP-6); the card shows agent, machine, kind, repos, cost | as start |
-| `network_connect` | `bridge.connect` | NETWORK_REACH (Ask) | `{host, port, reason}` → `{socket_path}` (a unix socket in its session folder, bridged through the Mac) | opens a forwarded connection. q7 must define what crosses (REVIEW.md C5) | host |
+| `network_connect` | `bridge.connect` / BridgeService.OpenPortForward | NETWORK_REACH (Ask; Ask me or Never only, D20) | `{host, port, reason, wait_seconds?}` → `{forward_id, socket_path}` (a unix socket in its session folder, bridged through the Mac) | HO-11: the card shows its machine, host and port and that it stays open until the session stops; it closes then. Never low-risk; can't be approved while the Mac is away. Nothing else crosses the bridge (HO-10) | host: waits for the Mac, or fails under Skip |
 | `session_rename`, `session_add_repo`, `session_drop_repo`, `session_spec_mode`, `session_own_copy` | `session.*` (self) | OWN_SESSION_MANAGE (Ask) | `{title}`, `{repo}`, `{repo}` (+ plan), `{on, files?}`, `{repo}` | change its own session | host |
 | `session_stop`, `session_archive`, `session_delete` (self) | `session.*` (self) | OWN_SESSION_END (Ask) | `{}`; archive and delete show the plan on the card | end its own session | host |
 | `session_move` | `session.move` / MoveSession | SESSION_MOVE (Ask) | `{session?: self, machine, reason}` → `{operation_id}` | moves a session (MV-*) | host |
-| `session_push` | `session.push` / PlanPush + PushAndOpenPullRequests | GIT_PUSH (Ask); review sessions refused unless the user set PR-8 | `{repos?: string[], open_pr?: bool, title?, body?}` → `{operation_id}` | pushes and opens PRs | host |
+| `session_push` | `session.push` / PlanPush + PushAndOpenPullRequests | GIT_PUSH (Ask, IN-24); review sessions follow PR-7 and PR-8 instead | `{repos?: string[], open_pr?: bool, title?, body?}` → `{operation_id}` | pushes and opens PRs; the card shows repos, branch, commits and PR title. An uncontained agent pushing with its own git credentials is not stopped (SEC-5) | host |
 | `pr_review_start` | `review.start` / StartReview | PR_REVIEW_START (Ask) | `{prs: string[], machine, agent?}` → `{operation_id, session}` | a PR review session, read-only (PR-7) | host |
 | `machine_add_ssh`, `machine_create`, `machine_start`, `machine_stop`, `machine_reconnect`, `skills_sync` | `machine.*`, `skills.sync` | MACHINE_PROVISION (Ask) | `{ssh_host, name}`, `{provider, name, params}`, `{machine}`… → `{operation_id}` | as in Hosts | host |
 | `trash_restore` | `trash.restore` / RestoreFromTrash | TRASH_RESTORE (Ask) | `{trash_item_id}` → `{restored}` | | host |
 | `channel_create` | `channel.create` / CreateChannel | CHANNEL_CREATE (Ask) | `{name, repos, machines}` → `{channel}` | | host |
-| `session_stop`, `session_archive`, `session_delete` of another session | `session.*` | SESSION_STOP_OTHER (**Never**) | `{session}` | | denied at once |
+| `session_stop`, `session_archive`, `session_delete` of another session | `session.*` | SESSION_STOP_OTHER (**Never**; archive joins this row, D21) | `{session}` | | denied at once |
+| `session_restore`, `session_rebuild` | `session.restore` / RestoreSession, `session.rebuild` / RebuildSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask, D21) | `{session, machine?, reason}` → `{operation_id}` | an archived session back, or rebuilt from its record (SL-4) | host |
 | `channel_rename`, `channel_add_repo`, `channel_remove_repo`, `channel_add_machine`, `channel_remove_machine` | `channel.*` | CHANNEL_CHANGE (**Never**) | | | denied at once |
 | `machine_remove`, `machine_forget`, `machine_delete` | `machine.*` | MACHINE_DESTROY (**Never**) | | | denied at once |
 
@@ -306,24 +321,23 @@ one by name anyway gets `user_only`, whose `fix` says to ask the user with
 
 | Operation | Why |
 | --- | --- |
+| `channel.delete` | CH-25: only the user deletes a channel; there is no request for it either |
 | `inbox.answer`, `inbox.answer_all` | An agent approving requests would approve its own |
 | `access.set_rule`, `access.set_away_rule`, `access.set_defaults`, `access.revoke_grant`, `access.set_passphrase` | Changing access is how an agent would widen its own grant (BOUNDARIES.md §6) |
 | `settings.update`, `channel_settings.update`, `agents.add`, `agents.update` | Launch commands and their variables run as the user |
-| `marks.set`, `pinned.reorder` | NV-20 |
+| `marks.set`, `pinned.reorder` | NV-20, NV-25 |
 | `review.submit`, `review.set_push_allowed` | PR-8, PR-12: only the user posts or lets an agent push |
 | `diff.mark_reviewed`, `view.set_state`, the user's own comments and `comment.send` | The user's review state (RV-*, VW-*, SM-*) |
 | `trash.empty` | Not undoable |
-| `host.set_variable`, `host.trust_new_key`, `providers.set_config`, `provider.login`, `provider.make_unattended` | Secrets and host identity |
-| `machine.change_root`, `machine.set_vm_tier`, `machine.shell`, `terminal.attach` (interactive), `terminal.open_shell_tab` in another session | A shell is beyond every rule |
+| `host.set_variable`, `host.remove_variable`, `host.trust_new_key`, `providers.set_config`, `provider.import`, `provider.login`, `provider.make_unattended` | Secrets and host identity (HO-13, MP-23) |
+| `machine.change_root`, `machine.set_vm_tier` | MACHINE_SETTINGS: root and the VM tier change what every agent there can reach |
+| `machine.shell`, `terminal.attach` with input, `terminal.open_shell_tab`, `terminal.send_queued_now` | TERMINAL_INPUT: a shell is beyond every rule. An agent types into another session only through `session_type` |
+| `bridge.close` of a forward the agent didn't open | The user's view of the bridge (HO-4) |
 | `transfer.*` between locations that aren't the agent's own clone or `shared/`; pause or cancel of others' transfers | FM-* is the user's file manager; agents copy in only (TP-4) |
 | `view_state.*`, `events.subscribe`, `audit.list` | The app's own state and the user's record of what agents did |
 | writes into another session's clones | Not an agent action; for a context-only fork's parent a hard limit (IN-20) |
 
 ## 8. Requirements covered
 
-TP-1 `topology_get`; TP-2 `file_read` (own); TP-3 `file_read` (others);
-TP-4 `files_copy_in`, `file_fetch`; TP-5 `session_note`, `session_ask`,
-`session_answer`; TP-6 `session_fork`; TP-7 `board_item_*`, `view_*`; TP-8
-GRPC.md §4; TP-9 §5; TP-10 §4 (nothing added to the terminal but the answer
-line); PR-9 `review_draft`; VW-1 `view_prepare`; IN-16..18 §6; KP-6 §7;
-NV-20 §7; SL-5 §5.
+Every requirement that crosses a boundary, with its tools, RPCs and
+commands, is in [TRACE.md](TRACE.md).

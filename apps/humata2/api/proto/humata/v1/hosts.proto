@@ -1,5 +1,5 @@
-// Machines, providers and skills sync (HO-1..9, MP-1..22, SK-1..8,
-// LD-10..15, LD-19..20). The registry (hosts.json) lives on the host; each
+// Machines, providers, skills sync and port forwards (HO-1..13, MP-1..24,
+// SK-1..11, LD-10..15, LD-19..20, FC-10). The registry (hosts.json) lives on the host; each
 // call that touches a machine is carried out there over the peer link.
 syntax = "proto3";
 
@@ -30,7 +30,12 @@ service MachineService {
   // the last pointers. Never contacts the machine.
   rpc PlanForgetMachine(PlanForgetMachineRequest) returns (ForgetMachinePlan);
   rpc ForgetMachine(ForgetMachineRequest) returns (ForgetMachineResponse);
-  // FC-10, ST-5. Moves the Humata folders; refused while sessions run there.
+  // FC-10, NV-27: which channels live under the old root, and whether
+  // sessions run there. ChangeRoot acts only on this plan.
+  rpc PlanChangeRoot(PlanChangeRootRequest) returns (ChangeRootPlan);
+  // FC-10, ST-5. Moves the listed channels' folders, or applies the new
+  // root to new channels only; refused while sessions run in a folder it
+  // would move. A plan whose list changed fails with Error.plan_stale.
   rpc ChangeRoot(ChangeRootRequest) returns (Operation);
   // PER-8. User-only.
   rpc SetVmTier(SetVmTierRequest) returns (Machine);
@@ -41,9 +46,12 @@ service MachineService {
   rpc TrimLogs(TrimLogsRequest) returns (TrimLogsResponse);
   // HO-7, SEC-1: names only.
   rpc ListHostVariables(ListHostVariablesRequest) returns (ListHostVariablesResponse);
-  // Write-only: the value goes to the machine and is never returned by any
-  // call. User-only; the spec does not yet say where values are entered.
+  // HO-13. Write-only: the value goes to the machine and is never returned
+  // by any call. User-only (MACHINE_SETTINGS). Agents launched after it get
+  // the new value; running ones keep theirs.
   rpc SetHostVariable(SetHostVariableRequest) returns (SetHostVariableResponse);
+  // HO-7, HO-13 Remove. User-only.
+  rpc RemoveHostVariable(RemoveHostVariableRequest) returns (SetHostVariableResponse);
   // MP-9 after Error.host_key_changed. User-only, with presence: accepting
   // a changed key is how an interception would get in.
   rpc TrustNewHostKey(TrustNewHostKeyRequest) returns (Machine);
@@ -55,6 +63,12 @@ service ProviderService {
   // validates before saving; nothing is saved when any problem is found.
   rpc GetProvidersConfig(GetProvidersConfigRequest) returns (ProvidersConfig);
   rpc SetProvidersConfig(SetProvidersConfigRequest) returns (SetProvidersConfigResponse);
+  // MP-23: a provider file the user picked. Shows its full text and every
+  // command it will run; nothing is added. Never reads a repo path an agent
+  // could write: the app passes the file's bytes, not a path.
+  rpc PreviewProviderImport(PreviewProviderImportRequest) returns (ProviderImportPlan);
+  // MP-23. User-only, with presence; adds exactly what the plan showed.
+  rpc ImportProvider(ImportProviderRequest) returns (SetProvidersConfigResponse);
   // MP-4, MP-19: params must be the provider's declared ones. Steps: create,
   // identity, connect, check, install, service, register.
   rpc CreateMachine(CreateMachineRequest) returns (Operation);
@@ -70,13 +84,70 @@ service ProviderService {
 }
 
 service SkillsService {
-  // SK-5: what a sync would add, update and remove, and name clashes.
+  // SK-5, SK-11: what a sync would add, update and remove, and name clashes;
+  // for any sync, not only the first.
   rpc PreviewSkillsSync(PreviewSkillsSyncRequest) returns (SkillsSyncPlan);
   // SK-2. A machine's first sync needs that machine's plan token (SK-5).
+  // SK-9: each machine's synced set is swapped whole. SK-10: offline
+  // machines are skipped and named as skipped steps; they sync when they
+  // return (SK-7). SK-11: an automatic sync applies without asking unless
+  // it finds a new clash, which it leaves for ResolveSkillClash.
   rpc SyncSkills(SyncSkillsRequest) returns (Operation);
   // SK-5 clash pick. User-only.
   rpc ResolveSkillClash(ResolveSkillClashRequest) returns (ResolveSkillClashResponse);
 }
+
+// HO-10, HO-11: the bridge carries nothing but Humata's own calls unless a
+// port forward was approved. An agent's network_connect goes through the
+// network rule (Ask me or Never only, D20) and, once approved, lands here.
+service BridgeService {
+  // Opens a forward from the requesting session's machine to host:port and
+  // returns a Unix socket path on that machine for the agent to connect to.
+  // Never covered by a low-risk rule and never approved on a machine
+  // while the Mac is away (AW-11): it waits for the Mac, or under Skip
+  // fails with Error.host_unreachable. Closes when the session stops.
+  rpc OpenPortForward(OpenPortForwardRequest) returns (PortForward);
+  // The user closes one early. An agent closes its own.
+  rpc ClosePortForward(ClosePortForwardRequest) returns (ClosePortForwardResponse);
+  // HO-4: open forwards, per machine or session.
+  rpc ListPortForwards(ListPortForwardsRequest) returns (ListPortForwardsResponse);
+}
+
+message PortForward {
+  string id = 1;
+  SessionId session = 2;
+  MachineId machine = 3;
+  string host = 4;
+  uint32 port = 5;
+  // On the session's machine, 0600, inside the session folder.
+  string socket_path = 6;
+  google.protobuf.Timestamp opened_at = 7;
+}
+
+message OpenPortForwardRequest {
+  IdempotencyKey idempotency_key = 1;
+  string host = 2;
+  uint32 port = 3;
+  string reason = 4;
+  // TP-11.
+  uint32 wait_seconds = 5;
+}
+
+message ClosePortForwardRequest {
+  IdempotencyKey idempotency_key = 1;
+  string id = 2;
+}
+
+message ClosePortForwardResponse {}
+
+message ListPortForwardsRequest {
+  oneof scope {
+    MachineId machine = 1;
+    SessionId session = 2;
+  }
+}
+
+message ListPortForwardsResponse { repeated PortForward forwards = 1; }
 
 // ---------------------------------------------------------------------------
 
@@ -218,11 +289,32 @@ message ForgetMachineResponse {
   repeated SessionId archived = 1;
 }
 
+message PlanChangeRootRequest {
+  MachineId id = 1;
+  string root = 2;
+}
+
+message ChangeRootPlan {
+  MachineId machine = 1;
+  string old_root = 2;
+  string new_root = 3;
+  // FC-10: channels living under the old root.
+  repeated ChannelId channels = 4;
+  // Running sessions in those channels' folders; moving is refused while
+  // any is listed, applying to new channels only is not.
+  repeated SessionId running = 5;
+  PlanToken token = 6;
+}
+
 message ChangeRootRequest {
   IdempotencyKey idempotency_key = 1;
   MachineId id = 2;
   string root = 3;
   PresenceProof presence = 4;
+  // NV-27: the plan the dialog showed.
+  PlanToken plan = 5;
+  // FC-10: move the plan's channels; false applies to new channels only.
+  bool move_channels = 6;
 }
 
 message SetVmTierRequest {
@@ -305,12 +397,23 @@ message SetHostVariableRequest {
   IdempotencyKey idempotency_key = 1;
   MachineId id = 2;
   string name = 3;
-  // Never logged, journaled, audited or echoed. Empty removes it.
+  // Never logged, journaled, audited or echoed. Must not be empty: removing
+  // is RemoveHostVariable.
   string value = 4;
   PresenceProof presence = 5;
 }
 
-message SetHostVariableResponse {}
+message RemoveHostVariableRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId id = 2;
+  string name = 3;
+  PresenceProof presence = 4;
+}
+
+message SetHostVariableResponse {
+  // HO-13: sessions now running keep the old value until relaunched.
+  uint32 running_sessions_keep_old_value = 1;
+}
 
 message TrustNewHostKeyRequest {
   IdempotencyKey idempotency_key = 1;
@@ -379,6 +482,35 @@ message ProviderConfigProblem {
   string field = 2;
   uint32 line = 3;
   Error error = 4;
+}
+
+message PreviewProviderImportRequest {
+  // The file's bytes as the user picked it.
+  bytes file = 1;
+  string file_name = 2;
+}
+
+message ProviderImportPlan {
+  // MP-23: the full text, shown as is.
+  string text = 1;
+  repeated Provider providers = 2;
+  // Every command it will run, per provider and action, verbatim.
+  message Command {
+    ProviderId provider = 1;
+    string action = 2;   // "create", "connect", "start", …
+    string command = 3;
+  }
+  repeated Command commands = 3;
+  // Ids that already exist; importing replaces them only when listed here.
+  repeated ProviderId replaces = 4;
+  repeated ProviderConfigProblem problems = 5;
+  PlanToken token = 6;
+}
+
+message ImportProviderRequest {
+  IdempotencyKey idempotency_key = 1;
+  PlanToken plan = 2;
+  PresenceProof presence = 3;
 }
 
 message SetProvidersConfigResponse {
