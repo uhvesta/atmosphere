@@ -1,0 +1,27 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
+
+# Humata 2's internal gRPC protocol between the app and the daemons
+# (humata/v1/*.proto), described in ../GRPC.md.
+
+proto_library(
+    name = "humata2_proto",
+    srcs = glob(["humata/v1/*.proto"]),
+    strip_import_prefix = "",
+    deps = [
+        "@protobuf//:duration_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+rust_prost_library(
+    name = "humata2_rust",
+    proto = ":humata2_proto",
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

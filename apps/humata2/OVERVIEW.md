@@ -21,21 +21,22 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
 ---
 
 ## I0: Agree the foundations
-- [ ] Fold the spec review (`REVIEW.md`) into `SPEC.md`: fix contradictions, undefined terms and untestable requirements.
+- [x] Fold the spec review (`REVIEW.md`) into `SPEC.md`: fix contradictions, undefined terms and untestable requirements.
 - [ ] Agree the boundary specs in `api/`: every requirement maps to an RPC, MCP tool or CLI command, and the capability matrix leaves no gaps.
 - [ ] Decide what happens to the earlier H2-0/H2-1 code (`apps/humata2/app` (Swift), `bindgen`, `core`, `rehearsal`): keep, fold in, or remove.
-- [ ] Lay out the crates and Bazel targets for Humata 2, with the narrowest visibility (see AGENTS.md).
+- [x] Lay out the crates and Bazel targets for Humata 2, with the narrowest visibility (see AGENTS.md). See `LAYOUT.md`.
 
 ## I1: State management (tca-rust)
 Expand `libs/tca-rust` (Store, LocalStore, TestStore, effects, `for_each`, `if_let`, IdentifiedVec, TestClock) until it can carry a desktop app.
-- [ ] Navigation: stacks, sheets and alerts as state, with tests for presenting and dismissing.
-- [ ] Shared state: one value (settings, pinned, the machine list) read by many features without copying, with change tests.
-- [ ] Dependencies: a standard way to swap clients (daemon, clock, clipboard, file system) for fakes in tests.
-- [ ] Persistence: save and restore chosen state (layout, pane sizes, fold state, open tabs) across restarts.
-- [ ] Fine-grained observation: a view re-renders only when the part it reads changes, measured with a 10k-row list.
-- [ ] Streams as effects: a gRPC stream feeds actions in, is cancelled with its feature, and resumes from a cursor.
-- [ ] TestStore covers all of the above: exhaustive and non-exhaustive modes, readable diffs on failure.
-- [ ] README updated. Publishing to crates.io only if you ask.
+- [x] Navigation: stacks, sheets and alerts as state, with tests for presenting and dismissing.
+- [x] Shared state: one value (settings, pinned, the machine list) read by many features without copying, with change tests.
+- [x] Dependencies: a standard way to swap clients (daemon, clock, clipboard, file system) for fakes in tests.
+- [x] Persistence: save and restore chosen state (layout, pane sizes, fold state, open tabs) across restarts.
+- [x] Fine-grained observation: a view re-renders only when the part it reads changes, measured with a 10k-row list.
+- [x] Streams as effects: a gRPC stream feeds actions in, is cancelled with its feature, and resumes from a cursor.
+- [x] TestStore covers all of the above: exhaustive and non-exhaustive modes, readable diffs on failure.
+- [x] README updated. Publishing to crates.io only if you ask (not published).
+- Linux: pending the next batched Linux run (D18).
 
 ## I2: GUI framework
 Choose by measurement, not reputation.

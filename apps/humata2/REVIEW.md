@@ -243,3 +243,41 @@ value read from a TTY or stdin.
 - Expand all and Collapse all (NV-18, NV-19) have no API.
 - Pinned and VIP are user-only and have no MCP tool.
 - Every write has an idempotency key; the host keeps keys for 30 days.
+
+## Status
+
+Folded into SPEC.md on 2026-11-14 (OVERVIEW I0.1). Decisions still open are in DECISIONS.md.
+
+- **C1** SEC-5, SEC-6, SEC-3, SE-20, AR-4, HO-12; D1.
+- **C2** SEC-7 to SEC-14, AW-2, AW-5, flow 26.10; D2.
+- **C3** AW-7 to AW-12, TP-9, SL-5, SL-6, IN-15; D3.
+- **C4** TP-11 to TP-15, IN-12, IN-13; D4.
+- **C5** HO-10 to HO-12, IN-10, IN-17 (network row), q7; D5.
+- **H1** IN-14, IN-22, IN-9 (item 8).
+- **H2** IN-17 (access rules removed from the table), IN-23; D6.
+- **H3** SEC-15.
+- **H4** SE-21 to SE-23, Status table (Probably idle), Built-in agents table, ST-1; D7.
+- **H5** SL-6 to SL-8.
+- **H6** NV-27.
+- **H7** CH-24, CH-25; D11.
+- **H8** LD-8, LD-21, LD-22, SEC-1; D12.
+- **H9** IN-24, PR-7, IN-17 (push row).
+- **H10** TP-16, VW-1, PR-9, the session and PR diagrams, flows 26.5, 26.12, 26.17.
+- **M1** SE-4, SE-15, FC-8 references fixed; ST and NV in number order; §29 lists q1 to q10.
+- **M2** AR-3, AR-5.
+- **M3** TP-6, IN-10, TP-10, PR-15, PER-2, TR-6, NV-7.
+- **M4** TP-5.
+- **M5** SM-11, SM-16; D13.
+- **M6** MP-23, MP-24, IN-17 (machine rows).
+- **M7** SK-9 to SK-11.
+- **M8** NV-24 to NV-26.
+- **M9** LD-16, Concepts (Inactive).
+- **M10** IN-17 (fetch and `shared/` rows).
+- **M11** SE-24, SE-25, AW-2; D14.
+- **M12** TR-4, SE-16, PER-3, HO-6.
+- **M13** IN-25.
+- **M14** IN-17, BD-9.
+- **M15** IN-16, Concepts (Own clones).
+- **M16** HO-7, HO-13.
+- API with no requirement before: PullRequestDraft VW-13, VW-14; DeleteChannel CH-24; SetHostVariable HO-13; RequestAccess IN-26; ViewStateService AR-5; ReorderPinned NV-25; CliAuthService SEC-10, SEC-14.
+- Not folded: "Design choices the API made that the spec should confirm" are left for the spec owner.

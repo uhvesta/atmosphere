@@ -102,6 +102,9 @@ pub(crate) enum Kind<A> {
         effect: Box<Effect<A>>,
     },
     Cancel(CancelId),
+    /// Asks whatever presented the feature to dismiss it; nothing outside
+    /// a presentation or stack.
+    Dismiss,
 }
 
 impl<A> fmt::Debug for Effect<A> {
@@ -118,6 +121,7 @@ impl<A> fmt::Debug for Effect<A> {
                 .field(effect)
                 .finish(),
             Kind::Cancel(id) => f.debug_tuple("Effect::cancel").field(id).finish(),
+            Kind::Dismiss => f.write_str("Effect::dismiss"),
         }
     }
 }
@@ -218,6 +222,18 @@ impl<A: Send + 'static> Effect<A> {
         }
     }
 
+    /// Asks whatever presented this feature, a sheet or a stack, to
+    /// dismiss it, which cancels the feature's effects. It's sent as soon
+    /// as it's reached, so to dismiss once async work is done, put it
+    /// after that work with [`then`](Self::then). A feature that wasn't
+    /// presented with [`if_presented`](crate::if_presented) or
+    /// [`for_each_in_stack`](crate::for_each_in_stack) ignores it.
+    pub fn dismiss() -> Self {
+        Self {
+            kind: Kind::Dismiss,
+        }
+    }
+
     /// This effect once `after` has passed on `clock` without another with
     /// the same `id` starting: what's asked for again in the meantime
     /// replaces it.
@@ -259,8 +275,40 @@ impl<A: Send + 'static> Effect<A> {
                 effect: Box::new(effect.map_with(f)),
             },
             Kind::Cancel(id) => Kind::Cancel(id),
+            Kind::Dismiss => Kind::Dismiss,
         };
         Effect { kind }
+    }
+
+    /// This effect with each dismiss in it, at once or after work it
+    /// follows, made into sending what `dismissed` makes.
+    pub(crate) fn on_dismiss(self, dismissed: &Arc<dyn Fn() -> A + Send + Sync>) -> Self {
+        let kind = match self.kind {
+            Kind::Dismiss => Kind::Send(dismissed()),
+            Kind::Merge(effects) => Kind::Merge(
+                effects
+                    .into_iter()
+                    .map(|e| e.on_dismiss(dismissed))
+                    .collect(),
+            ),
+            Kind::Concat(effects) => Kind::Concat(
+                effects
+                    .into_iter()
+                    .map(|e| e.on_dismiss(dismissed))
+                    .collect(),
+            ),
+            Kind::Cancellable {
+                id,
+                cancel_in_flight,
+                effect,
+            } => Kind::Cancellable {
+                id,
+                cancel_in_flight,
+                effect: Box::new(effect.on_dismiss(dismissed)),
+            },
+            kind => kind,
+        };
+        Self { kind }
     }
 
     /// This effect with its cancel ids kept within `scope`, so the same id

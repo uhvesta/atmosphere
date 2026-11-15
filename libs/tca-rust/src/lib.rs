@@ -11,6 +11,13 @@
 //! maps their effects back ([`Effect::map`], [`for_each`], [`if_let`]), and
 //! a reducer holds its dependencies itself, so tests build it with fakes.
 //!
+//! For an app there's more: navigation as state ([`StackState`],
+//! [`PresentationState`], [`AlertState`]) run by [`for_each_in_stack`] and
+//! [`if_presented`]; one value many features read, [`Shared`]; clients by
+//! type in [`Dependencies`]; state saved and restored through a
+//! [`Storage`] with [`Persisting`]; and streams as effects with
+//! [`Effect::stream`].
+//!
 //! ```
 //! use std::sync::Arc;
 //! use std::time::Duration;
@@ -54,19 +61,35 @@
 //! [The Composable Architecture]: https://github.com/pointfreeco/swift-composable-architecture
 
 mod clock;
+mod dependencies;
 mod diff;
 mod effect;
 mod identified;
 mod local_store;
+mod navigation;
+mod persistence;
 mod reducer;
 mod runner;
+mod shared;
 mod store;
+mod stream;
 mod test_store;
 
 pub use clock::{Clock, SystemClock, TestClock};
+pub use dependencies::{Dependencies, DependencyError};
 pub use effect::{BoxFuture, CancelId, Effect, Sender};
 pub use identified::{Change, Identified, IdentifiedVec};
 pub use local_store::LocalStore;
+pub use navigation::{
+    AlertState, ButtonRole, ButtonState, PresentationAction, PresentationState, StackAction,
+    StackElementId, StackState, alert, for_each_in_stack, if_presented,
+};
+pub use persistence::{
+    Codec, FileStorage, MemoryStorage, PersistError, Persistence, Persisting, Restored, Storage,
+    StorageError,
+};
 pub use reducer::{FnReducer, Reducer, for_each, if_let, reducer};
+pub use shared::Shared;
 pub use store::{Observation, Store, StoreError};
-pub use test_store::TestStore;
+pub use stream::{EventStream, StreamEnd};
+pub use test_store::{TestFailure, TestStore};

@@ -20,7 +20,7 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.98.1"
+rust-version = "1.100.0"
 
 [workspace.dependencies]
 # Workspace crates.
@@ -29,12 +29,12 @@ bootstrap = { path = "tools/bootstrap/lib" }
 # Third-party crates.
 bzip2 = "0.6.1"
 clap = { version = "4.6.7", features = ["derive"] }
-flate2 = "1.1.10"
+flate2 = "1.1.11"
 plist = "1.10.3"
 prost = "0.14.5"
 prost-types = "0.14.5"
 protoc-gen-prost = "0.5.0"
-rand = "0.10"
+rand = "0.10.3"
 rayon = "1.12.0"
 regex = "1.13.1"
 rusqlite = { version = "0.42.0", features = ["bundled"] }
@@ -43,7 +43,7 @@ ruzstd = "0.9.1"
 # cargo-metadata: Bazel runs it on the library, outside any cargo project.
 uniffi = "0.32.2"
 uniffi_bindgen = { version = "0.32.2", default-features = false }
-camino = "1.2"
+camino = "1.2.6"
 # Pseudo-terminals for Humata's terminals.
 rustix = { version = "1.1.6", features = ["fs", "process", "pty", "termios"] }
 # ring, not aws-lc-rs, which needs CMake to build.
@@ -55,8 +55,8 @@ tempfile = "3.27.0"
 tar = "0.4.46"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-toml = "1.1.8"
+toml = "1.2.1"
 ureq = "3.5.1"
 uuid = { version = "1.29.2", features = ["v4"] }
 versions = "8.0.1"
-zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }

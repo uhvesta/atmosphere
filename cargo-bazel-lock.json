@@ -1,5 +1,5 @@
 {
-  "checksum": "20241188a9a9b18da1d4977844fdb82ebaf27a6d10e01e9e46af385c29d742bb",
+  "checksum": "9b0da78bf0168891544a2428164b312bc2eb2c3008a992afb01900cc6d5e33af",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -738,7 +738,7 @@
         ],
         "deps": [
           {
-            "id": "itoa 1.0.18",
+            "id": "itoa 1.0.19",
             "target": "itoa"
           }
         ],
@@ -818,7 +818,7 @@
             "target": "serde"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           }
         ],
@@ -913,7 +913,7 @@
             "target": "unicode_ident"
           },
           {
-            "id": "winnow 1.0.4",
+            "id": "winnow 1.0.5",
             "target": "winnow"
           }
         ],
@@ -1358,7 +1358,7 @@
             "target": "thiserror"
           },
           {
-            "id": "toml 1.1.8+spec-1.1.0",
+            "id": "toml 1.2.1+spec-1.1.0",
             "target": "toml"
           },
           {
@@ -1385,7 +1385,7 @@
       "common_attrs": {
         "deps": [
           {
-            "id": "flate2 1.1.10",
+            "id": "flate2 1.1.11",
             "target": "flate2"
           },
           {
@@ -1405,7 +1405,7 @@
             "target": "thiserror"
           },
           {
-            "id": "toml 1.1.8+spec-1.1.0",
+            "id": "toml 1.2.1+spec-1.1.0",
             "target": "toml"
           }
         ],
@@ -1420,7 +1420,7 @@
       "common_attrs": {
         "deps": [
           {
-            "id": "flate2 1.1.10",
+            "id": "flate2 1.1.11",
             "target": "flate2"
           },
           {
@@ -1436,7 +1436,7 @@
             "target": "thiserror"
           },
           {
-            "id": "zip 9.3.0",
+            "id": "zip 9.5.1",
             "target": "zip"
           }
         ],
@@ -1771,7 +1771,7 @@
       ],
       "version": "0.2.1"
     },
-    "cc 1.11.0": {
+    "cc 1.11.1": {
       "common_attrs": {
         "deps": [
           {
@@ -1796,8 +1796,8 @@
       "package_url": "https://github.com/rust-lang/cc-rs",
       "repository": {
         "Http": {
-          "sha256": "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b",
-          "url": "https://static.crates.io/crates/cc/1.11.0/download"
+          "sha256": "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155",
+          "url": "https://static.crates.io/crates/cc/1.11.1/download"
         }
       },
       "targets": [
@@ -1808,7 +1808,7 @@
           }
         }
       ],
-      "version": "1.11.0"
+      "version": "1.11.1"
     },
     "cfg-if 1.0.5": {
       "common_attrs": {
@@ -2140,7 +2140,7 @@
             "target": "quote"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           }
         ],
@@ -2258,7 +2258,7 @@
       ],
       "version": "1.0.5"
     },
-    "const-oid 0.10.2": {
+    "const-oid 0.10.3": {
       "common_attrs": {
         "edition": "2024"
       },
@@ -2273,8 +2273,8 @@
       "package_url": "https://github.com/RustCrypto/formats",
       "repository": {
         "Http": {
-          "sha256": "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c",
-          "url": "https://static.crates.io/crates/const-oid/0.10.2/download"
+          "sha256": "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a",
+          "url": "https://static.crates.io/crates/const-oid/0.10.3/download"
         }
       },
       "targets": [
@@ -2285,7 +2285,58 @@
           }
         }
       ],
-      "version": "0.10.2"
+      "version": "0.10.3"
+    },
+    "constant_time_eq 0.6.1": {
+      "build_script_attrs": {
+        "proc_macro_deps": [
+          {
+            "id": "rustversion 1.0.23",
+            "target": "rustversion"
+          }
+        ]
+      },
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "std"
+        ],
+        "edition": "2021",
+        "extra_deps": [
+          ":build_script_build"
+        ]
+      },
+      "library_target_name": "constant_time_eq",
+      "license": "CC0-1.0 OR MIT-0 OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "CC0-1.0",
+        "MIT-0"
+      ],
+      "name": "constant_time_eq",
+      "package_url": "https://codeberg.org/cesarb/constant_time_eq",
+      "repository": {
+        "Http": {
+          "sha256": "9eb6feb175df65d0a3ccd3e73484e940d0ac664e8034f0519fd49a93db3071d9",
+          "url": "https://static.crates.io/crates/constant_time_eq/0.6.1/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "constant_time_eq",
+            "crate_root": "src/lib.rs"
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs"
+          }
+        }
+      ],
+      "version": "0.6.1"
     },
     "core-foundation-sys 0.8.7": {
       "common_attrs": {
@@ -2403,7 +2454,7 @@
       ],
       "version": "0.3.1"
     },
-    "crc32fast 1.5.4": {
+    "crc32fast 1.5.5": {
       "build_script_attrs": {},
       "common_attrs": {
         "crate_features": [
@@ -2432,8 +2483,8 @@
       "package_url": "https://github.com/srijs/rust-crc32fast",
       "repository": {
         "Http": {
-          "sha256": "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04",
-          "url": "https://static.crates.io/crates/crc32fast/1.5.4/download"
+          "sha256": "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64",
+          "url": "https://static.crates.io/crates/crc32fast/1.5.5/download"
         }
       },
       "targets": [
@@ -2450,7 +2501,7 @@
           }
         }
       ],
-      "version": "1.5.4"
+      "version": "1.5.5"
     },
     "crossbeam-deque 0.8.8": {
       "build_script_attrs": {},
@@ -3024,7 +3075,7 @@
         ],
         "deps": [
           {
-            "id": "const-oid 0.10.2",
+            "id": "const-oid 0.10.3",
             "target": "const_oid"
           },
           {
@@ -3146,7 +3197,7 @@
             "target": "block_buffer"
           },
           {
-            "id": "const-oid 0.10.2",
+            "id": "const-oid 0.10.3",
             "target": "const_oid"
           },
           {
@@ -3913,7 +3964,7 @@
       ],
       "version": "0.5.9"
     },
-    "flate2 1.1.10": {
+    "flate2 1.1.11": {
       "common_attrs": {
         "crate_features": [
           "any_impl",
@@ -3924,7 +3975,7 @@
         ],
         "deps": [
           {
-            "id": "crc32fast 1.5.4",
+            "id": "crc32fast 1.5.5",
             "target": "crc32fast"
           },
           {
@@ -3945,8 +3996,8 @@
       "package_url": "https://github.com/rust-lang/flate2-rs",
       "repository": {
         "Http": {
-          "sha256": "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb",
-          "url": "https://static.crates.io/crates/flate2/1.1.10/download"
+          "sha256": "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4",
+          "url": "https://static.crates.io/crates/flate2/1.1.11/download"
         }
       },
       "targets": [
@@ -3957,7 +4008,7 @@
           }
         }
       ],
-      "version": "1.1.10"
+      "version": "1.1.11"
     },
     "foldhash 0.1.5": {
       "common_attrs": {
@@ -4296,7 +4347,7 @@
             "target": "quote"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           }
         ],
@@ -5136,7 +5187,7 @@
             "target": "bytes"
           },
           {
-            "id": "itoa 1.0.18",
+            "id": "itoa 1.0.19",
             "target": "itoa"
           }
         ],
@@ -5698,7 +5749,7 @@
       "build_script_attrs": {
         "deps": [
           {
-            "id": "cc 1.11.0",
+            "id": "cc 1.11.1",
             "target": "cc"
           }
         ]
@@ -5902,7 +5953,7 @@
       ],
       "version": "0.15.0"
     },
-    "itoa 1.0.18": {
+    "itoa 1.0.19": {
       "common_attrs": {
         "edition": "2021"
       },
@@ -5917,8 +5968,8 @@
       "package_url": "https://github.com/dtolnay/itoa",
       "repository": {
         "Http": {
-          "sha256": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
-          "url": "https://static.crates.io/crates/itoa/1.0.18/download"
+          "sha256": "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4",
+          "url": "https://static.crates.io/crates/itoa/1.0.19/download"
         }
       },
       "targets": [
@@ -5929,7 +5980,7 @@
           }
         }
       ],
-      "version": "1.0.18"
+      "version": "1.0.19"
     },
     "js-sys 0.3.107": {
       "common_attrs": {
@@ -6134,7 +6185,7 @@
       "build_script_attrs": {
         "deps": [
           {
-            "id": "cc 1.11.0",
+            "id": "cc 1.11.1",
             "target": "cc"
           },
           {
@@ -8827,7 +8878,7 @@
       "build_script_attrs": {
         "deps": [
           {
-            "id": "cc 1.11.0",
+            "id": "cc 1.11.1",
             "target": "cc"
           }
         ],
@@ -9607,7 +9658,7 @@
           },
           {
             "alias": "pki_types",
-            "id": "rustls-pki-types 1.15.1",
+            "id": "rustls-pki-types 1.16.0",
             "target": "rustls_pki_types"
           },
           {
@@ -9660,7 +9711,7 @@
       ],
       "version": "0.23.46"
     },
-    "rustls-pki-types 1.15.1": {
+    "rustls-pki-types 1.16.0": {
       "common_attrs": {
         "crate_features": [
           "alloc",
@@ -9686,8 +9737,8 @@
       "package_url": "https://github.com/rustls/pki-types",
       "repository": {
         "Http": {
-          "sha256": "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96",
-          "url": "https://static.crates.io/crates/rustls-pki-types/1.15.1/download"
+          "sha256": "102f35f7de7b06d8c61f1cff6592f5253e0dea431c74867aad5dfd70f44663fb",
+          "url": "https://static.crates.io/crates/rustls-pki-types/1.16.0/download"
         }
       },
       "targets": [
@@ -9698,7 +9749,7 @@
           }
         }
       ],
-      "version": "1.15.1"
+      "version": "1.16.0"
     },
     "rustls-webpki 0.103.16": {
       "common_attrs": {
@@ -9714,7 +9765,7 @@
           },
           {
             "alias": "pki_types",
-            "id": "rustls-pki-types 1.15.1",
+            "id": "rustls-pki-types 1.16.0",
             "target": "rustls_pki_types"
           },
           {
@@ -10227,7 +10278,7 @@
             "target": "quote"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           }
         ],
@@ -10280,7 +10331,7 @@
               "target": "indexmap"
             },
             {
-              "id": "itoa 1.0.18",
+              "id": "itoa 1.0.19",
               "target": "itoa"
             },
             {
@@ -10341,7 +10392,7 @@
       ],
       "version": "1.0.154"
     },
-    "serde_spanned 1.1.2": {
+    "serde_spanned 1.1.3": {
       "common_attrs": {
         "crate_features": [
           "alloc",
@@ -10367,8 +10418,8 @@
       "package_url": "https://github.com/toml-rs/toml",
       "repository": {
         "Http": {
-          "sha256": "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c",
-          "url": "https://static.crates.io/crates/serde_spanned/1.1.2/download"
+          "sha256": "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782",
+          "url": "https://static.crates.io/crates/serde_spanned/1.1.3/download"
         }
       },
       "targets": [
@@ -10379,7 +10430,7 @@
           }
         }
       ],
-      "version": "1.1.2"
+      "version": "1.1.3"
     },
     "serdect 0.4.3": {
       "common_attrs": {
@@ -11006,7 +11057,7 @@
       "build_script_attrs": {
         "deps": [
           {
-            "id": "cc 1.11.0",
+            "id": "cc 1.11.1",
             "target": "cc"
           }
         ],
@@ -11457,6 +11508,7 @@
           "parsing",
           "printing",
           "proc-macro",
+          "visit",
           "visit-mut"
         ],
         "deps": [
@@ -11500,7 +11552,7 @@
       ],
       "version": "2.0.119"
     },
-    "syn 3.0.9": {
+    "syn 3.0.10": {
       "common_attrs": {
         "crate_features": [
           "clone-impls",
@@ -11541,8 +11593,8 @@
       "package_url": "https://github.com/dtolnay/syn",
       "repository": {
         "Http": {
-          "sha256": "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b",
-          "url": "https://static.crates.io/crates/syn/3.0.9/download"
+          "sha256": "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79",
+          "url": "https://static.crates.io/crates/syn/3.0.10/download"
         }
       },
       "targets": [
@@ -11553,7 +11605,7 @@
           }
         }
       ],
-      "version": "3.0.9"
+      "version": "3.0.10"
     },
     "tar 0.4.46": {
       "common_attrs": {
@@ -11802,7 +11854,7 @@
             "target": "quote"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           }
         ],
@@ -12047,7 +12099,7 @@
             "target": "quote"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           }
         ],
@@ -12077,7 +12129,7 @@
       ],
       "version": "2.7.2"
     },
-    "toml 1.1.8+spec-1.1.0": {
+    "toml 1.2.1+spec-1.1.0": {
       "common_attrs": {
         "crate_features": [
           "default",
@@ -12092,11 +12144,11 @@
             "target": "serde_core"
           },
           {
-            "id": "serde_spanned 1.1.2",
+            "id": "serde_spanned 1.1.3",
             "target": "serde_spanned"
           },
           {
-            "id": "toml_datetime 1.1.2+spec-1.1.0",
+            "id": "toml_datetime 1.1.3+spec-1.1.0",
             "target": "toml_datetime"
           },
           {
@@ -12104,11 +12156,11 @@
             "target": "toml_parser"
           },
           {
-            "id": "toml_writer 1.1.3+spec-1.1.0",
+            "id": "toml_writer 1.2.0+spec-1.1.0",
             "target": "toml_writer"
           },
           {
-            "id": "winnow 1.0.4",
+            "id": "winnow 1.0.5",
             "target": "winnow"
           }
         ],
@@ -12125,8 +12177,8 @@
       "package_url": "https://github.com/toml-rs/toml",
       "repository": {
         "Http": {
-          "sha256": "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d",
-          "url": "https://static.crates.io/crates/toml/1.1.8+spec-1.1.0/download"
+          "sha256": "d5755c51863cdac711f1956baf8eb9588e060755f7d3c4c979e70ea1e1f32cd7",
+          "url": "https://static.crates.io/crates/toml/1.2.1+spec-1.1.0/download"
         }
       },
       "targets": [
@@ -12137,9 +12189,9 @@
           }
         }
       ],
-      "version": "1.1.8+spec-1.1.0"
+      "version": "1.2.1+spec-1.1.0"
     },
-    "toml_datetime 1.1.2+spec-1.1.0": {
+    "toml_datetime 1.1.3+spec-1.1.0": {
       "common_attrs": {
         "crate_features": [
           "alloc",
@@ -12165,8 +12217,8 @@
       "package_url": "https://github.com/toml-rs/toml",
       "repository": {
         "Http": {
-          "sha256": "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053",
-          "url": "https://static.crates.io/crates/toml_datetime/1.1.2+spec-1.1.0/download"
+          "sha256": "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49",
+          "url": "https://static.crates.io/crates/toml_datetime/1.1.3+spec-1.1.0/download"
         }
       },
       "targets": [
@@ -12177,7 +12229,7 @@
           }
         }
       ],
-      "version": "1.1.2+spec-1.1.0"
+      "version": "1.1.3+spec-1.1.0"
     },
     "toml_parser 1.1.5+spec-1.1.0": {
       "common_attrs": {
@@ -12187,7 +12239,7 @@
         ],
         "deps": [
           {
-            "id": "winnow 1.0.4",
+            "id": "winnow 1.0.5",
             "target": "winnow"
           }
         ],
@@ -12218,7 +12270,7 @@
       ],
       "version": "1.1.5+spec-1.1.0"
     },
-    "toml_writer 1.1.3+spec-1.1.0": {
+    "toml_writer 1.2.0+spec-1.1.0": {
       "common_attrs": {
         "crate_features": [
           "alloc",
@@ -12237,8 +12289,8 @@
       "package_url": "https://github.com/toml-rs/toml",
       "repository": {
         "Http": {
-          "sha256": "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770",
-          "url": "https://static.crates.io/crates/toml_writer/1.1.3+spec-1.1.0/download"
+          "sha256": "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a",
+          "url": "https://static.crates.io/crates/toml_writer/1.2.0+spec-1.1.0/download"
         }
       },
       "targets": [
@@ -12249,7 +12301,7 @@
           }
         }
       ],
-      "version": "1.1.3+spec-1.1.0"
+      "version": "1.2.0+spec-1.1.0"
     },
     "twox-hash 2.1.5": {
       "common_attrs": {
@@ -12509,7 +12561,7 @@
             "target": "textwrap"
           },
           {
-            "id": "toml 1.1.8+spec-1.1.0",
+            "id": "toml 1.2.1+spec-1.1.0",
             "target": "toml"
           },
           {
@@ -12691,7 +12743,7 @@
             "target": "syn"
           },
           {
-            "id": "toml 1.1.8+spec-1.1.0",
+            "id": "toml 1.2.1+spec-1.1.0",
             "target": "toml"
           },
           {
@@ -12953,7 +13005,7 @@
             "target": "base64"
           },
           {
-            "id": "flate2 1.1.10",
+            "id": "flate2 1.1.11",
             "target": "flate2"
           },
           {
@@ -12969,7 +13021,7 @@
             "target": "rustls"
           },
           {
-            "id": "rustls-pki-types 1.15.1",
+            "id": "rustls-pki-types 1.16.0",
             "target": "rustls_pki_types"
           },
           {
@@ -12981,7 +13033,7 @@
             "target": "utf8_zero"
           },
           {
-            "id": "webpki-roots 1.0.11",
+            "id": "webpki-roots 1.0.12",
             "target": "webpki_roots"
           }
         ],
@@ -13437,7 +13489,7 @@
             "target": "quote"
           },
           {
-            "id": "syn 3.0.9",
+            "id": "syn 3.0.10",
             "target": "syn"
           },
           {
@@ -13519,12 +13571,12 @@
       ],
       "version": "0.2.130"
     },
-    "webpki-roots 1.0.11": {
+    "webpki-roots 1.0.12": {
       "common_attrs": {
         "deps": [
           {
             "alias": "pki_types",
-            "id": "rustls-pki-types 1.15.1",
+            "id": "rustls-pki-types 1.16.0",
             "target": "rustls_pki_types"
           }
         ],
@@ -13540,8 +13592,8 @@
       "package_url": "https://github.com/rustls/webpki-roots",
       "repository": {
         "Http": {
-          "sha256": "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171",
-          "url": "https://static.crates.io/crates/webpki-roots/1.0.11/download"
+          "sha256": "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297",
+          "url": "https://static.crates.io/crates/webpki-roots/1.0.12/download"
         }
       },
       "targets": [
@@ -13552,7 +13604,7 @@
           }
         }
       ],
-      "version": "1.0.11"
+      "version": "1.0.12"
     },
     "weedle2 5.0.0": {
       "common_attrs": {
@@ -14489,7 +14541,7 @@
       ],
       "version": "0.52.6"
     },
-    "winnow 1.0.4": {
+    "winnow 1.0.5": {
       "common_attrs": {
         "crate_features": [
           "alloc",
@@ -14518,8 +14570,8 @@
       "package_url": "https://github.com/winnow-rs/winnow",
       "repository": {
         "Http": {
-          "sha256": "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81",
-          "url": "https://static.crates.io/crates/winnow/1.0.4/download"
+          "sha256": "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef",
+          "url": "https://static.crates.io/crates/winnow/1.0.5/download"
         }
       },
       "targets": [
@@ -14530,7 +14582,7 @@
           }
         }
       ],
-      "version": "1.0.4"
+      "version": "1.0.5"
     },
     "wnaf 0.14.1": {
       "common_attrs": {
@@ -14634,9 +14686,17 @@
       "common_attrs": {
         "crate_features": [
           "alloc",
-          "default"
+          "default",
+          "derive",
+          "zeroize_derive"
         ],
-        "edition": "2024"
+        "edition": "2024",
+        "proc_macro_deps": [
+          {
+            "id": "zeroize_derive 1.5.0",
+            "target": "zeroize_derive"
+          }
+        ]
       },
       "library_target_name": "zeroize",
       "license": "Apache-2.0 OR MIT",
@@ -14663,7 +14723,50 @@
       ],
       "version": "1.9.1"
     },
-    "zip 9.3.0": {
+    "zeroize_derive 1.5.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "proc-macro2 1.0.107",
+            "target": "proc_macro2"
+          },
+          {
+            "id": "quote 1.0.47",
+            "target": "quote"
+          },
+          {
+            "id": "syn 2.0.119",
+            "target": "syn"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "zeroize_derive",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "zeroize_derive",
+      "package_url": "https://github.com/RustCrypto/utils",
+      "repository": {
+        "Http": {
+          "sha256": "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328",
+          "url": "https://static.crates.io/crates/zeroize_derive/1.5.0/download"
+        }
+      },
+      "targets": [
+        {
+          "ProcMacro": {
+            "crate_name": "zeroize_derive",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "1.5.0"
+    },
+    "zip 9.5.1": {
       "common_attrs": {
         "crate_features": [
           "_deflate-any",
@@ -14672,11 +14775,15 @@
         "deps": {
           "common": [
             {
-              "id": "crc32fast 1.5.4",
+              "id": "constant_time_eq 0.6.1",
+              "target": "constant_time_eq"
+            },
+            {
+              "id": "crc32fast 1.5.5",
               "target": "crc32fast"
             },
             {
-              "id": "flate2 1.1.10",
+              "id": "flate2 1.1.11",
               "target": "flate2"
             },
             {
@@ -14690,6 +14797,10 @@
             {
               "id": "typed-path 0.13.0",
               "target": "typed_path"
+            },
+            {
+              "id": "zeroize 1.9.1",
+              "target": "zeroize"
             }
           ],
           "selects": {
@@ -14737,8 +14848,8 @@
       "package_url": "https://github.com/zip-rs/zip2",
       "repository": {
         "Http": {
-          "sha256": "eaeb7f16d2605b49aef586996ded29e65642fab7259a3077e537351df6d80426",
-          "url": "https://static.crates.io/crates/zip/9.3.0/download"
+          "sha256": "e3476fd497ac8af5b1ec7b51acab7bef380f7e8dd8e0487595bafd839417a302",
+          "url": "https://static.crates.io/crates/zip/9.5.1/download"
         }
       },
       "targets": [
@@ -14749,7 +14860,7 @@
           }
         }
       ],
-      "version": "9.3.0"
+      "version": "9.5.1"
     },
     "zlib-rs 0.6.8": {
       "common_attrs": {
@@ -14822,7 +14933,7 @@
     "bzip2 0.6.1",
     "camino 1.2.6",
     "clap 4.6.7",
-    "flate2 1.1.10",
+    "flate2 1.1.11",
     "plist 1.10.3",
     "prost 0.14.5",
     "prost-types 0.14.5",
@@ -14840,13 +14951,13 @@
     "tar 0.4.46",
     "thiserror 2.0.21",
     "tokio 1.54.1",
-    "toml 1.1.8+spec-1.1.0",
+    "toml 1.2.1+spec-1.1.0",
     "uniffi 0.32.2",
     "uniffi_bindgen 0.32.2",
     "ureq 3.5.1",
     "uuid 1.29.2",
     "versions 8.0.1",
-    "zip 9.3.0"
+    "zip 9.5.1"
   ],
   "direct_dev_deps": [
     "tempfile 3.27.0"

@@ -122,7 +122,7 @@ fn prepare<A: Send + 'static>(
     cancels: &Cancels,
 ) -> Option<Ready<A>> {
     match effect.kind {
-        Kind::None => None,
+        Kind::None | Kind::Dismiss => None,
         Kind::Send(action) => {
             send.send(action);
             None

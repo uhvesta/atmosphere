@@ -74,3 +74,83 @@ Status: **open** (waiting for the user) · **decided**.
 - The VT core is libghostty-vt: parsing, screen state and scrollback, cross-platform. It is drawn by our own GPUI terminal view.
 - Humata 1's Zig-in-Bazel setup for GhosttyKit is reused to build it.
 - Fallback: alacritty_terminal behind the same interface.
+
+## D11: Deleting a channel (REVIEW H7). Open
+- **Problem:** the spec can create, rename and change a channel, but nothing removes one.
+- **Options:**
+  - (a) **Delete channel…** sends everything of the channel to trash, after the unpushed-work check; restorable for 30 days.
+  - (b) Only a channel with no sessions (live or archived) can be deleted.
+  - (c) No deleting; archive every session and leave the empty channel.
+- **Provisional:** (a). It matches how sessions are deleted (LD-5) and nothing is lost for 30 days. User-only; agents can never delete a channel.
+- **Affects:** CH-24, CH-25, LD-6, the channel page's menu.
+- **Reverse:** narrow it to (b) by refusing while the channel has sessions.
+
+## D12: Secrets in the conversation mirror (REVIEW H8). Open
+- **Problem:** the mirror copies every transcript to the Mac (LD-8). Agents often print environment values and tokens, so host variable values reach the Mac inside transcripts, against SEC-1.
+- **Options:**
+  - (a) Before a mirror chunk leaves the machine, replace every exact host variable value in it with `‹NAME›`. Keep the mirror as long as the session record, and delete it with the session.
+  - (b) (a), and also mask strings that look like tokens (known prefixes, long high-entropy strings).
+  - (c) No scrubbing; document it.
+- **Provisional:** (a). Exact values are a check a test can make; pattern masking guesses and can hide real output. The spec says plainly that other secrets an agent prints are mirrored as printed.
+- **Affects:** LD-21, LD-22, SEC-1.
+- **Reverse:** add pattern masking as an opt-in setting.
+
+## D13: When a comment counts as addressed (REVIEW M5). Open
+- **Problem:** SM-11 marks a comment addressed "when the agent changes its passage". Reformatting, moves and nearby edits make that ambiguous.
+- **Options:**
+  - (a) Addressed when an agent change after sending touches any of the comment's anchored lines, ignoring changes that only alter whitespace. A passage moved unchanged is re-anchored, not addressed.
+  - (b) Addressed when the quoted passage no longer appears in the file.
+  - (c) Never automatic: the user marks each comment addressed.
+- **Provisional:** (a). It follows the diff the user sees; (b) misses edits that keep the quoted words.
+- **Affects:** SM-11, SM-16, RV-25.
+- **Reverse:** switch the rule; comment statuses are recomputed from history.
+
+## D14: Several writers on one terminal (REVIEW M11). Open
+- **Problem:** the app, `humata attach`, `session_type` and queued comments can all write to one terminal at once.
+- **Options:**
+  - (a) Allow several writers, as tmux does. Each writer sees how many others are attached with input. `humata attach --read-only` only watches. Queued messages are pasted whole at a turn end.
+  - (b) One writer at a time; others are read-only until they take over.
+  - (c) Allow it but ask before a second writer starts typing.
+- **Provisional:** (a). It is what users of tmux expect, and the count makes a second writer visible.
+- **Affects:** SE-24, SE-25, AW-2.
+- **Reverse:** make new attaches read-only by default, with a take-over action.
+
+## D15: How the gRPC services are carried (OVERVIEW I7). Open
+- **Question:** the protos define gRPC services. How do the app and the daemons reach each other?
+- **Options:**
+  - (a) Plain tonic servers on a Unix socket per machine (0600). SSH, or a provider's connect command, carries the bytes to that socket.
+  - (b) Our own framing over SSH stdio, like Humata 1.
+  - (c) tonic over TCP with TLS.
+  - (d) An in-process SSH client (russh) opening the channels itself.
+- **Provisional:** (a).
+  - **The daemon:** `humatad2` is a stock tonic server on `~/.humata2/humatad.sock`. It runs on its own, so it survives SSH drops.
+  - **The app:** one tonic `Channel` per machine, through a connector:
+    - this Mac: the local socket directly;
+    - over SSH: streamlocal forwarding to the remote socket;
+    - any provider: its `connect … {cmd}` runs `humatad2 bridge`, which pipes stdio to the socket.
+  - **Reconnecting:** the Channel calls the connector again, and streams resume from a cursor.
+  - **Why:**
+    - least custom code (only the connector);
+    - one multiplexed HTTP/2 connection per machine, with flow control per stream;
+    - no TCP port anywhere;
+    - local and remote share one code path;
+    - it works with any connect command.
+- **Affects:** I7, I8, and a prost/tonic toolchain for Humata 2 that leaves Humata 1's alone.
+- **Reverse:** the app reaches services only through generated client traits, so changing the transport touches one crate.
+
+## D16: The GUI spike builds with cargo first (OVERVIEW I2). Open
+- **Question:** gpui-kit pulls in a large tree with Metal build scripts. Bring it into Bazel through crate_universe now, or after the spike?
+- **Provisional:** cargo, in `spike/gui`'s own workspace, until the spike's numbers keep gpui-kit. Then it moves to crate_universe, with the Metal shader build scripts handled there, before A1.
+- **Reverse:** none needed. It's the order of work.
+
+## D17: The new GUI binary is `desktop`, not `app` (OVERVIEW I0). Open
+- **Why:** `apps/humata2/app` holds the earlier Swift code, which waits on D9.
+- **Reverse:** rename the package once D9 is decided.
+
+## D18: How Linux suites run (OVERVIEW rules). Decided 2026-11-14
+- **Owner:** all tests run on this Mac. Linux runs in the `humata2-linux` Lima VM (2 CPUs, 4 GiB, 20 GiB disk), batched every few milestones.
+- **How:** `testing/linux/run.sh` cross-compiles tests to static musl and runs them in the VM.
+
+## D19: Dependency freshness. Decided 2026-11-14
+- **Owner:** use the latest versions, Rust 1.100, and nothing published less than 3 days ago.
+- **How:** `.cargo/config.toml` sets `global-min-publish-age = "3 days"`.

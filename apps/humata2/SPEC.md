@@ -17,7 +17,8 @@ several machines.
 
 Requirement IDs (`CH-3`, `PER-7`, …) are stable: new requirements get new
 numbers and removed ones are not reused. Each requirement is a statement a test
-can check.
+can check. A requirement tagged "(provisional, D<n>)" follows a pick in
+[DECISIONS.md](DECISIONS.md) that the owner has not confirmed yet.
 
 ## Contents
 
@@ -71,7 +72,15 @@ can check.
 | Agent access rule | Per channel, per kind of action: Allow, Ask me, or Never. |
 | Prepared view | A review walkthrough or board view an agent prepared for you over MCP. Opened only if you choose to. |
 | Journal | Per session (with its forks): every view its agents prepared. |
+| Machine journal | A machine's own append-only list of writes and requests made while the host is away (SL-5). Not the Journal of views. |
+| Host | The Mac running the app. It holds the source of truth (SL-1). "Away" means a machine has no link to it. |
 | Bridge | This Mac. Every machine has one SSH link to it, and every call between machines goes through it. |
+| Turn | From a message reaching the agent until the agent waits for input again. How Humata learns a turn ended is per agent (SE-21). |
+| Own clones | The clones under a session's own folder (`sessions/<session>/`). A context-only fork has none until it gets its own copy (FK-9). |
+| Grant | An "Always let …" permission for one session and one target (IN-14, IN-22). |
+| Presence | Proof that the person, not an agent, is giving a command from the CLI (SEC-10). |
+| Inactive | A session with no terminal output, no input and not opened by the user for a given time (LD-16). Not the Idle status. |
+| Revision | A counter every editable thing carries; it goes up on each change (SL-7). |
 
 Session statuses, shown as a dot everywhere a session appears:
 
@@ -80,19 +89,20 @@ Session statuses, shown as a dot everywhere a session appears:
 | working | Working | green, pulsing |
 | needs | Needs you | orange |
 | idle | Idle | grey |
+| probably idle | Probably idle (SE-22) | grey, half-filled |
 | exited | Agent exited — resumable | hollow ring |
 | offline | Host offline — reconnecting | red |
 
 Built-in agents (Claude, Codex and Copilot are the defaults; users can add
 more, ST-2):
 
-| Agent | Command | Context forks |
-| --- | --- | --- |
-| Claude Code | `claude` | yes |
-| Codex CLI | `codex` | yes |
-| Copilot CLI | `copilot` | yes |
-| OpenCode | `opencode` | no |
-| Plain shell | `zsh` (the login shell) | no |
+| Agent | Command | Context forks | Turn end (SE-21) |
+| --- | --- | --- | --- |
+| Claude Code | `claude` | yes | the agent's hooks |
+| Codex CLI | `codex` | yes | output fallback |
+| Copilot CLI | `copilot` | yes | the agent's hooks |
+| OpenCode | `opencode` | no | output fallback |
+| Plain shell | `zsh` (the login shell) | no | none: no turns |
 
 ## 2. Architecture
 
@@ -128,10 +138,18 @@ more, ST-2):
 - **AR-2** The app, the `humata` command-line tool and the MCP server are all
   clients of the same gRPC API.
 - **AR-3** The app holds no session state that matters: quitting it changes
-  nothing on any machine.
+  nothing on any machine. View state the user expects back is kept by the
+  host instead (AR-5).
 - **AR-4** Remote machines reach each other only through the Mac (for now).
   Every cross-machine call is checked on the Mac against the channel's agent
-  access rules.
+  access rules. A call that stays on one machine is checked by that machine
+  against its latest copy of the host's rules (AW-8). These checks cover
+  calls made through Humata only (SEC-5).
+- **AR-5** View state is stored on the host, not in the app: open panels and
+  tabs, folds, scroll positions and filters (SE-13), pane widths and
+  collapsed panes (NV-16), expand and collapse results (NV-19) and the
+  pinned order (NV-25). After the app is quit, crashes or is reinstalled,
+  each of these comes back as it was.
 
 ## 3. Channels and machines
 
@@ -238,6 +256,21 @@ more, ST-2):
   files and comments; open comments on it are kept with the session's
   archive record.
 
+### Deleting a channel
+
+- **CH-24** The channel page's menu has **Delete channel…**. Its dialog
+  lists every live and archived session of the channel, its board items and
+  its pending Inbox requests, and names each session's uncommitted or
+  unpushed work as MV-9 does. A session with such work blocks the delete
+  until it is pushed or the user ticks "Delete that work". Confirming stops
+  the channel's agents, withdraws its pending requests, sends its sessions
+  (as LD-5), board, main clones, `shared/` and folders on every machine to
+  that machine's trash, and removes the channel from the sidebar. Restoring
+  it from the Mac's trash within 30 days brings the channel back with its
+  sessions archived. (provisional, D11)
+- **CH-25** Only the user can delete a channel. An agent has no way to ask
+  for it, and the CLI needs presence (SEC-9). (provisional, D11)
+
 ```text
 ┌ # payments-rewrite ───────────────────────────────────────── [New session] ┐
 │ Sessions · 11 │ Inbox · 7 │ Board │ Repos & machines │ Agent access │ Activity│
@@ -296,7 +329,7 @@ is configurable per machine.
   bundle and sends it over the SSH link; pushes from that machine go back
   through the Mac. The GitHub token never leaves the Mac.
 - **FC-8** `shared/` exists on every machine of the channel. An agent can copy
-  files into it (rule-gated, see TP-5).
+  files into it (rule-gated, see TP-4).
 - **FC-9** Humata shows no standing notice about a clone being behind main,
   shared, or unpushed. Unpushed or uncommitted work is shown only where it
   blocks an action (archiving, moving, removing a machine).
@@ -357,7 +390,7 @@ is configurable per machine.
   title, the dialog shows "for PAY-7", the first-message placeholder names the
   item, the item is assigned to the new session, and an item in Backlog or To
   do moves to In progress.
-- **SE-4** After Start session, Humata writes the session record (SE-20) to
+- **SE-4** After Start session, Humata writes the session record (PER-11) to
   disk, makes the clones, launches the agent in its holder and opens the
   session page. The channel's Activity gets "Started “…” with <agent> on
   <machine>".
@@ -378,7 +411,7 @@ is configurable per machine.
 │ ● Writing ledger/migrations/0042 +41       │ │ 0042_accounts.sql +41││  ◧ Journal │
 │ ● Bash: cargo test -p api ledger           │ └──────────────────────┘│  ⓘ Info    │
 │   test result: ok. 14 passed               │ ┌ api uhvesta/ledger-… ┐│            │
-│ ● humata.board.move PAY-3 → Done           │ │ client.rs  +62 −21   ││            │
+│ ● board_item_move PAY-3 → Done             │ │ client.rs  +62 −21   ││            │
 │   ⏳ waiting for your approval (Inbox)      │ └──────────────────────┘│            │
 │ > █                                        │ [Send 2 comments]       │            │
 └────────────────────────────────────────────┴─────────────────────────┴────────────┘
@@ -419,13 +452,15 @@ is configurable per machine.
 - **SE-14** When the agent exits, the terminal stays with its last output and
   a line saying the process exited with its code and that Resume starts the
   agent again with its conversation. The header and Home show **Resume**.
-- **SE-15** Resume starts the agent with its pinned conversation id (PER-16)
+- **SE-15** Resume starts the agent with its pinned conversation id (PER-12)
   in the same folder and prints a line saying the conversation was restored.
 - **SE-16** While the session's machine is offline, the terminal shows the
   last output and a line saying the connection was lost, the agent keeps
   running there, and the view will catch up. Typing is disabled. The tab bar
   says "disconnected". On reconnect, Humata shows everything produced
-  meanwhile and a line "reconnected; caught up N lines of output".
+  meanwhile and a line "reconnected; caught up N lines of output". When
+  more was produced than the scrollback keeps, the view starts from a fresh
+  screen and the line says how many lines were not kept (TR-4).
 - **SE-17** "Open in editor" opens the file in the user's editor on the
   session's machine.
 
@@ -442,7 +477,34 @@ is configurable per machine.
   that machine with its line limit.
 - **SE-20** It has a **What this agent may do** card: it owns this session,
   its board (n items), its clones and the items it created (n); everything
-  else goes to the Inbox; link to the channel's rules.
+  else goes to the Inbox; link to the channel's rules. The card says whether
+  the agent is contained (SEC-6) and, when it is not, that it can read and
+  write anything the user can without asking Humata (SEC-5).
+  (provisional, D1)
+
+### Turns and typing
+
+- **SE-21** Humata learns that an agent's turn ended from the agent's own
+  hooks for Claude Code and Copilot CLI. For Codex CLI, OpenCode and
+  user-added agents it uses the output fallback: the turn is taken to have
+  ended after 3 seconds with no terminal output. A plain shell has no turns.
+  The source is shown in Settings › Agents (ST-1). (provisional, D7)
+- **SE-22** A session whose turn end comes from the output fallback shows
+  **Probably idle**, never Idle, until the user types or the agent writes
+  output again. (provisional, D7)
+- **SE-23** Messages Humata queues for a session (comments, notes, queued
+  typing, the approval line of IN-12) are typed when the turn ends. When the
+  end comes from the agent's hooks, they are typed on their own. When it
+  comes from the output fallback, or the session is a plain shell, they are
+  not: the queue shows "waiting: turn end not certain" with **Send now**.
+  Each message is typed whole as
+  one bracketed paste and never in the middle of another. (provisional, D7)
+- **SE-24** Several writers may type into one terminal at once: the app,
+  `humata attach` and Humata's own queued messages. Each writer's terminal
+  shows "n others can type here" while others are attached with input.
+  (provisional, D14)
+- **SE-25** `humata attach --read-only` shows the terminal and sends no
+  input; it does not count as a writer in SE-24. (provisional, D14)
 
 ## 6. Forks
 
@@ -598,7 +660,8 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 - **LD-8** Every session's conversation is mirrored to the host
   continuously, with its pointers (SL-3), over the machine's existing link
   as an offset-keyed stream (TR-4); the record itself lives on the host
-  (SL-1). A machine that was offline catches up when it reconnects.
+  (SL-1). A machine that was offline catches up when it reconnects. What is
+  mirrored is scrubbed first (LD-21).
 - **LD-9** Because of the mirror and pointers, losing or deleting a machine
   loses no history up to its last sync; only its clones' unpushed commits
   and dirty files are lost.
@@ -648,7 +711,10 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 
 - **LD-16** Retention rules are off by default. In Settings (defaults for new
   channels) and per channel, the user can turn on: **Archive PR reviews N
-  days after the PR merges or closes**; and **Archive sessions idle for N days**.
+  days after the PR merges or closes**; and **Archive sessions inactive for N
+  days**. A session is inactive when, for N days, its terminals had no
+  output and no input and the user did not open it. The Idle status plays
+  no part.
 - **LD-17** A retention rule never deletes work: a session with uncommitted
   or unpushed work is not archived by a rule. Such skips are listed under the rule in Storage
   with the session and the reason.
@@ -665,6 +731,19 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 - **LD-20** When a machine runs out of disk while sessions run, those
   sessions show "<machine> is out of disk" with **Free up space** (opens its
   Storage page). There is no standing low-disk warning elsewhere.
+
+### The mirror and secrets
+
+- **LD-21** Before any part of a conversation leaves its machine for the
+  mirror, every exact value of that machine's host variables in it is
+  replaced with `‹NAME›`, the variable's name. The Mac's mirror never holds
+  such a value. Other secrets an agent prints (a token it read from a file,
+  say) are mirrored as printed, and the Storage page says so.
+  (provisional, D12)
+- **LD-22** A session's mirror is kept as long as its session record: it
+  stays while the session is live or archived, goes to the Mac's trash when
+  the session is deleted (LD-5), and is gone when that trash empties.
+  (provisional, D12)
 
 ## 9. Review across N repos: diff, files, editor
 
@@ -803,8 +882,8 @@ each repo's branch.
 │ > Reviewing #482 with focus: …      │ api  uhvesta/fix-refund-rounding     │
 │ ● Bash: cargo test -p payments      │  refund.rs  +62 −21                  │
 │   test result: ok. 31 passed        │  140 │+ let cents = amount.round();  │
-│ ● humata.review.draft refund.rs:140 │      ┆ draft by Claude Code:         │
-│ ● humata.review.draft ledger …:22   │      ┆ "round() is half-away-from-…" │
+│ ● review_draft refund.rs:140        │      ┆ draft by Claude Code:         │
+│ ● review_draft ledger …:22          │      ┆ "round() is half-away-from-…" │
 │ > █                                 │      ┆ [Edit] [Drop]                 │
 │                                     │ ledger #91  uhvesta/refund-ledger    │
 │ ⚠ 2 new commits · [Update the clone]│ Drafts: 4 (3 by agent, 1 by you)    │
@@ -837,8 +916,11 @@ each repo's branch.
 ### Read-only by default
 
 - **PR-7** A review session is read-only towards GitHub by default: the agent
-  can edit files, build and test in its clones, but pushes are refused, and
-  the refusal tells it so.
+  can edit files, build and test in its clones, but pushes through Humata
+  are refused, and the refusal tells it so. The channel's push rule (IN-24)
+  does not apply to review sessions; only PR-8 does. An uncontained agent
+  that pushes with the machine's own git credentials is not stopped
+  (SEC-5).
 - **PR-8** **Let the agent push to the PR branch** (in the dialog and in the
   session's Info panel) allows pushes for that session only. Pushes go
   through the Mac (FC-7).
@@ -846,7 +928,7 @@ each repo's branch.
 ### Draft comments
 
 - **PR-9** The agent drafts line comments with the MCP tool
-  `humata.review.draft` (repo, path, line or range, side, text). Drafts are
+  `review_draft` (repo, path, line or range, side, text). Drafts are
   allowed by default and never posted by the agent.
 - **PR-10** The Diff panel's base defaults to each PR's base ("PR #482 against
   main"), grouped per repo with the PR's number. The other bases of RV-1 stay
@@ -867,8 +949,8 @@ each repo's branch.
 
 ### When the PR changes
 
-- **PR-15** While a review session is open, and every few minutes while it is
-  not, Humata checks each PR's head with the Mac's `gh`. New commits show
+- **PR-15** Every minute while a review session is open, and every 5 minutes
+  while it is not, Humata checks each PR's head with the Mac's `gh`. New commits show
   "N new commits, update the clone" on the session (diff header and Home).
 - **PR-16** **Update the clone** fetches the new head and tells the agent
   what changed: the new commits and the files changed since the head it
@@ -942,9 +1024,10 @@ each repo's branch.
   comment the quoted passage with its line numbers and the comment.
 - **SM-10** The message is a bracketed paste, so it arrives as one input. If
   the agent is mid-turn, the message waits in Humata's queue for that session
-  and is typed when the turn ends; the comments show "queued" until then.
+  and is typed when the turn ends, as SE-23 says; the comments show "queued"
+  until then.
 - **SM-11** Each comment has a status: **draft** → **sent** → **addressed**
-  (when the agent changes its passage after it was sent). The user can
+  (by the rule in SM-16). The user can
   **Resolve** a comment or **Reopen** a resolved one; reopening sets it back to
   draft.
 - **SM-12** Resolved comments are hidden by default and shown with **Show
@@ -962,6 +1045,11 @@ each repo's branch.
   submit.
 - **SM-15** The Diff strip badge and footers count draft comments across
   every view of the session.
+- **SM-16** A sent comment becomes addressed when a change the agent makes
+  after it was sent alters any of the comment's anchored lines. A change
+  that only alters whitespace does not count. A passage moved elsewhere
+  unchanged is re-anchored (SM-7) and stays sent. Changes the user makes
+  never address a comment. (provisional, D13)
 
 ## 12. File manager and transfers
 
@@ -1046,8 +1134,8 @@ each repo's branch.
 - **BD-8** The session strip's Board panel shows that session's board.
 - **BD-9** An agent creating, editing, moving or deleting items follows the
   channel's agent access rules (IN-17): by default it may do anything on its
-  own session board, add to the channel board and change channel items it
-  created; anything else is an Inbox request.
+  own session board, add to the channel board and edit, move or delete
+  channel items it created; anything else is an Inbox request.
 - **BD-10** What a fork's session board starts with is open (q5).
 
 ## 14. Inbox and agent access
@@ -1093,9 +1181,9 @@ each repo's branch.
 │ WHAT IT WAS DOING                                                         │
 │   ● Wrote bench/brin_vs_btree.sql (6 queries)                             │
 │   ● Local run: BRIN 2.1× faster — fixture too small to trust              │
-│   ⏳ humata.bridge.connect staging-db:5432                                 │
+│   ⏳ network_connect staging-db:5432                                       │
 │                                                                           │
-│ Asks you because: Reaching a machine outside its clones  Change this rule │
+│ Asks you because: Network connection through the Mac  Change this rule    │
 │ Nothing to undo: read-only. Stop it any time from its terminal.           │
 │                                                                           │
 │ [Approve] [Deny] [Deny and reply…]     [Always let this session connect…] │
@@ -1113,7 +1201,8 @@ each repo's branch.
      channel's Agent access tab).
   7. **Whether it can be undone**, in red when it cannot.
   8. Buttons: **Approve**, **Deny**, **Deny and reply…**, and a specific
-     **Always let …** scoped exactly to this requester and this target.
+     **Always let …** whose label names the session and the target it
+     covers (IN-22).
 - **IN-10** The preview depends on the kind of request:
   - Board item change: the item (opens its drawer) and each field before →
     after.
@@ -1124,42 +1213,69 @@ each repo's branch.
   - Typing into another terminal: the target session and agent, the last
     lines of its terminal, and the exact text to be typed, highlighted.
   - New session or fork: agent, machine, kind, repos and how they are copied,
-    and cost (clone size, a new agent's usage).
+    the size of what will be cloned or copied, and a usage note in words
+    ("Starts a new Codex CLI agent; its usage counts against your Codex
+    plan"). No price is shown.
+  - Network connection: the machine it opens from, the host and port, and
+    that it stays open until the session stops (HO-11).
+  - Push or pull request: each repo, its branch, the commits to push and the
+    PR's title (IN-24).
+  - Question for you: the question, its choices and a reply field (IN-25).
+  - Access asked ahead: the kind of action, its target and the grant that
+    approving makes (IN-26).
   - Cross-machine copy: source machine and path → destination machine and
     path, sizes.
   - Context hand-off or note to another session: the exact content to be
     sent.
 - **IN-11** **Open session ↗** opens the requester's session with its Inbox
   panel on "This session" and the request selected.
-- **IN-12** Approve performs the action, unblocks the agent's call, and prints
-  a line in the agent's terminal ("… — approved by you").
-- **IN-13** Deny returns a denial to the agent's call and prints "… — denied by
-  you". **Deny and reply…** asks for a note; the agent gets the note as the
-  result of its call.
-- **IN-14** **Always let …** approves this request and adds an Allow rule
-  scoped exactly as its label says (this session, this target). It can be
-  undone in Agent access.
+- **IN-12** Approve performs the action whether or not the agent's call is
+  still waiting (TP-13). If the call is waiting, it returns the action's
+  result. If the agent already got "pending" (TP-11), Humata types one line
+  into its terminal at the end of its turn (SE-23): "… — approved by you",
+  with the request id to wait on. (provisional, D4)
+- **IN-13** Deny returns a denial naming the user to the agent's call, or to
+  its next wait on the request (TP-12), and does nothing else. **Deny and
+  reply…** asks for a note; the agent gets the note with the denial. If the
+  agent already got "pending", Humata types "… — denied by you" as IN-12
+  does.
+- **IN-14** **Always let …** approves this request and adds a grant for the
+  requesting session and the target IN-22 names for this kind of action.
+  The label names both ("Always let “Benchmark BRIN” connect to
+  staging-db:5432"). The agent cannot choose a wider scope. The grant is
+  listed and removable in Agent access (IN-19).
 - **IN-15** Answering a request removes it from every scope's pending list at
-  once and updates every count.
+  once and updates every count. Only the first answer counts: a second
+  answer from anywhere fails and says who answered it, how and when (AW-10).
+  (provisional, D3)
 
 ### Agent access
 
-- **IN-16** An agent acts over MCP without asking only on what it owns: its
-  own session, its session board, its own clones and items it created. Every
-  other action is checked against the channel's rules.
+- **IN-16** Some actions need no rule, and no setting stops them: reading its
+  own session (title, status, repos, branches), reading and writing its own
+  clones, its own views and its own requests. A context-only fork reads its
+  parent's clones the same way but can never write them (IN-20). Every other
+  action is checked against the channel's rules, including its own session
+  board and the channel items it created, whose rules default to Allow. The
+  rules govern calls made through Humata only (SEC-5).
 - **IN-17** The Agent access tab lists rules per kind of action, each with
   **Allow / Ask me / Never**, and explains that anything asked lands in the
   Inbox batched with every other agent's requests. Defaults:
 
   | Action | Default |
   | --- | --- |
+  | Read and write its own clones | Always (IN-16; no setting) |
   | Its own session board: add, edit, move, delete | Allow |
+  | See its channel: machines, sessions, the channel board | Allow |
   | Channel board: add items | Allow |
-  | Channel board: edit or move items it created | Allow |
-  | Channel board: edit or move anyone else's items | Ask me |
-  | Global board: anything | Ask me |
-  | Read and write its own clones | Allow |
+  | Channel board: edit, move or delete items it created | Allow |
+  | Channel board: edit, move or delete anyone else's items | Ask me |
+  | Global board, or other channels and their boards: anything | Ask me |
+  | Write into `shared/` on its machine | Allow |
+  | Fetch files from `shared/`, the channel folder or a main clone on its machine into its own clone | Allow |
   | Prepare views for you (you choose whether to open them) | Allow |
+  | Draft PR review comments (review sessions) | Allow |
+  | Ask you a question, or ask ahead for access (IN-25, IN-26) | Allow |
   | Read another session's files (same machine) | Ask me |
   | Read files on another machine (bridged) | Ask me |
   | Copy files into its clone or `shared/` from another session or machine | Ask me |
@@ -1167,9 +1283,21 @@ each repo's branch.
   | Type into another session's terminal | Ask me |
   | Start or fork sessions (same machine) | Ask me |
   | Start or fork sessions on another machine | Ask me |
-  | Reach a machine outside its clones (network) | Ask me |
+  | Start a PR review | Ask me |
+  | Change its own session: rename, add or drop a repo, spec mode, own copy | Ask me |
+  | Stop, archive or delete its own session | Ask me |
+  | Move a session to another machine | Ask me |
+  | Push its branch or open a pull request (IN-24) | Ask me |
+  | Open a network connection through the Mac (HO-11) | Ask me |
+  | Add, create, start or stop machines; sync skills (MP-24) | Ask me |
+  | Restore from trash | Ask me |
+  | Create a channel | Ask me |
   | Stop or delete any session but itself | Never |
-  | Change channel settings, repos or access rules | Never |
+  | Change channel settings or repos | Never |
+  | Remove, forget or delete machines (MP-24) | Never |
+
+  Access rules themselves are not in this list: only the user changes them
+  (IN-23).
 
 - **IN-18** "Never" returns a denial to the agent at once, with the rule named,
   and adds nothing to the Inbox.
@@ -1178,14 +1306,50 @@ each repo's branch.
 - **IN-20** A context-only fork's writes to its parent's clones are never
   allowed, whatever the rules say (FK-7).
 - **IN-21** Rule changes take effect for the next call; pending requests stay
-  pending.
+  pending. When a pending request is answered, the answer is checked against
+  the rule as it is then: approving a request whose rule became Never fails
+  and says the rule changed.
+- **IN-22** A grant made by **Always let …** covers exactly this target:
+
+  | Kind of action | Target the grant covers |
+  | --- | --- |
+  | Read or copy another session's files | That session, and only the paths under the folder asked for |
+  | Read or copy files on another machine | That machine, and only the paths under the folder asked for |
+  | Note, question or typing into another session | That session |
+  | Start or fork a session | That machine and that agent |
+  | Edit, move or delete others' items | That board |
+  | Network connection | That machine, host and port |
+  | Push or pull request | That repo and branch |
+  | Machines | That machine and that action |
+
+  A grant belongs to one session. Forks and rebuilt sessions get none of
+  their parent's grants. A moved session keeps its grants. A grant ends when
+  its session is archived or deleted. A grant whose rule is set to Never
+  stops applying until the rule changes back. An agent cannot widen a grant.
+- **IN-23** Only the user changes access rules, the While I'm away rule,
+  grants, defaults for new channels, Settings and agents' launch commands.
+  No rule lets an agent do it. An agent's attempt is denied at once, names
+  this rule and adds nothing to the Inbox. (provisional, D6)
+- **IN-24** A push or pull request that an agent asks Humata for
+  (`session_push`) goes through the "Push its branch or open a pull request"
+  rule. The user's own **Push and open PR(s)** (MV-12) needs no rule. Review
+  sessions follow PR-7 and PR-8 instead. An uncontained agent
+  that pushes with its own git credentials is not stopped by this rule
+  (SEC-5).
+- **IN-25** An agent can ask the user a question with up to 4 choices. The
+  card shows the question, the choices and a reply field. The user's choice
+  or reply is the result of the agent's call. Waiting works as TP-11.
+- **IN-26** An agent can ask ahead for access: the kind of action, its target
+  and its reason. The card shows them; approving makes the same grant as
+  **Always let …** for that target (IN-22), and denying returns a denial.
 
 ## 15. Agent-prepared views and the Journal
 
-- **VW-1** An agent can call `humata.view.prepare` to prepare a view for the
+- **VW-1** An agent can call `view_prepare` to prepare a view for the
   user: a **review walkthrough** (ordered steps, each a repo, path and note,
-  with a title and summary) or a **board view** (a channel board in a given
-  scope, with a title and summary). Gated by the "Prepare views for you" rule.
+  with a title and summary), a **board view** (a channel board in a given
+  scope, with a title and summary) or a **pull request view** (VW-13). Gated
+  by the "Prepare views for you" rule.
 - **VW-2** Preparing a view changes nothing on screen. Humata shows an offer
   bar: "<agent> in “<session>” prepared a view for you: <title>", the summary,
   and **Open it**, **Later**, **Not now**.
@@ -1214,6 +1378,13 @@ each repo's branch.
   to "prepare the PR review for me").
 - **VW-12** Views work for sessions on remote machines: the view is stored
   with the session on the Mac and its files are read over the bridge.
+- **VW-13** A pull request view holds, per repo, a title, a body, a base
+  branch and whether it is a draft. Preparing it pushes nothing. **Open it**
+  shows the fields, editable, with **Push and open PR(s)**, which runs the
+  push and pull request action (MV-12) with what is shown.
+- **VW-14** A prepared view is a draft until the agent marks it ready. A
+  draft is not offered and is not in the Journal. The agent can revise its
+  draft as often as it likes. Marking it ready shows the offer (VW-2).
 
 ## 16. Agents' view of the topology (MCP tools)
 
@@ -1229,22 +1400,43 @@ outside the session go through the Mac.
   own clone or into `shared/`, subject to the rules.
 - **TP-5** An agent can send a note or summary to another session, or ask it a
   question, subject to the rules. A delivered note is typed into the target's
-  terminal as one message naming the sender; a question's answer is returned
-  to the asking agent's call.
+  terminal at its next turn end (SE-23) as one message naming the sender. A
+  question is typed the same way with its id; the target answers it with
+  `session_answer`, and the answer is the result of the asking agent's
+  call. Until then the question is pending, and waiting works as TP-11.
 - **TP-6** An agent can start a fork of itself on another machine, subject to
-  the rules; the Inbox card shows agent, machine, kind, repos and cost.
+  the rules; the Inbox card shows agent, machine, kind, repos, the size to
+  copy and a usage note (IN-10).
 - **TP-7** An agent can create, edit, move and delete board items on boards it
   may use (BD-9), and prepare views (VW-1).
 - **TP-8** Every cross-machine call goes through the Mac and is checked there
   against the channel's rules; calls on anything the agent doesn't own become
   Inbox requests.
-- **TP-9** While the Mac is offline, cross-machine calls queue on the agent's
-  machine and the call waits; the session keeps running. Writes that need no
-  answer go to the local journal (SL-5). When the Mac is back, queued calls
-  are checked and answered in order.
-- **TP-10** A blocked call shows in the agent's terminal as the CLI shows any
-  pending tool call; Humata adds nothing to the terminal beyond the answer
-  line (IN-12).
+- **TP-9** While the Mac is offline, calls behave as the table in AW-7 says.
+  The session keeps running either way. (provisional, D3)
+- **TP-10** While a call waits, Humata types nothing into the agent's
+  terminal; the agent's CLI shows the call as it shows any waiting tool call.
+  The only line Humata types is the one in IN-12.
+- **TP-11** A call that needs an answer waits up to `wait_seconds` (default
+  45, at most 600). While it waits it reports progress every 15 seconds. Then
+  it returns "pending" with a request id, and the request stays in the
+  Inbox. The agent waits again on that id. (provisional, D4)
+- **TP-12** Waiting again on a request returns what the original call would
+  have: the result once approved, the denial with any note, or "pending"
+  again.
+- **TP-13** An approved request runs its action whether or not the agent is
+  waiting. Its result is kept for 24 hours for the agent to collect.
+  (provisional, D4)
+- **TP-14** Repeating a call with the same request (a client retry) returns
+  the same Inbox request; it never makes a second one.
+- **TP-15** A request is withdrawn when the agent withdraws it, when its
+  session stops, is archived or is deleted, or when the agent's MCP process
+  exits while the call is open and no "pending" was returned. A withdrawn
+  card greys out and can't be answered. A request that returned "pending"
+  stays answerable after the MCP process exits.
+- **TP-16** Every MCP tool is named `<area>_<verb>` (`session_fork`,
+  `board_item_move`) on the MCP server `humata`. Activity, item history and
+  Inbox cards show the dotted operation id (`session.fork`).
 
 ## 17. Hosts and the bridge
 
@@ -1270,14 +1462,35 @@ outside the session go through the Mac.
   offline — reconnecting", and its page says only the link is down, Humata
   retries every 5–30 s, and its files show the last copy read.
 - **HO-6** Humata reconnects on its own with backoff. **Reconnect now** tries
-  at once. On reconnect each session catches up its output exactly (TR-4) and
-  Humata says how many sessions reattached.
+  at once. On reconnect each session catches up its output as TR-4 says:
+  exactly while the missed output is still kept, otherwise from a fresh
+  screen. Humata says how many sessions reattached.
 - **HO-7** Host variables: only their names are sent to clients; values stay
-  on the machine.
+  on the machine. The machine's page lists the names with **Set value…** and
+  **Remove** (HO-13).
 - **HO-8** GitHub access uses the `gh` CLI; there is no GitHub OAuth app. The
   Mac's GitHub token never leaves the Mac.
 - **HO-9** Remote machines never talk to each other directly. Possibly later:
   direct machine-to-machine SSH under the same rules.
+- **HO-10** The bridge carries only Humata's own calls and file transfers.
+  Nothing else crosses it unless the user approves a port forward (HO-11).
+  (provisional, D5)
+- **HO-11** A port forward is opened only when the user approves it. The card
+  shows the machine it opens from, the host and port it reaches, and that it
+  stays open until the session stops. Low-risk rules never cover it, and it
+  can't be approved while the Mac is away. It closes when the session stops.
+  (provisional, D5)
+- **HO-12** The network rule promises only that Humata forwards nothing
+  without approval. An uncontained agent can still open its own connections
+  from its machine (SEC-5); a contained agent cannot (SEC-6). The rule's row
+  in Agent access says so. (provisional, D5, D1)
+- **HO-13** **Set value…** asks for a host variable's value in a masked field
+  and stores it on that machine. Nobody can read a value back, from the app,
+  the CLI or an agent; it can only be replaced or removed. Only the user sets
+  or removes values. `humata host var set <machine> <NAME>` reads the value
+  from the terminal with echo off, or from standard input, never from an
+  argument. Agents launched after the change get the new value in their
+  environment; running agents keep the one they started with.
 
 ### Skills sync
 
@@ -1307,6 +1520,13 @@ outside the session go through the Mac.
   returns.
 - **SK-8** A failed sync is shown where it blocks, on a session that needs the
   missing skill, with the reason and **Retry**.
+- **SK-9** A sync replaces a machine's whole synced set at once. An agent
+  reading skills mid-sync sees the old set or the new one, never a mix.
+- **SK-10** A sync to several machines skips the offline ones and says which
+  were skipped; they sync when they return (SK-7).
+- **SK-11** Every sync, not only the first, can be previewed: what will be
+  added, updated and removed, and any name clashes with machine-local skills.
+  Automatic syncs apply without asking except when there is a new clash.
 
 ## 18. Machine providers
 
@@ -1484,6 +1704,16 @@ status = "hcloud server describe {name} -o json | jq -c '{state: .status}'"
   cross-machine forks, moves and copies, a machine going offline
   mid-transfer, and the kill matrix (PER-23).
 
+### Who may set up machines
+
+- **MP-23** Only the user adds or changes a provider, in Settings. Humata
+  never loads a provider from a repo or from any file an agent can write.
+  Importing a provider file shows its full text and every command it will
+  run; it is added only after the user confirms.
+- **MP-24** An agent may ask to create, start or stop a machine; under the
+  defaults each goes to the Inbox (IN-17). Removing, forgetting or deleting
+  a machine is Never by default.
+
 ## 19. Persistence and resume
 
 This is the core requirement: sessions survive the app, the network, the
@@ -1541,11 +1771,26 @@ daemon and, as far as physically possible, the machine.
   branch, or at the last pushed sha, resumes the conversation from the mirror,
   and marks what is lost (unpushed commits, dirty files) from the last
   pointers.
-- **SL-5** While the host is unreachable, MCP writes on a machine (board item
-  edits, Inbox requests, comments) go to a local append-only journal and
-  replay to the host in order on reconnect.
-- **SL-6** The host is authoritative. Conflicts resolve per item, last writer
-  wins, and the losing write is kept in the item's history.
+- **SL-5** While the host is unreachable, the host-state writes that AW-7
+  marks "journaled" (board items, comment and view drafts, questions to the
+  user) and requests made on the machine go to a local append-only journal.
+  The journal replays to the host in order on reconnect. Nothing else is
+  journaled. (provisional, D3)
+- **SL-6** The host is authoritative. A replayed write is applied field by
+  field against the revision it was made on. Where the host changed the same
+  field since, the later write wins and the other value is kept in the
+  item's history, marked as a lost conflict. Inbox answers never work this
+  way: the first answer wins (AW-10). (provisional, D3)
+- **SL-7** Every board item, comment and view has a revision that goes up
+  with each change. An edit made from a stale revision is not applied: the
+  editor shows the current value and asks again. Board fields, marks and
+  view state may be written without a revision; then the later write wins
+  and the earlier one is kept in history.
+- **SL-8** A delete is kept as a tombstone in history. An edit or move that
+  arrives for a deleted item does not bring it back; it is kept in history.
+  A delete made from an older revision is applied only if nothing it would
+  remove changed since; otherwise the item stays and the delete is kept in
+  history as lost.
 
 ### Tier 1: the app, the Mac's link, SSH
 
@@ -1553,10 +1798,11 @@ daemon and, as far as physically possible, the machine.
   session's machine. The holder is not a child of the SSH connection or of
   the app, and keeps running when either goes away.
 - **PER-2** The holder keeps the terminal's VT screen state (via a terminal
-  emulator library such as `alacritty_terminal`) and flushes scrollback to
-  disk about every second.
+  emulator library) and flushes scrollback to disk at least once a second.
 - **PER-3** When a client reattaches, it gets a full screen snapshot and then
-  all output produced since its last offset, with nothing lost or repeated.
+  all output produced since its last offset, with nothing lost or repeated,
+  while that output is still kept. When it is not, the client gets a fresh
+  snapshot and a count of the lines not kept (TR-4).
 - **PER-4** Quitting or crashing the app, the Mac sleeping or going offline,
   or the SSH link dropping, leaves every session's process running.
 
@@ -1631,18 +1877,52 @@ daemon and, as far as physically possible, the machine.
   offline or off.
 - **AW-2** From any plain SSH terminal on a machine, `humata attach <session>`
   attaches to a session's terminal; detaching leaves it running. `humata ls`
-  lists the machine's sessions.
+  lists the machine's sessions. Attaching with input is user-only and needs
+  presence (SEC-9); an agent's attempt is refused. Several writers may be
+  attached at once (SE-24).
 - **AW-3** While the Mac is away, each remote daemon keeps its agents'
-  requests in its local journal (SL-5), shown by `humata inbox`.
+  requests in its local journal (SL-5). `humata inbox` on that machine shows
+  them, and nothing else shows them until the Mac is back.
 - **AW-4** Each channel has a **While I'm away** rule for requests that would
   ask: **Wait** (the call waits), **Skip the step** (the call is denied with a
   note that the user is away), or **Allow low-risk kinds** (the user picks
-  which kinds count as low-risk).
+  which kinds count as low-risk, from those AW-11 allows).
 - **AW-5** The user can answer requests later from the Mac, or on the machine
-  with `humata inbox` over SSH.
+  with `humata inbox` over SSH. Answering on the machine while the Mac is
+  away needs the approval passphrase (SEC-13).
 - **AW-6** When the Mac reconnects, each journal replays into the host's Inbox
-  in order (SL-5, SL-6); a request answered in one place is answered
-  everywhere.
+  in order (SL-5, SL-6). A request answered on the machine arrives answered,
+  credited to the user on that machine. A request still pending becomes an
+  ordinary Inbox request on the Mac.
+- **AW-7** What each call does:
+
+  | The call | Mac reachable | Mac away |
+  | --- | --- | --- |
+  | Reads and writes of its own session's files, clones and `shared/` | done on the machine | done on the machine |
+  | Reads of channel state (topology, boards, its comments) | answered by the Mac | answered from the last copy, marked with its age |
+  | Writes the rules allow (own board, channel board add, its own items, comment and view drafts, questions to the user) | done | journaled (SL-5) |
+  | Anything the rules say Never | denied | denied |
+  | An Ask on something on this machine (another session here, start or fork here, type into a session here) | Inbox request; the call waits | per the While I'm away rule |
+  | Anything that needs another machine or GitHub (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | done or asked | waits, or under Skip denied saying the Mac is away; never low-risk |
+  | User-only calls | user-only (SEC-9) | only answering requests the machine holds, with the passphrase |
+
+  (provisional, D3)
+- **AW-8** While the Mac is away, a machine judges calls against the last copy
+  of the rules, grants and While I'm away rule the Mac sent it. Nothing on
+  the machine can change that copy. (provisional, D3)
+- **AW-9** On reconnect, every journaled write is checked again against the
+  rules as they are then. A write a tightened rule no longer allows is not
+  applied; it is shown in the item's history and as one line in the agent's
+  terminal. (provisional, D3)
+- **AW-10** The first answer to a request wins. A second answer from anywhere
+  fails and says who answered, how and when. A deny never undoes an approval
+  that already ran. (provisional, D3)
+- **AW-11** Low-risk kinds can never include anything that needs another
+  machine, a network connection, typing into another session, or any action
+  that is Never by default. (provisional, D3)
+- **AW-12** **Always let …** given on the machine while the Mac is away
+  applies there at once and becomes a grant on the Mac at replay, with the
+  same target (IN-22). (provisional, D3)
 
 ## 21. Transport: gRPC streaming
 
@@ -1656,10 +1936,15 @@ daemon and, as far as physically possible, the machine.
   unary calls.
 - **TR-4** Every stream is keyed by an offset (terminal output position, event
   sequence, transfer byte offset). After a reconnect, the client resumes each
-  stream from its last offset and gets exactly what it missed.
+  stream from its last offset and gets exactly what it missed, while that is
+  still kept. A terminal behind its kept scrollback gets a fresh screen and a
+  count of the lines not kept. An event stream behind the kept events gets
+  the current state of everything it watches, then new events.
 - **TR-5** No port is opened on any machine besides SSH.
 - **TR-6** A slow or unreachable machine never stalls the app or other
-  machines' streams.
+  machines' streams: with one machine not answering, the app keeps
+  responding to input and other machines' terminals keep updating at their
+  usual rate.
 
 ## 22. Navigation and UI principles
 
@@ -1677,7 +1962,9 @@ daemon and, as far as physically possible, the machine.
   then the drawer, in that order.
 - **NV-6** Pages that sit inside others show breadcrumbs (channel › parent
   session › session; Hosts › machine).
-- **NV-7** Every screen leads to an action; no state dumps.
+- **NV-7** Every screen offers at least one action on what it shows. A list
+  or table of state is shown only where each row opens something or can be
+  acted on, or where NV-8 lists it as kept on purpose.
 - **NV-8** Humata does not detect or show what the user can't act on from
   that spot, and shows a problem only where it blocks an action. Kept on
   purpose: the Hosts table columns, the host health card, the bridge diagram,
@@ -1688,6 +1975,11 @@ daemon and, as far as physically possible, the machine.
   separate list.
 - **NV-10** Short confirmations appear as a toast at the bottom, sometimes
   with one action ("Show Home").
+- **NV-11** First run with no channels: the main area explains that a channel
+  is a project (its repos, machines, board and sessions) and offers **Create
+  your first channel** and **Add a machine over SSH**, noting that GitHub
+  access comes from the `gh` CLI with no sign-in in Humata.
+
 ### Resizable and collapsible panes
 
 ```text
@@ -1758,11 +2050,23 @@ daemon and, as far as physically possible, the machine.
   first in the Inbox.
 - **NV-23** VIP notifications break through quiet hours only when the user
   allows it in Settings.
+- **NV-24** Pins and VIP marks are kept on the host. The app and `humata
+  pinned` show the same items in the same order.
+- **NV-25** Pinned items keep the order the user gives them, by dragging in
+  the Pinned section or from the palette. A newly pinned item goes at the
+  end.
+- **NV-26** A thing that is deleted or forgotten loses its pin and VIP mark.
+  Archiving keeps both.
 
-- **NV-11** First run with no channels: the main area explains that a channel
-  is a project (its repos, machines, board and sessions) and offers **Create
-  your first channel** and **Add a machine over SSH**, noting that GitHub
-  access comes from the `gh` CLI with no sign-in in Humata.
+### Confirmations
+
+- **NV-27** A confirmation acts only on the list it showed. If what the action
+  would touch changed while the dialog was open (a session started, a
+  commit appeared, an item was added), confirming does nothing; the dialog
+  shows the new list and asks again. This holds for archiving, deleting,
+  dropping a repo from a session, removing a repo or machine from a channel,
+  forgetting a machine, emptying the trash, changing a Humata root and
+  submitting a review.
 
 ## 23. Home, global Inbox, Global board, palette
 
@@ -1814,14 +2118,11 @@ daemon and, as far as physically possible, the machine.
 - **ST-1** **Agents**: each agent with its launch command, whether it supports
   context forks, and **Edit** (launch command and its variables). The page
   explains that a context fork needs the agent to copy its conversation under
-  a new id, and that agents that can't offer only code-only forks.
+  a new id, and that agents that can't offer only code-only forks. Each
+  agent also shows where its turn ends come from (SE-21): its hooks, or
+  watching its output.
 - **ST-2** The user can add an agent (name, command, resume and fork
   arguments).
-- **ST-15** **Default agent and model**, any built-in or user-added agent,
-  with an optional per-channel override. New session, fork and PR review
-  preselect it.
-- **ST-16** **Sync skills to machines automatically** and skill exclude
-  patterns (SK-3, SK-6).
 - **ST-3** **Terminal**: font, theme (follows the system by default),
   scrollback length (kept on each machine).
 - **ST-4** **Default access for new channels**: the same rules as a channel's
@@ -1829,9 +2130,6 @@ daemon and, as far as physically possible, the machine.
 - **ST-5** **Machines**: per machine, the Humata root folder (FC-10) and the
   VM tier switch (PER-8).
 - **ST-6** **While I'm away** default for new channels (AW-4).
-- **ST-13** **Branch prefix** (e.g. `uhvesta/`), default the `gh` login
-  followed by `/`; can be empty; overridable per channel (FC-12).
-- **ST-14** **Retention** defaults for new channels, all off (LD-16).
 - **ST-7** **Long lines: Wrap / Scroll**, Wrap by default. It applies to code
   in the Diff panel, the editor tab (all three modes), the Files viewer and
   review views. The setting persists across restarts and changing it takes
@@ -1861,16 +2159,78 @@ daemon and, as far as physically possible, the machine.
 - **ST-11** In Scroll mode each line is one visual line and the view scrolls
   horizontally; in side by side both sides scroll together.
 - **ST-12** The terminal is not affected: it wraps as the agent CLI draws it.
+- **ST-13** **Branch prefix** (e.g. `uhvesta/`), default the `gh` login
+  followed by `/`; can be empty; overridable per channel (FC-12).
+- **ST-14** **Retention** defaults for new channels, all off (LD-16).
+- **ST-15** **Default agent and model**, any built-in or user-added agent,
+  with an optional per-channel override. New session, fork and PR review
+  preselect it.
+- **ST-16** **Sync skills to machines automatically** and skill exclude
+  patterns (SK-3, SK-6).
+- **ST-17** **Security**: **Contain agents** and its per-channel override
+  (SEC-6), the approval passphrase (SEC-13), and CLI logins and script
+  tokens, each with **Revoke** (SEC-14).
 
 ## 25. Security and secrets
 
 - **SEC-1** Values of host variables are never sent to clients and never
-  written to project files; only their names cross.
+  written to project files; only their names cross. They reach the agents on
+  their machine as environment variables (HO-13). Before a transcript is
+  mirrored to the Mac, exact values are replaced (LD-21).
 - **SEC-2** The GitHub token never leaves the Mac. Remote clones without `gh`
   use bundles and pushes through the Mac (FC-7).
-- **SEC-3** Agents get only what the rules allow; a context-only fork can
-  never write its parent's files.
+- **SEC-3** Agents get only what the rules allow for calls made through
+  Humata (SEC-5); a context-only fork can never write its parent's files
+  through Humata.
 - **SEC-4** The local socket is readable only by the user.
+- **SEC-5** An agent that is not contained runs as the user and can read and
+  write anything the user can on its machine, and open network connections,
+  without asking Humata. The rules don't stop that. The Agent access tab and
+  each session's Info panel say so in these words for uncontained sessions.
+  (provisional, D1)
+- **SEC-6** **Contain agents** is off by default and can be turned on in
+  Settings, with a per-channel override. A contained agent can write only
+  inside its session folder and `shared/`. Its reads of other sessions'
+  folders, Humata's own folders, `~/.ssh` and the `gh` config fail. Its only
+  network connection is to its daemon's socket. A change applies when a
+  session next launches or resumes. (provisional, D1)
+- **SEC-7** Some actions are the user's only, and no rule or grant gives
+  them to an agent: answering Inbox requests; changing access rules, grants,
+  the passphrase, Settings, agents and providers; pins and VIP; submitting a
+  review or letting an agent push (PR-8); marking files reviewed and sending
+  comments; emptying the trash; setting host variables; changing a machine's
+  root or VM tier; opening a shell or attaching with input; and deleting a
+  channel. An agent that tries one is refused, told the action is the
+  user's, and pointed at asking the user (IN-25).
+- **SEC-8** A `humata` command run inside a session's process tree acts as
+  that session's agent, with that agent's rules, wherever it was typed.
+  (provisional, D2)
+- **SEC-9** A `humata` command run outside any session is treated as an
+  unverified user. It can read only that machine's own state. Writes, reads
+  that go through the Mac and user-only actions need presence (SEC-10).
+  (provisional, D2)
+- **SEC-10** The user shows presence in one of three ways: confirming in the
+  app (a dialog naming the command, with **Allow** and **Don't Allow**);
+  `humata login`, which lasts up to 12 hours or until `humata logout`; or the
+  approval passphrase while the Mac is away (SEC-13). Typing "yes" at a
+  prompt never counts. (provisional, D2)
+- **SEC-11** A login covers only the terminal session it was made in. A
+  process that leaves that session (for example with `setsid`) is not
+  covered.
+- **SEC-12** A presence prompt shown inside a session's own terminal is
+  refused: an agent could answer it.
+- **SEC-13** The approval passphrase is set in Settings › Security. It has at
+  least 5 random words. Five wrong tries lock it for 15 minutes on that
+  machine. The Settings page explains how to answer over SSH with the Mac
+  closed: `humata login` with the passphrase, then `humata inbox`.
+- **SEC-14** Scripts use tokens the user makes in Settings › Security. A token
+  lists what it may do, which channels and when it expires. Tokens can be
+  listed and revoked. A token can never do a user-only action.
+- **SEC-15** No tool takes a caller's identity as an argument: an agent is
+  always the session it was launched in. If a session's identity is used
+  from outside that session's process tree, the call is refused, the
+  identity is replaced at the session's next resume, and the Activity tab
+  records it.
 
 ## 26. UX flows
 
@@ -1926,17 +2286,17 @@ daemon and, as far as physically possible, the machine.
 4. Clicks **Open session ↗** on the card. "API rate limiter" opens with its
    Inbox panel and the request selected, beside its terminal.
 5. Reads the terminal: the test failing on `accounts.balance_cents`.
-6. Clicks **Approve**. The terminal shows "approved by you"; the agent
-   continues. Counts drop everywhere.
+6. Clicks **Approve**. The agent's waiting call returns the files and the
+   agent continues; nothing is typed into its terminal (IN-12). Counts drop everywhere.
 
 ### 26.5 Agent forks itself onto a GPU machine
 
 ```text
  Benchmark session (devbox-1)        This Mac (bridge)            gpu-box
  ─────────────────────────────      ──────────────────          ─────────────
- humata.session.fork(gpu-box) ───▶  check rules: Ask me
+ session_fork(gpu-box) ──────────▶  check rules: Ask me
                                     Inbox card: agent, machine,
-                                    kind, repos, cost
+                                    kind, repos, size, usage
                                     user: Approve
            ◀── pause point ─────────
  branch + uncommitted files  ─────▶ relay (stream, offsets) ──▶ session clone
@@ -1951,7 +2311,8 @@ daemon and, as far as physically possible, the machine.
 1. The agent in "Benchmark BRIN vs btree" on devbox-1 calls the fork tool for
    gpu-box, code + context.
 2. The Mac checks the rule "Start or fork sessions on another machine": Ask
-   me. A card appears with agent, machine, kind, repos and cost.
+   me. A card appears with agent, machine, kind, repos, the size to copy and
+   a usage note.
 3. The user approves.
 4. The branch and uncommitted files stream from devbox-1 through the Mac into
    new session clones on gpu-box; the conversation is copied and its path-keyed
@@ -2015,8 +2376,9 @@ daemon and, as far as physically possible, the machine.
 ### 26.10 Working away from the Mac
 
 1. The Mac is closed. Sessions on devbox-1 keep working.
-2. The user SSHes to devbox-1 from another computer and runs `humata ls`, then
-   `humata attach api-rate-limiter`.
+2. The user SSHes to devbox-1 from another computer, runs `humata login` and
+   enters the approval passphrase (SEC-10, SEC-13), then runs `humata ls`
+   and `humata attach api-rate-limiter`.
 3. They type into the agent's terminal, then detach; the session keeps running.
 4. An agent asks to read another session's files; the channel's While I'm away
    rule is Wait, so the request waits in devbox-1's inbox.
@@ -2038,8 +2400,8 @@ daemon and, as far as physically possible, the machine.
 
 1. The user asks the agent in "Ledger schema migration" to prepare the PR
    review.
-2. The agent calls `humata.view.prepare`. An offer bar appears: "PR review:
-   ledger schema" with its summary.
+2. The agent calls `view_prepare` and marks the view ready. An offer bar
+   appears: "PR review: ledger schema" with its summary.
 3. The user clicks **Open it**. A review tab opens: step 1
    `0042_accounts.sql` with the agent's note; a bar says "Showing “PR review:
    ledger schema”" with Revert and Keep.
@@ -2116,7 +2478,7 @@ daemon and, as far as physically possible, the machine.
    `~/Humata/pr-reviews/sessions/…` on devbox-1 and starts the agent with the
    PRs and the focus.
 4. The agent builds and runs the tests, then drafts three comments with
-   `humata.review.draft`. They show as drafts under their lines.
+   `review_draft`. They show as drafts under their lines.
 5. The user edits one, drops one, adds one of their own as Draft for GitHub.
 6. The author pushes 2 commits. The session shows "2 new commits, update the
    clone"; the user clicks it and the agent is told which files changed.
@@ -2248,6 +2610,8 @@ decisions:
 - **q1** Channel feed: events only, or can the user also post notes into it?
 - **q2** Diff comments: pasted into the agent's terminal as one message (as
   specified), or kept in Humata for the agent to fetch over MCP?
+- **q3** Answered: context-only forks are read-only on their parent's files
+  (FK-7, IN-20).
 - **q4** Main clones: read-only reference only, or may a plain shell session
   work in them?
 - **q5** Does a fork's session board start as a copy of its parent's, empty,
@@ -2255,11 +2619,11 @@ decisions:
 - **q6** The earlier planning-thread idea: drop it, or make "spec" a kind of
   board item?
 - **q7** Across the bridge, what may cross (file reads, file writes, terminal
-  input, MCP calls), and which always ask?
+  input, MCP calls), and which always ask? Answered provisionally (D5):
+  only Humata's own calls and file transfers, each under its rule; port
+  forwards only on approval (HO-10, HO-11, HO-12).
 - **q8** Confirm dropping Humata 1's chat features (queue, /rewind, /compact,
   images).
 - **q9** Should Humata also show a structured view of tool calls beside the
   terminal?
-
-Answered: **q3** context-only forks are read-only on their parent's files;
-**q10** channels span many machines.
+- **q10** Answered: channels span many machines.

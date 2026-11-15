@@ -1,0 +1,6 @@
+# Don't resolve to crate versions published less than 3 days ago, so a
+# compromised or broken release has time to be noticed and yanked first.
+# Needs cargo 1.100+. To take a newer version anyway, once you've checked it,
+# run `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow cargo update -p <crate>`.
+[registry]
+global-min-publish-age = "3 days"

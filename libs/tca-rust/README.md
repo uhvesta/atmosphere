@@ -52,10 +52,44 @@ store.receive(Action::Added, |_| {});
   UI thread: `send` reduces the action and tells observers before it returns,
   with no channel or lock, and its state needn't be `Send`. What its effects
   send later is reduced by its `run` future, on that same thread.
+- **Navigation:** `PresentationState` and `PresentationAction` hold a
+  sheet or popover; `if_presented` runs the child on it, drops actions that
+  come once it's gone and cancels its effects when it's dismissed, from the
+  parent or by the child returning `Effect::dismiss()`. `StackState`,
+  `StackAction` and `for_each_in_stack` do the same for a stack of screens:
+  popping one pops those above it and stops their effects. `AlertState` and
+  `alert` describe an alert and its buttons as data.
+- **Shared state:** `Shared<T>` is one value many features read. Readers
+  share it rather than copy it, a change made through any of them is seen by
+  all, `subscribe` tells a callback of each change until its `Observation`
+  is dropped, and `changes` is an effect that sends an action per change.
+- **`Dependencies`:** clients found by type. The app builds the live set
+  once; a test overrides any of them with `with` and builds the feature
+  from that, so it never reaches the live client. A missing one is a
+  `DependencyError` when the feature is made, not when it runs.
+- **Persistence:** a `Storage` keeps bytes by key (`MemoryStorage` for
+  tests, `FileStorage` writing each key to a file in a folder, replaced
+  whole through a temporary file and a rename). A `Codec` turns a value into
+  bytes. `Persistence` restores a value, falling back to the default with
+  the reason when it's missing or can't be read, and saves it after changes
+  pause. `Persisting` wraps a reducer to save the part of its state it's
+  told to whenever that part changes.
+- **Streams:** `Effect::stream` opens an `EventStream`, such as a `tokio`
+  channel of results, sends an action per item and one when it ends
+  (`StreamEnd`). Keep the last item's cursor in state and open the next
+  stream from it to resume after a drop. Cancelling the effect drops the
+  stream.
+- **Fine-grained observation:** observers watch a part of the state chosen
+  by a selector, and are told only when that part changes, so a row's view
+  hears of its row, not of the other ten thousand.
 - **An exhaustive `TestStore`:** each step must change the state as the test
   says, with a line diff when it doesn't. Every action effects send must be
   received, and no effect may still run at the end. `non_exhaustive` checks
-  only what a test asks about.
+  only what a test asks about: its expectations apply to the state after
+  the action, and actions it doesn't ask for are reduced and let go.
+  `try_send`, `try_receive` and `try_finish` return a `TestFailure` instead
+  of panicking, and `settle` runs the effects that are ready, as after a
+  `TestClock` is advanced.
 
 ## How it differs from the Swift library
 
