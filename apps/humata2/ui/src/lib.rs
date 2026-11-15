@@ -16,6 +16,8 @@ mod pages;
 mod lists;
 mod channel;
 mod board;
+mod hosts;
+mod settings;
 mod session_tabs;
 mod panels;
 mod shell;
@@ -85,6 +87,9 @@ gpui_kit::assets::icon_assets!(
         ShieldCheck,
         Bot,
         SquarePen,
+        HardDrive,
+        Bell,
+        Keyboard,
         SquareTerminal,
         WifiOff,
     ]

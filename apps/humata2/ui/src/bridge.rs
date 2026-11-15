@@ -113,6 +113,8 @@ impl Ui {
                     state.load.clone(),
                     state.route.clone(),
                     state.navigation_overlay,
+                    state.hosts.selected.clone(),
+                    state.settings.preferences.show_pinned,
                 )
             },
             move |_| changed(),

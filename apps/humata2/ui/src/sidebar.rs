@@ -409,7 +409,11 @@ impl Render for Sidebar {
             .iter()
             .position(|r| matches!(r.kind, RowKind::Section("Channels")))
             .unwrap_or(0);
-        let pinned: Vec<_> = rows[..channel_start].to_vec();
+        let pinned: Vec<_> = if self.ui.read(|s| s.settings.preferences.show_pinned) {
+            rows[..channel_start].to_vec()
+        } else {
+            Vec::new()
+        };
         let rows = rows
             .iter()
             .skip(channel_start + 1)
@@ -449,6 +453,7 @@ impl Render for Sidebar {
             .flex_1()
         };
         let ui = &self.ui;
+        let selected_host = ui.read(|s| s.hosts.selected.clone());
         let (route, waiting, machines) = ui.read(|s| {
             (
                 s.route.clone(),
@@ -457,7 +462,19 @@ impl Render for Sidebar {
                     .iter()
                     .filter(|r| r.answer.is_none())
                     .count(),
-                s.workspace.machines.clone(),
+                s.workspace
+                    .machines
+                    .iter()
+                    .filter(|m| {
+                        m.online
+                            || !s
+                                .workspace
+                                .machine_health
+                                .get(&m.id)
+                                .is_some_and(|h| h.stopped)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
             )
         });
         widgets::col()
@@ -633,7 +650,21 @@ impl Render for Sidebar {
                                 .child("offline"),
                         )
                     })
-                    .on_click(move |_, _, cx| ui.send(AppAction::Switch(Route::Hosts), cx))
+                    .when(
+                        route == Route::Hosts && selected_host.as_ref() == Some(&m.id),
+                        |x| {
+                            x.rounded(px(6.))
+                                .bg(rgb(look.selection))
+                                .text_color(rgb(0xffffff))
+                        },
+                    )
+                    .on_click(move |_, _, cx| {
+                        ui.send(AppAction::Switch(Route::Hosts), cx);
+                        ui.send(
+                            AppAction::Hosts(humata2_hosts::HostsAction::Select(m.id.clone())),
+                            cx,
+                        );
+                    })
                     .test_support()
             }))
             .child(div().flex_1())

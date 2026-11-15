@@ -233,6 +233,36 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             last_seen: "12 min ago".into(),
         },
     ];
+    workspace.machines.push(Machine {
+        id: MachineId::new("cloud-vm-3"),
+        name: "cloud-vm-3".into(),
+        kind: MachineKind::Provider {
+            provider: "cloud".into(),
+        },
+        online: false,
+        detail: "Ubuntu 24.04 · provider".into(),
+        last_seen: "stopped".into(),
+    });
+    for (id, system, used, free, latency, stopped) in [
+        ("this-mac", "macOS 26.7 · arm64", 42, 210, None, false),
+        ("devbox-1", "Ubuntu 24.04 · ssh", 88, 11, Some(18), false),
+        ("gpu-box", "Debian 13 · ssh", 30, 140, None, false),
+        ("cloud-vm-3", "Ubuntu 24.04 · provider", 10, 90, None, true),
+    ] {
+        workspace.machine_health.insert(
+            MachineId::new(id),
+            crate::model::MachineHealth {
+                system: system.into(),
+                daemon: "2.0.3".into(),
+                uptime: "6 days".into(),
+                tools: vec!["gh 2.83".into(), "claude 2.4".into(), "codex 0.98".into()],
+                disk_used_percent: used,
+                disk_free_gb: free,
+                latency_ms: latency,
+                stopped,
+            },
+        );
+    }
     for (name, repos) in [
         ("payments-rewrite", vec!["acme/ledger", "acme/api"]),
         ("infra", vec!["acme/infra"]),

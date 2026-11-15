@@ -669,7 +669,11 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                                     machine.id
                                                 )),
                                                 machine.name.clone(),
-                                                AppAction::Navigate(Route::Hosts),
+                                                AppAction::Hosts(
+                                                    humata2_hosts::HostsAction::Select(
+                                                        machine.id.clone(),
+                                                    ),
+                                                ),
                                                 look,
                                             )
                                             .ghost()

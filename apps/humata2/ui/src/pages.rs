@@ -53,11 +53,19 @@ pub fn page(
     state: &AppState,
     channel_filter: Entity<InputState>,
     board_inputs: &crate::board::Inputs,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     match &state.route {
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
+        Route::Settings => crate::settings::page(ui, state, Look::of(cx)).into_any_element(),
+        Route::Hosts => crate::hosts::page(
+            ui,
+            state,
+            f32::from(window.viewport_size().width) - state.layout.sidebar.width,
+            Look::of(cx),
+        )
+        .into_any_element(),
         Route::Board(_) => {
             crate::board::page(ui, state, board_inputs, Look::of(cx)).into_any_element()
         }
@@ -311,8 +319,8 @@ pub(crate) fn terminal_body(
         .gap(px(1.))
         .bg(rgb(look.term))
         .font_family("Menlo")
-        .text_size(px(12.))
-        .line_height(px(17.))
+        .text_size(px(f32::from(state.settings.preferences.font_size)))
+        .line_height(px(f32::from(state.settings.preferences.font_size) + 5.))
         .children(base.iter().chain(live).map(|line| {
             div()
                 .text_color(rgb(match line.from {

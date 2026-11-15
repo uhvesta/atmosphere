@@ -216,7 +216,10 @@ impl AppState {
                 view: saved.board.clone(),
                 ..Default::default()
             },
-            hosts: HostsState::default(),
+            hosts: HostsState {
+                selected: saved.selected_host.clone(),
+                ..Default::default()
+            },
             files: FilesState::default(),
             settings: SettingsState::default(),
             palette: PaletteState::default(),
@@ -268,6 +271,7 @@ impl AppState {
             layout: self.layout,
             full_screens: self.full_screens.clone(),
             channels: self.channel_pages.clone(),
+            selected_host: self.hosts.selected.clone(),
             board: self.board.view.clone(),
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
@@ -1105,6 +1109,13 @@ impl App {
             AppAction::CloseNavigationOverlay => {
                 state.navigation_overlay = false;
                 Effect::none()
+            }
+            AppAction::Hosts(HostsAction::Select(id)) => {
+                let navigate = self.switch(state, Route::Hosts);
+                Effect::merge([
+                    navigate,
+                    self.child(state, AppAction::Hosts(HostsAction::Select(id))),
+                ])
             }
             AppAction::Board(BoardAction::SetScope(scope)) => {
                 if matches!(state.route, Route::Board(_)) {

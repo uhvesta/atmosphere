@@ -859,3 +859,78 @@ fn board_creates_in_selected_column_and_answers_the_item_request() {
     assert!(app.contains("board-card INF-2"));
     assert!(!app.contains("board-card PAY-3"));
 }
+
+#[test]
+fn hosts_and_settings_reference_images() {
+    use humata2_clients::model::MachineId;
+    use humata2_hosts::HostsAction as H;
+    let mut app = App::new(fixture::design());
+    app.cx
+        .update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    app.send(AppAction::Hosts(H::Select(MachineId::new("devbox-1"))));
+    assert!(app.contains("host-row devbox-1"));
+    app.snapshot("28-hosts");
+    app.send(AppAction::Switch(Route::Settings));
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("29-settings");
+}
+
+#[test]
+fn host_reconnect_and_shell_use_the_selected_machine() {
+    use humata2_clients::model::{Agent, MachineId};
+    use humata2_hosts::HostsAction as H;
+    let mut app = App::new(fixture::design());
+    app.send(AppAction::Hosts(H::Select(MachineId::new("gpu-box"))));
+    app.click("host-connect gpu-box");
+    assert!(app.ui.read(|s| {
+        s.workspace
+            .machine(&MachineId::new("gpu-box"))
+            .unwrap()
+            .online
+    }));
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(720.), px(760.)));
+            window.bounds_changed(cx);
+        })
+        .expect("resize Hosts");
+    app.settle();
+    app.click("host-open-shell");
+    assert!(app.ui.read(|s|matches!(s.overlay(),Some(humata2_app::Overlay::NewSession(sheet)) if sheet.machine==Some(MachineId::new("gpu-box"))&&sheet.agent==Agent::Shell)));
+}
+
+#[test]
+fn layout_settings_keep_the_hidden_group_and_toggle_pinned_rows() {
+    use humata2_settings::{Section, SettingsAction as T};
+    let mut workspace = fixture::design();
+    workspace
+        .sessions
+        .iter_mut()
+        .find(|s| s.id.as_str() == "ledger")
+        .unwrap()
+        .pinned = true;
+    let mut app = App::new(workspace);
+    app.open("ledger", Panel::Changes);
+    app.click("add-tab-0");
+    app.click("split-terminal-0-zsh");
+    assert!(app.contains("add-tab-1"));
+    app.send(AppAction::Switch(Route::Settings));
+    app.click("settings-panes-Fixed");
+    app.click("settings-pinned");
+    assert!(!app.contains("sidebar-pinned-ledger"));
+    app.send(AppAction::Navigate(Route::Session(SessionId::new(
+        "ledger",
+    ))));
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 2);
+    app.send(AppAction::Settings(T::SplitGroups(true)));
+    assert!(app.contains("add-tab-0") && app.contains("add-tab-1"));
+    app.send(AppAction::Switch(Route::Settings));
+    app.click("settings-theme-Light");
+    app.cx
+        .update(|cx| assert!(!gpui_kit::component::ActiveTheme::theme(cx).is_dark()));
+    app.click("settings-font-plus");
+    assert_eq!(app.ui.read(|s| s.settings.preferences.font_size), 13);
+    app.send(AppAction::Settings(T::Section(Section::General)));
+    app.click("settings-wrap");
+    assert!(!app.ui.read(|s| s.review.wrap));
+}

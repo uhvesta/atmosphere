@@ -54,6 +54,8 @@ pub struct SavedUi {
     pub recent: Vec<Command>,
     /// Prepared views decided on.
     pub views: Decisions,
+    /// The selected machine in Hosts.
+    pub selected_host: Option<MachineId>,
     /// Hosts that answered.
     pub connected: BTreeSet<MachineId>,
 }

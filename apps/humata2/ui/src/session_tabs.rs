@@ -177,7 +177,7 @@ fn tab_row(
         })
 }
 
-fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
+fn menu(ui: &Rc<Ui>, group: usize, split_groups: bool, look: Look) -> Stateful<Div> {
     col()
         .id("new-terminal-menu")
         .absolute()
@@ -219,21 +219,23 @@ fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
                     .child(name)
                     .test_support(),
                 )
-                .child(
-                    send(
-                        ui,
-                        format!("split-terminal-{group}-{}", agent.command()),
-                        "Open in second group",
-                        SessionAction::OpenTerminal { agent, split: true },
-                        look,
+                .when(split_groups, |x| {
+                    x.child(
+                        send(
+                            ui,
+                            format!("split-terminal-{group}-{}", agent.command()),
+                            "Open in second group",
+                            SessionAction::OpenTerminal { agent, split: true },
+                            look,
+                        )
+                        .px(px(6.))
+                        .py(px(5.))
+                        .rounded(px(4.))
+                        .hover(move |x| x.bg(rgb(look.fill)))
+                        .child(chrome::icon(IconName::Columns2, look.secondary, 14.))
+                        .test_support(),
                     )
-                    .px(px(6.))
-                    .py(px(5.))
-                    .rounded(px(4.))
-                    .hover(move |x| x.bg(rgb(look.fill)))
-                    .child(chrome::icon(IconName::Columns2, look.secondary, 14.))
-                    .test_support(),
-                )
+                })
         }))
         .child(
             send(
@@ -393,59 +395,67 @@ pub(crate) fn body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look)
             )
         }))
         .child(
-            row()
-                .flex_1()
-                .min_h_0()
-                .items_stretch()
-                .children(groups.iter().enumerate().map(|(group, tabs)| {
-                    let selected = tabs.tabs.get(tabs.selected);
-                    col()
-                        .relative()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .overflow_hidden()
-                        .when(group > 0, |g| g.border_l_1().border_color(rgb(look.line)))
-                        .child(tab_row(ui, state, session, group, tabs, look))
-                        .child(match selected {
-                            Some(Tab::File { repo, path }) => {
-                                file_body(state, session, repo, path, look)
-                            }
-                            Some(Tab::View(title)) => {
-                                let view = state
-                                    .workspace
-                                    .views
-                                    .iter()
-                                    .find(|v| v.session == session.id && v.title == *title);
-                                col()
-                                    .id("prepared-view-content")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
-                                    .p(px(18.))
-                                    .gap(px(12.))
-                                    .bg(rgb(look.content))
-                                    .text_color(rgb(look.text))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(title.clone()),
-                                    )
-                                    .children(view.map(|v| {
-                                        div().child(v.body.clone()).test_text(v.body.clone())
-                                    }))
-                                    .test_support()
-                                    .into_any_element()
-                            }
-                            Some(Tab::Terminal(tab)) => {
-                                pages::terminal_body(ui, state, session, *tab, group, look)
-                                    .into_any_element()
-                            }
-                            None => div().into_any_element(),
-                        })
-                        .when(state.session.terminal_menu == Some(group), |g| {
-                            g.child(menu(ui, group, look).test_support())
-                        })
-                })),
+            row().flex_1().min_h_0().items_stretch().children(
+                groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(group, _)| {
+                        state.settings.preferences.split_groups
+                            || *group == state.session.view().map_or(0, |v| v.focused_group)
+                    })
+                    .map(|(group, tabs)| {
+                        let selected = tabs.tabs.get(tabs.selected);
+                        col()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .when(group > 0, |g| g.border_l_1().border_color(rgb(look.line)))
+                            .child(tab_row(ui, state, session, group, tabs, look))
+                            .child(match selected {
+                                Some(Tab::File { repo, path }) => {
+                                    file_body(state, session, repo, path, look)
+                                }
+                                Some(Tab::View(title)) => {
+                                    let view = state
+                                        .workspace
+                                        .views
+                                        .iter()
+                                        .find(|v| v.session == session.id && v.title == *title);
+                                    col()
+                                        .id("prepared-view-content")
+                                        .flex_1()
+                                        .min_h_0()
+                                        .overflow_y_scroll()
+                                        .p(px(18.))
+                                        .gap(px(12.))
+                                        .bg(rgb(look.content))
+                                        .text_color(rgb(look.text))
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(title.clone()),
+                                        )
+                                        .children(view.map(|v| {
+                                            div().child(v.body.clone()).test_text(v.body.clone())
+                                        }))
+                                        .test_support()
+                                        .into_any_element()
+                                }
+                                Some(Tab::Terminal(tab)) => {
+                                    pages::terminal_body(ui, state, session, *tab, group, look)
+                                        .into_any_element()
+                                }
+                                None => div().into_any_element(),
+                            })
+                            .when(state.session.terminal_menu == Some(group), |g| {
+                                g.child(
+                                    menu(ui, group, state.settings.preferences.split_groups, look)
+                                        .test_support(),
+                                )
+                            })
+                    }),
+            ),
         )
 }

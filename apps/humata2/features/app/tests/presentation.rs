@@ -163,3 +163,32 @@ fn board_view_scope_and_filters_restore_together() {
     assert_eq!(restored.board.view, store.state().board.view);
     store.finish();
 }
+
+#[test]
+fn selected_host_and_layout_preferences_restore_without_closing_saved_groups() {
+    use humata2_clients::model::MachineId;
+    use humata2_settings::{SettingsAction as T, Theme};
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    state.hosts.selected = Some(MachineId::new("devbox-1"));
+    let mut store = TestStore::new(state, App::new(clients.clone()));
+    store.send(AppAction::Settings(T::SetTheme(Theme::Light)), |s| {
+        s.settings.preferences.theme = Theme::Light
+    });
+    store.send(AppAction::Settings(T::TogglePinned), |s| {
+        s.settings.preferences.show_pinned = false
+    });
+    store.send(AppAction::Settings(T::SplitGroups(false)), |s| {
+        s.settings.preferences.split_groups = false
+    });
+    saved::Saver::new(clients.storage.clone())
+        .save(1, &store.state().saved())
+        .expect("save preferences");
+    let restored = AppState::launch(&clients);
+    assert_eq!(restored.hosts.selected, Some(MachineId::new("devbox-1")));
+    assert_eq!(
+        restored.settings.preferences,
+        store.state().settings.preferences
+    );
+    store.finish();
+}

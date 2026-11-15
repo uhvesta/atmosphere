@@ -13,6 +13,8 @@ use crate::model::{
 pub struct Workspace {
     /// The hosts.
     pub machines: Vec<Machine>,
+    /// Health reported by each host.
+    pub machine_health: BTreeMap<MachineId, crate::model::MachineHealth>,
     /// The channels, in sidebar order.
     pub channels: Vec<Channel>,
     /// Every session, parents before their forks.

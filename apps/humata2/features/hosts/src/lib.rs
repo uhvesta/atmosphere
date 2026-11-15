@@ -17,6 +17,8 @@ use tca::{Effect, Reducer};
 pub struct HostsState {
     /// Where hosts come from.
     pub workspace: Arc<Workspace>,
+    /// The machine whose health is open.
+    pub selected: Option<MachineId>,
     /// Hosts being connected.
     pub connecting: BTreeSet<MachineId>,
     /// What a reconnect found, per host.
@@ -56,6 +58,8 @@ pub enum HostsAction {
     Show(Arc<Workspace>),
     /// The hosts connected at the last run came back at launch.
     Restore(BTreeSet<MachineId>),
+    /// Inspect a particular machine.
+    Select(MachineId),
     /// Connect was clicked.
     Connect(MachineId),
     /// The reconnect finished.
@@ -84,7 +88,21 @@ impl Reducer for Hosts {
 
     fn reduce(&self, state: &mut HostsState, action: HostsAction) -> Effect<HostsAction> {
         match action {
-            HostsAction::Show(workspace) => state.workspace = workspace,
+            HostsAction::Show(workspace) => {
+                if !state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|id| workspace.machine(id).is_some())
+                {
+                    state.selected = workspace.machines.first().map(|m| m.id.clone());
+                }
+                state.workspace = workspace;
+            }
+            HostsAction::Select(id) => {
+                if state.workspace.machine(&id).is_some() {
+                    state.selected = Some(id);
+                }
+            }
             HostsAction::Restore(previously) => state.previously = previously,
             HostsAction::Connect(machine) => {
                 if !state.connecting.insert(machine.clone()) {

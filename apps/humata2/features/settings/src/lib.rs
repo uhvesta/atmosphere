@@ -9,8 +9,10 @@ use tca::{Effect, Reducer};
 /// The app's colors.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Theme {
-    /// Dark.
+    /// Follow the window system.
     #[default]
+    System,
+    /// Dark.
     Dark,
     /// Light.
     Light,
@@ -18,6 +20,7 @@ pub enum Theme {
 
 /// What the person set.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Preferences {
     /// Colors.
     pub theme: Theme,
@@ -27,6 +30,10 @@ pub struct Preferences {
     pub wrap_diffs: bool,
     /// The agent new sessions start with.
     pub default_agent: Agent,
+    /// Show pinned rows at the top of the sidebar.
+    pub show_pinned: bool,
+    /// Present the session as one or two tab groups.
+    pub split_groups: bool,
     /// Ask before Approve all when something can't be undone.
     pub confirm_destructive: bool,
 }
@@ -34,11 +41,13 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            theme: Theme::Dark,
-            font_size: 13,
-            wrap_diffs: false,
+            theme: Theme::System,
+            font_size: 12,
+            wrap_diffs: true,
             default_agent: Agent::Claude,
             confirm_destructive: true,
+            show_pinned: true,
+            split_groups: true,
         }
     }
 }
@@ -46,9 +55,25 @@ impl Default for Preferences {
 /// The smallest and largest text sizes.
 pub const FONT_SIZES: std::ops::RangeInclusive<u8> = 10..=20;
 
+/// Sections in the native settings sidebar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Section {
+    General,
+    Agents,
+    Machines,
+    #[default]
+    Layout,
+    Access,
+    Storage,
+    Notifications,
+    Keyboard,
+}
+
 /// The settings page's state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SettingsState {
+    /// The selected settings section.
+    pub section: Section,
     /// What is set.
     pub preferences: Preferences,
     /// An API key being typed, before it is saved.
@@ -62,6 +87,12 @@ pub struct SettingsState {
 /// What happens on the settings page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingsAction {
+    /// Open a settings section.
+    Section(Section),
+    /// Show or hide pinned rows.
+    TogglePinned,
+    /// One group or the bounded two-group presentation.
+    SplitGroups(bool),
     /// Saved preferences came back at launch.
     Restore(Preferences),
     /// Pick colors.
@@ -108,6 +139,9 @@ impl Reducer for Settings {
                 state.preferences = restored;
                 state.has_key = self.clients.keychain.has(KEY_NAME).unwrap_or(false);
             }
+            SettingsAction::Section(section) => state.section = section,
+            SettingsAction::TogglePinned => preferences.show_pinned = !preferences.show_pinned,
+            SettingsAction::SplitGroups(split) => preferences.split_groups = split,
             SettingsAction::SetTheme(theme) => preferences.theme = theme,
             SettingsAction::FontSize(delta) => {
                 let size = preferences.font_size.saturating_add_signed(delta);
@@ -129,7 +163,9 @@ impl Reducer for Settings {
                         state.has_key = true;
                         state.error = None;
                     }
-                    Err(error @ KeychainError::Denied { .. }) => state.error = Some(error.to_string()),
+                    Err(error @ KeychainError::Denied { .. }) => {
+                        state.error = Some(error.to_string())
+                    }
                 }
             }
         }

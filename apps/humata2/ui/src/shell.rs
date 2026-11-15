@@ -42,6 +42,7 @@ pub struct Shell {
     channel_filter_value: String,
     _channel_filter_subscription: Subscription,
     board_inputs: crate::board::Inputs,
+    applied_theme: Option<humata2_settings::Theme>,
     _appearance: Subscription,
     viewport: f32,
 }
@@ -87,8 +88,13 @@ impl Shell {
             },
         );
         let board_inputs = crate::board::Inputs::new(&ui, window, cx);
-        let appearance = window.observe_window_appearance(|window, cx| {
-            gpui_kit::component::theme::Theme::sync_system_appearance(Some(window), cx)
+        let appearance_ui = ui.clone();
+        let appearance = window.observe_window_appearance(move |window, cx| {
+            if appearance_ui
+                .read(|s| s.settings.preferences.theme == humata2_settings::Theme::System)
+            {
+                gpui_kit::component::theme::Theme::sync_system_appearance(Some(window), cx);
+            }
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -108,6 +114,7 @@ impl Shell {
             channel_filter_value: String::new(),
             _channel_filter_subscription: channel_filter_subscription,
             board_inputs,
+            applied_theme: None,
             _appearance: appearance,
             viewport: 0.,
         }
@@ -228,6 +235,16 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.ui.read(|s| s.settings.preferences.theme);
+        if self.applied_theme != Some(theme) {
+            self.applied_theme = Some(theme);
+            use gpui_kit::component::theme::{Theme, ThemeMode};
+            match theme {
+                humata2_settings::Theme::System => Theme::sync_system_appearance(Some(window), cx),
+                humata2_settings::Theme::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+                humata2_settings::Theme::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+            }
+        }
         let look = Look::of(cx);
         let viewport = f32::from(window.viewport_size().width);
         if self.viewport != viewport {
@@ -367,7 +384,11 @@ impl Render for Shell {
                     .into_any_element()
             } else {
                 self.ui.read(|state| {
-                    if matches!(state.route, Route::Board(_)) {
+                    if matches!(state.route, Route::Settings) {
+                        crate::settings::toolbar(look).into_any_element()
+                    } else if matches!(state.route, Route::Hosts) {
+                        crate::hosts::toolbar(&ui, look).into_any_element()
+                    } else if matches!(state.route, Route::Board(_)) {
                         crate::board::toolbar(&ui, state, &self.board_inputs, look)
                             .into_any_element()
                     } else if let Route::Channel(id) = &state.route

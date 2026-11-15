@@ -1,0 +1,28 @@
+//! A host selection follows loaded machines and ignores stale links.
+use humata2_clients::{Clients, fixture, model::MachineId};
+use humata2_hosts::{Hosts, HostsAction as A, HostsState};
+use std::sync::Arc;
+use tca::{TestClock, TestStore};
+#[test]
+fn selected_host_survives_refresh_and_falls_back_when_removed() {
+    let workspace = Arc::new(fixture::design());
+    let (clients, _) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    let mut store = TestStore::new(HostsState::default(), Hosts::new(clients));
+    store.send(A::Show(workspace.clone()), |s| {
+        s.workspace = workspace.clone();
+        s.selected = Some(MachineId::new("this-mac"));
+    });
+    store.send(A::Select(MachineId::new("devbox-1")), |s| {
+        s.selected = Some(MachineId::new("devbox-1"))
+    });
+    store.send(A::Select(MachineId::new("missing")), |_| {});
+    store.send(A::Show(workspace.clone()), |_| {});
+    let mut removed = (*workspace).clone();
+    removed.machines.retain(|m| m.id.as_str() != "devbox-1");
+    let removed = Arc::new(removed);
+    store.send(A::Show(removed.clone()), |s| {
+        s.workspace = removed.clone();
+        s.selected = Some(MachineId::new("this-mac"));
+    });
+    store.finish();
+}

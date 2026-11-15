@@ -97,6 +97,19 @@ pub struct Machine {
     pub last_seen: String,
 }
 
+/// Health information reported by a host, never inferred from the UI.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MachineHealth {
+    pub system: String,
+    pub daemon: String,
+    pub uptime: String,
+    pub tools: Vec<String>,
+    pub disk_used_percent: u8,
+    pub disk_free_gb: u64,
+    pub latency_ms: Option<u32>,
+    pub stopped: bool,
+}
+
 /// The agent a session runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Agent {

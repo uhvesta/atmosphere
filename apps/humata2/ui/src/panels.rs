@@ -322,12 +322,13 @@ fn changes(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .overflow_x_scroll()
+                    .when(!state.review.wrap, |x| x.overflow_x_scroll())
+                    .when(state.review.wrap, |x| x.overflow_x_hidden())
                     .child(
                         col()
                             .py(px(6.))
                             .font_family("Menlo")
-                            .text_size(px(11.5))
+                            .text_size(px(f32::from(state.settings.preferences.font_size) - 0.5))
                             .line_height(px(17.))
                             .bg(rgb(look.term))
                             .children(file.lines.iter().map(|line| {
@@ -359,7 +360,8 @@ fn changes(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                                     )
                                     .child(
                                         text(format!("{sign} {}", line.text))
-                                            .whitespace_nowrap()
+                                            .when(!state.review.wrap, |x| x.whitespace_nowrap())
+                                            .when(state.review.wrap, |x| x.flex_1().min_w_0())
                                             .text_color(rgb(look.term_text)),
                                     )
                             })),

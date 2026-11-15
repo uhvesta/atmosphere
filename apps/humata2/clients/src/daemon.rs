@@ -634,6 +634,10 @@ impl Daemon for FakeDaemon {
                     inner.changed(&session);
                     outcomes.push((session, recovery));
                 }
+                if let Some(health) = inner.workspace.machine_health.get_mut(&id) {
+                    health.stopped = false;
+                }
+                inner.emit(Event::Resync);
                 Ok(outcomes)
             },
         )
