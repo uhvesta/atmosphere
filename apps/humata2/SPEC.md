@@ -1271,6 +1271,30 @@ user builds a code-level understanding of the change.
   unchanged is re-anchored (SM-7) and stays sent. Changes the user makes
   never address a comment. (provisional, D13)
 
+### Resolving and archiving (owner direction 2026-11-15, D101)
+
+- **SM-17** A resolved comment stays resolved. Re-anchoring, its passage
+  changing, the agent rewriting the file or a PR update marking it outdated
+  never reopens it or brings it back into view. Only **Reopen** does.
+- **SM-18** An addressed comment shows its passage before and after the
+  agent's change, with **Resolve**. **Resolve N addressed** resolves every
+  addressed comment in the file (or the session's Diff) at once.
+- **SM-19** The agent can resolve a comment with the MCP tool
+  `comment_resolve` (`comment.resolve`), and only with a reply: the call
+  carries a short note on what it did, which shows in the thread marked with
+  the agent's name, as `comment_reply` (DK-9) does. A comment the agent
+  resolved says so ("Resolved by claude") and can be reopened like any other.
+  The action has its own agent access rule (Allow by default); with Never,
+  the tool returns a denial that says the user turned it off.
+- **SM-20** Only the user can **archive** a comment; no MCP tool or CLI
+  command the agent can reach does it. Archiving hides the comment
+  everywhere, including under Show resolved, without marking it dealt with.
+  It works on any comment, drafts included; an archived comment is never
+  sent and is left out of every count (SM-15). Archiving shows an Undo toast.
+- **SM-21** Archived comments are listed under **Archived** in the session's
+  Info panel, with **Unarchive**, and stay in the session's Journal. Drop
+  (SM-7) deletes a comment; archive keeps it.
+
 ## 12. File manager and transfers
 
 ```text

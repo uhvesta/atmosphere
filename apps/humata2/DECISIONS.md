@@ -752,3 +752,8 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - Scratch folders go 7 days after close unless kept; picked folders are never deleted. Moving a Desk session copies its folder and restarts the agent with its conversation.
 - Done at sign-off: frames renamed without `-draft-`; the Desk row is in the sidebar of every frame (01–43); frame 33 (first run) stays alongside 34 (empty Home).
 - Reverse: drop `desktop/tests/design/desk.rs`, the `desk`, `empty` and `fresh` fields in `design/sidebar.rs`, frames 34–43 and SPEC DK-1–DK-9.
+
+## D101: Resolving and archiving comments (owner direction 2026-11-15)
+- **Pick:** SM-17–SM-21. Resolved comments never come back on their own; addressed ones offer Resolve, singly or all at once. Agents may resolve, but only with a reply saying what they did, under their own agent access rule. Archive is the user's alone: it hides a comment everywhere without calling it dealt with, and keeps it under Archived in Info and in the Journal.
+- Frames for the addressed, resolved, archived states and the Archived list are still to be drawn for the owner's review.
+- Reverse: drop SM-17–SM-21 and the `comment_resolve` tool.

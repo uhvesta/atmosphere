@@ -242,6 +242,8 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
 - [ ] Build markdown review (DK-6–DK-8): Preview/Source/Side by side, linked scroll, comments on source lines sent to the session's agent. Frames 39, 41–43.
 - [ ] Record and show last used per session (SPEC SE-26, D99) wherever sessions are listed.
 - [ ] Add the MCP tool `comment_reply` (SPEC DK-9), after DK-1–DK-8.
+- [ ] Draw frames for comment states (addressed with before/after and Resolve, resolved by the agent, archived, the Archived list in Info) for the owner's review (SPEC SM-17–SM-21, D101).
+- [ ] Build resolve/archive (SM-17–SM-21): resolved never comes back, Resolve N addressed, `comment_resolve` MCP tool with a required reply and its own agent access rule, user-only Archive with Undo and the Archived list.
 - [ ] Write the TP-17 delegation rule into Humata's skills and MCP tool descriptions: mechanical calls go to a cheap subagent (Haiku / Luna) with the smallest context window and medium reasoning effort where the CLI allows.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
 
