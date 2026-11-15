@@ -1925,16 +1925,24 @@ daemon and, as far as physically possible, the machine.
 
 - **PER-25** Turning any machine off at any instant (a closed lid, a power
   cut, a crash or a reboot, of the host, a remote machine or both) loses
-  nothing the user had: sessions, tabs, layout, open panes and scroll
-  positions, composer and comment drafts, review comments and their send
-  queue, Inbox requests, answers and grants, journals, pins, settings, and
-  terminal output up to the last sync (500 ms at most). Whatever the user
-  did is on disk, fsynced, before Humata says it's done; high-rate state
-  (drafts, scroll) is saved at least once a second.
-- **PER-26** Turning it back on needs no action: the daemons start at login
-  (PER-18–PER-20), the host reconnects to every machine (PER-21), sessions
-  reattach or resume (PER-13–PER-16), and the app reopens its windows where
-  they were.
+  nothing the user had: every agent session (so each one can be recovered),
+  sessions and their tabs, which screen was showing and what was open on it,
+  which machines were connected, composer and comment drafts, review
+  comments and their send queue, Inbox requests, answers and grants,
+  journals, pins, settings, and terminal output up to the last sync (500 ms
+  at most). Whatever the user did is on disk, fsynced, before Humata says
+  it's done; drafts are saved at least once a second. Exact scroll positions
+  and other fine-grained view state are not kept.
+- **PER-26** Turning it back on puts the user back where they were: the
+  daemons start at login (PER-18–PER-20), the app opens on the same screen
+  with the same sessions and agents open, and local sessions reattach or
+  resume (PER-13–PER-16). The host tries to reconnect to every machine that
+  was connected (PER-21); a machine that needs the user (a login, a
+  passphrase, a VM to start) waits for a manual Connect, which is fine.
+  Once a machine is connected again, its daemon reports what it held, and
+  each of its sessions is reattached, resumed, or listed as recoverable
+  with what's needed, so nothing an agent had on that machine is lost
+  silently.
 - **PER-27** Every multi-step operation (adding a machine, installing tools,
   takeover, sync rules, resume, fork and move, file transfers, the review
   send queue, journal replay) is either finished or cleanly undone after a
