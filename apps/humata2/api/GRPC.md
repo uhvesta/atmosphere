@@ -480,7 +480,7 @@ returns (AW-3).
   answered and how. Last-writer-wins never applies to answers: an approval
   that ran can't be taken back by a later deny, and treating them as
   last-writer-wins would show a deny for something that happened.
-- AW-12: "Always let" from a local answer applies on the machine at once and
+- AW-12: "Always allow" from a local answer applies on the machine at once and
   creates its grant on the host at replay, with the same target (IN-22), so
   the snapshot carries it from then on.
 

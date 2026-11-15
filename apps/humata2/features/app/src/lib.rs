@@ -11,24 +11,36 @@ pub mod channel;
 pub mod layout;
 pub mod saved;
 
+mod commands;
+mod events;
+mod new_channel;
+mod new_session;
+mod overlay;
+mod persist;
+mod route;
+mod toast;
+
+pub use new_channel::{NewChannel, NewChannelAction};
+pub use new_session::{NewSession, NewSessionAction, NewSessionPicker};
+pub use overlay::Overlay;
+pub use route::Route;
+pub use toast::{Toast, ToastAction};
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_board::{Board, BoardAction, BoardState};
-use humata2_clients::model::{
-    Agent, ChannelId, ItemId, MachineId, Scope, SessionId, SessionOptions,
-};
+use humata2_clients::model::{ChannelId, ItemId, Scope, SessionId};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_files::{Files, FilesAction, FilesState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
-use humata2_palette::{Command, Palette, PaletteAction, PaletteState};
+use humata2_palette::{Palette, PaletteAction, PaletteState};
 use humata2_review::{Review, ReviewAction, ReviewState};
 use humata2_session::{Panel, SessionAction, SessionState, Sessions};
 use humata2_settings::{Settings, SettingsAction, SettingsState};
-use humata2_sidebar::{RowKey, Sidebar, SidebarAction, SidebarState};
+use humata2_sidebar::{Sidebar, SidebarAction, SidebarState};
 use humata2_views::{Views, ViewsAction, ViewsState};
-use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer, StreamEnd};
 
 use crate::layout::{FullScreen, Layout, PaneId};
@@ -43,30 +55,6 @@ pub const DRAFT_SAVE: Duration = Duration::from_secs(1);
 /// How many screens Back remembers.
 pub const TRAIL: usize = 50;
 
-/// A screen.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Route {
-    /// What needs the person, across channels (HM-1–5).
-    #[default]
-    Home,
-    /// The Inbox.
-    Inbox,
-    /// A board.
-    Board(Scope),
-    /// A channel's page.
-    Channel(ChannelId),
-    /// A session's page.
-    Session(SessionId),
-    /// Hosts.
-    Hosts,
-    /// Files and transfers.
-    Files,
-    /// Prepared views.
-    Views,
-    /// Settings.
-    Settings,
-}
-
 /// Whether the workspace is there yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Load {
@@ -77,99 +65,6 @@ pub enum Load {
     Ready,
     /// It couldn't load; the message says why and what to do.
     Failed(String),
-}
-
-/// The New session sheet (SE-1).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NewSession {
-    /// Its channel.
-    pub channel: Option<ChannelId>,
-    /// Its agent.
-    pub agent: Agent,
-    /// Its host.
-    pub machine: Option<MachineId>,
-    /// Its title.
-    pub title: String,
-    /// Typed once the agent starts.
-    pub first_message: String,
-    /// Repositories left out of this session.
-    pub excluded_repos: std::collections::BTreeSet<String>,
-    /// The board item this session starts for.
-    pub item: Option<ItemId>,
-    /// The picker currently open.
-    pub picker: Option<NewSessionPicker>,
-    /// Waiting for the daemon.
-    pub creating: bool,
-    /// Why it couldn't be made.
-    pub error: Option<String>,
-}
-
-impl NewSession {
-    /// The branch preview and the branch passed to the host.
-    pub fn branch(&self) -> String {
-        let slug = self
-            .title
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase)
-            .collect::<Vec<_>>()
-            .join("-");
-        if slug.is_empty() {
-            "new-session".into()
-        } else {
-            slug
-        }
-    }
-}
-/// A New session picker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NewSessionPicker {
-    Channel,
-    Machine,
-}
-
-/// The New channel sheet (CH-1).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct NewChannel {
-    /// Its name.
-    pub name: String,
-    /// Its repositories, comma-separated as typed.
-    pub repos: String,
-    /// Waiting for the daemon.
-    pub creating: bool,
-    /// Why it couldn't be made.
-    pub error: Option<String>,
-}
-
-/// Something over the screen. The top one takes the keyboard and Escape
-/// closes it, putting focus back where it was.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Overlay {
-    /// The command palette.
-    Palette,
-    /// The New session sheet.
-    NewSession(NewSession),
-    /// The New channel sheet.
-    NewChannel(NewChannel),
-    /// Keyboard shortcuts.
-    Shortcuts,
-}
-
-/// The action a toast offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ToastAction {
-    RestoreSession(SessionId),
-}
-
-/// A message at the bottom of the window.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Toast {
-    /// Its id, to dismiss it.
-    pub id: u64,
-    /// What it says.
-    pub text: String,
-    pub action: Option<ToastAction>,
-    pub working: bool,
 }
 
 /// The whole app's state.
@@ -343,26 +238,6 @@ impl AppState {
             _ => None,
         }
     }
-
-    fn toast(&mut self, text: String, clock: &Arc<dyn tca::Clock>) -> Effect<AppAction> {
-        self.next_toast += 1;
-        let id = self.next_toast;
-        self.toasts.push(Toast {
-            id,
-            text,
-            action: None,
-            working: false,
-        });
-        if self.toasts.len() > 3 {
-            self.toasts.remove(0);
-        }
-        let sleep = clock.sleep(TOAST);
-        Effect::future(async move {
-            sleep.await;
-            AppAction::ToastExpired(id)
-        })
-        .cancellable(format!("toast-{id}"), true)
-    }
 }
 
 /// A pane change.
@@ -374,38 +249,6 @@ pub enum PaneAction {
     Toggle(PaneId),
     /// Its divider was double-clicked.
     Reset(PaneId),
-}
-
-/// A change to the New session sheet.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NewSessionAction {
-    /// Edit its first message.
-    FirstMessage(String),
-    /// Include or leave out one channel repository.
-    ToggleRepo(String),
-    /// Open/close a picker.
-    Picker(Option<NewSessionPicker>),
-    /// Pick its channel.
-    Channel(ChannelId),
-    /// Pick its agent.
-    Agent(Agent),
-    /// Pick its host.
-    Machine(MachineId),
-    /// Its title changed.
-    Title(String),
-    /// Start it.
-    Create,
-}
-
-/// A change to the New channel sheet.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NewChannelAction {
-    /// Its name changed.
-    Name(String),
-    /// Its repositories changed.
-    Repos(String),
-    /// Make it.
-    Create,
 }
 
 /// Everything that happens in the app.
@@ -539,49 +382,6 @@ impl App {
             .cancellable("events", true)
     }
 
-    /// Hands the new workspace to every feature.
-    fn show(&self, state: &mut AppState) -> Effect<AppAction> {
-        let workspace = &state.workspace;
-        Effect::merge([
-            self.child(
-                state,
-                AppAction::Sidebar(SidebarAction::Show(workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Session(SessionAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Review(ReviewAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Inbox(InboxAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Board(BoardAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Hosts(HostsAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Files(FilesAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Palette(PaletteAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
-                AppAction::Views(ViewsAction::Show(state.workspace.clone())),
-            ),
-        ])
-    }
-
     /// Runs a feature's reducer on its part of the state.
     fn child(&self, state: &mut AppState, action: AppAction) -> Effect<AppAction> {
         match action {
@@ -623,149 +423,6 @@ impl App {
                 Views.reduce(&mut state.views, action).map(AppAction::Views)
             }
             _ => Effect::none(),
-        }
-    }
-
-    fn navigate(&self, state: &mut AppState, route: Route) -> Effect<AppAction> {
-        if state.route != route {
-            let previous = std::mem::replace(&mut state.route, route);
-            state.trail.push(previous);
-            if state.trail.len() > TRAIL {
-                state.trail.remove(0);
-            }
-        }
-        self.arrive(state)
-    }
-
-    fn switch(&self, state: &mut AppState, route: Route) -> Effect<AppAction> {
-        state.route = route;
-        state.navigation_overlay = false;
-        state.trail.clear();
-        self.arrive(state)
-    }
-
-    /// Tells the features what the route now shows.
-    fn arrive(&self, state: &mut AppState) -> Effect<AppAction> {
-        let current = match &state.route {
-            Route::Session(id) => Some(RowKey::Session(id.clone())),
-            Route::Channel(id) => Some(RowKey::Channel(id.clone())),
-            _ => None,
-        };
-        let mut effects = vec![self.child(
-            state,
-            AppAction::Sidebar(SidebarAction::SetCurrent(current)),
-        )];
-        match state.route.clone() {
-            Route::Session(id) => {
-                effects.push(self.child(state, AppAction::Views(ViewsAction::Return(id.clone()))));
-                effects
-                    .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
-                effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
-            }
-            Route::Channel(id) => {
-                state.session.open = None;
-                match state.channel_pages.get(&id).map(|v| v.tab) {
-                    Some(channel::Tab::Inbox) => effects.push(self.child(
-                        state,
-                        AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::Channel(
-                            id,
-                        ))),
-                    )),
-                    Some(channel::Tab::Board) => effects.push(self.child(
-                        state,
-                        AppAction::Board(BoardAction::SetScope(Scope::Channel(id))),
-                    )),
-                    _ => {}
-                }
-            }
-            Route::Inbox => {
-                state.session.open = None;
-                effects.push(self.child(
-                    state,
-                    AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::All)),
-                ));
-            }
-            Route::Board(scope) => {
-                effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
-            }
-            _ => state.session.open = None,
-        }
-        Effect::merge(effects)
-    }
-
-    fn run(&self, state: &mut AppState, command: Command) -> Effect<AppAction> {
-        match command {
-            Command::Home => self.navigate(state, Route::Home),
-            Command::Inbox => self.navigate(state, Route::Inbox),
-            Command::Board => self.navigate(state, Route::Board(Scope::Global)),
-            Command::Hosts => self.navigate(state, Route::Hosts),
-            Command::Files => self.navigate(state, Route::Files),
-            Command::Settings => self.navigate(state, Route::Settings),
-            Command::NewSession => self.reduce(state, AppAction::StartNewSession),
-            Command::NewChannel => self.reduce(state, AppAction::StartNewChannel),
-            Command::ExpandAll => self.child(state, AppAction::Sidebar(SidebarAction::ExpandAll)),
-            Command::CollapseAll => {
-                self.child(state, AppAction::Sidebar(SidebarAction::CollapseAll))
-            }
-            Command::ToggleSidebar => {
-                state.layout.toggle(PaneId::Sidebar);
-                Effect::none()
-            }
-            Command::Fork => self.child(
-                state,
-                AppAction::Session(SessionAction::StartFork(
-                    humata2_clients::model::ForkKind::Worktree,
-                )),
-            ),
-            Command::Archive => self.child(state, AppAction::Session(SessionAction::Archive)),
-            Command::Channel(id) => self.navigate(state, Route::Channel(id)),
-            Command::Session(id) => self.navigate(state, Route::Session(id)),
-            Command::Pull(number) => {
-                let found = state
-                    .workspace
-                    .pulls
-                    .iter()
-                    .find(|pull| pull.number == number);
-                match found.and_then(|pull| pull.session.clone()) {
-                    Some(session) => self.navigate(state, Route::Session(session)),
-                    None => {
-                        let clock = self.clients.clock.clone();
-                        state.toast(
-                            format!(
-                                "No session here opened pull request #{number}. Open it on GitHub, or start a session to review it."
-                            ),
-                            &clock,
-                        )
-                    }
-                }
-            }
-            Command::TogglePanel => {
-                state.layout.toggle(PaneId::Panel);
-                Effect::none()
-            }
-            Command::TerminalFullScreen => {
-                self.reduce(state, AppAction::ToggleFullScreen(FullScreen::Terminal))
-            }
-            Command::File {
-                session,
-                repo,
-                path,
-            } => {
-                let go = self.navigate(state, Route::Session(session));
-                let select = self.child(
-                    state,
-                    AppAction::Session(SessionAction::SelectFile { repo, path }),
-                );
-                let open = self.child(state, AppAction::Session(SessionAction::OpenFile));
-                Effect::merge([go, select, open])
-            }
-            Command::Record => {
-                let clock = self.clients.clock.clone();
-                state.toast(
-                    "Recording starts from the desktop app's --record flag for now.".to_owned(),
-                    &clock,
-                )
-            }
         }
     }
 
@@ -839,93 +496,6 @@ impl App {
             _ => Effect::none(),
         }
     }
-
-    fn apply(&self, state: &mut AppState, event: Event) -> Effect<AppAction> {
-        let workspace = Arc::make_mut(&mut state.workspace);
-        let mut snapshot = None;
-        match event {
-            Event::Output { session, tab, line } => {
-                return self.child(
-                    state,
-                    AppAction::Session(SessionAction::Output { session, tab, line }),
-                );
-            }
-            Event::TerminalData {
-                session,
-                tab,
-                offset,
-                bytes,
-            } => {
-                return self.child(
-                    state,
-                    AppAction::Session(SessionAction::TerminalData {
-                        session,
-                        tab,
-                        offset,
-                        bytes,
-                    }),
-                );
-            }
-            Event::Session(session) => {
-                snapshot = Some(session.id.clone());
-                upsert(&mut workspace.sessions, session, |a, b| a.id == b.id);
-            }
-            Event::Request(request) => {
-                upsert(&mut workspace.requests, request, |a, b| a.id == b.id);
-            }
-            Event::Machine(machine) => {
-                upsert(&mut workspace.machines, machine, |a, b| a.id == b.id);
-            }
-            Event::Transfer(transfer) => {
-                upsert(&mut workspace.transfers, transfer, |a, b| a.id == b.id);
-            }
-            Event::Resync => return self.load(),
-        }
-        let mut effects = vec![self.show(state)];
-        if let Some(id) = snapshot {
-            effects.push(self.child(state, AppAction::Session(SessionAction::Snapshot(id))));
-        }
-        Effect::merge(effects)
-    }
-
-    /// Saves where the person is if it changed: at once for a structural
-    /// change, within a second for drafts.
-    fn persist(&self, state: &mut AppState) -> Effect<AppAction> {
-        if state.load != Load::Ready {
-            return Effect::none();
-        }
-        let now = state.saved();
-        if now == state.last_saved {
-            return Effect::none();
-        }
-        if now.structure() == state.last_saved.structure() {
-            if state.save_due {
-                return Effect::none();
-            }
-            state.save_due = true;
-            let sleep = self.clients.clock.sleep(DRAFT_SAVE);
-            return Effect::future(async move {
-                sleep.await;
-                AppAction::SaveDue
-            });
-        }
-        self.save(state, now)
-    }
-
-    fn save(&self, state: &mut AppState, now: SavedUi) -> Effect<AppAction> {
-        state.save_generation += 1;
-        let generation = state.save_generation;
-        state.last_saved = now.clone();
-        let saver = self.saver.clone();
-        Effect::future(async move {
-            AppAction::Saved(
-                saver
-                    .save(generation, &now)
-                    .err()
-                    .map(|error| error.to_string()),
-            )
-        })
-    }
 }
 
 fn upsert<T>(list: &mut Vec<T>, value: T, same: impl Fn(&T, &T) -> bool) {
@@ -976,364 +546,26 @@ impl App {
                 Effect::none()
             }
             AppAction::Event(event) => self.apply(state, event),
-            AppAction::EventsEnded(end) => {
-                let text = match end {
-                    StreamEnd::Finished => {
-                        "The daemon stopped sending updates. Reconnecting.".to_owned()
-                    }
-                    StreamEnd::Failed(error) => {
-                        format!("Lost updates from the daemon: {error}. Reconnecting.")
-                    }
-                };
-                Effect::merge([state.toast(text, &clock), self.load(), self.follow()])
-            }
-            AppAction::UndoToast(id) => {
-                let Some(toast) = state.toasts.iter_mut().find(|t| t.id == id && !t.working) else {
-                    return Effect::none();
-                };
-                let Some(ToastAction::RestoreSession(session)) = toast.action.clone() else {
-                    return Effect::none();
-                };
-                toast.working = true;
-                let daemon = self.clients.daemon.clone();
-                Effect::future(async move {
-                    AppAction::Undone {
-                        toast: id,
-                        result: daemon.restore_session(&session).await,
-                    }
-                })
-            }
-            AppAction::Undone { toast, result } => match result {
-                Ok(()) => {
-                    state.toasts.retain(|t| t.id != toast);
-                    Effect::none()
-                }
-                Err(error) => {
-                    if let Some(toast) = state.toasts.iter_mut().find(|t| t.id == toast) {
-                        toast.working = false;
-                    }
-                    state.toast(error.to_string(), &clock)
-                }
-            },
+            AppAction::EventsEnded(end) => self.events_ended(state, end),
+            AppAction::UndoToast(id) => self.undo_toast(state, id),
+            AppAction::Undone { toast, result } => self.toast_undone(state, toast, result),
             AppAction::Retry => {
                 state.load = Load::Loading;
                 Effect::merge([self.load(), self.follow()])
             }
             AppAction::Navigate(route) => self.navigate(state, route),
             AppAction::Switch(route) => self.switch(state, route),
-            AppAction::Back => match state.trail.pop() {
-                Some(route) => {
-                    state.route = route;
-                    self.arrive(state)
-                }
-                None => Effect::none(),
-            },
-            AppAction::Escape => {
-                if let Some(top) = state.overlays.pop() {
-                    if top == Overlay::Palette {
-                        state.palette.open = false;
-                    }
-                    return Effect::none();
-                }
-                if state.navigation_overlay {
-                    state.navigation_overlay = false;
-                    return Effect::none();
-                }
-                if state.session.terminal_menu.is_some() {
-                    return self
-                        .child(state, AppAction::Session(SessionAction::TerminalMenu(None)));
-                }
-                if state.session.fork.is_some() {
-                    return self.child(state, AppAction::Session(SessionAction::CancelFork));
-                }
-                if state.inbox.confirm.is_some() {
-                    return self.child(state, AppAction::Inbox(InboxAction::CancelBulk));
-                }
-                if state.inbox.reply.is_some() {
-                    return self.child(state, AppAction::Inbox(InboxAction::CancelReply));
-                }
-                if state.board.new_title.is_some() {
-                    return self.child(state, AppAction::Board(BoardAction::CancelNew));
-                }
-                if state.board.drawer.is_some() && matches!(state.route, Route::Board(_)) {
-                    return self.child(state, AppAction::Board(BoardAction::Close));
-                }
-                if state.review.draft().is_some() && state.panel() == Some(Panel::Changes) {
-                    return self.child(state, AppAction::Review(ReviewAction::CancelComment));
-                }
-                Effect::none()
-            }
-            AppAction::OpenPalette => {
-                if state.overlay() == Some(&Overlay::Palette) {
-                    return Effect::none();
-                }
-                state.overlays.push(Overlay::Palette);
-                let in_session = matches!(state.route, Route::Session(_));
-                state.palette.context = match &state.route {
-                    Route::Session(id) => Some(id.clone()),
-                    _ => None,
-                };
-                self.child(
-                    state,
-                    AppAction::Palette(PaletteAction::Open { in_session }),
-                )
-            }
-            AppAction::StartNewSession => {
-                let channel = match &state.route {
-                    Route::Channel(id) => Some(id.clone()),
-                    Route::Session(id) => state.workspace.session(id).map(|s| s.channel.clone()),
-                    _ => state.workspace.channels.first().map(|c| c.id.clone()),
-                };
-                let machine = channel.as_ref().and_then(|id| {
-                    state
-                        .workspace
-                        .channel_machines(id)
-                        .find(|machine| machine.online)
-                        .map(|machine| machine.id.clone())
-                });
-                state.overlays.push(Overlay::NewSession(NewSession {
-                    channel,
-                    agent: state.settings.preferences.default_agent,
-                    machine,
-                    title: String::new(),
-                    first_message: String::new(),
-                    excluded_repos: Default::default(),
-                    item: None,
-                    picker: None,
-                    creating: false,
-                    error: None,
-                }));
-                Effect::none()
-            }
-            AppAction::StartNewForItem(id) => {
-                let Some(item) = state
-                    .workspace
-                    .items
-                    .iter()
-                    .find(|item| item.id == id)
-                    .cloned()
-                else {
-                    return Effect::none();
-                };
-                let effect = self.reduce(state, AppAction::StartNewSession);
-                if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
-                    sheet.title = item.title;
-                    sheet.item = Some(id);
-                    if let Scope::Channel(channel) = item.scope {
-                        sheet.machine = state
-                            .workspace
-                            .channel_machines(&channel)
-                            .find(|m| m.online)
-                            .map(|m| m.id.clone());
-                        sheet.channel = Some(channel);
-                    }
-                    if let Some(machine) = item
-                        .session
-                        .as_ref()
-                        .and_then(|id| state.workspace.session(id))
-                        .and_then(|s| state.workspace.machine(&s.machine))
-                        .filter(|m| m.online)
-                    {
-                        sheet.machine = Some(machine.id.clone());
-                    }
-                }
-                effect
-            }
-            AppAction::StartNewChannel => {
-                state
-                    .overlays
-                    .push(Overlay::NewChannel(NewChannel::default()));
-                Effect::none()
-            }
-            AppAction::ShowShortcuts => {
-                if state.overlay() != Some(&Overlay::Shortcuts) {
-                    state.overlays.push(Overlay::Shortcuts);
-                }
-                Effect::none()
-            }
-            AppAction::NewSession(change) => {
-                let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() else {
-                    return Effect::none();
-                };
-                if sheet.creating {
-                    return Effect::none();
-                }
-                match change {
-                    NewSessionAction::Channel(id) => {
-                        if !state
-                            .workspace
-                            .channel_machines(&id)
-                            .any(|m| m.online && Some(&m.id) == sheet.machine.as_ref())
-                        {
-                            sheet.machine = state
-                                .workspace
-                                .channel_machines(&id)
-                                .find(|m| m.online)
-                                .map(|m| m.id.clone());
-                        }
-                        sheet.channel = Some(id);
-                        sheet.excluded_repos.clear();
-                        sheet.picker = None;
-                    }
-                    NewSessionAction::Agent(agent) => {
-                        sheet.agent = agent;
-                    }
-                    NewSessionAction::Machine(id) => {
-                        sheet.machine = Some(id);
-                        sheet.picker = None;
-                    }
-                    NewSessionAction::FirstMessage(text) => sheet.first_message = text,
-                    NewSessionAction::Picker(picker) => sheet.picker = picker,
-                    NewSessionAction::ToggleRepo(repo) => {
-                        if !sheet.excluded_repos.remove(&repo) {
-                            sheet.excluded_repos.insert(repo);
-                        }
-                    }
-                    NewSessionAction::Title(title) => sheet.title = title,
-                    NewSessionAction::Create => {
-                        let (Some(channel), Some(machine)) =
-                            (sheet.channel.clone(), sheet.machine.clone())
-                        else {
-                            sheet.error = Some(
-                                "Pick a channel and a host first. Add a host on the Hosts page if none is listed.".to_owned(),
-                            );
-                            return Effect::none();
-                        };
-                        let title = if sheet.title.trim().is_empty() {
-                            format!("New {} session", sheet.agent.name())
-                        } else {
-                            sheet.title.trim().to_owned()
-                        };
-                        sheet.creating = true;
-                        sheet.error = None;
-                        if !state
-                            .workspace
-                            .channel_machines(&channel)
-                            .any(|m| m.online && m.id == machine)
-                        {
-                            sheet.creating = false;
-                            sheet.error=Some("Choose a machine connected to this channel, or add the machine to the channel first.".into());
-                            return Effect::none();
-                        }
-                        let options = SessionOptions {
-                            model: None,
-                            repos: state
-                                .workspace
-                                .channel(&channel)
-                                .map_or_else(Vec::new, |c| {
-                                    c.repos
-                                        .iter()
-                                        .filter(|repo| !sheet.excluded_repos.contains(*repo))
-                                        .cloned()
-                                        .collect()
-                                }),
-                            first_message: sheet.first_message.clone(),
-                            item: sheet.item.clone(),
-                            branch: sheet.branch(),
-                        };
-                        let agent = sheet.agent;
-                        let daemon = self.clients.daemon.clone();
-                        return Effect::future(async move {
-                            AppAction::SessionCreated(
-                                daemon
-                                    .create_session(&channel, agent, &machine, &title, options)
-                                    .await,
-                            )
-                        });
-                    }
-                }
-                Effect::none()
-            }
-            AppAction::NewChannel(change) => {
-                let Some(Overlay::NewChannel(sheet)) = state.overlays.last_mut() else {
-                    return Effect::none();
-                };
-                match change {
-                    NewChannelAction::Name(name) => sheet.name = name,
-                    NewChannelAction::Repos(repos) => sheet.repos = repos,
-                    NewChannelAction::Create => {
-                        let name = sheet.name.trim().trim_start_matches('#').to_owned();
-                        if name.is_empty() {
-                            sheet.error = Some("Give the channel a name.".to_owned());
-                            return Effect::none();
-                        }
-                        let repos = sheet
-                            .repos
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|repo| !repo.is_empty())
-                            .map(str::to_owned)
-                            .collect();
-                        sheet.creating = true;
-                        sheet.error = None;
-                        let machines = state
-                            .workspace
-                            .machines
-                            .iter()
-                            .filter(|machine| machine.online)
-                            .map(|machine| machine.id.clone())
-                            .take(1)
-                            .collect();
-                        let daemon = self.clients.daemon.clone();
-                        return Effect::future(async move {
-                            AppAction::ChannelCreated(
-                                daemon.create_channel(&name, repos, machines).await,
-                            )
-                        });
-                    }
-                }
-                Effect::none()
-            }
-            AppAction::SessionCreated(result) => {
-                let sheet = state
-                    .overlays
-                    .iter_mut()
-                    .rev()
-                    .find_map(|overlay| match overlay {
-                        Overlay::NewSession(sheet) => Some(sheet),
-                        _ => None,
-                    });
-                match result {
-                    Ok(id) => {
-                        state
-                            .overlays
-                            .retain(|overlay| !matches!(overlay, Overlay::NewSession(_)));
-                        self.navigate(state, Route::Session(id))
-                    }
-                    Err(error) => {
-                        if let Some(sheet) = sheet {
-                            sheet.creating = false;
-                            sheet.error = Some(error.to_string());
-                        }
-                        Effect::none()
-                    }
-                }
-            }
-            AppAction::ChannelCreated(result) => {
-                let sheet = state
-                    .overlays
-                    .iter_mut()
-                    .rev()
-                    .find_map(|overlay| match overlay {
-                        Overlay::NewChannel(sheet) => Some(sheet),
-                        _ => None,
-                    });
-                match result {
-                    Ok(id) => {
-                        state
-                            .overlays
-                            .retain(|overlay| !matches!(overlay, Overlay::NewChannel(_)));
-                        self.navigate(state, Route::Channel(id))
-                    }
-                    Err(error) => {
-                        if let Some(sheet) = sheet {
-                            sheet.creating = false;
-                            sheet.error = Some(error.to_string());
-                        }
-                        Effect::none()
-                    }
-                }
-            }
+            AppAction::Back => self.go_back(state),
+            AppAction::Escape => self.escape(state),
+            AppAction::OpenPalette => self.open_palette(state),
+            AppAction::StartNewSession => self.start_new_session(state),
+            AppAction::StartNewForItem(id) => self.start_new_for_item(state, id),
+            AppAction::StartNewChannel => self.start_new_channel(state),
+            AppAction::ShowShortcuts => self.show_shortcuts(state),
+            AppAction::NewSession(change) => self.change_new_session(state, change),
+            AppAction::NewChannel(change) => self.change_new_channel(state, change),
+            AppAction::SessionCreated(result) => self.session_created(state, result),
+            AppAction::ChannelCreated(result) => self.channel_created(state, result),
             AppAction::ToggleNavigationOverlay => {
                 state.navigation_overlay = !state.navigation_overlay;
                 Effect::none()
@@ -1440,30 +672,14 @@ impl App {
                 }
                 Effect::none()
             }
-            AppAction::DismissToast(id) => {
-                state.toasts.retain(|toast| toast.id != id);
-                Effect::cancel(format!("toast-{id}"))
-            }
-            AppAction::ToastExpired(id) => {
-                state.toasts.retain(|toast| toast.id != id);
-                Effect::none()
-            }
+            AppAction::DismissToast(id) => self.dismiss_toast(state, id),
+            AppAction::ToastExpired(id) => self.toast_expired(state, id),
             AppAction::DismissRestoreError => {
                 state.restore_error = None;
                 Effect::none()
             }
-            AppAction::SaveDue => {
-                state.save_due = false;
-                let now = state.saved();
-                if now == state.last_saved {
-                    return Effect::none();
-                }
-                self.save(state, now)
-            }
-            AppAction::Saved(error) => match error {
-                Some(error) => state.toast(error, &clock),
-                None => Effect::none(),
-            },
+            AppAction::SaveDue => self.save_if_due(state),
+            AppAction::Saved(error) => self.save_finished(state, error),
             AppAction::Settings(SettingsAction::ToggleWrap) => {
                 let effect = self.child(state, AppAction::Settings(SettingsAction::ToggleWrap));
                 state.review.wrap = state.settings.preferences.wrap_diffs;

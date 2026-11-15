@@ -1,0 +1,313 @@
+//! The New session sheet (SE-1).
+
+use super::{Overlays, sync};
+use crate::bridge::Ui;
+use crate::widgets::{self, col, row};
+use crate::{chrome, theme::Look};
+use gpui_kit::assets::IconName;
+use gpui_kit::base::Disableable as _;
+use gpui_kit::base::FocusTrapElement as _;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::input::{Input, Textarea};
+use gpui_kit::{prelude::*, *};
+use humata2_app::{AppAction, NewSession, NewSessionAction, NewSessionPicker};
+use humata2_clients::model::Agent;
+use std::rc::Rc;
+
+impl Overlays {
+    /// The New session sheet.
+    pub(super) fn new_session(
+        &mut self,
+        sheet_state: &NewSession,
+        look: Look,
+        ui: &Rc<Ui>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        sync(&self.title, &sheet_state.title, window, cx);
+        if self.first_message.read(cx).value().as_ref() != sheet_state.first_message {
+            self.first_message.update(cx, |input, cx| {
+                input.set_value(sheet_state.first_message.clone(), window, cx)
+            });
+        }
+        let placeholder = sheet_state.item.as_ref().map_or_else(
+            || "Optional. Typed into the agent once it starts.".into(),
+            |id| format!("Optional. Typed into the agent once it starts, e.g. “Work on {id}”."),
+        );
+        if self.first_message_placeholder != placeholder {
+            self.first_message_placeholder = placeholder.clone();
+            self.first_message.update(cx, |input, cx| {
+                input.set_placeholder(placeholder, window, cx)
+            });
+        }
+        let workspace = self.ui.read(|s| s.workspace.clone());
+        let channel = sheet_state
+            .channel
+            .as_ref()
+            .and_then(|id| workspace.channel(id));
+        let machine = sheet_state
+            .machine
+            .as_ref()
+            .and_then(|id| workspace.machine(id));
+        let label = |text: &str| {
+            div()
+                .w(px(110.))
+                .flex_shrink_0()
+                .flex()
+                .justify_end()
+                .text_color(rgb(look.secondary))
+                .child(text.to_owned())
+        };
+        let form_row = |text: &str, value: AnyElement| {
+            row()
+                .gap(px(12.))
+                .child(label(text))
+                .child(div().flex_1().min_w_0().child(value))
+        };
+        let button = |id: ElementId, text: SharedString, action: AppAction| {
+            widgets::send(ui, id, text, action)
+                .small()
+                .h(px(24.))
+                .px(px(10.))
+                .bg(rgb(look.fill))
+                .text_color(rgb(look.text))
+        };
+        let context = format!(
+            "in # {}{}",
+            channel.map_or("Choose a channel", |c| c.name.as_str()),
+            sheet_state
+                .item
+                .as_ref()
+                .map_or_else(String::new, |id| format!(" · for {id}"))
+        );
+        let context_ui = ui.clone();
+        let mut content = col()
+            .id("new-session")
+            .role(Role::Dialog)
+            .aria_label("New session")
+            .w(px(560.))
+            .max_w_full()
+            .max_h(relative(0.85))
+            .overflow_y_scroll()
+            .gap(px(12.))
+            .p(px(20.))
+            .rounded(px(12.))
+            .bg(rgb(look.card))
+            .border_1()
+            .border_color(rgb(look.line))
+            .shadow_lg()
+            .text_size(px(12.5))
+            .text_color(rgb(look.text))
+            .test_support()
+            .child(
+                row()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("New session"),
+                    )
+                    .child(
+                        div()
+                            .id("new-session-channel-picker")
+                            .role(Role::Button)
+                            .aria_label("Choose channel")
+                            .test_support()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .cursor_pointer()
+                            .child(context)
+                            .on_click(move |_, _, cx| {
+                                context_ui.send(
+                                    AppAction::NewSession(NewSessionAction::Picker(Some(
+                                        NewSessionPicker::Channel,
+                                    ))),
+                                    cx,
+                                )
+                            }),
+                    ),
+            );
+        if sheet_state.picker == Some(NewSessionPicker::Channel) {
+            content = content.child(row().flex_wrap().gap(px(6.)).children(
+                workspace.channels.iter().enumerate().map(|(index, c)| {
+                    button(
+                        ("new-session-channel", index).into(),
+                        format!("# {}", c.name).into(),
+                        AppAction::NewSession(NewSessionAction::Channel(c.id.clone())),
+                    )
+                }),
+            ));
+        }
+        content = content.child(form_row(
+            "Title",
+            Input::new(&self.title)
+                .small()
+                .h(px(26.))
+                .aria_label("Title")
+                .into_any_element(),
+        ));
+        let agents = row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
+            Agent::ALL.into_iter().enumerate().map(|(index, agent)| {
+                let ui = ui.clone();
+                let name = match agent {
+                    Agent::Claude => "Claude Code",
+                    Agent::Shell => "Terminal",
+                    _ => agent.name(),
+                };
+                div()
+                    .id(("new-session-agent", index))
+                    .role(Role::Tab)
+                    .aria_label(name)
+                    .aria_selected(sheet_state.agent == agent)
+                    .test_support()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .text_size(px(11.5))
+                    .rounded(px(6.))
+                    .when(sheet_state.agent == agent, |x| {
+                        x.bg(rgb(look.card)).shadow_sm()
+                    })
+                    .cursor_pointer()
+                    .child(name)
+                    .on_click(move |_, _, cx| {
+                        ui.send(AppAction::NewSession(NewSessionAction::Agent(agent)), cx)
+                    })
+            }),
+        );
+        content = content.child(form_row("Runs", agents.into_any_element()));
+        let machine_picker = row()
+            .gap(px(8.))
+            .child(
+                button(
+                    "new-session-machine-picker".into(),
+                    machine
+                        .map_or("Choose a machine", |m| m.name.as_str())
+                        .to_owned()
+                        .into(),
+                    AppAction::NewSession(NewSessionAction::Picker(Some(
+                        NewSessionPicker::Machine,
+                    ))),
+                )
+                .icon(IconName::ChevronsUpDown),
+            )
+            .children(
+                machine
+                    .and_then(|m| workspace.machine_health.get(&m.id))
+                    .map(|h| {
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(format!("{} GB free", h.disk_free_gb))
+                    }),
+            );
+        content = content.child(form_row("Machine", machine_picker.into_any_element()));
+        if sheet_state.picker == Some(NewSessionPicker::Machine) {
+            content = content.child(
+                row().flex_wrap().gap(px(6.)).children(
+                    workspace
+                        .machines
+                        .iter()
+                        .filter(|m| {
+                            m.online
+                                && channel.is_some_and(|c| {
+                                    c.machines.contains(&m.id)
+                                        || workspace
+                                            .sessions
+                                            .iter()
+                                            .any(|s| s.channel == c.id && s.machine == m.id)
+                                })
+                        })
+                        .enumerate()
+                        .map(|(index, m)| {
+                            button(
+                                ("new-session-machine", index).into(),
+                                m.name.clone().into(),
+                                AppAction::NewSession(NewSessionAction::Machine(m.id.clone())),
+                            )
+                        }),
+                ),
+            );
+        }
+        let repos = col()
+            .gap(px(6.))
+            .children(channel.into_iter().flat_map(|c| &c.repos).map(|repo| {
+                row()
+                    .gap(px(8.))
+                    .child(chrome::icon(IconName::FolderGit2, look.secondary, 12.))
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .child(repo.rsplit('/').next().unwrap_or(repo).to_owned()),
+                    )
+                    .child(button(
+                        SharedString::from(format!("new-session-repo-{repo}")).into(),
+                        if sheet_state.excluded_repos.contains(repo) {
+                            "Leave this repo out".into()
+                        } else {
+                            "Own clone, new branch from main".into()
+                        },
+                        AppAction::NewSession(NewSessionAction::ToggleRepo(repo.clone())),
+                    ))
+            }));
+        content = content
+            .child(form_row("Repos", repos.into_any_element()))
+            .child(form_row(
+                "First message",
+                Textarea::new(&self.first_message)
+                    .h(px(70.))
+                    .aria_label("First message")
+                    .into_any_element(),
+            ));
+        if let Some(error) = &sheet_state.error {
+            content = content.child(
+                div()
+                    .id("new-session-error")
+                    .role(Role::Alert)
+                    .test_support()
+                    .text_color(rgb(0xff453a))
+                    .child(error.clone()),
+            );
+        }
+        content
+            .child(
+                row()
+                    .gap(px(8.))
+                    .pt(px(4.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(format!("Branch: {}", sheet_state.branch())),
+                    )
+                    .child(button(
+                        "new-session-cancel".into(),
+                        "Cancel".into(),
+                        AppAction::Escape,
+                    ))
+                    .child(
+                        widgets::primary(
+                            ui,
+                            "new-session-create",
+                            if sheet_state.creating {
+                                "Starting…"
+                            } else {
+                                "Start session"
+                            },
+                            AppAction::NewSession(NewSessionAction::Create),
+                        )
+                        .small()
+                        .h(px(24.))
+                        .bg(rgb(look.accent))
+                        .text_color(rgb(0xffffff))
+                        .disabled(sheet_state.creating),
+                    ),
+            )
+            .focus_trap("new-session-trap", &self.title.focus_handle(cx))
+            .into_any_element()
+    }
+}

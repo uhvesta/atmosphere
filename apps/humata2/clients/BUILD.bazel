@@ -5,7 +5,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # desktop app can be clicked through before the real daemon is wired in.
 rust_library(
     name = "clients",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "humata2_clients",
     visibility = [
         "//apps/humata2/desktop:__pkg__",

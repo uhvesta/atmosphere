@@ -143,7 +143,7 @@ exactly one capability against one target. Tiers:
 | --- | --- | --- |
 | No rule (owned) | IN-16's set only: its own session (title, status, repos, branches), reading and writing its own clones, its own views and its own requests, comments sent to it (D21), its own port forwards. Not a rule; no setting turns it off. A context-only fork reads its parent's clones here but never writes them (IN-20) | none: checked as "the target is the caller's own" |
 | Default Allow | A rule, Allow for new channels (IN-17). The user may set Ask me or Never | OWN_BOARD_WRITE, CHANNEL_READ, CHANNEL_BOARD_ADD, CHANNEL_BOARD_EDIT_OWN, SHARED_WRITE, FILES_FETCH_LOCAL, VIEWS_PREPARE, REVIEW_DRAFT, INBOX_ASK |
-| Ask me | A rule, Ask me for new channels; "Always let …" may add an IN-22 grant | CHANNEL_BOARD_EDIT_OTHERS, GLOBAL_READ, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, PR_REVIEW_START, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE |
+| Ask me | A rule, Ask me for new channels; "Always allow …" may add an IN-22 grant | CHANNEL_BOARD_EDIT_OTHERS, GLOBAL_READ, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, PR_REVIEW_START, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE |
 | Ask me, no Allow | As Ask me, but the rule offers only Ask me and Never (D20); never low-risk, never approved on a machine while the Mac is away (HO-11) | NETWORK_REACH |
 | Never by default | A rule, Never for new channels: denied at once with the rule named (IN-18) until the user changes it | SESSION_STOP_OTHER, CHANNEL_CHANGE, MACHINE_DESTROY |
 | User-only | No rule, no grant, no MCP tool, no Inbox request (SEC-7, IN-23); from the CLI, presence | INBOX_ANSWER, ACCESS_CHANGE, SETTINGS_CHANGE, MARKS_CHANGE, PR_SUBMIT, USER_REVIEW_STATE, TRASH_EMPTY, HOST_SECRETS, CHANNEL_DELETE, MACHINE_SETTINGS, TERMINAL_INPUT |
@@ -173,7 +173,7 @@ Hard limits that no rule or grant lifts:
 ## 4. Asking, grants and their lifetime
 
 - A call whose rule is Ask me becomes an Inbox request with the preview
-  (IN-9, IN-10) and the one "Always let …" target IN-22 fixes for that kind
+  (IN-9, IN-10) and the one "Always allow …" target IN-22 fixes for that kind
   of action. The agent doesn't choose the offered target; `inbox_request`
   (IN-26) names one, and the daemon narrows it to the same standard target:
 
@@ -190,7 +190,7 @@ Hard limits that no rule or grant lifts:
 
   Other Ask me capabilities (OWN_SESSION_MANAGE, OWN_SESSION_END,
   SESSION_MOVE, PR_REVIEW_START, TRASH_RESTORE, CHANNEL_CREATE, GLOBAL_READ
-  reads) offer no "Always let …": each approval is one call.
+  reads) offer no "Always allow …": each approval is one call.
 - Grants are made only by `AnswerRequest` with `AlwaysLet`, from the app or
   a present user, and its target must equal the card's offer
   (`invalid_field` otherwise). No other call writes a grant.
@@ -206,7 +206,7 @@ Hard limits that no rule or grant lifts:
   only be chosen among capabilities with `may_be_low_risk`, which excludes
   anything that crosses machines, the network rule, typing, and every
   Never-by-default capability (AW-11).
-- An "Always let …" given on a machine while the Mac is away applies there
+- An "Always allow …" given on a machine while the Mac is away applies there
   at once and becomes the same grant on the Mac at replay (AW-12).
 
 ## 5. User-only operations
@@ -303,7 +303,7 @@ Behaviour tests, not wording tests:
   stores are unchanged.
 - `tools/list` for an agent contains no tool whose operation is user-only;
   calling each user-only name fails with `user_only`.
-- An agent's request for access, approved with "Always let", creates exactly
+- An agent's request for access, approved with "Always allow", creates exactly
   the card's grant, for that session only; a fork of that session has none.
 - A process double-forked from a session's agent connects with no
   credential: every call but `WhoAmI` returns `presence_required`.

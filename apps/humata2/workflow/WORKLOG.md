@@ -25,7 +25,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
 | minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
 | minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | done |
-| minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | running |
+| minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | done |
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 
 ## Claims
@@ -44,7 +44,7 @@ Each lane's plan, tasks and workers live in its milestone file
 
 | Lane | Milestone file | Manager | Workers running | State |
 |---|---|---|---|---|
-| P0 | none (pre-manager step) | minion P0 | Sonnet split workers, one file each | LAYOUT.md sweep; splitting features/app lib.rs, clients daemon.rs and fixture.rs, ui overlays.rs |
+| P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
 Old template, kept for reference:
 
@@ -79,3 +79,4 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: J1 done; committed its SPEC/DECISIONS/OVERVIEW edits (C1's pickup block staged from HEAD). D103–D112 Provisional, D113 frame changes await the owner.
 - 2026-11-15 main: J1 committed (ba1a357e). Started P0 (Opus) and D1 (Fable, DAG files). C1 active again on Changes wrapping (ui panels/shell/lib, native.rs).
 - 2026-11-15 main: D1 done: DAG.md + 26 milestone files. Scripted syncs moved into MACH (D49). Skill honours `*` edges. Next: P0 report → gate → commit → dag-walk resume (FL-D daemon lane, FRAMES1 docs lane first).
+- 2026-11-15 main: gate for P0: build pass; tests 20/21, native_test 8 failures all from C1's uncommitted queue/presence work. rustfmt check pass. `--config=lint` broken repo-wide. Committed P0 (C1's `terminal_peers` line in fixture/design_session.rs left unstaged).

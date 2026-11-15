@@ -230,7 +230,7 @@ Allow (IN-17); a user can set any of those to Ask me or Never.
 ### 6.2 Needs approval
 
 These exist for agents but go to the Inbox under the defaults: Ask me
-(approve, deny, deny with a note, or approve and "Always let …" with the
+(approve, deny, deny with a note, or approve and "Always allow …" with the
 card's scope). Those marked **Never** by default are denied at once with the
 rule named until the user changes the rule (IN-18).
 
