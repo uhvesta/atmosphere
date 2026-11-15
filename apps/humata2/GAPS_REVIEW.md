@@ -256,7 +256,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: step progress isn't coalesced; sessions and channels aren't on the feed because nothing in humatad2 changes them yet.
 
-### (this commit): who made each change on the event feed [minion F]
+### d7f72620: who made each change on the event feed [minion F]
 - Each event on the feed now says who made the change: a session's agent, or the user. Changes the daemon makes itself, like a machine coming online, say no one.
 - `daemon/humatad/src/events.rs`: `Feed::publish` and `publish_in` take `by`. `identity::actor` (moved from `operations.rs`; the app's `via` is now APP) names the caller. `inbox.rs` derives it from the request: the requester while pending or withdrawn, `answered.by` after; the grant takes `answered.by`. `access_service.rs`, `review.rs` (`publish` takes the caller) and `review/views.rs` (`put` takes it) pass the caller; machines and operation steps pass none; an operation's start is its `started_by`.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
