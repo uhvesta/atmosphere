@@ -717,3 +717,8 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 ## D93: The MCP `inbox_request` tool (proposed by minion F). Provisional
 - **Pick:** `inbox_request` calls RequestAccess with the call's idempotency key and waits as `inbox_ask` does. Approved, it answers `{decision: "approved", grant_id}`; an ask a grant already covers is approved at once with that grant's id; a denial is the tool error `denied` with the user's note. A `board` target of `session` or `channel` is the caller's own; `global` is the global board. A capability name this humatad2 doesn't know is `invalid_field`, telling the agent to pick from the tool's list or update Humata. Recommendation: keep it.
 - Reverse: `request_access`, `grant_target` and the `access` module in `daemon/humatad/src/mcp.rs`, and the grant id in `outcome`.
+
+## D94: Operations on the event feed (proposed by minion F). Provisional
+- **Pick:** an operation starting is a Created Event with the Operation; each change after (a step, the end, a retry starting over) is an Updated one with the whole Operation, told while it's held so the feed keeps the order its version does. One an agent started is filed under the agent's channel and session; the user's belong nowhere, so a feed narrowed to channels or sessions doesn't get them. The user hears of every operation, an agent of its own session's, as GetOperation finds them. Recommendation: keep it.
+- A step's progress is one event each; nothing coalesces them yet.
+- Reverse: `Tracked::tell` and its calls in `daemon/humatad/src/operations.rs`, `Operations::new` in `serve.rs`, and the Operation arm of `Filter` in `daemon/humatad/src/events.rs`.

@@ -284,7 +284,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone(), feed.clone());
     let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
     let access = Access::new(guard.clone(), feed.clone());
-    let operations = Arc::new(Operations::default());
+    let operations = Arc::new(Operations::new(feed.clone()));
     let machines = match role {
         pb::DaemonRole::Host => {
             let work = Arc::new(machine_work(&state, args.tools, args.ssh_config, feed.clone())?);

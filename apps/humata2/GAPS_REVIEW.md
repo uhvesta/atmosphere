@@ -250,6 +250,12 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: Ask→Inbox needs a way for any RPC to answer pending with a request id.
 
+### (this commit): operations on the event feed [minion F]
+- The app now hears of long work, such as adding a machine, as it starts, as each step moves and when it ends, without watching each one. An agent hears of its own session's.
+- `daemon/humatad/src/operations.rs`: `Operations::new(feed)`; each Tracked keeps the starting agent's channel and session and `tell`s the feed: Created in `start`, Updated inside `Progress::change`'s `send_modify`. `daemon/humatad/src/events.rs`: `Filter` passes operations by TOPIC_OPERATIONS, the channels or sessions asked for, and `sees_session`.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
+- Look at: step progress isn't coalesced; sessions and channels aren't on the feed because nothing in humatad2 changes them yet.
+
 ### 13396a5c: session lifecycle and full-screen presentation (Desktop UI; N1) [minion C1]
 - The session can now put its terminal or panel full screen and return to its saved columns; the choice survives a restart per session. Exited sessions keep their transcript and Resume; offline sessions retain output with a disconnected notice. Selected panel-strip choices close/reopen, and pending Inbox/unsent-comment badges are visible. Frames 03–06 and 09–13 now have real-app comparison images; they remain partial for the differences below.
 - `features/app/src/layout.rs`, `saved.rs` and `lib.rs` own presentation and navigation-overlay state. Narrow windows fold columns without overwriting saved widths. `ui/src/shell.rs`, `sidebar.rs`, `bridge.rs` and `pages.rs` use that state and shared column sizing; `panels.rs` gains actionable full-screen window controls and badges. `clients::fixture::design_session` supplies lifecycle tails and the approved PAY/INF board items. The transcript now contains the mock's literal command text; no cargo command was executed. Terminal output is isolated by selected tab. Panel contents were preserved.

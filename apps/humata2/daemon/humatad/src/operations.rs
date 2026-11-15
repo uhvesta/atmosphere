@@ -5,7 +5,8 @@
 //! by its own owner (machines' `recover`, PER-27), not resumed from here.
 //! Cancel asks the work to stop at its next step boundary; the work
 //! undoes what it did and ends the operation cancelled. Retry runs a
-//! failed operation's work again under the same id (D81).
+//! failed operation's work again under the same id (D81). Each start and
+//! each change goes on the event feed too (D94).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
 use crate::attach::now;
+use crate::events::{Feed, Scope};
 use crate::identity::{self, Caller};
 use crate::status;
 
@@ -48,6 +50,10 @@ pub(crate) type Rerun = Arc<dyn Fn(Progress) + Send + Sync>;
 
 struct Tracked {
     owner: Owner,
+    /// Where the feed files it: the starting agent's channel and session;
+    /// the user's belong nowhere.
+    scope: Option<(String, String)>,
+    feed: Arc<Feed>,
     operation: watch::Sender<pb::Operation>,
     /// The steps the kind lists, for a rerun to start from.
     steps: Vec<OpStep>,
@@ -66,9 +72,9 @@ struct Table {
 }
 
 /// Every operation since this daemon started.
-#[derive(Default)]
 pub(crate) struct Operations {
     table: Mutex<Table>,
+    feed: Arc<Feed>,
 }
 
 /// What [`Operations::start`] found.
@@ -79,6 +85,13 @@ pub(crate) enum Started {
 }
 
 impl Operations {
+    pub(crate) fn new(feed: Arc<Feed>) -> Self {
+        Self {
+            table: Mutex::new(Table::default()),
+            feed,
+        }
+    }
+
     /// Starts an operation of `kind` on `target` with `steps`, all waiting,
     /// for `caller`. A key already used returns that operation instead.
     /// `cancellable` says whether the work stops when asked to; work that
@@ -118,9 +131,15 @@ impl Operations {
             version: 1,
             result: None,
         };
-        let (sender, _) = watch::channel(operation);
+        let scope = match caller {
+            Caller::Agent(agent) => Some((agent.session.channel.to_string(), agent.session.id.to_string())),
+            _ => None,
+        };
+        let (sender, _) = watch::channel(operation.clone());
         let tracked = Arc::new(Tracked {
             owner,
+            scope,
+            feed: self.feed.clone(),
             operation: sender,
             steps: steps.to_vec(),
             cancellable,
@@ -132,6 +151,7 @@ impl Operations {
         if let Some(key) = key {
             table.by_key.insert(key.value, id);
         }
+        tracked.tell(pb::Change::Created, operation);
         Ok(Started::New(Progress { tracked }))
     }
 
@@ -249,10 +269,30 @@ impl Progress {
     }
 
     fn change(&self, edit: impl FnOnce(&mut pb::Operation)) {
+        // Told while the operation is held, so the feed has its changes
+        // in the order they were made.
         self.tracked.operation.send_modify(|operation| {
             edit(operation);
             operation.version += 1;
+            self.tracked.tell(pb::Change::Updated, operation.clone());
         });
+    }
+}
+
+impl Tracked {
+    fn tell(&self, change: pb::Change, operation: pb::Operation) {
+        let payload = pb::event::Payload::Operation(operation);
+        match &self.scope {
+            Some((channel, session)) => self.feed.publish_in(
+                change,
+                payload,
+                Scope {
+                    channel: channel.clone(),
+                    session: session.clone(),
+                },
+            ),
+            None => self.feed.publish(change, payload),
+        }
     }
 }
 

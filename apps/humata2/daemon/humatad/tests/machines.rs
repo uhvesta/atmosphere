@@ -455,6 +455,57 @@ async fn the_feed_tells_each_machine_change_and_a_resume_starts_after_the_last_s
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_feed_tells_an_operation_from_its_start_to_how_it_ended() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+    let mut feed = pb::event_service_client::EventServiceClient::new(connect(&host.socket).await)
+        .subscribe(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Operations as i32],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut narrowed = pb::event_service_client::EventServiceClient::new(connect(&host.socket).await)
+        .subscribe(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Operations as i32],
+            channels: vec![pb::ChannelId {
+                value: "ch_other".to_owned(),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let adding = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap().into_inner();
+    let watched = host.watch(&adding).await;
+    let mut told = Vec::new();
+    loop {
+        let event = next_event(&mut feed).await;
+        let Some(pb::event::Payload::Operation(operation)) = event.payload.clone() else {
+            panic!("expected an operation, got {event:?}");
+        };
+        told.push((event.change(), operation));
+        if told.last().is_some_and(|(_, operation)| state_of(operation) != pb::OperationState::Running) {
+            break;
+        }
+    }
+
+    assert_eq!(told[0].0, pb::Change::Created);
+    assert_eq!(told[0].1.id, adding.id);
+    assert!(told[1..].iter().all(|(change, _)| *change == pb::Change::Updated));
+    assert!(told.windows(2).all(|pair| pair[0].1.version < pair[1].1.version));
+    assert_eq!(told.last().map(|(_, operation)| operation), watched.last());
+    // The user's operation belongs to no channel.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), narrowed.message()).await.is_err(),
+        "a feed narrowed to a channel heard of the user's operation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_add_cancelled_while_it_connects_ends_cancelled_and_leaves_nothing() {
     let machine = FakeMachine::new();
     let host = Host::start(&machine).await;

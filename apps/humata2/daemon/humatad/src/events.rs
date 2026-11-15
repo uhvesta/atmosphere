@@ -158,6 +158,7 @@ struct Filter {
     inbox: bool,
     access: bool,
     comments: bool,
+    operations: bool,
     channels: Vec<String>,
     sessions: Vec<String>,
 }
@@ -178,6 +179,7 @@ impl Filter {
         let inbox = topics.is_empty() || topics.contains(&(pb::Topic::Inbox as i32));
         let access = topics.is_empty() || topics.contains(&(pb::Topic::Access as i32));
         let comments = topics.is_empty() || topics.contains(&(pb::Topic::Comments as i32));
+        let operations = topics.is_empty() || topics.contains(&(pb::Topic::Operations as i32));
         Ok(Self {
             user,
             own_session,
@@ -186,6 +188,7 @@ impl Filter {
             inbox,
             access,
             comments,
+            operations,
             channels: request.channels.iter().map(|id| id.value.clone()).collect(),
             sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
         })
@@ -230,6 +233,11 @@ impl Filter {
             Some(pb::event::Payload::Grant(_)) => self.access && self.sees_session(scope) && self.asked(scope),
             // Review chat notes: the user's, and their session agent's.
             Some(pb::event::Payload::Comment(_)) => self.comments && self.sees_session(scope) && self.asked(scope),
+            // Operations: the user's and every session's to the user,
+            // an agent its own session's, as GetOperation finds them.
+            Some(pb::event::Payload::Operation(_)) => {
+                self.operations && self.sees_session(scope) && self.asked(scope)
+            }
             _ => false,
         }
     }
