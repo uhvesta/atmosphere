@@ -102,6 +102,16 @@ const MIGRATIONS: &[&str] = &["
     -- crash redoes doesn't tell it twice.
     ALTER TABLE interruptions ADD COLUMN told_unix_ms INTEGER;
     ALTER TABLE interruptions ADD COLUMN told_conversation_len INTEGER;
+", "
+    -- Each session's review (PR-26): the review chat's view, notes and
+    -- switches, and what the last diff showed, so a restart keeps them.
+    CREATE TABLE reviews (
+        session TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        updated_unix_ms INTEGER NOT NULL,
+        state BLOB,
+        state_file TEXT,
+        CHECK ((state IS NULL) <> (state_file IS NULL))
+    ) STRICT;
 "];
 
 /// The schema this build writes and reads.

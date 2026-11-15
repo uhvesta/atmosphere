@@ -283,17 +283,45 @@ pub struct ReviewChat {
 }
 
 impl ReviewChat {
-    /// A review's chat restored from what persisted (PR-26).
+    /// A review's chat restored from what persisted (PR-26). `last_seq`
+    /// and `last_note` are [`ReviewChat::last_seq`] and
+    /// [`ReviewChat::last_note`] as they were saved, so new changes and
+    /// notes never reuse an id the app or the agent already holds, even
+    /// one of a note since dropped.
     #[must_use]
-    pub fn restore(view: ViewState, switches: AgentSwitches, notes: Vec<UserNote>) -> Self {
-        let next_note = notes.len() as u64;
+    pub fn restore(
+        view: ViewState,
+        switches: AgentSwitches,
+        notes: Vec<UserNote>,
+        last_seq: u64,
+        last_note: u64,
+    ) -> Self {
+        let next_note = notes
+            .iter()
+            .filter_map(|note| note.id.strip_prefix("note-")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+            .max(last_note);
         Self {
             view,
             switches,
             notes: notes.into_iter().map(|note| (note.id.clone(), note)).collect(),
+            next_seq: last_seq,
             next_note,
             ..Self::default()
         }
+    }
+
+    /// The number of the last change, to save with the chat.
+    #[must_use]
+    pub fn last_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// The number of the last note given out, to save with the chat.
+    #[must_use]
+    pub fn last_note(&self) -> u64 {
+        self.next_note
     }
 
     /// The view the app reports, debounced while the user scrolls. A move

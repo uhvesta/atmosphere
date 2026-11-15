@@ -642,3 +642,8 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Proposal:** root `rustfmt.toml` sets `edition = "2024"` and `max_width = 100`; other choices remain the stable defaults. It matches the workspace edition and avoids unstable options.
 - **Scope:** format touched files with the Bazel-managed rustfmt target. This change formats only the two new GUI test files; it does not rewrite the existing tree or turn on a new enforcement gate. The owner decides how to migrate existing files before repository-wide enforcement.
 - **Verified:** `bazel run @rules_rust//tools/upstream_wrapper:rustfmt -- --check apps/humata2/diff/tests/view.rs apps/humata2/testing/flow/tests/scroll.rs` accepts the configuration and both files. Reverse: remove the config; no behavioural code depends on it.
+
+## D80: When a review plan applies at once, and notes on a hunk (proposed by minion B). Provisional
+- **Pick:** `review_prepare` (PrepareView with a review plan) applies at once, through `ReviewChat::prepare` with its undo id, when the session's review chat is open, which the daemon takes to mean the app has reported the review view (ReportReviewView) at least once; the store keeps that flag. Anywhere else it would be a draft view, which isn't built, so it answers not built. Recommendation: keep it, and have the app say when it closes the review pane so the flag can clear.
+- **Notes on a hunk:** CommentAnchor has no hunk target, so `review_note`'s `hunk_at` is a note on that one line. Recommendation: add a hunk target to CommentAnchor when the pane draws hunk notes differently.
+- Reverse: both live in `daemon/humatad/src/review.rs` and `src/mcp.rs`; the store's `view_reported` would go unused.

@@ -36,6 +36,8 @@ pub(crate) enum Type {
     JournalPayload = 1,
     /// `humata.store.v1.AgentLaunch`.
     AgentLaunch = 2,
+    /// `humata.store.v1.ReviewState`.
+    ReviewState = 3,
 }
 
 /// Why a blob's bytes can't be read back.
@@ -75,6 +77,7 @@ impl Type {
         match self {
             Self::JournalPayload => "a journal entry",
             Self::AgentLaunch => "an agent's launch record",
+            Self::ReviewState => "a session's review",
         }
     }
 }

@@ -99,6 +99,14 @@ impl GrpcDaemon {
         pb::review_chat_service_client::ReviewChatServiceClient::new(self.channel.clone())
     }
 
+    fn comments(&self) -> pb::comment_service_client::CommentServiceClient<Channel> {
+        pb::comment_service_client::CommentServiceClient::new(self.channel.clone())
+    }
+
+    fn views(&self) -> pb::view_service_client::ViewServiceClient<Channel> {
+        pb::view_service_client::ViewServiceClient::new(self.channel.clone())
+    }
+
     /// The caller's own session: the review chat acts on its own review.
     async fn own_session(&self) -> Result<pb::SessionId, ToolError> {
         let (agent, _) = self.agent().await?;
@@ -155,6 +163,101 @@ impl GrpcDaemon {
             .map_err(|status| self.failed(&status))?
             .into_inner();
         let result = json!({ "undo_id": change.undo_id, "summary": change.summary });
+        Ok(applied(result, None))
+    }
+
+    /// `review_note`: a note for the user on a file, a hunk or lines.
+    async fn review_note(&self, call: Call) -> Result<Reply, ToolError> {
+        let session = self.own_session().await?;
+        let arguments = &call.arguments;
+        // A comment's anchor has no hunk: a note on a hunk is on the line
+        // inside it.
+        let lines = review::lines(arguments.get("lines")).or_else(|| {
+            review::number(arguments.get("hunk_at")).map(|line| pb::LineRange { first: line, last: line })
+        });
+        let request = self.request(pb::CreateCommentRequest {
+            idempotency_key: Some(key(&call)),
+            session: Some(session),
+            anchor: Some(pb::CommentAnchor {
+                file: Some(review::repo_path(arguments)),
+                lines,
+                side: review::side(arguments),
+                quoted: text(arguments, "quoted"),
+                ..pb::CommentAnchor::default()
+            }),
+            text: text(arguments, "text"),
+            destination: Some(pb::CommentDestination {
+                destination: Some(pb::comment_destination::Destination::Note(pb::UserNote {})),
+            }),
+        })?;
+        let note = self
+            .comments()
+            .create_comment(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let result = json!({ "note_id": note.id.map(|id| id.value), "undo_id": note.undo_id });
+        Ok(applied(result, None))
+    }
+
+    /// `review_note_edit`: new text for a note.
+    async fn review_note_edit(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::EditCommentRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(pb::CommentId {
+                value: text(&call.arguments, "note_id"),
+            }),
+            text: text(&call.arguments, "text"),
+            expected_revision: None,
+        })?;
+        let note = self
+            .comments()
+            .edit_comment(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let result = json!({ "note_id": note.id.map(|id| id.value), "undo_id": note.undo_id });
+        Ok(applied(result, None))
+    }
+
+    /// `review_note_drop`.
+    async fn review_note_drop(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::DropCommentRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(pb::CommentId {
+                value: text(&call.arguments, "note_id"),
+            }),
+            expected_revision: None,
+        })?;
+        let dropped = self
+            .comments()
+            .drop_comment(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(json!({ "dropped": true, "undo_id": dropped.undo_id }), None))
+    }
+
+    /// `review_prepare`: in the review chat, the plan applies at once.
+    async fn review_prepare(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let request = self.request(pb::PrepareViewRequest {
+            idempotency_key: Some(key(&call)),
+            title: text(arguments, "title"),
+            summary: String::new(),
+            content: Some(pb::prepare_view_request::Content::ReviewPlan(review::plan(arguments))),
+        })?;
+        let prepared = self
+            .views()
+            .prepare_view(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let result = if prepared.undo_id.is_empty() {
+            json!({ "view_id": prepared.id.map(|id| id.value), "state": "draft" })
+        } else {
+            json!({ "applied": true, "undo_id": prepared.undo_id })
+        };
         Ok(applied(result, None))
     }
 
@@ -258,6 +361,10 @@ impl Daemon for GrpcDaemon {
             Operation::SessionType => self.session_type(call).await,
             Operation::ReviewContext => self.review_context().await,
             Operation::ReviewFocus => self.review_focus(call).await,
+            Operation::ReviewNote => self.review_note(call).await,
+            Operation::ReviewNoteEdit => self.review_note_edit(call).await,
+            Operation::ReviewNoteDrop => self.review_note_drop(call).await,
+            Operation::ReviewPrepare => self.review_prepare(call).await,
             other => Err(not_built(other)),
         }
     }
@@ -551,11 +658,113 @@ mod review {
 
     pub(super) fn lines(lines: Option<&Value>) -> Option<pb::LineRange> {
         let lines = lines?;
-        let number = |field: &str| lines.get(field).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
         Some(pb::LineRange {
-            first: number("first")?,
-            last: number("last")?,
+            first: number(lines.get("first"))?,
+            last: number(lines.get("last"))?,
         })
+    }
+
+    pub(super) fn number(value: Option<&Value>) -> Option<u32> {
+        value.and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
+    }
+
+    fn strings(value: Option<&Value>) -> Vec<String> {
+        value
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    fn objects(value: Option<&Value>) -> impl Iterator<Item = &Map<String, Value>> {
+        value
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+    }
+
+    /// `review_prepare`'s arguments as a plan. The server checked them
+    /// against the schema; the daemon checks them against the diff.
+    pub(super) fn plan(arguments: &Map<String, Value>) -> pb::ReviewPlan {
+        let spec = arguments.get("spec");
+        pb::ReviewPlan {
+            spec: Some(pb::DiffSpec {
+                repos: objects(spec.and_then(|spec| spec.get("repos"))).map(repo_spec).collect(),
+            }),
+            order: objects(arguments.get("order")).map(repo_path).collect(),
+            groups: objects(arguments.get("groups"))
+                .map(|group| pb::ReviewGroup {
+                    title: super::text(group, "title"),
+                    note: super::text(group, "note"),
+                    first: group.get("first").and_then(Value::as_object).map(repo_path),
+                })
+                .collect(),
+            notes: objects(arguments.get("notes"))
+                .map(|note| {
+                    let (target, lines) = match (lines(note.get("lines")), number(note.get("hunk_at"))) {
+                        (Some(lines), _) => (pb::review_note::Target::Lines, Some(lines)),
+                        (None, Some(line)) => (pb::review_note::Target::Hunk, Some(pb::LineRange { first: line, last: line })),
+                        (None, None) => (pb::review_note::Target::File, None),
+                    };
+                    pb::ReviewNote {
+                        file: Some(repo_path(note)),
+                        target: target as i32,
+                        lines,
+                        side: side(note),
+                        text: super::text(note, "text"),
+                        ..pb::ReviewNote::default()
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn repo_spec(repo: &Map<String, Value>) -> pb::RepoDiffSpec {
+        use pb::diff_spec_base::Base;
+        use pb::diff_spec_compare::{Untracked, Upto};
+        let base = repo.get("base").and_then(Value::as_object);
+        let given = |field: &str| base.and_then(|base| base.get(field));
+        let base = if let Some(branch) = given("merge_base_with").and_then(Value::as_str) {
+            Some(Base::MergeBaseWith(branch.to_owned()))
+        } else if let Some(rev) = given("rev").and_then(Value::as_str) {
+            Some(Base::Rev(rev.to_owned()))
+        } else if let Some(n) = number(given("reviewed_snapshot")) {
+            Some(Base::ReviewedSnapshot(n))
+        } else if given("fork_point").is_some() {
+            Some(Base::ForkPoint(pb::ForkPointBase {}))
+        } else if given("index").is_some() {
+            Some(Base::Index(pb::IndexBase {}))
+        } else {
+            None
+        };
+        let upto = match repo.get("upto").and_then(Value::as_str) {
+            Some("commits") => Upto::Commits,
+            Some("staged") => Upto::Staged,
+            _ => Upto::Unstaged,
+        };
+        let untracked = match repo.get("untracked").and_then(Value::as_str) {
+            Some("none") => Untracked::None,
+            Some("paths") => Untracked::Paths,
+            _ => Untracked::All,
+        };
+        let whitespace = match repo.get("whitespace").and_then(Value::as_str) {
+            Some("ignore_changes") => pb::DiffWhitespace::IgnoreChanges,
+            Some("ignore_all") => pb::DiffWhitespace::IgnoreAll,
+            _ => pb::DiffWhitespace::Unspecified,
+        };
+        pb::RepoDiffSpec {
+            repo: repo_path(repo).repo,
+            base: Some(pb::DiffSpecBase { base }),
+            compare: Some(pb::DiffSpecCompare {
+                upto: upto as i32,
+                untracked: untracked as i32,
+                untracked_paths: strings(repo.get("untracked_paths")),
+            }),
+            include_paths: strings(repo.get("include_paths")),
+            exclude_paths: strings(repo.get("exclude_paths")),
+            whitespace: whitespace as i32,
+            no_renames: repo.get("renames").and_then(Value::as_bool) == Some(false),
+        }
     }
 
     pub(super) fn side(arguments: &Map<String, Value>) -> i32 {

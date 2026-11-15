@@ -1,12 +1,15 @@
-//! DiffService and ReviewChatService (D66, SPEC RV-28–RV-34, PR-22–PR-26):
-//! a session's diffs, computed with `humata2_review_diff` in its clones on
-//! this machine, the reviewed snapshots Mark reviewed takes, and the review
-//! chat's view of the review.
+//! DiffService, ReviewChatService, and the review chat's side of
+//! CommentService and ViewService (D66, SPEC RV-28–RV-34, PR-22–PR-26): a
+//! session's diffs, computed with `humata2_review_diff` in its clones on
+//! this machine, the reviewed snapshots Mark reviewed takes, the review
+//! chat's view of the review, and the notes and plans its agent leaves.
 //!
-//! What a review showed is kept per session in memory: the last GetDiff's
-//! files per repo, which MarkReviewed snapshots and the review chat's tools
-//! check files against, and the chat's view, notes and changes. None of it
-//! persists yet (OVERVIEW › review_diff wiring).
+//! What a review showed is kept per session: the last GetDiff's files per
+//! repo, which MarkReviewed snapshots and the review chat's tools check
+//! files against, and the chat's view, notes and switches. Each change is
+//! saved to the store before it is answered, so a restart keeps them
+//! (PR-26); the list of changes, for Undo, lives only as long as the
+//! daemon.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -17,16 +20,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use humata2_access::{Call, Capability, Entry, Place, RepoPath, Root, SessionRef, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
-    BaseContext, Checkout, ChatError, Clones, DiffError, FileRef, FileSummary, Matching, RepoDiff,
-    ReviewChat, Side, Viewed, wire,
+    AnchorError, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, DiffError, FileRef,
+    FileSummary, Matching, PlanError, RepoDiff, ReviewChat, Side, UserNote, Viewed, Whitespace, wire,
 };
-use humata2_store::{SessionRecord, Store};
+use humata2_store::{ReviewRecord, SessionRecord, Store};
+use prost::Message;
 use tokio::sync::watch;
 use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status};
 
 use crate::guard::Guard;
-use crate::identity::{self, Caller};
+use crate::identity::{self, AgentCaller, Caller};
 use crate::status;
 
 /// At most this many lines of a selection go back with review_context.
@@ -46,6 +50,15 @@ struct Inner {
     /// Answers to calls that carried an idempotency key, by key.
     marked: Mutex<HashMap<String, pb::MarkReviewedResponse>>,
     focused: Mutex<HashMap<String, pb::ReviewChange>>,
+    /// Answers to the review chat's notes and plans, by idempotency key.
+    answered: Mutex<HashMap<String, Answer>>,
+}
+
+#[derive(Clone)]
+enum Answer {
+    Comment(pb::Comment),
+    Dropped(pb::DropCommentResponse),
+    Prepared(pb::PreparedView),
 }
 
 /// One session's review.
@@ -56,6 +69,8 @@ struct SessionReview {
     chat: Mutex<Chat>,
     /// The last change's seq, for WatchReviewChanges.
     changed: watch::Sender<u64>,
+    /// Held while the review is saved, so saves land in order.
+    saving: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -63,6 +78,9 @@ struct Chat {
     chat: ReviewChat,
     /// When each change was made, by seq, in Unix seconds.
     at: BTreeMap<u64, i64>,
+    /// Whether the app reported the user's view: the review is open in a
+    /// review chat, so a plan applies at once (PR-24).
+    reported: bool,
 }
 
 impl Review {
@@ -75,6 +93,7 @@ impl Review {
                 sessions: Mutex::default(),
                 marked: Mutex::default(),
                 focused: Mutex::default(),
+                answered: Mutex::default(),
             }),
         }
     }
@@ -100,11 +119,52 @@ impl Review {
         }
     }
 
-    fn review(&self, session: &str) -> Arc<SessionReview> {
-        lock(&self.inner.sessions)
-            .entry(session.to_owned())
-            .or_default()
-            .clone()
+    /// The session's review: in memory, else as the store saved it.
+    fn review(&self, session: &str) -> Result<Arc<SessionReview>, Status> {
+        let mut sessions = lock(&self.inner.sessions);
+        if let Some(review) = sessions.get(session) {
+            return Ok(review.clone());
+        }
+        let saved = self
+            .inner
+            .store
+            .review(session)
+            .map_err(|error| status::store(error, &self.inner.machine, "read the session's review"))?;
+        let review = Arc::new(match saved {
+            Some(record) => restored(&record),
+            None => SessionReview::default(),
+        });
+        sessions.insert(session.to_owned(), review.clone());
+        Ok(review)
+    }
+
+    /// Saves the session's review as it is now. Saves of one review land
+    /// in the order they're made.
+    async fn save(&self, session: &str, review: &SessionReview) -> Result<(), Status> {
+        let _saving = review.saving.lock().await;
+        let record = saved(session, review);
+        let store = self.inner.store.clone();
+        blocking(move || store.put_review(&record))
+            .await?
+            .map_err(|error| status::store(error, &self.inner.machine, "save the session's review"))
+    }
+
+    /// Saves the review, then tells the app's feed about change `seq`.
+    async fn publish(&self, session: &str, review: &SessionReview, seq: u64) -> Result<(), Status> {
+        let saved = self.save(session, review).await;
+        review.changed.send_replace(seq);
+        saved
+    }
+
+    /// The answer an earlier call with the same idempotency key got.
+    fn answered(&self, key: Option<&String>) -> Option<Answer> {
+        key.and_then(|key| lock(&self.inner.answered).get(key).cloned())
+    }
+
+    fn remember(&self, key: Option<String>, answer: Answer) {
+        if let Some(key) = key {
+            lock(&self.inner.answered).insert(key, answer);
+        }
     }
 
     fn require(&self, caller: &Caller, call: &Call) -> Result<(), Status> {
@@ -207,10 +267,18 @@ impl pb::diff_service_server::DiffService for Review {
         let spec = wire::spec_for_base(&base, &keys, |_| None).map_err(|error| wire_failed("base", &error))?;
         let clones = clones(&record, &keys).await?;
         let diffs = clones.diff(&spec, &context_of(&record)).await.map_err(|error| diff_failed(&error))?;
-        let review = self.review(&record.id);
-        let mut shown = lock(&review.shown);
-        for diff in &diffs {
-            shown.insert(folder_name(&diff.repo).to_owned(), diff.clone());
+        let review = self.review(&record.id)?;
+        let moved = {
+            let mut shown = lock(&review.shown);
+            let mut moved = false;
+            for diff in &diffs {
+                let before = shown.insert(folder_name(&diff.repo).to_owned(), diff.clone());
+                moved |= before.as_ref() != Some(diff);
+            }
+            moved
+        };
+        if moved {
+            self.save(&record.id, &review).await?;
         }
         Ok(Response::new(pb::GetDiffResponse {
             any_changes: diffs.iter().any(|diff| !diff.files.is_empty()),
@@ -295,7 +363,7 @@ impl pb::diff_service_server::DiffService for Review {
         let clones = clones(&record, &keys).await?;
         // RV-28: per repo, the tree the client says it showed, else the
         // last GetDiff's, else the working tree as it is now.
-        let review = self.review(&record.id);
+        let review = self.review(&record.id)?;
         let mut trees: BTreeMap<String, String> = lock(&review.shown)
             .iter()
             .map(|(folder, diff)| (folder.clone(), diff.trees.new.clone()))
@@ -357,7 +425,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         // Never gated by the switches (PR-25): reading is what the chat is
         // for.
         self.require(&caller, &Call::ReadSession(session))?;
-        let review = self.review(&record.id);
+        let review = self.review(&record.id)?;
         let context = lock(&review.chat).chat.context();
         let selected = match context.view.open.as_ref() {
             Some(place) => selected_text(&record.folder, place).await,
@@ -376,7 +444,13 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         self.require_use(&caller, Capability::UserReviewState, &session)?;
         let view = request.view.ok_or_else(|| status::missing("view"))?;
         let view = wire::view_from_pb(&view).map_err(|error| wire_failed("view", &error))?;
-        lock(&self.review(&record.id).chat).chat.report(view);
+        let review = self.review(&record.id)?;
+        {
+            let mut chat = lock(&review.chat);
+            chat.chat.report(view);
+            chat.reported = true;
+        }
+        self.save(&record.id, &review).await?;
         Ok(Response::new(pb::ReportReviewViewResponse {}))
     }
 
@@ -394,7 +468,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             return Ok(Response::new(answer));
         }
         let (place, highlights) = wire::focus_from_pb(&request).map_err(|error| wire_failed("file", &error))?;
-        let review = self.review(&record.id);
+        let review = self.review(&record.id)?;
         let shown = lock(&review.shown).clone();
         let change = {
             let mut chat = lock(&review.chat);
@@ -406,7 +480,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             chat.at.insert(change.seq, at);
             wire::change_to_pb(&change, at)
         };
-        review.changed.send_replace(change.seq);
+        self.publish(&record.id, &review, change.seq).await?;
         if let Some(key) = idempotency {
             lock(&self.inner.focused).insert(key, change.clone());
         }
@@ -424,7 +498,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         if request.undo_id.is_empty() {
             return Err(status::missing("undo_id"));
         }
-        let review = self.review(&record.id);
+        let review = self.review(&record.id)?;
         let change = {
             let mut chat = lock(&review.chat);
             let change = chat.chat.undo(&request.undo_id).map_err(|error| chat_failed(&error))?;
@@ -432,7 +506,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
             chat.at.insert(change.seq, at);
             wire::change_to_pb(&change, at)
         };
-        review.changed.send_replace(change.seq);
+        self.publish(&record.id, &review, change.seq).await?;
         Ok(Response::new(change))
     }
 
@@ -446,7 +520,7 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         let request = request.into_inner();
         let (record, session) = self.session(request.session.as_ref())?;
         self.require(&caller, &Call::ReadSession(session))?;
-        let review = self.review(&record.id);
+        let review = self.review(&record.id)?;
         let mut changed = review.changed.subscribe();
         let mut after = request.after_seq;
         let stream = async_stream(move |sender| async move {
@@ -482,10 +556,493 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
         let (record, session) = self.session(request.session.as_ref())?;
         self.require_use(&caller, Capability::UserReviewState, &session)?;
         let switches = wire::switches_from_pb(request.switches.as_ref());
-        let review = self.review(&record.id);
-        let mut chat = lock(&review.chat);
-        chat.chat.set_switches(switches);
-        Ok(Response::new(wire::switches_to_pb(chat.chat.switches())))
+        let review = self.review(&record.id)?;
+        let switches = {
+            let mut chat = lock(&review.chat);
+            chat.chat.set_switches(switches);
+            chat.chat.switches()
+        };
+        self.save(&record.id, &review).await?;
+        Ok(Response::new(wire::switches_to_pb(switches)))
+    }
+}
+
+/// The review chat's notes for the user (PR-23): CreateComment with the
+/// `note` destination, and EditComment and DropComment on those notes.
+/// Comments to send to the agent, PR drafts and the rest aren't built yet.
+#[tonic::async_trait]
+impl pb::comment_service_server::CommentService for Review {
+    async fn list_comments(
+        &self,
+        _request: Request<pb::ListCommentsRequest>,
+    ) -> Result<Response<pb::ListCommentsResponse>, Status> {
+        Err(status::not_built("humata.v1.CommentService.ListComments"))
+    }
+
+    async fn create_comment(&self, request: Request<pb::CreateCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let is_note = matches!(
+            request.destination.as_ref().and_then(|destination| destination.destination.as_ref()),
+            Some(pb::comment_destination::Destination::Note(_))
+        );
+        if !is_note {
+            return Err(status::not_built(
+                "humata.v1.CommentService.CreateComment for comments to the agent or a pull request",
+            ));
+        }
+        let asked = request.session.clone().or_else(|| own_session(&caller));
+        let (record, session) = self.session(asked.as_ref())?;
+        self.require_use(&caller, Capability::ReviewNote, &session)?;
+        let author = note_author(&caller)?;
+        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
+        if let Some(Answer::Comment(answer)) = self.answered(idempotency.as_ref()) {
+            return Ok(Response::new(answer));
+        }
+        let mut note = wire::note_from_anchor(request.anchor.as_ref(), &request.text)
+            .map_err(|error| wire_failed("anchor", &error))?;
+        let review = self.review(&record.id)?;
+        lock(&review.chat)
+            .chat
+            .switches()
+            .allow(ChatTool::Note)
+            .map_err(|error| chat_failed(&error))?;
+        let shown_diff = lock(&review.shown).get(folder_name(&note.file.repo)).cloned();
+        let Some(diff) = shown_diff.filter(|diff| diff.file(&note.file.path).is_some()) else {
+            return Err(chat_failed(&ChatError::NotInReview {
+                repo: note.file.repo.clone(),
+                path: note.file.path.clone(),
+            }));
+        };
+        // The diff names the repo as GetDiff was asked; the note follows it.
+        note.file.repo.clone_from(&diff.repo);
+        self.require_read(&caller, &session, std::slice::from_ref(&diff.repo))?;
+        let clones = clones(&record, std::slice::from_ref(&diff.repo)).await?;
+        let checkout = clones.get(&diff.repo).map_err(|error| diff_failed(&error))?.clone();
+        let matching = Matching {
+            whitespace: Whitespace::Counts,
+            renames: true,
+        };
+        let note = checkout
+            .anchor_notes(diff, matching, vec![note])
+            .await
+            .map_err(|error| anchor_failed(&error))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| status::internal("anchoring a note lost it".to_owned(), ""))?;
+        let shown = lock(&review.shown).clone();
+        let (seq, comment) = {
+            let mut chat = lock(&review.chat);
+            let change = chat
+                .chat
+                .note(&author.agent, note, |file| in_diff(&shown, file))
+                .map_err(|error| chat_failed(&error))?;
+            chat.at.insert(change.seq, now());
+            (change.seq, changed_note(&change, &record.id))
+        };
+        self.publish(&record.id, &review, seq).await?;
+        let comment = comment.ok_or_else(|| status::internal("a new note made no note".to_owned(), ""))?;
+        self.remember(idempotency, Answer::Comment(comment.clone()));
+        Ok(Response::new(comment))
+    }
+
+    async fn edit_comment(&self, request: Request<pb::EditCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
+        self.require_use(&caller, Capability::ReviewNote, &session)?;
+        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
+        if let Some(Answer::Comment(answer)) = self.answered(idempotency.as_ref()) {
+            return Ok(Response::new(answer));
+        }
+        let review = self.review(&record.id)?;
+        let (seq, comment) = {
+            let mut chat = lock(&review.chat);
+            let change = chat
+                .chat
+                .edit_note(&id, request.text)
+                .map_err(|error| chat_failed(&error))?;
+            chat.at.insert(change.seq, now());
+            (change.seq, changed_note(&change, &record.id))
+        };
+        self.publish(&record.id, &review, seq).await?;
+        let comment = comment.ok_or_else(|| status::internal("an edited note made no note".to_owned(), ""))?;
+        self.remember(idempotency, Answer::Comment(comment.clone()));
+        Ok(Response::new(comment))
+    }
+
+    async fn drop_comment(
+        &self,
+        request: Request<pb::DropCommentRequest>,
+    ) -> Result<Response<pb::DropCommentResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
+        self.require_use(&caller, Capability::ReviewNote, &session)?;
+        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
+        if let Some(Answer::Dropped(answer)) = self.answered(idempotency.as_ref()) {
+            return Ok(Response::new(answer));
+        }
+        let review = self.review(&record.id)?;
+        let change = {
+            let mut chat = lock(&review.chat);
+            let change = chat.chat.drop_note(&id).map_err(|error| chat_failed(&error))?;
+            chat.at.insert(change.seq, now());
+            change
+        };
+        self.publish(&record.id, &review, change.seq).await?;
+        let answer = pb::DropCommentResponse {
+            undo_id: change.undo_id,
+        };
+        self.remember(idempotency, Answer::Dropped(answer.clone()));
+        Ok(Response::new(answer))
+    }
+
+    async fn reattach_comment(
+        &self,
+        _request: Request<pb::ReattachCommentRequest>,
+    ) -> Result<Response<pb::Comment>, Status> {
+        Err(status::not_built("humata.v1.CommentService.ReattachComment"))
+    }
+
+    async fn send_comments(
+        &self,
+        _request: Request<pb::SendCommentsRequest>,
+    ) -> Result<Response<pb::SendCommentsResponse>, Status> {
+        Err(status::not_built("humata.v1.CommentService.SendComments"))
+    }
+
+    async fn resolve_comment(&self, _request: Request<pb::ResolveCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        Err(status::not_built("humata.v1.CommentService.ResolveComment"))
+    }
+
+    async fn reopen_comment(&self, _request: Request<pb::ReopenCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        Err(status::not_built("humata.v1.CommentService.ReopenComment"))
+    }
+}
+
+/// A review plan the review chat's agent prepares (PR-24): in an open
+/// review chat it applies at once. Draft views aren't built yet.
+#[tonic::async_trait]
+impl pb::view_service_server::ViewService for Review {
+    async fn prepare_view(&self, request: Request<pb::PrepareViewRequest>) -> Result<Response<pb::PreparedView>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let Some(pb::prepare_view_request::Content::ReviewPlan(plan)) = request.content else {
+            return Err(status::not_built(
+                "humata.v1.ViewService.PrepareView for walkthroughs, board offers and pull request drafts",
+            ));
+        };
+        let asked = own_session(&caller).ok_or_else(|| {
+            status::failure(
+                Code::FailedPrecondition,
+                status::error(
+                    "a view is prepared by a session's agent: PrepareView takes the session from the agent's token".to_owned(),
+                    "call it from the agent's MCP server (review_prepare), not as the user",
+                    pb::error::Kind::InvalidField(pb::InvalidField {
+                        field: "review_plan".to_owned(),
+                        problem: pb::invalid_field::Problem::NotAllowedHere as i32,
+                    }),
+                ),
+            )
+        })?;
+        let (record, session) = self.session(Some(&asked))?;
+        let author = note_author(&caller)?;
+        let review = self.review(&record.id)?;
+        if !lock(&review.chat).reported {
+            // A draft view is offered in the session's channel.
+            self.require(
+                &caller,
+                &Call::Use {
+                    capability: Capability::ViewsPrepare,
+                    target: Target::Channel(session.channel.clone()),
+                },
+            )?;
+            return Err(status::not_built(
+                "humata.v1.ViewService.PrepareView outside an open review chat (draft views)",
+            ));
+        }
+        self.require_use(&caller, Capability::ReviewOrder, &session)?;
+        let idempotency = idempotency(&record.id, request.idempotency_key.as_ref());
+        if let Some(Answer::Prepared(answer)) = self.answered(idempotency.as_ref()) {
+            return Ok(Response::new(answer));
+        }
+        lock(&review.chat)
+            .chat
+            .switches()
+            .allow(ChatTool::Prepare)
+            .map_err(|error| chat_failed(&error))?;
+        let mut plan = wire::plan_from_pb(&plan).map_err(|error| wire_failed("review_plan", &error))?;
+        let asked_repos: Vec<pb::RepoRef> = plan.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
+        let keys = repo_keys(&record, &asked_repos).await?;
+        self.require_read(&caller, &session, &keys)?;
+        let clones = clones(&record, &keys).await?;
+        let diffs = clones
+            .diff(&plan.spec, &context_of(&record))
+            .await
+            .map_err(|error| diff_failed(&error))?;
+        plan.check(&diffs).map_err(|error| plan_failed(&error))?;
+        for (diff, spec) in diffs.iter().zip(&plan.spec.repos) {
+            let checkout = clones.get(&diff.repo).map_err(|error| diff_failed(&error))?.clone();
+            let notes = std::mem::take(&mut plan.notes);
+            plan.notes = checkout
+                .anchor_notes(diff.clone(), Matching::from(spec), notes)
+                .await
+                .map_err(|error| anchor_failed(&error))?;
+        }
+        // What the plan compares is what the review shows from now on.
+        {
+            let mut shown = lock(&review.shown);
+            for diff in &diffs {
+                shown.insert(folder_name(&diff.repo).to_owned(), diff.clone());
+            }
+        }
+        let change = {
+            let mut chat = lock(&review.chat);
+            let change = chat
+                .chat
+                .prepare(&author.agent, plan)
+                .map_err(|error| chat_failed(&error))?;
+            chat.at.insert(change.seq, now());
+            change
+        };
+        self.publish(&record.id, &review, change.seq).await?;
+        let answer = pb::PreparedView {
+            title: request.title,
+            undo_id: change.undo_id,
+            ..pb::PreparedView::default()
+        };
+        self.remember(idempotency, Answer::Prepared(answer.clone()));
+        Ok(Response::new(answer))
+    }
+
+    async fn revise_view(&self, _request: Request<pb::ReviseViewRequest>) -> Result<Response<pb::PreparedView>, Status> {
+        Err(status::not_built("humata.v1.ViewService.ReviseView"))
+    }
+
+    async fn mark_ready(&self, _request: Request<pb::MarkReadyRequest>) -> Result<Response<pb::PreparedView>, Status> {
+        Err(status::not_built("humata.v1.ViewService.MarkReady"))
+    }
+
+    async fn list_views(
+        &self,
+        _request: Request<pb::ListViewsRequest>,
+    ) -> Result<Response<pb::ListViewsResponse>, Status> {
+        Err(status::not_built("humata.v1.ViewService.ListViews"))
+    }
+
+    async fn set_view_state(
+        &self,
+        _request: Request<pb::SetViewStateRequest>,
+    ) -> Result<Response<pb::PreparedView>, Status> {
+        Err(status::not_built("humata.v1.ViewService.SetViewState"))
+    }
+}
+
+impl Review {
+    /// The session and note a note's comment id names: `<session>/note-N`,
+    /// or from the session's own agent, `note-N` as review_context lists
+    /// it.
+    fn note_session(
+        &self,
+        caller: &Caller,
+        id: Option<&pb::CommentId>,
+    ) -> Result<(SessionRecord, SessionRef, String), Status> {
+        let id = id
+            .map(|id| id.value.clone())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let (asked, note) = match id.split_once('/') {
+            Some((session, note)) => (
+                pb::SessionId {
+                    value: session.to_owned(),
+                },
+                note.to_owned(),
+            ),
+            None => (
+                own_session(caller).ok_or_else(|| {
+                    status::invalid_field(
+                        "id",
+                        pb::invalid_field::Problem::BadFormat,
+                        format!("{id:?} doesn't say whose review it's in"),
+                        "name a review chat note as <session>/<note id>, like se_1/note-2",
+                    )
+                })?,
+                id,
+            ),
+        };
+        let (record, session) = self.session(Some(&asked))?;
+        Ok((record, session, note))
+    }
+}
+
+/// The session an agent's token belongs to.
+fn own_session(caller: &Caller) -> Option<pb::SessionId> {
+    match caller {
+        Caller::Agent(agent) => Some(pb::SessionId {
+            value: agent.session.id.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// Notes and plans for the user come from the session's agent.
+fn note_author(caller: &Caller) -> Result<&AgentCaller, Status> {
+    match caller {
+        Caller::Agent(agent) => Ok(agent),
+        _ => Err(status::failure(
+            Code::FailedPrecondition,
+            status::error(
+                "notes for the user come from the session's agent in the review chat".to_owned(),
+                "ask the agent in the review chat to leave the note or arrange the review",
+                pb::error::Kind::InvalidField(pb::InvalidField {
+                    field: "destination".to_owned(),
+                    problem: pb::invalid_field::Problem::NotAllowedHere as i32,
+                }),
+            ),
+        )),
+    }
+}
+
+fn idempotency(session: &str, key: Option<&pb::IdempotencyKey>) -> Option<String> {
+    key.filter(|key| !key.value.is_empty())
+        .map(|key| format!("{session}/{}", key.value))
+}
+
+/// The note a change shows, as the Comment CreateComment and EditComment
+/// answer: with its session and author, and that change's id for Undo.
+fn changed_note(change: &humata2_review_diff::Change, session: &str) -> Option<pb::Comment> {
+    let ChangeKind::Note(note) = &change.what else {
+        return None;
+    };
+    let mut comment = note_comment(note, session);
+    comment.undo_id.clone_from(&change.undo_id);
+    Some(comment)
+}
+
+/// A note as a Comment, with its session and the agent that wrote it.
+fn note_comment(note: &UserNote, session: &str) -> pb::Comment {
+    let mut comment = wire::user_note_to_pb(note);
+    comment.session = Some(pb::SessionId {
+        value: session.to_owned(),
+    });
+    comment.author = Some(pb::Actor {
+        actor: Some(pb::actor::Actor::Agent(pb::AgentActor {
+            session: comment.session.clone(),
+            agent: Some(pb::AgentId {
+                value: note.author.clone(),
+            }),
+            ..pb::AgentActor::default()
+        })),
+    });
+    comment
+}
+
+/// The review as the store keeps it: the chat as a ReviewContext, the
+/// shown diffs as RepoDiffs.
+fn saved(session: &str, review: &SessionReview) -> ReviewRecord {
+    let (context, last_seq, last_note, reported) = {
+        let chat = lock(&review.chat);
+        (chat.chat.context(), chat.chat.last_seq(), chat.chat.last_note(), chat.reported)
+    };
+    let mut chat = wire::context_to_pb(&context, Vec::new());
+    chat.notes = context.notes.iter().map(|note| note_comment(note, session)).collect();
+    let shown = lock(&review.shown)
+        .values()
+        .map(|diff| wire::repo_diff_to_pb(diff).encode_to_vec())
+        .collect();
+    ReviewRecord {
+        session: session.to_owned(),
+        chat: chat.encode_to_vec(),
+        shown,
+        last_seq,
+        last_note,
+        view_reported: reported,
+        updated_unix_ms: now().saturating_mul(1000),
+    }
+}
+
+/// A review back from the store. What can't be read back starts empty,
+/// and the daemon's log says so: the review still opens.
+fn restored(record: &ReviewRecord) -> SessionReview {
+    let lost = |what: &str| {
+        crate::log::say!(
+            "humatad2: session {}'s saved review had {what} this build can't read, so the review chat starts without it",
+            record.session
+        );
+    };
+    let context = pb::ReviewContext::decode(record.chat.as_slice()).unwrap_or_else(|_| {
+        lost("a chat");
+        pb::ReviewContext::default()
+    });
+    let view = context
+        .view
+        .as_ref()
+        .map(wire::view_from_pb)
+        .transpose()
+        .unwrap_or_else(|_| {
+            lost("a view");
+            None
+        })
+        .unwrap_or_default();
+    let notes: Vec<UserNote> = context
+        .notes
+        .iter()
+        .filter_map(|comment| {
+            let author = match comment.author.as_ref().and_then(|author| author.actor.as_ref()) {
+                Some(pb::actor::Actor::Agent(agent)) => agent.agent.as_ref().map(|id| id.value.clone()),
+                _ => None,
+            };
+            let note = wire::user_note_from_pb(comment, author.as_deref().unwrap_or_default()).ok();
+            if note.is_none() {
+                lost("a note");
+            }
+            note
+        })
+        .collect();
+    let shown = record
+        .shown
+        .iter()
+        .filter_map(|bytes| {
+            let diff = pb::RepoDiff::decode(bytes.as_slice()).ok().and_then(|diff| wire::repo_diff_from_pb(&diff));
+            if diff.is_none() {
+                lost("a diff");
+            }
+            diff
+        })
+        .map(|diff| (folder_name(&diff.repo).to_owned(), diff))
+        .collect();
+    let switches = wire::switches_from_pb(context.switches.as_ref());
+    SessionReview {
+        shown: Mutex::new(shown),
+        chat: Mutex::new(Chat {
+            chat: ReviewChat::restore(view, switches, notes, record.last_seq, record.last_note),
+            at: BTreeMap::new(),
+            reported: record.view_reported,
+        }),
+        ..SessionReview::default()
+    }
+}
+
+/// A plan that doesn't fit its diff: the agent fixes the plan.
+fn plan_failed(error: &PlanError) -> Status {
+    status::failure(
+        Code::FailedPrecondition,
+        status::error(
+            error.to_string(),
+            "",
+            pb::error::Kind::InvalidField(pb::InvalidField {
+                field: "review_plan".to_owned(),
+                problem: pb::invalid_field::Problem::NotAllowedHere as i32,
+            }),
+        ),
+    )
+}
+
+fn anchor_failed(error: &AnchorError) -> Status {
+    match error {
+        AnchorError::Plan(error) => plan_failed(error),
+        AnchorError::Diff(error) => diff_failed(error),
     }
 }
 

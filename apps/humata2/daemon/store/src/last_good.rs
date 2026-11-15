@@ -182,17 +182,25 @@ pub(crate) fn copy_files(root: &Path) -> HashSet<String> {
     let Ok(connection) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
         return HashSet::new();
     };
-    connection
-        .prepare(
-            "SELECT payload_file FROM journal WHERE payload_file IS NOT NULL
-             UNION SELECT launch_file FROM agents WHERE launch_file IS NOT NULL",
-        )
-        .and_then(|mut statement| {
-            statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<HashSet<String>>>()
-        })
-        .unwrap_or_default()
+    // One query per table: a copy taken before a table existed still names
+    // the files of the others.
+    [
+        "SELECT payload_file FROM journal WHERE payload_file IS NOT NULL",
+        "SELECT launch_file FROM agents WHERE launch_file IS NOT NULL",
+        "SELECT state_file FROM reviews WHERE state_file IS NOT NULL",
+    ]
+    .into_iter()
+    .flat_map(|query| {
+        connection
+            .prepare(query)
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<HashSet<String>>>()
+            })
+            .unwrap_or_default()
+    })
+    .collect()
 }
 
 /// Whether `error`, from opening the store, says its database is damaged,

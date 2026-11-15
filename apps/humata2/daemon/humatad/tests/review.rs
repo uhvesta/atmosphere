@@ -350,7 +350,7 @@ async fn agent_token(daemon: &Daemon) -> (String, Attach) {
         .id
         .unwrap();
     let mut attach = Attach::start(daemon, open(&tab, 0)).await;
-    let path = daemon.dir.path().join("token");
+    let path = daemon.dir.path().join(format!("token-{}", tab.value));
     attach
         .type_text(&format!("printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r", path.display()))
         .await;
@@ -429,4 +429,242 @@ async fn the_sessions_agent_may_read_and_focus_but_not_change_the_users_review_s
         .await
         .unwrap_err();
     assert!(matches!(error_of(&switched).kind, Some(pb::error::Kind::UserOnly(_))));
+}
+
+async fn comments(daemon: &Daemon) -> pb::comment_service_client::CommentServiceClient<Channel> {
+    pb::comment_service_client::CommentServiceClient::new(daemon.channel().await)
+}
+
+async fn views(daemon: &Daemon) -> pb::view_service_client::ViewServiceClient<Channel> {
+    pb::view_service_client::ViewServiceClient::new(daemon.channel().await)
+}
+
+fn note(path: &str, first: u32, last: u32, text: &str) -> pb::CreateCommentRequest {
+    pb::CreateCommentRequest {
+        idempotency_key: None,
+        session: Some(session()),
+        anchor: Some(pb::CommentAnchor {
+            file: Some(file(path)),
+            lines: Some(pb::LineRange { first, last }),
+            side: pb::DiffSide::New as i32,
+            ..pb::CommentAnchor::default()
+        }),
+        text: text.to_owned(),
+        destination: Some(pb::CommentDestination {
+            destination: Some(pb::comment_destination::Destination::Note(pb::UserNote {})),
+        }),
+    }
+}
+
+fn note_id(comment: &pb::Comment) -> String {
+    comment.id.as_ref().map(|id| id.value.clone()).unwrap_or_default()
+}
+
+async fn context(daemon: &Daemon) -> pb::ReviewContext {
+    chat(daemon)
+        .await
+        .get_review_context(pb::GetReviewContextRequest { session: Some(session()) })
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+fn note_texts(context: &pb::ReviewContext) -> Vec<(String, String)> {
+    context
+        .notes
+        .iter()
+        .map(|note| (note_id(note), note.text.clone()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_notes_are_kept_through_a_restart_and_never_reuse_an_id() {
+    let (mut daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=10).replace("line 3\n", "line three\n")).unwrap();
+    get_diff(&daemon, uncommitted()).await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut notes = comments(&daemon).await;
+
+    let outside = notes
+        .create_comment(as_agent(note("README.md", 1, 1, "nope"), &token))
+        .await
+        .unwrap_err();
+    assert_eq!(outside.code(), Code::FailedPrecondition, "notes go only on files the diff shows");
+
+    let first = notes
+        .create_comment(as_agent(note("refund.rs", 3, 3, "renamed for clarity"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let second = notes
+        .create_comment(as_agent(note("refund.rs", 4, 4, "unchanged"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!first.undo_id.is_empty());
+    assert_eq!(first.anchor.as_ref().unwrap().quoted, "line three", "the note quotes its lines");
+    let edited = notes
+        .edit_comment(as_agent(
+            pb::EditCommentRequest {
+                idempotency_key: None,
+                id: first.id.clone(),
+                text: "renamed so it reads as a number".to_owned(),
+                expected_revision: None,
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(edited.undo_id, first.undo_id, "the edit is its own change to undo");
+    // The user drops one, naming it with its session.
+    notes
+        .drop_comment(pb::DropCommentRequest {
+            idempotency_key: None,
+            id: Some(pb::CommentId {
+                value: format!("{SESSION}/{}", note_id(&second)),
+            }),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    let before = note_texts(&context(&daemon).await);
+    assert_eq!(before, [(note_id(&first), "renamed so it reads as a number".to_owned())]);
+
+    daemon.restart().await;
+
+    assert_eq!(note_texts(&context(&daemon).await), before, "the notes survive the restart");
+    let (token, _attach) = agent_token(&daemon).await;
+    let third = comments(&daemon)
+        .await
+        .create_comment(as_agent(note("refund.rs", 5, 5, "after the restart"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        ![note_id(&first), note_id(&second)].contains(&note_id(&third)),
+        "{} was given out before the restart",
+        note_id(&third)
+    );
+    assert!(![first.undo_id, edited.undo_id].contains(&third.undo_id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notes_are_the_agents_and_the_user_can_turn_them_off() {
+    let (daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=11)).unwrap();
+    get_diff(&daemon, uncommitted()).await;
+    let (token, _attach) = agent_token(&daemon).await;
+
+    let by_user = comments(&daemon)
+        .await
+        .create_comment(note("refund.rs", 11, 11, "mine"))
+        .await
+        .unwrap_err();
+    assert_eq!(by_user.code(), Code::FailedPrecondition, "notes for the user come from the agent");
+
+    chat(&daemon)
+        .await
+        .set_agent_switches(pb::SetAgentSwitchesRequest {
+            session: Some(session()),
+            switches: Some(pb::AgentSwitches {
+                focus: true,
+                notes: false,
+                order: true,
+            }),
+        })
+        .await
+        .unwrap();
+    let off = comments(&daemon)
+        .await
+        .create_comment(as_agent(note("refund.rs", 11, 11, "new line"), &token))
+        .await
+        .unwrap_err();
+    assert_eq!(off.code(), Code::PermissionDenied);
+    assert!(matches!(error_of(&off).kind, Some(pb::error::Kind::Denied(_))));
+    assert!(context(&daemon).await.notes.is_empty());
+}
+
+fn plan(order: &[&str], notes: Vec<pb::ReviewNote>) -> pb::PrepareViewRequest {
+    pb::PrepareViewRequest {
+        idempotency_key: None,
+        title: "Refund review".to_owned(),
+        summary: String::new(),
+        content: Some(pb::prepare_view_request::Content::ReviewPlan(pb::ReviewPlan {
+            spec: Some(pb::DiffSpec {
+                repos: vec![pb::RepoDiffSpec {
+                    repo: Some(repo()),
+                    base: Some(pb::DiffSpecBase {
+                        base: Some(pb::diff_spec_base::Base::Rev("HEAD".to_owned())),
+                    }),
+                    ..pb::RepoDiffSpec::default()
+                }],
+            }),
+            order: order.iter().map(|path| file(path)).collect(),
+            groups: Vec::new(),
+            notes,
+        })),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plan_in_an_open_review_chat_orders_the_review_and_leaves_its_notes() {
+    let (daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=11)).unwrap();
+    std::fs::write(clone.join("api.rs"), lines(1..=2)).unwrap();
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut views = views(&daemon).await;
+    let notes = vec![pb::ReviewNote {
+        file: Some(file("refund.rs")),
+        target: pb::review_note::Target::Lines as i32,
+        lines: Some(pb::LineRange { first: 11, last: 11 }),
+        side: pb::DiffSide::New as i32,
+        text: "the new line".to_owned(),
+        ..pb::ReviewNote::default()
+    }];
+
+    let closed = views
+        .prepare_view(as_agent(plan(&["api.rs", "refund.rs"], notes.clone()), &token))
+        .await
+        .unwrap_err();
+    assert_eq!(closed.code(), Code::Unimplemented, "a draft view isn't built yet");
+
+    chat(&daemon)
+        .await
+        .report_review_view(pb::ReportReviewViewRequest {
+            session: Some(session()),
+            view: Some(pb::ReviewViewState::default()),
+        })
+        .await
+        .unwrap();
+    let missing = views
+        .prepare_view(as_agent(plan(&["gone.rs"], Vec::new()), &token))
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), Code::FailedPrecondition, "the order names only files the spec shows");
+
+    let prepared = views
+        .prepare_view(as_agent(plan(&["refund.rs", "api.rs"], notes), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!prepared.undo_id.is_empty(), "it applied at once");
+    let context = context(&daemon).await;
+    let order: Vec<String> = context.view.unwrap().order.into_iter().map(|path| path.path).collect();
+    assert_eq!(order, ["refund.rs", "api.rs"]);
+    assert_eq!(
+        context.notes.iter().map(|note| note.text.as_str()).collect::<Vec<_>>(),
+        ["the new line"]
+    );
+
+    chat(&daemon)
+        .await
+        .undo_review_change(pb::UndoReviewChangeRequest {
+            session: Some(session()),
+            undo_id: prepared.undo_id,
+        })
+        .await
+        .unwrap();
+    let undone = self::context(&daemon).await;
+    assert!(undone.view.unwrap().order.is_empty() && undone.notes.is_empty(), "Undo takes the plan back");
 }

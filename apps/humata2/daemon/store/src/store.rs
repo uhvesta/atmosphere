@@ -468,7 +468,8 @@ impl Inner {
         let mut referenced = connection
             .prepare(
                 "SELECT payload_file FROM journal WHERE payload_file IS NOT NULL
-                 UNION SELECT launch_file FROM agents WHERE launch_file IS NOT NULL",
+                 UNION SELECT launch_file FROM agents WHERE launch_file IS NOT NULL
+                 UNION SELECT state_file FROM reviews WHERE state_file IS NOT NULL",
             )
             .and_then(|mut statement| {
                 statement

@@ -270,12 +270,15 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 
 ### review_diff wiring (A2, A8; PR-22–PR-26, D66)
 - [x] humatad serves DiffService and ReviewChatService (`daemon/humatad/src/review.rs`) on the socket. MarkReviewed snapshots per repo the `shown_tree` the client names, else the last GetDiff's new tree, else the working tree; review chat changes reach WatchReviewChanges; the agent may read its own diff, `review_context` and `review_focus`, never MarkReviewed, Undo or the switches (user-only). Test: `//apps/humata2/daemon/humatad:review_test`.
-- [ ] humatad serves CommentService (at least the `note` destination: review_note, review_note_edit, review_note_drop) and ViewService (PrepareView; in a review chat `review_prepare` applies through `ReviewChat::prepare`).
+- [x] humatad serves CommentService's `note` destination (CreateComment, EditComment, DropComment; notes are the agent's own, anchored in the clone, only on files the last diff showed, off when the user turns notes off) and ViewService's PrepareView with a review plan, which in an open review chat (D80) applies through `ReviewChat::prepare`. Test: `//apps/humata2/daemon/humatad:review_test` (`notes_are_the_agents_and_the_user_can_turn_them_off`, `a_plan_in_an_open_review_chat_orders_the_review_and_leaves_its_notes`).
+- [ ] ListComments, the terminal and PR comment destinations, and draft views (PrepareView outside an open review chat; GetView, ApproveView, DiscardView) answer not built.
+- [ ] CommentAnchor has no hunk target, so `review_note`'s `hunk_at` becomes a one-line note on that line (D80).
+- [ ] Notes aren't marked outdated when a later GetDiff changes the lines they quote.
 - [x] MCP dispatches `review_context` and `review_focus` to ReviewChatService for the caller's own session. Test: `//apps/humata2/daemon/humatad:mcp_test` (`the_review_chats_agent_shows_the_user_a_place_and_reads_it_back`).
-- [ ] MCP dispatches `review_note`, `review_note_edit`, `review_note_drop` and `review_prepare` once CommentService and ViewService are served (they answer not built today).
-- [ ] The review state in `src/review.rs` is memory only: the store persists UserNote, ReviewViewState, the switches and the last shown trees, so a restart keeps the review chat and Mark reviewed still snapshots what was shown.
-- [ ] The CLI's empty `shown_tree` is what the proto asks of it ("Empty (the CLI): the last GetDiff's trees"), and the daemon now fills it in; drop this item unless the CLI gets its own diff view.
-- [ ] DiffService on the peer link (a session on another machine) is still not built; the socket's daemon serves it.
+- [x] MCP dispatches `review_note`, `review_note_edit`, `review_note_drop` and `review_prepare` to CommentService and ViewService. Test: `//apps/humata2/daemon/humatad:mcp_test` (`the_review_chats_agent_leaves_notes_and_orders_the_review`).
+- [x] The store keeps each session's review (`reviews` table, a `ReviewState` blob): the chat's view, notes and switches, the last shown diffs, the last change and note numbers and whether the view was reported, so a restart keeps the review chat, never reuses a note id, and Mark reviewed still snapshots what was shown. Tests: `//apps/humata2/daemon/store:reviews_test`, `//apps/humata2/daemon/review_diff:notes_test` (`a_restored_chat_never_reuses_a_note_or_change_id`), `//apps/humata2/daemon/humatad:review_test` (`the_agents_notes_are_kept_through_a_restart_and_never_reuse_an_id`).
+- [ ] Undo of a review change made before a restart, and the idempotency keys of notes and plans, are memory only: after a restart Undo can't find the change and a repeated key acts again.
+- [ ] DiffService on the peer link (a session on another machine) is still not built; the socket's daemon serves it. Not straightforward (minion B): the peer-link process holds neither the store nor the clones, so it needs a relay to the socket's daemon, as TerminalService and FileService do.
 - [ ] `GetDiff` with `other_session` is refused (wire leaves it to the daemon); resolve it to that session's snapshot.
 - [ ] Measure gix end to end.
 

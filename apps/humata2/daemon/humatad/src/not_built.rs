@@ -67,9 +67,7 @@ not_built! {
     MarkService => mark_service_server,
     ViewStateService => view_state_service_server,
     DiffService => diff_service_server,
-    CommentService => comment_service_server,
     PullRequestReviewService => pull_request_review_service_server,
-    ViewService => view_service_server,
     TerminalService => terminal_service_server,
 }
 
@@ -91,9 +89,7 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(AgentService)
         .add_service(MarkService)
         .add_service(ViewStateService)
-        .add_service(CommentService)
         .add_service(PullRequestReviewService)
-        .add_service(ViewService)
 }
 
 /// Adds MachineService to a machine's `router`: only the host keeps

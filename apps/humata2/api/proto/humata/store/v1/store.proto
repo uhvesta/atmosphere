@@ -20,3 +20,15 @@ message AgentLaunch {
   uint32 cols = 9;
   uint32 rows = 10;
 }
+
+// A session's review, so a restart keeps its review chat (PR-26). `chat`
+// is a humata.v1.ReviewContext (the view, the notes with their authors,
+// the switches) and `shown` a humata.v1.GetDiffResponse per repository
+// as the last diff showed it, both as the daemon encodes them.
+message ReviewState {
+  bytes chat = 1;
+  repeated bytes shown = 2;
+  uint64 last_seq = 3;
+  bool view_reported = 4;
+  uint64 last_note = 5;
+}

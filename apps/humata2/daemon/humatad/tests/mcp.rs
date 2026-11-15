@@ -459,3 +459,67 @@ async fn the_review_chats_agent_shows_the_user_a_place_and_reads_it_back() {
     assert_eq!(seen["selected_text"], json!(["2"]));
     assert_eq!(outside["isError"], true, "a file the review doesn't show can't be focused");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
+    let fixture = Fixture::start().await;
+    shown_review(&fixture).await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let notes = |context: &Value| -> Vec<String> {
+        context["structuredContent"]["result"]["notes"]
+            .as_array()
+            .map(|notes| notes.iter().filter_map(|note| note["text"].as_str().map(str::to_owned)).collect())
+            .unwrap_or_default()
+    };
+
+    let kept = mcp
+        .call(1, "review_note", json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "why 2?" }))
+        .await;
+    let gone = mcp
+        .call(2, "review_note", json!({ "repo": "api", "path": "refund.rs", "lines": { "first": 3, "last": 3 }, "text": "fine" }))
+        .await;
+    assert_eq!(kept["isError"], false, "{kept}");
+    let id = |reply: &Value| reply["structuredContent"]["result"]["note_id"].as_str().unwrap().to_owned();
+    let edited = mcp
+        .call(3, "review_note_edit", json!({ "note_id": id(&kept), "text": "why a digit?" }))
+        .await;
+    let dropped = mcp.call(4, "review_note_drop", json!({ "note_id": id(&gone) })).await;
+    assert_eq!(edited["isError"], false, "{edited}");
+    assert_eq!(dropped["structuredContent"]["result"]["dropped"], true, "{dropped}");
+    assert_eq!(notes(&mcp.call(5, "review_context", json!({})).await), ["why a digit?"]);
+
+    let plan = json!({
+        "title": "Refund first",
+        "spec": { "repos": [{ "repo": "api", "base": { "rev": "HEAD" } }] },
+        "order": [{ "repo": "api", "path": "refund.rs" }],
+        "notes": [{ "repo": "api", "path": "refund.rs", "lines": { "first": 2, "last": 2 }, "text": "start here" }],
+    });
+    let draft = mcp.call(6, "review_prepare", plan.clone()).await;
+    assert_eq!(draft["isError"], true, "a draft view outside an open review isn't built: {draft}");
+    pb::review_chat_service_client::ReviewChatServiceClient::new(fixture.daemon.channel().await)
+        .report_review_view(pb::ReportReviewViewRequest {
+            session: Some(session()),
+            view: Some(pb::ReviewViewState::default()),
+        })
+        .await
+        .unwrap();
+    let ordered = mcp.call(7, "review_prepare", plan).await;
+    assert_eq!(ordered["structuredContent"]["result"]["applied"], true, "{ordered}");
+    assert!(notes(&mcp.call(8, "review_context", json!({})).await).contains(&"start here".to_owned()));
+
+    pb::review_chat_service_client::ReviewChatServiceClient::new(fixture.daemon.channel().await)
+        .set_agent_switches(pb::SetAgentSwitchesRequest {
+            session: Some(session()),
+            switches: Some(pb::AgentSwitches {
+                focus: true,
+                notes: false,
+                order: true,
+            }),
+        })
+        .await
+        .unwrap();
+    let off = mcp
+        .call(9, "review_note", json!({ "repo": "api", "path": "refund.rs", "hunk_at": 2, "text": "again" }))
+        .await;
+    assert_eq!(off["isError"], true, "the user turned notes off: {off}");
+}

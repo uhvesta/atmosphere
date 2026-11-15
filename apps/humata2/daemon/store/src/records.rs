@@ -76,6 +76,25 @@ pub struct AgentRecord {
     pub updated_unix_ms: i64,
 }
 
+/// A session's review, kept so a restart keeps its review chat (PR-26).
+/// The store keeps what the daemon encodes without reading it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReviewRecord {
+    pub session: String,
+    /// The review chat: its view, notes and switches, as the daemon
+    /// encodes them.
+    pub chat: Vec<u8>,
+    /// What the last diff showed, one encoded diff per repository.
+    pub shown: Vec<Vec<u8>>,
+    /// The last change the chat numbered, so numbering carries on.
+    pub last_seq: u64,
+    /// The last note the chat numbered, so a dropped note's id stays used.
+    pub last_note: u64,
+    /// Whether the user's view was reported, so the chat is a review chat.
+    pub view_reported: bool,
+    pub updated_unix_ms: i64,
+}
+
 /// Everything needed to start an agent again in the same conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentLaunch {

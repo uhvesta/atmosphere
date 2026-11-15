@@ -329,6 +329,41 @@ pub fn repo_diff_to_pb(diff: &RepoDiff) -> pb::RepoDiff {
     }
 }
 
+/// A repo's diff back from [`repo_diff_to_pb`], as a saved review keeps
+/// what its diff showed. `None` for one without its trees.
+#[must_use]
+pub fn repo_diff_from_pb(diff: &pb::RepoDiff) -> Option<RepoDiff> {
+    let some = |value: &str| (!value.is_empty()).then(|| value.to_owned());
+    Some(RepoDiff {
+        repo: repo_key(diff.repo.as_ref()?),
+        branch: some(&diff.branch),
+        head: some(&diff.head),
+        label: diff.label.clone(),
+        trees: trees_from_pb(diff.trees.as_ref())?,
+        files: diff
+            .files
+            .iter()
+            .map(|file| FileSummary {
+                path: file.path.clone(),
+                status: match pb::ChangeKind::try_from(file.change) {
+                    Ok(pb::ChangeKind::Added) => FileStatus::Added,
+                    Ok(pb::ChangeKind::Deleted) => FileStatus::Deleted,
+                    Ok(pb::ChangeKind::Renamed) => FileStatus::Renamed {
+                        from: file.old_path.clone(),
+                        similarity: u8::try_from(file.similarity).unwrap_or(100),
+                    },
+                    _ => FileStatus::Modified,
+                },
+                added: file.added,
+                removed: file.removed,
+                binary: file.binary,
+                old_blob: some(&file.old_blob_sha),
+                new_blob: some(&file.new_blob_sha),
+            })
+            .collect(),
+    })
+}
+
 #[must_use]
 pub fn trees_to_pb(trees: &Trees) -> pb::DiffTrees {
     pb::DiffTrees {
@@ -858,6 +893,53 @@ pub fn denied(error: &ChatError) -> Option<pb::Denied> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shown_diff_round_trips_through_the_wire() {
+        let diff = RepoDiff {
+            repo: "acme/api".to_owned(),
+            branch: Some("fix".to_owned()),
+            head: None,
+            label: "HEAD + unstaged".to_owned(),
+            trees: Trees {
+                old: "a".repeat(40),
+                new: "b".repeat(40),
+            },
+            files: vec![
+                FileSummary {
+                    path: "new.rs".to_owned(),
+                    status: FileStatus::Added,
+                    added: 3,
+                    removed: 0,
+                    binary: false,
+                    old_blob: None,
+                    new_blob: Some("c".repeat(40)),
+                },
+                FileSummary {
+                    path: "moved.rs".to_owned(),
+                    status: FileStatus::Renamed {
+                        from: "old.rs".to_owned(),
+                        similarity: 87,
+                    },
+                    added: 1,
+                    removed: 1,
+                    binary: true,
+                    old_blob: Some("d".repeat(40)),
+                    new_blob: Some("e".repeat(40)),
+                },
+                FileSummary {
+                    path: "gone.rs".to_owned(),
+                    status: FileStatus::Deleted,
+                    added: 0,
+                    removed: 9,
+                    binary: false,
+                    old_blob: Some("f".repeat(40)),
+                    new_blob: None,
+                },
+            ],
+        };
+        assert_eq!(repo_diff_from_pb(&repo_diff_to_pb(&diff)), Some(diff));
+    }
 
     #[test]
     fn a_spec_round_trips_through_the_wire() {

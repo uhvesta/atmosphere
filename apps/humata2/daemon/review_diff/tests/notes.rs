@@ -6,7 +6,7 @@
 mod support;
 
 use humata2_review_diff::{
-    AgentSwitches, ChatError, ChatTool, DiffSpec, FileRef, Group, Note, NoteState, NoteTarget,
+    AgentSwitches, ChangeKind, ChatError, ChatTool, DiffSpec, FileRef, Group, Note, NoteState, NoteTarget,
     RepoDiff, RepoSpec, ReviewChat, ReviewPlan, Side, ViewState,
 };
 use support::{Repo, diff};
@@ -199,7 +199,7 @@ fn the_review_chat_marks_its_notes_outdated_after_an_edit() {
     let spec = RepoSpec::uncommitted("api");
     let shown = diff(&repo, &spec);
     let in_diff = |f: &FileRef| shown.file(&f.path).is_some();
-    let mut chat = ReviewChat::restore(ViewState::default(), AgentSwitches::default(), Vec::new());
+    let mut chat = ReviewChat::restore(ViewState::default(), AgentSwitches::default(), Vec::new(), 0, 0);
     let note = anchored(&repo, &shown, vec![lines_note("a.rs", 2, 2)]).remove(0);
     let change = chat.note("claude", note, in_diff).expect("notes are on");
     assert!(!change.undo_id.is_empty());
@@ -221,10 +221,42 @@ fn a_switch_the_user_turned_off_denies_its_tools() {
         notes: false,
         ..AgentSwitches::default()
     };
-    let mut chat = ReviewChat::restore(ViewState::default(), switches, Vec::new());
+    let mut chat = ReviewChat::restore(ViewState::default(), switches, Vec::new(), 0, 0);
     let denied = chat.note("claude", lines_note("a.rs", 1, 1), in_diff);
     assert!(matches!(denied, Err(ChatError::SwitchOff { .. })));
     assert!(chat.notes().next().is_none());
     assert!(switches.allow(ChatTool::Context).is_ok());
     assert!(switches.allow(ChatTool::Focus).is_ok());
+}
+
+#[test]
+fn a_restored_chat_never_reuses_a_note_or_change_id() {
+    let repo = edited();
+    let shown = diff(&repo, &RepoSpec::uncommitted("api"));
+    let in_diff = |f: &FileRef| shown.file(&f.path).is_some();
+    let mut chat = ReviewChat::default();
+    for line in 1..=3 {
+        chat.note("claude", lines_note("a.rs", line, line), in_diff).expect("notes are on");
+    }
+    let last = chat.notes().last().map(|note| note.id.clone()).expect("three notes");
+    chat.drop_note(&last).expect("its own note");
+    let mut held: Vec<String> = vec![last];
+    let kept: Vec<_> = chat.notes().cloned().collect();
+    held.extend(kept.iter().flat_map(|note| [note.id.clone(), note.undo_id.clone()]));
+
+    let mut restored = ReviewChat::restore(
+        chat.view().clone(),
+        chat.switches(),
+        kept,
+        chat.last_seq(),
+        chat.last_note(),
+    );
+    let change = restored.note("claude", lines_note("a.rs", 4, 4), in_diff).expect("notes are on");
+
+    let ChangeKind::Note(note) = &change.what else {
+        panic!("a note change shows a note");
+    };
+    assert!(!held.contains(&note.id), "{} was reused", note.id);
+    assert!(!held.contains(&change.undo_id), "{} was reused", change.undo_id);
+    assert!(change.seq > chat.last_seq());
 }
