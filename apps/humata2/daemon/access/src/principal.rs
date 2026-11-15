@@ -6,13 +6,15 @@ use crate::capability::Capability;
 use crate::ids::{ChannelId, MachineId, SessionId, SessionRef};
 
 /// The caller, as the daemon established it from the socket, the session
-/// token, the CLI login or the script token.
+/// token, the CLI login or the script token. A call with none of these
+/// never reaches the policy: the daemon refuses it everything but `WhoAmI`
+/// and starting a CLI login (SEC-9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     /// The user in the app.
     App,
-    /// The CLI outside any session tree.
-    Cli(Presence),
+    /// The CLI outside any session tree, with the user's presence shown.
+    Cli(PresenceMethod),
     /// A session's agent, over MCP or through the CLI inside its session
     /// tree (SEC-8). A person typing in a Humata-held terminal is this too:
     /// the daemon can't tell them apart.
@@ -21,13 +23,6 @@ pub enum Principal {
     Script(ScriptToken),
     /// Another daemon over the peer link.
     Peer(PeerLink),
-}
-
-/// Whether a CLI caller outside a session tree has shown the user is there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Presence {
-    Unverified,
-    Present(PresenceMethod),
 }
 
 /// How the user showed they are there (`PresenceRequired.Method`).
@@ -146,9 +141,8 @@ impl Principal {
     pub fn present_user(&self, context: &Context) -> Option<PresentUser> {
         let method = match self {
             Principal::App => None,
-            Principal::Cli(Presence::Present(method)) => Some(*method),
-            Principal::Cli(Presence::Unverified)
-            | Principal::Agent(_)
+            Principal::Cli(method) => Some(*method),
+            Principal::Agent(_)
             | Principal::Script(_)
             | Principal::Peer(_) => return None,
         };

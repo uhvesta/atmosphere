@@ -7,9 +7,9 @@ use std::collections::BTreeSet;
 
 use humata2_access::{
     Agent, BoardAct, BoardRef, Call, Capability, ChannelId, CheckError, DeniedSource, Decision,
-    Entry, ErrorKind, Fix, GrantTarget, NetworkTarget, Place, Policy, PolicyError, Presence,
-    PresenceMethod, Principal, Refusal, RepoBranch, RepoRef, Root, Rules, ScriptToken, SessionId,
-    SessionKind, SessionRef, Source, Target, Tier, Verdict,
+    Entry, ErrorKind, Fix, GrantTarget, NetworkTarget, Place, Policy, PolicyError, PresenceMethod,
+    Principal, Refusal, RepoBranch, RepoRef, Root, Rules, ScriptToken, SessionId, SessionKind,
+    SessionRef, Source, Target, Tier, Verdict,
 };
 use support::*;
 
@@ -117,7 +117,7 @@ fn nothing_outside_humatas_folders_for_anyone() {
     for principal in [
         as_agent(a()),
         Principal::App,
-        Principal::Cli(Presence::Unverified),
+        Principal::Cli(PresenceMethod::CliLogin),
     ] {
         let refusal = refused(&principal, &read(outside()));
         assert_eq!(refusal.kind(), ErrorKind::OutsideHumataFolders, "{principal:?}");
@@ -257,25 +257,14 @@ fn board_items_an_agent_made_are_its_to_edit() {
 }
 
 #[test]
-fn a_cli_without_presence_is_told_how_to_show_it() {
-    let refusal = refused(
-        &Principal::Cli(Presence::Unverified),
-        &write(file_of(&a(), "src/lib.rs")),
-    );
-    assert_eq!(refusal.kind(), ErrorKind::PresenceRequired);
-    assert_eq!(
-        refusal.fix(),
-        Fix::ShowPresence {
-            accepted: vec![PresenceMethod::ConfirmInApp, PresenceMethod::CliLogin],
-        }
-    );
-    // On a machine with the Mac away, only the passphrase can show it.
+fn answering_on_a_machine_with_the_mac_away_asks_for_the_passphrase() {
     let refusal = refusal_of(check(
         &policy(),
-        &Principal::Cli(Presence::Unverified),
-        &write(file_of(&c(), "src/lib.rs")),
+        &Principal::Cli(PresenceMethod::CliLogin),
+        &use_on(Capability::InboxAnswer, Target::Channel(payments())),
         &on_box_away(),
     ));
+    assert_eq!(refusal.kind(), ErrorKind::PresenceRequired);
     assert_eq!(
         refusal.fix(),
         Fix::ShowPresence {

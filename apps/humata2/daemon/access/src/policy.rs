@@ -13,8 +13,8 @@ use crate::capability::{AwayRule, Capability as C, Capability, ChannelRules, Dec
 use crate::error::{AnswerError, CheckError, PolicyError};
 use crate::ids::{ChannelId, GrantId, MachineId, RequestId, SessionId};
 use crate::principal::{
-    Agent, Context, Host, PeerLink, Presence, PresenceMethod, PresentUser, Principal,
-    ScriptToken, SessionKind,
+    Agent, Context, Host, PeerLink, PresenceMethod, PresentUser, Principal, ScriptToken,
+    SessionKind,
 };
 use crate::verdict::{AccessRequest, AnswerAt, Effect, Refusal, Source, Verdict};
 
@@ -117,10 +117,7 @@ impl Policy {
     ) -> Result<Verdict, CheckError> {
         match principal {
             Principal::App => Ok(check_user(None, call, context)),
-            Principal::Cli(Presence::Present(method)) => {
-                Ok(check_user(Some(*method), call, context))
-            }
-            Principal::Cli(Presence::Unverified) => Ok(check_unverified(call, context)),
+            Principal::Cli(method) => Ok(check_user(Some(*method), call, context)),
             Principal::Agent(agent) => self.check_agent(agent, call, context),
             Principal::Script(token) => Ok(check_script(token, call, context)),
             Principal::Peer(link) => Ok(check_peer(link, call)),
@@ -1076,42 +1073,6 @@ fn user_only_while_away(
         }),
         _ => Verdict::Refused(Refusal::HostUnreachable),
     }
-}
-
-/// The CLI outside a session tree without presence: reads of this
-/// machine's state and of its channels; anything else asks for presence
-/// (SEC-9).
-fn check_unverified(call: &Call, context: &Context) -> Verdict {
-    if let Some(refusal) = file_hard_limit(call) {
-        return Verdict::Refused(refusal);
-    }
-    let reads = match call {
-        Call::ReadFiles(place) => place.machine == context.here,
-        Call::ReadSession(_) => true,
-        Call::Board { board, act } => {
-            *act == BoardAct::Read && !matches!(board, BoardRef::Global)
-        }
-        Call::Use {
-            capability: C::ChannelRead,
-            target: Target::Channel(_),
-        } => true,
-        Call::Use { capability, .. } if capability.tier() == Tier::Peer => {
-            return Verdict::Refused(Refusal::PeerOnly {
-                capability: *capability,
-            });
-        }
-        Call::WriteFiles(_) | Call::CopyFiles { .. } | Call::Use { .. } => false,
-    };
-    if reads {
-        let reach = reach(call, capability_of(call), &context.here);
-        return carry_out(Source::LocalRead, reach, context, None);
-    }
-    let accepted = if context.host_away() {
-        vec![PresenceMethod::ApprovalPassphrase]
-    } else {
-        vec![PresenceMethod::ConfirmInApp, PresenceMethod::CliLogin]
-    };
-    Verdict::Refused(Refusal::PresenceRequired { accepted })
 }
 
 /// A script token: exactly what it lists, in its channels, never asking

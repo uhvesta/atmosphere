@@ -34,8 +34,6 @@ pub enum Source {
     AwayRule,
     /// The user, in the app or with presence shown.
     User,
-    /// A CLI caller without presence reading this machine's state (SEC-9).
-    LocalRead,
     /// A script token lists it (SEC-14).
     ScriptToken,
     /// The user let this review session push to its PR branch (PR-8).

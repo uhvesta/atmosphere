@@ -368,12 +368,10 @@ fn no_sequence_of_agent_calls_widens_a_grant() {
 
 #[test]
 fn only_a_present_user_can_change_the_policy() {
-    // Neither an agent nor a script nor a CLI without presence has a
-    // PresentUser to pass.
+    // Neither an agent nor a script nor a peer has a PresentUser to pass.
     for principal in [
         as_agent(a()),
         Principal::Script(humata2_access::ScriptToken::default()),
-        Principal::Cli(humata2_access::Presence::Unverified),
         Principal::Peer(humata2_access::PeerLink::HostToDaemon),
     ] {
         assert_eq!(principal.present_user(&on_mac()), None, "{principal:?}");
@@ -390,11 +388,9 @@ fn a_grant_made_on_a_machine_applies_there_at_once_and_replays_to_the_mac() {
     let offered = asked.always_let.clone().expect("offered");
 
     // Not without the passphrase.
-    let app_like = Principal::Cli(humata2_access::Presence::Present(
-        humata2_access::PresenceMethod::CliLogin,
-    ))
-    .present_user(&on_box_away())
-    .expect("present");
+    let app_like = Principal::Cli(humata2_access::PresenceMethod::CliLogin)
+        .present_user(&on_box_away())
+        .expect("present");
     assert_eq!(
         on_box.approve(&app_like, &RequestId::new("r1"), &asked, &Answer::AlwaysLet(offered.clone())),
         Err(AnswerError::PassphraseNeeded)

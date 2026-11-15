@@ -8,12 +8,17 @@
 //! - Never by default: stopping another session.
 //! - User-only: changing access rules.
 //! - Peer: a machine's report to the Mac.
+//!
+//! The row "CLI outside a session, no credential" isn't here: such a call
+//! never reaches the policy, because the daemon refuses it everything but
+//! `WhoAmI` and starting a CLI login (SEC-9). humatad2's tests/auth.rs
+//! covers it.
 
 mod support;
 
 use humata2_access::{
-    AnswerAt, Call, Capability, Context, Effect, Presence, PresenceMethod, Principal, Refusal,
-    ScriptToken, Source, Target,
+    AnswerAt, Call, Capability, Context, Effect, PresenceMethod, Principal, Refusal, ScriptToken,
+    Source, Target,
 };
 use support::*;
 
@@ -183,24 +188,13 @@ fn rows() -> Vec<Row> {
         },
         Row {
             actor: "CLI outside a session, with presence",
-            principal: Principal::Cli(Presence::Present(PresenceMethod::CliLogin)),
+            principal: Principal::Cli(PresenceMethod::CliLogin),
             context: on_mac(),
             no_rule: (read(file_of(&a(), "src/main.rs")), allowed(Source::User)),
             default_allow: (add_to_payments_board(), allowed(Source::User)),
             ask_me: (note_to(b()), allowed(Source::User)),
             never: (stop(b()), allowed(Source::User)),
             user_only: (change_access(), allowed(Source::User)),
-            peer: (peer_report(), Expect::Refused(peer_only)),
-        },
-        Row {
-            actor: "CLI outside a session, no presence",
-            principal: Principal::Cli(Presence::Unverified),
-            context: on_mac(),
-            no_rule: (read(file_of(&a(), "src/main.rs")), allowed(Source::LocalRead)),
-            default_allow: (add_to_payments_board(), Expect::Refused(presence)),
-            ask_me: (note_to(b()), Expect::Refused(presence)),
-            never: (stop(b()), Expect::Refused(presence)),
-            user_only: (change_access(), Expect::Refused(presence)),
             peer: (peer_report(), Expect::Refused(peer_only)),
         },
         Row {
@@ -254,7 +248,7 @@ fn rows() -> Vec<Row> {
 fn every_actor_against_every_tier() {
     let policy = policy();
     let cells: Vec<Cell> = rows().into_iter().flat_map(Row::cells).collect();
-    assert_eq!(cells.len(), 60, "ten actors, six tiers");
+    assert_eq!(cells.len(), 54, "nine actors, six tiers");
     let wrong: Vec<String> = cells
         .iter()
         .filter_map(|cell| {
@@ -318,23 +312,6 @@ fn no_rule_stops_an_agent_on_its_own_things() {
 }
 
 #[test]
-fn a_cli_without_presence_reads_but_does_not_write() {
-    let policy = policy();
-    let cli = Principal::Cli(Presence::Unverified);
-    let see_channel = use_on(Capability::ChannelRead, Target::Channel(payments()));
-    assert!(allowed(Source::LocalRead).met_by(&check(&policy, &cli, &see_channel, &on_mac())));
-    assert!(
-        Expect::Refused(presence)
-            .met_by(&check(&policy, &cli, &write(file_of(&a(), "src/main.rs")), &on_mac()))
-    );
-    // Files on another machine are not this machine's own state.
-    assert!(
-        Expect::Refused(presence)
-            .met_by(&check(&policy, &cli, &read(file_of(&c(), "src/main.rs")), &on_mac()))
-    );
-}
-
-#[test]
 fn a_machine_while_away_waits_for_what_needs_another_machine() {
     let policy = policy();
     // c is on the box; a is on the Mac.
@@ -346,12 +323,10 @@ fn a_machine_while_away_waits_for_what_needs_another_machine() {
 fn a_machine_while_away_answers_only_requests_it_holds_with_the_passphrase() {
     let policy = policy();
     let answer = use_on(Capability::InboxAnswer, Target::Channel(payments()));
-    let passphrase = Principal::Cli(Presence::Present(PresenceMethod::ApprovalPassphrase));
+    let passphrase = Principal::Cli(PresenceMethod::ApprovalPassphrase);
     assert!(allowed(Source::User).met_by(&check(&policy, &passphrase, &answer, &on_box_away())));
-    assert!(
-        Expect::Refused(presence)
-            .met_by(&check(&policy, &Principal::Cli(Presence::Unverified), &answer, &on_box_away()))
-    );
+    let login = Principal::Cli(PresenceMethod::CliLogin);
+    assert!(Expect::Refused(presence).met_by(&check(&policy, &login, &answer, &on_box_away())));
     assert!(
         Expect::Refused(|r| matches!(r, Refusal::HostUnreachable))
             .met_by(&check(&policy, &passphrase, &change_access(), &on_box_away()))

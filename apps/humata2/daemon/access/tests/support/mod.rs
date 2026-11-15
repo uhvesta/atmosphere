@@ -8,9 +8,9 @@
 
 use humata2_access::{
     AccessRequest, Agent, AnswerAt, BoardAct, BoardRef, Call, Capability, ChannelId, Context,
-    Effect, Entry, Grant, MachineId, Place, Policy, Presence, PresenceMethod, PresentUser,
-    Principal, Refusal, RepoPath, RequestId, Root, SessionId, SessionKind, SessionRef, Source,
-    Target, Verdict,
+    Effect, Entry, Grant, MachineId, Place, Policy, PresenceMethod, PresentUser, Principal,
+    Refusal, RepoPath, RequestId, Root, SessionId, SessionKind, SessionRef, Source, Target,
+    Verdict,
 };
 
 pub fn mac() -> MachineId {
@@ -97,7 +97,7 @@ pub fn user() -> PresentUser {
 
 /// The user on the box with the approval passphrase, the Mac away.
 pub fn user_on_box() -> PresentUser {
-    Principal::Cli(Presence::Present(PresenceMethod::ApprovalPassphrase))
+    Principal::Cli(PresenceMethod::ApprovalPassphrase)
         .present_user(&on_box_away())
         .expect("a passphrase shows presence")
 }

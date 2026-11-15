@@ -30,8 +30,8 @@ pub use ids::{AgentId, ChannelId, GrantId, MachineId, RepoRef, RequestId, Sessio
 pub use path::{RepoPath, RepoPathError};
 pub use policy::{Answer, Approval, Grant, Policy, PolicyState, Rules, RulesState};
 pub use principal::{
-    Agent, Context, Host, PeerLink, Presence, PresenceMethod, PresentUser, Principal,
-    ScriptToken, SessionKind,
+    Agent, Context, Host, PeerLink, PresenceMethod, PresentUser, Principal, ScriptToken,
+    SessionKind,
 };
 pub use verdict::{
     AccessRequest, AnswerAt, DeniedSource, Effect, ErrorKind, Fix, Refusal, Source, Verdict,
