@@ -47,7 +47,7 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 17. [Hosts and the bridge](#17-hosts-and-the-bridge)
 18. [Machine providers](#18-machine-providers)
 19. [Persistence and resume](#19-persistence-and-resume)
-20. [Async: working while the Mac is away](#20-async-working-while-the-mac-is-away)
+20. [Async: working while the host is away](#20-async-working-while-the-host-is-away)
 21. [Transport: gRPC streaming](#21-transport-grpc-streaming)
 22. [Navigation and UI principles](#22-navigation-and-ui-principles)
 23. [Home, global Inbox, Global board, palette](#23-home-global-inbox-global-board-palette)
@@ -79,7 +79,7 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 | Prepared view | A review walkthrough or board view an agent prepared for you over MCP. Opened only if you choose to. |
 | Journal | Per session (with its forks): every view its agents prepared. |
 | Machine journal | A machine's own append-only list of writes and requests made while the host is away (SL-5). Not the Journal of views. |
-| Host | The machine whose `humatad` holds the source of truth (SL-1): your Mac by default, or a machine you host (AR-7). Where this spec says "the Mac", read "the host". "Away" means a machine has no link to it. |
+| Host | The machine whose `humatad` holds the source of truth (SL-1): your Mac by default, or a machine you host (AR-7). The worked examples in §26 use a Mac as the host; elsewhere the spec says "host". "Away" means a machine has no link to it. |
 | Bridge | The host. Every machine has one SSH link to it, and every call between machines goes through it. |
 | Turn | From a message reaching the agent until the agent waits for input again. How Humata learns a turn ended is per agent (SE-21). |
 | Own clones | The clones under a session's own folder (`sessions/<session>/`). A context-only fork has none until it gets its own copy (FK-9). |
@@ -113,12 +113,12 @@ more, ST-2):
 ## 2. Architecture
 
 ```text
- Your Mac
+ Your Mac (the host by default)
  ┌──────────────────────────────────────────────────────────────────────────┐
  │  Humata app (Rust, GPUI + tca-rust)                                      │
  │     │ gRPC over a local unix socket                                      │
  │     ▼                                                                    │
- │  humatad (Mac role): channels, boards, Inbox, access rules, journal,     │
+ │  humatad (host role): channels, boards, Inbox, access rules, journal,    │
  │     │                 the hosts list, the bridge, GitHub token (gh)      │
  │     ├── holder ── PTY ── claude …     (one holder per local session)     │
  │     ├── holder ── PTY ── zsh                                             │
@@ -129,13 +129,13 @@ more, ST-2):
         ▼                                           ▼
  ┌────────────────────────────────┐        ┌────────────────────────────────┐
  │ devbox-1 (Linux)               │        │ gpu-box (Linux)                │
- │ humatad (host role)            │        │ humatad (host role)            │
+ │ humatad (machine role)         │        │ humatad (machine role)         │
  │  ├─ holder ─ PTY ─ codex       │        │  ├─ holder ─ PTY ─ claude      │
- │  ├─ holder ─ PTY ─ claude      │        │  └─ own inbox while Mac away   │
+ │  ├─ holder ─ PTY ─ claude      │        │  └─ own inbox while host away  │
  │  ├─ ~/Humata/<channel>/…       │        │                                │
  │  └─ humatad mcp ◀─ agents      │        │                                │
  └────────────────────────────────┘        └────────────────────────────────┘
-      devbox-1 never talks to gpu-box directly: devbox-1 ─▶ Mac ─▶ gpu-box
+      devbox-1 never talks to gpu-box directly: devbox-1 ─▶ host ─▶ gpu-box
 ```
 
 - **AR-1** Every machine Humata uses runs one `humatad`. The host's daemon
@@ -185,7 +185,7 @@ more, ST-2):
 - **CH-2** The folder name is derived from the channel name (lowercase,
   non-alphanumerics become `-`) and shown live while typing. The user never
   picks a path.
-- **CH-3** The repo picker lists repos from the `gh` CLI on the Mac, with fuzzy
+- **CH-3** The repo picker lists repos from the `gh` CLI on the host, with fuzzy
   search and checkboxes; repos already in the channel are left out. The create
   button says how many repos it will clone ("Create channel and clone 2
   repos").
@@ -260,7 +260,7 @@ more, ST-2):
 
 - **CH-18** **Add repo…** is available at any time on the Repos & machines
   tab. The user picks from saved repositories, pastes a GitHub URL, or picks
-  a local path on the Mac (its remote is used for clones; a repo with no
+  a local path on the host (its remote is used for clones; a repo with no
   remote is sent by bundle, FC-7).
 - **CH-19** The new repo's main clone is made on every machine of the channel
   in the background, with progress in that repo's row of the grid. A machine
@@ -292,7 +292,7 @@ more, ST-2):
   the channel's agents, withdraws its pending requests, sends its sessions
   (as LD-5), board, main clones, `shared/` and folders on every machine to
   that machine's trash, and removes the channel from the sidebar. Restoring
-  it from the Mac's trash within 30 days brings the channel back with its
+  it from the host's trash within 30 days brings the channel back with its
   sessions archived. (provisional, D11)
 - **CH-25** Only the user can delete a channel. An agent has no way to ask
   for it, and the CLI needs presence (SEC-10). (provisional, D11)
@@ -690,7 +690,7 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 
 - **MV-12** Push and open a pull request works per repo of the session: the
   dialog lists each repo with its branch and change totals, and the user picks
-  which to push and open a PR for. PRs are opened with `gh` through the Mac.
+  which to push and open a PR for. PRs are opened with `gh` through the host.
 - **MV-13** A move carries everything the session has on its machine, not
   only its clones (D63):
   - the branch, commits not yet pushed, staged, unstaged, untracked and
@@ -745,7 +745,7 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
   **Delete**.
 - **LD-4** **Restore** asks for a machine (the original one first if it is
   still in the channel), clones each repo's branch from its remote, copies
-  the conversation back from the Mac (fixing path-keyed records) and resumes
+  the conversation back from the host (fixing path-keyed records) and resumes
   the agent with it. A branch that was never pushed can't come back: the
   dialog says that work was deleted at archive and that the repo will start
   from `main`.
@@ -756,14 +756,14 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
   choice) removes everything of the session: record, conversation,
   scrollback, diff summary and any clones. Everything goes to trash first,
   after the same unpushed-work check.
-- **LD-6** Each machine has one Humata trash at `<root>/.trash/`; the Mac's
+- **LD-6** Each machine has one Humata trash at `<root>/.trash/`; the host's
   trash also holds deleted session records and conversations. Files deleted
   in the file manager (FM-3) go to the same trash.
 - **LD-7** Anything in trash can be restored until it is emptied. Trash
   empties items 30 days after they were deleted; **Empty trash** on the
   Storage page empties it now, after saying how much it frees.
 
-### The Mac keeps the history
+### The host keeps the history
 
 - **LD-8** Every session's conversation is mirrored to the host
   continuously, with its pointers (SL-3), over the machine's existing link
@@ -844,12 +844,12 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 
 - **LD-21** Before any part of a conversation leaves its machine for the
   mirror, every exact value of that machine's host variables in it is
-  replaced with `‹NAME›`, the variable's name. The Mac's mirror never holds
+  replaced with `‹NAME›`, the variable's name. The host's mirror never holds
   such a value. Other secrets an agent prints (a token it read from a file,
   say) are mirrored as printed, and the Storage page says so.
   (provisional, D12)
 - **LD-22** A session's mirror is kept as long as its session record: it
-  stays while the session is live or archived, goes to the Mac's trash when
+  stays while the session is live or archived, goes to the host's trash when
   the session is deleted (LD-5), and is gone when that trash empties.
   (provisional, D12)
 
@@ -1070,7 +1070,7 @@ each repo's branch.
   creates it, with its folders, the first time a PR is reviewed; its repos are
   whatever repos its PRs come from.
 - **PR-3** Humata fetches the PR's title, author, base and head branches,
-  size (files, +/−) and checks with the Mac's `gh`. If that fails, the
+  size (files, +/−) and checks with the host's `gh`. If that fails, the
   dialog says why (not signed in to `gh`, no access to the repo, PR not found,
   rate limited) and what to do; for a rate limit it says to wait.
 - **PR-4** The dialog picks the machine (This Mac or any SSH machine,
@@ -1095,7 +1095,7 @@ each repo's branch.
   (SEC-5).
 - **PR-8** **Let the agent push to the PR branch** (in the dialog and in the
   session's Info panel) allows pushes for that session only. Pushes go
-  through the Mac (FC-7).
+  through the host (FC-7).
 
 ### Draft comments
 
@@ -1112,7 +1112,7 @@ each repo's branch.
 - **PR-12** Nothing is posted to GitHub until the user submits. **Submit
   review** lists the drafts per PR (each editable or droppable), a summary the
   agent may have drafted, and the verdict per PR: **Comment**, **Approve** or
-  **Request changes**. Submitting posts one review per PR with the Mac's `gh`.
+  **Request changes**. Submitting posts one review per PR with the host's `gh`.
 - **PR-13** If posting fails, nothing is lost: the drafts stay, and the
   message says what failed and what to do. A review that posted for some PRs
   and not others says which.
@@ -1122,7 +1122,7 @@ each repo's branch.
 ### When the PR changes
 
 - **PR-15** Every minute while a review session is open, and every 5 minutes
-  while it is not, Humata checks each PR's head with the Mac's `gh`. New commits show
+  while it is not, Humata checks each PR's head with the host's `gh`. New commits show
   "N new commits, update the clone" on the session (diff header and Home).
 - **PR-16** **Update the clone** fetches the new head and tells the agent
   what changed: the new commits and the files changed since the previous
@@ -1341,7 +1341,7 @@ user builds a code-level understanding of the change.
 - **FM-12** Each pane has its own machine picker; offline machines are listed
   but cannot be picked. A pane whose machine goes offline shows the last
   listing read, says so, and disables actions on it.
-- **FM-13** When either end of a transfer is offline (or the Mac, for a
+- **FM-13** When either end of a transfer is offline (or the host, for a
   machine ↔ machine transfer), the transfer pauses and the tray says which
   machine it waits for; it continues on its own when that machine is back.
 - **FM-14** A move across machines deletes the source only after every file
@@ -1427,7 +1427,7 @@ user builds a code-level understanding of the change.
 │   ● Local run: BRIN 2.1× faster — fixture too small to trust              │
 │   ⏳ network_connect staging-db:5432                                       │
 │                                                                           │
-│ Asks you because: Network connection through the Mac  Change this rule    │
+│ Asks you because: Network connection through the host  Change this rule    │
 │ Nothing to undo: read-only. Stop it any time from its terminal.           │
 │                                                                           │
 │ [Approve] [Deny] [Deny and reply…]     [Always let this session connect…] │
@@ -1532,7 +1532,7 @@ user builds a code-level understanding of the change.
   | Stop, archive or delete its own session | Ask me |
   | Move a session to another machine | Ask me |
   | Push its branch or open a pull request (IN-24) | Ask me |
-  | Open a network connection through the Mac (HO-11) | Ask me |
+  | Open a network connection through the host (HO-11) | Ask me |
   | Add, create, start or stop machines; sync skills (MP-24) | Ask me |
   | Restore from trash | Ask me |
   | Create a channel | Ask me |
@@ -1621,7 +1621,7 @@ user builds a code-level understanding of the change.
 - **VW-11** With no views, the Journal says how to get one (e.g. ask the agent
   to "prepare the PR review for me").
 - **VW-12** Views work for sessions on remote machines: the view is stored
-  with the session on the Mac and its files are read over the bridge.
+  with the session on the host and its files are read over the bridge.
 - **VW-13** A pull request view holds, per repo, a title, a body, a base
   branch and whether it is a draft. Preparing it pushes nothing. **Open it**
   shows the fields, editable, with **Push and open PR(s)**, which runs the
@@ -1711,7 +1711,7 @@ Linux machine (AR-7).
   sessions on it (each opens) and **New session on <machine>**; a health card
   (gh signed in as which user with which scopes, agents installed, disk free,
   variable names); its Humata folders by channel; and what its agents can
-  reach through the Mac with each rule's setting.
+  reach through the host with each rule's setting.
 - **HO-5** When a machine goes offline, its sessions keep running there; the
   sidebar marks it offline, the rail shows "!", its sessions show "Host
   offline — reconnecting", and its page says only the link is down, Humata
@@ -1733,7 +1733,7 @@ Linux machine (AR-7).
 - **HO-11** A port forward is opened only when the user approves it. The card
   shows the machine it opens from, the host and port it reaches, and that it
   stays open until the session stops. Low-risk rules never cover it, and it
-  can't be approved while the Mac is away. It closes when the session stops.
+  can't be approved while the host is away. It closes when the session stops.
   (provisional, D5)
 - **HO-12** The network rule promises only that Humata forwards nothing
   without approval. An uncontained agent can still open its own connections
@@ -1757,12 +1757,12 @@ Linux machine (AR-7).
    minus .env, keys, *.pem …                                       never touched)
 ```
 
-- **SK-1** The Mac's skills (each agent's skill and plugin folders) sync one
+- **SK-1** The host's skills (each agent's skill and plugin folders) sync one
   way to machines. Nothing syncs back.
 - **SK-2** `humata skills sync [machine…]` syncs to the named machines, or to
   all; Hosts and each machine's page have **Sync skills**.
 - **SK-3** Settings has **Sync skills to machines automatically** (on connect
-  and whenever the Mac's skills change), with an opt-out per machine.
+  and whenever the host's skills change), with an opt-out per machine.
 - **SK-4** Sync writes only into a Humata-managed skills folder on the
   machine, and agents started by Humata there are pointed at it. Skills made
   on the machine itself are never overwritten or deleted.
@@ -1805,7 +1805,7 @@ Linux machine (AR-7).
   machine needs no network, toolchain or package manager. An unsupported
   platform fails at Add machine, naming it.
 - **TS-3** Other things can be synced by script: a sync rule names a source
-  on the Mac (a folder or a command's output), a destination on machines, and
+  on the host (a folder or a command's output), a destination on machines, and
   optional `before`/`after` commands run there, as command templates like
   providers'. Rules run on connect and on demand (`humata sync run [rule]
   [machine…]`), with the same preview, secret filtering, offline catch-up and
@@ -1843,7 +1843,7 @@ tool behind them. A plain SSH host is the simplest case.
 
 - **MP-1** Every machine is treated the same in every respect, whatever made
   it or however it is reached.
-- **MP-2** A provider is a TOML entry on the Mac (Settings › Machine
+- **MP-2** A provider is a TOML entry on the host (Settings › Machine
   providers) of command templates: `create`, `connect` or `identity`, and
   optional `start`, `stop`, `delete`, `status`. An action appears only when
   its command is defined.
@@ -1851,9 +1851,9 @@ tool behind them. A plain SSH host is the simplest case.
   shell-quoted; it is also exported as `HUMATA_NAME`.
 - **MP-4** `HUMATA_<PARAM>` variables exist only for params the provider
   declares; each declared param is a field in Add machine. Commands get no
-  other variables from the Mac or from Humata's secrets, except host
+  other variables from the host or from Humata's secrets, except host
   variables the provider lists by name in `env`.
-- **MP-5** Commands run on the Mac by default, or on a named machine
+- **MP-5** Commands run on the host by default, or on a named machine
   (`run_on`).
 - **MP-6** Any scriptable setup fits: a cloud CLI, Terraform, an internal
   tool, anything that can run a command on the machine or print its SSH
@@ -2008,7 +2008,7 @@ daemon and, as far as physically possible, the machine.
  What dies                         What survives                    Tier
  ─────────────────────────────────────────────────────────────────────────
  App quit / crash                  the live process, screen,         1
- Mac sleep / offline               scrollback; reattach gets a
+ Host sleep / offline              scrollback; reattach gets a
  SSH link drop                     snapshot + output meanwhile
  ─────────────────────────────────────────────────────────────────────────
  humatad crash / upgrade           holders untouched; new daemon      2
@@ -2028,7 +2028,7 @@ daemon and, as far as physically possible, the machine.
 ### Where state lives
 
 ```text
- Host (this Mac): source of truth              Each machine: only what must be local
+ Host (e.g. your Mac): source of truth          Each machine: only what must be local
  ┌─────────────────────────────────────────┐   ┌──────────────────────────────────┐
  │ channels · session records · boards     │   │ code clones                      │
  │ Inbox · grants · comments · views       │   │ agent's live context:            │
@@ -2077,7 +2077,7 @@ daemon and, as far as physically possible, the machine.
   remove changed since; otherwise the item stays and the delete is kept in
   history as lost.
 
-### Tier 1: the app, the Mac's link, SSH
+### Tier 1: the app, the host's link, SSH
 
 - **PER-1** Each session's PTY is held by its own small holder process on the
   session's machine. The holder is not a child of the SSH connection or of
@@ -2088,7 +2088,7 @@ daemon and, as far as physically possible, the machine.
   all output produced since its last offset, with nothing lost or repeated,
   while that output is still kept. When it is not, the client gets a fresh
   snapshot and a count of the lines not kept (TR-4).
-- **PER-4** Quitting or crashing the app, the Mac sleeping or going offline,
+- **PER-4** Quitting or crashing the app, the host sleeping or going offline,
   or the SSH link dropping, leaves every session's process running.
 
 ### Tier 2: the daemon
@@ -2142,7 +2142,7 @@ daemon and, as far as physically possible, the machine.
 - **PER-19** Fallback on Linux without systemd: `setsid` plus a crontab
   `@reboot` entry.
 - **PER-20** On macOS, `humatad` is a launchd login item.
-- **PER-21** The Mac reconnects to every machine with backoff.
+- **PER-21** The host reconnects to every machine with backoff.
 - **PER-22** tmux is not required. (tmux has the same logout-kill caveat.) A
   bundled static tmux in control mode is a possible fallback holder; it
   degrades graphics, OSC 52 and passthrough.
@@ -2207,44 +2207,44 @@ daemon and, as far as physically possible, the machine.
   restored, not lost; what changed after that copy is listed in the restart
   report.
 
-## 20. Async: working while the Mac is away
+## 20. Async: working while the host is away
 
-- **AW-1** Sessions on remote machines keep working while the Mac is asleep,
+- **AW-1** Sessions on remote machines keep working while the host is asleep,
   offline or off.
 - **AW-2** From any plain SSH terminal on a machine, `humata attach <session>`
   attaches to a session's terminal; detaching leaves it running. `humata ls`
   lists the machine's sessions. Attaching with input is user-only and needs
   presence (SEC-10); an agent's attempt is refused. Several writers may be
   attached at once (SE-24).
-- **AW-3** While the Mac is away, each remote daemon keeps its agents'
+- **AW-3** While the host is away, each remote daemon keeps its agents'
   requests in its local journal (SL-5). `humata inbox` on that machine shows
-  them, and nothing else shows them until the Mac is back.
+  them, and nothing else shows them until the host is back.
 - **AW-4** Each channel has a **While I'm away** rule for requests that would
   ask: **Wait** (the call waits), **Skip the step** (the call is denied with a
   note that the user is away), or **Allow low-risk kinds** (the user picks
   which kinds count as low-risk, from those AW-11 allows).
-- **AW-5** The user can answer requests later from the Mac, or on the machine
-  with `humata inbox` over SSH. Answering on the machine while the Mac is
+- **AW-5** The user can answer requests later from the host, or on the machine
+  with `humata inbox` over SSH. Answering on the machine while the host is
   away needs the approval passphrase (SEC-13).
-- **AW-6** When the Mac reconnects, each journal replays into the host's Inbox
+- **AW-6** When the host reconnects, each journal replays into the host's Inbox
   in order (SL-5, SL-6). A request answered on the machine arrives answered,
   credited to the user on that machine. A request still pending becomes an
-  ordinary Inbox request on the Mac.
+  ordinary Inbox request on the host.
 - **AW-7** What each call does:
 
-  | The call | Mac reachable | Mac away |
+  | The call | Host reachable | Host away |
   | --- | --- | --- |
   | Reads and writes of its own session's files, clones and `shared/` | done on the machine | done on the machine |
-  | Reads of channel state (topology, boards, its comments) | answered by the Mac | answered from the last copy, marked with its age |
+  | Reads of channel state (topology, boards, its comments) | answered by the host | answered from the last copy, marked with its age |
   | Writes the rules allow (own board, channel board add, its own items, comment and view drafts, questions to the user) | done | journaled (SL-5) |
   | Anything the rules say Never | denied | denied |
   | An Ask on something on this machine (another session here, start or fork here, type into a session here) | Inbox request; the call waits | per the While I'm away rule |
-  | Anything that needs another machine or GitHub (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | done or asked | waits, or under Skip denied saying the Mac is away; never low-risk |
+  | Anything that needs another machine or GitHub (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | done or asked | waits, or under Skip denied saying the host is away; never low-risk |
   | User-only calls | user-only (SEC-9) | only answering requests the machine holds, with the passphrase |
 
   (provisional, D3)
-- **AW-8** While the Mac is away, a machine judges calls against the last copy
-  of the rules, grants and While I'm away rule the Mac sent it. Nothing on
+- **AW-8** While the host is away, a machine judges calls against the last copy
+  of the rules, grants and While I'm away rule the host sent it. Nothing on
   the machine can change that copy. (provisional, D3)
 - **AW-9** On reconnect, every journaled write is checked again against the
   rules as they are then. A write a tightened rule no longer allows is not
@@ -2256,8 +2256,8 @@ daemon and, as far as physically possible, the machine.
 - **AW-11** Low-risk kinds can never include anything that needs another
   machine, a network connection, typing into another session, or any action
   that is Never by default. (provisional, D3)
-- **AW-12** **Always let …** given on the machine while the Mac is away
-  applies there at once and becomes a grant on the Mac at replay, with the
+- **AW-12** **Always let …** given on the machine while the host is away
+  applies there at once and becomes a grant on the host at replay, with the
   same target (IN-22). (provisional, D3)
 
 ## 21. Transport: gRPC streaming
@@ -2627,7 +2627,7 @@ the **default layout** for a screen, not the only one.
 - **SEC-1** Values of host variables are never sent to clients and never
   written to project files; only their names cross. They reach the agents on
   their machine as environment variables (HO-13). Before a transcript is
-  mirrored to the Mac, exact values are replaced (LD-21).
+  mirrored to the host, exact values are replaced (LD-21).
 - **SEC-2** The GitHub token never leaves the host. Remote clones without `gh`
   use bundles and pushes through the host (FC-7).
 - **SEC-3** Agents get only what the rules allow for calls made through
@@ -2664,7 +2664,7 @@ the **default layout** for a screen, not the only one.
 - **SEC-10** The user shows presence in one of three ways: confirming in the
   app (a dialog naming the command, with **Allow** and **Don't Allow**);
   `humata login`, which lasts up to 12 hours or until `humata logout`; or the
-  approval passphrase while the Mac is away (SEC-13). Typing "yes" at a
+  approval passphrase while the host is away (SEC-13). Typing "yes" at a
   prompt never counts. (provisional, D2)
 - **SEC-11** A login covers only the terminal session it was made in. A
   process that leaves that session (for example with `setsid`) is not
@@ -2673,7 +2673,7 @@ the **default layout** for a screen, not the only one.
   refused: an agent could answer it.
 - **SEC-13** The approval passphrase is set in Settings › Security. It has at
   least 5 random words. Five wrong tries lock it for 15 minutes on that
-  machine. The Settings page explains how to answer over SSH with the Mac
+  machine. The Settings page explains how to answer over SSH with the host
   closed: `humata login` with the passphrase, then `humata inbox`.
 - **SEC-14** Scripts use tokens the user makes in Settings › Security. A token
   lists what it may do, which channels and when it expires. Tokens can be
