@@ -46,7 +46,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/desktop:directions_test`.
 - Look at: the mocks fake vibrancy with flat colours; the real window would use the system's sidebar material.
 
-### (this commit): N1 mocks for every main screen and its options
+### c16dff55: N1 mocks for every main screen and its options
 - `desktop/tests/directions.rs` and `tests/directions/*.rs` draw 37 still mocks (not the app) in looks A and B: session states and panels, three panel-switcher options, full screen and collapsed columns, two sidebar tree styles and folded channels, channel pages (two options plus Activity and Repos and machines), the Board as kanban, item drawer, table and dashboard, Home and Inbox options, Hosts, Settings and overlays. The three earlier frames are replaced.
 - Verified: `bazel test //apps/humata2/desktop:directions_test` (recorded with `directions_test_record`; frames viewed).
 - Look at: the Board dashboard isn't in SPEC; it needs the owner's yes and a BD entry before it's built.
