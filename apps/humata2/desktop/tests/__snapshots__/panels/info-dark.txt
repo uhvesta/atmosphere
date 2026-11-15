@@ -1,0 +1,73 @@
+Toolbar "Screens"
+  Button "Home" description="Home  ⌘1" unchecked
+  Button "Inbox" description="Inbox  ⌘2" unchecked
+  Button "Board" description="Board  ⌘3" unchecked
+  Button "Hosts" description="Hosts" unchecked
+  Button "Files" description="Files" unchecked
+  Button "Settings" description="Settings" unchecked
+Navigation "Sidebar"
+  Button "Expand all" description="Expand all  ⌥⌘→"
+  Button "Collapse all" description="Collapse all  ⌥⌘←"
+  Button "New channel" description="New channel  ⇧⌘N"
+  Button "Hide sidebar" description="Hide sidebar  ⌘0"
+  TreeItem "Login v2"
+  TreeItem "Token refresh retry"
+  TreeItem "#web" expanded
+    Button "Fold"
+  TreeItem "Login v2" selected expanded
+    Button "Fold"
+  TreeItem "Passkey prompt" expanded
+    Button "Fold"
+  TreeItem "Passkey copy edits"
+  TreeItem "Email code fallback"
+  TreeItem "Dark mode tokens"
+  TreeItem "#api" expanded
+    Button "Fold"
+  TreeItem "Token refresh retry"
+  TreeItem "Rate limit headers" expanded
+    Button "Fold"
+  TreeItem "Proto field docs"
+  TreeItem "#infra" expanded
+    Button "Fold"
+  TreeItem "Terraform plan"
+  TreeItem "CI cache"
+  TreeItem "Nightly backup"
+  TreeItem "#scratch" expanded
+    Button "Fold"
+  TreeItem "Shell"
+  Button "New session" description="New session  ⌘N"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Info"
+  Button "Expand panel"
+  Button "Close panel"
+  #session-info s-login
+    text "Agent"
+    text "Claude"
+    text "Machine"
+    text "This Mac · macOS 26.7 · M4 Max · 64 GB"
+    text "Started"
+    text "2 h ago"
+    text "Forks"
+    Button "Passkey prompt"
+    Button "Email code fallback"
+    text "Clones"
+    text "web"
+    text "humata/s-login"
+    text "Survives restarts"
+    text "Recovery has not been reported for this session."
+    text "What this agent may do"
+    text "Permission rules have not been reported for this session."
+    Button "Channel rules" disabled
+Toolbar "Session panels"
+  Button "Inbox"
+  Button "Diff"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Heading "Login v2"
+Button "Back" description="Back  ⌘["
+Button "Search" description="Command palette  ⌘K"
+Button "Toggle side panel" description="Toggle side panel  ⌥⌘0"
+Log "Login v2 terminal"

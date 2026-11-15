@@ -6,6 +6,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, Selectable as _, TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
@@ -880,12 +881,396 @@ fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
         )
 }
 
+#[derive(Default)]
+struct FileNode {
+    folder: bool,
+    children: std::collections::BTreeMap<String, FileNode>,
+}
+fn file_rows(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    repo: &str,
+    node: &FileNode,
+    path: &str,
+    depth: usize,
+    filter: &str,
+    look: Look,
+) -> Vec<AnyElement> {
+    let mut children: Vec<_> = node.children.iter().collect();
+    children.sort_by(|(an, a), (bn, b)| b.folder.cmp(&a.folder).then_with(|| an.cmp(bn)));
+    let mut rows = Vec::new();
+    for (name, child) in children {
+        let path = if path.is_empty() {
+            name.clone()
+        } else {
+            format!("{path}/{name}")
+        };
+        if !filter.is_empty()
+            && !path.to_lowercase().contains(filter)
+            && !contains_file(child, &path, filter)
+        {
+            continue;
+        }
+        let folded = state
+            .session
+            .view()
+            .is_some_and(|view| view.folded_files.contains(&(repo.to_owned(), path.clone())));
+        let selected = state
+            .session
+            .view()
+            .and_then(|view| view.file.as_ref())
+            .is_some_and(|(r, p)| r == repo && p == &path);
+        let changed = state
+            .workspace
+            .diffs
+            .iter()
+            .filter(|diff| Some(&diff.session) == state.session.open.as_ref() && diff.repo == repo)
+            .any(|diff| diff.files.iter().any(|file| file.path == path));
+        let event = if child.folder {
+            SessionAction::ToggleFolder {
+                repo: repo.to_owned(),
+                path: path.clone(),
+            }
+        } else {
+            SessionAction::SelectFile {
+                repo: repo.to_owned(),
+                path: path.clone(),
+            }
+        };
+        let click_ui = ui.clone();
+        rows.push(
+            row()
+                .id(SharedString::from(format!(
+                    "session-{} {repo}/{path}",
+                    if child.folder { "folder" } else { "file" }
+                )))
+                .role(if child.folder {
+                    Role::Button
+                } else {
+                    Role::ListItem
+                })
+                .aria_label(format!("{repo}/{path}"))
+                .test_support()
+                .h(px(23.))
+                .pl(px(8. + depth as f32 * 14.))
+                .pr(px(8.))
+                .gap(px(6.))
+                .rounded(px(5.))
+                .when(selected, |row| row.bg(rgb(look.fill)))
+                .child(icon(
+                    if child.folder {
+                        if folded {
+                            IconName::Folder
+                        } else {
+                            IconName::FolderOpen
+                        }
+                    } else {
+                        IconName::FileCode
+                    },
+                    look.secondary,
+                    12.,
+                ))
+                .child(text(name.clone()).flex_1())
+                .when(changed && !child.folder, |row| {
+                    row.child(
+                        text("M")
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(ORANGE)),
+                    )
+                })
+                .cursor_pointer()
+                .on_click(move |_, _, cx| click_ui.send(AppAction::Session(event.clone()), cx))
+                .into_any_element(),
+        );
+        if child.folder && (!folded || !filter.is_empty()) {
+            rows.extend(file_rows(
+                ui,
+                state,
+                repo,
+                child,
+                &path,
+                depth + 1,
+                filter,
+                look,
+            ));
+        }
+    }
+    rows
+}
+fn contains_file(node: &FileNode, path: &str, filter: &str) -> bool {
+    node.children.iter().any(|(name, child)| {
+        let path = format!("{path}/{name}");
+        path.to_lowercase().contains(filter) || contains_file(child, &path, filter)
+    })
+}
+fn files(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    session: &Session,
+    full: bool,
+    input: Entity<InputState>,
+    look: Look,
+) -> Div {
+    let mut repos = std::collections::BTreeMap::<String, FileNode>::new();
+    for file in state
+        .workspace
+        .session_files
+        .get(&session.id)
+        .into_iter()
+        .flatten()
+    {
+        let mut node = repos.entry(file.repo.clone()).or_default();
+        for component in file.path.split('/').filter(|part| !part.is_empty()) {
+            node.folder = true;
+            node = node.children.entry(component.to_owned()).or_default();
+        }
+        node.folder |= file.folder;
+    }
+    let filter = state
+        .session
+        .view()
+        .map_or("", |view| view.file_filter.as_str())
+        .to_lowercase();
+    let mut rows = Vec::new();
+    for (repo, node) in &repos {
+        let children = file_rows(ui, state, repo, node, "", 1, &filter, look);
+        if !filter.is_empty() && children.is_empty() {
+            continue;
+        }
+        let folded = state
+            .session
+            .view()
+            .is_some_and(|view| view.folded_files.contains(&(repo.clone(), String::new())));
+        let repo_name = repo.rsplit('/').next().unwrap_or(repo);
+        let click_ui = ui.clone();
+        let repo_id = repo.clone();
+        rows.push(
+            row()
+                .id(SharedString::from(format!("session-folder {repo}/")))
+                .role(Role::Button)
+                .aria_label(repo.clone())
+                .test_support()
+                .h(px(23.))
+                .px(px(8.))
+                .gap(px(6.))
+                .child(icon(IconName::FolderGit2, look.secondary, 12.))
+                .child(text(repo_name.to_owned()))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::ToggleFolder {
+                            repo: repo_id.clone(),
+                            path: String::new(),
+                        }),
+                        cx,
+                    )
+                })
+                .into_any_element(),
+        );
+        if !folded || !filter.is_empty() {
+            rows.extend(children);
+        }
+    }
+    col()
+        .size_full()
+        .child(header(ui, Panel::Files, full, None, look))
+        .child(
+            div()
+                .id("session-file-filter")
+                .test_support()
+                .p(px(10.))
+                .child(
+                    Input::new(&input)
+                        .aria_label("Filter files")
+                        .small()
+                        .h(px(26.))
+                        .bg(rgb(look.card))
+                        .border_color(rgb(look.line))
+                        .text_color(rgb(look.text)),
+                ),
+        )
+        .child(
+            col()
+                .id("session-files")
+                .role(Role::List)
+                .aria_label("Session files")
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(6.))
+                .text_size(px(12.5))
+                .children(rows),
+        )
+        .child(
+            row()
+                .gap(px(8.))
+                .p(px(10.))
+                .border_t_1()
+                .border_color(rgb(look.line))
+                .child(
+                    action(
+                        ui,
+                        "files-open-big",
+                        "Open big",
+                        AppAction::Session(SessionAction::ToggleWiden),
+                        look,
+                        false,
+                    )
+                    .disabled(full),
+                )
+                .child(
+                    Button::new("files-open-editor")
+                        .label("Open in editor")
+                        .small()
+                        .disabled(true),
+                )
+                .child(
+                    Button::new("files-upload")
+                        .label("Upload…")
+                        .small()
+                        .disabled(true),
+                ),
+        )
+}
+fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look) -> Div {
+    let kv = |key: &'static str, value: Div| {
+        row()
+            .items_start()
+            .gap(px(10.))
+            .py(px(3.))
+            .child(
+                text(key)
+                    .w(px(84.))
+                    .flex_shrink_0()
+                    .text_color(rgb(look.secondary)),
+            )
+            .child(value.flex_1().min_w_0())
+    };
+    let machine = state.workspace.machine(&session.machine);
+    let forks = state.workspace.forks(&session.id).map(|fork| {
+        let click_ui = ui.clone();
+        let id = fork.id.clone();
+        Button::new(SharedString::from(format!("session-info-fork {}", fork.id)))
+            .accessibility_label(fork.title.clone())
+            .ghost()
+            .small()
+            .w_full()
+            .h(px(23.))
+            .p_0()
+            .child(
+                text(fork.title.clone())
+                    .w_full()
+                    .text_left()
+                    .text_color(rgb(look.accent)),
+            )
+            .on_click(move |_, _, cx| {
+                click_ui.send(AppAction::Navigate(Route::Session(id.clone())), cx)
+            })
+    });
+    let recovery = session.recovery.as_ref().map_or_else(
+        || "Recovery has not been reported for this session.".to_owned(),
+        |recovery| recovery.label(),
+    );
+    let clones = state
+        .workspace
+        .session_files
+        .get(&session.id)
+        .into_iter()
+        .flatten()
+        .map(|file| file.repo.as_str())
+        .chain((!session.repo.is_empty()).then_some(session.repo.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let clone_rows = clones.into_iter().map(|repo| {
+        row()
+            .flex_wrap()
+            .gap(px(6.))
+            .child(text(repo.rsplit('/').next().unwrap_or(repo).to_owned()))
+            .when(repo == session.repo, |row| {
+                row.child(
+                    text(session.branch.clone())
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(look.line))
+                        .text_size(px(11.))
+                        .text_color(rgb(look.secondary)),
+                )
+            })
+    });
+    let details = col()
+        .child(kv("Agent", text(session.agent.name())))
+        .child(kv(
+            "Machine",
+            text(machine.map_or_else(
+                || session.machine.to_string(),
+                |machine| format!("{} · {}", machine.name, machine.detail),
+            )),
+        ))
+        .child(kv("Started", text(session.started.clone())))
+        .child(kv("Forks", col().children(forks)))
+        .child(kv("Clones", col().gap(px(3.)).children(clone_rows)));
+    let restart = card(look)
+        .p(px(10.))
+        .gap(px(4.))
+        .child(
+            row()
+                .gap(px(6.))
+                .child(icon(IconName::ShieldCheck, GREEN, 12.))
+                .child(text("Survives restarts").font_weight(FontWeight::SEMIBOLD)),
+        )
+        .child(secondary(look, recovery));
+    let permissions = card(look)
+        .p(px(10.))
+        .gap(px(4.))
+        .child(
+            row()
+                .gap(px(6.))
+                .child(icon(IconName::Bot, look.accent, 12.))
+                .child(text("What this agent may do").font_weight(FontWeight::SEMIBOLD)),
+        )
+        .child(secondary(
+            look,
+            "Permission rules have not been reported for this session.",
+        ))
+        .child(
+            Button::new("session-channel-rules")
+                .accessibility_label("Channel rules")
+                .child(text("Channel rules").w_full().text_left())
+                .ghost()
+                .w_full()
+                .small()
+                .text_color(rgb(look.accent))
+                .disabled(true),
+        );
+    col()
+        .size_full()
+        .child(header(ui, Panel::Info, full, None, look))
+        .child(
+            col()
+                .id(SharedString::from(format!("session-info {}", session.id)))
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .gap(px(10.))
+                .p(px(12.))
+                .text_size(px(12.5))
+                .child(details)
+                .child(restart)
+                .child(permissions),
+        )
+}
+
 pub(crate) fn panel(
     ui: &Rc<Ui>,
     state: &AppState,
     panel: Panel,
     width: f32,
     full: bool,
+    file_filter: Entity<InputState>,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let look = Look::of(cx);
@@ -899,6 +1284,8 @@ pub(crate) fn panel(
         (Panel::Inbox, _) => inbox(ui, state, full, look),
         (Panel::Board, Some(session)) => board(ui, state, session, full, look),
         (Panel::Journal, _) => journal(ui, state, full, look),
+        (Panel::Files, Some(session)) => files(ui, state, session, full, file_filter, look),
+        (Panel::Info, Some(session)) => info(ui, state, session, full, look),
         _ => col().child(header(ui, panel, full, None, look)),
     };
     col()
@@ -1015,7 +1402,6 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                     .h(px(48.))
                     .p_0()
                     .rounded(px(7.))
-                    .disabled(matches!(panel, Panel::Files | Panel::Info))
                     .when(on == Some(panel), |tab| tab.bg(rgb(look.fill)))
                     .child(
                         col()

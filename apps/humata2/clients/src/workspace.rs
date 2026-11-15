@@ -1,8 +1,10 @@
 //! Everything the app shows at once, as one value the daemon client loads.
 
+use std::collections::BTreeMap;
+
 use crate::model::{
     Channel, ChannelId, FileEntry, Item, JournalEntry, Machine, MachineId, PreparedView,
-    PullRequest, RepoDiff, Request, Session, SessionId, Skill, Spec, Transfer, Trashed,
+    PullRequest, RepoDiff, Request, Session, SessionFile, SessionId, Skill, Spec, Transfer, Trashed,
 };
 
 /// What every daemon the app talks to holds, merged.
@@ -22,6 +24,8 @@ pub struct Workspace {
     pub diffs: Vec<RepoDiff>,
     /// Files on the hosts.
     pub files: Vec<FileEntry>,
+    /// Repository paths in each session’s own clones, including unchanged files.
+    pub session_files: BTreeMap<SessionId, Vec<SessionFile>>,
     /// Copies between hosts.
     pub transfers: Vec<Transfer>,
     /// What can still be restored.

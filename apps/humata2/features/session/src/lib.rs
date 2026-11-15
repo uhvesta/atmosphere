@@ -7,7 +7,7 @@
 //! daemon's event stream and is appended to [`SessionState::live`], so a
 //! line doesn't copy the workspace.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use humata2_clients::model::{ForkKind, Line, SessionId, Skill, Speaker, Turn};
@@ -74,6 +74,15 @@ pub struct SessionView {
     pub draft: String,
     /// Messages waiting for the turn to end, first to go first.
     pub queue: Vec<String>,
+    /// The selected clone and relative file path in Files.
+    #[serde(default)]
+    pub file: Option<(String, String)>,
+    /// The Files filter, kept with this session.
+    #[serde(default)]
+    pub file_filter: String,
+    /// Collapsed Files directories, keyed by repository and path.
+    #[serde(default)]
+    pub folded_files: BTreeSet<(String, String)>,
 }
 
 /// A fork being named, before it is made.
@@ -176,6 +185,22 @@ pub enum SessionAction {
     SetPanel(Option<Panel>),
     /// The panel was widened or narrowed again.
     ToggleWiden,
+    /// Filter this session's repository paths.
+    FilterFiles(String),
+    /// Select a file in this session's clones.
+    SelectFile {
+        /// The repository containing it.
+        repo: String,
+        /// Its path relative to the clone.
+        path: String,
+    },
+    /// Expand or collapse a repository/directory in Files.
+    ToggleFolder {
+        /// The repository containing it.
+        repo: String,
+        /// Its path, or empty for the clone's root.
+        path: String,
+    },
     /// The composer's text changed.
     Draft(String),
     /// A `/` suggestion was picked.
@@ -337,6 +362,29 @@ impl Reducer for Sessions {
                     && view.panel.is_some()
                 {
                     view.widened = !view.widened;
+                }
+            }
+            SessionAction::FilterFiles(filter) => {
+                if let Some(view) = state.view_mut() {
+                    view.file_filter = filter;
+                }
+            }
+            SessionAction::SelectFile { repo, path } => {
+                let exists = state.open.as_ref()
+                    .and_then(|id| state.workspace.session_files.get(id))
+                    .is_some_and(|files| files.iter().any(|file| {
+                        !file.folder && file.repo == repo && file.path == path
+                    }));
+                if exists && let Some(view) = state.view_mut() {
+                    view.file = Some((repo, path));
+                }
+            }
+            SessionAction::ToggleFolder { repo, path } => {
+                if let Some(view) = state.view_mut() {
+                    let key = (repo, path);
+                    if !view.folded_files.remove(&key) {
+                        view.folded_files.insert(key);
+                    }
                 }
             }
             SessionAction::Draft(text) => {

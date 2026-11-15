@@ -14,7 +14,7 @@ use crate::model::{
     Agent, Answer, Channel, ChannelId, Comment, DiffLine, FileDiff, FileEntry, ForkKind, Item,
     ItemId, ItemKind, ItemStatus, JournalEntry, Line, LineKind, Machine, MachineId, MachineKind,
     PreparedView, Preview, PullRequest, Recovery, RepoDiff, Request, RequestId, RequestKind, Scope, Session,
-    SessionId, Skill, Speaker, Spec, Status, Transfer, TransferId, TransferState, Trashed, Turn,
+    SessionFile, SessionId, Skill, Speaker, Spec, Status, Transfer, TransferId, TransferState, Trashed, Turn,
 };
 use crate::workspace::Workspace;
 
@@ -31,6 +31,38 @@ pub fn standard() -> Workspace {
     workspace.items = items();
     workspace.diffs = diffs();
     workspace.files = files();
+    for session in &workspace.sessions {
+        if session.repo.is_empty() {
+            continue;
+        }
+        let mut files = vec![
+            SessionFile {
+                repo: session.repo.clone(),
+                path: "README.md".into(),
+                folder: false,
+            },
+            SessionFile {
+                repo: session.repo.clone(),
+                path: "src".into(),
+                folder: true,
+            },
+            SessionFile {
+                repo: session.repo.clone(),
+                path: "src/lib.rs".into(),
+                folder: false,
+            },
+        ];
+        for diff in workspace.diffs.iter().filter(|diff| diff.session == session.id) {
+            for file in &diff.files {
+                files.push(SessionFile {
+                    repo: diff.repo.clone(),
+                    path: file.path.clone(),
+                    folder: false,
+                });
+            }
+        }
+        workspace.session_files.insert(session.id.clone(), files);
+    }
     workspace.transfers = vec![
         Transfer {
             id: TransferId::new("t1"),

@@ -660,6 +660,9 @@ impl Daemon for FakeDaemon {
                     .iter()
                     .position(|found| found.id == parent)
                     .map_or(inner.workspace.sessions.len(), |at| at + 1);
+                if let Some(files) = inner.workspace.session_files.get(&parent).cloned() {
+                    inner.workspace.session_files.insert(id.clone(), files);
+                }
                 inner.workspace.sessions.insert(at, fork);
                 inner.changed(&id);
                 Ok(id)

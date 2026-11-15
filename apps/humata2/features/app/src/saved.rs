@@ -60,6 +60,7 @@ impl SavedUi {
         let mut structure = self.clone();
         for view in structure.sessions.values_mut() {
             view.draft.clear();
+            view.file_filter.clear();
         }
         structure.review.drafts.clear();
         structure

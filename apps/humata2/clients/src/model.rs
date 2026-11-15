@@ -568,6 +568,17 @@ pub struct Item {
     pub parent: Option<ItemId>,
 }
 
+/// A path inside one repository clone belonging to a session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionFile {
+    /// The repository, such as `acme/api`.
+    pub repo: String,
+    /// The path relative to that clone's root.
+    pub path: String,
+    /// Whether the path is a directory.
+    pub folder: bool,
+}
+
 /// A file on a host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileEntry {

@@ -74,6 +74,10 @@ gpui_kit::assets::icon_assets!(
         ChevronsUpDown,
         PanelLeftOpen,
         Sparkles,
+        FolderOpen,
+        FileText,
+        ShieldCheck,
+        Bot,
     ]
 );
 

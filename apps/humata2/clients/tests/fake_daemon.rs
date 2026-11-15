@@ -100,3 +100,18 @@ fn a_subscriber_that_falls_behind_is_told_to_reload() {
     daemon.emit(Event::Machine(machine));
     assert_eq!(events.try_recv().ok(), Some(Ok(Event::Resync)));
 }
+
+#[test]
+fn a_fork_starts_with_its_parents_clone_listing() {
+    use humata2_clients::model::ForkKind;
+    let daemon = FakeDaemon::new(fixture::standard(), Arc::new(TestClock::new()));
+    let parent = SessionId::new("s-auth");
+    let before = daemon.workspace().session_files[&parent].clone();
+    assert!(!before.is_empty());
+    for kind in [ForkKind::Worktree, ForkKind::Shared, ForkKind::Conversation] {
+        let fork = block_on(daemon.fork(&parent, kind, "Try another fix")).expect("fork");
+        let workspace = daemon.workspace();
+        assert_eq!(workspace.session_files.get(&fork), Some(&before));
+        assert_eq!(workspace.session_files.get(&parent), Some(&before));
+    }
+}

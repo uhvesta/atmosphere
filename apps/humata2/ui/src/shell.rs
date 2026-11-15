@@ -7,10 +7,12 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, Load, PaneAction, Route};
-use humata2_clients::model::Scope;
+use humata2_clients::model::{Scope, SessionId};
+use humata2_session::SessionAction;
 use humata2_sidebar::SidebarAction;
 
 use crate::bridge::{Part, Ui};
@@ -30,6 +32,10 @@ pub struct Shell {
     focus: FocusHandle,
     /// The side whose divider is being dragged.
     dragging: Option<PaneId>,
+    file_filter: Entity<InputState>,
+    file_filter_session: Option<SessionId>,
+    file_filter_value: String,
+    _file_filter_subscription: Subscription,
 }
 
 impl Shell {
@@ -46,6 +52,16 @@ impl Shell {
             let ui = ui.clone();
             cx.new(|cx| Overlays::new(ui, window, cx))
         };
+        let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let file_filter_subscription = cx.subscribe(
+            &file_filter,
+            |this: &mut Self, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    this.ui.send(AppAction::Session(SessionAction::FilterFiles(value)), cx);
+                }
+            },
+        );
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
@@ -55,6 +71,10 @@ impl Shell {
             overlays,
             focus,
             dragging: None,
+            file_filter,
+            file_filter_session: None,
+            file_filter_value: String::new(),
+            _file_filter_subscription: file_filter_subscription,
         }
     }
 
@@ -293,6 +313,19 @@ impl Render for Shell {
                 state.restore_error.clone(),
             )
         });
+        let (session, filter) = self.ui.read(|state| (
+            state.session.open.clone(),
+            state.session.view().map(|view| view.file_filter.clone()).unwrap_or_default(),
+        ));
+        // Input events are delivered after the render that follows editing. Sync
+        // only a new stored value/session, so that render cannot erase the edit.
+        if self.file_filter_session != session || self.file_filter_value != filter {
+            self.file_filter_session = session;
+            self.file_filter_value = filter.clone();
+            if self.file_filter.read(cx).value().as_ref() != filter {
+                self.file_filter.update(cx, |input, cx| input.set_value(filter, window, cx));
+            }
+        }
         let ui = self.ui.clone();
         let body = match load {
             Load::Loading => col()
@@ -381,12 +414,12 @@ impl Render for Shell {
                     .child(main)
                     .when_some(panel, |shell, panel| {
                         shell.child(self.divider(PaneId::Panel, cx))
-                            .child(self.ui.read(|state| panels::panel(&ui, state, panel, panel_width, false, cx)))
+                            .child(self.ui.read(|state| panels::panel(&ui, state, panel, panel_width, false, self.file_filter.clone(), cx)))
                     })
                     .when(in_session, |shell| shell.child(panels::strip(&ui, panel, cx)))
             })
             .when(full, |shell| {
-                shell.children(panel.map(|panel| self.ui.read(|state| panels::panel(&ui, state, panel, viewport, true, cx))))
+                shell.children(panel.map(|panel| self.ui.read(|state| panels::panel(&ui, state, panel, viewport, true, self.file_filter.clone(), cx))))
             })
             .child(self.overlays.clone())
     }

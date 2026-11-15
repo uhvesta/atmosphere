@@ -1,0 +1,76 @@
+Toolbar "Screens"
+  Button "Home" description="Home  ⌘1" unchecked
+  Button "Inbox" description="Inbox  ⌘2" unchecked
+  Button "Board" description="Board  ⌘3" unchecked
+  Button "Hosts" description="Hosts" unchecked
+  Button "Files" description="Files" unchecked
+  Button "Settings" description="Settings" unchecked
+Navigation "Sidebar"
+  Button "Expand all" description="Expand all  ⌥⌘→"
+  Button "Collapse all" description="Collapse all  ⌥⌘←"
+  Button "New channel" description="New channel  ⇧⌘N"
+  Button "Hide sidebar" description="Hide sidebar  ⌘0"
+  TreeItem "Login v2"
+  TreeItem "Token refresh retry"
+  TreeItem "#web" expanded
+    Button "Fold"
+  TreeItem "Login v2" expanded
+    Button "Fold"
+  TreeItem "Passkey prompt" expanded
+    Button "Fold"
+  TreeItem "Passkey copy edits"
+  TreeItem "Email code fallback"
+  TreeItem "Dark mode tokens"
+  TreeItem "#api" expanded
+    Button "Fold"
+  TreeItem "Token refresh retry" selected
+  TreeItem "Rate limit headers" expanded
+    Button "Fold"
+  TreeItem "Proto field docs"
+  TreeItem "#infra" expanded
+    Button "Fold"
+  TreeItem "Terraform plan"
+  TreeItem "CI cache"
+  TreeItem "Nightly backup"
+  TreeItem "#scratch" expanded
+    Button "Fold"
+  TreeItem "Shell"
+  Button "New session" description="New session  ⌘N"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Files"
+  Button "Expand panel"
+  Button "Close panel"
+  #session-file-filter
+    #input-4294967308
+      TextInput "Filter files" value="" placeholder="Filter files"
+  List "Session files"
+    Button "acme/api"
+      text "api"
+    Button "acme/api/src"
+      text "src"
+    ListItem "acme/api/src/client.rs"
+      text "client.rs"
+      text "M"
+    ListItem "acme/api/src/lib.rs"
+      text "lib.rs"
+    ListItem "acme/api/src/retry.rs"
+      text "retry.rs"
+      text "M"
+    ListItem "acme/api/README.md"
+      text "README.md"
+  Button "Open big"
+  Button "Open in editor" disabled
+  Button "Upload…" disabled
+Toolbar "Session panels"
+  Button "Inbox"
+  Button "Diff"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Heading "Token refresh retry"
+Button "Back" description="Back  ⌘["
+Button "Search" description="Command palette  ⌘K"
+Button "Toggle side panel" description="Toggle side panel  ⌥⌘0"
+Log "Token refresh retry terminal"

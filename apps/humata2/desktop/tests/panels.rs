@@ -182,6 +182,8 @@ fn the_panels_draw_their_client_data() {
         ("inbox", Panel::Inbox, false),
         ("board", Panel::Board, false),
         ("journal", Panel::Journal, false),
+        ("files", Panel::Files, false),
+        ("info", Panel::Info, false),
         ("changes-full", Panel::Changes, true),
         ("board-full", Panel::Board, true),
     ] {
@@ -192,7 +194,20 @@ fn the_panels_draw_their_client_data() {
             let mut app = App::new(fixture::standard());
             app.cx
                 .update(|cx| gpui_kit::component::theme::Theme::change(mode, None, cx));
-            app.open("s-auth", panel);
+            app.open(
+                if panel == Panel::Info {
+                    "s-login"
+                } else {
+                    "s-auth"
+                },
+                panel,
+            );
+            if panel == Panel::Files {
+                app.send(AppAction::Session(SessionAction::SelectFile {
+                    repo: "acme/api".into(),
+                    path: "src/client.rs".into(),
+                }));
+            }
             if full {
                 app.send(AppAction::Session(SessionAction::ToggleWiden));
             }
@@ -389,4 +404,97 @@ fn expanded_board_keeps_backlog_and_in_review_items() {
     assert!(app.contains("board-item A-backlog"));
     assert!(app.contains("board-item A-review"));
     assert!(!app.contains("board-item W-2"));
+}
+
+/// Files and Info are reachable from the native strip, rather than empty panels.
+#[test]
+fn files_and_info_show_the_open_sessions_data() {
+    let mut app = App::new(fixture::standard());
+    app.open("s-auth", Panel::Changes);
+    app.click("panel-tab Files");
+    assert!(app.contains("session-files"));
+    app.click("session-file acme/api/src/client.rs");
+    app.ui.read(|state| {
+        assert_eq!(
+            state.session.view().expect("session").file.as_ref(),
+            Some(&("acme/api".to_owned(), "src/client.rs".to_owned()))
+        )
+    });
+
+    app.click("panel-tab Info");
+    assert!(app.contains("session-info s-auth"));
+    app.open("s-login", Panel::Info);
+    assert!(app.contains("session-info s-login"));
+    assert!(!app.contains("session-info s-auth"));
+    app.click("session-info-fork s-passkey");
+    app.ui
+        .read(|state| assert_eq!(state.session.open, Some(SessionId::new("s-passkey"))));
+}
+
+#[test]
+fn session_files_filter_fold_and_restore_without_showing_other_clones() {
+    use humata2_clients::model::SessionFile;
+    let mut workspace = fixture::standard();
+    workspace
+        .session_files
+        .get_mut(&SessionId::new("s-login"))
+        .expect("fixture listing")
+        .push(SessionFile {
+            repo: "private/other".into(),
+            path: "secret.txt".into(),
+            folder: false,
+        });
+    let mut app = App::new(workspace);
+    app.open("s-auth", Panel::Files);
+    assert!(!app.contains("session-file private/other/secret.txt"));
+    assert!(app.contains("session-file acme/api/src/lib.rs"));
+    app.click("session-folder acme/api/src");
+    assert!(!app.contains("session-file acme/api/src/lib.rs"));
+    app.click("session-file-filter");
+    app.cx
+        .update_window(app.window, |_, window, cx| window.input("CLIENT", cx))
+        .expect("window");
+    app.settle();
+    app.ui
+        .read(|state| assert_eq!(state.session.view().expect("view").file_filter, "CLIENT"));
+    assert!(app.contains("session-file acme/api/src/client.rs"));
+    assert!(!app.contains("session-file acme/api/src/lib.rs"));
+    app.open("s-login", Panel::Files);
+    let saved = humata2_app::saved::restore(app.fakes.storage.as_ref())
+        .expect("saved state decodes")
+        .expect("state saved");
+    assert_eq!(
+        saved.sessions[&SessionId::new("s-auth")].file_filter,
+        "CLIENT"
+    );
+    assert!(app.contains("session-file private/other/secret.txt"));
+    app.open("s-auth", Panel::Files);
+    app.ui
+        .read(|state| assert_eq!(state.session.view().expect("view").file_filter, "CLIENT"));
+    app.send(AppAction::Session(
+        SessionAction::FilterFiles(String::new()),
+    ));
+    assert!(!app.contains("session-file acme/api/src/client.rs"));
+    app.click("session-folder acme/api/src");
+    assert!(app.contains("session-file acme/api/src/lib.rs"));
+    app.click("files-open-big");
+    assert!(app.contains("panel-full-screen"));
+    app.click("show-terminal");
+    assert!(app.contains("session-files"));
+}
+
+#[test]
+fn saved_sessions_from_before_file_views_still_restore() {
+    use humata2_clients::Storage as _;
+    let storage = humata2_clients::MemoryStorage::new();
+    storage.save(humata2_app::saved::KEY, br#"{"sessions":{"s-auth":{"tab":0,"panel":"Files","widened":false,"draft":"keep this","queue":[]}}}"#).expect("old state stored");
+    let saved = humata2_app::saved::restore(&storage)
+        .expect("old state decodes")
+        .expect("state exists");
+    let view = &saved.sessions[&SessionId::new("s-auth")];
+    assert_eq!(view.panel, Some(Panel::Files));
+    assert_eq!(view.draft, "keep this");
+    assert!(view.file.is_none());
+    assert!(view.file_filter.is_empty());
+    assert!(view.folded_files.is_empty());
 }

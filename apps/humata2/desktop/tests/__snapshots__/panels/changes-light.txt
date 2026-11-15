@@ -84,10 +84,10 @@ Complementary "Changes"
 Toolbar "Session panels"
   Button "Inbox"
   Button "Diff"
-  Button "Files" disabled
+  Button "Files"
   Button "Board"
   Button "Journal"
-  Button "Info" disabled
+  Button "Info"
 Heading "Token refresh retry"
 Button "Back" description="Back  ⌘["
 Button "Search" description="Command palette  ⌘K"
