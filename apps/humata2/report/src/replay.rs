@@ -8,6 +8,8 @@
 
 use std::fmt::{self, Write as _};
 
+use crate::change;
+use crate::error::ReplayError;
 use crate::event::{Button, Element, Event, Gesture, Pasted, Trees};
 use crate::recording::Captured;
 
@@ -53,6 +55,24 @@ pub enum FlowAction {
     Key(String),
     Drag { from: FlowTarget, to: FlowTarget },
     Paste(String),
+}
+
+impl fmt::Display for FlowTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {:?}", self.role, self.label)
+    }
+}
+
+impl fmt::Display for FlowAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Click(target) => write!(f, "click {target}"),
+            Self::Type(text) => write!(f, "type {text:?}"),
+            Self::Key(key) => write!(f, "press {key}"),
+            Self::Drag { from, to } => write!(f, "drag {from} to {to}"),
+            Self::Paste(text) => write!(f, "paste {text:?}"),
+        }
+    }
 }
 
 /// An interaction a flow can't play.
@@ -203,4 +223,92 @@ impl FlowScript {
         }
         out
     }
+}
+
+/// The app under test as a replay plays it: a flow driver over the app's
+/// real state and views, wired to fake services (such as a
+/// [`FakeDaemon`](crate::FakeDaemon) made from the same recording). It
+/// does what `humata2_flow::Driver` does and also gives the state, so the
+/// app adapts its flow driver to this; this crate has no GUI to do it.
+pub trait Player {
+    /// Why a step or reading the trees failed.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Does `action`, and returns once everything it started has settled.
+    ///
+    /// # Errors
+    ///
+    /// When the action can't be done, such as a control that isn't there
+    /// or a call the fake services can't answer.
+    fn play(&mut self, action: &FlowAction) -> Result<(), Self::Error>;
+
+    /// The state, view and layout now, written as a report writes them.
+    ///
+    /// # Errors
+    ///
+    /// When they can't be read.
+    fn trees(&mut self) -> Result<Trees, Self::Error>;
+}
+
+/// Which trees a replay compares with the recording's. The state always
+/// is. The view and layout are opt-in: a recording made in the app's
+/// window has its fonts, size and terminal text, which a headless test
+/// window may not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Compare {
+    pub view: bool,
+    pub layout: bool,
+}
+
+impl FlowScript {
+    /// Plays the script on `player` and checks that it starts and ends as
+    /// the recording did, comparing the trees `compare` names. The
+    /// interactions in [`skipped`](Self::skipped) aren't played.
+    ///
+    /// # Errors
+    ///
+    /// [`ReplayError::StartDiffers`] when the player doesn't start where
+    /// the recording did, [`ReplayError::Play`] or
+    /// [`ReplayError::Trees`] when the player fails, and
+    /// [`ReplayError::EndDiffers`] when it ends anywhere else.
+    pub fn replay<P: Player>(&self, player: &mut P, compare: Compare) -> Result<(), ReplayError<P::Error>> {
+        let start = player.trees().map_err(|source| ReplayError::Trees {
+            when: "before the first step",
+            source,
+        })?;
+        if let Some((tree, diff)) = differs(&self.start, &start, compare) {
+            return Err(ReplayError::StartDiffers { tree, diff });
+        }
+        for (index, step) in self.steps.iter().enumerate() {
+            player.play(&step.action).map_err(|source| ReplayError::Play {
+                step: index + 1,
+                what: step.action.to_string(),
+                source,
+            })?;
+        }
+        let end = player.trees().map_err(|source| ReplayError::Trees {
+            when: "after the last step",
+            source,
+        })?;
+        if let Some((tree, diff)) = differs(&self.end, &end, compare) {
+            return Err(ReplayError::EndDiffers { tree, diff });
+        }
+        Ok(())
+    }
+}
+
+/// The first tree `compare` names that differs, and how, as a readable
+/// diff from the recorded tree to the replayed one.
+fn differs(recorded: &Trees, replayed: &Trees, compare: Compare) -> Option<(&'static str, String)> {
+    [
+        ("state", true, &recorded.state, &replayed.state),
+        ("view", compare.view, &recorded.view, &replayed.view),
+        ("layout", compare.layout, &recorded.layout, &replayed.layout),
+    ]
+    .into_iter()
+    .filter(|(_, compared, _, _)| *compared)
+    .find_map(|(tree, _, recorded, replayed)| {
+        let hunks = change::diff(recorded, replayed);
+        (!hunks.is_empty()).then(|| (tree, change::render(&hunks, "    ")))
+    })
 }

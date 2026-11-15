@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::change;
-use crate::error::WriteError;
+use crate::error::{FormError, WriteError};
 use crate::event::{Event, Gesture, Holds, Kind};
 use crate::form::Form;
 use crate::jsonl;
 use crate::recording::Captured;
 use crate::replay::describe;
-use crate::scrub::Scrubbed;
+use crate::scrub::{self, Scrubbed, Secrets};
 
 /// Each file a report holds, in the order the prompt lists them, with what
 /// it holds.
@@ -87,6 +87,52 @@ pub fn write(reports: &Path, report: &Scrubbed) -> Result<PathBuf, WriteError> {
         let _ = fs::remove_dir_all(&temp);
     }
     published
+}
+
+/// Saves `form` into the report already written in `dir`, scrubbed of
+/// what `secrets` seeds: its `report.md` is made again from the report's
+/// `events.jsonl` and the new form, and replaces the old one whole. This
+/// lets a report be saved the moment it stops (so `humata report stop`
+/// can answer with its folder, and a crash while the form is open loses
+/// nothing) and the form be filled in after. The folder keeps its name.
+///
+/// # Errors
+///
+/// [`FormError`] when `events.jsonl` can't be read back or `report.md`
+/// can't be replaced; the old `report.md` is kept.
+pub fn fill_form(dir: &Path, form: Form, secrets: &Secrets) -> Result<(), FormError> {
+    let events = dir.join("events.jsonl");
+    let text = fs::read_to_string(&events).map_err(|source| FormError::ReadEvents {
+        path: events.clone(),
+        source,
+    })?;
+    let captured = jsonl::read_events(&text).map_err(|source| FormError::Events { path: events, source })?;
+    let form = scrub::scrub_form_alone(form, secrets);
+    let text = report_md(&captured, &form);
+
+    let summary = dir.join("report.md");
+    let temp = dir.join(format!(
+        ".report.md.{}-{}{PARTIAL}",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut out = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        out.set_permissions(Permissions::from_mode(0o600))?;
+        out.write_all(text.as_bytes())?;
+        out.sync_all()?;
+        fs::rename(&temp, &summary)?;
+        File::open(dir)?.sync_all()
+    })();
+    if written.is_err() {
+        // Already renamed or never made are both fine.
+        let _ = fs::remove_file(&temp);
+    }
+    written.map_err(|source| FormError::Write { path: summary, source })
 }
 
 /// Makes `temp` and writes every file into it, each synced to disk.

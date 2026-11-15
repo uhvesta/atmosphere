@@ -130,3 +130,114 @@ pub enum PromptError {
         source: std::io::Error,
     },
 }
+
+/// Why starting or stopping a recording was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum RecorderError {
+    #[error(
+        "a recording is already running, and only one runs at a time; stop it with Stop \
+         Recording in the menu or `humata report stop`, which saves it, then start a new one. \
+         To capture this moment without stopping it, take a snapshot instead"
+    )]
+    AlreadyRecording {
+        /// When the running recording started, in milliseconds since the
+        /// Unix epoch.
+        started_unix_ms: u64,
+    },
+
+    #[error(
+        "no recording is running, so there is nothing to stop; start one with Start Recording \
+         in the menu or `humata report record`, or take a snapshot of this moment with \
+         `humata report snapshot`"
+    )]
+    NotRecording,
+}
+
+/// Why the form couldn't be saved into a report that was already written.
+/// The report's earlier `report.md` is kept when this happens.
+#[derive(Debug, thiserror::Error)]
+pub enum FormError {
+    #[error(
+        "couldn't read {}, which the form's summary is made from; check that the report's \
+         folder still exists and belongs to you. The form wasn't saved",
+        path.display()
+    )]
+    ReadEvents {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "{} can't be read back, so the form's summary can't be made from it; the form wasn't \
+         saved. Take a new report",
+        path.display()
+    )]
+    Events {
+        path: PathBuf,
+        #[source]
+        source: ReadError,
+    },
+
+    #[error(
+        "couldn't write the form into {}; check that the disk has free space and the folder \
+         is writable. The report's earlier report.md is unchanged",
+        path.display()
+    )]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Why a call made during a replay couldn't be answered from the
+/// recording.
+#[derive(Debug, thiserror::Error)]
+pub enum FakeDaemonError {
+    #[error(
+        "the replay called {method} on {machine} more often than the recording did (it called \
+         it {recorded} times). The app now makes a call it didn't make when the report was \
+         taken, or the recording was full and dropped the call; if the app's calls changed on \
+         purpose, take a new report"
+    )]
+    Unrecorded {
+        machine: String,
+        method: String,
+        recorded: usize,
+    },
+}
+
+/// Why a recording didn't replay to where it ended.
+#[derive(Debug, thiserror::Error)]
+pub enum ReplayError<E: std::error::Error + 'static> {
+    #[error(
+        "the replay's app doesn't start where the recording started: its {tree} differs \
+         (- recording, + replay):\n{diff}Set up the test's fixture (its state and fake \
+         services) from the report's start, as state.txt shows it. A recording that was full \
+         starts mid-way, after its oldest events were folded in"
+    )]
+    StartDiffers { tree: &'static str, diff: String },
+
+    #[error("couldn't read the replay's state, view or layout {when}")]
+    Trees {
+        when: &'static str,
+        #[source]
+        source: E,
+    },
+
+    #[error("step {step} of the replay ({what}) couldn't be played")]
+    Play {
+        step: usize,
+        what: String,
+        #[source]
+        source: E,
+    },
+
+    #[error(
+        "the replay ended with a different {tree} from the recording (- recording, + replay):\n\
+         {diff}If the report showed a bug and it is fixed, update the test to expect the fixed \
+         end; otherwise the app or the test's fixture changed since the report was taken"
+    )]
+    EndDiffers { tree: &'static str, diff: String },
+}

@@ -1,0 +1,59 @@
+2026-11-14-the-draft-kept-milk-after-a/
+
+--- daemon.log (600)
+(no daemon calls, errors or log lines in this report)
+
+--- events.jsonl (600)
+{"kind":"context","schema":1,"report":"snapshot","context":{"started_unix_ms":1794652200000,"app_version":"0.1.0 (1)","os":"macOS 26.7","window":{"width":800,"height":600},"daemons":[{"machine":"studio","version":"0.1.0"}],"machines":[{"name":"studio","kind":"local","state":"online"}],"sessions":[{"id":"s-1","title":"fix the list","channel":"web","machine":"studio","agent":"shell"}]}}
+{"kind":"start","at_ms":0,"dropped":0,"state":"State {\n    draft: \"milk\",\n    items: [],\n    token: \"\",\n}\n","view":"Window \"Toy\"\n  TextInput \"New item\" value=\"milk\"\n  Button \"Add\"\n  PasswordInput \"Token\" value=\"\"\n  List \"Items\"\n  Terminal \"shell\"\n","layout":"window 800x600, test fonts\nWindow \"Toy\" 0,0 800x600\n  TextInput \"New item\" 8,8 600x24\n  Button \"Add\" 616,8 64x24\n  PasswordInput \"Token\" 8,40 600x24\n  List \"Items\" 8,72 784x200\n  Terminal \"shell\" 8,280 784x312\n"}
+{"kind":"end","at_ms":0,"state":"State {\n    draft: \"milk\",\n    items: [],\n    token: \"\",\n}\n","view":"Window \"Toy\"\n  TextInput \"New item\" value=\"milk\"\n  Button \"Add\"\n  PasswordInput \"Token\" value=\"\"\n  List \"Items\"\n  Terminal \"shell\"\n","layout":"window 800x600, test fonts\nWindow \"Toy\" 0,0 800x600\n  TextInput \"New item\" 8,8 600x24\n  Button \"Add\" 616,8 64x24\n  PasswordInput \"Token\" 8,40 600x24\n  List \"Items\" 8,72 784x200\n  Terminal \"shell\" 8,280 784x312\n"}
+
+--- layout.txt (600)
+layout
+    window 800x600, test fonts
+    Window "Toy" 0,0 800x600
+      TextInput "New item" 8,8 600x24
+      Button "Add" 616,8 64x24
+      PasswordInput "Token" 8,40 600x24
+      List "Items" 8,72 784x200
+      Terminal "shell" 8,280 784x312
+
+--- report.md (600)
+# Humata bug report (snapshot): the draft kept milk after a restart
+
+## Summary
+
+- **Kind:** snapshot, started 2026-11-14 UTC
+- **What happened:** the draft kept milk after a restart
+- **What I expected:** an empty draft
+- **App:** 0.1.0 (1) on macOS 26.7, window 800x600
+- **Daemons:** studio 0.1.0
+- **Machines:** studio (local, online)
+- **Sessions:** fix the list `s-1` (web on studio, shell)
+- **Comments:** 0 pinned to elements
+
+## Files
+
+- `report.md`: the summary, the form and the steps; start here
+- `events.jsonl`: every event in order, one JSON object a line; it replays as a flow test
+- `state.txt`: the app's state at the start, each action's change, and at the end
+- `view.txt`: what the window showed at the start, each change, and at the end
+- `layout.txt`: where everything sat, in logical pixels, at the start, each change, and at the end
+- `daemon.log`: the daemon calls, errors and log lines in the same period
+
+--- state.txt (600)
+state
+    State {
+        draft: "milk",
+        items: [],
+        token: "",
+    }
+
+--- view.txt (600)
+view
+    Window "Toy"
+      TextInput "New item" value="milk"
+      Button "Add"
+      PasswordInput "Token" value=""
+      List "Items"
+      Terminal "shell"

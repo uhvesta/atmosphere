@@ -177,6 +177,20 @@ pub fn scrub(mut captured: Captured, mut form: Form, secrets: &Secrets) -> Resul
     Ok(Scrubbed { captured, form })
 }
 
+/// `form` with everything `secrets` seeds taken out, for a form filled in
+/// after its report was written. Text typed into masked fields during the
+/// recording is no longer known by then, so only seeded values are found.
+pub(crate) fn scrub_form_alone(mut form: Form, secrets: &Secrets) -> Form {
+    let rules = Rules {
+        matcher: Matcher {
+            needles: secrets.needles.clone(),
+        },
+        kept: &secrets.kept_terminals,
+    };
+    rules.scrub_form(&mut form);
+    form
+}
+
 struct Rules<'a> {
     matcher: Matcher,
     kept: &'a [String],

@@ -1,0 +1,154 @@
+2026-11-14-the-list-showed-milk-twice/
+
+--- daemon.log (600)
+0.100 s app type "milk" into TextInput "New item" in Window "Toy"
+0.200 s app click Button "Add" in Window "Toy"
+0.205 s studio rpc humata.v1.SessionService/List ok in 3 ms
+    request:
+        {}
+    response:
+        {"sessions":["s-1"]}
+0.206 s studio log token ‹GITHUB_TOKEN› refreshed
+
+--- events.jsonl (600)
+{"kind":"context","schema":1,"report":"recording","context":{"started_unix_ms":1794652200000,"app_version":"0.1.0 (1)","os":"macOS 26.7","window":{"width":800,"height":600},"daemons":[{"machine":"studio","version":"0.1.0"}],"machines":[{"name":"studio","kind":"local","state":"online"}],"sessions":[{"id":"s-1","title":"fix the list","channel":"web","machine":"studio","agent":"shell"}]}}
+{"kind":"start","at_ms":0,"dropped":0,"state":"State {\n    draft: \"\",\n    items: [],\n    token: \"\",\n}\n","view":"Window \"Toy\"\n  TextInput \"New item\" value=\"\"\n  Button \"Add\"\n  PasswordInput \"Token\" value=\"\"\n  List \"Items\"\n  Terminal \"shell\"\n","layout":"window 800x600, test fonts\nWindow \"Toy\" 0,0 800x600\n  TextInput \"New item\" 8,8 600x24\n  Button \"Add\" 616,8 64x24\n  PasswordInput \"Token\" 8,40 600x24\n  List \"Items\" 8,72 784x200\n  Terminal \"shell\" 8,280 784x312\n"}
+{"kind":"interaction","at_ms":100,"gesture":"type","text":"milk","target":{"role":"TextInput","label":"New item","in":[{"role":"Window","label":"Toy"}]}}
+{"kind":"action","at_ms":101,"action":"DraftChanged(\"milk\")","change":[{"at":1,"removed":["    draft: \"\","],"added":["    draft: \"milk\","]}]}
+{"kind":"view","at_ms":102,"change":[{"at":1,"removed":["  TextInput \"New item\" value=\"\""],"added":["  TextInput \"New item\" value=\"milk\""]}]}
+{"kind":"interaction","at_ms":200,"gesture":"click","target":{"role":"Button","label":"Add","in":[{"role":"Window","label":"Toy"}]}}
+{"kind":"action","at_ms":201,"action":"AddTapped","change":[{"at":1,"removed":["    draft: \"milk\",","    items: [],"],"added":["    draft: \"\",","    items: [","        \"milk\",","    ],"]}]}
+{"kind":"view","at_ms":202,"change":[{"at":1,"removed":["  TextInput \"New item\" value=\"milk\""],"added":["  TextInput \"New item\" value=\"\""]},{"at":5,"added":["    ListItem \"milk\""]}]}
+{"kind":"layout","at_ms":203,"change":[{"at":6,"added":["    ListItem \"milk\" 8,72 784x20"]}]}
+{"kind":"rpc","at_ms":205,"machine":"studio","method":"humata.v1.SessionService/List","status":"ok","duration_ms":3,"request":"{}","response":"{\"sessions\":[\"s-1\"]}"}
+{"kind":"log","at_ms":206,"machine":"studio","line":"token ‹GITHUB_TOKEN› refreshed"}
+{"kind":"end","at_ms":300,"state":"State {\n    draft: \"\",\n    items: [\n        \"milk\",\n    ],\n    token: \"\",\n}\n","view":"Window \"Toy\"\n  TextInput \"New item\" value=\"\"\n  Button \"Add\"\n  PasswordInput \"Token\" value=\"\"\n  List \"Items\"\n    ListItem \"milk\"\n  Terminal \"shell\"\n","layout":"window 800x600, test fonts\nWindow \"Toy\" 0,0 800x600\n  TextInput \"New item\" 8,8 600x24\n  Button \"Add\" 616,8 64x24\n  PasswordInput \"Token\" 8,40 600x24\n  List \"Items\" 8,72 784x200\n    ListItem \"milk\" 8,72 784x20\n  Terminal \"shell\" 8,280 784x312\n"}
+
+--- layout.txt (600)
+layout at start (0.000 s)
+    window 800x600, test fonts
+    Window "Toy" 0,0 800x600
+      TextInput "New item" 8,8 600x24
+      Button "Add" 616,8 64x24
+      PasswordInput "Token" 8,40 600x24
+      List "Items" 8,72 784x200
+      Terminal "shell" 8,280 784x312
+
+0.203 s after click Button "Add" in Window "Toy"
+    @@ line 7
+    +     ListItem "milk" 8,72 784x20
+
+layout at end (0.300 s)
+    window 800x600, test fonts
+    Window "Toy" 0,0 800x600
+      TextInput "New item" 8,8 600x24
+      Button "Add" 616,8 64x24
+      PasswordInput "Token" 8,40 600x24
+      List "Items" 8,72 784x200
+        ListItem "milk" 8,72 784x20
+      Terminal "shell" 8,280 784x312
+
+--- report.md (600)
+# Humata bug report (recording): the list showed milk twice
+
+## Summary
+
+- **Kind:** recording, started 2026-11-14 UTC, 0.300 s long
+- **What happened:** the list showed milk twice
+- **What I expected:** milk once
+- **App:** 0.1.0 (1) on macOS 26.7, window 800x600
+- **Daemons:** studio 0.1.0
+- **Machines:** studio (local, online)
+- **Sessions:** fix the list `s-1` (web on studio, shell)
+- **Events:** 2 interactions, 2 actions, 2 view changes, 1 layout changes, 1 daemon calls, 0 daemon errors, 1 log lines
+- **Comments:** 1 pinned to elements
+
+## Comments
+
+- `ListItem "milk" in List "Items" in Window "Toy"`: shown twice
+
+## Steps
+
+1. 0.100 s type "milk" into TextInput "New item" in Window "Toy"
+2. 0.200 s click Button "Add" in Window "Toy"
+
+## Replay as a flow
+
+```rust
+Flow::new(SpecFlow::new("report", "the list showed milk twice"))
+    .snapshot()
+    .type_text("milk")
+    .snapshot()
+    .click(Role::Button, "Add")
+    .snapshot()
+```
+
+## Files
+
+- `report.md`: the summary, the form and the steps; start here
+- `events.jsonl`: every event in order, one JSON object a line; it replays as a flow test
+- `state.txt`: the app's state at the start, each action's change, and at the end
+- `view.txt`: what the window showed at the start, each change, and at the end
+- `layout.txt`: where everything sat, in logical pixels, at the start, each change, and at the end
+- `daemon.log`: the daemon calls, errors and log lines in the same period
+
+--- state.txt (600)
+state at start (0.000 s)
+    State {
+        draft: "",
+        items: [],
+        token: "",
+    }
+
+0.101 s DraftChanged("milk")
+    @@ line 2
+    -     draft: "",
+    +     draft: "milk",
+
+0.201 s AddTapped
+    @@ line 2
+    -     draft: "milk",
+    -     items: [],
+    +     draft: "",
+    +     items: [
+    +         "milk",
+    +     ],
+
+state at end (0.300 s)
+    State {
+        draft: "",
+        items: [
+            "milk",
+        ],
+        token: "",
+    }
+
+--- view.txt (600)
+view at start (0.000 s)
+    Window "Toy"
+      TextInput "New item" value=""
+      Button "Add"
+      PasswordInput "Token" value=""
+      List "Items"
+      Terminal "shell"
+
+0.102 s after type "milk" into TextInput "New item" in Window "Toy"
+    @@ line 2
+    -   TextInput "New item" value=""
+    +   TextInput "New item" value="milk"
+
+0.202 s after click Button "Add" in Window "Toy"
+    @@ line 2
+    -   TextInput "New item" value="milk"
+    +   TextInput "New item" value=""
+    @@ line 6
+    +     ListItem "milk"
+
+view at end (0.300 s)
+    Window "Toy"
+      TextInput "New item" value=""
+      Button "Add"
+      PasswordInput "Token" value=""
+      List "Items"
+        ListItem "milk"
+      Terminal "shell"

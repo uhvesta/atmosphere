@@ -3,7 +3,8 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # Humata 2's bug reports (I9) without a GUI: recordings and snapshots of
 # interactions, reducer actions, view and layout trees and daemon calls,
 # scrubbed of seeded secrets and terminal text, saved as text files an agent
-# can read, and turned into flow scripts. The desktop app and the CLI add
+# can read, and turned into flow scripts that replay against fake daemon
+# services made from the recording. The desktop app and the CLI add
 # themselves to `visibility` when they start using it.
 rust_library(
     name = "report",
@@ -26,6 +27,12 @@ rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
         srcs = [src] + glob(["tests/support/*.rs"]),
         crate_root = src,
+        # tests/folder_snapshot.rs reads its recorded folders from the
+        # runfiles; `bazel run` with HUMATA2_SNAPSHOT=record writes them.
+        data = glob(
+            ["tests/__snapshots__/**"],
+            allow_empty = True,
+        ),
         deps = [
             ":report",
             "@crates//:tempfile",

@@ -177,6 +177,11 @@ impl Recording {
         }
     }
 
+    /// Where it is being taken.
+    pub fn context(&self) -> &Context {
+        &self.context
+    }
+
     /// The context, to add machines and sessions as they become involved.
     pub fn context_mut(&mut self) -> &mut Context {
         &mut self.context
@@ -226,19 +231,21 @@ impl Recording {
         }
     }
 
-    /// Records a daemon call.
+    /// Records a daemon call, placed at its `at_ms` among the events
+    /// already recorded: a call is often told after the interactions that
+    /// happened while it ran.
     pub fn rpc(&mut self, rpc: Rpc) {
-        self.push(Event::Rpc(rpc));
+        self.push_at_time(Event::Rpc(rpc));
     }
 
-    /// Records an error a daemon reported.
+    /// Records an error a daemon reported, placed at its `at_ms`.
     pub fn daemon_error(&mut self, error: DaemonError) {
-        self.push(Event::DaemonError(error));
+        self.push_at_time(Event::DaemonError(error));
     }
 
-    /// Records a line of a daemon's log.
+    /// Records a line of a daemon's log, placed at its `at_ms`.
     pub fn log(&mut self, line: LogLine) {
-        self.push(Event::Log(line));
+        self.push_at_time(Event::Log(line));
     }
 
     /// Stops at `at_ms`, with the trees as the last events left them.
@@ -259,9 +266,32 @@ impl Recording {
         }
     }
 
+    /// Adds an interaction, action or tree change at the end: these come
+    /// from the app's own thread in the order they happened, and each tree
+    /// change is made against the one before it.
     fn push(&mut self, event: Event) {
         self.bytes += event.weight();
         self.events.push_back(event);
+        self.fit();
+    }
+
+    /// Adds a daemon call, error or log line after every event that
+    /// happened at or before it. These change no tree, so moving them
+    /// keeps every change applying.
+    fn push_at_time(&mut self, event: Event) {
+        self.bytes += event.weight();
+        let at_ms = event.at_ms();
+        let mut index = self.events.len();
+        while index > 0 && self.events[index - 1].at_ms() > at_ms {
+            index -= 1;
+        }
+        self.events.insert(index, event);
+        self.fit();
+    }
+
+    /// Folds the oldest events into the start until the rest fit the
+    /// limits.
+    fn fit(&mut self) {
         while self.events.len() > self.limits.max_events || self.bytes > self.limits.max_bytes {
             let Some(oldest) = self.events.pop_front() else {
                 break;
@@ -273,7 +303,8 @@ impl Recording {
 
     /// Moves `event` into the start trees.
     fn fold(&mut self, event: Event) {
-        self.start_ms = event.at_ms();
+        // A late daemon event can be older than what was folded before it.
+        self.start_ms = self.start_ms.max(event.at_ms());
         self.dropped += 1;
         let (lines, hunks): (&mut Vec<String>, &[Hunk]) = match &event {
             Event::Action(step) => (&mut self.base.state, &step.change),

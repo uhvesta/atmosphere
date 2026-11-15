@@ -17,32 +17,49 @@
 //! 4. [`write`] saves it as `reports/<date>-<slug>/` with `report.md`,
 //!    `events.jsonl`, `state.txt`, `view.txt`, `layout.txt` and
 //!    `daemon.log`, all readable only by this user.
+//!    A form filled in after the report was saved goes in with
+//!    [`fill_form`], so a report can be saved the moment it stops.
 //! 5. [`copy_prompt`] gives the text "Copy report" puts on the clipboard.
 //!
-//! [`read_events`] reads a saved `events.jsonl` back, and
-//! [`Captured::flow_script`] turns a recording into a flow test (I4).
+//! A [`Recorder`] holds the one recording running at a time, so the menu,
+//! the shortcut and `humata report record|stop` agree on it.
+//!
+//! [`read_events`] reads a saved `events.jsonl` back,
+//! [`Captured::flow_script`] turns a recording into a flow test (I4), and
+//! [`FlowScript::replay`] plays it on a [`Player`] wired to the
+//! [`FakeDaemon`] the recording gives, checking that it ends where the
+//! recording ended.
 
 mod change;
 mod error;
 mod event;
+mod fake;
 mod form;
 mod jsonl;
 mod prompt;
+mod recorder;
 mod recording;
 mod replay;
 mod scrub;
 mod write;
 
 pub use change::Hunk;
-pub use error::{PromptError, ReadError, ScrubError, WriteError};
+pub use error::{
+    FakeDaemonError, FormError, PromptError, ReadError, RecorderError, ReplayError, ScrubError,
+    WriteError,
+};
 pub use event::{
     ActionStep, Button, Context, Daemon, DaemonError, Element, Event, Gesture, Holds, Interaction,
     Kind, LogLine, Machine, Node, Pasted, Rpc, Session, TreeChange, Trees, WindowSize,
 };
+pub use fake::FakeDaemon;
 pub use form::{Comment, Form};
 pub use jsonl::read_events;
 pub use prompt::copy_prompt;
+pub use recorder::Recorder;
 pub use recording::{Captured, Limits, Recording, snapshot};
-pub use replay::{FlowAction, FlowScript, FlowStep, FlowTarget, SkipReason, Skipped};
+pub use replay::{
+    Compare, FlowAction, FlowScript, FlowStep, FlowTarget, Player, SkipReason, Skipped,
+};
 pub use scrub::{Scrubbed, Secrets, scrub};
-pub use write::write;
+pub use write::{fill_form, write};
