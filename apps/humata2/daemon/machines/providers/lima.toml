@@ -1,0 +1,34 @@
+# Humata's Lima provider (MP-22): a local Linux VM on this Mac, made and run
+# by limactl. Each machine is the Lima instance `humata2-<name>`, so these
+# commands never start, stop or delete a VM that Humata didn't make.
+
+[providers.lima]
+label = "Local VM (Lima)"
+params = [
+  { name = "cpus", prompt = "CPUs", default = "2" },
+  { name = "memory", prompt = "Memory (GiB)", default = "4" },
+  { name = "disk", prompt = "Disk (GiB)", default = "20" },
+  { name = "template", prompt = "Lima template", default = "ubuntu-lts" },
+]
+
+create = """
+for v in "$HUMATA_CPUS" "$HUMATA_MEMORY" "$HUMATA_DISK"; do
+  case "$v" in
+    ''|*[!0-9]*) echo "CPUs, memory and disk must be whole numbers; got '$v'. Change it in Add machine." >&2; exit 64;;
+  esac
+done
+case "$HUMATA_TEMPLATE" in
+  ''|*[!a-z0-9.-]*) echo "The Lima template must be a name such as ubuntu-lts; got '$HUMATA_TEMPLATE'. Change it in Add machine." >&2; exit 64;;
+esac
+limactl create --name=humata2-{name} --cpus="$HUMATA_CPUS" \
+  --memory="$HUMATA_MEMORY" --disk="$HUMATA_DISK" --mount-none \
+  "template:$HUMATA_TEMPLATE" && limactl start humata2-{name}
+"""
+
+# limactl passes its arguments on as words, so `{cmd}` goes to `sh -c`.
+connect = "exec limactl shell --workdir / humata2-{name} sh -c {cmd}"
+
+start = "limactl start humata2-{name}"
+stop = "limactl stop humata2-{name}"
+delete = "limactl delete --force humata2-{name}"
+status = "limactl list --format '{{.Status}}' humata2-{name}"

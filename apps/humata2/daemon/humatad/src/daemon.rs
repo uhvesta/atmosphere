@@ -3,6 +3,8 @@
 use humata2_grpc::humata::v1 as pb;
 use tonic::{Request, Response, Status};
 
+use crate::identity::{self, Caller};
+
 /// This API's version. `api_minor` grows with every addition once Humata 2
 /// ships; until then the protos change in place.
 const API_MAJOR: u32 = 1;
@@ -41,26 +43,34 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         }))
     }
 
-    /// Every connection is taken as the user on the CLI until the principal
-    /// checks of BOUNDARIES.md §2 are wired in. Only this user can open the
-    /// socket, but so can an agent running as them: until then, user-only
-    /// calls (typing into a tab, PasteImage) aren't refused to agents.
+    /// A connection with a session token is that session's agent; one
+    /// without is the user (BOUNDARIES.md §2).
     async fn who_am_i(
         &self,
-        _request: Request<pb::WhoAmIRequest>,
+        request: Request<pb::WhoAmIRequest>,
     ) -> Result<Response<pb::WhoAmIResponse>, Status> {
-        let via = match self.role {
-            pb::DaemonRole::Machine => pb::user_actor::Via::CliOnMachine,
-            _ => pb::user_actor::Via::CliOnHost,
-        };
-        Ok(Response::new(pb::WhoAmIResponse {
-            actor: Some(pb::Actor {
-                actor: Some(pb::actor::Actor::User(pb::UserActor {
+        let (actor, channel) = match identity::caller(&request)? {
+            Caller::User => {
+                let via = match self.role {
+                    pb::DaemonRole::Machine => pb::user_actor::Via::CliOnMachine,
+                    _ => pb::user_actor::Via::CliOnHost,
+                };
+                let user = pb::actor::Actor::User(pb::UserActor {
                     via: via as i32,
                     machine: Some(self.machine()),
-                })),
-            }),
-            channel: None,
+                });
+                (user, None)
+            }
+            Caller::Agent(agent) => {
+                let channel = pb::ChannelId {
+                    value: agent.session.channel.to_string(),
+                };
+                (pb::actor::Actor::Agent(agent.actor()), Some(channel))
+            }
+        };
+        Ok(Response::new(pb::WhoAmIResponse {
+            actor: Some(pb::Actor { actor: Some(actor) }),
+            channel,
             presence_possible: false,
             contained: false,
         }))

@@ -1,0 +1,399 @@
+//! `humatad2 mcp` against the real daemon: a session tab's token makes its
+//! agent, the daemon checks what that agent may do, and an Inbox question
+//! the agent gives up on is withdrawn.
+
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use common::{Attach, Daemon, WAIT, error_of, folder, open, state_folder};
+use humata2_grpc::humata::v1 as pb;
+use humata2_store::{SessionRecord, Store};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tonic::metadata::MetadataValue;
+use tonic::{Code, Request};
+
+const SESSION: &str = "se_mcp";
+const TOKEN_HEADER: &str = "humata-session-token";
+/// 32 hex characters, as a token is, that the daemon never gave out.
+const FORGED: &str = "0123456789abcdef0123456789abcdef";
+
+fn binary(variable: &str) -> PathBuf {
+    let path = std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("set {variable} to the binary's path"));
+    std::fs::canonicalize(path).unwrap()
+}
+
+/// A daemon that knows `SESSION`, with one shell tab open in it, and the
+/// token that tab's shell was given.
+struct Fixture {
+    daemon: Daemon,
+    tab: pb::TabId,
+    token: String,
+    _attach: Attach,
+}
+
+impl Fixture {
+    async fn start() -> Self {
+        let dir = folder();
+        let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+        store
+            .put_session(&SessionRecord {
+                id: SESSION.to_owned(),
+                channel: "ch_test".to_owned(),
+                machine: String::new(),
+                title: "mcp".to_owned(),
+                agent: "zsh".to_owned(),
+                folder: dir.path().to_owned(),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        drop(store);
+        let daemon = Daemon::start_in(dir).await;
+
+        let tab = daemon
+            .terminals()
+            .await
+            .open_shell_tab(pb::OpenShellTabRequest {
+                idempotency_key: None,
+                session: Some(session()),
+                repo: None,
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .id
+            .unwrap();
+
+        let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
+        let file = daemon.dir.path().join("token");
+        attach
+            .type_text(&format!(
+                "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r",
+                file.display()
+            ))
+            .await;
+        let token = read_when_written(&file).await;
+        assert_eq!(token.len(), 32, "the tab's shell has a session token");
+
+        Self {
+            daemon,
+            tab,
+            token,
+            _attach: attach,
+        }
+    }
+
+    async fn mcp(&self, token: &str) -> Mcp {
+        Mcp::start(&self.daemon.socket, token).await
+    }
+}
+
+fn session() -> pb::SessionId {
+    pb::SessionId {
+        value: SESSION.to_owned(),
+    }
+}
+
+/// `path`'s contents once something non-empty is written there.
+async fn read_when_written(path: &Path) -> String {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(text) if !text.is_empty() => return text,
+            _ => {}
+        }
+        assert!(Instant::now() < deadline, "{} was never written", path.display());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// `message` sent as the agent holding `token`.
+fn as_agent<T>(message: T, token: &str) -> Request<T> {
+    let mut request = Request::new(message);
+    request
+        .metadata_mut()
+        .insert(TOKEN_HEADER, MetadataValue::try_from(token).unwrap());
+    request
+}
+
+/// One `humatad2 mcp` process, spoken to as an agent's client would.
+struct Mcp {
+    _child: Child,
+    stdin: ChildStdin,
+    stdout: Lines<BufReader<ChildStdout>>,
+    /// Notifications read while waiting for a response.
+    notifications: Vec<Value>,
+}
+
+impl Mcp {
+    async fn start(socket: &Path, token: &str) -> Self {
+        let mut child = Command::new(binary("HUMATAD2"))
+            .arg("mcp")
+            .arg("--socket")
+            .arg(socket)
+            .env("HUMATA_SESSION_TOKEN", token)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut mcp = Self {
+            _child: child,
+            stdin,
+            stdout,
+            notifications: Vec::new(),
+        };
+        mcp.request(
+            0,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0" },
+            }),
+        )
+        .await;
+        mcp.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await;
+        mcp
+    }
+
+    async fn send(&mut self, message: Value) {
+        let mut line = message.to_string();
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes()).await.unwrap();
+        self.stdin.flush().await.unwrap();
+    }
+
+    async fn next(&mut self) -> Value {
+        let line = tokio::time::timeout(WAIT, self.stdout.next_line())
+            .await
+            .expect("humatad2 mcp went quiet")
+            .unwrap()
+            .expect("humatad2 mcp closed its output");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    /// Sends a request and returns its response's result.
+    async fn request(&mut self, id: u64, method: &str, params: Value) -> Value {
+        self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .await;
+        self.response(id).await
+    }
+
+    async fn response(&mut self, id: u64) -> Value {
+        loop {
+            let message = self.next().await;
+            if message.get("method").is_some() {
+                self.notifications.push(message);
+            } else if message["id"] == json!(id) {
+                assert!(message.get("error").is_none(), "{message}");
+                return message["result"].clone();
+            }
+        }
+    }
+
+    async fn call(&mut self, id: u64, tool: &str, arguments: Value) -> Value {
+        self.request(id, "tools/call", json!({ "name": tool, "arguments": arguments }))
+            .await
+    }
+
+    /// Reads until a notification `method` comes.
+    async fn wait_for_notification(&mut self, method: &str) -> Value {
+        loop {
+            if let Some(index) = self
+                .notifications
+                .iter()
+                .position(|message| message["method"] == method)
+            {
+                return self.notifications.remove(index);
+            }
+            let message = self.next().await;
+            self.notifications.push(message);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_types_into_its_own_session_through_mcp() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let typed = fixture.daemon.dir.path().join("typed");
+
+    let tools = mcp.request(1, "tools/list", json!({})).await;
+    let result = mcp
+        .call(
+            2,
+            "session_type",
+            json!({ "session": SESSION, "text": format!("printf ok > {}\r", typed.display()) }),
+        )
+        .await;
+
+    let names: Vec<&str> = tools["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(names.contains(&"session_type"));
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["outcome"], "applied");
+    assert_eq!(read_when_written(&typed).await, "ok");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn whoami_names_the_session_the_token_belongs_to() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    let result = mcp.call(1, "whoami", json!({})).await;
+
+    assert_eq!(result["isError"], false, "{result}");
+    let me = &result["structuredContent"]["result"];
+    assert_eq!(me["session"], SESSION);
+    assert_eq!(me["channel"], "ch_test");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_the_daemon_never_gave_out_is_refused() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(FORGED).await;
+
+    let result = mcp.call(1, "whoami", json!({})).await;
+    let refused = pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await)
+        .who_am_i(as_agent(pb::WhoAmIRequest {}, FORGED))
+        .await
+        .unwrap_err();
+
+    assert_eq!(result["isError"], true);
+    assert_eq!(
+        result["structuredContent"]["error"]["kind"],
+        "identity_mismatch"
+    );
+    assert_eq!(refused.code(), Code::Unauthenticated);
+    assert!(matches!(
+        error_of(&refused).kind,
+        Some(pb::error::Kind::IdentityMismatch(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn opening_a_shell_or_pasting_is_the_users_alone() {
+    let fixture = Fixture::start().await;
+    let open_shell = || pb::OpenShellTabRequest {
+        idempotency_key: None,
+        session: Some(session()),
+        repo: None,
+    };
+    let paste = || pb::PasteImageRequest {
+        idempotency_key: None,
+        session: Some(session()),
+        data: b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec(),
+        format: pb::ImageFormat::Png as i32,
+    };
+    let mut terminals = fixture.daemon.terminals().await;
+
+    let agent_shell = terminals
+        .open_shell_tab(as_agent(open_shell(), &fixture.token))
+        .await
+        .unwrap_err();
+    let agent_paste = terminals
+        .paste_image(as_agent(paste(), &fixture.token))
+        .await
+        .unwrap_err();
+    let user_shell = terminals.open_shell_tab(open_shell()).await;
+    let user_paste = terminals.paste_image(paste()).await;
+
+    for refused in [&agent_shell, &agent_paste] {
+        assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
+        assert!(matches!(
+            error_of(refused).kind,
+            Some(pb::error::Kind::UserOnly(_))
+        ));
+    }
+    assert!(user_shell.is_ok(), "{user_shell:?}");
+    assert!(user_paste.is_ok(), "{user_paste:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_tabs_token_stops_working() {
+    let fixture = Fixture::start().await;
+    let mut terminals = fixture.daemon.terminals().await;
+
+    terminals
+        .close_tab(pb::CloseTabRequest {
+            idempotency_key: None,
+            session: Some(session()),
+            tab: Some(fixture.tab.clone()),
+        })
+        .await
+        .unwrap();
+    let refused = pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await)
+        .who_am_i(as_agent(pb::WhoAmIRequest {}, &fixture.token))
+        .await
+        .unwrap_err();
+
+    assert_eq!(refused.code(), Code::Unauthenticated);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_the_agent_stops_waiting_on_is_withdrawn() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "inbox_ask",
+            "arguments": { "question": "Ship it?", "choices": ["yes", "no"] },
+            "_meta": { "progressToken": "waiting" },
+        },
+    }))
+    .await;
+    let progress = mcp.wait_for_notification("notifications/progress").await;
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+    let asked = inbox
+        .list_requests(pb::ListRequestsRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": { "requestId": 1 },
+    }))
+    .await;
+
+    assert_eq!(progress["params"]["progressToken"], "waiting");
+    assert_eq!(asked.pending_count, 1);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let requests = inbox
+            .list_requests(pb::ListRequestsRequest {
+                include_answered: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .requests;
+        if requests
+            .iter()
+            .any(|request| request.state() == pb::RequestState::Withdrawn)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the question was never withdrawn");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

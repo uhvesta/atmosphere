@@ -1,11 +1,14 @@
 //! Failures as gRPC statuses: a code for generic handling and one
 //! `humata.v1.Error` in the details, which clients branch on (GRPC.md §10).
 
+use humata2_access::{Capability, Fix, PresenceMethod, Refusal, SessionId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::StoreError;
 use prost::Message;
 use tonic::codegen::Bytes;
 use tonic::{Code, Status};
+
+use crate::guard;
 
 /// `google.rpc.Status`, the wrapper the details travel in.
 #[derive(Clone, PartialEq, prost::Message)]
@@ -176,4 +179,215 @@ pub(crate) fn chain(error: &dyn std::error::Error) -> String {
         source = cause.source();
     }
     text
+}
+
+/// A session token this daemon didn't give out, or one whose tab has
+/// closed (MCP.md §1).
+pub(crate) fn identity_mismatch() -> Status {
+    failure(
+        Code::Unauthenticated,
+        error(
+            "the session token isn't one this daemon gave out, or its tab has closed",
+            "start the agent from a Humata session tab, which sets HUMATA_SESSION_TOKEN; don't copy a token from another tab, since the daemon refuses it",
+            pb::error::Kind::IdentityMismatch(pb::IdentityMismatch {
+                claimed: None,
+                claimed_machine: None,
+            }),
+        ),
+    )
+}
+
+/// A call the policy refused, with the proto kind and fix it names.
+pub(crate) fn refused(refusal: &Refusal) -> Status {
+    use pb::denied::Source as Denied;
+    let denied = |source: Denied, capability: Option<Capability>| {
+        pb::error::Kind::Denied(pb::Denied {
+            source: source as i32,
+            capability: capability.map_or(0, |capability| guard::capability(capability) as i32),
+            request: None,
+            user_note: String::new(),
+        })
+    };
+    let session = |id: &SessionId| {
+        Some(pb::SessionId {
+            value: id.to_string(),
+        })
+    };
+    let (code, kind, retry) = match refusal {
+        Refusal::UserOnly { capability } => (
+            Code::PermissionDenied,
+            pb::error::Kind::UserOnly(pb::UserOnly {
+                capability: capability.map_or(0, |capability| guard::capability(capability) as i32),
+            }),
+            false,
+        ),
+        Refusal::NeverRule { capability, .. } => (
+            Code::PermissionDenied,
+            denied(Denied::NeverRule, Some(*capability)),
+            false,
+        ),
+        Refusal::ParentReadOnly { fork, parent } => (
+            Code::PermissionDenied,
+            pb::error::Kind::ParentReadOnly(pb::ParentReadOnly {
+                fork: session(fork),
+                parent: session(parent),
+            }),
+            false,
+        ),
+        Refusal::MainCloneReadOnly { repo, machine } => {
+            let (owner, name) = repo.as_str().split_once('/').unwrap_or(("", repo.as_str()));
+            (
+                Code::PermissionDenied,
+                pb::error::Kind::MainCloneReadOnly(pb::MainCloneReadOnly {
+                    repo: Some(pb::RepoRef {
+                        owner: owner.to_owned(),
+                        name: name.to_owned(),
+                    }),
+                    machine: Some(pb::MachineId {
+                        value: machine.to_string(),
+                    }),
+                }),
+                false,
+            )
+        }
+        Refusal::OutsideHumataFolders { .. } => (
+            Code::PermissionDenied,
+            pb::error::Kind::OutsideHumataFolders(pb::OutsideHumataFolders {
+                path: String::new(),
+            }),
+            false,
+        ),
+        Refusal::NotItsFolder { .. } | Refusal::ReviewSessionPush { .. } => (
+            Code::PermissionDenied,
+            denied(Denied::HardLimit, None),
+            false,
+        ),
+        Refusal::OtherChannel { .. }
+        | Refusal::ScriptTokenHasNoSession
+        | Refusal::ScriptTokenOtherChannel { .. }
+        | Refusal::PeerCannotCall => (
+            Code::PermissionDenied,
+            denied(Denied::Unspecified, None),
+            false,
+        ),
+        Refusal::ScriptTokenLacks { capability }
+        | Refusal::ScriptTokenCannotAsk { capability }
+        | Refusal::PeerOnly { capability } => (
+            Code::PermissionDenied,
+            denied(Denied::Unspecified, Some(*capability)),
+            false,
+        ),
+        Refusal::PresenceRequired { accepted } => (
+            Code::PermissionDenied,
+            pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: accepted
+                    .iter()
+                    .map(|method| presence_method(*method) as i32)
+                    .collect(),
+                caller_in_session_terminal: false,
+            }),
+            false,
+        ),
+        Refusal::UserAway { channel } => (
+            Code::Unavailable,
+            pb::error::Kind::UserAway(pb::UserAway {
+                channel: Some(pb::ChannelId {
+                    value: channel.to_string(),
+                }),
+            }),
+            true,
+        ),
+        Refusal::HostUnreachable => (
+            Code::Unavailable,
+            pb::error::Kind::HostUnreachable(pb::HostUnreachable { since: None }),
+            true,
+        ),
+        Refusal::NothingToAskAhead { .. } => (
+            Code::InvalidArgument,
+            pb::error::Kind::InvalidField(pb::InvalidField {
+                field: "capability".to_owned(),
+                problem: pb::invalid_field::Problem::NotAllowedHere as i32,
+            }),
+            false,
+        ),
+    };
+    failure(
+        code,
+        pb::Error {
+            message: refusal.to_string(),
+            fix: fix_text(&refusal.fix()),
+            retry: retry.then_some(pb::RetryAdvice {
+                after: None,
+                same_key: true,
+            }),
+            kind: Some(kind),
+        },
+    )
+}
+
+/// A call the channel's rules send to the Inbox, which this daemon can't
+/// make for it yet.
+pub(crate) fn needs_approval(capability: Capability) -> Status {
+    let message = format!(
+        "\"{capability}\" needs the user's approval here, and asking for it on this call isn't built into this humatad2 yet"
+    );
+    failure(
+        Code::Unimplemented,
+        pb::Error {
+            message,
+            fix: "ask the user with inbox_ask to do it themselves in the app; don't retry the call, since it is asked again each time".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// The `humata.v1.Error` a status carries, if it has one.
+pub(crate) fn error_of(status: &Status) -> Option<pb::Error> {
+    let details = RpcStatus::decode(status.details()).ok()?;
+    details
+        .details
+        .into_iter()
+        .find(|any| any.type_url == ERROR_TYPE_URL)
+        .and_then(|any| pb::Error::decode(any.value.as_slice()).ok())
+}
+
+fn presence_method(method: PresenceMethod) -> pb::presence_required::Method {
+    match method {
+        PresenceMethod::ConfirmInApp => pb::presence_required::Method::ConfirmInApp,
+        PresenceMethod::CliLogin => pb::presence_required::Method::CliLogin,
+        PresenceMethod::ApprovalPassphrase => pb::presence_required::Method::ApprovalPassphrase,
+    }
+}
+
+fn fix_text(fix: &Fix) -> String {
+    match fix {
+        Fix::AskTheUser => "ask the user with inbox_ask; they can do it themselves in the app".to_owned(),
+        Fix::UserChangesRule { channel, capability } => format!(
+            "only the user can change channel {channel}'s rule for \"{capability}\", in Agent access; asking again is refused the same way"
+        ),
+        Fix::UseOwnFolders => {
+            "work in the session's own clone or the channel's shared/ folder".to_owned()
+        }
+        Fix::UserAllowsReviewPush { session } => format!(
+            "the user can turn on \"Let the agent push to the PR branch\" in session {session}'s Info panel"
+        ),
+        Fix::ShowPresence { accepted } if accepted.is_empty() => {
+            "run it from the app or a terminal outside Humata".to_owned()
+        }
+        Fix::ShowPresence { .. } => {
+            "show the user is there in one of the ways the message names, then try again".to_owned()
+        }
+        Fix::WaitForUser => "try again when the user is back".to_owned(),
+        Fix::WaitForHost => "try again with the same key when the Mac can be reached".to_owned(),
+        Fix::TokenWithCapability { capability } => format!(
+            "make a new token that lists \"{capability}\" with `humata token create`; a token can't be widened"
+        ),
+        Fix::TokenForChannel { channel } => {
+            format!("make a token for channel {channel} with `humata token create`")
+        }
+        Fix::NotFromAScript => "do it from the app or an agent session instead".to_owned(),
+        Fix::MakeTheCall => "make the call itself; the user is asked then".to_owned(),
+        Fix::Nothing => "nothing the caller can change makes this work".to_owned(),
+    }
 }

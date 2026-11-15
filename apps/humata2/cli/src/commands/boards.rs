@@ -1,0 +1,415 @@
+//! Boards, prepared views, diffs, comments and pull request reviews
+//! (CLI.md §5.3).
+
+use humata2_proto::humata::v1 as pb;
+
+use super::{pages, parse, reply, values};
+use crate::args::{
+    BoardCommand, BoardWhich, Column, CommentCommand, DiffCommand, ReviewCommand, ViewAction,
+};
+use crate::call::{Ctx, Done, Outcome};
+use crate::console::Console;
+use crate::daemon::{Daemon, rpc};
+use crate::error::CliError;
+use crate::resolve;
+
+fn item(value: String) -> Option<pb::BoardItemId> {
+    Some(pb::BoardItemId { value })
+}
+
+/// `--global`, `--session`, or the channel's board.
+async fn board_ref<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    which: &BoardWhich,
+) -> Result<pb::BoardRef, CliError> {
+    use pb::board_ref::Board;
+    let board = if which.global {
+        Board::Global(pb::GlobalBoard {})
+    } else if let Some(session) = &which.session {
+        Board::Session(ctx.session(session).await?)
+    } else {
+        Board::Channel(ctx.this_channel().await?)
+    };
+    Ok(pb::BoardRef { board: Some(board) })
+}
+
+pub(super) async fn board<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    which: BoardWhich,
+    columns: Vec<Column>,
+    command: Option<BoardCommand>,
+) -> Result<Done, CliError> {
+    match command {
+        None => {
+            let view = pb::BoardView {
+                view: Some(pb::board_view::View::Board(board_ref(ctx, &which).await?)),
+            };
+            let columns: Vec<i32> = columns
+                .into_iter()
+                .map(|column| values::column(column) as i32)
+                .collect();
+            pages(ctx, rpc::board::LIST_ITEMS, "items", |page| pb::ListItemsRequest {
+                view: Some(view.clone()),
+                columns: columns.clone(),
+                page,
+            })
+            .await
+            .map(Done::reply)
+        }
+        Some(BoardCommand::Add {
+            title,
+            column,
+            description,
+            assign,
+        }) => {
+            let assigned_session = match assign {
+                Some(session) => Some(ctx.session(&session).await?),
+                None => None,
+            };
+            let request = pb::CreateItemRequest {
+                idempotency_key: ctx.key(),
+                board: Some(board_ref(ctx, &which).await?),
+                title,
+                column: column.map_or(pb::BoardColumn::Unspecified, values::column) as i32,
+                description: description.unwrap_or_default(),
+                assigned_session,
+                reason: String::new(),
+            };
+            reply(ctx, rpc::board::CREATE_ITEM, &request).await
+        }
+        Some(BoardCommand::Edit {
+            item: id,
+            title,
+            description,
+            assign,
+            unassign,
+        }) => {
+            let assigned_session = match assign {
+                Some(session) => Some(ctx.session(&session).await?),
+                None => None,
+            };
+            let request = pb::UpdateItemRequest {
+                idempotency_key: ctx.key(),
+                id: item(id),
+                patch: Some(pb::ItemPatch {
+                    title,
+                    description,
+                    assigned_session,
+                    clear_assignment: unassign,
+                }),
+                expected_revision: None,
+                reason: String::new(),
+            };
+            reply(ctx, rpc::board::UPDATE_ITEM, &request).await
+        }
+        Some(BoardCommand::Move {
+            item: id,
+            column,
+            after,
+        }) => {
+            let request = pb::MoveItemRequest {
+                idempotency_key: ctx.key(),
+                id: item(id),
+                column: values::column(column) as i32,
+                after: after.and_then(item),
+                expected_revision: None,
+                reason: String::new(),
+            };
+            reply(ctx, rpc::board::MOVE_ITEM, &request).await
+        }
+        Some(BoardCommand::Rm { item: id }) => {
+            let request = pb::DeleteItemRequest {
+                idempotency_key: ctx.key(),
+                id: item(id),
+                expected_revision: None,
+                reason: String::new(),
+            };
+            reply(ctx, rpc::board::DELETE_ITEM, &request).await
+        }
+        Some(BoardCommand::History { item: id }) => {
+            let id = item(id);
+            pages(ctx, rpc::board::GET_ITEM_HISTORY, "entries", |page| {
+                pb::GetItemHistoryRequest {
+                    id: id.clone(),
+                    page,
+                }
+            })
+            .await
+            .map(Done::reply)
+        }
+    }
+}
+
+pub(super) async fn views<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    session: Option<String>,
+) -> Result<Done, CliError> {
+    let session = match session {
+        Some(session) => Some(ctx.session(&session).await?),
+        None => None,
+    };
+    pages(ctx, rpc::view::LIST_VIEWS, "views", |page| pb::ListViewsRequest {
+        session: session.clone(),
+        include_forks: false,
+        page,
+    })
+    .await
+    .map(Done::reply)
+}
+
+pub(super) async fn view<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    action: ViewAction,
+    view: String,
+) -> Result<Done, CliError> {
+    let request = pb::SetViewStateRequest {
+        idempotency_key: ctx.key(),
+        id: Some(pb::ViewId { value: view }),
+        state: values::view_state(action) as i32,
+    };
+    reply(ctx, rpc::view::SET_VIEW_STATE, &request).await
+}
+
+/// `--against`: what the session's changes are compared with.
+async fn diff_base<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    against: &str,
+) -> Result<pb::DiffBase, CliError> {
+    use pb::diff_base::Base;
+    let base = match against {
+        "main" => Base::OriginMain(pb::OriginMain {}),
+        "uncommitted" => Base::UncommittedOnly(pb::UncommittedOnly {}),
+        "last-reviewed" => Base::SinceLastReviewed(pb::SinceLastReviewed {}),
+        "fork" => Base::SinceFork(pb::SinceFork {}),
+        "pr" => Base::PullRequestBase(pb::PullRequestBase {}),
+        // CLI.md names these, but DiffBase can't say them yet.
+        "last-turn" | "turn" => {
+            return Err(CliError::BadValue {
+                field: "--against",
+                value: against.into(),
+                expected: "main, uncommitted, last-reviewed, fork, pr or a session: this \
+                           daemon can't compare against a turn yet",
+            });
+        }
+        session => Base::OtherSession(ctx.session(session).await?),
+    };
+    Ok(pb::DiffBase { base: Some(base) })
+}
+
+pub(super) async fn diff<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    session: Option<String>,
+    repos: Vec<String>,
+    against: String,
+    command: Option<DiffCommand>,
+) -> Result<Done, CliError> {
+    match command {
+        Some(DiffCommand::MarkReviewed { session, paths }) => {
+            if let Some(path) = paths.first() {
+                return Err(CliError::BadValue {
+                    field: "path",
+                    value: path.clone(),
+                    expected: "no paths: this daemon marks the whole diff reviewed; run it \
+                               without paths",
+                });
+            }
+            let session = Some(ctx.session(&session).await?);
+            let key = ctx.key();
+            ctx.present_json(rpc::diff::MARK_REVIEWED, |presence| pb::MarkReviewedRequest {
+                idempotency_key: key.clone(),
+                session: session.clone(),
+                presence,
+            })
+            .await
+            .map(Done::reply)
+        }
+        None => {
+            let Some(session) = session else {
+                return Err(CliError::Missing { flag: "<SESSION>" });
+            };
+            let repos: Vec<pb::RepoRef> = repos
+                .iter()
+                .map(|repo| resolve::repo(repo))
+                .collect::<Result<_, CliError>>()?;
+            let request = pb::GetDiffRequest {
+                session: Some(ctx.session(&session).await?),
+                base: Some(diff_base(ctx, &against).await?),
+                repos,
+            };
+            reply(ctx, rpc::diff::GET_DIFF, &request).await
+        }
+    }
+}
+
+pub(super) async fn comment<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    command: CommentCommand,
+) -> Result<Done, CliError> {
+    match command {
+        CommentCommand::Add { session, at, text } => {
+            let anchor = parse::anchor(&at)?;
+            let request = pb::CreateCommentRequest {
+                idempotency_key: ctx.key(),
+                session: Some(ctx.session(&session).await?),
+                anchor: Some(anchor),
+                text,
+                destination: Some(pb::CommentDestination {
+                    destination: Some(pb::comment_destination::Destination::Terminal(
+                        pb::SessionTerminal {},
+                    )),
+                }),
+            };
+            reply(ctx, rpc::comment::CREATE_COMMENT, &request).await
+        }
+        CommentCommand::Send { session, ids } => {
+            let request = pb::SendCommentsRequest {
+                idempotency_key: ctx.key(),
+                session: Some(ctx.session(&session).await?),
+                ids: ids.into_iter().map(|value| pb::CommentId { value }).collect(),
+            };
+            reply(ctx, rpc::comment::SEND_COMMENTS, &request).await
+        }
+        CommentCommand::Ls { session } => {
+            let session = Some(ctx.session(&session).await?);
+            comments(ctx, session, Vec::new()).await
+        }
+        CommentCommand::Rm { comment } => {
+            let request = pb::DropCommentRequest {
+                idempotency_key: ctx.key(),
+                id: Some(pb::CommentId { value: comment }),
+                expected_revision: None,
+            };
+            reply(ctx, rpc::comment::DROP_COMMENT, &request).await
+        }
+    }
+}
+
+async fn comments<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    session: Option<pb::SessionId>,
+    statuses: Vec<i32>,
+) -> Result<Done, CliError> {
+    pages(ctx, rpc::comment::LIST_COMMENTS, "comments", |page| {
+        pb::ListCommentsRequest {
+            session: session.clone(),
+            statuses: statuses.clone(),
+            file: None,
+            page,
+        }
+    })
+    .await
+    .map(Done::reply)
+}
+
+pub(super) async fn review<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    command: ReviewCommand,
+) -> Result<Done, CliError> {
+    match command {
+        ReviewCommand::Start {
+            prs,
+            agent,
+            message,
+            allow_push,
+        } => {
+            let prs: Vec<pb::PullRequestRef> = prs
+                .iter()
+                .map(|pr| parse::pull_request(pr))
+                .collect::<Result<_, CliError>>()?;
+            let machine = Some(ctx.needs_machine().await?);
+            let key = ctx.key();
+            let agent = agent.map(|value| pb::AgentId { value });
+            let first_message = message.unwrap_or_default();
+            ctx.present_json(rpc::review::START_REVIEW, |presence| pb::StartReviewRequest {
+                idempotency_key: key.clone(),
+                prs: prs.clone(),
+                machine: machine.clone(),
+                agent: agent.clone(),
+                model: String::new(),
+                first_message: first_message.clone(),
+                push_allowed: allow_push,
+                presence,
+            })
+            .await
+            .map(Done::reply)
+        }
+        ReviewCommand::Drafts { session } => {
+            let session = Some(ctx.session(&session).await?);
+            comments(ctx, session, vec![pb::CommentStatus::Draft as i32]).await
+        }
+        ReviewCommand::Submit {
+            session,
+            verdict,
+            summary,
+        } => submit(ctx, &session, verdict, summary).await,
+        ReviewCommand::AllowPush { session, state } => {
+            let session = Some(ctx.session(&session).await?);
+            let key = ctx.key();
+            let allowed = values::on(state);
+            ctx.present_json(rpc::review::SET_PUSH_ALLOWED, |presence| {
+                pb::SetPushAllowedRequest {
+                    idempotency_key: key.clone(),
+                    session: session.clone(),
+                    allowed,
+                    presence,
+                }
+            })
+            .await
+            .map(Done::reply)
+        }
+    }
+}
+
+/// Posts each pull request's drafts with one verdict. The plan lists the
+/// drafts; with `--plan` its token is the one printed earlier.
+async fn submit<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    session: &str,
+    verdict: crate::args::Verdict,
+    summary: Option<String>,
+) -> Result<Done, CliError> {
+    let session = Some(ctx.session(session).await?);
+    let rpc_plan = rpc::review::PLAN_SUBMIT;
+    let plan_request = pb::PlanSubmitRequest {
+        session: session.clone(),
+    };
+    let bytes = ctx.raw(rpc_plan, &plan_request).await?;
+    let plan: pb::SubmitPlan = crate::call::decode(rpc_plan, &bytes)?;
+    let token = match &ctx.flags.plan {
+        Some(value) => Some(pb::PlanToken {
+            value: value.clone(),
+        }),
+        None => {
+            let shown = crate::as_json::encoded(rpc_plan.response, &bytes);
+            if ctx.flags.dry_run {
+                return Ok(Done {
+                    result: shown,
+                    outcome: Outcome::Planned,
+                });
+            }
+            ctx.confirm(&shown)?;
+            plan.token.clone()
+        }
+    };
+    let verdict = values::verdict(verdict) as i32;
+    let reviews: Vec<pb::ReviewSubmission> = plan
+        .pull_requests
+        .into_iter()
+        .map(|each| pb::ReviewSubmission {
+            pr: each.pr,
+            verdict,
+            summary: summary.clone().unwrap_or(each.drafted_summary),
+            drafts: each.drafts.into_iter().filter_map(|draft| draft.id).collect(),
+        })
+        .collect();
+    let key = ctx.key();
+    ctx.present_json(rpc::review::SUBMIT_REVIEW, |presence| pb::SubmitReviewRequest {
+        idempotency_key: key.clone(),
+        session: session.clone(),
+        reviews: reviews.clone(),
+        plan: token.clone(),
+        presence,
+    })
+    .await
+    .map(Done::reply)
+}

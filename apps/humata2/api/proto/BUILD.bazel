@@ -8,8 +8,12 @@ proto_library(
     name = "humata2_proto",
     srcs = glob(["humata/v1/*.proto"]),
     strip_import_prefix = "",
-    # humatad2 generates its tonic services from these protos.
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    # humatad2 generates its tonic services from these protos, and the CLI
+    # builds the descriptor set it prints replies as JSON with.
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+    ],
     deps = [
         "@protobuf//:duration_proto",
         "@protobuf//:timestamp_proto",

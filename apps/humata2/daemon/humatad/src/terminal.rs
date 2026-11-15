@@ -1,5 +1,6 @@
-//! TerminalService: tabs, each a shell kept by a holder of its own, and
-//! pasted images. Typing queued for a turn end isn't built yet.
+//! TerminalService: tabs, each a shell kept by a holder of its own, typing
+//! into a session, and pasted images. Every call is checked for its caller
+//! first. Typing queued for a turn end isn't built yet.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
@@ -7,14 +8,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use humata2_access::{Call, Capability, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_holder::{HolderError, HolderSpec};
+use humata2_holder::{Event, HolderError, HolderSpec};
 use humata2_store::{SessionRecord, Store, StoreError, TabKind, TabRecord};
 use pb::invalid_field::Problem;
 use tokio::sync::watch;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::attach::{self, AttachStream};
+use crate::guard::Guard;
+use crate::identity::{self, Caller, Identities};
 use crate::{paste, status};
 
 /// How long a holder gets to say what it holds before a tab is listed
@@ -27,6 +31,9 @@ const REMEMBERED_MAX: usize = 4096;
 /// A new tab's size until a client attaches with its own.
 const INITIAL_COLS: u16 = 80;
 const INITIAL_ROWS: u16 = 24;
+
+/// How long a tab's shell gets to take text typed into it.
+const TYPE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct TerminalsConfig {
     pub(crate) store: Arc<Store>,
@@ -42,6 +49,9 @@ pub(crate) struct TerminalsConfig {
     /// Where holders write what goes wrong.
     pub(crate) logs: PathBuf,
     pub(crate) scrollback_bytes: usize,
+    pub(crate) guard: Arc<Guard>,
+    /// Gives each session tab's shell its session token.
+    pub(crate) identities: Arc<Identities>,
 }
 
 pub(crate) struct Terminals {
@@ -59,27 +69,32 @@ impl Terminals {
         }
     }
 
-    async fn session(&self, id: &str) -> Result<SessionRecord, Status> {
+    async fn find_session(&self, id: &str) -> Result<Option<SessionRecord>, Status> {
         let store = self.config.store.clone();
         let key = id.to_owned();
         match blocking(move || store.session(&key)).await? {
-            Ok(Some(session)) => Ok(session),
-            Ok(None) | Err(StoreError::InvalidId { .. }) => Err(no_session(id)),
+            Ok(found) => Ok(found),
+            Err(StoreError::InvalidId { .. }) => Ok(None),
             Err(error) => Err(status::store(error, &self.config.machine, "look up the session")),
         }
     }
 
-    async fn tab(&self, id: &str, session: Option<&str>) -> Result<TabRecord, Status> {
+    async fn session(&self, id: &str) -> Result<SessionRecord, Status> {
+        self.find_session(id).await?.ok_or_else(|| no_session(id))
+    }
+
+    async fn find_tab(&self, id: &str) -> Result<Option<TabRecord>, Status> {
         let store = self.config.store.clone();
         let key = id.to_owned();
-        let found = match blocking(move || store.tab(&key)).await? {
-            Ok(found) => found,
-            Err(StoreError::InvalidId { .. }) => None,
-            Err(error) => {
-                return Err(status::store(error, &self.config.machine, "look up the tab"));
-            }
-        };
-        match found {
+        match blocking(move || store.tab(&key)).await? {
+            Ok(found) => Ok(found),
+            Err(StoreError::InvalidId { .. }) => Ok(None),
+            Err(error) => Err(status::store(error, &self.config.machine, "look up the tab")),
+        }
+    }
+
+    async fn tab(&self, id: &str, session: Option<&str>) -> Result<TabRecord, Status> {
+        match self.find_tab(id).await? {
             Some(tab) if session.is_none_or(|session| tab.session.as_deref() == Some(session)) => {
                 Ok(tab)
             }
@@ -92,6 +107,54 @@ impl Terminals {
         blocking(move || store.tabs())
             .await?
             .map_err(|error| status::store(error, &self.config.machine, "list the tabs"))
+    }
+
+    /// What a call on `record` is checked against.
+    fn session_target(&self, record: &SessionRecord) -> Target {
+        Target::Session(identity::session_ref(record, &self.config.machine))
+    }
+
+    /// What typing into `tab` is checked against: its session, or for a
+    /// machine shell (or a tab whose session is gone) the whole machine.
+    async fn tab_target(&self, tab: &TabRecord) -> Result<Target, Status> {
+        let Some(session) = &tab.session else {
+            return Ok(Target::Global);
+        };
+        Ok(match self.find_session(session).await? {
+            Some(record) => self.session_target(&record),
+            None => Target::Global,
+        })
+    }
+
+    /// Checks that `caller` may type into `target`: the user only.
+    fn check_input(&self, caller: &Caller, target: Target) -> Result<(), Status> {
+        self.config.guard.require(
+            caller,
+            &Call::Use {
+                capability: Capability::TerminalInput,
+                target,
+            },
+        )
+    }
+
+    /// The tab text typed into a session goes to: its agent's, else its
+    /// first shell.
+    async fn typing_tab(&self, session: &str) -> Result<TabRecord, Status> {
+        let mut tabs: Vec<TabRecord> = self
+            .tabs()
+            .await?
+            .into_iter()
+            .filter(|tab| tab.session.as_deref() == Some(session))
+            .collect();
+        tabs.sort_by_key(|tab| (tab.kind != TabKind::Agent, tab.created_unix_ms));
+        tabs.into_iter().next().ok_or_else(|| {
+            status::not_found(
+                pb::EntityKind::Tab,
+                "",
+                format!("session {session} has no open tab to type into"),
+                "open a shell tab in the session, or start its agent, then type again",
+            )
+        })
     }
 
     /// A tab as the API shows it, with the offsets its holder reports.
@@ -127,29 +190,51 @@ impl Terminals {
     }
 
     /// Starts a shell in `cwd` under a holder of its own and saves its tab.
-    async fn open_shell(&self, session: Option<String>, cwd: PathBuf) -> Result<pb::Tab, Status> {
+    /// A session's shell gets a session token of its own, so what runs in
+    /// it is that session's agent to the daemon.
+    async fn open_shell(
+        &self,
+        session: Option<&SessionRecord>,
+        cwd: PathBuf,
+    ) -> Result<pb::Tab, Status> {
         let config = &self.config;
         let id = format!("tb_{}", uuid::Uuid::new_v4().simple());
         let socket = config.holders.join(format!("{id}.sock"));
         let log = config.logs.join(format!("{id}.log"));
+        let mut env = Vec::new();
+        if let Some(record) = session {
+            let identities = config.identities.clone();
+            let (tab, record) = (id.clone(), record.clone());
+            let token = blocking(move || identities.mint(&tab, &record))
+                .await?
+                .map_err(|error| status::store(error, &config.machine, "save the tab's session token"))?;
+            env.push((
+                OsString::from(humata2_mcp::TOKEN_VAR),
+                OsString::from(token),
+            ));
+        }
         let spec = HolderSpec {
             holder: config.holder.clone(),
             socket: socket.clone(),
             program: config.shell.clone(),
             args: config.shell_args.clone(),
             cwd,
-            env: Vec::new(),
+            env,
             cols: INITIAL_COLS,
             rows: INITIAL_ROWS,
             scrollback_bytes: config.scrollback_bytes,
             log: log.clone(),
         };
-        let spawned = blocking(move || humata2_holder::spawn(&spec))
-            .await?
-            .map_err(|error| holder_failed("start the tab's shell", &error, &log))?;
+        let spawned = match blocking(move || humata2_holder::spawn(&spec)).await? {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                self.revoke(&id).await;
+                return Err(holder_failed("start the tab's shell", &error, &log));
+            }
+        };
         let tab = TabRecord {
             id,
-            session,
+            session: session.map(|record| record.id.clone()),
             kind: TabKind::Shell,
             title: config
                 .shell
@@ -165,9 +250,18 @@ impl Terminals {
         if let Err(error) = blocking(move || store.put_tab(&saved)).await? {
             // Nothing could find the shell again, so it doesn't stay.
             let _ = humata2_holder::shutdown(&tab.holder_socket).await;
+            self.revoke(&tab.id).await;
             return Err(status::store(error, &config.machine, "save the new tab"));
         }
         Ok(self.describe(&tab).await)
+    }
+
+    /// Ends `tab`'s session token. A failure to save that is left for the
+    /// next start, which drops tokens whose tab is gone.
+    async fn revoke(&self, tab: &str) {
+        let identities = self.config.identities.clone();
+        let tab = tab.to_owned();
+        let _ = blocking(move || identities.revoke(&tab)).await;
     }
 
     fn recall(&self, key: Option<&str>) -> Option<Outcome> {
@@ -196,9 +290,15 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::ListTabsRequest>,
     ) -> Result<Response<pb::ListTabsResponse>, Status> {
+        let caller = identity::caller(&request)?;
         let session = id_of(request.into_inner().session.map(|session| session.value));
-        if let Some(session) = &session {
-            self.session(session).await?;
+        match &session {
+            Some(session) => {
+                let record = self.session(session).await?;
+                let read = Call::ReadSession(identity::session_ref(&record, &self.config.machine));
+                self.config.guard.require(&caller, &read)?;
+            }
+            None => self.check_input(&caller, Target::Global)?,
         }
         let mut tabs = Vec::new();
         for tab in self.tabs().await? {
@@ -213,13 +313,16 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::OpenShellTabRequest>,
     ) -> Result<Response<pb::Tab>, Status> {
+        let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let key = idempotency("OpenShellTab", request.idempotency_key);
+        let session = id_of(request.session.map(|session| session.value))
+            .ok_or_else(|| status::missing("session"))?;
+        let session = self.session(&session).await?;
+        self.check_input(&caller, self.session_target(&session))?;
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
             return Ok(Response::new(tab));
         }
-        let session = id_of(request.session.map(|session| session.value))
-            .ok_or_else(|| status::missing("session"))?;
         if request.repo.is_some() {
             return Err(status::invalid_field(
                 "repo",
@@ -228,8 +331,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
                 "leave repo unset to start in the session folder, then cd into the clone",
             ));
         }
-        let session = self.session(&session).await?;
-        let tab = self.open_shell(Some(session.id), session.folder).await?;
+        let tab = self.open_shell(Some(&session), session.folder.clone()).await?;
         self.remember(key, Outcome::Tab(tab.clone()));
         Ok(Response::new(tab))
     }
@@ -238,6 +340,8 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::OpenMachineShellRequest>,
     ) -> Result<Response<pb::Tab>, Status> {
+        let caller = identity::caller(&request)?;
+        self.check_input(&caller, Target::Global)?;
         let request = request.into_inner();
         let key = idempotency("OpenMachineShell", request.idempotency_key);
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
@@ -262,12 +366,18 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::CloseTabRequest>,
     ) -> Result<Response<pb::CloseTabResponse>, Status> {
+        let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let key = idempotency("CloseTab", request.idempotency_key);
+        let id = id_of(request.tab.map(|tab| tab.value)).ok_or_else(|| status::missing("tab"))?;
+        let target = match self.find_tab(&id).await? {
+            Some(tab) => self.tab_target(&tab).await?,
+            None => Target::Global,
+        };
+        self.check_input(&caller, target)?;
         if let Some(Outcome::Closed) = self.recall(key.as_deref()) {
             return Ok(Response::new(pb::CloseTabResponse {}));
         }
-        let id = id_of(request.tab.map(|tab| tab.value)).ok_or_else(|| status::missing("tab"))?;
         let session = id_of(request.session.map(|session| session.value));
         let tab = self.tab(&id, session.as_deref()).await?;
         if tab.kind == TabKind::Agent {
@@ -290,6 +400,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             .await?
             .map_err(|error| status::store(error, &self.config.machine, "forget the closed tab"))?;
         self.writers.forget(&tab.id);
+        self.revoke(&tab.id).await;
         self.remember(key, Outcome::Closed);
         Ok(Response::new(pb::CloseTabResponse {}))
     }
@@ -300,6 +411,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<Streaming<pb::AttachClientMessage>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
+        let caller = identity::caller(&request)?;
         let mut incoming = request.into_inner();
         let open = match incoming.message().await? {
             Some(pb::AttachClientMessage {
@@ -318,15 +430,56 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             .ok_or_else(|| status::missing("open.tab"))?;
         let session = id_of(open.session.clone().map(|session| session.value));
         let tab = self.tab(&id, session.as_deref()).await?;
+        let target = self.tab_target(&tab).await?;
+        match (&target, open.read_only) {
+            (Target::Session(session), true) => {
+                self.config.guard.require(&caller, &Call::ReadSession(session.clone()))?;
+            }
+            _ => self.check_input(&caller, target)?,
+        }
         let stream = attach::start(&tab, &open, incoming, &self.writers).await?;
         Ok(Response::new(stream))
     }
 
+    /// Types text into a session's tab, as if typed at its keyboard: raw,
+    /// with no bracketed paste around it.
     async fn r#type(
         &self,
-        _request: Request<pb::TypeRequest>,
+        request: Request<pb::TypeRequest>,
     ) -> Result<Response<pb::TypeResponse>, Status> {
-        Err(status::not_built("humata.v1.TerminalService.Type"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = idempotency("Type", request.idempotency_key);
+        let session = id_of(request.session.map(|session| session.value))
+            .ok_or_else(|| status::missing("session"))?;
+        let session = self.session(&session).await?;
+        self.config.guard.require(
+            &caller,
+            &Call::Use {
+                capability: Capability::SessionType,
+                target: self.session_target(&session),
+            },
+        )?;
+        if let Some(Outcome::Typed(typed)) = self.recall(key.as_deref()) {
+            return Ok(Response::new(typed));
+        }
+        if request.when == pb::type_request::When::TurnEnds as i32 {
+            return Err(status::not_built(
+                "humata.v1.TerminalService.Type with when TURN_ENDS",
+            ));
+        }
+        let tab = match id_of(request.tab.map(|tab| tab.value)) {
+            Some(tab) => self.tab(&tab, Some(&session.id)).await?,
+            None => self.typing_tab(&session.id).await?,
+        };
+        type_into(&tab, request.text.as_bytes()).await?;
+        let typed = pb::TypeResponse {
+            queued: None,
+            typed: true,
+            turn_end_uncertain: false,
+        };
+        self.remember(key, Outcome::Typed(typed.clone()));
+        Ok(Response::new(typed))
     }
 
     async fn cancel_queued_typing(
@@ -345,8 +498,9 @@ impl pb::terminal_service_server::TerminalService for Terminals {
 
     async fn send_queued_now(
         &self,
-        _request: Request<pb::SendQueuedNowRequest>,
+        request: Request<pb::SendQueuedNowRequest>,
     ) -> Result<Response<pb::SendQueuedNowResponse>, Status> {
+        self.check_input(&identity::caller(&request)?, Target::Global)?;
         Err(status::not_built("humata.v1.TerminalService.SendQueuedNow"))
     }
 
@@ -354,13 +508,16 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::PasteImageRequest>,
     ) -> Result<Response<pb::PasteImageResponse>, Status> {
+        let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let key = idempotency("PasteImage", request.idempotency_key);
+        let session = id_of(request.session.map(|session| session.value))
+            .ok_or_else(|| status::missing("session"))?;
+        let record = self.session(&session).await?;
+        self.check_input(&caller, self.session_target(&record))?;
         if let Some(Outcome::Paste(pasted)) = self.recall(key.as_deref()) {
             return Ok(Response::new(pasted));
         }
-        let session = id_of(request.session.map(|session| session.value))
-            .ok_or_else(|| status::missing("session"))?;
         let extension = paste::check(request.format, &request.data)?;
         let size_bytes = request.data.len() as u64;
         let store = self.config.store.clone();
@@ -393,6 +550,7 @@ enum Outcome {
     Tab(pb::Tab),
     Closed,
     Paste(pb::PasteImageResponse),
+    Typed(pb::TypeResponse),
 }
 
 #[derive(Default)]
@@ -479,6 +637,54 @@ pub(crate) fn no_tab(id: &str) -> Status {
         format!("no tab {id} is open on this machine"),
         "list the session's tabs for the ones still open",
     )
+}
+
+/// Types `text` into `tab`'s terminal and waits until all of it is there.
+async fn type_into(tab: &TabRecord, text: &[u8]) -> Result<(), Status> {
+    let no_log = Path::new("");
+    let mut attachment = humata2_holder::attach(&tab.holder_socket, u64::MAX)
+        .await
+        .map_err(|error| holder_failed("reach the tab's shell", &error, no_log))?;
+    attachment
+        .control
+        .input(1, text)
+        .await
+        .map_err(|error| holder_failed("type into the tab", &error, no_log))?;
+    let written = async {
+        loop {
+            match attachment.events.next().await {
+                Ok(Some(Event::InputWritten { seq: 1 })) => return Ok(()),
+                Ok(Some(Event::Refused { message })) => {
+                    return Err(status::internal(
+                        format!("the tab's holder refused the typing: {message}"),
+                        "",
+                    ));
+                }
+                Ok(Some(Event::Exited { .. }) | None) => {
+                    return Err(status::not_found(
+                        pb::EntityKind::Tab,
+                        &tab.id,
+                        format!("tab {}'s shell exited before the text reached it", tab.id),
+                        "open a new tab in the session and type again",
+                    ));
+                }
+                Ok(Some(_)) => {}
+                Err(error) => return Err(holder_failed("type into the tab", &error, no_log)),
+            }
+        }
+    };
+    tokio::time::timeout(TYPE_TIMEOUT, written)
+        .await
+        .map_err(|_| {
+            status::internal(
+                format!(
+                    "tab {}'s shell didn't take the text within {} seconds; some of it may have been typed",
+                    tab.id,
+                    TYPE_TIMEOUT.as_secs()
+                ),
+                "",
+            )
+        })?
 }
 
 fn holder_failed(doing: &str, error: &HolderError, log: &Path) -> Status {

@@ -1,0 +1,84 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load(":descriptors.bzl", "proto_descriptor_set")
+
+# `humata`, Humata 2's command for people and their scripts (../api/CLI.md):
+# one gRPC operation per command, sent to the daemon's Unix socket.
+
+# Every message the daemon can send, so any reply prints as JSON.
+proto_descriptor_set(
+    name = "descriptors",
+    proto = "//apps/humata2/api/proto:humata2_proto",
+)
+
+# The commands, behind a Daemon trait the tests fake. Only this package's
+# binary and tests use it.
+rust_library(
+    name = "cli",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    compile_data = [":descriptors"],
+    crate_name = "humata2_cli",
+    crate_root = "src/lib.rs",
+    rustc_env = {"HUMATA2_DESCRIPTORS": "$(execpath :descriptors)"},
+    deps = [
+        "//apps/humata2/api/proto:humata2_rust",
+        "@crates//:clap",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:prost-reflect",
+        "@crates//:rustix",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:uuid",
+    ],
+)
+
+rust_binary(
+    name = "humata",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = [
+        ":cli",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "cli_unit_test",
+    crate = ":cli",
+)
+
+# One test binary per file: each runs commands against a fake daemon and
+# checks the requests sent, the JSON printed and the exit code.
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        crate_root = src,
+        deps = [
+            ":cli",
+            "//apps/humata2/api/proto:humata2_rust",
+            "@crates//:prost",
+            "@crates//:serde_json",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "descriptors.bzl",
+    ],
+    tags = ["starlark"],
+)

@@ -20,24 +20,41 @@ members = [
     "apps/humata2/daemon/humatad",
     "apps/humata2/report",
     "apps/humata2/daemon/mcp",
+    "apps/humata2/daemon/machines",
+    "apps/humata2/cli",
+    "apps/humata2/ui-prototype",
     "libs/tca-rust",
 ]
 resolver = "3"
+# The UI prototype reuses these test tools as path dependencies; they keep
+# their own workspace settings instead of becoming implicit members here.
+exclude = ["apps/humata2/testing/snapshot", "apps/humata2/testing/flow"]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.100.0"
+publish = false
 
 [workspace.dependencies]
 # Workspace crates.
 bootstrap = { path = "tools/bootstrap/lib" }
 humata2-store = { path = "apps/humata2/daemon/store" }
 humata2-holder = { path = "apps/humata2/daemon/holder" }
+tca-rust = { path = "libs/tca-rust" }
 
 # Third-party crates.
 bzip2 = "0.6.1"
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.11"
+prost-reflect = "0.16.5"
+# The isolated Humata 2 UI prototype, shared between native and web builds.
+gpui-kit = "=0.9.1"
+wasm-bindgen = "=0.2.127"
+console_error_panic_hook = "0.1.7"
+# Shared headless screenshot tooling also needs these when crate_universe
+# splices its nested Cargo workspace into this workspace for feature resolution.
+gpui-pre-apple = { version = "=0.3.12", features = ["font-kit", "test-support"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 # Humata 2 tests drive the daemon over a Unix socket with these.
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 plist = "1.10.3"

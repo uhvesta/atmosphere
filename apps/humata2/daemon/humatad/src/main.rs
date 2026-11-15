@@ -1,11 +1,16 @@
 //! `humatad2`: Humata 2's daemon. `serve` answers the gRPC API (GRPC.md) on
 //! a Unix socket; `bridge` pipes stdin and stdout to that socket, so SSH or
-//! a provider's connect command can carry it.
+//! a provider's connect command can carry it; `mcp` is the MCP server an
+//! agent starts (MCP.md), a client of that socket.
 
 mod attach;
 mod bridge;
 mod daemon;
 mod error;
+mod guard;
+mod identity;
+mod inbox;
+mod mcp;
 mod not_built;
 mod paste;
 mod serve;
@@ -31,6 +36,9 @@ enum Command {
     Serve(serve::ServeArgs),
     /// Pipes stdin and stdout to the daemon's socket.
     Bridge(bridge::BridgeArgs),
+    /// Serves MCP on stdin and stdout for the agent of the session whose
+    /// token is in HUMATA_SESSION_TOKEN.
+    Mcp(mcp::McpArgs),
 }
 
 fn main() -> ExitCode {
@@ -44,6 +52,7 @@ fn main() -> ExitCode {
                 match cli.command {
                     Command::Serve(args) => serve::run(args).await,
                     Command::Bridge(args) => bridge::run(args).await,
+                    Command::Mcp(args) => mcp::run(args).await,
                 }
             })
         });

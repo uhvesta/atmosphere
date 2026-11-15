@@ -99,4 +99,20 @@ pub(crate) enum DaemonError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error(
+        "couldn't read the session tokens in {}; if it is damaged, delete it and restart the session tabs, since their agents can't reach Humata until they get new tokens",
+        path.display()
+    )]
+    Tokens {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("the MCP server stopped")]
+    Mcp {
+        #[source]
+        source: humata2_mcp::ServeError,
+    },
 }

@@ -1,0 +1,24 @@
+[package]
+name = "humata2-ui-prototype"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gpui-kit.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen.workspace = true
+console_error_panic_hook.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+humata2-snapshot = { path = "../testing/snapshot" }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-pre-apple.workspace = true
+

@@ -1,0 +1,79 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Machine providers (MACHINE-PROVIDERS.md): scripted create, connect and
+# identity commands, the link every step runs through, setting a machine up
+# (check, install humatad2 and its holder, user service), taking over an
+# interactive login, and the built-in Lima provider the e2e tests use. No
+# gRPC and no async: the daemon drives it through the Runner trait.
+rust_library(
+    name = "machines",
+    srcs = glob(["src/*.rs"]),
+    compile_data = ["providers/lima.toml"],
+    crate_name = "humata2_machines",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "@crates//:rustix",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:toml",
+    ],
+)
+
+rust_test(
+    name = "machines_unit_test",
+    crate = ":machines",
+    deps = ["@crates//:tempfile"],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        crate_root = src,
+        deps = [
+            ":machines",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        exclude = [
+            "tests/lima.rs",
+            "tests/system_timeout.rs",
+        ],
+    )
+]
+
+# Waits on a real timeout: a second or so of wall-clock time.
+rust_test(
+    name = "system_timeout_test",
+    srcs = ["tests/system_timeout.rs"],
+    tags = ["slow"],
+    deps = [":machines"],
+)
+
+# Creates, sets up and deletes the Lima VM humata2-machines-e2e on this Mac.
+# Its #[ignore] test runs only with --test_arg=--ignored, in the e2e batch.
+rust_test(
+    name = "lima_test",
+    size = "large",
+    srcs = ["tests/lima.rs"],
+    tags = [
+        "e2e",
+        "no-sandbox",
+        "requires-network",
+        "slow",
+    ],
+    deps = [
+        ":machines",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

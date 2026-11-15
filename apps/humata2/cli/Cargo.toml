@@ -1,0 +1,36 @@
+[package]
+name = "humata2-cli"
+description = "Humata 2's `humata` command: each command is one gRPC operation on the daemon's socket."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Also depends on the protocol's Rust types and its descriptor set, which
+# Bazel generates (//apps/humata2/api/proto:humata2_rust and :descriptors
+# here), so this crate builds with Bazel only.
+[lib]
+name = "humata2_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "humata"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+hyper-util = { workspace = true }
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+rustix = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

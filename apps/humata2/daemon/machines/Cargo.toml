@@ -1,0 +1,22 @@
+[package]
+name = "humata2-machines"
+description = "Humata 2's machine providers: scripted create, connect and identity commands, setting a machine up over its link (check, install humatad2, user service), interactive takeover, and the Lima provider used by tests."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_machines"
+path = "src/lib.rs"
+
+[dependencies]
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

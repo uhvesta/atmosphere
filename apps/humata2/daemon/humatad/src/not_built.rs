@@ -41,7 +41,7 @@ macro_rules! not_built {
         )*
 
         /// Adds every service not built yet to `router`.
-        pub(crate) fn register(router: Router) -> Router {
+        pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
             router$(.add_service($service))*
         }
     };
@@ -62,7 +62,6 @@ not_built! {
     FileService => file_service_server,
     TransferService => transfer_service_server,
     TrashService => trash_service_server,
-    InboxService => inbox_service_server,
     EventService => event_service_server,
     OperationService => operation_service_server,
     MachineService => machine_service_server,

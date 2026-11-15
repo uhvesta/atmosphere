@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Humata 2 · UI Prototype</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #17181b; color: #dedfe3; font: 13px system-ui; }
+    #loading { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; }
+    #loading small { color: #898c96; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="loading"><span>Humata 2</span><small>Starting the Rust UI prototype…</small></div>
+  <script type="module">
+    const loading = document.getElementById('loading');
+    try {
+      const { default: init, run } = await import('./pkg/humata2_ui_prototype.js');
+      await init();
+      run();
+      // GPUI starts graphics asynchronously. Remove this only after it paints.
+      const observe = new MutationObserver(() => {
+        if (document.querySelector('canvas')) {
+          loading.style.pointerEvents = 'none';
+          loading.style.zIndex = '-1';
+          observe.disconnect();
+        }
+      });
+      observe.observe(document.body, { childList: true, subtree: true });
+      if (document.querySelector('canvas')) loading.style.display = 'none';
+    } catch (error) {
+      loading.textContent = `Could not start the prototype: ${error}. Check the browser console, enable graphics acceleration, and reload.`;
+      console.error(error);
+    }
+  </script>
+</body>
+</html>

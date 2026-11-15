@@ -11,10 +11,14 @@ use humata2_store::{Store, write_atomic};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::UnixListenerStream;
+use tonic::service::InterceptorLayer;
 use tonic::transport::Server;
 
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
+use crate::guard::Guard;
+use crate::identity::{Authenticate, Identities};
+use crate::inbox::Inbox;
 use crate::not_built;
 use crate::paste::PASTE_MAX_BYTES;
 use crate::terminal::{Terminals, TerminalsConfig};
@@ -126,6 +130,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Role::Machine => pb::DaemonRole::Machine,
     };
 
+    let identities = Arc::new(Identities::load(
+        state.join("session-tokens"),
+        &store,
+        &machine,
+    )?);
+    let guard = Arc::new(Guard::new(&machine, role));
+
     let listener = bind(&socket)?;
     let terminals = Terminals::new(TerminalsConfig {
         store: Arc::new(store),
@@ -137,16 +148,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         holders,
         logs,
         scrollback_bytes: args.scrollback_bytes,
+        guard: guard.clone(),
+        identities: identities.clone(),
     });
 
+    // Every call is matched to its caller before a service sees it.
     let router = Server::builder()
+        .layer(InterceptorLayer::new(Authenticate::new(identities)))
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(Daemon::new(
             machine, role,
         )))
         .add_service(
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
-        );
+        )
+        .add_service(pb::inbox_service_server::InboxServiceServer::new(Inbox::new(guard)));
     let router = not_built::register(router);
 
     let stop = stop_signal()?;

@@ -440,7 +440,7 @@ fn clamp(value: u32) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
 
-fn now() -> Timestamp {
+pub(crate) fn now() -> Timestamp {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

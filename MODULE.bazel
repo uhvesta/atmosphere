@@ -36,6 +36,35 @@ register_toolchains("//bazel/xcode:all")
 # through it.
 register_toolchains("@llvm//toolchain:all")
 
+# The GPUI prototype links the macOS desktop frameworks. Keep the default
+# hermetic SDK frameworks and add the ones GPUI links; no host SDK is used.
+macos_ui_sdk = use_extension("@llvm//extensions:osx.bzl", "osx")
+macos_ui_sdk.frameworks(names = [
+    "AppKit",
+    "ApplicationServices",
+    "Carbon",
+    "CFNetwork",
+    "CloudKit",
+    "ColorSync",
+    "CoreData",
+    "CoreFoundation",
+    "CoreGraphics",
+    "CoreImage",
+    "CoreServices",
+    "CoreText",
+    "CoreVideo",
+    "Foundation",
+    "ImageIO",
+    "Kernel",
+    "Metal",
+    "OSLog",
+    "QuartzCore",
+    "Security",
+    "SystemConfiguration",
+    "UniformTypeIdentifiers",
+    "UserNotifications",
+])
+
 # MARK: - Python
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(python_version = "3.14.4")
@@ -77,6 +106,14 @@ crate.from_cargo(
     ],
 )
 use_repo(crate, "crates")
+
+# GPUI's dev build derives inspector reflection under debug_assertions.
+# Bazel compiles proc macros in the optimized exec configuration, so enable
+# the macro explicitly to keep that API available to the target crate.
+crate.annotation(
+    crate = "gpui-pre-macros",
+    crate_features = ["inspector"],
+)
 
 # rules_rust's build script runner drops AR when it is libtool, as @llvm's is
 # on macOS, so cc-rs falls back to /usr/bin/ar, which needs Xcode or the

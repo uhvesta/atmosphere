@@ -1,0 +1,29 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+
+# Design work only; the production application does not depend on this package.
+rust_library(
+    name = "ui",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    compile_data = glob(["assets/*.ttf"]),
+    crate_name = "humata2_ui_prototype",
+    crate_root = "src/lib.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = ["@crates//:gpui-kit"],
+)
+
+rust_binary(
+    name = "desktop",
+    srcs = ["src/main.rs"],
+    crate_name = "humata2_ui_prototype_desktop",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [":ui"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

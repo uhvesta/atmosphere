@@ -19,20 +19,26 @@ path = "codegen/protoc_gen_tonic.rs"
 
 [dependencies]
 clap = { workspace = true }
+humata2-access = { path = "../access" }
 humata2-holder = { workspace = true }
+humata2-mcp = { path = "../mcp" }
 humata2-store = { workspace = true }
+hyper-util = { workspace = true }
 prost = { workspace = true }
 protoc-gen-prost = { workspace = true }
 protoc-gen-tonic = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
+tower = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-hyper-util = { workspace = true }
 rustix = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
-tower = { workspace = true }
