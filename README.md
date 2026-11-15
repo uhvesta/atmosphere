@@ -22,4 +22,8 @@ Without direnv, run `sh tools/bootstrap/bazelisk.sh`, then add `.tools/bin` to `
 
 For stacked PRs or trees of PRs, `bazel run //tools/bootstrap/revup` installs [revup](https://github.com/Skydio/revup).
 
+## Planned: vendored Rust dependencies
+
+Today Rust crates come from crates.io through `crate_universe`, and a crate we need to change gets a small patch through its `crate.annotation(patches = …)` in `MODULE.bazel`. To revisit: vendor our Rust dependencies and build them with Bazel, set up automatically. Each crate's upstream source would be checked in with its license and a record of its version and checksum, and our changes kept as named patch files on top. One command would update a crate (respecting the 3-day cooldown), reapply the patches, stop on a conflict, and run the tests that use it. A check would fail if the checked-in source isn't exactly upstream plus our patches.
+
 `AGENTS.md` holds the code guidelines. Toolchain details are in [TOOLCHAINS.md](TOOLCHAINS.md).
