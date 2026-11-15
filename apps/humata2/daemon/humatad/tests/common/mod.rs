@@ -152,6 +152,15 @@ impl Daemon {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+            // On macOS a killed daemon's socket still takes connections
+            // for a few milliseconds after it is reaped. A daemon started
+            // then would take it for a live one and stop, and a client
+            // would reach the dying one, so wait until it refuses.
+            let deadline = Instant::now() + WAIT;
+            while std::os::unix::net::UnixStream::connect(&self.socket).is_ok() {
+                assert!(Instant::now() < deadline, "a killed humatad2's socket never stopped answering");
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 

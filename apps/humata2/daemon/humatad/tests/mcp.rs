@@ -523,3 +523,35 @@ async fn the_review_chats_agent_leaves_notes_and_orders_the_review() {
         .await;
     assert_eq!(off["isError"], true, "the user turned notes off: {off}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tab_that_outlives_a_restart_keeps_its_token() {
+    let mut fixture = Fixture::start().await;
+
+    fixture.daemon.restart().await;
+    // Once the start has brought back what the last run left, the tab
+    // it reattached to is the same shell with the same token.
+    let mut daemon = pb::daemon_service_client::DaemonServiceClient::new(fixture.daemon.channel().await);
+    let deadline = Instant::now() + WAIT;
+    while daemon
+        .get_server_info(pb::GetServerInfoRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .last_start
+        .is_none()
+    {
+        assert!(Instant::now() < deadline, "the daemon never finished bringing sessions back");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let me = daemon
+        .who_am_i(as_agent(pb::WhoAmIRequest {}, &fixture.token))
+        .await
+        .unwrap()
+        .into_inner();
+    let Some(pb::actor::Actor::Agent(agent)) = me.actor.and_then(|actor| actor.actor) else {
+        panic!("the token is the tab's agent");
+    };
+    assert_eq!(agent.session, Some(session()));
+}

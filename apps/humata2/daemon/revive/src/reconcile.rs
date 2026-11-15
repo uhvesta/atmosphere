@@ -3,7 +3,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::ffi::OsString;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use humata2_holder::{HolderSpec, SavedOutput};
 use humata2_store::fault::point;
@@ -100,13 +101,23 @@ pub async fn reconcile(
         shells: Vec::new(),
         report: Ok(PathBuf::new()),
     };
+    // `env` is asked only for a holder this run starts, since a tab's
+    // variables can carry a token that replaces the one its holder was
+    // started with: a holder that still answers keeps its own. What it
+    // gave out, the report masks.
+    let given: Mutex<Vec<(OsString, OsString)>> = Mutex::new(Vec::new());
+    let giving = |tab: &TabRecord| {
+        let variables = env(tab);
+        lock(&given).extend(variables.iter().cloned());
+        variables
+    };
     let agent_tabs: HashSet<String> = agents.iter().map(|agent| agent.tab.clone()).collect();
     for agent in agents {
         let tab = by_id.get(&agent.tab).cloned();
         let session = agent.session.clone();
-        let variables = env(&crate::agent::agent_tab(&agent, 0, 0));
-        report.agent(config, &agent, tab.as_ref(), &variables);
-        let outcome = revive_agent(store, config, agent, tab, env).await;
+        report.agent(config, &agent, tab.as_ref());
+        let outcome = revive_agent(store, config, agent, tab, &giving).await;
+        report.mask(&std::mem::take(&mut *lock(&given)));
         report.agent_outcome(&outcome);
         reconciled.agents.push((session, outcome));
     }
@@ -119,8 +130,9 @@ pub async fn reconcile(
     for tab in shells {
         let folder = tab.session.as_ref().and_then(|id| folders.get(id)).cloned();
         let id = tab.id.clone();
-        report.shell(config, &tab, &env(&tab));
-        let outcome = revive_shell(store, config, tab, folder, env).await;
+        report.shell(config, &tab);
+        let outcome = revive_shell(store, config, tab, folder, &giving).await;
+        report.mask(&std::mem::take(&mut *lock(&given)));
         report.shell_outcome(&outcome);
         reconciled.shells.push((id, outcome));
     }
@@ -273,4 +285,8 @@ async fn revive_shell(
         ));
     }
     Ok(ShellRevived::Restarted { saved })
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

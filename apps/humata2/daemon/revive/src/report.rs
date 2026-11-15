@@ -302,7 +302,6 @@ impl Restart {
         config: &ReviveConfig,
         record: &AgentRecord,
         tab: Option<&TabRecord>,
-        variables: &[(std::ffi::OsString, std::ffi::OsString)],
     ) {
         let launch = &record.launch;
         let log = config.logs.join(format!("{}.log", record.tab));
@@ -310,7 +309,6 @@ impl Restart {
             AgentState::Running { holder_pid } => Some(holder_pid),
             _ => tab.map(|tab| tab.holder_pid).filter(|pid| *pid != 0),
         };
-        self.mask(variables);
         self.entries.push(Entry {
             kind: "agent",
             session: Some(record.session.clone()),
@@ -341,10 +339,8 @@ impl Restart {
         &mut self,
         config: &ReviveConfig,
         tab: &TabRecord,
-        variables: &[(std::ffi::OsString, std::ffi::OsString)],
     ) {
         let log = config.logs.join(format!("{}.log", tab.id));
-        self.mask(variables);
         self.entries.push(Entry {
             kind: "shell",
             session: tab.session.clone(),
@@ -369,7 +365,8 @@ impl Restart {
         });
     }
 
-    fn mask(&mut self, variables: &[(std::ffi::OsString, std::ffi::OsString)]) {
+    /// Keeps `variables` out of the report.
+    pub(crate) fn mask(&mut self, variables: &[(std::ffi::OsString, std::ffi::OsString)]) {
         for (name, value) in variables {
             let value = value.to_string_lossy().into_owned();
             if value.len() >= SHORTEST_SECRET && !self.secrets.iter().any(|(_, known)| *known == value) {
