@@ -138,6 +138,48 @@ async fn put_sends_a_header_then_the_file() {
 }
 
 #[tokio::test]
+async fn put_of_a_big_file_sends_it_in_order_with_one_last_chunk() {
+    let folder = tempfile::tempdir().expect("a temporary folder");
+    let local = folder.path().join("big.bin");
+    let bytes: Vec<u8> = (0..(5 << 19) + 7).map(|index: u32| (index % 251) as u8).collect();
+    std::fs::write(&local, &bytes).expect("the local file");
+    let local = local.to_str().expect("a UTF-8 path");
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "--channel", "ch_1", "files", "put", local, "ma_1:channel/big.bin"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let parts: Vec<Option<Part>> = daemon
+        .sent::<pb::WriteFileMessage>(rpc::files::WRITE_FILE)
+        .into_iter()
+        .map(|message| message.message)
+        .collect();
+    let Some(Some(Part::Header(header))) = parts.first() else {
+        panic!("the first message is the header: {parts:?}");
+    };
+    assert_eq!(header.size, bytes.len() as u64);
+    let chunks: Vec<&pb::FileChunk> = parts[1..]
+        .iter()
+        .map(|part| match part {
+            Some(Part::Chunk(chunk)) => chunk,
+            other => panic!("only chunks follow the header: {other:?}"),
+        })
+        .collect();
+    let mut sent = Vec::new();
+    for chunk in &chunks {
+        assert_eq!(chunk.offset, sent.len() as u64);
+        sent.extend_from_slice(&chunk.data);
+    }
+    assert_eq!(sent, bytes);
+    assert_eq!(chunks.iter().filter(|chunk| chunk.last).count(), 1);
+    assert!(chunks.last().is_some_and(|chunk| chunk.last));
+}
+
+#[tokio::test]
 async fn put_of_a_missing_local_file_sends_nothing() {
     let folder = tempfile::tempdir().expect("a temporary folder");
     let missing = folder.path().join("missing.txt");

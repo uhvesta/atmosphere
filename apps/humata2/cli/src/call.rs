@@ -248,16 +248,26 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         self.note(&format!(
             "Waiting for an answer (request {request}). Ctrl-C stops waiting; the request stays."
         ));
-        while reply.state == pending {
-            reply = self
-                .call(
-                    rpc::inbox::WAIT_FOR_ANSWER,
-                    &pb::WaitForAnswerRequest {
-                        id: reply.id.clone(),
-                        wait_seconds: 60,
-                    },
-                )
-                .await?;
+        // One stream held until the answer (TR-7): the daemon pushes it,
+        // and its keepalives are skipped rather than asked again.
+        let rpc = rpc::inbox::WAIT_FOR_ANSWER;
+        let asked = pb::WaitForAnswerRequest {
+            id: reply.id.clone(),
+            wait_seconds: u32::MAX,
+        };
+        let mut replies = self.daemon.server_stream(rpc, asked.encode_to_vec()).await?;
+        while let Some(message) = replies.recv().await {
+            let message: pb::WaitResponse = decode(rpc, &message?)?;
+            if message.keepalive {
+                continue;
+            }
+            reply = message;
+            if reply.state != pending {
+                return Ok(reply);
+            }
+        }
+        if reply.state == pending {
+            return Err(DaemonError::Ended { rpc: rpc.path }.into());
         }
         Ok(reply)
     }

@@ -56,6 +56,37 @@ there. That alone isn't enough, since any local process can also run
 `humatad serve --stdio` itself, so the link serves nothing but the handshake
 until the host proves it holds the machine's enrollment key (§8).
 
+### 2.1 Keepalive and polls that remain (TR-7, TR-9, D54)
+
+A link pushes; nothing asks again to see whether something changed. A
+waiting call holds one stream (`WaitForAnswer`, `Subscribe`, `Attach`) and
+its answer comes when it exists. The peer link sends an HTTP/2 PING after
+30 seconds without traffic and ends the link when one goes unanswered for
+20 seconds: that PING is how a dead link is noticed and the only timer an
+idle link runs. The local sockets need none: a closed socket ends the
+connection at once. The ssh carrying a link keeps its own
+`ServerAliveInterval`, which should match (30 s; machines' `link.rs`
+still sets 15 s).
+
+Every interval or poll still in the daemon, the CLI and the MCP server,
+and why no notification replaces it yet. Each runs only while what it waits
+for is pending; none runs on an idle daemon.
+
+| Where | Interval | Waits for | Why it isn't a notification |
+| --- | --- | --- | --- |
+| `WaitForAnswer` keepalive (humatad `inbox.rs`) | 15 s, only while a wait is open | nothing: it says the request is still pending, which MCP turns into `notifications/progress` (TP-11, TP-12) | it's a heartbeat the API promises, not a check; the answer itself is a watch channel |
+| `humatad2 bridge` connect (humatad `bridge.rs`) | 25 ms for 0.5 s, then 25 ms up to 10 s after starting a daemon | the daemon's socket to accept | startup only; a ready pipe from the started daemon would replace it |
+| Holder probe per tab in `ListTabs` and per `TypeInto` (humatad `terminal.rs`) | none, but one new connection per tab per call, 2 s timeout | the holder's welcome | the holder has no long-lived control connection to the daemon yet |
+| Holder scrollback sync (holder `server.rs`, `saved.rs`) | 500 ms, forever, per tab | new output to save | not this API's code; to become a notify on output with a 500 ms debounce |
+| Holder hang-up (holder `server.rs`) | 20 ms, up to the hang-up grace | the program to exit | to become a watch on exit |
+| Revive agent output (revive `agent.rs`) | the crate's `POLL`, while reviving | output and exit | to read the holder's event stream |
+| Command runner (machines `system.rs`) | 20 ms on a blocking thread, per command | the child to exit | to wait on the child in its own thread |
+
+Nothing watches agent conversation files, git state or `shared/` yet; when
+they're read they're to come from file notifications (FSEvents, inotify),
+never a rescan on a timer. POLLING-AUDIT-2026-11-14.md in `research/` has
+the detail and the fixes.
+
 ## 3. Principals on a connection
 
 Every connection is bound to one principal when it is accepted; no request

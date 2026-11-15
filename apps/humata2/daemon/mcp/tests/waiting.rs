@@ -108,6 +108,41 @@ async fn each_keepalive_is_a_progress_notification_for_the_clients_token() {
     assert_eq!(envelope["request_id"], "req-1");
 }
 
+/// TR-8
+#[tokio::test]
+async fn an_agent_that_stops_reading_gets_its_reply_without_a_backlog_of_progress() {
+    let daemon = asking();
+    let mut client = Client::start_slow(&daemon, 256);
+
+    client
+        .start_call(
+            json!(1),
+            "board_item_create",
+            json!({ "arguments": item(None), "_meta": { "progressToken": "tok" } }),
+        )
+        .await;
+    let wait = daemon.next_wait().await;
+    let keepalives = 1000;
+    for _ in 0..keepalives {
+        wait.events.send(WaitEvent::Keepalive).await.expect("the server waits");
+    }
+    wait.events
+        .send(applied(json!({ "id": "item-1" })))
+        .await
+        .expect("the server waits");
+    let reply = client.reply_to(&json!(1)).await;
+
+    let progress: Vec<u64> = client
+        .notifications
+        .iter()
+        .filter(|message| message["method"] == "notifications/progress")
+        .filter_map(|message| message["params"]["progress"].as_u64())
+        .collect();
+    assert!(progress.len() < keepalives, "{} of {keepalives} queued", progress.len());
+    assert!(progress.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(structured(&reply["result"])["outcome"], "applied");
+}
+
 /// TP-11
 #[tokio::test]
 async fn without_a_progress_token_keepalives_send_nothing() {

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -35,6 +36,12 @@ const SERVER_VERSION: &str = "2.0.0";
 
 /// TP-11: how long a call waits for the user when it doesn't say.
 const DEFAULT_WAIT_SECONDS: u64 = 45;
+
+/// Progress is sent only while fewer lines than this wait to be written:
+/// each one only says "still waiting", so when the agent stops reading
+/// they're dropped rather than queued without end (TR-8). Replies are
+/// never dropped.
+const PROGRESS_BACKLOG: usize = 64;
 
 /// The MCP server for one agent process.
 pub struct Server<D> {
@@ -71,14 +78,18 @@ impl<D: Daemon> Server<D> {
         R: AsyncRead + Unpin + Send,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        // Unbounded but not unlimited: replies are one per request the
+        // agent made, and progress is skipped when the writer is behind.
         let (out, outgoing) = mpsc::unbounded_channel();
-        let writer = tokio::spawn(write_all(output, outgoing));
+        let queued = Arc::new(AtomicUsize::new(0));
+        let writer = tokio::spawn(write_all(output, outgoing, Arc::clone(&queued)));
         let shared = Arc::new(Shared {
             daemon: self.daemon,
             token: self.token,
             nonce: self.nonce,
             binding: tokio::sync::Mutex::new(Binding::Unbound),
             out,
+            queued,
             calls: Mutex::new(HashMap::new()),
             withdrawals: Mutex::new(JoinSet::new()),
         });
@@ -125,13 +136,18 @@ enum Outgoing {
     Close,
 }
 
-async fn write_all<W>(mut output: W, mut outgoing: mpsc::UnboundedReceiver<Outgoing>) -> io::Result<()>
+async fn write_all<W>(
+    mut output: W,
+    mut outgoing: mpsc::UnboundedReceiver<Outgoing>,
+    queued: Arc<AtomicUsize>,
+) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     while let Some(next) = outgoing.recv().await {
         match next {
             Outgoing::Message(message) => {
+                queued.fetch_sub(1, Ordering::Relaxed);
                 let mut line = message.to_string();
                 line.push('\n');
                 output.write_all(line.as_bytes()).await?;
@@ -164,6 +180,8 @@ struct Shared<D> {
     nonce: String,
     binding: tokio::sync::Mutex<Binding>,
     out: mpsc::UnboundedSender<Outgoing>,
+    /// Messages sent to the writer and not yet taken by it.
+    queued: Arc<AtomicUsize>,
     calls: Mutex<HashMap<u64, InFlight>>,
     withdrawals: Mutex<JoinSet<()>>,
 }
@@ -175,7 +193,18 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 impl<D: Daemon> Shared<D> {
     fn send(&self, message: Value) {
         // A closed writer means the agent is gone; nothing reads replies.
-        let _ = self.out.send(Outgoing::Message(message));
+        self.queued.fetch_add(1, Ordering::Relaxed);
+        if self.out.send(Outgoing::Message(message)).is_err() {
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Sends a notification that only says the call is still going, unless
+    /// the writer is behind (PROGRESS_BACKLOG).
+    fn send_progress(&self, message: Value) {
+        if self.queued.load(Ordering::Relaxed) < PROGRESS_BACKLOG {
+            self.send(message);
+        }
     }
 
     fn send_close(&self) {
@@ -415,7 +444,7 @@ impl<D: Daemon> Shared<D> {
                 WaitEvent::Keepalive => {
                     if let Some(token) = progress {
                         sent += 1;
-                        self.send(jsonrpc::notification(
+                        self.send_progress(jsonrpc::notification(
                             "notifications/progress",
                             json!({
                                 "progressToken": token,

@@ -208,8 +208,22 @@ impl Client {
     }
 
     pub fn start_with(daemon: &FakeDaemon, token: Result<SessionToken, TokenError>) -> Self {
+        Self::start_reading(daemon, token, 1 << 20)
+    }
+
+    /// A client that takes at most `buffer` bytes of the server's output
+    /// before it reads, as an agent that is busy elsewhere.
+    pub fn start_slow(daemon: &FakeDaemon, buffer: usize) -> Self {
+        Self::start_reading(daemon, SessionToken::new("token-1"), buffer)
+    }
+
+    fn start_reading(
+        daemon: &FakeDaemon,
+        token: Result<SessionToken, TokenError>,
+        buffer: usize,
+    ) -> Self {
         let (to_server, server_input) = tokio::io::duplex(1 << 20);
-        let (server_output, from_server) = tokio::io::duplex(1 << 20);
+        let (server_output, from_server) = tokio::io::duplex(buffer);
         let server = Server::new(daemon.clone(), token);
         let server = tokio::spawn(server.serve(server_input, server_output));
         Self {

@@ -1,6 +1,8 @@
 //! The commands that stream: a terminal, a provider's login, and a file's
 //! bytes in or out.
 
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::Path;
 
 use humata2_proto::humata::v1 as pb;
@@ -21,6 +23,9 @@ const DETACH: u8 = 0x1d;
 
 /// The size of each chunk `files put` sends.
 const CHUNK_BYTES: usize = 1 << 20;
+
+/// The daemon's attach window when `window_bytes` is 0 (terminal.proto).
+const DEFAULT_WINDOW: u64 = 1 << 20;
 
 /// The gRPC status a stream's own `failed` message is reported with.
 const UNKNOWN: i32 = 2;
@@ -49,6 +54,14 @@ pub(super) async fn attach<D: Daemon, C: Console>(
 
     no_json(ctx)?;
     let read_only = open.read_only;
+    // Acks only free the daemon's window (TR-8), so one per quarter
+    // window keeps output flowing without a message per output chunk.
+    let window = match open.window_bytes {
+        0 => DEFAULT_WINDOW,
+        bytes => u64::from(bytes),
+    };
+    let ack_every = (window / 4).max(1);
+    let mut acked = 0;
     let mut keyboard = ctx
         .console
         .keyboard()
@@ -70,23 +83,24 @@ pub(super) async fn attach<D: Daemon, C: Console>(
             reply = replies.recv() => {
                 let Some(reply) = reply else { break };
                 let reply: pb::AttachServerMessage = decode(rpc::terminal::ATTACH, &reply?)?;
-                let ack = match reply.message {
+                match reply.message {
                     Some(Server::Snapshot(snapshot)) => {
                         ctx.console.write(&snapshot.vt);
-                        Some(snapshot.offset)
+                        // The daemon counts a snapshot as drawn.
+                        acked = snapshot.offset;
                     }
                     Some(Server::Output(output)) => {
                         ctx.console.write(&output.data);
-                        Some(output.offset + output.data.len() as u64)
+                        let offset = output.offset + output.data.len() as u64;
+                        if offset.saturating_sub(acked) >= ack_every {
+                            acked = offset;
+                            let _ = send.send(message(Client::Ack(pb::OutputAck { offset }))).await;
+                        }
                     }
                     Some(Server::Notice(notice)) => {
                         ctx.console.eprint(&format!("\r\n[humata] {}\r", notice.text));
-                        None
                     }
-                    Some(Server::State(_) | Server::InputAccepted(_)) | None => None,
-                };
-                if let Some(offset) = ack {
-                    let _ = send.send(message(Client::Ack(pb::OutputAck { offset }))).await;
+                    Some(Server::State(_) | Server::InputAccepted(_)) | None => {}
                 }
             }
             keys = keyboard.input.recv() => {
@@ -236,47 +250,92 @@ pub(super) async fn put<D: Daemon, C: Console>(
 ) -> Result<Done, CliError> {
     use pb::write_file_message::Message as Part;
 
-    let data = std::fs::read(local).map_err(|source| CliError::ReadFile {
-        path: local.to_path_buf(),
-        source,
-    })?;
+    // Read off the runtime and streamed through a short queue, so a big
+    // file is never all in memory (TR-8). The hash pass comes first: the
+    // header carries it.
+    let path = local.to_path_buf();
+    let (size, sha256) = tokio::task::spawn_blocking(move || digest(&path))
+        .await
+        .map_err(|_| read_failed(local, io::Error::other("the file reader stopped")))?
+        .map_err(|source| read_failed(local, source))?;
     let header = pb::WriteFileHeader {
         idempotency_key: ctx.key(),
         location: Some(location),
-        size: data.len() as u64,
-        sha256: hex(&Sha256::digest(&data)),
+        size,
+        sha256,
         replace,
     };
-    let mut parts = vec![Part::Header(header)];
-    let mut offset = 0;
-    let mut chunks = data.chunks(CHUNK_BYTES).peekable();
-    if chunks.peek().is_none() {
-        parts.push(Part::Chunk(pb::FileChunk {
-            offset: 0,
-            last: true,
-            ..Default::default()
-        }));
-    }
-    while let Some(chunk) = chunks.next() {
-        parts.push(Part::Chunk(pb::FileChunk {
-            offset,
-            data: chunk.to_vec(),
-            sha256: String::new(),
-            last: chunks.peek().is_none(),
-        }));
-        offset += chunk.len() as u64;
-    }
-    let (send, requests) = mpsc::channel(parts.len());
-    for part in parts {
-        let message = pb::WriteFileMessage {
-            message: Some(part),
-        };
-        let _ = send.try_send(message.encode_to_vec());
-    }
-    drop(send);
+    let (send, requests) = mpsc::channel(2);
+    let header = pb::WriteFileMessage {
+        message: Some(Part::Header(header)),
+    };
+    let _ = send.try_send(header.encode_to_vec());
+    let path = local.to_path_buf();
+    let reader = tokio::task::spawn_blocking(move || send_chunks(&path, size, &send));
     let rpc = rpc::files::WRITE_FILE;
-    let reply = ctx.daemon.client_stream(rpc, requests).await?;
-    Ok(Done::reply(as_json::encoded(rpc.response, &reply)))
+    let reply = ctx.daemon.client_stream(rpc, requests).await;
+    // A local read failure explains a refused upload better than the
+    // daemon's size or hash mismatch does.
+    match reader.await {
+        Ok(Err(source)) => return Err(read_failed(local, source)),
+        Ok(Ok(())) => {}
+        Err(_) => return Err(read_failed(local, io::Error::other("the file reader stopped"))),
+    }
+    Ok(Done::reply(as_json::encoded(rpc.response, &reply?)))
+}
+
+fn read_failed(path: &Path, source: io::Error) -> CliError {
+    CliError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// The file's size and SHA-256, read in chunks.
+fn digest(path: &Path) -> io::Result<(u64, String)> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                hasher.update(&buffer[..read]);
+                size += read as u64;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((size, hex(&hasher.finalize())))
+}
+
+/// Sends the file as `CHUNK_BYTES` chunks, the one ending at `size`
+/// marked last. Stops early if the call ended.
+fn send_chunks(path: &Path, size: u64, send: &mpsc::Sender<Vec<u8>>) -> io::Result<()> {
+    use pb::write_file_message::Message as Part;
+
+    let mut file = File::open(path)?;
+    let mut offset = 0u64;
+    loop {
+        let mut data = Vec::with_capacity(CHUNK_BYTES);
+        (&mut file).take(CHUNK_BYTES as u64).read_to_end(&mut data)?;
+        let read = data.len() as u64;
+        let last = read == 0 || offset + read >= size;
+        let chunk = pb::WriteFileMessage {
+            message: Some(Part::Chunk(pb::FileChunk {
+                offset,
+                data,
+                sha256: String::new(),
+                last,
+            })),
+        };
+        if send.blocking_send(chunk.encode_to_vec()).is_err() || last {
+            return Ok(());
+        }
+        offset += read;
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {

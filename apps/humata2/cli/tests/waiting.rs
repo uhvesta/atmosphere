@@ -229,21 +229,37 @@ async fn wait_asks_the_daemon_to_hold_the_answer_that_long() {
 #[tokio::test]
 async fn a_terminal_waits_until_the_answer_comes() {
     let daemon = FakeDaemon::new();
+    let keepalive = pb::WaitResponse {
+        keepalive: true,
+        ..pending()
+    };
+    let approved = pb::WaitResponse {
+        state: pb::RequestState::Approved as i32,
+        ..pending()
+    };
     daemon
         .reply(rpc::inbox::REQUEST_ACCESS, &pending())
-        .reply(rpc::inbox::WAIT_FOR_ANSWER, &pending())
-        .reply(
-            rpc::inbox::WAIT_FOR_ANSWER,
-            &pb::WaitResponse {
-                state: pb::RequestState::Approved as i32,
-                ..pending()
-            },
-        );
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&keepalive, &keepalive, &approved]);
     let console = FakeConsole::terminal();
     assert_eq!(run(&daemon, &console, &ASK_AHEAD).await, exit::OK);
-    let waits: Vec<pb::WaitForAnswerRequest> = daemon.sent(rpc::inbox::WAIT_FOR_ANSWER);
-    assert_eq!(waits.len(), 2);
-    assert!(waits.iter().all(|wait| wait.id == pending().id));
+    // One stream held until the answer, never asked again (TR-7).
+    let wait: pb::WaitForAnswerRequest = daemon.only(rpc::inbox::WAIT_FOR_ANSWER);
+    assert_eq!(wait.id, pending().id);
+}
+
+#[tokio::test]
+async fn a_wait_that_ends_unanswered_is_an_error() {
+    let daemon = FakeDaemon::new();
+    let keepalive = pb::WaitResponse {
+        keepalive: true,
+        ..pending()
+    };
+    daemon
+        .reply(rpc::inbox::REQUEST_ACCESS, &pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&keepalive]);
+    let console = FakeConsole::terminal();
+    assert_ne!(run(&daemon, &console, &ASK_AHEAD).await, exit::OK);
+    assert_eq!(daemon.sent::<pb::WaitForAnswerRequest>(rpc::inbox::WAIT_FOR_ANSWER).len(), 1);
 }
 
 #[tokio::test]

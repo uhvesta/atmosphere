@@ -444,7 +444,18 @@ impl pb::inbox_service_server::InboxService for Inbox {
             })?,
         };
         let target = request.target.ok_or_else(|| status::missing("target"))?;
-        let call = grant_target::ask_ahead_call(&self.store, &self.machine, agent, capability, target)?;
+        // The target's session is looked up in the store, which blocks:
+        // off the runtime's threads (TR-8).
+        let call = {
+            let store = Arc::clone(&self.store);
+            let machine = self.machine.clone();
+            let asking = agent.clone();
+            tokio::task::spawn_blocking(move || {
+                grant_target::ask_ahead_call(&store, &machine, &asking, capability, target)
+            })
+            .await
+            .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))??
+        };
         let session = agent.session.id.to_string();
         let key = id_of(request.idempotency_key.map(|key| key.value))
             .map(|key| format!("{session}/{key}"));
