@@ -211,3 +211,76 @@ A bug report is text an agent can read and act on: what you did, where, what the
 - [ ] The ⌘K palette covering every action.
 - [ ] Every spec flow passes as a flow test on macOS and Linux.
 - [ ] Humata 2 can replace Humata 1 day to day.
+
+## Known gaps (2026-11-15)
+
+Work that was started but isn't finished, grouped by area. Each item is open until its tests pass and a real run works. Run builds and tests only through Bazel (`export PATH=$PWD/.tools/bin:$PATH`), never cargo.
+
+### Desktop UI (I2, A10; D72, D74)
+- [ ] Render `state.panes.tree()`. The layout state and shortcuts exist, but nothing draws the panes, so the shortcuts do nothing. Build it on gpui-component's dock, with the layout state as the source of truth.
+- [ ] The Panes sidebar, Settings › Layout › Panes, e2e flows, contact sheets, record/replay, FLOWS.md, and the D72 entry.
+- [ ] Snapshot fixes: the Inbox badge overlaps the rail icon, and Home's row times stop short of the right edge.
+
+### Markdown (`apps/humata2/markdown`)
+- [ ] Fix `headless:flows` (3 of 7 fail, all in `src/view.rs`):
+  - comment on selection needs a fallback source mapping when a selection end has none;
+  - Copy as Markdown leaves the clipboard empty: toolbar buttons need `on_mouse_down(Left, stop_propagation)`, and a drag started mid-heading begins past its text;
+  - after toggling Source, `set_mode` must focus the new text view.
+- [ ] Read the goldens, record `headless:timing` numbers, run buildifier, and give the markdown decision a number (it proposed D75).
+- [ ] Add syntect to the gpui-fast lock (code blocks are uncoloured on Fast), add a Flow scroll action, parse `secondary-` keystrokes, and add Fast-engine GUI tests.
+
+### Review pane (`apps/humata2/review`; D53)
+- [ ] The `large` test mounts about 207 rows per scroll frame against a bound of 120. Cause unknown.
+- [ ] Goldens show "Saving…" because the test clock never passes the 300 ms debounce.
+- [ ] Embed `humata2_diff_view` and a MarkdownRenderer; today the pane has stubs for both.
+- [ ] The daemon remembers Type keys durably, so a send never repeats after a restart.
+- [ ] MCP relays `review_focus`, `review_note` and `review_prepare` to the pane.
+
+### review_diff wiring (A2, A8; PR-22–PR-26, D66)
+- [ ] humatad serves DiffService, ReviewChatService, CommentService and ViewService (`src/review.rs`), with a MarkReviewed tree snapshot.
+- [ ] MCP dispatches the 6 review tools; add `humatad/tests/review.rs` and access tests.
+- [ ] The CLI sends a real `shown_tree` (today it's empty); the store persists UserNote and ReviewViewState.
+- [ ] Measure gix end to end.
+
+### Diff view (`apps/humata2/diff`; D67)
+- [ ] Write D67 in DECISIONS.md with the GPUI and Fast numbers. Agreed: no "open all folds" action, and Full file mode is gated on its own measurement.
+- [ ] Behaviour tests for the new DiffView (Pane harness, SpecChanged, CommentRequested, ContextNeeded, the counter, viewed files folding). It has been compiled, never run.
+- [ ] Point the gate at DiffView instead of DiffState, then re-run the gates (GPUI and Fast, incremental patch) on a quiet machine. Last numbers were from a loaded machine, on the old view: scroll with comments p95 6.71 / max 10.07 ms; Fast p95 ≤ 3.64 ms.
+- [ ] Drop the unused unicode-segmentation and unicode-width dependencies (needs a repin).
+
+### Terminal (I6; D73)
+- [ ] Run `stream_bench` and `stream_fast_bench` for 1, 2 and 4 panes.
+- [ ] Test IME in a real window.
+- [ ] Settle ⌘W: TerminalTabs and NV-30 (close pane) both claim it.
+
+### Testing infrastructure (I3–I5)
+- [ ] Run `engine:frames_bench_fast`, `terminal/view:frame_bench{,_fast}` and the ui-prototype `markdown_frame_costs`. Fast can't become the default until it has numbers.
+- [ ] Re-measure plain GPUI on a quiet machine (loaded run: idle p99 30.6 ms; 20k diff p99 22.2 ms).
+- [ ] Real-window GPU benchmarks; verify IME, clipboard and VoiceOver.
+- [ ] Investigate `Click("board-card-0")`, which once hit the 12-frame settle limit.
+- [ ] Remove the stale `apps/humata2/testing/Cargo.lock`. The ui-prototype README/UX_FLOWS still show cargo commands; that's the other session's to fix.
+- [ ] Enforce rustfmt (there is no rustfmt.toml yet).
+
+### Daemon and persistence (I7; PER-25–PER-31, D71)
+- [ ] `last_good` test `a_copy_is_saved_once_writes_go_quiet` is ignored because Bazel's darwin sandbox delivers no file events. Prove saving another way.
+- [ ] Give the background reconcile, `ServerInfo.last_start` and the debounce a decision number and a GRPC entry.
+- [ ] Put humatad's own log lines in restart reports. Write the restart doctor skill (`humata doctor restarts`).
+- [ ] MV-13/MV-14 move export and import, including the store's MV-13 export.
+- [ ] Recheck `terminal_test` (once failed with `SizeOutOfRange { claimed: 2097152 }`) and `restart_test` (once Unauthenticated), and fix the flaky `humatad2_unit_test`.
+
+### Machines (I7, A3; D61)
+- [ ] Restart the service only when checksums change, not on every connect.
+- [ ] Operation Cancel and Retry, EventService machine streaming, and launchd for macOS remotes.
+- [ ] A host-side peer-link client with keepalive.
+- [ ] The remove plan covers sessions and channels, and runs the dispose, leave_channels, provider_delete and find_agents steps.
+- [ ] A real Lima/Linux run, including the four-platform tools bundle (after all I milestones, per the Linux batch rule).
+
+### Compression (D65)
+- [ ] Put FileService on the peer link so the remote throughput estimate fills in. Test that Auto picks zstd beyond the unit tests.
+- [ ] TransferService.Upload, diff chunks and bug-report chunks, the compression settings page, and FileService roots beyond session clones.
+- [ ] Bench numbers on a quiet machine.
+
+### MCP, access and other open items (I8, A5)
+- [ ] ReportService, script tokens (SEC-14), and the web listener.
+- [ ] MCP `inbox_request` and Ask→Inbox (D38.6); persist the Inbox and grants.
+- [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D74's sidebar question, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64).
