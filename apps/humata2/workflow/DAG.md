@@ -23,13 +23,13 @@ milestone file; agents read that file, not this one.
 | ID | Goal | Layer | Lane | Depends on (reason) | Status |
 |---|---|---|---|---|---|
 | [D0](milestones/D0.md) | SPEC, DECISIONS and OVERVIEW tell one story | L0 | docs | — | done (d8151a80, ba1a357e) |
-| [P0](milestones/P0.md) | Hot shared files are split so lanes don't collide | L0 | main | D0: the split follows the tidied docs | in progress (minion P0, under the main agent) |
+| [P0](milestones/P0.md) | Hot shared files are split so lanes don't collide | L0 | main | D0: the split follows the tidied docs | done (1a3831dd; `ui/src/panels.rs` and `desktop/tests/native.rs` deferred to LOOK2 while C1 holds them) |
 | [W1](milestones/W1.md) | The owner answers wave 1 and the changed frames are redrawn | L0 | owner + docs | D0: the questions come from the docs tidy | blocked (waiting on the owner; the main agent asks now) |
-| [FRAMES1](milestones/FRAMES1.md) | The screens the next layers need are drawn and signed off | L0 | docs | D0: frames are drawn from the tidied rules | open |
+| [FRAMES1](milestones/FRAMES1.md) | The screens the next layers need are drawn and signed off | L0 | docs | D0: frames are drawn from the tidied rules | in progress (lane FRAMES1) |
 | [FRAMES2](milestones/FRAMES2.md) | The screens for machines, files, forks, PR reviews and views are drawn and signed off | L1 | docs | FRAMES1: same files and the same lane; the earlier frames set the patterns | blocked |
 | [LOOK1](milestones/LOOK1.md) | The session page and sidebar look like the goldens | L0 | UI | D0: the frames and rules it matches are the tidied ones | in progress (minion C1, outside this workflow; do not hand out) |
 | [LOOK2](milestones/LOOK2.md) | Every other screen looks like the goldens | L1 | UI | LOOK1: shares the shell, theme and sidebar; and C1 must release the UI files; P0: the panels and native tests must be split before a second manager edits them; W1*: frames 18, 29, 31, 32, 33 change; the app matches the redrawn ones before this closes | blocked |
-| [FL-D](milestones/FL-D.md) | The daemon holds a real local session that survives restarts | L0 | daemon | D0: the rules it builds are the tidied ones | open |
+| [FL-D](milestones/FL-D.md) | The daemon holds a real local session that survives restarts | L0 | daemon | D0: the rules it builds are the tidied ones | done (9ec5b5ed) |
 | [FL](milestones/FL.md) | First light: a real session in the app that survives a reboot (0.1) | L1 | daemon + UI seam | FL-D: the app needs real Session and Channel services and holders; LOOK1: a real terminal needs the session page, tabs and sidebar; P0: the real client follows the per-service client traits P0 splits out; FRAMES1: New channel, clone progress and "Couldn't resume" have no frame yet | blocked |
 | [BUG](milestones/BUG.md) | Report a bug as text an agent can act on | L1 | third builder (`report/`) | LOOK1: a recording names targets by their place in the view tree, which must be stable; P0: the app wiring adds an overlay and actions in the split files | blocked |
 | [TIDY](milestones/TIDY.md) | No leftovers from dropped designs in the code or API | L1 | daemon | W1: deleting an API and folders can't be undone; it waits for the owner to confirm D104 and D9 | blocked |

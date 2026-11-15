@@ -22,6 +22,9 @@ For each of frames 18–35 the native capture matches the design frame within to
 - Also: OVERVIEW.md › "N1: A native macOS look and feel" (open items)
 - P0 is splitting some of these files; if a path is gone, look for its parts beside it (`ls` the folder).
 
+## Carried over from P0
+Split `ui/src/panels.rs` and `desktop/tests/native.rs` the same mechanical way P0 split the others (see the P0 commit 1a3831dd), first, once C1 has released them.
+
 ## Out of scope
 The Inbox card's full context and grants (ASK). Board behaviour beyond what is drawn (BOARD). Desk frames 36–40 and markdown frames 39, 41–43 (DESK, REVIEW). Palette search across machines and pins (FIND).
 
