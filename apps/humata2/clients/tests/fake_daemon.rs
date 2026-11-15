@@ -206,3 +206,100 @@ fn approving_an_item_transition_moves_only_its_item_and_denying_keeps_it() {
         assert!(workspace.waiting().all(|r| r.id != request));
     }
 }
+
+#[test]
+fn archive_undo_restores_tree_and_pin_without_rewinding_terminal_output() {
+    let mut workspace = fixture::design();
+    let id = SessionId::new("ledger");
+    workspace
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == id)
+        .unwrap()
+        .pinned = true;
+    let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
+    block_on(daemon.archive(&id)).expect("archive");
+    assert!(daemon.workspace().session(&id).unwrap().archived);
+    assert_ne!(
+        daemon
+            .workspace()
+            .session(&SessionId::new("brin"))
+            .unwrap()
+            .parent,
+        Some(id.clone())
+    );
+    block_on(daemon.send(&id, "kept output")).expect("output continues");
+    let lines = daemon.workspace().session(&id).unwrap().transcript.clone();
+    block_on(daemon.restore_session(&id)).expect("undo");
+    let workspace = daemon.workspace();
+    let restored = workspace.session(&id).unwrap();
+    assert!(!restored.archived && restored.pinned);
+    assert_eq!(restored.transcript, lines);
+    assert_eq!(
+        workspace.session(&SessionId::new("brin")).unwrap().parent,
+        Some(id)
+    );
+}
+
+#[test]
+fn session_launch_choices_assign_the_item_and_keep_only_included_repositories() {
+    use humata2_clients::model::{Agent, ChannelId, ItemStatus, SessionOptions, Speaker};
+    let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+    let options = SessionOptions {
+        model: Some("Opus".into()),
+        repos: vec!["acme/ledger".into()],
+        first_message: "Work on PAY-9\nKeep tests passing".into(),
+        item: Some(ItemId::new("PAY-9")),
+        branch: "backfill-progress-bar".into(),
+    };
+    let id = block_on(daemon.create_session(
+        &ChannelId::new("payments-rewrite"),
+        Agent::Claude,
+        &MachineId::new("devbox-1"),
+        "Backfill progress bar",
+        options.clone(),
+    ))
+    .expect("start session");
+    let workspace = daemon.workspace();
+    let session = workspace.session(&id).unwrap();
+    assert_eq!(workspace.session_options[&id], options);
+    assert_eq!(session.repo, "acme/ledger");
+    assert_eq!(session.branch, "backfill-progress-bar");
+    assert!(
+        session
+            .transcript
+            .iter()
+            .any(|line| line.from == Speaker::You && line.text == options.first_message)
+    );
+    let item = workspace
+        .items
+        .iter()
+        .find(|i| i.id.as_str() == "PAY-9")
+        .unwrap();
+    assert_eq!(item.session, Some(id));
+    assert_eq!(item.status, ItemStatus::InProgress);
+}
+
+#[test]
+fn adding_an_ssh_destination_reuses_it_and_rejects_a_list() {
+    let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+    assert!(matches!(
+        block_on(daemon.add_machine("one two")),
+        Err(DaemonError::Refused { .. })
+    ));
+    let id = block_on(daemon.add_machine("dev@newbox")).expect("added");
+    assert_eq!(
+        block_on(daemon.add_machine("dev@newbox")).expect("reused"),
+        id
+    );
+    assert!(daemon.workspace().machine(&id).unwrap().online);
+    assert_eq!(
+        daemon
+            .workspace()
+            .machines
+            .iter()
+            .filter(|m| m.id == id)
+            .count(),
+        1
+    );
+}

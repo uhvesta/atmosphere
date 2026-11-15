@@ -1,14 +1,8 @@
 //! D76 appearance tokens and shared control sizes.
 
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::{App, Hsla, Rgba, rgb, rgba};
+use gpui_kit::{App, Rgba, rgb};
 
-/// Cards and sheets.
-pub const PANEL: u32 = 0x202328;
-/// Raised controls on a panel.
-pub const PANEL2: u32 = 0x262a30;
-/// Hairlines and borders.
-pub const LINE: u32 = 0x33373e;
 /// Body text.
 pub const TEXT: u32 = 0xe6e7e9;
 /// Secondary text.
@@ -19,12 +13,6 @@ pub const FAINT: u32 = 0x6b7179;
 pub const ACCENT2: u32 = 0x3d7be0;
 /// Errors, removed, destructive.
 pub const RED: u32 = 0xf05d5d;
-/// A selected row.
-pub const SELECTED: u32 = 0x22354f;
-/// A toast.
-pub const TOAST: u32 = 0x26303d;
-/// A toast's border.
-pub const TOAST_LINE: u32 = 0x3b4c63;
 
 /// The top bar's height.
 pub const TOP_BAR: f32 = 52.0;
@@ -39,12 +27,6 @@ pub const SHEET: f32 = 640.0;
 #[must_use]
 pub fn color(hex: u32) -> Rgba {
     rgb(hex)
-}
-
-/// The scrim behind sheets.
-#[must_use]
-pub fn scrim() -> Hsla {
-    rgba(0x0000_008c).into()
 }
 
 /// Tokens copied from the approved light/dark frames, rather than the

@@ -1,0 +1,6 @@
+Splitter "Resize the sidebar"
+Button "Close window"
+Button "Minimize window"
+Button "Zoom window"
+Button "Create your first channel"
+Button "Add a machine over SSH"

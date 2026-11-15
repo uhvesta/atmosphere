@@ -72,6 +72,8 @@ pub enum Operation {
     MoveItem,
     /// [`Daemon::send_comments`].
     SendComments,
+    /// [`Daemon::archive`].
+    Archive,
     /// [`Daemon::resume`].
     Resume,
 }
@@ -134,6 +136,10 @@ pub trait Daemon: Send + Sync + 'static {
     fn fork(&self, session: &SessionId, kind: ForkKind, title: &str) -> Reply<SessionId>;
     /// Archives a session; its forks keep running.
     fn archive(&self, session: &SessionId) -> Reply<()>;
+    /// Adds a plain SSH destination to the fake workspace.
+    fn add_machine(&self, address: &str) -> Reply<MachineId>;
+    /// Restores a session archived by this client, including its tree and pin.
+    fn restore_session(&self, session: &SessionId) -> Reply<()>;
     /// Pins or unpins a session.
     fn set_pinned(&self, session: &SessionId, pinned: bool) -> Reply<()>;
     /// Marks a session very important, or not.
@@ -147,6 +153,7 @@ pub trait Daemon: Send + Sync + 'static {
         agent: Agent,
         machine: &MachineId,
         title: &str,
+        options: crate::model::SessionOptions,
     ) -> Reply<SessionId>;
     /// Makes a channel.
     fn create_channel(
@@ -196,6 +203,7 @@ struct Inner {
     recoveries: HashMap<SessionId, Recovery>,
     calls: Vec<String>,
     next: u32,
+    archived: HashMap<SessionId, (Session, Vec<SessionId>)>,
 }
 
 struct Subscriber {
@@ -215,6 +223,7 @@ impl FakeDaemon {
                 recoveries: fixture::recoveries(),
                 calls: Vec::new(),
                 next: 1,
+                archived: HashMap::new(),
             })),
             clock,
             latency: Duration::ZERO,
@@ -710,28 +719,127 @@ impl Daemon for FakeDaemon {
 
     fn archive(&self, session: &SessionId) -> Reply<()> {
         let id = session.clone();
-        self.reply(None, format!("archive {session}"), move |inner| {
-            let parent = {
-                let found = inner
+        self.reply(
+            Some(Operation::Archive),
+            format!("archive {session}"),
+            move |inner| {
+                let snapshot =
+                    inner
+                        .workspace
+                        .session(&id)
+                        .cloned()
+                        .ok_or_else(|| DaemonError::NotFound {
+                            what: format!("Session {id}"),
+                        })?;
+                if snapshot.archived {
+                    return Err(DaemonError::Refused {
+                        what: format!("Archiving {}", snapshot.title),
+                        reason: "it is already archived. Restore it before archiving again".into(),
+                    });
+                }
+                let children = inner
+                    .workspace
+                    .sessions
+                    .iter()
+                    .filter(|s| s.parent.as_ref() == Some(&id))
+                    .map(|s| s.id.clone())
+                    .collect();
+                inner.archived.insert(id.clone(), (snapshot, children));
+                let parent = {
+                    let found = inner
+                        .workspace
+                        .sessions
+                        .iter_mut()
+                        .find(|found| found.id == id)
+                        .ok_or_else(|| DaemonError::NotFound {
+                            what: format!("Session {id}"),
+                        })?;
+                    found.archived = true;
+                    found.pinned = false;
+                    found.parent.clone()
+                };
+                // FK-13: its forks move up to its parent.
+                for child in inner
                     .workspace
                     .sessions
                     .iter_mut()
-                    .find(|found| found.id == id)
+                    .filter(|child| child.parent.as_ref() == Some(&id))
+                {
+                    child.parent.clone_from(&parent);
+                }
+                inner.emit(Event::Resync);
+                Ok(())
+            },
+        )
+    }
+
+    fn add_machine(&self, address: &str) -> Reply<MachineId> {
+        let address = address.trim().to_owned();
+        self.reply(None, "add SSH machine".into(), move |inner| {
+            if address.is_empty() || address.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err(DaemonError::Refused {
+                    what: "Adding a machine".into(),
+                    reason: "type one SSH host or user@host without spaces".into(),
+                });
+            }
+            if let Some(machine) = inner.workspace.machines.iter().find(
+                |m| matches!(&m.kind,crate::model::MachineKind::Ssh{address:old} if old==&address),
+            ) {
+                return Ok(machine.id.clone());
+            }
+            let id = MachineId::new(inner.id("ssh"));
+            inner.workspace.machines.push(crate::model::Machine {
+                id: id.clone(),
+                name: address.rsplit('@').next().unwrap_or(&address).into(),
+                kind: crate::model::MachineKind::Ssh { address },
+                online: true,
+                detail: "Ubuntu 24.04 · ssh".into(),
+                last_seen: "now".into(),
+            });
+            inner.workspace.machine_health.insert(
+                id.clone(),
+                crate::model::MachineHealth {
+                    system: "Ubuntu 24.04 · ssh".into(),
+                    daemon: "2.0.3".into(),
+                    uptime: "just started".into(),
+                    ..Default::default()
+                },
+            );
+            inner.emit(Event::Resync);
+            Ok(id)
+        })
+    }
+
+    fn restore_session(&self, session: &SessionId) -> Reply<()> {
+        let id = session.clone();
+        self.reply(None, format!("restore session {session}"), move |inner| {
+            let (snapshot, children) =
+                inner
+                    .archived
+                    .remove(&id)
                     .ok_or_else(|| DaemonError::NotFound {
-                        what: format!("Session {id}"),
+                        what: format!("Archived session {id}. It may already have been restored"),
                     })?;
-                found.archived = true;
-                found.pinned = false;
-                found.parent.clone()
-            };
-            // FK-13: its forks move up to its parent.
+            let restored_parent = snapshot.parent.clone();
+            let found = inner
+                .workspace
+                .sessions
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or_else(|| DaemonError::NotFound {
+                    what: format!("Session {id}"),
+                })?;
+            // Restore archival metadata without overwriting output received since archive.
+            found.archived = false;
+            found.pinned = snapshot.pinned;
+            found.parent = restored_parent.clone();
             for child in inner
                 .workspace
                 .sessions
                 .iter_mut()
-                .filter(|child| child.parent.as_ref() == Some(&id))
+                .filter(|s| children.contains(&s.id) && s.parent == restored_parent)
             {
-                child.parent.clone_from(&parent);
+                child.parent = Some(id.clone());
             }
             inner.emit(Event::Resync);
             Ok(())
@@ -796,6 +904,7 @@ impl Daemon for FakeDaemon {
         agent: Agent,
         machine: &MachineId,
         title: &str,
+        options: crate::model::SessionOptions,
     ) -> Reply<SessionId> {
         let channel = channel.clone();
         let machine = machine.clone();
@@ -811,15 +920,21 @@ impl Daemon for FakeDaemon {
                 if !online {
                     return Err(DaemonError::Offline { machine });
                 }
-                let repo = inner
-                    .workspace
-                    .channel(&channel)
-                    .and_then(|found| found.repos.first().cloned())
-                    .unwrap_or_default();
+                let config=inner.workspace.channel(&channel).ok_or_else(||DaemonError::NotFound {what:format!("Channel {channel}")})?;
+                if options.repos.iter().any(|repo|!config.repos.contains(repo)) {return Err(DaemonError::Refused {what:"Starting the session".into(),reason:"one of its repositories is outside this channel. Pick this channel's repositories and try again".into()});}
+                if let Some(item)=&options.item {
+                    let found=inner.workspace.items.iter().find(|i|&i.id==item).ok_or_else(||DaemonError::NotFound {what:format!("Board item {item}")})?;
+                    if matches!(&found.scope,Scope::Channel(id) if id!=&channel) {return Err(DaemonError::Refused {what:"Starting an item session".into(),reason:"the item belongs to another channel. Use the item's channel".into()});}
+                }
+                if !inner.workspace.channel_machines(&channel).any(|m| m.id == machine) {
+                    return Err(DaemonError::Refused { what: "Starting the session".into(), reason: "the machine is outside this channel. Choose a connected machine or add it to the channel first".into() });
+                }
+                let machine_name = inner.workspace.machine(&machine).map_or_else(|| machine.to_string(), |m| m.name.clone());
+                let repo=options.repos.first().cloned().unwrap_or_default();
                 let id = SessionId::new(inner.id("s-new"));
                 inner.workspace.sessions.push(Session {
                     id: id.clone(),
-                    channel,
+                    channel: channel.clone(),
                     parent: None,
                     fork: None,
                     title: title.clone(),
@@ -831,7 +946,7 @@ impl Daemon for FakeDaemon {
                     vip: false,
                     unread: 0,
                     repo,
-                    branch: format!("humata/{id}"),
+                    branch: if options.branch.is_empty(){id.to_string()}else{options.branch.clone()},
                     started: "just now".to_owned(),
                     active: "just now".to_owned(),
                     activity: String::new(),
@@ -844,6 +959,15 @@ impl Daemon for FakeDaemon {
                     archived: false,
                     recovery: None,
                 });
+                if !options.first_message.is_empty() {
+                    if let Some(session)=inner.workspace.sessions.last_mut(){session.transcript.push(Line {from:Speaker::You,text:options.first_message.clone()});session.status=Status::Working;session.turn=Turn::Running;}
+                }
+                if let Some(item)=&options.item {
+                    if let Some(item)=inner.workspace.items.iter_mut().find(|i|&i.id==item) {item.session=Some(id.clone());if matches!(item.status,ItemStatus::Backlog|ItemStatus::Todo){item.status=ItemStatus::InProgress;}}
+                }
+                inner.workspace.activity.insert(0,crate::model::Activity {channel,session:Some(id.clone()),kind:crate::model::ActivityKind::Turn,text:format!("Started “{title}” with {} on {machine_name}",agent.name()),by:"You".into(),at:"now".into()});
+                inner.workspace.session_options.insert(id.clone(),options);
+                inner.emit(Event::Resync);
                 inner.changed(&id);
                 Ok(id)
             },

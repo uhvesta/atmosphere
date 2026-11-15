@@ -169,6 +169,8 @@ pub enum Delegate {
     OpenSession(SessionId),
     /// Say this in a toast.
     Toast(String),
+    /// An archive succeeded; the parent can offer Undo.
+    Archived(SessionId, String),
     /// The open session was archived: leave its page.
     Left,
 }
@@ -271,6 +273,12 @@ pub enum SessionAction {
     CancelFork,
     /// The daemon made the fork, or didn't.
     Forked(Result<SessionId, DaemonError>),
+    /// The archive request finished.
+    Archived {
+        session: SessionId,
+        title: String,
+        result: Result<(), DaemonError>,
+    },
     /// Archive the open session.
     Archive,
     /// Pin or unpin the open session.
@@ -717,20 +725,37 @@ impl Reducer for Sessions {
                 Err(error) => state.error = Some(error.to_string()),
             },
             SessionAction::Archive => {
-                if let Some(id) = state.open.take() {
+                if let Some(id) = state.open.clone() {
                     let title = state
                         .workspace
                         .session(&id)
-                        .map(|session| session.title.clone())
-                        .unwrap_or_default();
-                    return self.done(|daemon| daemon.archive(&id)).and(Effect::concat([
-                        Effect::send(SessionAction::Delegate(Delegate::Left)),
-                        Effect::send(SessionAction::Delegate(Delegate::Toast(format!(
-                            "Archived {title}. It stays in Trash for 30 days."
-                        )))),
-                    ]));
+                        .map_or_else(String::new, |s| s.title.clone());
+                    let daemon = self.clients.daemon.clone();
+                    return Effect::future(async move {
+                        let result = daemon.archive(&id).await;
+                        SessionAction::Archived {
+                            session: id,
+                            title,
+                            result,
+                        }
+                    });
                 }
             }
+            SessionAction::Archived {
+                session,
+                title,
+                result,
+            } => match result {
+                Ok(()) => {
+                    if state.open.as_ref() == Some(&session) {
+                        state.open = None;
+                    }
+                    return Effect::send(SessionAction::Delegate(Delegate::Archived(
+                        session, title,
+                    )));
+                }
+                Err(error) => state.error = Some(error.to_string()),
+            },
             SessionAction::TogglePin => {
                 if let Some(session) = open_session(state) {
                     let (id, pinned) = (session.id.clone(), !session.pinned);

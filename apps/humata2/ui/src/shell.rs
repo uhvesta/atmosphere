@@ -43,6 +43,8 @@ pub struct Shell {
     _channel_filter_subscription: Subscription,
     board_inputs: crate::board::Inputs,
     applied_theme: Option<humata2_settings::Theme>,
+    host_address: Entity<InputState>,
+    _host_address_subscription: Subscription,
     _appearance: Subscription,
     viewport: f32,
 }
@@ -88,6 +90,22 @@ impl Shell {
             },
         );
         let board_inputs = crate::board::Inputs::new(&ui, window, cx);
+        let host_address =
+            cx.new(|cx| InputState::new(window, cx).placeholder("user@host or SSH alias"));
+        let host_ui = ui.clone();
+        let host_address_subscription = cx.subscribe(
+            &host_address,
+            move |_: &mut Self, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    host_ui.send(
+                        AppAction::Hosts(humata2_hosts::HostsAction::Address(
+                            input.read(cx).value().to_string(),
+                        )),
+                        cx,
+                    );
+                }
+            },
+        );
         let appearance_ui = ui.clone();
         let appearance = window.observe_window_appearance(move |window, cx| {
             if appearance_ui
@@ -115,6 +133,8 @@ impl Shell {
             _channel_filter_subscription: channel_filter_subscription,
             board_inputs,
             applied_theme: None,
+            host_address,
+            _host_address_subscription: host_address_subscription,
             _appearance: appearance,
             viewport: 0.,
         }
@@ -333,6 +353,13 @@ impl Render for Shell {
         }
         self.ui
             .read(|state| self.board_inputs.sync(state, window, cx));
+        let address = self
+            .ui
+            .read(|s| s.hosts.add_address.clone().unwrap_or_default());
+        if self.host_address.read(cx).value().as_ref() != address {
+            self.host_address
+                .update(cx, |input, cx| input.set_value(address, window, cx));
+        }
         let ui = self.ui.clone();
         let body = match load {
             Load::Loading => col()
@@ -367,6 +394,7 @@ impl Render for Shell {
                     state,
                     self.channel_filter.clone(),
                     &self.board_inputs,
+                    self.host_address.clone(),
                     window,
                     cx,
                 )
@@ -384,7 +412,9 @@ impl Render for Shell {
                     .into_any_element()
             } else {
                 self.ui.read(|state| {
-                    if matches!(state.route, Route::Settings) {
+                    if state.workspace.channels.is_empty() && state.route == Route::Home {
+                        div().into_any_element()
+                    } else if matches!(state.route, Route::Settings) {
                         crate::settings::toolbar(look).into_any_element()
                     } else if matches!(state.route, Route::Hosts) {
                         crate::hosts::toolbar(&ui, look).into_any_element()

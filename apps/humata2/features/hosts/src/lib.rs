@@ -19,6 +19,12 @@ pub struct HostsState {
     pub workspace: Arc<Workspace>,
     /// The machine whose health is open.
     pub selected: Option<MachineId>,
+    /// An SSH host being added.
+    pub add_address: Option<String>,
+    /// A host-add request is in flight.
+    pub adding: bool,
+    /// Why adding a host failed.
+    pub add_error: Option<String>,
     /// Hosts being connected.
     pub connecting: BTreeSet<MachineId>,
     /// What a reconnect found, per host.
@@ -58,6 +64,16 @@ pub enum HostsAction {
     Show(Arc<Workspace>),
     /// The hosts connected at the last run came back at launch.
     Restore(BTreeSet<MachineId>),
+    /// Open the SSH host form.
+    StartAdd,
+    /// Edit the SSH destination.
+    Address(String),
+    /// Cancel the form.
+    CancelAdd,
+    /// Connect this new SSH destination.
+    Add,
+    /// Adding the destination finished.
+    Added(Result<MachineId, DaemonError>),
     /// Inspect a particular machine.
     Select(MachineId),
     /// Connect was clicked.
@@ -104,6 +120,49 @@ impl Reducer for Hosts {
                 }
             }
             HostsAction::Restore(previously) => state.previously = previously,
+            HostsAction::StartAdd => {
+                state.add_address = Some(String::new());
+                state.add_error = None;
+            }
+            HostsAction::Address(address) => {
+                if let Some(value) = &mut state.add_address {
+                    *value = address;
+                }
+            }
+            HostsAction::CancelAdd => {
+                if !state.adding {
+                    state.add_address = None;
+                    state.add_error = None;
+                }
+            }
+            HostsAction::Add => {
+                if state.adding {
+                    return Effect::none();
+                }
+                let Some(address) = state.add_address.clone() else {
+                    return Effect::none();
+                };
+                if address.trim().is_empty() {
+                    return Effect::none();
+                }
+                state.adding = true;
+                state.add_error = None;
+                let daemon = self.clients.daemon.clone();
+                return Effect::future(async move {
+                    HostsAction::Added(daemon.add_machine(&address).await)
+                });
+            }
+            HostsAction::Added(result) => {
+                state.adding = false;
+                match result {
+                    Ok(id) => {
+                        state.selected = Some(id);
+                        state.add_address = None;
+                        state.add_error = None;
+                    }
+                    Err(error) => state.add_error = Some(error.to_string()),
+                }
+            }
             HostsAction::Connect(machine) => {
                 if !state.connecting.insert(machine.clone()) {
                     return Effect::none();

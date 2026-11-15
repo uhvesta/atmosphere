@@ -87,6 +87,8 @@ gpui_kit::assets::icon_assets!(
         ShieldCheck,
         Bot,
         SquarePen,
+        SquareTerminal,
+        Archive,
         HardDrive,
         Bell,
         Keyboard,

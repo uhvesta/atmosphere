@@ -31,7 +31,7 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings"
 Splitter "Resize the sidebar"
-Button "Add a machine…" disabled
+Button "Add a machine…"
 ListItem "This Mac"
 ListItem "devbox-1" selected
   Button "Free space…" disabled

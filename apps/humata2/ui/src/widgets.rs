@@ -98,19 +98,6 @@ pub fn primary(
     send(ui, id, label, action).primary()
 }
 
-/// One of a set of choices, selected when `on`.
-#[must_use]
-pub fn choice(
-    ui: &Rc<Ui>,
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    on: bool,
-    action: AppAction,
-) -> Button {
-    let button = send(ui, id, label, action);
-    if on { button.primary() } else { button.ghost() }
-}
-
 /// A banner saying what went wrong, with a button to dismiss it.
 #[must_use]
 pub fn error_banner(
@@ -134,27 +121,4 @@ pub fn error_banner(
         .child(div().flex_1().text_color(color(theme::TEXT)).child(text))
         .child(ghost(ui, (id, 1usize), "Dismiss", dismiss))
         .test_support()
-}
-
-/// A clickable row in a list, with role `role` and `label`, highlighted
-/// when `selected`. Finish it with `.test_support()` so queries see it.
-pub fn list_item(
-    id: impl Into<ElementId>,
-    role: Role,
-    label: impl Into<SharedString>,
-    selected: bool,
-) -> Stateful<Div> {
-    row()
-        .id(id)
-        .role(role)
-        .aria_label(label)
-        .aria_selected(selected)
-        .gap_2()
-        .px_2()
-        .rounded(px(5.))
-        .cursor_pointer()
-        .when(selected, |item| item.bg(color(theme::SELECTED)))
-        .when(!selected, |item| {
-            item.hover(|item| item.bg(color(theme::PANEL2)))
-        })
 }

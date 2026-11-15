@@ -978,6 +978,14 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
         );
     }
     panel
+        .child(button(
+            ui,
+            "board-start-session",
+            "Start a session for this item",
+            AppAction::StartNewForItem(item.id.clone()),
+            look,
+            false,
+        ))
         .child(secondary(look, "Description").font_weight(FontWeight::SEMIBOLD))
         .child(
             secondary(

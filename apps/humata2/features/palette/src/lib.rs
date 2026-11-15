@@ -47,6 +47,14 @@ pub enum Command {
     Session(SessionId),
     /// Open a pull request by number.
     Pull(u32),
+    /// Open a repository path in its session's own clone.
+    File {
+        session: SessionId,
+        repo: String,
+        path: String,
+    },
+    /// Expand the terminal in the current session.
+    TerminalFullScreen,
     /// Start recording a bug report (I9).
     Record,
     /// Show or hide the session's side panel.
@@ -79,6 +87,8 @@ pub struct PaletteState {
     pub cursor: usize,
     /// Recent picks, newest first; saved.
     pub recent: Vec<Command>,
+    /// The session beneath the palette, for scoped file/context actions.
+    pub context: Option<SessionId>,
     /// Whether a session is open, so session commands apply.
     pub in_session: bool,
 }
@@ -104,6 +114,8 @@ pub enum PaletteAction {
         /// Whether a session is open.
         in_session: bool,
     },
+    /// The session under the palette changed.
+    Context(Option<SessionId>),
     /// Escape or a click outside.
     Close,
     /// The query changed.
@@ -140,6 +152,12 @@ impl Reducer for Palette {
                 state.in_session = in_session;
                 state.query.clear();
                 state.refresh();
+            }
+            PaletteAction::Context(session) => {
+                state.context = session;
+                if state.open {
+                    state.refresh();
+                }
             }
             PaletteAction::Close => {
                 if state.open {
@@ -196,16 +214,36 @@ impl PaletteState {
             ));
         }
         for entry in self.all() {
-            if let Some(score) = fuzzy(query, &entry.title) {
+            let search = if matches!(entry.command, Command::Session(_)) {
+                format!("{} {}", entry.title, entry.hint)
+            } else {
+                entry.title.clone()
+            };
+            let contextual = matches!(
+                entry.command,
+                Command::TogglePanel | Command::TerminalFullScreen
+            ) && self
+                .context
+                .as_ref()
+                .and_then(|id| self.workspace.session(id))
+                .is_some_and(|session| fuzzy(query, &session.title).is_some());
+            if let Some(score) = fuzzy(query, &search).or_else(|| contextual.then_some(0)) {
                 let recent = self
                     .recent
                     .iter()
                     .position(|command| command == &entry.command)
                     .map_or(0, |at| 1_000 - i64::try_from(at).unwrap_or(0));
-                entries.push((score + recent, entry));
+                let direct = fuzzy(query, &entry.title).is_some();
+                entries.push((score + recent + if direct { 10_000 } else { 0 }, entry));
             }
         }
-        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        let rank = |entry: &Entry| match entry.command {
+            Command::Session(_) => 0,
+            Command::File { .. } => 1,
+            Command::Channel(_) => 2,
+            _ => 3,
+        };
+        entries.sort_by(|a, b| rank(&a.1).cmp(&rank(&b.1)).then_with(|| b.0.cmp(&a.0)));
         self.entries = Arc::new(entries.into_iter().map(|(_, entry)| entry).collect());
         self.cursor = 0;
     }
@@ -235,8 +273,20 @@ impl PaletteState {
         .collect();
         if self.in_session {
             entries.push(Entry {
+                command: Command::TerminalFullScreen,
+                title: "Terminal full screen".into(),
+                hint: "⇧⌘↩".into(),
+            });
+            entries.push(Entry {
                 command: Command::Fork,
-                title: "Fork this session…".to_owned(),
+                title: self
+                    .context
+                    .as_ref()
+                    .and_then(|id| self.workspace.session(id))
+                    .map_or_else(
+                        || "Fork this session…".into(),
+                        |session| format!("Fork “{}”", session.title),
+                    ),
                 hint: "⇧⌘F".to_owned(),
             });
             entries.push(Entry {
@@ -252,12 +302,53 @@ impl PaletteState {
                 hint: "Channel".to_owned(),
             });
         }
-        for session in self.workspace.sessions.iter().filter(|session| !session.archived) {
+        for session in self
+            .workspace
+            .sessions
+            .iter()
+            .filter(|session| !session.archived)
+        {
             entries.push(Entry {
                 command: Command::Session(session.id.clone()),
                 title: session.title.clone(),
-                hint: session.status.label(),
+                hint: session
+                    .parent
+                    .as_ref()
+                    .and_then(|id| self.workspace.session(id))
+                    .map_or_else(
+                        || {
+                            format!(
+                                "# {} · {}",
+                                session.channel,
+                                session.status.label().to_lowercase()
+                            )
+                        },
+                        |parent| format!("fork of {}", parent.title),
+                    ),
             });
+        }
+        for (session, files) in &self.workspace.session_files {
+            if self.context.as_ref().is_some_and(|id| id != session) {
+                continue;
+            }
+            let Some(owner) = self.workspace.session(session).filter(|s| !s.archived) else {
+                continue;
+            };
+            for file in files.iter().filter(|file| !file.folder) {
+                entries.push(Entry {
+                    command: Command::File {
+                        session: session.clone(),
+                        repo: file.repo.clone(),
+                        path: file.path.clone(),
+                    },
+                    title: format!(
+                        "{}/{}",
+                        file.repo.rsplit('/').next().unwrap_or(&file.repo),
+                        file.path
+                    ),
+                    hint: owner.title.clone(),
+                });
+            }
         }
         entries
     }

@@ -38,7 +38,7 @@ Complementary "Files"
   Button "Expand panel"
   Button "Close panel"
   #session-file-filter
-    #input-4294967308
+    #input-4294967312
       TextInput "Filter files" value="" placeholder="Filter files"
   List "Session files"
     Button "acme/api"

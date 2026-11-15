@@ -96,6 +96,7 @@ humata2_snapshot_test(
         "//apps/humata2/features/app",
         "//apps/humata2/features/board",
         "//apps/humata2/features/hosts",
+        "//apps/humata2/features/palette",
         "//apps/humata2/features/review",
         "//apps/humata2/features/session",
         "//apps/humata2/features/settings",

@@ -6,9 +6,13 @@ use crate::{
     widgets::{col, row},
 };
 use gpui_kit::base::Disableable as _;
-use gpui_kit::component::{Sizable as _, button::Button};
+use gpui_kit::component::{
+    Sizable as _,
+    button::Button,
+    input::{Input, InputState},
+};
 use gpui_kit::{prelude::*, *};
-use humata2_app::{AppAction, AppState, NewSessionAction, Route};
+use humata2_app::{AppAction, AppState, NewSessionAction};
 use humata2_clients::model::{Agent, MachineId, MachineKind, Status};
 use humata2_hosts::HostsAction as A;
 use std::rc::Rc;
@@ -72,18 +76,21 @@ pub(crate) fn toolbar(ui: &Rc<Ui>, look: Look) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("Hosts"),
         )
-        .child(
-            button(
-                ui,
-                "hosts-add",
-                "Add a machine…",
-                AppAction::Switch(Route::Hosts),
-                look,
-            )
-            .disabled(true),
-        )
+        .child(button(
+            ui,
+            "hosts-add",
+            "Add a machine…",
+            AppAction::Hosts(A::StartAdd),
+            look,
+        ))
 }
-pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, width: f32, look: Look) -> Div {
+pub(crate) fn page(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    width: f32,
+    address: Entity<InputState>,
+    look: Look,
+) -> Div {
     let narrow = width < 850.;
     let mut table = card(look)
         .flex_1()
@@ -332,24 +339,75 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, width: f32, look: Look) -> Div
         ));
     }
     details = details.child(bridge);
-    row()
-        .size_full()
-        .min_h_0()
-        .items_stretch()
-        .when(narrow, |x| x.flex_col())
-        .gap(px(16.))
-        .p(px(20.))
-        .text_size(px(12.5))
-        .text_color(rgb(look.text))
-        .child(
-            div()
-                .id("hosts-scroll")
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .when(narrow, |x| x.min_h(px(210.)))
-                .overflow_x_scroll()
-                .child(table),
-        )
-        .child(details.when(narrow, |x| x.w_full()))
+    let form = state.hosts.add_address.as_ref().map(|value| {
+        card(look)
+            .m(px(20.))
+            .p(px(12.))
+            .gap(px(8.))
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Add a machine over SSH"),
+            )
+            .child(dim(look, "Use an SSH host or alias you can connect to."))
+            .child(Input::new(&address))
+            .children(
+                state
+                    .hosts
+                    .add_error
+                    .as_ref()
+                    .map(|error| div().text_color(rgb(0xff453a)).child(error.clone())),
+            )
+            .child(
+                row()
+                    .gap(px(8.))
+                    .child(
+                        button(
+                            ui,
+                            "host-add-connect",
+                            if state.hosts.adding {
+                                "Connecting…"
+                            } else {
+                                "Connect"
+                            },
+                            AppAction::Hosts(A::Add),
+                            look,
+                        )
+                        .disabled(value.trim().is_empty() || state.hosts.adding),
+                    )
+                    .child(
+                        button(
+                            ui,
+                            "host-add-cancel",
+                            "Cancel",
+                            AppAction::Hosts(A::CancelAdd),
+                            look,
+                        )
+                        .disabled(state.hosts.adding),
+                    ),
+            )
+    });
+    col().size_full().min_h_0().children(form).child(
+        row()
+            .flex_1()
+            .min_h_0()
+            .min_h_0()
+            .items_stretch()
+            .when(narrow, |x| x.flex_col())
+            .gap(px(16.))
+            .p(px(20.))
+            .text_size(px(12.5))
+            .text_color(rgb(look.text))
+            .child(
+                div()
+                    .id("hosts-scroll")
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .when(narrow, |x| x.min_h(px(210.)))
+                    .overflow_x_scroll()
+                    .child(table),
+            )
+            .child(details.when(narrow, |x| x.w_full())),
+    )
 }

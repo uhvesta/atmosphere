@@ -159,6 +159,16 @@ impl Agent {
     }
 }
 
+/// The explicit choices used when starting a session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionOptions {
+    pub model: Option<String>,
+    pub repos: Vec<String>,
+    pub first_message: String,
+    pub item: Option<ItemId>,
+    pub branch: String,
+}
+
 /// What a session is doing, as the sidebar dot shows it (SE-2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Status {

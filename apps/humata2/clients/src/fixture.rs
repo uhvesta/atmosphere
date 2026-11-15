@@ -830,6 +830,29 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             ],
         );
     }
+    for (session, files) in &workspace.session_files {
+        for file in files {
+            let body = match (file.repo.as_str(), file.path.as_str()) {
+                ("ledger", "migrations/0042_accounts.sql") => {
+                    "CREATE TABLE accounts (\n    id BIGINT PRIMARY KEY,\n    currency CHAR(3) NOT NULL,\n    balance BIGINT NOT NULL DEFAULT 0\n);\n"
+                }
+                ("ledger", "README.md") => {
+                    "# Ledger\n\nAccounts and journal entries for payments.\n\nApply migrations in order before starting the backfill.\n"
+                }
+                ("api", "src/entry.rs") => {
+                    "pub struct Entry {\n    pub account_id: i64,\n    pub amount: i64,\n    pub currency: String,\n}\n"
+                }
+                ("api", "Cargo.toml") => {
+                    "[package]\nname = \"payments-api\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
+                }
+                _ => continue,
+            };
+            workspace
+                .file_contents
+                .entry((session.clone(), file.repo.clone(), file.path.clone()))
+                .or_insert_with(|| body.into());
+        }
+    }
     if let Some(files) = workspace
         .session_files
         .get_mut(&SessionId::new("partial-brin"))

@@ -37,7 +37,7 @@ Tab "Table" selected
 Tab "Dashboard"
 Button "New item"
 #board-filter-input
-  #input-4294967312
+  #input-4294967316
     TextInput "Filter" value="" placeholder="Filter"
 ListItem "PAY-12 Multi-currency ledgers"
 ListItem "INF-4 Move CI to devbox runners"

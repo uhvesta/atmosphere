@@ -386,6 +386,20 @@ fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
+        if self.ui.read(|s| {
+            s.load == humata2_app::Load::Ready
+                && s.workspace.channels.is_empty()
+                && s.route == Route::Home
+        }) {
+            return widgets::col()
+                .id("sidebar")
+                .w(px(236.))
+                .h_full()
+                .bg(rgb(look.sidebar))
+                .child(row().h(px(52.)).pl(px(20.)).child(chrome::lights()))
+                .into_any_element();
+        }
+
         let (rows, cursor, current, collapsed, width) = self.ui.read(|state| {
             let columns = state.layout.columns(
                 f32::from(window.viewport_size().width),

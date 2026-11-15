@@ -19,6 +19,8 @@ pub struct Workspace {
     pub channels: Vec<Channel>,
     /// Every session, parents before their forks.
     pub sessions: Vec<Session>,
+    /// Explicit launch choices, indexed by session.
+    pub session_options: BTreeMap<SessionId, crate::model::SessionOptions>,
     /// Inbox requests, newest first, answered ones included.
     pub requests: Vec<Request>,
     /// Board items on every board.
@@ -68,6 +70,21 @@ impl Workspace {
     #[must_use]
     pub fn machine(&self, id: &MachineId) -> Option<&Machine> {
         self.machines.iter().find(|machine| &machine.id == id)
+    }
+
+    /// Hosts declared by the channel or already holding one of its sessions.
+    pub fn channel_machines<'a>(
+        &'a self,
+        channel: &'a ChannelId,
+    ) -> impl Iterator<Item = &'a Machine> + 'a {
+        self.machines.iter().filter(move |machine| {
+            self.channel(channel)
+                .is_some_and(|c| c.machines.contains(&machine.id))
+                || self
+                    .sessions
+                    .iter()
+                    .any(|s| &s.channel == channel && s.machine == machine.id)
+        })
     }
 
     /// Requests still waiting for an answer.

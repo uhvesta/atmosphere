@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_board::{Board, BoardAction, BoardState};
-use humata2_clients::model::{Agent, ChannelId, MachineId, Scope, SessionId};
+use humata2_clients::model::{
+    Agent, ChannelId, ItemId, MachineId, Scope, SessionId, SessionOptions,
+};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_files::{Files, FilesAction, FilesState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
@@ -88,10 +90,44 @@ pub struct NewSession {
     pub machine: Option<MachineId>,
     /// Its title.
     pub title: String,
+    /// Optional model override.
+    pub model: String,
+    /// Typed once the agent starts.
+    pub first_message: String,
+    /// Repositories left out of this session.
+    pub excluded_repos: std::collections::BTreeSet<String>,
+    /// The board item this session starts for.
+    pub item: Option<ItemId>,
+    /// The picker currently open.
+    pub picker: Option<NewSessionPicker>,
     /// Waiting for the daemon.
     pub creating: bool,
     /// Why it couldn't be made.
     pub error: Option<String>,
+}
+
+impl NewSession {
+    /// The branch preview and the branch passed to the host.
+    pub fn branch(&self) -> String {
+        let slug = self
+            .title
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+            .join("-");
+        if slug.is_empty() {
+            "new-session".into()
+        } else {
+            slug
+        }
+    }
+}
+/// A New session picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewSessionPicker {
+    Channel,
+    Machine,
 }
 
 /// The New channel sheet (CH-1).
@@ -121,6 +157,12 @@ pub enum Overlay {
     Shortcuts,
 }
 
+/// The action a toast offers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ToastAction {
+    RestoreSession(SessionId),
+}
+
 /// A message at the bottom of the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Toast {
@@ -128,6 +170,8 @@ pub struct Toast {
     pub id: u64,
     /// What it says.
     pub text: String,
+    pub action: Option<ToastAction>,
+    pub working: bool,
 }
 
 /// The whole app's state.
@@ -305,7 +349,12 @@ impl AppState {
     fn toast(&mut self, text: String, clock: &Arc<dyn tca::Clock>) -> Effect<AppAction> {
         self.next_toast += 1;
         let id = self.next_toast;
-        self.toasts.push(Toast { id, text });
+        self.toasts.push(Toast {
+            id,
+            text,
+            action: None,
+            working: false,
+        });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
@@ -332,6 +381,14 @@ pub enum PaneAction {
 /// A change to the New session sheet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NewSessionAction {
+    /// Edit the model override.
+    Model(String),
+    /// Edit its first message.
+    FirstMessage(String),
+    /// Include or leave out one channel repository.
+    ToggleRepo(String),
+    /// Open/close a picker.
+    Picker(Option<NewSessionPicker>),
     /// Pick its channel.
     Channel(ChannelId),
     /// Pick its agent.
@@ -362,6 +419,13 @@ pub enum AppAction {
     Launch,
     /// The workspace loaded, or didn't.
     Loaded(Result<Workspace, DaemonError>),
+    /// Undo the action offered by this toast.
+    UndoToast(u64),
+    /// A toast undo finished.
+    Undone {
+        toast: u64,
+        result: Result<(), DaemonError>,
+    },
     /// Something changed on a daemon.
     Event(Event),
     /// The event stream ended.
@@ -386,6 +450,8 @@ pub enum AppAction {
     StartNewChannel,
     /// ⌘/.
     ShowShortcuts,
+    /// Start a session for this board item.
+    StartNewForItem(ItemId),
     /// The New session sheet changed.
     NewSession(NewSessionAction),
     /// The New channel sheet changed.
@@ -681,6 +747,22 @@ impl App {
                 state.layout.toggle(PaneId::Panel);
                 Effect::none()
             }
+            Command::TerminalFullScreen => {
+                self.reduce(state, AppAction::ToggleFullScreen(FullScreen::Terminal))
+            }
+            Command::File {
+                session,
+                repo,
+                path,
+            } => {
+                let go = self.navigate(state, Route::Session(session));
+                let select = self.child(
+                    state,
+                    AppAction::Session(SessionAction::SelectFile { repo, path }),
+                );
+                let open = self.child(state, AppAction::Session(SessionAction::OpenFile));
+                Effect::merge([go, select, open])
+            }
             Command::Record => {
                 let clock = self.clients.clock.clone();
                 state.toast(
@@ -708,6 +790,18 @@ impl App {
                 D::OpenSession(id) => self.switch(state, Route::Session(id.clone())),
             },
             AppAction::Session(SessionAction::Delegate(delegate)) => match delegate {
+                S::Archived(id, title) => {
+                    let notice = state.toast(format!("Archived “{title}”"), &clock);
+                    if let Some(toast) = state.toasts.last_mut() {
+                        toast.action = Some(ToastAction::RestoreSession(id.clone()));
+                    }
+                    let leave = if state.route == Route::Session(id.clone()) {
+                        self.navigate(state, Route::Home)
+                    } else {
+                        Effect::none()
+                    };
+                    Effect::merge([notice, leave])
+                }
                 S::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 S::Toast(text) => state.toast(text.clone(), &clock),
                 S::Left => {
@@ -881,6 +975,34 @@ impl App {
                 };
                 Effect::merge([state.toast(text, &clock), self.load(), self.follow()])
             }
+            AppAction::UndoToast(id) => {
+                let Some(toast) = state.toasts.iter_mut().find(|t| t.id == id && !t.working) else {
+                    return Effect::none();
+                };
+                let Some(ToastAction::RestoreSession(session)) = toast.action.clone() else {
+                    return Effect::none();
+                };
+                toast.working = true;
+                let daemon = self.clients.daemon.clone();
+                Effect::future(async move {
+                    AppAction::Undone {
+                        toast: id,
+                        result: daemon.restore_session(&session).await,
+                    }
+                })
+            }
+            AppAction::Undone { toast, result } => match result {
+                Ok(()) => {
+                    state.toasts.retain(|t| t.id != toast);
+                    Effect::none()
+                }
+                Err(error) => {
+                    if let Some(toast) = state.toasts.iter_mut().find(|t| t.id == toast) {
+                        toast.working = false;
+                    }
+                    state.toast(error.to_string(), &clock)
+                }
+            },
             AppAction::Retry => {
                 state.load = Load::Loading;
                 Effect::merge([self.load(), self.follow()])
@@ -935,6 +1057,10 @@ impl App {
                 }
                 state.overlays.push(Overlay::Palette);
                 let in_session = matches!(state.route, Route::Session(_));
+                state.palette.context = match &state.route {
+                    Route::Session(id) => Some(id.clone()),
+                    _ => None,
+                };
                 self.child(
                     state,
                     AppAction::Palette(PaletteAction::Open { in_session }),
@@ -946,21 +1072,65 @@ impl App {
                     Route::Session(id) => state.workspace.session(id).map(|s| s.channel.clone()),
                     _ => state.workspace.channels.first().map(|c| c.id.clone()),
                 };
-                let machine = state
-                    .workspace
-                    .machines
-                    .iter()
-                    .find(|machine| machine.online)
-                    .map(|machine| machine.id.clone());
+                let machine = channel.as_ref().and_then(|id| {
+                    state
+                        .workspace
+                        .channel_machines(id)
+                        .find(|machine| machine.online)
+                        .map(|machine| machine.id.clone())
+                });
                 state.overlays.push(Overlay::NewSession(NewSession {
                     channel,
                     agent: state.settings.preferences.default_agent,
                     machine,
                     title: String::new(),
+                    model: if state.settings.preferences.default_agent == Agent::Claude {
+                        "Opus".into()
+                    } else {
+                        String::new()
+                    },
+                    first_message: String::new(),
+                    excluded_repos: Default::default(),
+                    item: None,
+                    picker: None,
                     creating: false,
                     error: None,
                 }));
                 Effect::none()
+            }
+            AppAction::StartNewForItem(id) => {
+                let Some(item) = state
+                    .workspace
+                    .items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .cloned()
+                else {
+                    return Effect::none();
+                };
+                let effect = self.reduce(state, AppAction::StartNewSession);
+                if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
+                    sheet.title = item.title;
+                    sheet.item = Some(id);
+                    if let Scope::Channel(channel) = item.scope {
+                        sheet.machine = state
+                            .workspace
+                            .channel_machines(&channel)
+                            .find(|m| m.online)
+                            .map(|m| m.id.clone());
+                        sheet.channel = Some(channel);
+                    }
+                    if let Some(machine) = item
+                        .session
+                        .as_ref()
+                        .and_then(|id| state.workspace.session(id))
+                        .and_then(|s| state.workspace.machine(&s.machine))
+                        .filter(|m| m.online)
+                    {
+                        sheet.machine = Some(machine.id.clone());
+                    }
+                }
+                effect
             }
             AppAction::StartNewChannel => {
                 state
@@ -978,10 +1148,46 @@ impl App {
                 let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() else {
                     return Effect::none();
                 };
+                if sheet.creating {
+                    return Effect::none();
+                }
                 match change {
-                    NewSessionAction::Channel(id) => sheet.channel = Some(id),
-                    NewSessionAction::Agent(agent) => sheet.agent = agent,
-                    NewSessionAction::Machine(id) => sheet.machine = Some(id),
+                    NewSessionAction::Channel(id) => {
+                        if !state
+                            .workspace
+                            .channel_machines(&id)
+                            .any(|m| m.online && Some(&m.id) == sheet.machine.as_ref())
+                        {
+                            sheet.machine = state
+                                .workspace
+                                .channel_machines(&id)
+                                .find(|m| m.online)
+                                .map(|m| m.id.clone());
+                        }
+                        sheet.channel = Some(id);
+                        sheet.excluded_repos.clear();
+                        sheet.picker = None;
+                    }
+                    NewSessionAction::Agent(agent) => {
+                        sheet.agent = agent;
+                        sheet.model = if agent == Agent::Claude {
+                            "Opus".into()
+                        } else {
+                            String::new()
+                        };
+                    }
+                    NewSessionAction::Machine(id) => {
+                        sheet.machine = Some(id);
+                        sheet.picker = None;
+                    }
+                    NewSessionAction::Model(model) => sheet.model = model,
+                    NewSessionAction::FirstMessage(text) => sheet.first_message = text,
+                    NewSessionAction::Picker(picker) => sheet.picker = picker,
+                    NewSessionAction::ToggleRepo(repo) => {
+                        if !sheet.excluded_repos.remove(&repo) {
+                            sheet.excluded_repos.insert(repo);
+                        }
+                    }
                     NewSessionAction::Title(title) => sheet.title = title,
                     NewSessionAction::Create => {
                         let (Some(channel), Some(machine)) =
@@ -999,12 +1205,38 @@ impl App {
                         };
                         sheet.creating = true;
                         sheet.error = None;
+                        if !state
+                            .workspace
+                            .channel_machines(&channel)
+                            .any(|m| m.online && m.id == machine)
+                        {
+                            sheet.creating = false;
+                            sheet.error=Some("Choose a machine connected to this channel, or add the machine to the channel first.".into());
+                            return Effect::none();
+                        }
+                        let options = SessionOptions {
+                            model: (!sheet.model.trim().is_empty() && sheet.agent != Agent::Shell)
+                                .then(|| sheet.model.trim().into()),
+                            repos: state
+                                .workspace
+                                .channel(&channel)
+                                .map_or_else(Vec::new, |c| {
+                                    c.repos
+                                        .iter()
+                                        .filter(|repo| !sheet.excluded_repos.contains(*repo))
+                                        .cloned()
+                                        .collect()
+                                }),
+                            first_message: sheet.first_message.clone(),
+                            item: sheet.item.clone(),
+                            branch: sheet.branch(),
+                        };
                         let agent = sheet.agent;
                         let daemon = self.clients.daemon.clone();
                         return Effect::future(async move {
                             AppAction::SessionCreated(
                                 daemon
-                                    .create_session(&channel, agent, &machine, &title)
+                                    .create_session(&channel, agent, &machine, &title, options)
                                     .await,
                             )
                         });
@@ -1109,6 +1341,13 @@ impl App {
             AppAction::CloseNavigationOverlay => {
                 state.navigation_overlay = false;
                 Effect::none()
+            }
+            AppAction::Hosts(HostsAction::StartAdd) => {
+                let navigate = self.switch(state, Route::Hosts);
+                Effect::merge([
+                    navigate,
+                    self.child(state, AppAction::Hosts(HostsAction::StartAdd)),
+                ])
             }
             AppAction::Hosts(HostsAction::Select(id)) => {
                 let navigate = self.switch(state, Route::Hosts);

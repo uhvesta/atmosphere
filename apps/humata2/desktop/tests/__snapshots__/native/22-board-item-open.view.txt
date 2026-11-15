@@ -37,7 +37,7 @@ Tab "Table"
 Tab "Dashboard"
 Button "New item"
 #board-filter-input
-  #input-4294967312
+  #input-4294967316
     TextInput "Filter" value="" placeholder="Filter"
 Button "Expand item"
 Button "Close item"
@@ -63,3 +63,4 @@ Button "PAY-2 Currency codes table ✓"
 Button "Move to Done"
 Button "Keep in progress"
 Button "Open session"
+Button "Start a session for this item"

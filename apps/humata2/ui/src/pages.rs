@@ -53,16 +53,21 @@ pub fn page(
     state: &AppState,
     channel_filter: Entity<InputState>,
     board_inputs: &crate::board::Inputs,
+    host_address: Entity<InputState>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     match &state.route {
+        Route::Home if state.workspace.channels.is_empty() => {
+            first_run(ui, Look::of(cx)).into_any_element()
+        }
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
         Route::Settings => crate::settings::page(ui, state, Look::of(cx)).into_any_element(),
         Route::Hosts => crate::hosts::page(
             ui,
             state,
             f32::from(window.viewport_size().width) - state.layout.sidebar.width,
+            host_address,
             Look::of(cx),
         )
         .into_any_element(),
@@ -348,4 +353,15 @@ pub(crate) fn terminal_body(
                 .when(tab==0&&session.agent!=Agent::Shell,|body|body.child(div().text_color(rgb(look.term_dim)).child("  ⏵⏵ accept edits on (shift+tab to cycle)")))
         ))
         .test_support()
+}
+
+fn first_run(ui: &Rc<Ui>, look: Look) -> Div {
+    col().size_full().items_center().justify_center().p(px(20.)).text_size(px(13.)).text_color(rgb(look.text)).child(
+        col().w(px(460.)).max_w_full().items_center().gap(px(12.))
+            .child(chrome::icon(IconName::SquareTerminal,look.accent,40.))
+            .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Start with a channel"))
+            .child(div().text_color(rgb(look.secondary)).text_center().child("A channel is a project: its repos, the machines that work on it, its board and its sessions."))
+            .child(row().flex_wrap().justify_center().gap(px(10.)).pt(px(6.)).child(widgets::primary(ui,"first-channel-create","Create your first channel",AppAction::StartNewChannel).small().h(px(24.)).bg(rgb(look.accent)).text_color(rgb(0xffffff))).child(widgets::send(ui,"first-machine-add","Add a machine over SSH",AppAction::Hosts(humata2_hosts::HostsAction::StartAdd)).small().h(px(24.)).bg(rgb(look.fill)).text_color(rgb(look.text))))
+            .child(div().pt(px(8.)).text_size(px(11.5)).text_color(rgb(look.secondary)).text_center().child("GitHub access comes from the gh CLI. There is no sign-in in Humata."))
+    )
 }
