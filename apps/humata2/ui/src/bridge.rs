@@ -156,6 +156,9 @@ impl Ui {
                     state.overlays.clone(),
                     state.palette.clone(),
                     state.toasts.clone(),
+                    state.session.fork.clone(),
+                    state.session.forking,
+                    state.session.error.clone(),
                 )
             },
             move |_| changed(),

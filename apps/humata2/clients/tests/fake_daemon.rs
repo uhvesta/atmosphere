@@ -328,3 +328,47 @@ fn raw_terminal_input_waits_for_enter_and_cannot_type_while_offline() {
     ));
     assert_eq!(daemon.workspace().terminal_bytes, snapshot);
 }
+
+/// FK-2/10/11: code-only starts fresh; context forks retain the conversation.
+#[test]
+fn fork_kinds_keep_the_right_conversation_files_and_branch() {
+    use humata2_clients::model::ForkKind;
+    let mut workspace = fixture::design();
+    let source = workspace
+        .sessions
+        .iter_mut()
+        .find(|s| s.id.as_str() == "ledger")
+        .unwrap();
+    source.archived = true;
+    source
+        .terminal_agents
+        .insert(1, humata2_clients::model::Agent::Codex);
+    let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
+    let parent = SessionId::new("ledger");
+    let before = daemon.workspace();
+    let source = before.session(&parent).unwrap();
+    let original = &source.transcript[1];
+    for kind in [ForkKind::Worktree, ForkKind::Conversation, ForkKind::Shared] {
+        let id = block_on(daemon.fork(&parent, kind, "Another approach")).unwrap();
+        let workspace = daemon.workspace();
+        let fork = workspace.session(&id).unwrap();
+        assert_eq!(fork.parent.as_ref(), Some(&parent));
+        assert_eq!(fork.transcript.contains(original), kind != ForkKind::Shared);
+        assert_eq!(fork.branch == source.branch, kind == ForkKind::Conversation);
+        assert!(fork.shells.is_empty() && fork.terminal_agents.is_empty());
+        assert!(!fork.archived);
+        assert_ne!(fork.started, source.started);
+        assert_eq!(
+            block_on(daemon.read_file(&id, "api", "src/client.rs")).unwrap(),
+            block_on(daemon.read_file(&parent, "api", "src/client.rs")).unwrap()
+        );
+        assert!(
+            workspace
+                .activity
+                .iter()
+                .any(|a| a.kind == humata2_clients::model::ActivityKind::Fork
+                    && a.session.as_ref() == Some(&id))
+        );
+        assert!(!workspace.terminal_bytes[&(id, 0)].is_empty());
+    }
+}

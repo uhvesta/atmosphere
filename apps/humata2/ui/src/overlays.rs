@@ -15,8 +15,9 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, NewChannelAction, NewSessionAction, NewSessionPicker, Overlay};
-use humata2_clients::model::Agent;
+use humata2_clients::model::{Agent, ForkKind};
 use humata2_palette::{Command, PaletteAction};
+use humata2_session::SessionAction;
 
 use crate::bridge::{Part, Ui};
 use crate::keys::SHORTCUTS;
@@ -26,6 +27,7 @@ use crate::widgets::{self, col, row};
 /// Which overlay shows, to tell when another opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    Fork,
     Palette,
     NewSession,
     NewChannel,
@@ -46,6 +48,7 @@ pub struct Overlays {
     ui: Rc<Ui>,
     query: Entity<InputState>,
     title: Entity<InputState>,
+    fork_title: Entity<InputState>,
     first_message: Entity<TextareaState>,
     first_message_placeholder: String,
     name: Entity<InputState>,
@@ -64,6 +67,8 @@ impl Overlays {
             InputState::new(window, cx).placeholder("Type a command, a channel or a session")
         });
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("What should it do?"));
+        let fork_title =
+            cx.new(|cx| InputState::new(window, cx).placeholder("What should the fork do?"));
         let first_message = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Optional. Typed into the agent once it starts.")
@@ -83,6 +88,11 @@ impl Overlays {
                 &title,
                 |text| AppAction::NewSession(NewSessionAction::Title(text)),
                 AppAction::NewSession(NewSessionAction::Create),
+            ),
+            (
+                &fork_title,
+                |text| AppAction::Session(SessionAction::ForkTitle(text)),
+                AppAction::Session(SessionAction::ConfirmFork),
             ),
             (
                 &name,
@@ -124,6 +134,7 @@ impl Overlays {
             ui,
             query,
             title,
+            fork_title,
             first_message,
             first_message_placeholder: "Optional. Typed into the agent once it starts.".into(),
             name,
@@ -148,6 +159,9 @@ impl Overlays {
         match top {
             Some(Kind::Palette) => self.query.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::NewSession) => self.title.update(cx, |input, cx| input.focus(window, cx)),
+            Some(Kind::Fork) => self
+                .fork_title
+                .update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::NewChannel) => self.name.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::Shortcuts) => window.focus(&self.sheet, cx),
             None => {
@@ -200,7 +214,23 @@ impl Render for Overlays {
                 state.toasts.clone(),
             )
         });
-        let shown = top.as_ref().map(kind);
+        let (fork, forking, fork_error, parent) = self.ui.read(|state| {
+            (
+                state.session.fork.clone(),
+                state.session.forking,
+                state.session.error.clone(),
+                state
+                    .session
+                    .open
+                    .as_ref()
+                    .and_then(|id| state.workspace.session(id))
+                    .cloned(),
+            )
+        });
+        let shown = top
+            .as_ref()
+            .map(kind)
+            .or_else(|| fork.as_ref().map(|_| Kind::Fork));
         self.follow_focus(shown, window, cx);
         let ui = self.ui.clone();
         let content = top.map(|top| match top {
@@ -722,6 +752,157 @@ impl Render for Overlays {
                 )))
                 .focus_trap("shortcuts-trap", &self.sheet)
                 .into_any_element(),
+        });
+        let content = content.or_else(|| {
+            fork.map(|fork| {
+                sync(&self.fork_title, &fork.title, window, cx);
+                let mut body = sheet("fork-session", "Fork session", look)
+                    .w(px(560.))
+                    .max_w_full()
+                    .p(px(20.))
+                    .gap(px(14.))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Fork session"),
+                    )
+                    .child(div().text_color(rgb(look.secondary)).child(format!(
+                        "From {} · now",
+                        parent.as_ref().map_or("this session", |s| s.title.as_str())
+                    )))
+                    .child(field(
+                        "Title",
+                        Input::new(&self.fork_title)
+                            .disabled(forking)
+                            .aria_label("Fork title"),
+                    ));
+                for (index, choice, description) in [
+                    (
+                        0usize,
+                        ForkKind::Worktree,
+                        "Own copies of the current files, a new branch, and the conversation.",
+                    ),
+                    (
+                        1,
+                        ForkKind::Conversation,
+                        "The conversation and read-only access to the parent's files.",
+                    ),
+                    (
+                        2,
+                        ForkKind::Shared,
+                        "Own copies of the current files and a fresh conversation.",
+                    ),
+                ] {
+                    body = body.child(
+                        col()
+                            .p(px(10.))
+                            .gap(px(5.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(rgb(if fork.kind == choice {
+                                look.accent
+                            } else {
+                                look.line
+                            }))
+                            .child(
+                                widgets::send(
+                                    &ui,
+                                    SharedString::from(format!("fork-kind-{index}")),
+                                    choice.name(),
+                                    AppAction::Session(SessionAction::ForkKind(choice)),
+                                )
+                                .disabled(forking),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(rgb(look.secondary))
+                                    .child(description),
+                            ),
+                    );
+                }
+                if let Some(parent) = parent {
+                    let repos = ui.read(|state| {
+                        state
+                            .workspace
+                            .session_files
+                            .get(&parent.id)
+                            .into_iter()
+                            .flatten()
+                            .map(|f| f.repo.as_str())
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    });
+                    let repos = if repos.is_empty() {
+                        parent.repo.as_str()
+                    } else {
+                        repos.as_str()
+                    };
+                    let preview = if fork.kind == ForkKind::Conversation {
+                        format!(
+                            "{} · {} · reads {} on the parent branch {}",
+                            parent.agent.name(),
+                            parent.machine,
+                            repos,
+                            parent.branch
+                        )
+                    } else {
+                        format!(
+                            "{} · {} · own copy of {} on a new branch",
+                            parent.agent.name(),
+                            parent.machine,
+                            repos
+                        )
+                    };
+                    body = body.child(
+                        div()
+                            .p(px(10.))
+                            .rounded(px(7.))
+                            .bg(rgb(look.fill))
+                            .text_size(px(12.))
+                            .child(preview),
+                    );
+                }
+                body = body
+                    .children(fork_error.map(|error| {
+                        div()
+                            .id("fork-error")
+                            .role(Role::Alert)
+                            .text_color(rgb(0xff453a))
+                            .child(error)
+                    }))
+                    .child(
+                        row()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                widgets::send(
+                                    &ui,
+                                    "fork-cancel",
+                                    "Cancel",
+                                    AppAction::Session(SessionAction::CancelFork),
+                                )
+                                .disabled(forking),
+                            )
+                            .child(
+                                widgets::primary(
+                                    &ui,
+                                    "fork-create",
+                                    if forking { "Forking…" } else { "Create fork" },
+                                    AppAction::Session(SessionAction::ConfirmFork),
+                                )
+                                .disabled(forking || fork.title.trim().is_empty())
+                                .bg(rgb(look.accent))
+                                .text_color(rgb(0xffffff)),
+                            ),
+                    );
+                body.test_support()
+                    .focus_trap("fork-trap", &self.sheet)
+                    .into_any_element()
+            })
         });
         let layer = div().absolute().top_0().left_0().size_full();
         let layer = match content {

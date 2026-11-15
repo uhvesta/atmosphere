@@ -726,6 +726,12 @@ impl Daemon for FakeDaemon {
             format!("fork {session} {kind:?} {title:?}"),
             move |inner| {
                 let source = inner.session_mut(&parent)?.clone();
+                if title.trim().is_empty() {
+                    return Err(DaemonError::Refused {
+                        what: "Creating the fork".into(),
+                        reason: "it needs a title. Give it a title and try again".into(),
+                    });
+                }
                 let id = SessionId::new(inner.id("s-fork"));
                 let mut fork = source.clone();
                 fork.id = id.clone();
@@ -737,12 +743,37 @@ impl Daemon for FakeDaemon {
                 fork.pinned = false;
                 fork.vip = false;
                 fork.unread = 0;
-                fork.branch = format!("humata/{id}");
+                fork.archived = false;
+                fork.started = "just now".into();
+                fork.active = "just now".into();
+                fork.activity = if kind == ForkKind::Shared {
+                    "Fresh agent, no conversation".into()
+                } else {
+                    "Conversation copied".into()
+                };
+                fork.branch = if kind == ForkKind::Conversation {
+                    source.branch.clone()
+                } else {
+                    format!("humata/{id}")
+                };
                 fork.transcript = vec![Line {
                     from: Speaker::System,
-                    text: format!("Forked from “{}” ({})", source.title, kind.name()),
+                    text: format!("Forked from “{}” at now ({})", source.title, kind.name()),
                 }];
+                if kind == ForkKind::Shared {
+                    fork.transcript.push(Line {
+                        from: Speaker::System,
+                        text: "Fresh agent, no conversation".into(),
+                    });
+                } else {
+                    fork.transcript.push(Line {
+                        from: Speaker::System,
+                        text: "Conversation copied".into(),
+                    });
+                    fork.transcript.extend(source.transcript.clone());
+                }
                 fork.shells = Vec::new();
+                fork.terminal_agents.clear();
                 fork.recovery = None;
                 let at = inner
                     .workspace
@@ -753,8 +784,30 @@ impl Daemon for FakeDaemon {
                 if let Some(files) = inner.workspace.session_files.get(&parent).cloned() {
                     inner.workspace.session_files.insert(id.clone(), files);
                 }
+                let contents: Vec<_> = inner
+                    .workspace
+                    .file_contents
+                    .iter()
+                    .filter(|((session, _, _), _)| session == &parent)
+                    .map(|((_, repo, path), body)| {
+                        ((id.clone(), repo.clone(), path.clone()), body.clone())
+                    })
+                    .collect();
+                inner.workspace.file_contents.extend(contents);
+                inner.workspace.activity.insert(
+                    0,
+                    crate::model::Activity {
+                        channel: source.channel.clone(),
+                        session: Some(id.clone()),
+                        kind: crate::model::ActivityKind::Fork,
+                        text: format!("Forked “{}” → “{title}” ({})", source.title, kind.name()),
+                        by: "You".into(),
+                        at: "now".into(),
+                    },
+                );
                 inner.workspace.sessions.insert(at, fork);
                 inner.changed(&id);
+                inner.emit(Event::Resync);
                 Ok(id)
             },
         )

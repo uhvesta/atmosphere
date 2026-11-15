@@ -1147,3 +1147,39 @@ fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
             .read(|s| s.session.terminal_bytes[&key].ends_with(b"~/humata\r\n$ "))
     );
 }
+
+/// FK-1/2: the header opens a real dialog and the selected kind creates a child.
+#[test]
+fn the_fork_dialog_creates_the_selected_kind_and_can_cancel() {
+    use humata2_clients::model::ForkKind;
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("session-fork");
+    assert!(app.contains("fork-create"));
+    app.click("fork-kind-1");
+    app.send(AppAction::Session(SessionAction::ForkTitle(
+        "Review the migration".into(),
+    )));
+    app.snapshot("fork-dialog");
+    app.click("fork-create");
+    let id = app.ui.read(|s| s.session.open.clone()).unwrap();
+    assert_ne!(id, SessionId::new("ledger"));
+    assert!(app.ui.read(|s| {
+        s.workspace.session(&id).is_some_and(|v| {
+            v.parent.as_ref() == Some(&SessionId::new("ledger"))
+                && v.fork == Some(ForkKind::Conversation)
+        })
+    }));
+    app.click("session-fork");
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    app.settle();
+    assert!(!app.contains("fork-create"));
+    assert!(app.ui.read(|s| s.session.fork.is_none()));
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.click("session-fork");
+    app.snapshot("fork-dialog-dark");
+    app.click("fork-cancel");
+    assert!(app.ui.read(|s| s.session.fork.is_none()));
+}

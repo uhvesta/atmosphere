@@ -37,7 +37,7 @@ Tab "Table"
 Tab "Dashboard" selected
 Button "New item"
 #board-filter-input
-  #input-4294967314
+  #input-4294967316
     TextInput "Filter" value="" placeholder="Filter"
 Button "Waiting on you: 1"
 Button "In progress: 2"

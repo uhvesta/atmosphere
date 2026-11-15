@@ -125,6 +125,8 @@ pub struct SessionState {
     pub file_contents: BTreeMap<(SessionId, String, String), Result<String, DaemonError>>,
     /// Whether a message is on its way.
     pub sending: bool,
+    /// A fork request is waiting for the client.
+    pub forking: bool,
     /// The fork dialog, if open (FK-1).
     pub fork: Option<ForkDraft>,
     /// What went wrong last, for the page's error banner.
@@ -276,6 +278,8 @@ pub enum SessionAction {
     Resume,
     /// Open the fork dialog.
     StartFork(ForkKind),
+    /// Choose how the fork shares code and conversation.
+    ForkKind(ForkKind),
     /// The fork dialog's title changed.
     ForkTitle(String),
     /// Make the fork.
@@ -734,33 +738,63 @@ impl Reducer for Sessions {
                 }
             }
             SessionAction::StartFork(kind) => {
-                let title = state
-                    .open
-                    .as_ref()
-                    .and_then(|id| state.workspace.session(id))
-                    .map(|session| format!("{} (fork)", session.title))
-                    .unwrap_or_default();
+                if state.forking {
+                    return Effect::none();
+                }
+                let Some(session) = open_session(state) else {
+                    return Effect::none();
+                };
+                let title = format!("{} (fork)", session.title);
                 state.fork = Some(ForkDraft { kind, title });
+                state.error = None;
+            }
+            SessionAction::ForkKind(kind) => {
+                if !state.forking
+                    && let Some(fork) = &mut state.fork
+                {
+                    fork.kind = kind;
+                }
             }
             SessionAction::ForkTitle(title) => {
-                if let Some(fork) = &mut state.fork {
+                if !state.forking
+                    && let Some(fork) = &mut state.fork
+                {
                     fork.title = title;
                 }
             }
             SessionAction::ConfirmFork => {
-                let (Some(id), Some(fork)) = (state.open.clone(), state.fork.take()) else {
+                if state.forking {
+                    return Effect::none();
+                }
+                let (Some(id), Some(fork)) = (state.open.clone(), state.fork.clone()) else {
                     return Effect::none();
                 };
+                if fork.title.trim().is_empty() {
+                    state.error = Some("Give the fork a title before starting it.".into());
+                    return Effect::none();
+                }
+                state.forking = true;
+                state.error = None;
                 let daemon = self.clients.daemon.clone();
                 return Effect::future(async move {
                     SessionAction::Forked(daemon.fork(&id, fork.kind, fork.title.trim()).await)
                 });
             }
-            SessionAction::CancelFork => state.fork = None,
-            SessionAction::Forked(result) => match result {
-                Ok(id) => return Effect::send(SessionAction::Delegate(Delegate::OpenSession(id))),
-                Err(error) => state.error = Some(error.to_string()),
-            },
+            SessionAction::CancelFork => {
+                if !state.forking {
+                    state.fork = None;
+                }
+            }
+            SessionAction::Forked(result) => {
+                state.forking = false;
+                match result {
+                    Ok(id) => {
+                        state.fork = None;
+                        return Effect::send(SessionAction::Delegate(Delegate::OpenSession(id)));
+                    }
+                    Err(error) => state.error = Some(error.to_string()),
+                }
+            }
             SessionAction::Archive => {
                 if let Some(id) = state.open.clone() {
                     let title = state

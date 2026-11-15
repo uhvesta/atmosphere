@@ -215,9 +215,9 @@ impl Status {
 pub enum ForkKind {
     /// Its own worktree and branch.
     Worktree,
-    /// The parent's working tree.
+    /// Own code copies with a fresh conversation (legacy serialized name).
     Shared,
-    /// A copy of the conversation only.
+    /// Conversation context with read-only access to the parent clones.
     Conversation,
 }
 
@@ -226,9 +226,9 @@ impl ForkKind {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Worktree => "worktree fork",
-            Self::Shared => "shared fork",
-            Self::Conversation => "conversation fork",
+            Self::Worktree => "Code + context",
+            Self::Shared => "Code only",
+            Self::Conversation => "Context only",
         }
     }
 }
