@@ -384,12 +384,17 @@ async fn the_review_chat_moves_the_view_and_the_user_can_undo_or_turn_it_off() {
 /// The session token a shell tab in `SESSION` is given, and the attach
 /// that keeps the tab open.
 async fn agent_token(daemon: &Daemon) -> (String, Attach) {
+    agent_token_in(daemon, session()).await
+}
+
+/// As [`agent_token`], for a tab in `session`.
+async fn agent_token_in(daemon: &Daemon, session: pb::SessionId) -> (String, Attach) {
     let tab = daemon
         .terminals()
         .await
         .open_shell_tab(pb::OpenShellTabRequest {
             idempotency_key: None,
-            session: Some(session()),
+            session: Some(session),
             repo: None,
         })
         .await
@@ -1351,6 +1356,61 @@ async fn next_note(events: &mut tonic::Streaming<pb::Event>) -> (i32, String, St
         Some(pb::event::Payload::Comment(comment)) => (event.change, note_id(&comment), comment.text),
         other => panic!("expected a comment, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_hears_of_notes_on_every_session_it_may_list_them_for() {
+    let (daemon, clone) = daemon_with_sessions(&["se_other"]).await;
+    let theirs = daemon.dir.path().join("se_other").join(REPO);
+    std::fs::write(theirs.join("refund.rs"), lines(1..=10).replace("line 3\n", "line three\n")).unwrap();
+    std::fs::write(clone.join("refund.rs"), lines(1..=10).replace("line 5\n", "line five\n")).unwrap();
+    let other = pb::SessionId {
+        value: "se_other".to_owned(),
+    };
+    diffs(&daemon)
+        .await
+        .get_diff(pb::GetDiffRequest {
+            session: Some(other.clone()),
+            base: uncommitted(),
+            repos: vec![repo()],
+        })
+        .await
+        .unwrap();
+    let (token, _attach) = agent_token(&daemon).await;
+    let (theirs_token, _theirs_attach) = agent_token_in(&daemon, other.clone()).await;
+    let mut agents = feed(&daemon, as_agent(pb::SubscribeRequest::default(), &token)).await;
+
+    let made = comments(&daemon)
+        .await
+        .create_comment(as_agent(
+            pb::CreateCommentRequest {
+                session: Some(other.clone()),
+                ..note("refund.rs", 3, 3, "on the other session")
+            },
+            &theirs_token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let listed = comments(&daemon)
+        .await
+        .list_comments(as_agent(
+            pb::ListCommentsRequest {
+                session: Some(other),
+                ..pb::ListCommentsRequest::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .comments;
+    assert_eq!(listed.iter().map(note_id).collect::<Vec<_>>(), vec![note_id(&made)]);
+    assert_eq!(
+        next_note(&mut agents).await,
+        (pb::Change::Created as i32, note_id(&made), "on the other session".to_owned()),
+        "the agent hears of the note it may list"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

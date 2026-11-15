@@ -737,4 +737,9 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - `include_forks` still lists only the session's own views: no session record says which session it was forked from until forking is built.
 - Reverse: the `(None, Caller::User(_))` arm and `every_offered` in `daemon/humatad/src/review/views.rs`.
 
+## D98: An agent hears of the notes it may read (proposed by minion F). Provisional
+- **Pick:** a Comment event reaches an agent when it may read the note's session at that moment: its own always, another one in its channel by default (ChannelRead), one in another channel only with a GlobalRead grant. A check that would ask the user counts as no, so subscribing never makes an Inbox request. This widens D92 to match ListComments. Recommendation: keep it.
+- The check runs per event and per agent subscriber, so a grant revoked later stops the next note, not ones already sent.
+- Reverse: `reads_session` and the Comment arm of `Filter` in `daemon/humatad/src/events.rs`, and the guard and machine passed to `EventSvc::new` in `daemon/humatad/src/serve.rs`.
+
 

@@ -284,6 +284,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let inbox = Arc::new(Inbox::new(guard.clone(), store.clone(), machine.clone(), feed.clone()));
     let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
     let access = Access::new(guard.clone(), feed.clone(), inbox.clone());
+    let events = EventSvc::new(feed.clone(), guard.clone(), machine.clone());
     let operations = Arc::new(Operations::new(feed.clone()));
     let machines = match role {
         pb::DaemonRole::Host => {
@@ -324,7 +325,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .add_service(pb::operation_service_server::OperationServiceServer::new(
             OperationSvc::new(operations),
         ))
-        .add_service(pb::event_service_server::EventServiceServer::new(EventSvc::new(feed)));
+        .add_service(pb::event_service_server::EventServiceServer::new(events));
     // Only the host keeps machines; a machine's daemon forwards these to
     // it once the link does (GRPC.md §4).
     let router = match machines {

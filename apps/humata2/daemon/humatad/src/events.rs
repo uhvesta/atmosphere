@@ -10,12 +10,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_access::Refusal;
+use humata2_access::{Call, ChannelId, MachineId, Refusal, SessionId, SessionRef};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::attach::now;
+use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller};
 use crate::status;
 
@@ -163,6 +164,10 @@ fn resync(earliest: u64) -> Arc<Published> {
 
 /// Who sees what, and what the request asked for.
 struct Filter {
+    caller: Caller,
+    guard: Arc<Guard>,
+    /// This daemon's machine, where the sessions it tells of run.
+    machine: String,
     user: bool,
     /// An agent's own session.
     own_session: Option<String>,
@@ -177,7 +182,7 @@ struct Filter {
 }
 
 impl Filter {
-    fn of(caller: &Caller, request: &pb::SubscribeRequest) -> Result<Self, Status> {
+    fn of(caller: &Caller, request: &pb::SubscribeRequest, guard: Arc<Guard>, machine: String) -> Result<Self, Status> {
         let (user, own_session) = match caller {
             Caller::User(_) => (true, None),
             Caller::Agent(agent) => (false, Some(agent.session.id.to_string())),
@@ -194,6 +199,9 @@ impl Filter {
         let comments = topics.is_empty() || topics.contains(&(pb::Topic::Comments as i32));
         let operations = topics.is_empty() || topics.contains(&(pb::Topic::Operations as i32));
         Ok(Self {
+            caller: caller.clone(),
+            guard,
+            machine,
             user,
             own_session,
             machines,
@@ -221,6 +229,24 @@ impl Filter {
         self.user || scope.is_some_and(|scope| self.own_session.as_deref() == Some(scope.session.as_str()))
     }
 
+    /// Whether the caller may read `scope`'s session, as ListComments
+    /// checks it: its own always, another as its grants and rules allow
+    /// now. A check that would ask the user counts as no.
+    fn reads_session(&self, scope: Option<&Scope>) -> bool {
+        if self.sees_session(scope) {
+            return true;
+        }
+        let Some(scope) = scope else {
+            return false;
+        };
+        let call = Call::ReadSession(SessionRef {
+            id: SessionId::new(scope.session.as_str()),
+            channel: ChannelId::new(scope.channel.as_str()),
+            machine: MachineId::new(self.machine.as_str()),
+        });
+        matches!(self.guard.check(&self.caller, &call), Ok(Checked::Allowed))
+    }
+
     fn passes(&self, published: &Published) -> bool {
         let scope = published.scope.as_ref();
         match &published.event.payload {
@@ -244,8 +270,9 @@ impl Filter {
             }
             // Grants likewise, as ListGrants lists them.
             Some(pb::event::Payload::Grant(_)) => self.access && self.sees_session(scope) && self.asked(scope),
-            // Review chat notes: the user's, and their session agent's.
-            Some(pb::event::Payload::Comment(_)) => self.comments && self.sees_session(scope) && self.asked(scope),
+            // Review chat notes of every session the caller may read, as
+            // ListComments lists them.
+            Some(pb::event::Payload::Comment(_)) => self.comments && self.asked(scope) && self.reads_session(scope),
             // Operations: the user's and every session's to the user,
             // an agent its own session's, as GetOperation finds them.
             Some(pb::event::Payload::Operation(_)) => {
@@ -262,11 +289,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct EventSvc {
     feed: Arc<Feed>,
+    guard: Arc<Guard>,
+    machine: String,
 }
 
 impl EventSvc {
-    pub(crate) fn new(feed: Arc<Feed>) -> Self {
-        Self { feed }
+    pub(crate) fn new(feed: Arc<Feed>, guard: Arc<Guard>, machine: String) -> Self {
+        Self { feed, guard, machine }
     }
 }
 
@@ -283,7 +312,7 @@ impl pb::event_service_server::EventService for EventSvc {
     ) -> Result<Response<Self::SubscribeStream>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let filter = Filter::of(&caller, &request)?;
+        let filter = Filter::of(&caller, &request, self.guard.clone(), self.machine.clone())?;
         let (backlog, mut live) = self.feed.subscribe(request.after.map(|after| after.value));
         let feed = self.feed.clone();
         let (sender, receiver) = mpsc::channel(64);
