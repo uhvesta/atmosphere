@@ -4,6 +4,9 @@
 //! `refs/humata/pinned/<session>/<n>`, so pruning and pinning live in git
 //! with the snapshot and move with the clone.
 
+use std::ffi::OsStr;
+use std::path::Path;
+
 use crate::checkout::Checkout;
 use crate::error::DiffError;
 use crate::git::trimmed;
@@ -15,6 +18,8 @@ pub const KEPT_SNAPSHOTS: usize = 20;
 
 const REVIEWED: &str = "refs/humata/reviewed";
 const PINNED: &str = "refs/humata/pinned";
+/// Where the commit another session's clone is on is fetched to.
+const OTHER: &str = "refs/humata/other";
 
 impl Checkout {
     /// Records `shown_tree` (the new side of the diff the user was looking
@@ -120,6 +125,38 @@ impl Checkout {
             self.prune(session)?;
         }
         Ok(())
+    }
+
+    /// Fetches the commit HEAD is on in `session`'s own clone of this repo,
+    /// at `from`, into this clone as `refs/humata/other/<session>`, and
+    /// returns it, to compare against (RV-1's other session). `from` is
+    /// only read.
+    ///
+    /// # Errors
+    ///
+    /// [`DiffError::OtherSession`] when `from` isn't a clone with a commit.
+    pub fn fetch_session_head_blocking(&self, from: &Path, session: &str) -> Result<String, DiffError> {
+        check_session(session)?;
+        let name = format!("{OTHER}/{session}");
+        let refspec = format!("+HEAD:{name}");
+        let args = [
+            OsStr::new("fetch"),
+            OsStr::new("--quiet"),
+            OsStr::new("--no-tags"),
+            OsStr::new("--no-write-fetch-head"),
+            from.as_os_str(),
+            OsStr::new(&refspec),
+        ];
+        let output = self.git.output(args, None)?;
+        if !output.status.success() {
+            return Err(DiffError::OtherSession {
+                session: session.to_owned(),
+                from: from.to_owned(),
+                status: output.status,
+                stderr: trimmed(&output.stderr),
+            });
+        }
+        self.commit(&name)
     }
 
     /// The commit of snapshot `n`, or of the latest for `None`.

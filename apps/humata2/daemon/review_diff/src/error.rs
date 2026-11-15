@@ -78,6 +78,17 @@ pub enum DiffError {
     )]
     BadSession { session: String },
 
+    #[error(
+        "couldn't read the commit session {session}'s clone is on, in {} ({status}): {stderr}. Check that the session's clone of this repo exists and has a commit; its uncommitted changes aren't compared",
+        from.display()
+    )]
+    OtherSession {
+        session: String,
+        from: PathBuf,
+        status: ExitStatus,
+        stderr: String,
+    },
+
     #[error("the diff spec has no repo named {repo:?}; the session's repos are {known:?}")]
     UnknownRepo { repo: String, known: Vec<String> },
 

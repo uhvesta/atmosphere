@@ -41,6 +41,7 @@ mod spec;
 pub mod wire;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 pub use chat::{
     AgentSwitches, Change, ChangeKind, ChangeTool, ChatError, ChatTool, Context, Highlight, Lines,
@@ -158,6 +159,16 @@ impl Checkout {
     pub async fn snapshots(&self, session: String) -> Result<Vec<Snapshot>, DiffError> {
         let checkout = self.clone();
         blocking(move || checkout.snapshots_blocking(&session)).await
+    }
+
+    /// [`Self::fetch_session_head_blocking`] on the blocking pool.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fetch_session_head_blocking`].
+    pub async fn fetch_session_head(&self, from: PathBuf, session: String) -> Result<String, DiffError> {
+        let checkout = self.clone();
+        blocking(move || checkout.fetch_session_head_blocking(&from, &session)).await
     }
 
     /// [`Self::pin_blocking`] on the blocking pool.

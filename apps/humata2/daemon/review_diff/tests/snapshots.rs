@@ -265,3 +265,34 @@ fn a_binary_file_has_no_lines() {
     assert!(chunk.binary);
     assert!(chunk.hunks.is_empty());
 }
+
+#[test]
+fn another_sessions_commit_is_fetched_to_compare_against_and_its_clone_is_left_alone() {
+    let mine = Repo::new();
+    mine.write("a.txt", "one\n");
+    mine.commit_all("base");
+    let theirs = Repo::new();
+    theirs.write("a.txt", "one\ntheirs\n");
+    let their_head = theirs.commit_all("their work");
+    let their_refs = theirs.git(&["for-each-ref"]);
+    mine.write("a.txt", "one\nmine\n");
+
+    let checkout = mine.checkout();
+    let commit = checkout
+        .fetch_session_head_blocking(theirs.dir(), "se_other")
+        .expect("fetch their HEAD");
+    assert_eq!(commit, their_head);
+    let spec = RepoSpec::new(
+        "api",
+        humata2_review_diff::Base::Rev { rev: commit },
+        humata2_review_diff::Compare::everything(),
+    );
+    let shown = diff(&mine, &spec);
+    assert_eq!(added(&hunks(&mine, &shown, "a.txt", &spec)), ["mine"]);
+    assert_eq!(theirs.git(&["for-each-ref"]), their_refs, "their clone gained a ref");
+
+    // A clone with no commit has nothing to compare against.
+    let empty = Repo::new();
+    let error = checkout.fetch_session_head_blocking(empty.dir(), "se_empty").unwrap_err();
+    assert!(matches!(error, DiffError::OtherSession { .. }), "{error:?}");
+}

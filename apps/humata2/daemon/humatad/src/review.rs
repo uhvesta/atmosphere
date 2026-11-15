@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use humata2_access::{Call, Capability, Entry, Place, RepoPath, Root, SessionRef, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
-    AnchorError, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, DiffError, FileRef,
+    AnchorError, Base, BaseContext, ChangeKind, Compare, DiffSpec, RepoSpec, ChatError, ChatTool, Checkout, Clones, DiffError, FileRef,
     FileSummary, Matching, PlanError, RepoDiff, ReviewChat, Side, UserNote, Viewed, Whitespace, wire,
 };
 use humata2_store::{ReviewRecord, SessionRecord, Store};
@@ -264,8 +264,13 @@ impl pb::diff_service_server::DiffService for Review {
         let keys = repo_keys(&record, &request.repos).await?;
         self.require_read(&caller, &session, &keys)?;
         let base = request.base.unwrap_or_default();
-        let spec = wire::spec_for_base(&base, &keys, |_| None).map_err(|error| wire_failed("base", &error))?;
         let clones = clones(&record, &keys).await?;
+        let spec = match &base.base {
+            Some(pb::diff_base::Base::OtherSession(other)) => {
+                self.other_session_spec(&caller, &clones, &keys, other).await?
+            }
+            _ => wire::spec_for_base(&base, &keys, |_| None).map_err(|error| wire_failed("base", &error))?,
+        };
         let diffs = clones.diff(&spec, &context_of(&record)).await.map_err(|error| diff_failed(&error))?;
         let review = self.review(&record.id)?;
         let moved = {
@@ -277,7 +282,8 @@ impl pb::diff_service_server::DiffService for Review {
             }
             moved
         };
-        if moved {
+        let refreshed = self.refresh_notes(&clones, &review, &diffs).await?;
+        if moved || refreshed {
             self.save(&record.id, &review).await?;
         }
         Ok(Response::new(pb::GetDiffResponse {
@@ -572,11 +578,33 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
 /// Comments to send to the agent, PR drafts and the rest aren't built yet.
 #[tonic::async_trait]
 impl pb::comment_service_server::CommentService for Review {
+    /// The review chat's notes, the only comments built yet. They have no
+    /// status (they are never sent), so a status filter lists none.
     async fn list_comments(
         &self,
-        _request: Request<pb::ListCommentsRequest>,
+        request: Request<pb::ListCommentsRequest>,
     ) -> Result<Response<pb::ListCommentsResponse>, Status> {
-        Err(status::not_built("humata.v1.CommentService.ListComments"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let asked = request.session.clone().or_else(|| own_session(&caller));
+        let (record, session) = self.session(asked.as_ref())?;
+        self.require(&caller, &Call::ReadSession(session))?;
+        let review = self.review(&record.id)?;
+        let comments = if request.statuses.is_empty() {
+            lock(&review.chat)
+                .chat
+                .notes()
+                .filter(|note| request.file.as_ref().is_none_or(|file| on_file(&note.note.file, file)))
+                .map(|note| note_comment(note, &record.id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(Response::new(pb::ListCommentsResponse {
+            comments,
+            draft_count: 0,
+            page: None,
+        }))
     }
 
     async fn create_comment(&self, request: Request<pb::CreateCommentRequest>) -> Result<Response<pb::Comment>, Status> {
@@ -840,6 +868,62 @@ impl pb::view_service_server::ViewService for Review {
 }
 
 impl Review {
+    /// RV-1's other session: per repo, this clone against the commit the
+    /// other session's own clone of it is on, fetched into this one. The
+    /// caller must be able to read that session's clones too.
+    async fn other_session_spec(
+        &self,
+        caller: &Caller,
+        clones: &Clones,
+        keys: &[String],
+        other: &pb::SessionId,
+    ) -> Result<DiffSpec, Status> {
+        let (other_record, other_session) = self.session(Some(other))?;
+        self.require_read(caller, &other_session, keys)?;
+        let mut repos = Vec::with_capacity(keys.len());
+        for key in keys {
+            let checkout = clones.get(key).map_err(|error| diff_failed(&error))?;
+            let from = other_record.folder.join(folder_name(key));
+            let commit = checkout
+                .fetch_session_head(from, other_record.id.clone())
+                .await
+                .map_err(|error| diff_failed(&error))?;
+            repos.push(RepoSpec::new(key.clone(), Base::Rev { rev: commit }, Compare::everything()));
+        }
+        Ok(DiffSpec { repos })
+    }
+
+    /// Marks the session's notes outdated where `diffs` changed the lines
+    /// they quote, and moves the ones whose lines only moved (RV-34,
+    /// PR-26). Returns whether any note changed.
+    async fn refresh_notes(&self, clones: &Clones, review: &SessionReview, diffs: &[RepoDiff]) -> Result<bool, Status> {
+        let notes: Vec<_> = lock(&review.chat).chat.notes().map(|note| note.note.clone()).collect();
+        if notes.is_empty() {
+            return Ok(false);
+        }
+        let mut states = vec![None; notes.len()];
+        for diff in diffs {
+            let checkout = clones.get(&diff.repo).map_err(|error| diff_failed(&error))?.clone();
+            let found = checkout
+                .note_states(diff.clone(), notes.clone())
+                .await
+                .map_err(|error| diff_failed(&error))?;
+            for (state, found) in states.iter_mut().zip(found) {
+                if state.is_none() {
+                    *state = found;
+                }
+            }
+        }
+        let mut chat = lock(&review.chat);
+        let before: Vec<UserNote> = chat.chat.notes().cloned().collect();
+        // A note made or dropped meanwhile: the next GetDiff refreshes them.
+        if !before.iter().map(|note| &note.note).eq(notes.iter()) {
+            return Ok(false);
+        }
+        chat.chat.refresh_notes(&states);
+        Ok(!chat.chat.notes().eq(before.iter()))
+    }
+
     /// The session and note a note's comment id names: `<session>/note-N`,
     /// or from the session's own agent, `note-N` as review_context lists
     /// it.
@@ -902,6 +986,17 @@ fn note_author(caller: &Caller) -> Result<&AgentCaller, Status> {
             ),
         )),
     }
+}
+
+/// Whether a note on `note` is on the file ListComments asked for; a file
+/// without a repo matches that path in any repo.
+fn on_file(note: &FileRef, file: &pb::RepoPath) -> bool {
+    let repo = file
+        .repo
+        .as_ref()
+        .map(|repo| repo.name.as_str())
+        .filter(|name| !name.is_empty());
+    note.path == file.path && repo.is_none_or(|name| folder_name(&note.repo) == name)
 }
 
 fn idempotency(session: &str, key: Option<&pb::IdempotencyKey>) -> Option<String> {
@@ -1126,7 +1221,8 @@ fn diff_failed(error: &DiffError) -> Status {
         | DiffError::NoCommits { .. }
         | DiffError::NoSnapshot { .. }
         | DiffError::SnapshotMissing { .. }
-        | DiffError::NotAFork => (
+        | DiffError::NotAFork
+        | DiffError::OtherSession { .. } => (
             Code::FailedPrecondition,
             pb::error::Kind::InvalidField(pb::InvalidField {
                 field: "base".to_owned(),

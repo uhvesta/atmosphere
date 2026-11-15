@@ -200,7 +200,7 @@ impl Checkout {
     }
 
     /// `rev` as a commit id.
-    fn commit(&self, rev: &str) -> Result<String, DiffError> {
+    pub(crate) fn commit(&self, rev: &str) -> Result<String, DiffError> {
         self.git
             .resolve(&format!("{rev}^{{commit}}"))?
             .ok_or_else(|| DiffError::UnknownRevision {

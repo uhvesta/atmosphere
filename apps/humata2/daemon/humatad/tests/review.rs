@@ -23,26 +23,37 @@ const TOKEN_HEADER: &str = "humata-session-token";
 /// A daemon that knows `SESSION`, whose folder holds a clone of `REPO`
 /// with one commit.
 async fn daemon_with_clone() -> (Daemon, PathBuf) {
+    daemon_with_sessions(&[]).await
+}
+
+/// As [`daemon_with_clone`], with more sessions `others`, each with a
+/// clone of `REPO` (from the first) in `<folder>/<session>`.
+async fn daemon_with_sessions(others: &[&str]) -> (Daemon, PathBuf) {
     let dir = folder();
     let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
-    store
-        .put_session(&SessionRecord {
-            id: SESSION.to_owned(),
-            channel: "ch_test".to_owned(),
-            machine: String::new(),
-            title: "review".to_owned(),
-            agent: "zsh".to_owned(),
-            folder: dir.path().to_owned(),
-            created_unix_ms: 0,
-        })
-        .unwrap();
-    drop(store);
+    let session = |id: &str, folder: PathBuf| SessionRecord {
+        id: id.to_owned(),
+        channel: "ch_test".to_owned(),
+        machine: String::new(),
+        title: "review".to_owned(),
+        agent: "zsh".to_owned(),
+        folder,
+        created_unix_ms: 0,
+    };
+    store.put_session(&session(SESSION, dir.path().to_owned())).unwrap();
     let clone = dir.path().join(REPO);
     std::fs::create_dir(&clone).unwrap();
     git(&clone, &["init", "-q", "-b", "main"]);
     std::fs::write(clone.join("refund.rs"), lines(1..=10)).unwrap();
     git(&clone, &["add", "."]);
     git(&clone, &["commit", "-q", "-m", "first"]);
+    for other in others {
+        let folder = dir.path().join(other);
+        std::fs::create_dir(&folder).unwrap();
+        git(&folder, &["clone", "-q", clone.to_str().unwrap(), REPO]);
+        store.put_session(&session(other, folder)).unwrap();
+    }
+    drop(store);
     (Daemon::start_in(dir).await, clone)
 }
 
@@ -113,6 +124,43 @@ async fn get_diff(daemon: &Daemon, base: Option<pb::DiffBase>) -> pb::GetDiffRes
         .await
         .unwrap()
         .into_inner()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_diff_against_another_session_compares_with_the_commit_its_clone_is_on() {
+    let (daemon, clone) = daemon_with_sessions(&["se_other"]).await;
+    let theirs = daemon.dir.path().join("se_other").join(REPO);
+    std::fs::write(theirs.join("theirs.rs"), "fn theirs() {}\n").unwrap();
+    git(&theirs, &["add", "."]);
+    git(&theirs, &["commit", "-q", "-m", "theirs"]);
+    std::fs::write(clone.join("refund.rs"), lines(1..=11)).unwrap();
+
+    let other = base(pb::diff_base::Base::OtherSession(pb::SessionId {
+        value: "se_other".to_owned(),
+    }));
+    let shown = get_diff(&daemon, other).await;
+    let files = &shown.repos[0].files;
+    let change = |path: &str| {
+        let file = files.iter().find(|file| file.path == path).unwrap();
+        pb::ChangeKind::try_from(file.change).unwrap()
+    };
+    assert_eq!(paths(&shown), ["refund.rs", "theirs.rs"]);
+    assert_eq!(change("refund.rs"), pb::ChangeKind::Modified);
+    assert_eq!(change("theirs.rs"), pb::ChangeKind::Deleted, "this session doesn't have their file");
+    assert_eq!(git(&theirs, &["status", "--porcelain"]), "", "their clone is left as it was");
+
+    let unknown = diffs(&daemon)
+        .await
+        .get_diff(pb::GetDiffRequest {
+            session: Some(session()),
+            base: base(pb::diff_base::Base::OtherSession(pb::SessionId {
+                value: "se_nowhere".to_owned(),
+            })),
+            repos: vec![repo()],
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code(), Code::NotFound);
 }
 
 fn paths(response: &pb::GetDiffResponse) -> Vec<String> {
@@ -583,6 +631,122 @@ async fn notes_are_the_agents_and_the_user_can_turn_them_off() {
     assert_eq!(off.code(), Code::PermissionDenied);
     assert!(matches!(error_of(&off).kind, Some(pb::error::Kind::Denied(_))));
     assert!(context(&daemon).await.notes.is_empty());
+}
+
+async fn list_notes(daemon: &Daemon, request: pb::ListCommentsRequest) -> Vec<pb::Comment> {
+    comments(daemon).await.list_comments(request).await.unwrap().into_inner().comments
+}
+
+fn all_notes() -> pb::ListCommentsRequest {
+    pb::ListCommentsRequest {
+        session: Some(session()),
+        ..pb::ListCommentsRequest::default()
+    }
+}
+
+/// Each note's id, lines and whether it is outdated.
+fn note_places(notes: &[pb::Comment]) -> Vec<(String, u32, u32, bool)> {
+    notes
+        .iter()
+        .map(|note| {
+            let anchor = note.anchor.clone().unwrap_or_default();
+            let lines = anchor.lines.unwrap_or_default();
+            (note_id(note), lines.first, lines.last, anchor.outdated)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_later_diff_marks_notes_whose_lines_changed_outdated_and_moves_the_rest() {
+    let (mut daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=10).replace("line 3\n", "line three\n")).unwrap();
+    get_diff(&daemon, uncommitted()).await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut notes = comments(&daemon).await;
+    let changed = notes
+        .create_comment(as_agent(note("refund.rs", 3, 3, "renamed"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let kept = notes
+        .create_comment(as_agent(note("refund.rs", 5, 5, "untouched"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let (changed, kept) = (note_id(&changed), note_id(&kept));
+
+    // The agent edits the line the first note quotes and adds one on top.
+    let now = format!("line 0\n{}", lines(1..=10).replace("line 3\n", "line 3 again\n"));
+    std::fs::write(clone.join("refund.rs"), now).unwrap();
+    assert_eq!(
+        note_places(&list_notes(&daemon, all_notes()).await),
+        [(changed.clone(), 3, 3, false), (kept.clone(), 5, 5, false)],
+        "nothing changes until a diff is shown"
+    );
+    get_diff(&daemon, uncommitted()).await;
+
+    let expected = [(changed, 3, 3, true), (kept, 6, 6, false)];
+    assert_eq!(note_places(&list_notes(&daemon, all_notes()).await), expected);
+    assert_eq!(note_places(&context(&daemon).await.notes), expected);
+
+    daemon.restart().await;
+    assert_eq!(note_places(&list_notes(&daemon, all_notes()).await), expected, "a restart keeps it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_comments_gives_the_review_chats_notes_by_file() {
+    let (daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("refund.rs"), lines(1..=11)).unwrap();
+    std::fs::write(clone.join("new.rs"), "fn new() {}\n").unwrap();
+    get_diff(&daemon, uncommitted()).await;
+    assert!(list_notes(&daemon, all_notes()).await.is_empty());
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut notes = comments(&daemon).await;
+    let on_refund = notes
+        .create_comment(as_agent(note("refund.rs", 11, 11, "new line"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+    let on_new = notes
+        .create_comment(as_agent(note("new.rs", 1, 1, "new file"), &token))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let listed = list_notes(&daemon, all_notes()).await;
+    assert_eq!(listed.iter().map(note_id).collect::<Vec<_>>(), [note_id(&on_refund), note_id(&on_new)]);
+    assert!(listed.iter().all(|note| note.session == Some(session()) && note.author.is_some()));
+
+    let refund_only = list_notes(
+        &daemon,
+        pb::ListCommentsRequest {
+            file: Some(file("refund.rs")),
+            ..all_notes()
+        },
+    )
+    .await;
+    assert_eq!(refund_only.iter().map(note_id).collect::<Vec<_>>(), [note_id(&on_refund)]);
+
+    // Notes are never sent, so they have no status to filter on.
+    let sent = list_notes(
+        &daemon,
+        pb::ListCommentsRequest {
+            statuses: vec![pb::CommentStatus::Sent as i32],
+            ..all_notes()
+        },
+    )
+    .await;
+    assert!(sent.is_empty());
+
+    // The session's agent lists its own session's without naming it.
+    let own = comments(&daemon)
+        .await
+        .list_comments(as_agent(pb::ListCommentsRequest::default(), &token))
+        .await
+        .unwrap()
+        .into_inner()
+        .comments;
+    assert_eq!(own.len(), 2);
 }
 
 fn plan(order: &[&str], notes: Vec<pb::ReviewNote>) -> pb::PrepareViewRequest {

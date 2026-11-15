@@ -181,3 +181,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `humatad/tests/machines.rs`: the bundle's humatad2 runs the real binary, so after an add the link really comes up over the fake ssh, and comes up again after a daemon restart on the same state.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (63 tests pass). The new tests fail before (no key is written, no link starts, a wrong proof is OFFLINE). `takeover_test`'s `a_bridge_that_never_syncs_…` failed once in a parallel run and passed 3 runs alone (the known flake).
 - Look at: the machine's key file is left on removal (with its state folder); the host copy is a file, not the keychain; real SSH is untested (D84).
+
+### (this commit): ListComments, outdated notes and other_session diffs (review_diff wiring) [minion E]
+- `daemon/humatad/src/review.rs`: ListComments lists the review chat's notes (session, author, anchor, outdated), filtered by file; a status filter gives none. GetDiff now asks the checkout where each note stands (`note_states`) and runs `ReviewChat::refresh_notes`, saving the review when a note went outdated or moved. GetDiff with `other_session` builds a `Base::Rev` spec per repo from the other session's HEAD, after checking the caller may read that session's clones.
+- `daemon/review_diff`: `Checkout::fetch_session_head(_blocking)` fetches another clone's HEAD into `refs/humata/other/<session>`; `DiffError::OtherSession` says the clone needs a commit.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (63 tests pass). The three new review_test tests and the new snapshots_test test fail before (ListComments not built, notes never outdated, other_session refused).
+- Look at: notes going outdated aren't a WatchReviewChanges change; other_session needs the session on this machine and skips its uncommitted changes (D85).
