@@ -268,7 +268,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (65 tests pass), including `//apps/humata2/daemon/humatad:inbox_test` (`a_restart_keeps_the_inbox_and_the_grants_still_standing`) and `//apps/humata2/daemon/store:inbox_test`.
 - Look at: waits on pending requests end with the old process, so the agent must wait again; deleting a session ends its grants only at the next restart (the in-memory policy keeps them until then); rules still aren't saved (always the defaults).
 
-### (this commit): humata views lists every session's offered views [minion F]
+### 8f0a2fd1: humata views lists every session's offered views [minion F]
 - `humata views` with no session now lists every session's offered views, newest first, instead of failing for want of a session; `humata view open|later|not-now|revert|keep` is covered by tests.
 - `daemon/humatad/src/review/views.rs`: `list_prepared` sends the user with no session to `every_offered`, which reads each session's views from the store and keeps the non-drafts; an agent with no session still gets its own; others must name one (D97). `cli/tests/views.rs` checks the requests and output of both commands against the fake daemon. `include_forks` is unchanged: nothing records a fork's parent yet.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (66 tests pass), including `//apps/humata2/cli:views_test` and `//apps/humata2/daemon/humatad:review_test` (`the_user_lists_every_offered_view_newest_first_without_naming_a_session`).
