@@ -56,6 +56,7 @@ pub struct Overlays {
     sheet: FocusHandle,
     shown: Option<Kind>,
     restore: Option<FocusHandle>,
+    restore_target: Option<crate::terminals::FocusTarget>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -142,6 +143,7 @@ impl Overlays {
             sheet: cx.focus_handle(),
             shown: None,
             restore: None,
+            restore_target: None,
             _subscriptions: subscriptions,
         }
     }
@@ -154,6 +156,7 @@ impl Overlays {
         }
         if self.shown.is_none() {
             self.restore = window.focused(cx);
+            self.restore_target = Some(self.ui.read(crate::terminals::focus_target));
         }
         self.shown = top;
         match top {
@@ -165,7 +168,11 @@ impl Overlays {
             Some(Kind::NewChannel) => self.name.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::Shortcuts) => window.focus(&self.sheet, cx),
             None => {
-                if let Some(focus) = self.restore.take() {
+                let same_target = self.restore_target.take().as_ref()
+                    == Some(&self.ui.read(crate::terminals::focus_target));
+                if let Some(focus) = self.restore.take()
+                    && same_target
+                {
                     window.focus(&focus, cx);
                 }
             }

@@ -213,6 +213,8 @@ pub enum SessionAction {
     SelectTab(usize),
     /// Pick a tab in a particular group.
     SelectGroupTab { group: usize, index: usize },
+    /// A visible terminal gained keyboard focus, including by clicking its grid.
+    FocusTerminal { session: SessionId, tab: usize },
     /// Open or close a group's plus menu.
     TerminalMenu(Option<usize>),
     /// Start/attach a program in the focused group or in the second group.
@@ -490,6 +492,18 @@ impl Reducer for Sessions {
                 state.terminal_menu = None;
                 if let (Some(id), Some((repo, path))) = (state.open.clone(), file) {
                     return self.read_file(id, repo, path);
+                }
+            }
+            SessionAction::FocusTerminal { session, tab } => {
+                if state.open.as_ref() == Some(&session)
+                    && let Some(view) = state.views.get_mut(&session)
+                {
+                    if let Some(group) = view.groups.iter().position(|group| {
+                        group.tabs.get(group.selected) == Some(&Tab::Terminal(tab))
+                    }) {
+                        view.focused_group = group;
+                        view.tab = tab;
+                    }
                 }
             }
             SessionAction::TerminalMenu(group) => state.terminal_menu = group,
