@@ -23,3 +23,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `markdown/src/view.rs`: the toggle keeps keyboard focus; the toolbar caches its selection and acts on mouse down.
 - Verified: in `headless:flows`, `the_keyboard_switches_to_the_source_and_back` passes. Two flows still fail, as recorded in OVERVIEW.
 - Look at: whether acting on press, not click, is acceptable UX for the selection toolbar.
+
+### 639904a6: Copy as Markdown keeps block markup (Markdown)
+- `markdown/src/view.rs` `with_block_markup`: when a selection starts at a block's first visible character, or ends at its last, the source range grows over the markup only (`# `, `> `, list markers, closing `**`).
+- `testing/flow`: `Target::at_start()` aims a click or drag just inside a control's leading edge. The copy flow uses it for the heading.
+- Verified: `bazel test //apps/humata2/markdown/headless:flows` (copy flow passes; 6/7), plus `markdown:markdown_test`, `headless:rendering` and `headless:snapshots`.
+- Look at: the markup character set in `only_markup` is a heuristic.
