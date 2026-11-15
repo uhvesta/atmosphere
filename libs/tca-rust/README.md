@@ -78,7 +78,13 @@ store.receive(Action::Added, |_| {});
   channel of results, sends an action per item and one when it ends
   (`StreamEnd`). Keep the last item's cursor in state and open the next
   stream from it to resume after a drop. Cancelling the effect drops the
-  stream.
+  stream. A stream waits while `EFFECT_QUEUE` of what effects sent is still
+  waiting for the reducer, so a fast server slows to the reducer's pace
+  (over gRPC, through flow control) instead of filling memory. An effect of
+  your own that sends as fast as something else produces awaits
+  `Sender::ready` before taking more. What the UI sends never waits and is
+  never dropped: a send can't block the thread it's on, and people act far
+  slower than reducers reduce.
 - **Fine-grained observation:** observers watch a part of the state chosen
   by a selector, and are told only when that part changes, so a row's view
   hears of its row, not of the other ten thousand.

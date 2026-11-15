@@ -5,7 +5,10 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use tokio::sync::Notify;
 
 use crate::clock::Clock;
 
@@ -14,14 +17,22 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Sends an effect's actions back to the store that ran it. Once the store
 /// is gone, or the effect is cancelled, what's sent is dropped.
+///
+/// [`send`](Self::send) never waits and never drops an action for want of
+/// room: the queue to the reducer has no bound. An effect that sends as
+/// fast as something else produces, such as one following a stream,
+/// awaits [`ready`](Self::ready) before taking the next item, so it waits
+/// for the reducer rather than queue without end; [`Effect::stream`] does.
 pub struct Sender<A> {
     send: Arc<dyn Fn(A) + Send + Sync>,
+    room: Option<Arc<Room>>,
 }
 
 impl<A> Clone for Sender<A> {
     fn clone(&self) -> Self {
         Self {
             send: self.send.clone(),
+            room: self.room.clone(),
         }
     }
 }
@@ -30,6 +41,23 @@ impl<A: 'static> Sender<A> {
     pub(crate) fn new(send: impl Fn(A) + Send + Sync + 'static) -> Self {
         Self {
             send: Arc::new(send),
+            room: None,
+        }
+    }
+
+    /// A sender that waits in [`ready`](Self::ready) for `room`.
+    pub(crate) fn with_room(room: Arc<Room>, send: impl Fn(A) + Send + Sync + 'static) -> Self {
+        Self {
+            send: Arc::new(send),
+            room: Some(room),
+        }
+    }
+
+    /// A sender through `send` that waits for the same room as `like`.
+    pub(crate) fn like<B>(like: &Sender<B>, send: impl Fn(A) + Send + Sync + 'static) -> Self {
+        Self {
+            send: Arc::new(send),
+            room: like.room.clone(),
         }
     }
 
@@ -38,9 +66,71 @@ impl<A: 'static> Sender<A> {
         (self.send)(action)
     }
 
+    /// Waits until fewer than [`EFFECT_QUEUE`] actions effects sent are
+    /// waiting for the reducer. Await it before taking more work whose
+    /// actions you'll send, so a fast producer slows to the reducer's pace
+    /// instead of filling memory.
+    pub async fn ready(&self) {
+        if let Some(room) = &self.room {
+            room.wait().await;
+        }
+    }
+
     /// A sender of `B`s that sends each as the `A` that `f` makes of it.
     fn before<B: 'static>(self, f: Arc<dyn Fn(B) -> A + Send + Sync>) -> Sender<B> {
-        Sender::new(move |action| self.send(f(action)))
+        let room = self.room.clone();
+        Sender {
+            send: Arc::new(move |action| self.send(f(action))),
+            room,
+        }
+    }
+}
+
+/// How many actions effects sent may wait for the reducer before
+/// [`Sender::ready`] waits.
+pub const EFFECT_QUEUE: usize = 1024;
+
+/// Counts the actions effects sent that the reducer hasn't taken yet.
+pub(crate) struct Room {
+    queued: AtomicUsize,
+    limit: usize,
+    freed: Notify,
+}
+
+impl Room {
+    pub(crate) fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            queued: AtomicUsize::new(0),
+            limit: limit.max(1),
+            freed: Notify::new(),
+        })
+    }
+
+    /// An action an effect sent was queued.
+    pub(crate) fn queued(&self) {
+        self.queued.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The reducer took one of those actions, or it couldn't be queued.
+    pub(crate) fn taken(&self) {
+        let before = self.queued.fetch_sub(1, Ordering::SeqCst);
+        if before == self.limit {
+            self.freed.notify_waiters();
+        }
+    }
+
+    async fn wait(&self) {
+        loop {
+            let freed = self.freed.notified();
+            let mut freed = std::pin::pin!(freed);
+            // Listening before looking, so a `taken` in between isn't
+            // missed.
+            freed.as_mut().enable();
+            if self.queued.load(Ordering::SeqCst) < self.limit {
+                return;
+            }
+            freed.await;
+        }
     }
 }
 

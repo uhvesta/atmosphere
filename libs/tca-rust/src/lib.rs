@@ -77,7 +77,7 @@ mod test_store;
 
 pub use clock::{Clock, SystemClock, TestClock};
 pub use dependencies::{Dependencies, DependencyError};
-pub use effect::{BoxFuture, CancelId, Effect, Sender};
+pub use effect::{BoxFuture, CancelId, EFFECT_QUEUE, Effect, Sender};
 pub use identified::{Change, Identified, IdentifiedVec};
 pub use local_store::LocalStore;
 pub use navigation::{

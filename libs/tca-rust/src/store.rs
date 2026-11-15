@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
-use crate::effect::Sender;
+use crate::effect::{EFFECT_QUEUE, Room, Sender};
 use crate::reducer::Reducer;
 use crate::runner::Runner;
 
@@ -40,7 +40,8 @@ pub enum StoreError {
 /// state changed is told, once however many actions there were.
 pub struct Store<R: Reducer> {
     shared: Arc<Shared<R::State>>,
-    actions: mpsc::UnboundedSender<R::Action>,
+    /// Each action, and whether an effect sent it.
+    actions: mpsc::UnboundedSender<(R::Action, bool)>,
     runner: Runner,
     /// The runtime the store made for itself, if it wasn't given one.
     runtime: Option<Runtime>,
@@ -107,9 +108,14 @@ where
         // Weak, so the store's own effects don't keep it running once
         // it's dropped.
         let weak = actions.downgrade();
-        let send = Sender::new(move |action| {
+        let room = Room::new(EFFECT_QUEUE);
+        let counted = room.clone();
+        let send = Sender::with_room(room.clone(), move |action| {
             if let Some(actions) = weak.upgrade() {
-                let _ = actions.send(action);
+                counted.queued();
+                if actions.send((action, true)).is_err() {
+                    counted.taken();
+                }
             }
         });
         runtime.spawn(reduce_all(
@@ -118,6 +124,7 @@ where
             receiver,
             runner.clone(),
             send,
+            room,
         ));
         Self {
             shared,
@@ -129,9 +136,12 @@ where
 }
 
 impl<R: Reducer> Store<R> {
-    /// Queues `action` for the reducer, without waiting.
+    /// Queues `action` for the reducer, without waiting. There's no bound
+    /// on what the UI may queue: a send must never block the thread it's
+    /// on or lose what the user did, and the user acts far slower than the
+    /// reducer reduces.
     pub fn send(&self, action: R::Action) {
-        let _ = self.actions.send(action);
+        let _ = self.actions.send((action, false));
     }
 
     /// What `read` makes of the state as it is now.
@@ -193,9 +203,10 @@ impl<R: Reducer> Drop for Store<R> {
 async fn reduce_all<R>(
     reducer: R,
     shared: Arc<Shared<R::State>>,
-    mut receiver: mpsc::UnboundedReceiver<R::Action>,
+    mut receiver: mpsc::UnboundedReceiver<(R::Action, bool)>,
     runner: Runner,
     send: Sender<R::Action>,
+    room: Arc<Room>,
 ) where
     R: Reducer,
     R::Action: Send + 'static,
@@ -203,7 +214,10 @@ async fn reduce_all<R>(
     let mut observers: Vec<Observer<R::State>> = Vec::new();
     let mut waiting = Vec::new();
     while receiver.recv_many(&mut waiting, 256).await > 0 {
-        for action in waiting.drain(..) {
+        for (action, from_effect) in waiting.drain(..) {
+            if from_effect {
+                room.taken();
+            }
             let effect = {
                 let mut state = shared.state.write().unwrap_or_else(PoisonError::into_inner);
                 reducer.reduce(&mut state, action)

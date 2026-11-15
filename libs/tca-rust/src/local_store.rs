@@ -12,7 +12,7 @@ use std::task::{Poll, Waker};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
-use crate::effect::Sender;
+use crate::effect::{EFFECT_QUEUE, Room, Sender};
 use crate::reducer::Reducer;
 use crate::runner::Runner;
 use crate::store::{Observation, StoreError};
@@ -63,6 +63,8 @@ struct Inner<R: Reducer> {
     received: RefCell<mpsc::UnboundedReceiver<R::Action>>,
     /// Keeps the effects' channel open; they hold it only weakly.
     _actions: mpsc::UnboundedSender<R::Action>,
+    /// Counts what effects sent that isn't reduced yet.
+    room: Arc<Room>,
     send: Sender<R::Action>,
     runner: Runner,
     /// Wakes [`LocalStore::run`] to end once the store is gone.
@@ -94,9 +96,14 @@ where
         // Weak, so effects still running don't keep the channel open once
         // the store is gone.
         let weak = actions.downgrade();
-        let send = Sender::new(move |action| {
+        let room = Room::new(EFFECT_QUEUE);
+        let counted = room.clone();
+        let send = Sender::with_room(room.clone(), move |action| {
             if let Some(actions) = weak.upgrade() {
-                let _ = actions.send(action);
+                counted.queued();
+                if actions.send(action).is_err() {
+                    counted.taken();
+                }
             }
         });
         Self {
@@ -108,6 +115,7 @@ where
                 reducing: Cell::new(false),
                 received: RefCell::new(received),
                 _actions: actions,
+                room,
                 send,
                 runner: Runner::new(runtime.clone()),
                 running: RefCell::new(None),
@@ -182,6 +190,7 @@ async fn next<R: Reducer>(store: &Weak<Inner<R>>) -> Option<Rc<Inner<R>>> {
         let polled = inner.received.borrow_mut().poll_recv(cx);
         match polled {
             Poll::Ready(Some(action)) => {
+                inner.room.taken();
                 inner.queue.borrow_mut().push_back(action);
                 Poll::Ready(Some(inner))
             }
@@ -226,7 +235,11 @@ where
 
     fn next_action(&self) -> Option<R::Action> {
         let queued = self.queue.borrow_mut().pop_front();
-        queued.or_else(|| self.received.borrow_mut().try_recv().ok())
+        queued.or_else(|| {
+            let action = self.received.borrow_mut().try_recv().ok()?;
+            self.room.taken();
+            Some(action)
+        })
     }
 
     fn tell(&self) {

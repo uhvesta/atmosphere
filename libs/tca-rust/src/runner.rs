@@ -173,7 +173,7 @@ fn prepare<A: Send + 'static>(
 fn guard<A: Send + 'static>(send: &Sender<A>, token: &Token) -> Sender<A> {
     let send = send.clone();
     let token = token.clone();
-    Sender::new(move |action| {
+    Sender::like(&send.clone(), move |action| {
         if !*token.borrow() {
             send.send(action);
         }

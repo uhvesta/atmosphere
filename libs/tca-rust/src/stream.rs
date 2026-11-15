@@ -75,6 +75,9 @@ impl<A: Send + 'static> Effect<A> {
                 }
             };
             loop {
+                // The reducer keeps up with the stream, or the stream
+                // waits: what isn't read yet stays with its source.
+                send.ready().await;
                 match stream.next().await {
                     Some(Ok(next)) => send.send(item(next)),
                     Some(Err(error)) => {
