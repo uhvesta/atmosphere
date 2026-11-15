@@ -97,6 +97,7 @@ fn drive<R>(
         builds,
         wait: &|_| {},
         events: &mut push,
+        cancelled: &|| false,
     };
     let result = f(&mut drive);
     (result, events)
@@ -170,6 +171,38 @@ fn adding_a_machine_needs_its_host_key_confirmed_and_installs_all_three_tools() 
     assert!(machine.unit_installed());
     assert!(events.contains(&StepEvent::Done(humata2_machines::OpStep::Install)));
     assert!(events.contains(&StepEvent::Skipped(humata2_machines::OpStep::FindAgents)));
+}
+
+#[test]
+fn an_add_cancelled_after_any_step_stops_there_and_is_undone() {
+    use humata2_machines::OpStep;
+    for (after, next) in [
+        (OpStep::Connect, OpStep::Check),
+        (OpStep::Check, OpStep::Install),
+        (OpStep::Install, OpStep::Start),
+    ] {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        let request = request(Some(fingerprint(&host, &machine)));
+        let machines = host.machines();
+        let plan = machines.plan_add(&request).unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut push = |event| events.borrow_mut().push(event);
+        let cancelled = || events.borrow().contains(&StepEvent::Done(after));
+        let runner = machine.runner();
+        let mut drive = Drive {
+            runner: &runner,
+            builds: &Files(1),
+            wait: &|_| {},
+            events: &mut push,
+            cancelled: &cancelled,
+        };
+        let result = machines.add(&request, plan, &mut drive);
+
+        assert!(matches!(result, Err(ManageError::Cancelled { .. })), "after {after:?}: {result:?}");
+        assert!(!events.borrow().contains(&StepEvent::Running(next)), "{next:?} ran after the cancel");
+        assert_clean(&host, &machine);
+    }
 }
 
 #[test]

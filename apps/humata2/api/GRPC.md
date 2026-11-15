@@ -343,11 +343,18 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
 What humatad2 builds of this so far (D61): `ADD_MACHINE` and
 `REMOVE_MACHINE` only, kept in memory (a restart forgets finished
 operations; a machine left half added or half removed is finished or
-undone when the daemon starts, PER-27). A failed add is undone at once, so
-Try again is a fresh `AddSshMachine`; `CancelOperation` and
-`RetryOperation` answer `not_built`. `REMOVE_MACHINE` runs `stop_daemon`
-and `forget`; `dispose:`, `leave_channels` and `provider_delete` come with
-sessions, channels and providers.
+undone when the daemon starts, PER-27). `CancelOperation` stops an
+`ADD_MACHINE` at its next step boundary (between steps, or between connect
+attempts) and undoes it, and the operation ends `CANCELLED`; cancelling
+one that already ended answers with how it ended. `REMOVE_MACHINE` is
+past its point of no return from its first step, so cancelling it fails
+with `not_cancellable`. A failed add is undone at once, so
+`RetryOperation` runs a failed operation's work again from its first step
+under the same id (D81); a retry resent with the same key answers with
+that run, and any other state fails with `invalid_field` on `id`.
+`REMOVE_MACHINE` runs `stop_daemon` and `forget`; `dispose:`,
+`leave_channels` and `provider_delete` come with sessions, channels and
+providers.
 
 ## 8. The peer link
 

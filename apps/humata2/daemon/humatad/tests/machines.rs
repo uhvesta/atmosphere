@@ -277,6 +277,146 @@ async fn a_machine_is_added_once_its_host_key_is_confirmed_then_removed_by_plan(
     assert_eq!(reused.code(), Code::FailedPrecondition);
 }
 
+/// The fingerprint a first, unconfirmed add reports.
+async fn presented_fingerprint(host: &Host) -> String {
+    let first = host.machines().await.add_ssh_machine(add("", "first")).await.unwrap().into_inner();
+    let last = host.watch(&first).await.pop().unwrap();
+    let Some(pb::error::Kind::HostKeyChanged(key)) = last.error.and_then(|error| error.kind) else {
+        panic!("expected the host key to need confirming");
+    };
+    key.presented_fingerprint
+}
+
+/// Waits until the fake `ssh` has been run more than `calls` times.
+async fn ssh_ran(machine: &FakeMachine, calls: usize) {
+    let deadline = Instant::now() + WAIT;
+    while machine.ssh_calls() <= calls {
+        assert!(Instant::now() < deadline, "ssh never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_add_cancelled_while_it_connects_ends_cancelled_and_leaves_nothing() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+
+    machine.set("hang");
+    let calls = machine.ssh_calls();
+    let adding = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap().into_inner();
+    assert!(adding.cancellable);
+    ssh_ran(&machine, calls).await;
+    let asked = host
+        .operations()
+        .await
+        .cancel_operation(pb::CancelOperationRequest {
+            id: adding.id.clone(),
+            idempotency_key: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(asked.id, adding.id);
+    machine.clear("hang");
+
+    let last = host.watch(&adding).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Cancelled, "{:?}", last.error);
+    assert!(!last.cancellable);
+    for key in ["check", "install", "start"] {
+        assert_ne!(step_state(&last, key), pb::StepState::Done, "{key} ran after the cancel");
+    }
+    assert_eq!(step_state(&last, "check"), pb::StepState::Waiting);
+    assert!(host.list().await.is_empty());
+    assert!(machine.installed("humatad2").is_none());
+
+    // Cancelling again answers with how it ended.
+    let again = host
+        .operations()
+        .await
+        .cancel_operation(pb::CancelOperationRequest {
+            id: adding.id.clone(),
+            idempotency_key: None,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(state_of(&again), pb::OperationState::Cancelled);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_add_tried_again_runs_under_the_same_id_and_a_removal_cannot_be_cancelled() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+
+    // The machine is down: the add fails at connect.
+    machine.set("down");
+    let adding = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap().into_inner();
+    let failed = host.watch(&adding).await.pop().unwrap();
+    assert_eq!(state_of(&failed), pb::OperationState::Failed);
+    assert!(host.list().await.is_empty());
+
+    // Back up: trying again adds it, same operation, later versions.
+    machine.clear("down");
+    let retry = |key: &str| pb::RetryOperationRequest {
+        id: adding.id.clone(),
+        idempotency_key: Some(pb::IdempotencyKey { value: key.to_owned() }),
+    };
+    let retried = host.operations().await.retry_operation(retry("r1")).await.unwrap().into_inner();
+    assert_eq!(retried.id, adding.id);
+    assert!(retried.version > failed.version);
+    let resent = host.operations().await.retry_operation(retry("r1")).await.unwrap().into_inner();
+    assert_eq!(resent.id, adding.id);
+    let last = host.watch(&retried).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
+    assert!(last.error.is_none());
+    assert_eq!(host.list().await.len(), 1);
+    assert!(machine.installed("humatad2").is_some());
+
+    // Only a failed operation can be tried again.
+    let refused = host.operations().await.retry_operation(retry("r2")).await.unwrap_err();
+    assert_eq!(refused.code(), Code::FailedPrecondition);
+
+    // A removal is past its point of no return from its first step.
+    let plan = host
+        .machines()
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: machine_id() })
+        .await
+        .unwrap()
+        .into_inner();
+    machine.set("hang");
+    let calls = machine.ssh_calls();
+    let removing = host
+        .machines()
+        .await
+        .remove_machine(pb::RemoveMachineRequest {
+            id: machine_id(),
+            plan: plan.token,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!removing.cancellable);
+    ssh_ran(&machine, calls).await;
+    let refused = host
+        .operations()
+        .await
+        .cancel_operation(pb::CancelOperationRequest {
+            id: removing.id.clone(),
+            idempotency_key: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error_of(&refused).kind, Some(pb::error::Kind::NotCancellable(_))));
+    machine.clear("hang");
+    let last = host.watch(&removing).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
+    assert!(host.list().await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_ssh_host_or_unknown_machine_is_the_calls_own_error() {
     let machine = FakeMachine::new();

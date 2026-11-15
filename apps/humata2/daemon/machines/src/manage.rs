@@ -126,6 +126,20 @@ pub struct Drive<'a> {
     /// Blocks for the given time; tests pass one that returns at once.
     pub wait: &'a dyn Fn(Duration),
     pub events: &'a mut dyn FnMut(StepEvent),
+    /// True once the user cancelled: an add stops at the next step
+    /// boundary and is undone (GRPC.md §7). Work that can't be cancelled
+    /// never asks.
+    pub cancelled: &'a dyn Fn() -> bool,
+}
+
+/// A step boundary: the cancel the user asked for, if any.
+fn stop_if_cancelled(link: &Link, drive: &Drive<'_>) -> Result<(), ManageError> {
+    if (drive.cancelled)() {
+        return Err(ManageError::Cancelled {
+            machine: link.machine().as_str().to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Add machine over SSH (HO-1, MP-10).
@@ -233,6 +247,10 @@ pub enum ManageError {
         #[source]
         source: QuoteError,
     },
+    #[error(
+        "adding {machine} was cancelled, and what it had done there was undone. Add the machine again when you want it"
+    )]
+    Cancelled { machine: String },
     #[error(transparent)]
     Hosts(#[from] HostsError),
     #[error(transparent)]
@@ -343,6 +361,7 @@ impl Machines {
         let link = Link::ssh(plan.machine.clone(), plan.target, &self.known_hosts);
         let result = self
             .confirm_host_key(&link, request.trust_fingerprint.as_deref(), drive)
+            .and_then(|()| stop_if_cancelled(&link, drive))
             .and_then(|()| self.set_up(&link, drive));
         match result {
             Ok(ready) => {
@@ -513,6 +532,7 @@ impl Machines {
                     let next = OpStep::of(setup.current());
                     if next != current {
                         (drive.events)(StepEvent::Done(current));
+                        stop_if_cancelled(link, drive)?;
                         current = next;
                         (drive.events)(StepEvent::Running(current));
                     }
@@ -525,6 +545,7 @@ impl Machines {
                         delay,
                     });
                     (drive.wait)(delay);
+                    stop_if_cancelled(link, drive)?;
                 }
                 Progress::NeedsLogin(login) => {
                     (drive.events)(StepEvent::Failed {

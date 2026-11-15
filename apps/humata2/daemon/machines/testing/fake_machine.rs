@@ -6,6 +6,7 @@
 //! PATH. Flags in the state folder change what the machine does:
 //!
 //! - `down`: every ssh fails as an unreachable host would (exit 255);
+//! - `hang`: every ssh waits, once logged, until the flag is cleared;
 //! - `holder`: a `humata2_holder` of the user runs;
 //! - `uname`: what `uname -sm` prints (default `Linux x86_64`).
 //!
@@ -43,6 +44,7 @@ while [ "$#" -gt 0 ]; do
 done
 host=$1; shift
 printf '%s\n' "$*" >> "__STATE__/ssh.log"
+while [ -e "__STATE__/hang" ]; do /bin/sleep 0.05; done
 if [ -e "__STATE__/down" ]; then
   echo "ssh: connect to host $host port 22: Connection refused" >&2
   exit 255

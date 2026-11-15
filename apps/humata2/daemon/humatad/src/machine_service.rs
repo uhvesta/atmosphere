@@ -56,13 +56,19 @@ impl Work {
 
     /// Runs `with` with a [`Drive`] that runs commands as child processes
     /// and hands each step's progress to `events`.
-    fn drive<R>(&self, events: &mut dyn FnMut(StepEvent), with: impl FnOnce(&Machines, &mut Drive<'_>) -> R) -> R {
+    fn drive<R>(
+        &self,
+        events: &mut dyn FnMut(StepEvent),
+        cancelled: &dyn Fn() -> bool,
+        with: impl FnOnce(&Machines, &mut Drive<'_>) -> R,
+    ) -> R {
         let runner = SystemRunner::new(&());
         let mut drive = Drive {
             runner: &runner,
             builds: &*self.builds,
             wait: &std::thread::sleep,
             events,
+            cancelled,
         };
         with(&self.machines, &mut drive)
     }
@@ -97,7 +103,7 @@ impl Work {
 pub(crate) fn recover_in_background(work: Arc<Work>) {
     std::thread::spawn(move || {
         let mut ignore = |_: StepEvent| {};
-        match work.drive(&mut ignore, |machines, drive| machines.recover(drive)) {
+        match work.drive(&mut ignore, &|| false, |machines, drive| machines.recover(drive)) {
             Ok(recovered) => {
                 for machine in recovered {
                     if let Err(error) = machine.outcome {
@@ -146,26 +152,32 @@ impl MachineSvc {
 
     /// Runs `work` on a blocking thread, its progress going to `progress`,
     /// and finishes the operation with what it returns.
-    fn run(
-        &self,
-        progress: Progress,
-        work: impl FnOnce(&Machines, &mut Drive<'_>) -> Result<Option<pb::operation::Result>, ManageError>
-        + Send
-        + 'static,
-    ) -> pb::Operation {
+    /// Runs `job` for the operation on a blocking thread and answers with
+    /// the operation as it starts; Retry runs `job` again.
+    fn run(&self, progress: Progress, job: Job) -> pb::Operation {
         let operation = progress.operation();
-        let id = operation.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
-        let shared = self.work.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut events = |event: StepEvent| progress.step(&event);
-            let result = shared.drive(&mut events, work);
-            match result {
-                Ok(result) => progress.succeed(result),
-                Err(error) => progress.fail(error_of(&error, Some(&id))),
-            }
-        });
+        launch(self.work.clone(), progress, job);
         operation
     }
+}
+
+/// An operation's work, which may run more than once (Retry).
+type Job = Arc<dyn Fn(&Machines, &mut Drive<'_>) -> Result<Option<pb::operation::Result>, ManageError> + Send + Sync>;
+
+fn launch(shared: Arc<Work>, progress: Progress, job: Job) {
+    let again = (shared.clone(), job.clone());
+    progress.rerun_with(Arc::new(move |progress| launch(again.0.clone(), progress, again.1.clone())));
+    let id = progress.operation().id.map(|id| id.value).unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let mut events = |event: StepEvent| progress.step(&event);
+        let cancelled = || progress.cancelled();
+        let result = shared.drive(&mut events, &cancelled, |machines, drive| job(machines, drive));
+        match result {
+            Ok(result) => progress.succeed(result),
+            Err(ManageError::Cancelled { .. }) => progress.end_cancelled(),
+            Err(error) => progress.fail(error_of(&error, Some(&id))),
+        }
+    });
 }
 
 fn machine_id(name: &str) -> pb::MachineId {
@@ -270,6 +282,7 @@ fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
         ManageError::Run { .. } | ManageError::Quote { .. } => {
             ("check that ssh is installed and on PATH for humatad2, then try again", None)
         }
+        ManageError::Cancelled { .. } => ("add the machine again when you want it", None),
         ManageError::Hosts(_) | ManageError::KnownHosts(_) => {
             ("fix the file the message names, then try again", None)
         }
@@ -395,20 +408,21 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             pb::OperationKind::AddMachine,
             target,
             &OpStep::ADD,
+            true,
             request.idempotency_key,
         )? {
             Started::New(progress) => progress,
             Started::Existing(operation) => return Ok(Response::new(operation)),
         };
         let work = self.work.clone();
-        let operation = self.run(progress, move |machines, drive| {
-            let added = machines.add(&add, plan, drive);
+        let operation = self.run(progress, Arc::new(move |machines, drive| {
+            let added = machines.add(&add, plan.clone(), drive);
             match &added {
                 Ok(entry) => work.saw(&entry.name, pb::Reachability::Online),
                 Err(error) => work.saw(&name, reach_after(error)),
             }
             added.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
-        });
+        }));
         Ok(Response::new(operation))
     }
 
@@ -424,7 +438,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let work = self.work.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut ignore = |_: StepEvent| {};
-            let result = work.drive(&mut ignore, |machines, drive| machines.reconnect(&name, drive));
+            let result = work.drive(&mut ignore, &|| false, |machines, drive| machines.reconnect(&name, drive));
             match &result {
                 Ok(entry) => work.saw(&entry.name, pb::Reachability::Online),
                 Err(ManageError::Busy { .. } | ManageError::NotFound { .. }) => {}
@@ -509,14 +523,15 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             pb::OperationKind::RemoveMachine,
             target,
             &OpStep::REMOVE,
+            false,
             request.idempotency_key,
         )? {
             Started::New(progress) => progress,
             Started::Existing(operation) => return Ok(Response::new(operation)),
         };
-        let operation = self.run(progress, move |machines, drive| {
+        let operation = self.run(progress, Arc::new(move |machines, drive| {
             machines.remove(&name, drive).map(|()| None)
-        });
+        }));
         Ok(Response::new(operation))
     }
 

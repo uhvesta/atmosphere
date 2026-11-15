@@ -3,10 +3,12 @@
 //! gets every change as it happens; nothing asks again (TR-7). Operations
 //! live in memory: after a restart the work they did is finished or undone
 //! by its own owner (machines' `recover`, PER-27), not resumed from here.
-//! Cancel and Retry aren't built: a failed add was already undone, and
-//! Try again is a fresh add.
+//! Cancel asks the work to stop at its next step boundary; the work
+//! undoes what it did and ends the operation cancelled. Retry runs a
+//! failed operation's work again under the same id (D81).
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use humata2_grpc::humata::v1 as pb;
@@ -14,7 +16,7 @@ use humata2_access::Refusal;
 use humata2_machines::{OpStep, StepEvent};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 
 use crate::attach::now;
 use crate::identity::{self, Caller};
@@ -41,9 +43,20 @@ impl Owner {
     }
 }
 
+/// Runs an operation's work again with the handle given (Retry).
+pub(crate) type Rerun = Arc<dyn Fn(Progress) + Send + Sync>;
+
 struct Tracked {
     owner: Owner,
     operation: watch::Sender<pb::Operation>,
+    /// The steps the kind lists, for a rerun to start from.
+    steps: Vec<OpStep>,
+    /// Whether the kind can be cancelled while it runs (GRPC.md §7).
+    cancellable: bool,
+    cancel: AtomicBool,
+    rerun: Mutex<Option<Rerun>>,
+    /// The key of the retry that started the current run.
+    retry_key: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -68,12 +81,15 @@ pub(crate) enum Started {
 impl Operations {
     /// Starts an operation of `kind` on `target` with `steps`, all waiting,
     /// for `caller`. A key already used returns that operation instead.
+    /// `cancellable` says whether the work stops when asked to; work that
+    /// is cancellable checks [`Progress::cancelled`] between its steps.
     pub(crate) fn start(
         &self,
         caller: &Caller,
         kind: pb::OperationKind,
         target: pb::EntityRef,
         steps: &[OpStep],
+        cancellable: bool,
         key: Option<pb::IdempotencyKey>,
     ) -> Result<Started, Status> {
         let owner = Owner::of(caller)?;
@@ -94,7 +110,7 @@ impl Operations {
             state: pb::OperationState::Running as i32,
             steps: steps.iter().map(|&step| waiting(step)).collect(),
             error: None,
-            cancellable: false,
+            cancellable,
             idempotency_key: key.clone(),
             started_at: Some(now()),
             finished_at: None,
@@ -106,6 +122,11 @@ impl Operations {
         let tracked = Arc::new(Tracked {
             owner,
             operation: sender,
+            steps: steps.to_vec(),
+            cancellable,
+            cancel: AtomicBool::new(false),
+            rerun: Mutex::new(None),
+            retry_key: Mutex::new(None),
         });
         table.by_id.insert(id.clone(), tracked.clone());
         if let Some(key) = key {
@@ -154,6 +175,16 @@ impl Progress {
         self.tracked.operation.borrow().clone()
     }
 
+    /// True once CancelOperation asked this run to stop.
+    pub(crate) fn cancelled(&self) -> bool {
+        self.tracked.cancel.load(Ordering::SeqCst)
+    }
+
+    /// How RetryOperation runs this operation's work again.
+    pub(crate) fn rerun_with(&self, rerun: Rerun) {
+        *lock(&self.tracked.rerun) = Some(rerun);
+    }
+
     /// Applies a step's progress. A step the kind doesn't list (an undo's)
     /// is added at the end, so the list says what was done.
     pub(crate) fn step(&self, event: &StepEvent) {
@@ -187,6 +218,7 @@ impl Progress {
     pub(crate) fn succeed(self, result: Option<pb::operation::Result>) {
         self.change(|operation| {
             operation.state = pb::OperationState::Succeeded as i32;
+            operation.cancellable = false;
             operation.finished_at = Some(now());
             operation.result = result;
         });
@@ -195,8 +227,24 @@ impl Progress {
     pub(crate) fn fail(self, error: pb::Error) {
         self.change(|operation| {
             operation.state = pb::OperationState::Failed as i32;
+            operation.cancellable = false;
             operation.finished_at = Some(now());
             operation.error = Some(error);
+        });
+    }
+
+    /// The work stopped as asked and undid what it had done. A step it was
+    /// in the middle of is shown as not run.
+    pub(crate) fn end_cancelled(self) {
+        self.change(|operation| {
+            operation.state = pb::OperationState::Cancelled as i32;
+            operation.cancellable = false;
+            operation.finished_at = Some(now());
+            for step in &mut operation.steps {
+                if step.state == pb::StepState::Running as i32 {
+                    step.state = pb::StepState::Waiting as i32;
+                }
+            }
         });
     }
 
@@ -241,6 +289,61 @@ fn actor(caller: &Caller) -> pb::Actor {
         Caller::Peer => Actor::System(pb::SystemActor { reason: 0 }),
     };
     pb::Actor { actor: Some(actor) }
+}
+
+fn state(operation: &pb::Operation) -> pb::OperationState {
+    pb::OperationState::try_from(operation.state).unwrap_or(pb::OperationState::Unspecified)
+}
+
+/// The title of the step the operation is in, for `not_cancellable`.
+fn current_step(operation: &pb::Operation) -> String {
+    operation
+        .steps
+        .iter()
+        .find(|step| step.state == pb::StepState::Running as i32)
+        .or_else(|| operation.steps.iter().find(|step| step.state == pb::StepState::Waiting as i32))
+        .map(|step| step.title.clone())
+        .unwrap_or_default()
+}
+
+fn not_cancellable(id: &str, operation: &pb::Operation) -> Status {
+    status::failure(
+        Code::FailedPrecondition,
+        status::error(
+            format!("operation {id} can't be stopped: what it does can't be undone half way"),
+            "let it finish, then undo it with the reverse action (add the machine again after a removal)",
+            pb::error::Kind::NotCancellable(pb::NotCancellable {
+                operation: Some(pb::OperationId { value: id.to_owned() }),
+                step: current_step(operation),
+            }),
+        ),
+    )
+}
+
+fn not_retryable(id: &str, operation: &pb::Operation) -> Status {
+    let (what, fix) = match state(operation) {
+        pb::OperationState::Running => (
+            "is still running",
+            "watch it to see how it ends; only a failed operation can be tried again",
+        ),
+        pb::OperationState::Succeeded => ("already succeeded", "nothing is left to do"),
+        pb::OperationState::Cancelled => (
+            "was cancelled",
+            "start the work again as a new call (a cancelled operation was undone)",
+        ),
+        _ => ("can't run again", "start the work again as a new call"),
+    };
+    status::failure(
+        Code::FailedPrecondition,
+        status::error(
+            format!("operation {id} {what}, so it can't be tried again"),
+            fix,
+            pb::error::Kind::InvalidField(pb::InvalidField {
+                field: "id".to_owned(),
+                problem: pb::invalid_field::Problem::NotAllowedHere as i32,
+            }),
+        ),
+    )
 }
 
 fn finished(operation: &pb::Operation) -> bool {
@@ -371,17 +474,62 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
+    /// Asks a running operation to stop at its next step boundary and
+    /// answers with it as it is; its watchers see it end cancelled. One
+    /// that already ended is answered as it ended.
     async fn cancel_operation(
         &self,
-        _request: Request<pb::CancelOperationRequest>,
+        request: Request<pb::CancelOperationRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.OperationService.CancelOperation"))
+        let caller = identity::caller(&request)?;
+        let id = id_of(request.into_inner().id)?;
+        let tracked = self.operations.find(&caller, &id)?;
+        let operation = tracked.operation.borrow().clone();
+        if finished(&operation) {
+            return Ok(Response::new(operation));
+        }
+        if !tracked.cancellable {
+            return Err(not_cancellable(&id, &operation));
+        }
+        tracked.cancel.store(true, Ordering::SeqCst);
+        Ok(Response::new(tracked.operation.borrow().clone()))
     }
 
+    /// Runs a failed operation's work again under the same id: its steps
+    /// start over (a failed step's work was undone) and its version goes
+    /// on. A retry resent with the same key answers with that run.
     async fn retry_operation(
         &self,
-        _request: Request<pb::RetryOperationRequest>,
+        request: Request<pb::RetryOperationRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.OperationService.RetryOperation"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let id = id_of(request.id)?;
+        let key = request.idempotency_key.map(|key| key.value).filter(|value| !value.is_empty());
+        let tracked = self.operations.find(&caller, &id)?;
+        let mut retry_key = lock(&tracked.retry_key);
+        let operation = tracked.operation.borrow().clone();
+        if key.is_some() && *retry_key == key {
+            return Ok(Response::new(operation));
+        }
+        let rerun = lock(&tracked.rerun).clone();
+        let Some(rerun) = rerun.filter(|_| state(&operation) == pb::OperationState::Failed) else {
+            return Err(not_retryable(&id, &operation));
+        };
+        *retry_key = key;
+        tracked.cancel.store(false, Ordering::SeqCst);
+        let progress = Progress { tracked: tracked.clone() };
+        progress.change(|operation| {
+            operation.state = pb::OperationState::Running as i32;
+            operation.cancellable = tracked.cancellable;
+            operation.steps = tracked.steps.iter().map(|&step| waiting(step)).collect();
+            operation.error = None;
+            operation.result = None;
+            operation.finished_at = None;
+        });
+        drop(retry_key);
+        let operation = progress.operation();
+        rerun(progress);
+        Ok(Response::new(operation))
     }
 }
