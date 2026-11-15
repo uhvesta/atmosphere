@@ -214,6 +214,8 @@ A bug report is text an agent can read and act on: what you did, where, what the
 
 ## Known gaps (2026-11-15)
 
+**Keep this file current.** Everyone working on Humata 2, agents included, takes work from this file, and in the same commit as the code: ticks what is done and verified (with the Bazel target that proves it), splits partly done items to show what's left, and adds newly found gaps. Each commit also gets an entry in `GAPS_REVIEW.md` so it can be reviewed.
+
 Work that was started but isn't finished, grouped by area. Each item is open until its tests pass and a real run works. Run builds and tests only through Bazel (`export PATH=$PWD/.tools/bin:$PATH`), never cargo.
 
 ### Desktop UI (I2, A10; D72, D74)
