@@ -250,7 +250,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: Ask→Inbox needs a way for any RPC to answer pending with a request id.
 
-### (this commit): operations on the event feed [minion F]
+### 5725b662: operations on the event feed [minion F]
 - The app now hears of long work, such as adding a machine, as it starts, as each step moves and when it ends, without watching each one. An agent hears of its own session's.
 - `daemon/humatad/src/operations.rs`: `Operations::new(feed)`; each Tracked keeps the starting agent's channel and session and `tell`s the feed: Created in `start`, Updated inside `Progress::change`'s `send_modify`. `daemon/humatad/src/events.rs`: `Filter` passes operations by TOPIC_OPERATIONS, the channels or sessions asked for, and `sees_session`.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
