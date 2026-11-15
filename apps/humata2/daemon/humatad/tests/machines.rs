@@ -296,6 +296,96 @@ async fn ssh_ran(machine: &FakeMachine, calls: usize) {
     }
 }
 
+/// The feed's machine events, after `after` (unset: from now).
+async fn machine_feed(host: &Host, after: Option<u64>) -> tonic::Streaming<pb::Event> {
+    pb::event_service_client::EventServiceClient::new(connect(&host.socket).await)
+        .subscribe(pb::SubscribeRequest {
+            after: after.map(|value| pb::EventSeq { value }),
+            topics: vec![pb::Topic::Machines as i32],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+async fn next_event(feed: &mut tonic::Streaming<pb::Event>) -> pb::Event {
+    tokio::time::timeout(WAIT, feed.message())
+        .await
+        .expect("an event came")
+        .unwrap()
+        .expect("the feed stays open")
+}
+
+fn seq_of(event: &pb::Event) -> u64 {
+    event.seq.as_ref().unwrap().value
+}
+
+fn machine_in(event: &pb::Event) -> &pb::Machine {
+    match &event.payload {
+        Some(pb::event::Payload::Machine(machine)) => machine,
+        other => panic!("expected a machine, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_feed_tells_each_machine_change_and_a_resume_starts_after_the_last_seen() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+    let mut feed = machine_feed(&host, None).await;
+
+    let adding = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap().into_inner();
+    let created = next_event(&mut feed).await;
+    assert_eq!(created.change(), pb::Change::Created);
+    assert_eq!(machine_in(&created).name, "box-1");
+    let mut seen = vec![created.clone()];
+    while machine_in(seen.last().unwrap()).reachability() != pb::Reachability::Online {
+        let event = next_event(&mut feed).await;
+        assert_eq!(event.change(), pb::Change::Updated);
+        seen.push(event);
+    }
+    assert!(seen.windows(2).all(|pair| seq_of(&pair[0]) < seq_of(&pair[1])));
+    let last = host.watch(&adding).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
+    assert_eq!(machine_in(seen.last().unwrap()), &host.list().await[0]);
+
+    // Resuming after the first event starts exactly at the second.
+    let mut resumed = machine_feed(&host, Some(seq_of(&created))).await;
+    assert_eq!(next_event(&mut resumed).await, seen[1]);
+
+    // A removal ends with the machine deleted, as it last was.
+    let plan = host
+        .machines()
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: machine_id() })
+        .await
+        .unwrap()
+        .into_inner();
+    host.machines()
+        .await
+        .remove_machine(pb::RemoveMachineRequest {
+            id: machine_id(),
+            plan: plan.token,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let deleted = loop {
+        let event = next_event(&mut feed).await;
+        if event.change() == pb::Change::Deleted {
+            break event;
+        }
+    };
+    assert_eq!(machine_in(&deleted).name, "box-1");
+    assert!(host.list().await.is_empty());
+
+    // A point older than anything kept (a past run's) is told to resync.
+    let mut stale = machine_feed(&host, Some(1)).await;
+    let first = next_event(&mut stale).await;
+    assert!(matches!(first.payload, Some(pb::event::Payload::Resync(_))), "{first:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_add_cancelled_while_it_connects_ends_cancelled_and_leaves_nothing() {
     let machine = FakeMachine::new();

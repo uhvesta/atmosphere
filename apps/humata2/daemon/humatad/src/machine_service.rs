@@ -8,8 +8,11 @@
 //! What a machine's `reachability` says is what this daemon last saw: the
 //! host doesn't hold a link to each machine yet, so a machine not
 //! connected since humatad2 started is UNSPECIFIED.
+//!
+//! Each change to a machine as ListMachines shows it goes on the feed
+//! (EventService), after the change is written.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -21,6 +24,7 @@ use humata2_machines::{
 };
 use tonic::{Code, Request, Response, Status};
 
+use crate::events::Feed;
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
 use crate::operations::{Operations, Progress, Started};
@@ -43,15 +47,56 @@ pub(crate) struct Work {
     pub(crate) builds: Box<dyn Builds + Send + Sync>,
     /// What each machine looked like when last connected to.
     reach: Mutex<HashMap<String, pb::Reachability>>,
+    feed: Arc<Feed>,
+    /// The machines as the feed last told them.
+    shown: Mutex<BTreeMap<String, pb::Machine>>,
 }
 
 impl Work {
-    pub(crate) fn new(machines: Machines, builds: Box<dyn Builds + Send + Sync>) -> Self {
-        Self {
+    pub(crate) fn new(machines: Machines, builds: Box<dyn Builds + Send + Sync>, feed: Arc<Feed>) -> Self {
+        let work = Self {
             machines,
             builds,
             reach: Mutex::new(HashMap::new()),
+            feed,
+            shown: Mutex::new(BTreeMap::new()),
+        };
+        *lock(&work.shown) = work.listed().unwrap_or_default();
+        work
+    }
+
+    fn listed(&self) -> Result<BTreeMap<String, pb::Machine>, ManageError> {
+        Ok(self
+            .machines
+            .list()?
+            .iter()
+            .map(|entry| (entry.name.clone(), self.machine(entry)))
+            .collect())
+    }
+
+    /// Puts each machine that changed since the feed last told it on the
+    /// feed: added, changed, or gone (with how it last looked).
+    fn publish_machines(&self) {
+        let mut shown = lock(&self.shown);
+        let Ok(now) = self.listed() else {
+            // The list will be read again at the next change.
+            return;
+        };
+        for (name, machine) in &now {
+            match shown.get(name) {
+                None => self.feed.publish(pb::Change::Created, pb::event::Payload::Machine(machine.clone())),
+                Some(before) if before != machine => {
+                    self.feed.publish(pb::Change::Updated, pb::event::Payload::Machine(machine.clone()));
+                }
+                Some(_) => {}
+            }
         }
+        for (name, machine) in shown.iter() {
+            if !now.contains_key(name) {
+                self.feed.publish(pb::Change::Deleted, pb::event::Payload::Machine(machine.clone()));
+            }
+        }
+        *shown = now;
     }
 
     /// Runs `with` with a [`Drive`] that runs commands as child processes
@@ -63,18 +108,25 @@ impl Work {
         with: impl FnOnce(&Machines, &mut Drive<'_>) -> R,
     ) -> R {
         let runner = SystemRunner::new(&());
+        let mut tell = |event: StepEvent| {
+            events(event);
+            self.publish_machines();
+        };
         let mut drive = Drive {
             runner: &runner,
             builds: &*self.builds,
             wait: &std::thread::sleep,
-            events,
+            events: &mut tell,
             cancelled,
         };
-        with(&self.machines, &mut drive)
+        let result = with(&self.machines, &mut drive);
+        self.publish_machines();
+        result
     }
 
     fn saw(&self, machine: &str, reach: pb::Reachability) {
         lock(&self.reach).insert(machine.to_owned(), reach);
+        self.publish_machines();
     }
 
     fn machine(&self, entry: &HostEntry) -> pb::Machine {

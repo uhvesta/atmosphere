@@ -11,6 +11,7 @@ mod cli_login;
 mod compression;
 mod daemon;
 mod error;
+mod events;
 mod files;
 mod grant_target;
 mod guard;

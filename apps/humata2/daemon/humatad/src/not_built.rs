@@ -56,7 +56,6 @@ not_built! {
     FileService => file_service_server,
     TransferService => transfer_service_server,
     TrashService => trash_service_server,
-    EventService => event_service_server,
     MachineService => machine_service_server,
     ProviderService => provider_service_server,
     SkillsService => skills_service_server,
@@ -80,7 +79,6 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(ActivityService)
         .add_service(TransferService)
         .add_service(TrashService)
-        .add_service(EventService)
         .add_service(ProviderService)
         .add_service(SkillsService)
         .add_service(BridgeService)

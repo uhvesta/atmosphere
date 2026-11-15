@@ -252,6 +252,14 @@ Rules:
   without a fetch. `PointersUpdated` is coalesced to one per session per
   second.
 
+What humatad2 builds of `EventService` so far (D82): machine events only
+(`Machine` payloads, to the user; an agent sees none, as ListMachines
+lists none), each written to the machine list before it is sent. The
+feed is kept in memory, its last 1024 events: numbers start from the
+daemon's start time, so an `after` from an earlier run, or one older than
+the oldest kept, gets `Resync`. A subscriber that falls more than 1024
+events behind gets `Resync` and goes on from the present. `by` is unset.
+
 ### 6.1 Chunks and compression (TR-11, TR-13, D60, D65)
 
 Byte streams travel in chunks of at most 1 MiB (`humata2_chunk::CHUNK_MAX`),

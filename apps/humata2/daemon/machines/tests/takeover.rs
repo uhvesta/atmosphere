@@ -66,12 +66,21 @@ impl Shell {
 
     /// `/bin/sh` with `args`, such as `-c` and a script that stands in for
     /// what a login ends at.
+    /// Its `pgrep` finds no holder: the computer's own (another test's
+    /// daemon, or the user's) would make the takeover stage each file
+    /// instead of swapping it in.
     fn spawn(home: &std::path::Path, args: &[&str]) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let fakes = home.join(".test-bin");
+        std::fs::create_dir_all(&fakes).unwrap();
+        let pgrep = fakes.join("pgrep");
+        std::fs::write(&pgrep, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&pgrep, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut child = Command::new("/bin/sh")
             .args(args)
             .env_clear()
             .env("HOME", home)
-            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("PATH", format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", fakes.display()))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

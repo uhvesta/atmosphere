@@ -27,6 +27,7 @@ use crate::cli_login::{CliAuth, CliLogins};
 use crate::daemon::Daemon;
 use crate::compression::Compression;
 use crate::error::DaemonError;
+use crate::events::{EventSvc, Feed};
 use crate::files::Files;
 use crate::guard::Guard;
 use crate::identity::{self, Authenticate, Identities};
@@ -283,9 +284,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone());
     let access = Access::new(guard.clone());
     let operations = Arc::new(Operations::default());
+    let feed = Arc::new(Feed::default());
     let machines = match role {
         pb::DaemonRole::Host => {
-            let work = Arc::new(machine_work(&state, args.tools, args.ssh_config)?);
+            let work = Arc::new(machine_work(&state, args.tools, args.ssh_config, feed.clone())?);
             machine_service::recover_in_background(work.clone());
             Some(MachineSvc::new(guard, work, operations.clone()))
         }
@@ -318,9 +320,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             machine,
             role,
         }));
-    let router = router.add_service(pb::operation_service_server::OperationServiceServer::new(
-        OperationSvc::new(operations),
-    ));
+    let router = router
+        .add_service(pb::operation_service_server::OperationServiceServer::new(
+            OperationSvc::new(operations),
+        ))
+        .add_service(pb::event_service_server::EventServiceServer::new(EventSvc::new(feed)));
     // Only the host keeps machines; a machine's daemon forwards these to
     // it once the link does (GRPC.md §4).
     let router = match machines {
@@ -342,7 +346,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
 }
 
 /// The host's machine list, its own known_hosts and the tools bundle.
-fn machine_work(state: &Path, tools: Option<PathBuf>, ssh_config: Option<PathBuf>) -> Result<Work, DaemonError> {
+fn machine_work(
+    state: &Path,
+    tools: Option<PathBuf>,
+    ssh_config: Option<PathBuf>,
+    feed: Arc<Feed>,
+) -> Result<Work, DaemonError> {
     let builds: Box<dyn Builds + Send + Sync> = match tools {
         Some(tools) => Box::new(Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?),
         None => {
@@ -370,7 +379,7 @@ fn machine_work(state: &Path, tools: Option<PathBuf>, ssh_config: Option<PathBuf
         ssh_config,
         retry: RetryPolicy::default(),
     });
-    Ok(Work::new(machines, builds))
+    Ok(Work::new(machines, builds, feed))
 }
 
 fn beside_this_binary(name: &str) -> PathBuf {
