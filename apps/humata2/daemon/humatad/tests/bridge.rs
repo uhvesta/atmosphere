@@ -69,7 +69,10 @@ struct StopDetached(PathBuf);
 impl Drop for StopDetached {
     fn drop(&mut self) {
         let pattern = format!("{} serve", self.0.display());
-        let _ = std::process::Command::new("pkill").arg("-f").arg(pattern).status();
+        let _ = std::process::Command::new("pkill")
+            .arg("-f")
+            .arg(pattern)
+            .status();
     }
 }
 
@@ -95,8 +98,8 @@ async fn grpc_works_through_the_bridge() {
     assert_eq!(info.api_major, 1);
 
     // A failure's details make it through as well.
-    let refused = pb::channel_service_client::ChannelServiceClient::new(channel)
-        .list_channels(pb::ListChannelsRequest::default())
+    let refused = pb::activity_service_client::ActivityServiceClient::new(channel)
+        .list_activity(pb::ListActivityRequest::default())
         .await
         .unwrap_err();
     assert!(!error_of(&refused).message.is_empty());
@@ -151,7 +154,12 @@ async fn a_bridge_with_no_daemon_starts_one_that_outlives_it() {
     drop(channel);
     assert!(exits(&mut bridge).await.success());
     let socket = home.path().join(".humata2/humatad.sock");
-    assert!(who_am_i(common::connect(&socket).await).await.actor.is_none());
+    assert!(
+        who_am_i(common::connect(&socket).await)
+            .await
+            .actor
+            .is_none()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

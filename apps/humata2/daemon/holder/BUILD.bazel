@@ -44,7 +44,10 @@ rust_library(
     ),
     crate_features = ["faults"],
     crate_name = "humata2_holder",
-    visibility = ["//apps/humata2/daemon/revive:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/revive:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
     deps = HOLDER_DEPS + ["//apps/humata2/daemon/durable:durable_faults"],
 )
 
@@ -52,7 +55,10 @@ rust_binary(
     name = "humata2_holder_faults",
     testonly = True,
     srcs = ["src/main.rs"],
-    visibility = ["//apps/humata2/daemon/revive:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/revive:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
     deps = [
         ":holder_faults",
         "@crates//:clap",

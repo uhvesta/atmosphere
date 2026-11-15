@@ -19,7 +19,10 @@ rust_library(
     name = "revive",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_revive",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
     deps = REVIVE_DEPS + [
         "//apps/humata2/daemon/holder",
         "//apps/humata2/daemon/store",
@@ -38,6 +41,10 @@ rust_library(
     testonly = True,
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_revive",
+    visibility = [
+        "//apps/humata2/daemon/revive:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
     deps = REVIVE_DEPS + [
         "//apps/humata2/daemon/holder:holder_faults",
         "//apps/humata2/daemon/store:store_faults",

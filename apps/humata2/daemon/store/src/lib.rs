@@ -13,6 +13,7 @@
 mod agents;
 mod atomic;
 mod blob;
+mod channels;
 mod error;
 pub mod fault;
 mod inbox;
@@ -20,9 +21,9 @@ mod journal;
 mod last_good;
 mod records;
 mod reviews;
-mod views;
 mod schema;
 mod store;
+mod views;
 
 use humata2_store_proto::humata::store::v1 as proto;
 
@@ -31,8 +32,9 @@ pub use error::StoreError;
 pub use journal::{Journal, JournalEntry};
 pub use last_good::{Change, LastGood, Restored, RowChange};
 pub use records::{
-    AgentLaunch, AgentRecord, AgentState, InboxRecord, Interruption, Pointers, RepoPointer,
-    ResumeFailure, ReviewRecord, SessionRecord, TabKind, TabRecord, Told, ViewRecord,
+    AgentLaunch, AgentRecord, AgentState, ChannelRecord, ChannelRepo, InboxRecord, Interruption,
+    MainClone, Pointers, RepoPointer, ResumeFailure, ReviewRecord, SessionDetail, SessionRecord,
+    SessionRepo, StartStep, TabKind, TabRecord, Told, ViewRecord,
 };
 pub use schema::SCHEMA_VERSION;
 pub use store::Store;

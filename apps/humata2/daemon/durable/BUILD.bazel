@@ -8,6 +8,7 @@ rust_library(
     crate_name = "humata2_durable",
     visibility = [
         "//apps/humata2/daemon/holder:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
         "//apps/humata2/daemon/store:__pkg__",
     ],
 )
@@ -24,6 +25,7 @@ rust_library(
     visibility = [
         "//apps/humata2/daemon/holder:__pkg__",
         "//apps/humata2/daemon/revive:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
         "//apps/humata2/daemon/store:__pkg__",
     ],
     deps = [

@@ -24,7 +24,12 @@ async fn server_info_names_the_api_and_a_machine_that_stays_the_same() {
 
     assert_eq!(before.api_major, 1);
     assert_eq!(before.role(), pb::DaemonRole::Host);
-    assert!(before.machine.as_ref().is_some_and(|machine| !machine.value.is_empty()));
+    assert!(
+        before
+            .machine
+            .as_ref()
+            .is_some_and(|machine| !machine.value.is_empty())
+    );
     assert_eq!(before.machine, after.machine);
 }
 
@@ -32,8 +37,8 @@ async fn server_info_names_the_api_and_a_machine_that_stays_the_same() {
 async fn a_service_not_built_yet_says_so_with_an_error() {
     let daemon = Daemon::start().await;
 
-    let refused = pb::channel_service_client::ChannelServiceClient::new(daemon.channel().await)
-        .list_channels(pb::ListChannelsRequest::default())
+    let refused = pb::activity_service_client::ActivityServiceClient::new(daemon.channel().await)
+        .list_activity(pb::ListActivityRequest::default())
         .await
         .unwrap_err();
 

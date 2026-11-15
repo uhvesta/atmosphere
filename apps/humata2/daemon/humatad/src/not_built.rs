@@ -44,14 +44,17 @@ macro_rules! not_built {
 }
 
 fn answer(request: &http::Request<Body>) -> http::Response<Body> {
-    let method = request.uri().path().trim_start_matches('/').replace('/', ".");
+    let method = request
+        .uri()
+        .path()
+        .trim_start_matches('/')
+        .replace('/', ".");
     status::not_built(&method).into_http()
 }
 
 not_built! {
     AuditService => audit_service_server,
     BoardService => board_service_server,
-    ChannelService => channel_service_server,
     ActivityService => activity_service_server,
     FileService => file_service_server,
     TransferService => transfer_service_server,
@@ -60,7 +63,6 @@ not_built! {
     ProviderService => provider_service_server,
     SkillsService => skills_service_server,
     BridgeService => bridge_service_server,
-    SessionService => session_service_server,
     SettingsService => settings_service_server,
     AgentService => agent_service_server,
     MarkService => mark_service_server,
@@ -75,14 +77,12 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
     router
         .add_service(AuditService)
         .add_service(BoardService)
-        .add_service(ChannelService)
         .add_service(ActivityService)
         .add_service(TransferService)
         .add_service(TrashService)
         .add_service(ProviderService)
         .add_service(SkillsService)
         .add_service(BridgeService)
-        .add_service(SessionService)
         .add_service(SettingsService)
         .add_service(AgentService)
         .add_service(MarkService)

@@ -10,7 +10,8 @@ use crate::StoreError;
 
 /// Each step takes the schema from its index to the next version, kept in
 /// `PRAGMA user_version`. Steps are only ever added, never changed.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE sessions (
         id TEXT PRIMARY KEY,
         channel TEXT NOT NULL,
@@ -96,13 +97,15 @@ const MIGRATIONS: &[&str] = &["
         saved_tail_damaged INTEGER NOT NULL,
         PRIMARY KEY (session, n)
     ) STRICT;
-", "
+",
+    "
     -- When the resumed agent was told it had been interrupted, and how long
     -- its conversation was then, saved before it's told, so a resume a
     -- crash redoes doesn't tell it twice.
     ALTER TABLE interruptions ADD COLUMN told_unix_ms INTEGER;
     ALTER TABLE interruptions ADD COLUMN told_conversation_len INTEGER;
-", "
+",
+    "
     -- Each session's review (PR-26): the review chat's view, notes and
     -- switches, and what the last diff showed, so a restart keeps them.
     CREATE TABLE reviews (
@@ -112,7 +115,8 @@ const MIGRATIONS: &[&str] = &["
         state_file TEXT,
         CHECK ((state IS NULL) <> (state_file IS NULL))
     ) STRICT;
-", "
+",
+    "
     -- The views a session's agent prepared (VW-1, VW-14), drafts and
     -- offered ones, with the idempotency keys their calls carried.
     CREATE TABLE views (
@@ -125,7 +129,8 @@ const MIGRATIONS: &[&str] = &["
         CHECK ((view IS NULL) <> (view_file IS NULL))
     ) STRICT;
     CREATE INDEX views_by_session ON views (session, prepared_unix_ms, id);
-", "
+",
+    "
     -- What a session's agent asked the user (IN-26) and how it was
     -- answered, with the grant the answer made, so a restart keeps the
     -- Inbox and the grants (D96). A session's go with it.
@@ -139,7 +144,58 @@ const MIGRATIONS: &[&str] = &["
         CHECK ((entry IS NULL) <> (entry_file IS NULL))
     ) STRICT;
     CREATE INDEX inbox_requests_by_session ON inbox_requests (session);
-"];
+",
+    "
+    -- Channels (CH-1, CH-2, CH-5): their repositories with the state of
+    -- each main clone (FC-11-FC-14), and the machines they use. Positions
+    -- keep the order the user gave.
+    CREATE TABLE channels (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        folder TEXT NOT NULL UNIQUE,
+        branch_prefix TEXT NOT NULL,
+        default_agent TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        created_unix_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX channels_by_age ON channels (created_unix_ms, id);
+    CREATE TABLE channel_repos (
+        channel TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        main_state TEXT NOT NULL CHECK (main_state IN ('cloning', 'ready', 'failed')),
+        main_error TEXT,
+        PRIMARY KEY (channel, owner, name)
+    ) STRICT;
+    CREATE TABLE channel_machines (
+        channel TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+        machine TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (channel, machine)
+    ) STRICT;
+
+    -- Where a session's start stands (FC-1, FC-3, SE-4, PER-11, PER-27):
+    -- its clones and the step it reached, so a crash part way resumes it.
+    CREATE TABLE session_details (
+        session TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        model TEXT,
+        first_message TEXT,
+        start_step TEXT NOT NULL CHECK (start_step IN ('recorded', 'cloned', 'launching', 'done')),
+        operation TEXT,
+        revision INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE session_repos (
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        path BLOB NOT NULL,
+        PRIMARY KEY (session, owner, name)
+    ) STRICT;
+",
+];
 
 /// The schema this build writes and reads.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -159,7 +215,9 @@ pub(crate) fn open(path: &Path) -> Result<Connection, StoreError> {
         options.create(true).append(true).mode(0o600);
         humata2_durable::File::open(&options, path)?;
         match path.parent() {
-            Some(folder) if !existed && !folder.as_os_str().is_empty() => humata2_durable::sync_dir(folder),
+            Some(folder) if !existed && !folder.as_os_str().is_empty() => {
+                humata2_durable::sync_dir(folder)
+            }
             _ => Ok(()),
         }
     })();

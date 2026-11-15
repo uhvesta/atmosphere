@@ -23,9 +23,10 @@ use tonic::transport::Server;
 use tower::util::MapRequestLayer;
 
 use crate::access_service::Access;
+use crate::channel_service::ChannelSvc;
 use crate::cli_login::{CliAuth, CliLogins};
-use crate::daemon::Daemon;
 use crate::compression::Compression;
+use crate::daemon::Daemon;
 use crate::error::DaemonError;
 use crate::events::{EventSvc, Feed};
 use crate::files::Files;
@@ -39,6 +40,7 @@ use crate::operations::{OperationSvc, Operations};
 use crate::paste::PASTE_MAX_BYTES;
 use crate::peer_link;
 use crate::restart;
+use crate::session_service::SessionSvc;
 use crate::sync;
 use crate::terminal::{Terminals, TerminalsConfig};
 use crate::terminal_session::Kernel;
@@ -130,6 +132,20 @@ pub(crate) struct ServeArgs {
     #[cfg(feature = "admin")]
     #[arg(long, conflicts_with = "stdio")]
     cli_login_seconds: Option<u64>,
+    /// The folder every channel's folder is made in (FC-1). Default:
+    /// Humata inside --root.
+    #[arg(long)]
+    channels: Option<PathBuf>,
+    /// A JSON list of agents (name, program, start_args, resume_args,
+    /// conversation_file) that replaces the built-in claude. For tests.
+    #[arg(long, hide = true)]
+    agents: Option<PathBuf>,
+    /// The agent a new channel starts with.
+    #[arg(long, default_value = "claude")]
+    default_agent: String,
+    /// Where repositories are cloned from, with {owner} and {name}. For tests.
+    #[arg(long, hide = true, default_value = humata2_sessions::DEFAULT_REMOTE_TEMPLATE)]
+    remote_template: String,
 }
 
 /// `~/.humata2`, where the daemon lives unless told otherwise.
@@ -182,7 +198,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     }
     let shell = args
         .shell
-        .or_else(|| std::env::var_os("SHELL").filter(|shell| !shell.is_empty()).map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("SHELL")
+                .filter(|shell| !shell.is_empty())
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(|| PathBuf::from("/bin/sh"));
     let shell_args = if args.shell_args.is_empty() {
         vec![OsString::from("-l")]
@@ -205,7 +225,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // the log.
     let listener = bind(&socket)?;
     let daemon_log = crate::log::start(&logs);
-    let (store, restored) = Store::open_or_restore(state.join("store")).map_err(|source| DaemonError::Store { source })?;
+    let (store, restored) = Store::open_or_restore(state.join("store"))
+        .map_err(|source| DaemonError::Store { source })?;
     let store = Arc::new(store);
     let machine = machine_id(&state.join("machine-id"))?;
     let role = match args.role {
@@ -235,7 +256,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential from process {pid} acts as the user. This is a test daemon; don't use it as your real one"
             );
-            Authenticate::admin(identities.clone(), logins.clone(), identity::Admin::Process(pid))
+            Authenticate::admin(
+                identities.clone(),
+                logins.clone(),
+                identity::Admin::Process(pid),
+            )
         }
         (false, None) => Authenticate::new(identities.clone(), logins.clone()),
     };
@@ -243,6 +268,20 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let authenticate = Authenticate::new(identities.clone(), logins.clone());
     let guard = Arc::new(Guard::new(&machine, role));
 
+    let channels_folder = args.channels.clone().unwrap_or_else(|| root.join("Humata"));
+    let agents = match &args.agents {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|source| DaemonError::AgentsRead {
+                path: path.clone(),
+                source,
+            })?;
+            humata2_sessions::Agents::from_json(&bytes).map_err(|source| DaemonError::Agents {
+                path: path.clone(),
+                source,
+            })?
+        }
+        None => humata2_sessions::Agents::builtin(),
+    };
     let reports = state.join("restarts");
     private_folder(&reports)?;
     let revive = restart::Revive {
@@ -256,7 +295,18 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine: machine.clone(),
         daemon_log,
     };
-    let last_start = restart::in_background(store.clone(), identities.clone(), revive, restored);
+    let starter = restart::starter(
+        &store,
+        revive,
+        restart::Sessions {
+            channels: channels_folder,
+            remote_template: args.remote_template.clone(),
+            agents,
+            holders: holders.clone(),
+        },
+    );
+    let last_start =
+        restart::in_background(store.clone(), identities.clone(), starter.clone(), restored);
     last_good::keep(store.clone(), last_good::Quiet::default());
     let compression = Arc::new(Compression::new(&state));
     let terminals = Terminals::new(TerminalsConfig {
@@ -281,14 +331,39 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Link::Local,
     );
     let feed = Arc::new(Feed::default());
-    let inbox = Arc::new(Inbox::new(guard.clone(), store.clone(), machine.clone(), feed.clone()));
-    let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
+    let inbox = Arc::new(Inbox::new(
+        guard.clone(),
+        store.clone(),
+        machine.clone(),
+        feed.clone(),
+    ));
+    let review =
+        crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
     let access = Access::new(guard.clone(), feed.clone(), inbox.clone());
     let events = EventSvc::new(feed.clone(), guard.clone(), machine.clone());
     let operations = Arc::new(Operations::new(feed.clone()));
+    let channel_svc = ChannelSvc::new(
+        guard.clone(),
+        operations.clone(),
+        starter.clone(),
+        machine.clone(),
+        args.default_agent.clone(),
+    );
+    let session_svc = SessionSvc::new(
+        guard.clone(),
+        operations.clone(),
+        starter,
+        identities.clone(),
+        machine.clone(),
+    );
     let machines = match role {
         pb::DaemonRole::Host => {
-            let work = Arc::new(machine_work(&state, args.tools, args.ssh_config, feed.clone())?);
+            let work = Arc::new(machine_work(
+                &state,
+                args.tools,
+                args.ssh_config,
+                feed.clone(),
+            )?);
             machine_service::recover_in_background(work.clone());
             Some(MachineSvc::new(guard, work, operations.clone()))
         }
@@ -302,25 +377,41 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .layer(MapRequestLayer::new(identity::mark_open))
         .layer(InterceptorLayer::new(authenticate))
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
-            Daemon::new(machine.clone(), role).offering(compression).started(last_start),
+            Daemon::new(machine.clone(), role)
+                .offering(compression)
+                .started(last_start),
         ))
         .add_service(pb::file_service_server::FileServiceServer::new(files))
         .add_service(
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
         )
-        .add_service(pb::inbox_service_server::InboxServiceServer::from_arc(inbox))
-        .add_service(pb::diff_service_server::DiffServiceServer::new(review.clone()))
+        .add_service(pb::inbox_service_server::InboxServiceServer::from_arc(
+            inbox,
+        ))
+        .add_service(pb::diff_service_server::DiffServiceServer::new(
+            review.clone(),
+        ))
         .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review.clone()))
-        .add_service(pb::comment_service_server::CommentServiceServer::new(review.clone()))
+        .add_service(pb::comment_service_server::CommentServiceServer::new(
+            review.clone(),
+        ))
         .add_service(pb::view_service_server::ViewServiceServer::new(review))
         .add_service(pb::access_service_server::AccessServiceServer::new(access))
-        .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(CliAuth {
-            logins,
-            store,
-            machine,
-            role,
-        }));
+        .add_service(pb::channel_service_server::ChannelServiceServer::new(
+            channel_svc,
+        ))
+        .add_service(pb::session_service_server::SessionServiceServer::new(
+            session_svc,
+        ))
+        .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(
+            CliAuth {
+                logins,
+                store,
+                machine,
+                role,
+            },
+        ));
     let router = router
         .add_service(pb::operation_service_server::OperationServiceServer::new(
             OperationSvc::new(operations),
@@ -329,7 +420,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // Only the host keeps machines; a machine's daemon forwards these to
     // it once the link does (GRPC.md §4).
     let router = match machines {
-        Some(machines) => router.add_service(pb::machine_service_server::MachineServiceServer::new(machines)),
+        Some(machines) => router.add_service(
+            pb::machine_service_server::MachineServiceServer::new(machines),
+        ),
         None => not_built::register_host_only(router),
     };
     let router = not_built::register(router);
@@ -354,7 +447,9 @@ fn machine_work(
     feed: Arc<Feed>,
 ) -> Result<Work, DaemonError> {
     let builds: Box<dyn Builds + Send + Sync> = match tools {
-        Some(tools) => Box::new(Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?),
+        Some(tools) => {
+            Box::new(Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?)
+        }
         None => {
             let beside = beside_this_binary("tools");
             if beside.join(MANIFEST).is_file() {
@@ -381,7 +476,12 @@ fn machine_work(
         peer_keys: state.join(crate::peer_client::KEYS_DIR),
         retry: RetryPolicy::default(),
     });
-    Ok(Work::new(machines, builds, feed, Arc::new(std::time::SystemTime::now)))
+    Ok(Work::new(
+        machines,
+        builds,
+        feed,
+        Arc::new(std::time::SystemTime::now),
+    ))
 }
 
 fn beside_this_binary(name: &str) -> PathBuf {
@@ -474,7 +574,10 @@ fn machine_id(path: &Path) -> Result<String, DaemonError> {
 fn read_machine_id(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(id) if !id.trim().is_empty() => Ok(Some(id.trim().to_owned())),
-        Ok(_) => Err(std::io::Error::new(ErrorKind::InvalidData, "the file is empty")),
+        Ok(_) => Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            "the file is empty",
+        )),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -489,7 +592,10 @@ fn bind(socket: &Path) -> Result<UnixListener, DaemonError> {
             max: SOCKET_PATH_MAX,
         });
     }
-    if let Some(folder) = socket.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+    if let Some(folder) = socket
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+    {
         private_folder(folder)?;
     }
     if socket.exists() {
@@ -508,7 +614,8 @@ fn bind(socket: &Path) -> Result<UnixListener, DaemonError> {
         source,
     };
     let listener = UnixListener::bind(socket).map_err(bind_failed)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).map_err(bind_failed)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+        .map_err(bind_failed)?;
     Ok(listener)
 }
 
@@ -548,9 +655,15 @@ mod tests {
                     })
                 })
                 .collect();
-            let ids: Vec<String> = starts.into_iter().map(|start| start.join().unwrap()).collect();
+            let ids: Vec<String> = starts
+                .into_iter()
+                .map(|start| start.join().unwrap())
+                .collect();
             assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
-            assert_eq!(read_machine_id(&path).unwrap().as_deref(), Some(ids[0].as_str()));
+            assert_eq!(
+                read_machine_id(&path).unwrap().as_deref(),
+                Some(ids[0].as_str())
+            );
             // Nothing is left aside.
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         }
@@ -639,12 +752,20 @@ mod tests {
             let mut block = Vec::new();
             header(&mut block, ":method", "POST");
             header(&mut block, ":scheme", "http");
-            header(&mut block, ":path", "/humata.v1.DaemonService/GetServerInfo");
+            header(
+                &mut block,
+                ":path",
+                "/humata.v1.DaemonService/GetServerInfo",
+            );
             header(&mut block, ":authority", "localhost");
             header(&mut block, "content-type", "application/grpc");
             header(&mut block, "te", "trailers");
-            to.write_all(&frame(HEADERS, END_HEADERS, 1, &block)).await.unwrap();
-            to.write_all(&frame(DATA, END_STREAM, 1, &[0, 0, 0, 0, 0])).await.unwrap();
+            to.write_all(&frame(HEADERS, END_HEADERS, 1, &block))
+                .await
+                .unwrap();
+            to.write_all(&frame(DATA, END_STREAM, 1, &[0, 0, 0, 0, 0]))
+                .await
+                .unwrap();
             loop {
                 let next = read_frame(from).await.expect("the daemon hung up mid-call");
                 match (next.kind, next.flags) {
@@ -682,7 +803,9 @@ mod tests {
         /// Whether a restart report with its `restart.json` is in `reports`.
         fn reconciled(reports: &std::path::Path) -> bool {
             std::fs::read_dir(reports).is_ok_and(|entries| {
-                entries.flatten().any(|entry| entry.path().join("restart.json").is_file())
+                entries
+                    .flatten()
+                    .any(|entry| entry.path().join("restart.json").is_file())
             })
         }
 
@@ -720,7 +843,11 @@ mod tests {
             .serve;
             let served = tokio::spawn(run(args));
             let mut ready = pipe::Receiver::from_owned_fd(OwnedFd::from(ready)).unwrap();
-            assert_eq!(ready.read(&mut [0; 1]).await.unwrap(), 1, "the daemon listens");
+            assert_eq!(
+                ready.read(&mut [0; 1]).await.unwrap(),
+                1,
+                "the daemon listens"
+            );
             let (mut from, mut to) = UnixStream::connect(&socket).await.unwrap().into_split();
             to.write_all(PREFACE).await.unwrap();
             to.write_all(&frame(SETTINGS, 0, 0, &[])).await.unwrap();
@@ -765,7 +892,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("machine-id");
         std::fs::write(&path, "").unwrap();
-        assert!(matches!(machine_id(&path), Err(DaemonError::MachineId { .. })));
+        assert!(matches!(
+            machine_id(&path),
+            Err(DaemonError::MachineId { .. })
+        ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     }
 }

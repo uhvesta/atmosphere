@@ -174,7 +174,10 @@ impl AgentState {
     /// Whether the agent should be running, so a missing holder means it
     /// was interrupted.
     pub fn should_run(self) -> bool {
-        matches!(self, Self::Launching | Self::Running { .. } | Self::Resuming)
+        matches!(
+            self,
+            Self::Launching | Self::Running { .. } | Self::Resuming
+        )
     }
 }
 
@@ -213,4 +216,69 @@ pub struct Told {
     /// The conversation file's length just before: the note, if the agent
     /// wrote it down, is after this.
     pub conversation_len: u64,
+}
+
+/// A channel (CH-1): a folder of repositories worked on from machines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelRecord {
+    pub id: String,
+    pub name: String,
+    /// Where the channel's clones live, unique per channel.
+    pub folder: String,
+    pub branch_prefix: String,
+    pub default_agent: String,
+    /// In the order the user gave.
+    pub repos: Vec<ChannelRepo>,
+    /// In the order the user gave.
+    pub machines: Vec<String>,
+    pub revision: u64,
+    pub created_unix_ms: i64,
+}
+
+/// A repository of a channel and how its main clone stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelRepo {
+    pub owner: String,
+    pub name: String,
+    pub main: MainClone,
+}
+
+/// How cloning a repository's main checkout went (FC-11-FC-14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MainClone {
+    Cloning,
+    Ready,
+    Failed { reason: String },
+}
+
+/// A session's start: its clones and the step it reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionDetail {
+    pub session: String,
+    /// In the order the user gave.
+    pub repos: Vec<SessionRepo>,
+    pub model: Option<String>,
+    pub first_message: Option<String>,
+    pub start: StartStep,
+    /// The operation doing the start, if one is running.
+    pub operation: Option<String>,
+    pub revision: u64,
+}
+
+/// One repository cloned for a session, on its own branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRepo {
+    pub owner: String,
+    pub name: String,
+    pub branch: String,
+    pub path: PathBuf,
+}
+
+/// How far a session's start got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartStep {
+    Recorded,
+    Cloned,
+    Launching,
+    Done,
 }

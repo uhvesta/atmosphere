@@ -5,7 +5,9 @@ use std::time::Duration;
 /// What starting the daemon, or bridging to it, can fail at.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DaemonError {
-    #[error("HOME isn't set, so humatad2 can't find its folder; set HOME, or pass --socket and --state")]
+    #[error(
+        "HOME isn't set, so humatad2 can't find its folder; set HOME, or pass --socket and --state"
+    )]
     NoHome,
 
     #[error("couldn't start humatad2's runtime; the system may be out of threads or memory")]
@@ -178,6 +180,26 @@ pub(crate) enum DaemonError {
         path: PathBuf,
         #[source]
         source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't read the agents file {}; check the path given to --agents and that you can read it",
+        path.display()
+    )]
+    AgentsRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the agents file {} isn't valid; it is a JSON list of agents, each with name, program, start_args, resume_args and conversation_file, and each name used once",
+        path.display()
+    )]
+    Agents {
+        path: PathBuf,
+        #[source]
+        source: humata2_sessions::AgentError,
     },
 
     #[error("the MCP server stopped")]

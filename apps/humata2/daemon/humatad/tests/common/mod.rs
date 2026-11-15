@@ -142,7 +142,10 @@ impl Daemon {
         self.child = Some(child);
         let deadline = Instant::now() + WAIT;
         while UnixStream::connect(&self.socket).await.is_err() {
-            assert!(Instant::now() < deadline, "humatad2 never started listening");
+            assert!(
+                Instant::now() < deadline,
+                "humatad2 never started listening"
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
@@ -158,7 +161,10 @@ impl Daemon {
             // would reach the dying one, so wait until it refuses.
             let deadline = Instant::now() + WAIT;
             while std::os::unix::net::UnixStream::connect(&self.socket).is_ok() {
-                assert!(Instant::now() < deadline, "a killed humatad2's socket never stopped answering");
+                assert!(
+                    Instant::now() < deadline,
+                    "a killed humatad2's socket never stopped answering"
+                );
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
@@ -323,7 +329,14 @@ fn decoded(
         (_, raw_size) => raw_size,
     };
     decoder
-        .decode(humata2_chunk::Header { codec, raw_len, crc32 }, data)
+        .decode(
+            humata2_chunk::Header {
+                codec,
+                raw_len,
+                crc32,
+            },
+            data,
+        )
         .expect("a chunk that decodes")
 }
 
@@ -342,10 +355,7 @@ pub fn open(tab: &pb::TabId, from_offset: u64) -> pb::AttachOpen {
 
 impl Attach {
     /// Attaches as `open` says, failing with the call's error.
-    pub async fn try_start(
-        daemon: &Daemon,
-        open: pb::AttachOpen,
-    ) -> Result<Self, Status> {
+    pub async fn try_start(daemon: &Daemon, open: pb::AttachOpen) -> Result<Self, Status> {
         let (to, outgoing) = mpsc::channel(16);
         to.send(pb::AttachClientMessage {
             message: Some(pb::attach_client_message::Message::Open(open.clone())),
@@ -391,10 +401,12 @@ impl Attach {
     /// Types `text` and returns its input sequence number.
     pub async fn type_text(&mut self, text: &str) -> u64 {
         self.seq += 1;
-        self.send(pb::attach_client_message::Message::Input(pb::TerminalInput {
-            data: text.as_bytes().to_vec(),
-            input_seq: self.seq,
-        }))
+        self.send(pb::attach_client_message::Message::Input(
+            pb::TerminalInput {
+                data: text.as_bytes().to_vec(),
+                input_seq: self.seq,
+            },
+        ))
         .await;
         self.seq
     }
@@ -412,9 +424,18 @@ impl Attach {
                 if snapshot.codec != 0 {
                     self.compressed += 1;
                 }
-                let vt = decoded(&mut self.decoder, snapshot.codec, snapshot.raw_size, snapshot.crc32, snapshot.vt);
+                let vt = decoded(
+                    &mut self.decoder,
+                    snapshot.codec,
+                    snapshot.raw_size,
+                    snapshot.crc32,
+                    snapshot.vt,
+                );
                 if self.piecing {
-                    assert_eq!(snapshot.offset, self.cursor, "a snapshot's pieces disagree on its offset");
+                    assert_eq!(
+                        snapshot.offset, self.cursor,
+                        "a snapshot's pieces disagree on its offset"
+                    );
                     self.screen.extend_from_slice(&vt);
                 } else {
                     self.screen = vt;
@@ -427,11 +448,20 @@ impl Attach {
             }
             pb::attach_server_message::Message::Output(output) => {
                 assert!(!self.piecing, "output came in the middle of a snapshot");
-                assert_eq!(output.offset, self.cursor, "output skipped or repeated bytes");
+                assert_eq!(
+                    output.offset, self.cursor,
+                    "output skipped or repeated bytes"
+                );
                 if output.codec != 0 {
                     self.compressed += 1;
                 }
-                let data = decoded(&mut self.decoder, output.codec, output.raw_size, output.crc32, output.data);
+                let data = decoded(
+                    &mut self.decoder,
+                    output.codec,
+                    output.raw_size,
+                    output.crc32,
+                    output.data,
+                );
                 self.cursor += data.len() as u64;
                 self.screen.extend_from_slice(&data);
             }
@@ -469,5 +499,403 @@ impl Attach {
 
     pub fn shows(&self, text: &str) -> bool {
         String::from_utf8_lossy(&self.screen).contains(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channels and sessions: a world of git remotes, a test agent and the serve
+// flags that point the daemon at them.
+
+/// The name the test agent goes by.
+pub const AGENT_NAME: &str = "fake";
+
+/// What an agent stands in as: `--session-id` starts a conversation file,
+/// `--resume` keeps it, `--fresh` starts another. Every line typed to it is
+/// answered with `got: <line>` and kept in the conversation.
+fn agent_script(conv: &Path) -> String {
+    format!(
+        r#"CONV_DIR='{}'
+mode=$1; id=$2
+case "$mode" in
+  --session-id) f="$CONV_DIR/$id.jsonl"; : > "$f" ;;
+  --resume) f="$CONV_DIR/$id.jsonl" ;;
+  --fresh) f="$CONV_DIR/other.jsonl"; : > "$f" ;;
+esac
+echo "agent up $mode"
+while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
+"#,
+        conv.display()
+    )
+}
+
+/// Runs `git` with an identity, failing the test when it fails; returns
+/// what it printed, trimmed.
+pub fn git(args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Everything a channel or session test needs beside the daemon's own
+/// folders: where channels go, bare remotes to clone from, the test agent
+/// and its conversations.
+pub struct World {
+    pub root: PathBuf,
+    pub channels: PathBuf,
+    pub remotes: PathBuf,
+    pub conv: PathBuf,
+    pub agents: PathBuf,
+}
+
+impl World {
+    /// Makes the world's folders and files inside `root`.
+    pub fn new(root: &Path) -> Self {
+        let world = Self {
+            root: root.to_owned(),
+            channels: root.join("ch"),
+            remotes: root.join("remotes"),
+            conv: root.join("conv"),
+            agents: root.join("agents.json"),
+        };
+        std::fs::create_dir_all(&world.conv).unwrap();
+        std::fs::create_dir_all(&world.remotes).unwrap();
+        let script = root.join("agent.sh");
+        std::fs::write(&script, agent_script(&world.conv)).unwrap();
+        let agents = serde_json::json!([{
+            "name": AGENT_NAME,
+            "program": "/bin/sh",
+            "start_args": [script, "--session-id", "{conversation}"],
+            "resume_args": [script, "--resume", "{conversation}"],
+            "conversation_file": format!("{}/{{conversation}}.jsonl", world.conv.display()),
+        }]);
+        std::fs::write(&world.agents, agents.to_string()).unwrap();
+        world
+    }
+
+    /// The `serve` flags that use this world.
+    pub fn args(&self) -> Vec<String> {
+        let template = format!("file://{}/{{owner}}/{{name}}.git", self.remotes.display());
+        vec![
+            "--channels".to_owned(),
+            self.channels.display().to_string(),
+            "--agents".to_owned(),
+            self.agents.display().to_string(),
+            "--default-agent".to_owned(),
+            AGENT_NAME.to_owned(),
+            "--remote-template".to_owned(),
+            template,
+        ]
+    }
+
+    /// A bare repository `owner/name` on branch `main` with one commit.
+    pub fn remote(&self, owner: &str, name: &str) -> PathBuf {
+        let bare = self.remotes.join(owner).join(format!("{name}.git"));
+        std::fs::create_dir_all(&bare).unwrap();
+        let bare_text = bare.display().to_string();
+        git(&["init", "--bare", "--initial-branch=main", &bare_text]);
+        let work = self.root.join(format!("scratch-{owner}-{name}"));
+        std::fs::create_dir_all(&work).unwrap();
+        let work_text = work.display().to_string();
+        git(&["init", "--initial-branch=main", &work_text]);
+        std::fs::write(work.join("README.md"), format!("{owner}/{name}\n")).unwrap();
+        git(&["-C", &work_text, "add", "."]);
+        git(&["-C", &work_text, "commit", "-m", "first"]);
+        git(&["-C", &work_text, "push", &bare_text, "main"]);
+        bare
+    }
+
+    /// The commit `main` is at in the remote `bare`.
+    pub fn remote_head(bare: &Path) -> String {
+        git(&[
+            "--git-dir",
+            &bare.display().to_string(),
+            "rev-parse",
+            "main",
+        ])
+    }
+
+    /// The conversation file the agent of `conversation` writes.
+    pub fn conversation(&self, conversation: &str) -> PathBuf {
+        self.conv.join(format!("{conversation}.jsonl"))
+    }
+}
+
+/// A daemon serving this world, and the world.
+pub async fn start_world() -> (Daemon, World) {
+    let dir = folder();
+    let world = World::new(dir.path());
+    let args = world.args();
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    (Daemon::start_with(Build::Admin, dir, &refs).await, world)
+}
+
+impl Daemon {
+    pub async fn channel_service(
+        &self,
+    ) -> pb::channel_service_client::ChannelServiceClient<Channel> {
+        pb::channel_service_client::ChannelServiceClient::new(self.channel().await)
+    }
+
+    pub async fn session_service(
+        &self,
+    ) -> pb::session_service_client::SessionServiceClient<Channel> {
+        pb::session_service_client::SessionServiceClient::new(self.channel().await)
+    }
+
+    pub async fn operation_service(
+        &self,
+    ) -> pb::operation_service_client::OperationServiceClient<Channel> {
+        pb::operation_service_client::OperationServiceClient::new(self.channel().await)
+    }
+}
+
+pub fn repo_ref(owner: &str, name: &str) -> pb::RepoRef {
+    pb::RepoRef {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+/// Waits until `operation` is no longer running, and returns it as it ended.
+pub async fn finished(daemon: &Daemon, operation: &pb::Operation) -> pb::Operation {
+    let mut client = daemon.operation_service().await;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let now = client
+            .get_operation(pb::GetOperationRequest {
+                id: operation.id.clone(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if now.state != pb::OperationState::Running as i32 {
+            return now;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "operation {:?} never finished",
+            operation.id
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Creates a channel of `repos` (`(owner, name)`) and waits for its setup.
+pub async fn create_channel(
+    daemon: &Daemon,
+    name: &str,
+    repos: &[(&str, &str)],
+) -> (pb::Channel, pb::Operation) {
+    let response = daemon
+        .channel_service()
+        .await
+        .create_channel(pb::CreateChannelRequest {
+            idempotency_key: None,
+            name: name.to_owned(),
+            repos: repos
+                .iter()
+                .map(|(owner, name)| repo_ref(owner, name))
+                .collect(),
+            machines: Vec::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let setup = finished(daemon, &response.setup.unwrap()).await;
+    (response.channel.unwrap(), setup)
+}
+
+/// This daemon's own machine.
+pub async fn machine_id(daemon: &Daemon) -> pb::MachineId {
+    server_info(daemon).await.machine.unwrap()
+}
+
+pub async fn server_info(daemon: &Daemon) -> pb::ServerInfo {
+    pb::daemon_service_client::DaemonServiceClient::new(daemon.channel().await)
+        .get_server_info(pb::GetServerInfoRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+/// The start's account, once the daemon has brought everything back.
+pub async fn last_start(daemon: &Daemon) -> pb::LastStart {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        if let Some(start) = server_info(daemon).await.last_start {
+            return start;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never finished bringing sessions back"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+pub fn start_request(
+    channel: &pb::ChannelId,
+    machine: &pb::MachineId,
+    title: &str,
+) -> pb::StartSessionRequest {
+    pb::StartSessionRequest {
+        idempotency_key: None,
+        channel: Some(channel.clone()),
+        title: title.to_owned(),
+        agent: None,
+        model: String::new(),
+        machine: Some(machine.clone()),
+        repos: Vec::new(),
+        first_message: String::new(),
+        board_item: None,
+        spec_files: Vec::new(),
+    }
+}
+
+/// Starts a session titled `title` and waits for its operation.
+pub async fn start_session(
+    daemon: &Daemon,
+    channel: &pb::Channel,
+    title: &str,
+) -> (pb::SessionId, pb::Operation) {
+    let machine = machine_id(daemon).await;
+    let response = daemon
+        .session_service()
+        .await
+        .start_session(start_request(channel.id.as_ref().unwrap(), &machine, title))
+        .await
+        .unwrap()
+        .into_inner();
+    let operation = finished(daemon, &response.operation.unwrap()).await;
+    (response.session.unwrap(), operation)
+}
+
+pub async fn get_session(daemon: &Daemon, id: &pb::SessionId) -> pb::Session {
+    daemon
+        .session_service()
+        .await
+        .get_session(pb::GetSessionRequest {
+            id: Some(id.clone()),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+/// Polls until the session has `status`, and returns it.
+pub async fn wait_status(
+    daemon: &Daemon,
+    id: &pb::SessionId,
+    status: pb::SessionStatus,
+) -> pb::Session {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let session = get_session(daemon, id).await;
+        if session.status == status as i32 {
+            return session;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {} never became {status:?}; it is {:?}",
+            id.value,
+            session.status()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The session's agent tab.
+pub async fn agent_tab(daemon: &Daemon, id: &pb::SessionId) -> pb::TabId {
+    daemon
+        .terminals()
+        .await
+        .list_tabs(pb::ListTabsRequest {
+            session: Some(id.clone()),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .tabs
+        .into_iter()
+        .find(|tab| tab.kind == pb::tab::Kind::Agent as i32)
+        .expect("the session has an agent tab")
+        .id
+        .unwrap()
+}
+
+/// Every tab the store knows of (the daemon may be running or not).
+pub fn stored_tabs(state: &Path) -> Vec<humata2_store::TabRecord> {
+    humata2_store::Store::open(state.join("store"))
+        .unwrap()
+        .tabs()
+        .unwrap()
+}
+
+/// Whether the holder behind `tab` still answers on its socket.
+pub fn holder_answers(tab: &humata2_store::TabRecord) -> bool {
+    std::os::unix::net::UnixStream::connect(&tab.holder_socket).is_ok()
+}
+
+/// Kills the holders of `tabs` at once, as a reboot would, and waits until
+/// each is gone.
+pub async fn kill_holders(tabs: &[humata2_store::TabRecord]) {
+    for tab in tabs {
+        if let Some(pid) = i32::try_from(tab.holder_pid).ok().and_then(Pid::from_raw) {
+            let _ = rustix::process::kill_process(pid, Signal::KILL);
+        }
+    }
+    let deadline = Instant::now() + WAIT;
+    for tab in tabs {
+        while holder_answers(tab) {
+            assert!(
+                Instant::now() < deadline,
+                "holder {} never stopped answering",
+                tab.holder_pid
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// Runs `humata --json <args>` against the daemon as the user; returns the
+/// exit code and the JSON printed.
+pub fn humata(daemon: &Daemon, args: &[&str]) -> (i32, serde_json::Value) {
+    let output = Command::new(binary("HUMATA"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", daemon.dir.path())
+        .env("HUMATA_SOCKET", &daemon.socket)
+        .arg("--json")
+        .args(args)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let json = serde_json::from_str(&text).unwrap_or_else(|error| {
+        panic!(
+            "humata printed no JSON ({error}): {text:?}; stderr {:?}",
+            output.stderr
+        )
+    });
+    (output.status.code().unwrap_or(-1), json)
+}
+
+/// Polls until `path` exists.
+pub async fn wait_for_path(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

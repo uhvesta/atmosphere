@@ -32,7 +32,10 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     crate_features = ["faults"],
     crate_name = "humata2_store",
-    visibility = ["//apps/humata2/daemon/revive:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/revive:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
     deps = STORE_DEPS + ["//apps/humata2/daemon/durable:durable_faults"],
 )
 

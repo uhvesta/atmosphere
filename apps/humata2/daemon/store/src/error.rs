@@ -144,8 +144,31 @@ pub enum StoreError {
     )]
     InvalidId { id: String },
 
-    #[error("no session {id} is saved on this machine; it was removed, or belongs to another machine")]
+    #[error(
+        "no session {id} is saved on this machine; it was removed, or belongs to another machine"
+    )]
     NoSession { id: String },
+
+    #[error("no channel {id} is saved on this machine; it was removed, or was never saved here")]
+    NoChannel { id: String },
+
+    #[error(
+        "channel {id} is at revision {actual}, not {expected} as the change was made against; read the channel again and send the change again"
+    )]
+    StaleChannel {
+        id: String,
+        expected: u64,
+        actual: u64,
+    },
+
+    #[error(
+        "channel {channel} has no repository {owner}/{name} saved; add it to the channel first"
+    )]
+    NoChannelRepo {
+        channel: String,
+        owner: String,
+        name: String,
+    },
 }
 
 impl StoreError {

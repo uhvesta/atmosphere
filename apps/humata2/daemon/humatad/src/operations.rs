@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use humata2_grpc::humata::v1 as pb;
 use humata2_access::Refusal;
+use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{OpStep, StepEvent};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -105,6 +105,49 @@ impl Operations {
         cancellable: bool,
         key: Option<pb::IdempotencyKey>,
     ) -> Result<Started, Status> {
+        let shown = steps.iter().map(|&step| waiting(step)).collect();
+        self.start_with(
+            caller,
+            kind,
+            target,
+            shown,
+            steps.to_vec(),
+            cancellable,
+            key,
+        )
+    }
+
+    /// As [`Operations::start`], for work whose steps are named by the
+    /// work itself, as `(key, title)`. Such an operation has no steps for
+    /// a rerun to start from, so Retry answers that it can't be tried
+    /// again. [`Progress::set_step`] changes them.
+    pub(crate) fn start_steps(
+        &self,
+        caller: &Caller,
+        kind: pb::OperationKind,
+        target: pb::EntityRef,
+        steps: &[(String, String)],
+        cancellable: bool,
+        key: Option<pb::IdempotencyKey>,
+    ) -> Result<Started, Status> {
+        let shown = steps
+            .iter()
+            .map(|(key, title)| waiting_named(key, title))
+            .collect();
+        self.start_with(caller, kind, target, shown, Vec::new(), cancellable, key)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_with(
+        &self,
+        caller: &Caller,
+        kind: pb::OperationKind,
+        target: pb::EntityRef,
+        steps: Vec<pb::OperationStep>,
+        rerun_steps: Vec<OpStep>,
+        cancellable: bool,
+        key: Option<pb::IdempotencyKey>,
+    ) -> Result<Started, Status> {
         let owner = Owner::of(caller)?;
         let key = key.filter(|key| !key.value.is_empty());
         let mut table = lock(&self.table);
@@ -121,7 +164,7 @@ impl Operations {
             kind: kind as i32,
             target: Some(target),
             state: pb::OperationState::Running as i32,
-            steps: steps.iter().map(|&step| waiting(step)).collect(),
+            steps,
             error: None,
             cancellable,
             idempotency_key: key.clone(),
@@ -132,7 +175,10 @@ impl Operations {
             result: None,
         };
         let scope = match caller {
-            Caller::Agent(agent) => Some((agent.session.channel.to_string(), agent.session.id.to_string())),
+            Caller::Agent(agent) => Some((
+                agent.session.channel.to_string(),
+                agent.session.id.to_string(),
+            )),
             _ => None,
         };
         let (sender, _) = watch::channel(operation.clone());
@@ -141,7 +187,7 @@ impl Operations {
             scope,
             feed: self.feed.clone(),
             operation: sender,
-            steps: steps.to_vec(),
+            steps: rerun_steps,
             cancellable,
             cancel: AtomicBool::new(false),
             rerun: Mutex::new(None),
@@ -221,7 +267,11 @@ impl Progress {
             StepEvent::Undone(step) => (*step, pb::StepState::Undone, None),
         };
         self.change(|operation| {
-            let index = match operation.steps.iter().position(|shown| shown.key == step.key()) {
+            let index = match operation
+                .steps
+                .iter()
+                .position(|shown| shown.key == step.key())
+            {
                 Some(index) => index,
                 None => {
                     operation.steps.push(waiting(step));
@@ -231,6 +281,26 @@ impl Progress {
             let shown = &mut operation.steps[index];
             shown.state = state as i32;
             if let Some(tail) = tail {
+                shown.output_tail = tail;
+            }
+        });
+    }
+
+    /// Sets the step `key`, adding it at the end when the operation
+    /// doesn't list it yet (its title is then the key). `output_tail`
+    /// replaces what the step showed when given.
+    pub(crate) fn set_step(&self, key: &str, state: pb::StepState, output_tail: Option<String>) {
+        self.change(|operation| {
+            let index = match operation.steps.iter().position(|shown| shown.key == key) {
+                Some(index) => index,
+                None => {
+                    operation.steps.push(waiting_named(key, key));
+                    operation.steps.len() - 1
+                }
+            };
+            let shown = &mut operation.steps[index];
+            shown.state = state as i32;
+            if let Some(tail) = output_tail {
                 shown.output_tail = tail;
             }
         });
@@ -275,7 +345,8 @@ impl Progress {
         self.tracked.operation.send_modify(|operation| {
             edit(operation);
             operation.version += 1;
-            self.tracked.tell(pb::Change::Updated, operation.clone(), None);
+            self.tracked
+                .tell(pb::Change::Updated, operation.clone(), None);
         });
     }
 }
@@ -301,9 +372,13 @@ impl Tracked {
 }
 
 fn waiting(step: OpStep) -> pb::OperationStep {
+    waiting_named(step.key(), step.title())
+}
+
+fn waiting_named(key: &str, title: &str) -> pb::OperationStep {
     pb::OperationStep {
-        key: step.key().to_owned(),
-        title: step.title().to_owned(),
+        key: key.to_owned(),
+        title: title.to_owned(),
         state: pb::StepState::Waiting as i32,
         done_units: 0,
         total_units: 0,
@@ -321,7 +396,12 @@ fn current_step(operation: &pb::Operation) -> String {
         .steps
         .iter()
         .find(|step| step.state == pb::StepState::Running as i32)
-        .or_else(|| operation.steps.iter().find(|step| step.state == pb::StepState::Waiting as i32))
+        .or_else(|| {
+            operation
+                .steps
+                .iter()
+                .find(|step| step.state == pb::StepState::Waiting as i32)
+        })
         .map(|step| step.title.clone())
         .unwrap_or_default()
 }
@@ -333,7 +413,9 @@ fn not_cancellable(id: &str, operation: &pb::Operation) -> Status {
             format!("operation {id} can't be stopped: what it does can't be undone half way"),
             "let it finish, then undo it with the reverse action (add the machine again after a removal)",
             pb::error::Kind::NotCancellable(pb::NotCancellable {
-                operation: Some(pb::OperationId { value: id.to_owned() }),
+                operation: Some(pb::OperationId {
+                    value: id.to_owned(),
+                }),
                 step: current_step(operation),
             }),
         ),
@@ -449,7 +531,12 @@ impl pb::operation_service_server::OperationService for OperationSvc {
             .filter(|tracked| owner.sees(&tracked.owner))
             .map(|tracked| tracked.operation.borrow().clone())
             .filter(|operation| !request.running_only || !finished(operation))
-            .filter(|operation| request.target.as_ref().is_none_or(|target| operation.target.as_ref() == Some(target)))
+            .filter(|operation| {
+                request
+                    .target
+                    .as_ref()
+                    .is_none_or(|target| operation.target.as_ref() == Some(target))
+            })
             .collect();
         Ok(Response::new(pb::ListOperationsResponse {
             operations,
@@ -525,7 +612,10 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let id = id_of(request.id)?;
-        let key = request.idempotency_key.map(|key| key.value).filter(|value| !value.is_empty());
+        let key = request
+            .idempotency_key
+            .map(|key| key.value)
+            .filter(|value| !value.is_empty());
         let tracked = self.operations.find(&caller, &id)?;
         let mut retry_key = lock(&tracked.retry_key);
         let operation = tracked.operation.borrow().clone();
@@ -538,7 +628,9 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         };
         *retry_key = key;
         tracked.cancel.store(false, Ordering::SeqCst);
-        let progress = Progress { tracked: tracked.clone() };
+        let progress = Progress {
+            tracked: tracked.clone(),
+        };
         progress.change(|operation| {
             operation.state = pb::OperationState::Running as i32;
             operation.cancellable = tracked.cancellable;

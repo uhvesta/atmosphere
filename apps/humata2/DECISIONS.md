@@ -882,3 +882,41 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 - **Pick pending owner review:** retain frame03/04's compact queue bar. Show expands a scrollable list within that bar, capped at200px, with each message and Send now / Remove; Hide collapses it. A fallback turn ending or failed send keeps a visible Send now. Toolkit controls retain keyboard focus. This extends the approved bar without a new modal; the frames do not draw its expanded state.
 - Delivery retains the saved payload until acknowledged. Failed delivery preserves ordering and pauses that session's automatic retry; the person can retry explicitly. Only hook-backed Claude/Copilot Ended automatically flushes, per SE-21–23. Read-only observers are excluded from the reported per-terminal writer count. The fake transport cannot prove real bracketed-paste serialization, durable delivery deduplication or real attach presence; those remain daemon integration work.
 - **Reverse:** replace only the expandable list presentation after an approved frame; keep the queue correctness fixes.
+
+## D115: Channels and session-start state are plain store tables (proposed by minion FL-D). Provisional
+- `channels`, `channel_repos` (main clone cloning/ready/failed), `channel_machines`, `session_details` (start step, model, first message, operation, revision) and `session_repos` are STRICT plain-column tables that cascade with their channel or session. No new store protos; `SessionRecord` unchanged.
+- **Reverse:** move them into proto records with a migration that reads these tables.
+
+## D116: Where channel and session folders go (proposed by minion FL-D). Provisional
+- `humatad2 serve --channels` sets the channels root, default `<--root>/Humata`. A channel is `<root>/<folder>/{main,sessions,shared}`; a session folder is `sessions/<branch slug without the prefix>`. Clones go to `<dest>.partial` and are renamed into place, so a crash never leaves a half clone that looks finished.
+- `--agents` (JSON agent list) and `--remote-template` are hidden test flags in every build, not admin-gated. **Reverse:** gate them behind the `admin` feature.
+
+## D117: CreateChannel's operation and a failed clone (proposed by minion FL-D). Provisional
+- Kind ADD_REPO with steps `record`, then `clone_main:<owner/name>` per repo. GRPC.md §7 lists `clone_main:<machine>…, record`; the code records first so a crash mid-clone leaves a channel that recovery can finish. GRPC.md to be aligned when the owner agrees.
+- A failed clone fails the operation and keeps the channel with that repo marked Failed (frame 45 has no failed state yet; see FRAMES1).
+
+## D118: Recovering half-done starts after a restart (proposed by minion FL-D). Provisional
+- A start that hadn't reached `launch` is finished forward; if that fails its clones and record are removed and LastStart says so. From `launch` on, revive owns it. Recovery runs after reconcile in the same task, and only over ids the store held before the daemon served anything (so it never races a live start).
+- A resume revive couldn't do (`Revived::ResumeFailed`) now gets a LastStart `not_brought_back` line (PER-15, PER-29).
+
+## D119: Branch prefix, default agent (proposed by minion FL-D). Provisional
+- A new channel's branch prefix is empty until Settings or the gh login exist (ST-13). The default agent is `--default-agent` (claude).
+
+## D120: Other machines in CreateChannel wait for MACH (proposed by minion FL-D). Provisional
+- Any machine but this one answers UNIMPLEMENTED naming MACH; an empty list means this machine.
+
+## D121: StartSession answers early (proposed by minion FL-D). Provisional
+- It answers once the record is written; the START_SESSION operation runs on and targets the channel. Cheap checks run before the idempotency key is used.
+
+## D122: Renaming a channel keeps its folder (proposed by minion FL-D). Provisional
+- RenameChannel changes the display name only (FC-1).
+
+## D123: Stop and resume (proposed by minion FL-D). Provisional
+- StopSession acts only on Running (holder shutdown, then Stopped); Launching and Resuming answer busy. Resume reuses kind START_SESSION with steps `launch`, `verify` (no RESUME_SESSION kind). ResumeSession supports MODE_RESUME only; fresh-with-summary answers not built.
+
+## D124: Session status mapping (proposed by minion FL-D). Provisional
+- Launching/Resuming → STARTING, Running → WORKING, Exited → EXITED, Stopped → IDLE, ResumeFailed → RESUME_FAILED; an unfinished start shows STARTING.
+- Known gap: an agent that exits while the daemon runs stays WORKING until the next reconcile or resume (needs a holder-exit watcher; FL follow-up).
+
+## D125: The app's Channels and Sessions client traits (proposed by minion FL-D, agreed by the main agent). Provisional
+- The app's one `Daemon` trait gains two separate traits so FL can fake each service: `Channels` (create_channel, channel, channels, rename_channel) and `Sessions` (preview_branch_names, start_session, session, sessions, rename_session, stop_session, resume_session). Operations are watched through OperationService; terminals stay on `Terminals`. Signatures are in workflow/milestones/FL-D.md's lane report; FL implements them in `clients/` (seam: the main agent applies the `clients/src/lib.rs` lines).

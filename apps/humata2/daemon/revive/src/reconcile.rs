@@ -2,20 +2,19 @@
 //! PER-13, PER-16).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata2_holder::{HolderSpec, SavedOutput};
 use humata2_store::fault::point;
 use humata2_store::{
-    AgentRecord, AgentState, Interruption, Restored, ResumeFailure, SessionRecord, Store,
-    TabKind, TabRecord,
+    AgentRecord, AgentState, Interruption, Restored, ResumeFailure, SessionRecord, Store, TabKind,
+    TabRecord,
 };
 
 use crate::agent::{
-    announced, blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error,
-    unix_ms,
+    announced, blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error, unix_ms,
 };
 use crate::report::Restart;
 use crate::{Env, ReviveConfig, ReviveError};
@@ -46,7 +45,9 @@ pub enum ShellRevived {
     Reattached,
     /// A fresh shell in the same folder; what ran in the old one is gone.
     /// `saved` is what's left of the old one's output, shown above.
-    Restarted { saved: Option<SavedOutput> },
+    Restarted {
+        saved: Option<SavedOutput>,
+    },
 }
 
 /// Each session's agent and each shell tab, and what became of it. One
@@ -137,8 +138,32 @@ pub async fn reconcile(
         reconciled.shells.push((id, outcome));
     }
     let config = config.clone();
-    reconciled.report = blocking(move || report.write(&config)).await.and_then(|written| written);
+    reconciled.report = blocking(move || report.write(&config))
+        .await
+        .and_then(|written| written);
     Ok(reconciled)
+}
+
+/// Brings back one agent the way [`reconcile`] does when the daemon is
+/// already running: for an agent whose record says it should run and whose
+/// holder is gone, it is resumed with its pinned conversation and the
+/// resume is checked; one whose holder still answers while it is saved as
+/// launching or resuming is stopped and resumed again. An agent that
+/// shouldn't run is left as it is ([`Revived::Left`]). Unlike `reconcile`,
+/// no restart report is written and no other session is touched.
+/// `Revived::ResumeFailed` says the resume was tried and why it failed.
+pub async fn resume_agent(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    record: AgentRecord,
+    env: Env<'_>,
+) -> Result<Revived, ReviveError> {
+    let tab = {
+        let (store, id) = (store.clone(), record.tab.clone());
+        blocking(move || store.tab(&id)).await?
+    }
+    .map_err(|source| store_error(&record.session, "read the agent's tab", source))?;
+    revive_agent(store, config, record, tab, env).await
 }
 
 async fn revive_agent(
