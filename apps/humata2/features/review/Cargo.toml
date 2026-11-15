@@ -1,0 +1,16 @@
+[package]
+name = "humata2-review"
+description = "The Diff panel: per-repo file diffs, folding, wrap, line comments drafted and sent to the agent."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_review"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

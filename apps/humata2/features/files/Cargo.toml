@@ -1,0 +1,16 @@
+[package]
+name = "humata2-files"
+description = "Files and transfers across hosts, and the trash."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_files"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "humata2-hosts"
+description = "Hosts: the machine table, Connect and Reconnect, and what happened to each session when a host came back."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_hosts"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

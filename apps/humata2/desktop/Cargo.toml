@@ -1,0 +1,25 @@
+[package]
+name = "humata2-desktop"
+description = "Humata 2's desktop app: the window, menus and wiring, on fake clients until the real daemon is wired in, with record and replay modes."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "humata2"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit = { workspace = true }
+humata2-app = { path = "../features/app" }
+humata2-clients = { path = "../clients" }
+humata2-engine = { path = "../engine" }
+humata2-report = { path = "../report" }
+humata2-ui = { path = "../ui" }
+tca-rust = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+humata2-engine = { path = "../engine", features = ["test-support"] }

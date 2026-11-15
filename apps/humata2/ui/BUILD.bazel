@@ -1,0 +1,47 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2's GPUI views over the feature states, and the one bridge between
+# the app's tca-rust store and GPUI (ui/src/bridge.rs). On ordinary GPUI
+# only for now; the desktop app picks the engine and builds the GPUI
+# resources from `humata2_ui::Assets`.
+FEATURES = [
+    "app",
+    "board",
+    "files",
+    "hosts",
+    "inbox",
+    "layout",
+    "palette",
+    "review",
+    "session",
+    "settings",
+    "sidebar",
+    "views",
+]
+
+rust_library(
+    name = "ui",
+    srcs = glob(["src/*.rs"]),
+    # GPUI's macros find gpui-kit through it.
+    compile_data = ["Cargo.toml"],
+    crate_name = "humata2_ui",
+    visibility = ["//apps/humata2/desktop:__pkg__"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/report",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ] + ["//apps/humata2/features/%s" % feature for feature in FEATURES],
+)
+
+rust_test(
+    name = "ui_unit_test",
+    crate = ":ui",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

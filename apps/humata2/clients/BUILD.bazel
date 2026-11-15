@@ -1,0 +1,47 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The clients Humata 2's features depend on: a trait for each outside
+# service and, for now, only fakes with deterministic dummy data, so the
+# desktop app can be clicked through before the real daemon is wired in.
+rust_library(
+    name = "clients",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_clients",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/features:__subpackages__",
+        "//apps/humata2/ui:__pkg__",
+    ],
+    deps = [
+        "//libs/tca-rust:tca",
+        "@crates//:serde",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":clients",
+            "//libs/tca-rust:tca",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = ["README.md"],
+    tags = ["markdown"],
+)

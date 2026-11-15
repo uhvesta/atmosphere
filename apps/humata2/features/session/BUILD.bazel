@@ -1,0 +1,42 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# A session's page: header, terminal tabs, the right strip's panels, widen and close, the composer with its per-session send queue and / autocomplete, and per-session view state.
+# State, actions and effects only; the views are in //apps/humata2/ui.
+rust_library(
+    name = "session",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_session",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/features/app:__pkg__",
+        "//apps/humata2/ui:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/clients",
+        "//libs/tca-rust:tca",
+        "@crates//:serde",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":session",
+            "//apps/humata2/clients",
+            "//libs/tca-rust:tca",
+        ],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

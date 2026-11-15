@@ -1,0 +1,60 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata 2's root feature: routes and Back, overlays, pane layout, toasts,
+# loading, the daemon's event stream, and saving where the person was across
+# restarts. State, actions and effects only; the views are in
+# //apps/humata2/ui.
+FEATURES = [
+    "board",
+    "files",
+    "hosts",
+    "inbox",
+    "layout",
+    "palette",
+    "review",
+    "session",
+    "settings",
+    "sidebar",
+    "views",
+]
+
+rust_library(
+    name = "app",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_app",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/ui:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/clients",
+        "//libs/tca-rust:tca",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ] + ["//apps/humata2/features/%s" % feature for feature in FEATURES],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":app",
+            "//apps/humata2/clients",
+            "//libs/tca-rust:tca",
+            "@crates//:tokio",
+        ] + ["//apps/humata2/features/%s" % feature for feature in FEATURES],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

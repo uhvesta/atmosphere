@@ -1,0 +1,16 @@
+[package]
+name = "humata2-sidebar"
+description = "The sidebar: pinned sessions, channels with their session trees, folding, Expand all and Collapse all, and keyboard selection over a flattened, virtualizable row list."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_sidebar"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

@@ -1,0 +1,47 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
+
+# Humata 2's desktop app, on fake clients until the real daemon is wired in.
+# Run it with `bazel run //apps/humata2/desktop:humata2`.
+rust_binary(
+    name = "humata2",
+    srcs = glob(["src/*.rs"]),
+    # GPUI's macros find gpui-kit through it.
+    compile_data = ["Cargo.toml"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+# The window on fakes, drawn headless (nothing is shown) and kept as view
+# and image snapshots in tests/__snapshots__/. Record with
+# `bazel run //apps/humata2/desktop:shell_test_record`.
+humata2_snapshot_test(
+    name = "shell_test",
+    srcs = ["tests/shell.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/shell.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/testing/snapshot",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

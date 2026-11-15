@@ -1,0 +1,16 @@
+[package]
+name = "humata2-palette"
+description = "The command palette: fuzzy search over commands, sessions and channels, recent first, context-aware commands with inline arguments."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_palette"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

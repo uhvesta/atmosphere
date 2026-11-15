@@ -1,0 +1,16 @@
+[package]
+name = "humata2-inbox"
+description = "The Inbox: scopes, request rows, the decision card and its answers, Approve all and Deny all, answered requests."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_inbox"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

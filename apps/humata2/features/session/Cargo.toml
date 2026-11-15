@@ -1,0 +1,16 @@
+[package]
+name = "humata2-session"
+description = "A session's page: header, terminal tabs, the right strip's panels, widen and close, the composer with its per-session send queue and / autocomplete, and per-session view state."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_session"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+serde = { workspace = true }

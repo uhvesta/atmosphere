@@ -1,0 +1,17 @@
+[package]
+name = "humata2-clients"
+description = "The dependency clients Humata 2's features use (daemon, clock, clipboard, file system, keychain, terminals): traits, and fakes with deterministic dummy data."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_clients"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+tca-rust = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
