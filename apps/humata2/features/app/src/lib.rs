@@ -580,6 +580,13 @@ impl App {
                     .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
                 effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
             }
+            Route::Inbox => {
+                state.session.open = None;
+                effects.push(self.child(
+                    state,
+                    AppAction::Inbox(InboxAction::SetFilter(humata2_inbox::Filter::All)),
+                ));
+            }
             Route::Board(scope) => {
                 effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
             }

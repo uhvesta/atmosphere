@@ -32,6 +32,14 @@ pub enum Bulk {
     DenyAll,
 }
 
+/// Which answers are included in the wide Inbox list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum History {
+    Waiting,
+    Answered,
+    All,
+}
+
 /// The Inbox's state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InboxState {
@@ -41,6 +49,8 @@ pub struct InboxState {
     pub filter: Filter,
     /// Whether answered requests show too.
     pub show_answered: bool,
+    /// Limit the history to answered requests.
+    pub answered_only: bool,
     /// The request whose details show.
     pub selected: Option<RequestId>,
     /// A reply being written to deny with, and to which request.
@@ -61,6 +71,7 @@ impl InboxState {
             .requests
             .iter()
             .filter(|request| self.show_answered || request.answer.is_none())
+            .filter(|request| !self.answered_only || request.answer.is_some())
             .filter(|request| match &self.filter {
                 Filter::All => true,
                 Filter::Channel(channel) => &request.channel == channel,
@@ -73,7 +84,17 @@ impl InboxState {
     #[must_use]
     pub fn selection(&self) -> Option<&Request> {
         let id = self.selected.as_ref()?;
-        self.workspace.requests.iter().find(|request| &request.id == id)
+        self.workspace
+            .requests
+            .iter()
+            .find(|request| &request.id == id)
+    }
+
+    fn select_visible(&mut self) {
+        let shown = self.shown();
+        if !shown.iter().any(|r| Some(&r.id) == self.selected.as_ref()) {
+            self.selected = shown.first().map(|r| r.id.clone());
+        }
     }
 }
 
@@ -95,6 +116,8 @@ pub enum InboxAction {
     SetFilter(Filter),
     /// Show or hide answered requests.
     ToggleAnswered,
+    /// Pick Waiting, Answered, or All.
+    SetHistory(History),
     /// Show a request's details.
     Select(RequestId),
     /// Answer a request.
@@ -174,15 +197,22 @@ impl Reducer for Inbox {
         match action {
             InboxAction::Show(workspace) => {
                 state.workspace = workspace;
-                if state.selection().is_none() {
-                    state.selected = None;
-                }
+                state.select_visible();
             }
             InboxAction::SetFilter(filter) => {
                 state.filter = filter;
-                state.selected = None;
+                state.select_visible();
             }
-            InboxAction::ToggleAnswered => state.show_answered = !state.show_answered,
+            InboxAction::ToggleAnswered => {
+                state.show_answered = !state.show_answered;
+                state.answered_only = false;
+                state.select_visible();
+            }
+            InboxAction::SetHistory(history) => {
+                state.show_answered = history != History::Waiting;
+                state.answered_only = history == History::Answered;
+                state.select_visible();
+            }
             InboxAction::Select(id) => state.selected = Some(id),
             InboxAction::Answer(id, answer) => return self.answer(state, id, answer),
             InboxAction::Always(id) => {

@@ -1,0 +1,52 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox" selected
+  Link "Board"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" collapsed
+    Button "Unfold"
+  TreeItem "web"
+    Button "Unfold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Tab "Waiting" selected
+Tab "Answered"
+Tab "All"
+Heading "Inbox"
+Group "Move PAY-3 to Done"
+  text "2m"
+  text "Claude Code in Ledger schema migration · board_item_move"
+  text "The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you."
+  text "Item  PAY-3 Ledger schema\nMove  In progress → Done\nCreated by  You, 3 days ago"
+  CheckBox "Allow this for the rest of the session" unchecked disabled
+  Button "Allow"
+  Button "Deny"
+  Button "Reply…" disabled
+ListBoxOption "Move PAY-3 to Done" selected
+ListBoxOption "Drop the old ledger_entries index?"
+ListBoxOption "Which currency for refunds?"
+ListBoxOption "Push try-brin to origin"
+ListBoxOption "Run a command on gpu-box"
+ListBoxOption "Delete the old snapshots"
+ListBoxOption "Post review on acme/api #482"

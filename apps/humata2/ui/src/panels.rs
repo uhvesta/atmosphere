@@ -532,7 +532,7 @@ fn inbox(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                 })),
         )
 }
-fn request_card(
+pub(crate) fn request_card(
     ui: &Rc<Ui>,
     state: &AppState,
     request: &Request,
@@ -550,7 +550,20 @@ fn request_card(
         .child(secondary(look, request.asked.clone()));
     let session = state.workspace.session(&request.session);
     let by = session.map_or_else(String::new, |session| {
-        format!("{} in {}", session.agent.name(), session.title)
+        format!(
+            "{} in {}{}",
+            if session.agent == humata2_clients::model::Agent::Claude {
+                "Claude Code"
+            } else {
+                session.agent.name()
+            },
+            session.title,
+            if request.rule.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", request.rule)
+            }
+        )
     });
     card(look)
         .id(SharedString::from(format!("request {}", request.id)))
@@ -599,30 +612,35 @@ fn request_card(
                 .child(
                     row()
                         .gap(px(8.))
-                        .when(!pending && request.kind != RequestKind::Question, |row| {
-                            row.child(action(
-                                ui,
-                                SharedString::from(format!("allow {}", request.id)),
-                                "Allow",
-                                AppAction::Inbox(InboxAction::Answer(
-                                    request.id.clone(),
-                                    Answer::Approved,
-                                )),
-                                look,
-                                true,
-                            ))
-                            .child(action(
-                                ui,
-                                SharedString::from(format!("deny {}", request.id)),
-                                "Deny",
-                                AppAction::Inbox(InboxAction::Answer(
-                                    request.id.clone(),
-                                    Answer::Denied { reply: None },
-                                )),
-                                look,
-                                false,
-                            ))
-                        })
+                        .when(
+                            !pending
+                                && request.answer.is_none()
+                                && request.kind != RequestKind::Question,
+                            |row| {
+                                row.child(action(
+                                    ui,
+                                    SharedString::from(format!("allow {}", request.id)),
+                                    "Allow",
+                                    AppAction::Inbox(InboxAction::Answer(
+                                        request.id.clone(),
+                                        Answer::Approved,
+                                    )),
+                                    look,
+                                    true,
+                                ))
+                                .child(action(
+                                    ui,
+                                    SharedString::from(format!("deny {}", request.id)),
+                                    "Deny",
+                                    AppAction::Inbox(InboxAction::Answer(
+                                        request.id.clone(),
+                                        Answer::Denied { reply: None },
+                                    )),
+                                    look,
+                                    false,
+                                ))
+                            },
+                        )
                         .when(pending, |row| row.child(secondary(look, "Answering…")))
                         .child(div().flex_1())
                         .child(

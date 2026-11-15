@@ -342,6 +342,28 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         value.branch = "ledger-schema".into();
         value.unread = u32::from(["ledger", "refund", "postgres"].contains(&id));
         value.shells = vec!["zsh".into()];
+        let (activity, when) = match id {
+            "ledger" => ("Asks to move PAY-3 to Done", "2m"),
+            "refund" => ("Running cargo test -p refunds", "now"),
+            "brin" => ("Writing migrations/0043_brin.sql", "now"),
+            "partial-brin" => ("Comparing partial BRIN on posted_at", "now"),
+            "benchmark" => ("pgbench run 2 of 4", "1m"),
+            "postgres" => ("Exited with code 1 after the dump step", "40m"),
+            "rate" => ("Finished: pushed and opened PR #491", "1h"),
+            "pr-482" => ("3 new commits since your review", "2h"),
+            _ => ("", ""),
+        };
+        if id == "refund" {
+            value.agent = Agent::Copilot;
+        }
+        if id == "benchmark" {
+            value.agent = Agent::Codex;
+        }
+        if id == "postgres" {
+            value.agent = Agent::Claude;
+        }
+        value.activity = activity.into();
+        value.active = when.into();
         value.transcript = [
             (Speaker::System, "~/src/ledger (ledger-schema) $ claude"),
             (
@@ -471,6 +493,56 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             .requests
             .push(request(id, session, channel, RequestKind::Command, title));
     }
+    for request in &mut workspace.requests {
+        match request.id.as_str() {
+            "rate-command" => {
+                request.id = RequestId::new("push-brin");
+                request.session = SessionId::new("brin");
+                request.title = "Push try-brin to origin".into();
+                request.asked = "9m".into();
+                request.preview = Preview::Command("git push origin try-brin".into());
+                request.reason = "The index migration and its tests are ready to review.".into();
+            }
+            "refund-command" => {
+                request.title = "Which currency for refunds?".into();
+                request.kind = RequestKind::Question;
+                request.asked = "15m".into();
+                request.reason =
+                    "Should refunds use the charge currency or the account currency?".into();
+                request.preview = Preview::Text("Charge currency\nAccount currency".into());
+            }
+            "benchmark-command" => {
+                request.title = "Run a command on gpu-box".into();
+                request.asked = "22m".into();
+                request.preview = Preview::Command("pgbench -f bench/brin.sql".into());
+                request.reason =
+                    "Compare index performance against the staging-sized sample.".into();
+            }
+            "postgres-command" => {
+                request.title = "Delete the old snapshots".into();
+                request.asked = "1h".into();
+                request.kind = RequestKind::Destroy;
+                request.undoable = false;
+                request.reason = "The Postgres 17 restore has been verified.".into();
+                request.preview =
+                    Preview::Text("Remove the Postgres 16 snapshots on devbox-1.".into());
+            }
+            _ => {}
+        }
+    }
+    if let Some(request) = workspace
+        .requests
+        .iter_mut()
+        .find(|r| r.id.as_str() == "move-pay-3")
+    {
+        request.reason="The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you.".into();
+        request.preview = Preview::Text(
+            "Item  PAY-3 Ledger schema\nMove  In progress → Done\nCreated by  You, 3 days ago"
+                .into(),
+        );
+        request.asked = "2m".into();
+        request.rule = "board_item_move".into();
+    }
     workspace.file_contents.insert((SessionId::new("ledger"), "api".into(), "src/client.rs".into()),
         "use crate::ledger::{Entry, Ledger};\n\npub fn insert_entry(ledger: &mut Ledger, entry: Entry) {\n    ledger.insert(entry.clone());\n    ledger.insert_legacy(entry);\n}\n".into());
     if ledger_status == Status::NeedsYou {
@@ -479,6 +551,22 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             body: "A guided walk through the 3 files, risky parts first.\n\n1. api/src/client.rs — keep the dual write in one transaction.\n2. migrations/0042_accounts.sql — check the account key.\n3. backfill.sql — batches, timings and rollback.".into(), accepted: false,
         });
     }
+    workspace.pulls = vec![
+        PullRequest {
+            number: 482,
+            title: "acme/api #482".into(),
+            repo: "acme/api".into(),
+            session: Some(SessionId::new("pr-482")),
+            checks: "3 new".into(),
+        },
+        PullRequest {
+            number: 491,
+            title: "API rate limiter".into(),
+            repo: "acme/api".into(),
+            session: Some(SessionId::new("rate")),
+            checks: "Passed".into(),
+        },
+    ];
     workspace.items = [
         (
             "PAY-12",
@@ -742,6 +830,7 @@ fn session(
         branch: format!("humata/{id}"),
         started: "2 h ago".to_owned(),
         active: "1 min ago".to_owned(),
+        activity: String::new(),
         transcript: transcript(title, agent),
         shells: Vec::new(),
         terminal_agents: Default::default(),

@@ -9,7 +9,6 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::model::Status;
 
 use crate::bridge::Ui;
 use crate::theme::{self, color};
@@ -60,28 +59,6 @@ pub fn empty(what: impl Into<SharedString>, next: impl Into<SharedString>) -> Di
         .py_6()
         .child(dim(what))
         .child(faint(next))
-}
-
-/// A status's color.
-#[must_use]
-pub const fn status_color(status: Status) -> u32 {
-    match status {
-        Status::Working => theme::GREEN,
-        Status::NeedsYou => theme::ORANGE,
-        Status::Idle | Status::ProbablyIdle => theme::DIM,
-        Status::Exited { .. } => theme::RED,
-        Status::Offline => theme::FAINT,
-    }
-}
-
-/// A status dot.
-#[must_use]
-pub fn dot(status: Status) -> Div {
-    div()
-        .size(px(8.))
-        .flex_shrink_0()
-        .rounded_full()
-        .bg(color(status_color(status)))
 }
 
 /// A button that sends `action`.

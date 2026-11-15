@@ -597,3 +597,98 @@ fn prepared_views_wait_for_open_and_later_returns_on_the_next_visit() {
     app.click("terminal-tab 0");
     assert!(app.contains("terminal"));
 }
+
+/// N1: Home and wide Inbox are real pages over the clients, in both appearances.
+#[test]
+fn home_and_global_inbox_reference_images() {
+    for (name, route, mode) in [
+        ("25-home", Route::Home, ThemeMode::Light),
+        ("26-inbox", Route::Inbox, ThemeMode::Light),
+        ("27-inbox-dark", Route::Inbox, ThemeMode::Dark),
+    ] {
+        let mut workspace = fixture::design();
+        for s in &mut workspace.sessions {
+            s.vip = s.id.as_str() == "ledger";
+            s.pinned = route == Route::Home && ["ledger", "pr-482"].contains(&s.id.as_str());
+        }
+        let mut app = App::new(workspace);
+        app.cx.update(|cx| Theme::change(mode, None, cx));
+        app.send(AppAction::Switch(route));
+        for id in ["pr-reviews", "web"] {
+            app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
+                humata2_clients::model::ChannelId::new(id),
+            ))));
+        }
+        app.snapshot(name);
+    }
+}
+
+/// IN-3/7/15: selected details answer the chosen request, then history can reveal it.
+#[test]
+fn the_global_inbox_answers_only_the_selected_request() {
+    use humata2_clients::model::{Answer, RequestId};
+    let mut app = App::new(fixture::design());
+    app.click("rail-inbox");
+    assert_eq!(
+        app.ui.read(|s| s.inbox.selected.clone()),
+        Some(RequestId::new("move-pay-3"))
+    );
+    app.click("global-request push-brin");
+    assert_eq!(
+        app.ui.read(|s| s.inbox.selected.clone()),
+        Some(RequestId::new("push-brin"))
+    );
+    app.click("deny push-brin");
+    assert!(app.ui.read(|s| {
+        s.workspace
+            .requests
+            .iter()
+            .find(|r| r.id.as_str() == "push-brin")
+            .unwrap()
+            .answer
+            == Some(Answer::Denied { reply: None })
+    }));
+    assert!(app.ui.read(|s| {
+        s.workspace
+            .requests
+            .iter()
+            .find(|r| r.id.as_str() == "move-pay-3")
+            .unwrap()
+            .answer
+            .is_none()
+    }));
+    assert!(!app.contains("global-request push-brin"));
+    app.click("inbox-history-Answered");
+    assert!(app.contains("global-request push-brin"));
+    assert!(!app.contains("global-request move-pay-3"));
+    app.click("inbox-history-All");
+    assert!(app.contains("global-request move-pay-3"));
+    app.click("inbox-history-Waiting");
+    assert!(!app.contains("global-request push-brin"));
+}
+
+/// Home actions open the right session and Resume the exited process.
+#[test]
+fn home_review_and_resume_act_on_their_own_rows() {
+    let mut app = App::new(fixture::design());
+    app.click("home-needs-action-0");
+    assert_eq!(
+        app.ui.read(|s| s.session.open.clone()),
+        Some(SessionId::new("ledger"))
+    );
+    assert_eq!(app.ui.read(|s| s.panel()), Some(Panel::Inbox));
+    app.click("rail-home");
+    app.click("home-needs-action-1");
+    assert_eq!(
+        app.ui.read(|s| s.session.open.clone()),
+        Some(SessionId::new("postgres"))
+    );
+    assert_eq!(
+        app.ui.read(|s| s
+            .workspace
+            .session(&SessionId::new("postgres"))
+            .unwrap()
+            .status),
+        Status::Idle
+    );
+}

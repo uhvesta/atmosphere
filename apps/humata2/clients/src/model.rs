@@ -278,6 +278,8 @@ pub struct Session {
     pub started: String,
     /// When it last wrote, as people read it.
     pub active: String,
+    /// The most recent useful activity, shown on Home and in session tables.
+    pub activity: String,
     /// What its terminal shows.
     pub transcript: Vec<Line>,
     /// Its extra terminal tabs (SE-8), after the agent's.

@@ -287,6 +287,102 @@ fn nav(
         .test_support()
 }
 
+fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
+    let RowKey::Pinned(id) = entry.key.as_ref()? else {
+        return None;
+    };
+    let (session, pull) = ui.read(|s| {
+        (
+            s.workspace.session(id).cloned(),
+            s.workspace
+                .pulls
+                .iter()
+                .find(|p| p.session.as_ref() == Some(id))
+                .cloned(),
+        )
+    });
+    let session = session?;
+    let ui = ui.clone();
+    let id = id.clone();
+    let summary = pull.is_none() && !session.activity.is_empty();
+    Some(
+        div()
+            .id(SharedString::from(format!("sidebar-pinned-{id}")))
+            .role(Role::TreeItem)
+            .aria_label(session.title.clone())
+            .h(px(if summary { 40. } else { 26. }))
+            .flex_shrink_0()
+            .overflow_hidden()
+            .mx(px(10.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .child(
+                row()
+                    .h(px(26.))
+                    .gap(px(7.))
+                    .child(if pull.is_some() {
+                        chrome::icon(IconName::GitPullRequest, look.accent, 12.).into_any_element()
+                    } else {
+                        chrome::status(session.status).into_any_element()
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(session.title),
+                    )
+                    .when(session.vip, |x| {
+                        x.child(
+                            div()
+                                .px(px(4.))
+                                .rounded(px(3.))
+                                .bg(rgb(0xbf5af2))
+                                .text_size(px(9.5))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(rgb(0xffffff))
+                                .child("VIP"),
+                        )
+                    })
+                    .children(pull.map(|p| {
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(p.checks)
+                    })),
+            )
+            .when(summary, |x| {
+                x.child(
+                    div()
+                        .pl(px(25.))
+                        .h(px(14.))
+                        .line_height(px(14.))
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(px(11.5))
+                        .text_color(rgb(if session.status == Status::NeedsYou {
+                            0xff9f0a
+                        } else {
+                            look.secondary
+                        }))
+                        .child(format!("{} · {}", session.activity, session.active)),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                ui.send(
+                    AppAction::Sidebar(SidebarAction::Activate(RowKey::Pinned(id.clone()))),
+                    cx,
+                )
+            })
+            .test_support()
+            .into_any_element(),
+    )
+}
+
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
@@ -449,6 +545,9 @@ impl Render for Sidebar {
                     .test_support(),
             )
             .children(pinned.iter().enumerate().map(|(index, entry)| {
+                if let Some(row) = pinned_row(ui, entry, look) {
+                    return row;
+                }
                 draw_row(
                     ui,
                     &self.focus,

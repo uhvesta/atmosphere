@@ -803,6 +803,7 @@ impl Daemon for FakeDaemon {
                     branch: format!("humata/{id}"),
                     started: "just now".to_owned(),
                     active: "just now".to_owned(),
+                    activity: String::new(),
                     transcript: vec![Line {
                         from: Speaker::System,
                         text: format!("{} started · {title}", agent.name()),

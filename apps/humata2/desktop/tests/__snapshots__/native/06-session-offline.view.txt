@@ -62,7 +62,7 @@ Complementary "Files"
   Button "Upload…" disabled
 Toolbar "Session panels"
   Button "Inbox"
-    Status "Inbox: 2"
+    Status "Inbox: 3"
   Button "Diff"
   Button "Files"
   Button "Board"

@@ -312,7 +312,13 @@ impl Render for Shell {
                     .read(|state| pages::session_header(&ui, state, collapsed, main_width, look))
                     .into_any_element()
             } else {
-                top_bar(&ui, title, can_go_back, collapsed, look).into_any_element()
+                self.ui.read(|state| {
+                    if matches!(state.route, Route::Home | Route::Inbox) {
+                        crate::lists::toolbar(&ui, state, title, collapsed, look).into_any_element()
+                    } else {
+                        top_bar(&ui, title, can_go_back, collapsed, look).into_any_element()
+                    }
+                })
             })
             .children(restore_error.map(|error| {
                 div().p_3().child(widgets::error_banner(

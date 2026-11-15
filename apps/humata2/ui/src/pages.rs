@@ -51,6 +51,7 @@ pub fn title(state: &AppState) -> String {
 pub fn page(ui: &Rc<Ui>, state: &AppState, _window: &mut Window, cx: &mut App) -> AnyElement {
     match &state.route {
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
+        Route::Inbox => crate::lists::inbox(ui, state, Look::of(cx)).into_any_element(),
         Route::Session(id) => state
             .workspace
             .sessions
@@ -67,97 +68,8 @@ pub fn page(ui: &Rc<Ui>, state: &AppState, _window: &mut Window, cx: &mut App) -
     }
 }
 
-fn session_row(
-    ui: &Rc<Ui>,
-    session: &Session,
-    index: usize,
-    group: &'static str,
-    look: Look,
-) -> impl IntoElement {
-    let ui = ui.clone();
-    let id = session.id.clone();
-    widgets::list_item((group, index), Role::Link, session.title.clone(), false)
-        .h(px(34.))
-        .child(
-            widgets::dot(session.status)
-                .id((group, index + 10_000))
-                .tooltip({
-                    let words = session.status.label();
-                    move |window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(words.clone()).build(window, cx)
-                    }
-                }),
-        )
-        .child(div().flex_1().child(session.title.clone()))
-        .text_color(rgb(look.text))
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(rgb(look.secondary))
-                .child(session.active.clone()),
-        )
-        .on_click(move |_, _, cx| ui.send(AppAction::Navigate(Route::Session(id.clone())), cx))
-        .test_support()
-}
-
 pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
-    let needs: Vec<&Session> = state
-        .workspace
-        .sessions
-        .iter()
-        .filter(|session| matches!(session.status, Status::NeedsYou) && !session.archived)
-        .collect();
-    let working: Vec<&Session> = state
-        .workspace
-        .sessions
-        .iter()
-        .filter(|session| matches!(session.status, Status::Working) && !session.archived)
-        .collect();
-    let section = |heading: &'static str,
-                   group: &'static str,
-                   sessions: Vec<&Session>,
-                   none: &'static str| {
-        col()
-            .gap_1()
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(rgb(look.secondary))
-                    .child(heading),
-            )
-            .children(
-                sessions
-                    .iter()
-                    .enumerate()
-                    .map(|(index, session)| session_row(ui, session, index, group, look)),
-            )
-            .when(sessions.is_empty(), |list| list.child(widgets::dim(none)))
-    };
-    col()
-        .id("home")
-        .size_full()
-        .overflow_y_scroll()
-        .p_6()
-        .child(
-            col()
-                .w_full()
-                .max_w(px(880.))
-                .mx_auto()
-                .gap_6()
-                .child(section(
-                    "Needs you",
-                    "home-needs",
-                    needs,
-                    "Nothing is waiting on you.",
-                ))
-                .child(section(
-                    "Working",
-                    "home-working",
-                    working,
-                    "No agent is working right now.",
-                )),
-        )
+    crate::lists::home(ui, state, look)
 }
 
 pub(crate) fn session_header(

@@ -17,10 +17,6 @@ pub const DIM: u32 = 0x9aa0a8;
 pub const FAINT: u32 = 0x6b7179;
 /// The accent, pressed.
 pub const ACCENT2: u32 = 0x3d7be0;
-/// Working, added, done.
-pub const GREEN: u32 = 0x3fb950;
-/// Needs you.
-pub const ORANGE: u32 = 0xe3a13b;
 /// Errors, removed, destructive.
 pub const RED: u32 = 0xf05d5d;
 /// A selected row.
