@@ -626,6 +626,29 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 - **MV-12** Push and open a pull request works per repo of the session: the
   dialog lists each repo with its branch and change totals, and the user picks
   which to push and open a PR for. PRs are opened with `gh` through the Mac.
+- **MV-13** A move carries everything the session has on its machine, not
+  only its clones (D63):
+  - the branch, commits not yet pushed, staged, unstaged, untracked and
+    ignored files in each clone, and its `refs/humata/…` refs (reviewed
+    snapshots, RV-28);
+  - the session folder's own files outside the clones, Markdown included
+    (spec-mode documents, plans, notes the agent wrote);
+  - the machine daemon's store rows for the session (terminal tabs,
+    scrollback, attach state, review notes and highlights, revive data),
+    exported and imported as the store's self-describing records (TR-13),
+    never as raw database files;
+  - the agent's own per-session files: its conversation, its project-keyed
+    folders and memory (e.g. `~/.claude/projects/<path>/`), with the paths
+    in them rewritten for the new folder.
+  `shared/` and the main clones are the channel's, not the session's, and
+  don't move.
+- **MV-14** Before anything is copied, the old machine writes a **move
+  manifest**: every item above with its size and hash. The new machine
+  checks every hash before the agent resumes, and the old copy goes to the
+  old machine's trash (LD-6) only after that check and the resume. A move
+  that fails says which item failed to arrive or to match. The manifest is
+  kept in the restart report format (PER-28) so the restart doctor can
+  finish or undo a move cut off by a reboot.
 
 ## 8. Lifecycle and disk
 
@@ -764,6 +787,25 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
   stays while the session is live or archived, goes to the Mac's trash when
   the session is deleted (LD-5), and is gone when that trash empties.
   (provisional, D12)
+
+### Searching sessions on every machine (owner direction 2026-11-14, D63)
+
+- **LD-23** The host keeps a full-text index over the mirror (LD-8), so
+  one search covers every session on every machine, archived ones included,
+  and works while a machine is offline (results from it say "as of its last
+  sync"). The index is updated as the mirror stream arrives, never by
+  scanning, and is rebuildable: it carries a format version and is rebuilt
+  when that changes (D62).
+- **LD-24** A hit names the channel, session, machine, agent and turn, and
+  opens that turn. Calls to Humata's own tools are not indexed. The ⌘K
+  palette searches it, and so does `humata sessions search`.
+- **LD-25** Agents search it with the MCP tool `sessions_search` (query,
+  channel, machine, agent, time range) and read a hit's turns with
+  `session_read` (a session and a turn range, paged). Both answer from the
+  host, so an agent on any machine searches all of them. By default an
+  agent searches its own channel; other channels need "Search other
+  channels" (Ask). What it returns has already been scrubbed (LD-21).
+  `humata sessions search` and `sessions_search` return the same results.
 
 ## 9. Review across N repos: diff, files, editor
 
