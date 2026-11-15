@@ -118,7 +118,7 @@ fn copying_a_selection_puts_its_markdown_or_its_text_on_the_clipboard(cx: &mut T
     let (window, _pane) = open(cx, GALLERY, gallery_options(), WIDTH, HEIGHT);
     let drag = || {
         Flow::new(SpecFlow::new("26.20", "Iterate on a spec with the agent, copy a passage")).drag(
-            Target::new(Role::Heading, "Heading 1, level 1"),
+            Target::new(Role::Heading, "Heading 1, level 1").at_start(),
             Target::new(Role::Paragraph, "Paragraph 2"),
         )
     };

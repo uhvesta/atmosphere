@@ -11,7 +11,7 @@
 use gpui_kit::test::{TestEventExt as _, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext, ClipboardItem, HeadlessAppContext, InvalidKeystrokeError,
-    Keystroke, MouseButton, Pixels, Point, TestAppContext, Window,
+    Keystroke, MouseButton, Pixels, Point, TestAppContext, Window, point, px,
 };
 use humata2_engine::frame;
 use humata2_engine::parity::{self, Comparison};
@@ -412,7 +412,16 @@ fn pick(window: &Window, target: &Target) -> Result<Point<Pixels>, GpuiDriverErr
         .filter(|element| element.label() == Some(target.label()))
         .collect();
     match matching.as_slice() {
-        [element] => Ok(element.bounds().center()),
+        [element] => {
+            let bounds = element.bounds();
+            Ok(if target.starts_at_leading_edge() {
+                // Just inside the edge, so the press lands before the first
+                // character rather than on the control's border.
+                point(bounds.left() + px(2.), bounds.center().y)
+            } else {
+                bounds.center()
+            })
+        }
         [] => {
             let seen: Vec<String> = candidates
                 .iter()

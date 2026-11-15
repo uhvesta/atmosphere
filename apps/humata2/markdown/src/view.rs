@@ -842,6 +842,7 @@ impl MarkdownView {
             .and_then(|range| rendered.as_str().get(range))
             .unwrap_or_default()
             .to_owned();
+        let selected = self.with_block_markup(selected);
         let blocks = self.document.blocks_in(&selected);
         if blocks.len() == 1 {
             let index = blocks.start;
@@ -866,6 +867,33 @@ impl MarkdownView {
             }
         }
         self.document.selection(selected, quote)
+    }
+
+    /// `selected` grown to take in the markup that opens its first block and
+    /// closes its last one, when the selection starts at the first character
+    /// a reader sees or ends at the last: a selection from the start of a
+    /// heading copies as `# Heading`, not `Heading`.
+    fn with_block_markup(&self, selected: Range<usize>) -> Range<usize> {
+        let source = self.document.source();
+        let blocks = self.document.blocks_in(&selected);
+        let only_markup = |text: &str| {
+            text.chars()
+                .all(|ch| ch.is_whitespace() || "#>-*+_~`|[]xX.)0123456789".contains(ch))
+        };
+        let mut grown = selected.clone();
+        if let Some(first) = self.document.blocks().get(blocks.start)
+            && first.bytes.start < selected.start
+            && source.get(first.bytes.start..selected.start).is_some_and(only_markup)
+        {
+            grown.start = first.bytes.start;
+        }
+        if let Some(last) = blocks.end.checked_sub(1).and_then(|index| self.document.blocks().get(index))
+            && selected.end < last.bytes.end
+            && source.get(selected.end..last.bytes.end).is_some_and(only_markup)
+        {
+            grown.end = last.bytes.end;
+        }
+        grown
     }
 
     /// The selection as `format`, or `None` when nothing is selected.

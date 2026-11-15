@@ -48,6 +48,7 @@ impl fmt::Display for SpecFlow {
 pub struct Target {
     role: Role,
     label: String,
+    at_start: bool,
 }
 
 impl Target {
@@ -56,7 +57,21 @@ impl Target {
         Self {
             role,
             label: label.into(),
+            at_start: false,
         }
+    }
+
+    /// Aim at the control's leading edge instead of its middle, where a
+    /// person starts a drag to take a heading or line from its first word.
+    #[must_use]
+    pub fn at_start(mut self) -> Self {
+        self.at_start = true;
+        self
+    }
+
+    /// Whether to aim at the leading edge.
+    pub fn starts_at_leading_edge(&self) -> bool {
+        self.at_start
     }
 
     /// What the control is.
@@ -72,7 +87,11 @@ impl Target {
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} {:?}", self.role, self.label)
+        write!(f, "{:?} {:?}", self.role, self.label)?;
+        if self.at_start {
+            f.write_str(" at its start")?;
+        }
+        Ok(())
     }
 }
 
