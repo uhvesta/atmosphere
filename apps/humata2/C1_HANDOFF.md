@@ -6,7 +6,7 @@ Wrapped at the owner's explicit request on 2026-11-15. The original native-app/f
 
 **Latest owner direction is documented but partly unimplemented:** allow individual-comment Send as well as Send N comments, and let explicit Send write terminal input without mandatory turn-end detection. Current Review Send is still batch-only and retains the previous hook-end hold policy. Reconcile that first; do not describe the checkpoint as the finished send UX.
 
-Checkpoint commit: recorded by the hash-fill follow-up. Previous published C1 foundation: `491a1cdd` and `7c5de8fe`. This handoff is under the app directory because the task prohibits touching the shared checkout's .claude directory. The session-handoff scaffold was generated in a private temporary directory only.
+Checkpoint commit: `9e185a5b`; the accompanying hash-fill commit names it in GAPS_REVIEW. Publish destination is shared remote main; verify ancestry when resuming. Previous published C1 foundation: `491a1cdd` and `7c5de8fe`. This handoff is under the app directory because the task prohibits touching the shared checkout's .claude directory. The session-handoff scaffold was generated in a private temporary directory only.
 
 ## Important Context
 
