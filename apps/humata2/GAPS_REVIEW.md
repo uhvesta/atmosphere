@@ -87,7 +87,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/review:large //apps/humata2/review:snapshots //apps/humata2/review:flows //apps/humata2/review:model_test //apps/humata2/review:review_view_test` (all passed, in the recorded targeted runs). Recorded both snapshot suites; inspected all four image modes and the text/layout diffs.
 - Look at: this fixes the measurement and save state without changing the pane's layout or list overdraw. Pixel tolerance had retained the old tiny status label, so the four PNGs were regenerated before verification.
 
-### (this commit): embedded DiffView behaviour and D67 (Diff view) [minion C]
+### 1bc95455: embedded DiffView behaviour and D67 (Diff view) [minion C]
 - Adds `diff/tests/view.rs` and `view_test` / `view_fast_test` in `diff/BUILD.bazel`: a Pane subscribes to the actual embedded DiffView on both engines. Tests exercise pending comparison edits, selected comment anchors, context requests/responses, replacement and empty-review counters, and Viewed folding/clearing after a content change. Ticks those OVERVIEW items; writes D67 from the existing numbers without running benches.
 - Verified: `bazel test //apps/humata2/diff:view_test //apps/humata2/diff:view_fast_test` (five tests per engine passed). Ran Bazel-managed buildifier and rustfmt on the new test file.
 - Look at: a separate attempted navigation test exposed the viewport-clamped counter on short reviews on both engines. The dependency owns that state; OVERVIEW records it as deferred because patching/repinning is excluded in this shared worktree. D67 remains Provisional and performance gates remain open.
