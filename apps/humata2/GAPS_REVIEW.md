@@ -238,7 +238,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: an agent hears only of its own session's notes, narrower than what ListComments lets it read (D92).
 
-### (this commit): the MCP inbox_request tool [minion F]
+### a7b39eda: the MCP inbox_request tool [minion F]
 - A session's agent can now ask the user ahead for access, say to reach a port, from its MCP tools. It waits for the answer; approved, it gets the grant's id, and asking again for something already granted is approved at once. A no comes back as an error carrying the user's note.
 - `daemon/humatad/src/mcp.rs`: `Operation::InboxRequest` calls `request_access`, which maps the capability name and the JSON target (board, path, network, agent on machine, repo branch, machine action, session) to RequestAccess; `outcome` decodes the Grant from an approved answer into `grant_id`. `inbox.rs`: `GRANT_TYPE` is `pub(crate)`.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
