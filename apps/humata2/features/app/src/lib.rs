@@ -990,17 +990,17 @@ impl App {
                 state.review.wrap = state.settings.preferences.wrap_diffs;
                 effect
             }
-            AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))) => {
+            AppAction::Session(SessionAction::SetPanel(Some(panel))) => {
                 let effect = self.child(
                     state,
-                    AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
+                    AppAction::Session(SessionAction::SetPanel(Some(panel))),
                 );
                 if state.layout.panel.collapsed {
                     state.layout.panel.collapsed = false;
                 }
-                match state.session.open.clone() {
-                    Some(id) => effect.and(self.child(state, AppAction::Review(ReviewAction::Open(id)))),
-                    None => effect,
+                match (panel, state.session.open.clone()) {
+                    (Panel::Changes, Some(id)) => effect.and(self.child(state, AppAction::Review(ReviewAction::Open(id)))),
+                    _ => effect,
                 }
             }
             action @ (AppAction::Sidebar(_)

@@ -30,17 +30,20 @@ pub enum Panel {
     Files,
     /// Its board items.
     Board,
+    /// Events and prepared views for the session.
+    Journal,
     /// What it is and where it runs.
     Info,
 }
 
 impl Panel {
     /// Every panel, in tab order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Changes,
         Self::Inbox,
         Self::Files,
         Self::Board,
+        Self::Journal,
         Self::Info,
     ];
 
@@ -52,6 +55,7 @@ impl Panel {
             Self::Inbox => "Inbox",
             Self::Files => "Files",
             Self::Board => "Board",
+            Self::Journal => "Journal",
             Self::Info => "Info",
         }
     }

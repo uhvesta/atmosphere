@@ -1,0 +1,69 @@
+Toolbar "Screens"
+  Button "Home" description="Home  ⌘1" unchecked
+  Button "Inbox" description="Inbox  ⌘2" unchecked
+  Button "Board" description="Board  ⌘3" unchecked
+  Button "Hosts" description="Hosts" unchecked
+  Button "Files" description="Files" unchecked
+  Button "Settings" description="Settings" unchecked
+Navigation "Sidebar"
+  Button "Expand all" description="Expand all  ⌥⌘→"
+  Button "Collapse all" description="Collapse all  ⌥⌘←"
+  Button "New channel" description="New channel  ⇧⌘N"
+  Button "Hide sidebar" description="Hide sidebar  ⌘0"
+  TreeItem "Login v2"
+  TreeItem "Token refresh retry"
+  TreeItem "#web" expanded
+    Button "Fold"
+  TreeItem "Login v2" expanded
+    Button "Fold"
+  TreeItem "Passkey prompt" expanded
+    Button "Fold"
+  TreeItem "Passkey copy edits"
+  TreeItem "Email code fallback"
+  TreeItem "Dark mode tokens"
+  TreeItem "#api" expanded
+    Button "Fold"
+  TreeItem "Token refresh retry" selected
+  TreeItem "Rate limit headers" expanded
+    Button "Fold"
+  TreeItem "Proto field docs"
+  TreeItem "#infra" expanded
+    Button "Fold"
+  TreeItem "Terraform plan"
+  TreeItem "CI cache"
+  TreeItem "Nightly backup"
+  TreeItem "#scratch" expanded
+    Button "Fold"
+  TreeItem "Shell"
+  Button "New session" description="New session  ⌘N"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Board"
+  text "api"
+  Button "Expand panel"
+  Button "Close panel"
+  text "In progress · 1"
+  ListItem "A-1 Token refresh retry"
+    text "Token refresh retry"
+    text "A-1"
+  text "To do · 1"
+  ListItem "A-2 Rate limit headers"
+    text "Rate limit headers"
+    text "A-2"
+  text "Done · 0"
+  text "Won't do · 1"
+  ListItem "A-3 v1 tables cleanup"
+    text "v1 tables cleanup"
+    text "A-3"
+Toolbar "Session panels"
+  Button "Inbox"
+  Button "Diff"
+  Button "Files" disabled
+  Button "Board"
+  Button "Journal"
+  Button "Info" disabled
+Heading "Token refresh retry"
+Button "Back" description="Back  ⌘["
+Button "Search" description="Command palette  ⌘K"
+Button "Toggle side panel" description="Toggle side panel  ⌥⌘0"
+Log "Token refresh retry terminal"

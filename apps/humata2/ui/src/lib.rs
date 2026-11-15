@@ -11,6 +11,7 @@ pub mod keys;
 pub mod record;
 
 mod overlays;
+mod panels;
 mod pages;
 mod shell;
 mod sidebar;
@@ -61,6 +62,18 @@ gpui_kit::assets::icon_assets!(
         MessageSquare,
         Columns2,
         Square,
+        FileCode,
+        FileDiff,
+        FolderGit2,
+        FolderTree,
+        SquareKanban,
+        BookOpenText,
+        Info,
+        Maximize2,
+        Minimize2,
+        ChevronsUpDown,
+        PanelLeftOpen,
+        Sparkles,
     ]
 );
 

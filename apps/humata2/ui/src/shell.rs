@@ -11,13 +11,12 @@ use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
 use humata2_app::{AppAction, Load, PaneAction, Route};
 use humata2_clients::model::Scope;
-use humata2_session::Panel;
 use humata2_sidebar::SidebarAction;
 
 use crate::bridge::{Part, Ui};
 use crate::keys;
 use crate::overlays::Overlays;
-use crate::pages;
+use crate::{pages, panels};
 use crate::sidebar::Sidebar;
 use crate::theme::{self, color};
 use crate::widgets::{self, col, row};
@@ -231,6 +230,10 @@ fn top_bar(ui: &Rc<Ui>, title: String, can_go_back: bool, sidebar_hidden: bool) 
                     move |_, _, cx| ui.send(AppAction::OpenPalette, cx)
                 }),
         )
+        .when(ui.read(|state| matches!(state.route, Route::Session(_))), |bar| {
+            bar.child(widgets::ghost(ui, "toggle-side-panel", "", AppAction::Pane(PaneAction::Toggle(PaneId::Panel)))
+                .icon(IconName::PanelRight).accessibility_label("Toggle side panel").tooltip("Toggle side panel  ⌥⌘0"))
+        })
 }
 
 impl Shell {
@@ -268,39 +271,16 @@ impl Shell {
     }
 }
 
-/// The open session's side panel, on the right.
-fn side_panel(panel: Panel, width: f32) -> impl IntoElement {
-    col()
-        .id("side-panel")
-        .role(Role::Complementary)
-        .aria_label(panel.name())
-        .w(px(width))
-        .h_full()
-        .flex_shrink_0()
-        .bg(color(theme::SIDE))
-        .border_l_1()
-        .border_color(color(theme::LINE))
-        .child(
-            row()
-                .h(px(theme::TOP_BAR))
-                .flex_shrink_0()
-                .px_3()
-                .border_b_1()
-                .border_color(color(theme::LINE))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(panel.name()),
-        )
-        .child(widgets::empty("Nothing here yet.", "This panel is being built."))
-        .test_support()
-}
-
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = f32::from(window.viewport_size().width);
-        let (panel, panel_width) = self.ui.read(|state| {
+        let (panel, panel_width, full, in_session) = self.ui.read(|state| {
             let panel = state.panel().filter(|_| !state.layout.panel.collapsed);
-            let (_, width) = state.layout.widths(viewport - theme::RAIL_WIDTH, panel.is_some());
-            (panel, width)
+            let in_session = matches!(state.route, Route::Session(_));
+            let strip = if in_session { 64. } else { 0. };
+            let (_, width) = state.layout.widths(viewport - theme::RAIL_WIDTH - strip, panel.is_some());
+            let full = panel.is_some() && state.session.view().is_some_and(|view| view.widened);
+            (panel, width, full, in_session)
         });
         let (route, load, can_go_back, collapsed, title, waiting, restore_error) = self.ui.read(|state| {
             (
@@ -387,7 +367,7 @@ impl Render for Shell {
                 let x = f32::from(event.position.x);
                 let width = match pane {
                     PaneId::Sidebar => x - theme::RAIL_WIDTH,
-                    PaneId::Panel => viewport - x,
+                    PaneId::Panel => viewport - if in_session { 64. } else { 0. } - x,
                 };
                 this.send(AppAction::Pane(PaneAction::Drag(pane, width)), cx);
             }))
@@ -395,15 +375,18 @@ impl Render for Shell {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, _| this.dragging = None),
             )
-            .child(rail(&ui, &route, waiting))
-            .when(!collapsed, |shell| {
-                shell.child(self.sidebar.clone()).child(self.divider(PaneId::Sidebar, cx))
+            .when(!full, |shell| {
+                shell.child(rail(&ui, &route, waiting))
+                    .when(!collapsed, |shell| shell.child(self.sidebar.clone()).child(self.divider(PaneId::Sidebar, cx)))
+                    .child(main)
+                    .when_some(panel, |shell, panel| {
+                        shell.child(self.divider(PaneId::Panel, cx))
+                            .child(self.ui.read(|state| panels::panel(&ui, state, panel, panel_width, false, cx)))
+                    })
+                    .when(in_session, |shell| shell.child(panels::strip(&ui, panel, cx)))
             })
-            .child(main)
-            .when_some(panel, |shell, panel| {
-                shell
-                    .child(self.divider(PaneId::Panel, cx))
-                    .child(side_panel(panel, panel_width))
+            .when(full, |shell| {
+                shell.children(panel.map(|panel| self.ui.read(|state| panels::panel(&ui, state, panel, viewport, true, cx))))
             })
             .child(self.overlays.clone())
     }

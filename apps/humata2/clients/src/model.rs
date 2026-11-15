@@ -504,10 +504,14 @@ pub enum ItemKind {
 /// A board column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ItemStatus {
+    /// Planned, before it is ready to start.
+    Backlog,
     /// Not started.
     Todo,
     /// Being worked on.
     InProgress,
+    /// Ready for a person to review.
+    InReview,
     /// Waiting on something.
     Blocked,
     /// Finished.
@@ -518,9 +522,11 @@ pub enum ItemStatus {
 
 impl ItemStatus {
     /// Every column, in board order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
+        Self::Backlog,
         Self::Todo,
         Self::InProgress,
+        Self::InReview,
         Self::Blocked,
         Self::Done,
         Self::WontDo,
@@ -530,8 +536,10 @@ impl ItemStatus {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Backlog => "Backlog",
             Self::Todo => "To do",
             Self::InProgress => "In progress",
+            Self::InReview => "In review",
             Self::Blocked => "Blocked",
             Self::Done => "Done",
             Self::WontDo => "Won't do",

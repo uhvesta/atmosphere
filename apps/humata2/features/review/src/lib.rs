@@ -60,6 +60,9 @@ pub struct Anchor {
 /// What survives a restart: folded files and unsent comments.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSaved {
+    /// The selected repository and file, per session.
+    #[serde(default)]
+    pub selected: BTreeMap<SessionId, (String, String)>,
     /// Folded files per session.
     pub folded: BTreeMap<SessionId, BTreeSet<String>>,
     /// Comments written but not sent, per session.
@@ -118,6 +121,8 @@ pub enum Delegate {
 /// What happens on the review page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReviewAction {
+    /// Show a file from the open session's comparison.
+    SelectFile { repo: String, path: String },
     /// The data changed.
     Show(Arc<Workspace>),
     /// Saved folds and comments came back at launch.
@@ -168,6 +173,16 @@ impl Reducer for Review {
 
     fn reduce(&self, state: &mut ReviewState, action: ReviewAction) -> Effect<ReviewAction> {
         match action {
+            ReviewAction::SelectFile { repo, path } => {
+                if let Some(session) = state.session.clone()
+                    && state.workspace.diffs.iter().any(|diff| {
+                        diff.session == session && diff.repo == repo
+                            && diff.files.iter().any(|file| file.path == path)
+                    })
+                {
+                    state.saved.selected.insert(session, (repo, path));
+                }
+            }
             ReviewAction::Show(workspace) => {
                 state.workspace = workspace;
                 return prepare(state);

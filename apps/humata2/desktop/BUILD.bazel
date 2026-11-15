@@ -48,6 +48,26 @@ filegroup(
     tags = ["starlark"],
 )
 
+humata2_snapshot_test(
+    name = "panels_test",
+    srcs = ["tests/panels.rs"],
+    compile_data = ["Cargo.toml"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/review",
+        "//apps/humata2/features/session",
+        "//apps/humata2/testing/snapshot",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:image",
+        "@crates//:tokio",
+    ],
+)
+
 # The design goldens: what the UI should look like (D76). Record with
 # `bazel run //apps/humata2/desktop:design_test_record`.
 humata2_snapshot_test(
