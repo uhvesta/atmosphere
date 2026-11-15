@@ -3,10 +3,10 @@
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::TestTextExt as _;
+use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
-use humata2_clients::model::{Agent, Session, Status};
+use humata2_clients::model::{Agent, Session, Status, Turn};
 use humata2_session::{SessionAction, Tab, TabGroup};
 use humata2_views::ViewsAction;
 
@@ -150,6 +150,36 @@ fn tab_row(
             .test_support(),
         )
         .child(div().flex_1())
+        .when(session.status != Status::Offline, |bar| {
+            let peers = tabs
+                .tabs
+                .get(tabs.selected)
+                .and_then(|tab| match tab {
+                    Tab::Terminal(tab) => state
+                        .workspace
+                        .terminal_peers
+                        .get(&(session.id.clone(), *tab)),
+                    _ => None,
+                })
+                .copied()
+                .unwrap_or(0);
+            bar.when(peers > 0, |bar| {
+                let label = format!(
+                    "{peers} other{} can type here",
+                    if peers == 1 { "" } else { "s" }
+                );
+                bar.child(
+                    div()
+                        .id(SharedString::from(format!("terminal-peers-{group}")))
+                        .mr(px(12.))
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child(label.clone())
+                        .test_text(label)
+                        .test_support(),
+                )
+            })
+        })
         .when(split, |bar| {
             bar.child(
                 send(
@@ -379,7 +409,7 @@ pub(crate) fn body(
                             "Open it",
                             AppAction::Views(ViewsAction::Accept(offer.title.clone())),
                         ))
-                        .child(widgets::ghost(
+                            .child(widgets::ghost(
                             ui,
                             "offer-later",
                             "Later",
@@ -472,4 +502,128 @@ pub(crate) fn body(
                     }),
             ),
         )
+        .children(queue(ui, state, session, look))
+}
+
+fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option<AnyElement> {
+    let view = state.session.view()?;
+    if view.queue.is_empty() {
+        return None;
+    }
+    let failed = state.session.failed_queues.contains(&session.id);
+    let certain = !failed
+        && matches!(session.agent, Agent::Claude | Agent::Copilot)
+        && session.turn != Turn::Uncertain;
+    let count = view.queue.len();
+    let caption = format!(
+        "{count} message{} queued · {}",
+        if count == 1 { "" } else { "s" },
+        if failed {
+            "waiting: send failed"
+        } else if certain {
+            "typed when this turn ends"
+        } else {
+            "waiting: turn end not certain"
+        }
+    );
+    Some(
+        col()
+            .id("session-queue")
+            .flex_shrink_0()
+            .m(px(14.))
+            .mt(px(0.))
+            .px(px(10.))
+            .py(px(6.))
+            .gap(px(8.))
+            .rounded(px(7.))
+            .bg(rgb(look.fill))
+            .text_color(rgb(look.text))
+            .text_size(px(12.))
+            .child(
+                row()
+                    .gap(px(8.))
+                    .child(
+                        chrome::icon(IconName::MessageSquareText, look.secondary, 12.)
+                            .flex_shrink_0(),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(caption.clone())
+                            .test_text(caption),
+                    )
+                    .when(!certain, |bar| {
+                        bar.child(
+                            widgets::send(
+                                ui,
+                                "send-next-queued",
+                                "Send now",
+                                AppAction::Session(SessionAction::SendNow),
+                            )
+                            .disabled(state.session.sending),
+                        )
+                    })
+                    .child(
+                        widgets::ghost(
+                            ui,
+                            "show-queued",
+                            if state.session.queue_expanded {
+                                "Hide"
+                            } else {
+                                "Show"
+                            },
+                            AppAction::Session(SessionAction::ShowQueue(
+                                !state.session.queue_expanded,
+                            )),
+                        )
+                        .h(px(18.))
+                        .px(px(0.))
+                        .text_color(rgb(look.accent)),
+                    ),
+            )
+            .when(state.session.queue_expanded, |list| {
+                list.child(
+                    col()
+                        .id("queued-list")
+                        .max_h(px(200.))
+                        .overflow_y_scroll()
+                        .children(view.queue.iter().enumerate().map(|(index, message)| {
+                            row()
+                                .id(SharedString::from(format!("queued-message-{index}")))
+                                .items_start()
+                                .gap(px(8.))
+                                .py(px(5.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(message.clone())
+                                        .test_text(message.clone()),
+                                )
+                                .child(
+                                    widgets::send(
+                                        ui,
+                                        SharedString::from(format!("send-queued-{index}")),
+                                        "Send now",
+                                        AppAction::Session(SessionAction::SendQueued(index)),
+                                    )
+                                    .disabled(state.session.sending),
+                                )
+                                .child(
+                                    widgets::ghost(
+                                        ui,
+                                        SharedString::from(format!("remove-queued-{index}")),
+                                        "Remove",
+                                        AppAction::Session(SessionAction::RemoveQueued(index)),
+                                    )
+                                    .disabled(state.session.sending),
+                                )
+                                .test_support()
+                        })),
+                )
+            })
+            .test_support()
+            .into_any_element(),
+    )
 }

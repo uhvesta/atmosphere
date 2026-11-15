@@ -111,6 +111,8 @@ pub fn error_banner(
         .id(id)
         .role(Role::Alert)
         .aria_label(text.clone())
+        .flex_shrink_0()
+        .items_start()
         .gap_3()
         .px_3()
         .py_2()
@@ -118,7 +120,17 @@ pub fn error_banner(
         .bg(color(0x2a1717))
         .border_1()
         .border_color(color(theme::RED))
-        .child(div().flex_1().text_color(color(theme::TEXT)).child(text))
-        .child(ghost(ui, (id, 1usize), "Dismiss", dismiss))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(color(theme::TEXT))
+                .child(text),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .child(ghost(ui, (id, 1usize), "Dismiss", dismiss).text_color(color(theme::TEXT))),
+        )
         .test_support()
 }

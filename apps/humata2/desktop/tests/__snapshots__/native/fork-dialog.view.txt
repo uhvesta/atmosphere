@@ -73,6 +73,8 @@ Button "Not now"
 Tab "claude" selected
 Tab "zsh"
 Button "New terminal"
+#terminal-peers-0
+  text "1 other can type here"
 Dialog "Fork session" focused
   #input-4294967304 focused
     TextInput "Fork title" value="Review the migration" placeholder="What should the fork do?" focused

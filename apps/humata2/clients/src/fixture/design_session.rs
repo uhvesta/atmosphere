@@ -10,6 +10,9 @@ use crate::workspace::Workspace;
 #[must_use]
 pub fn design_session(ledger_status: Status) -> Workspace {
     let mut workspace = Workspace::default();
+    workspace
+        .terminal_peers
+        .insert((SessionId::new("ledger"), 0), 1);
     workspace.machines = vec![
         machines().remove(0),
         Machine {

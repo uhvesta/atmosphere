@@ -25,6 +25,8 @@ pub struct Workspace {
     pub terminal_bytes: BTreeMap<(SessionId, usize), Vec<u8>>,
     /// Last terminal size reported by each attached view (columns, rows).
     pub terminal_sizes: BTreeMap<(SessionId, usize), (u16, u16)>,
+    /// Other attached writers per terminal, excluding this app and read-only observers.
+    pub terminal_peers: BTreeMap<(SessionId, usize), usize>,
     /// Inbox requests, newest first, answered ones included.
     pub requests: Vec<Request>,
     /// Board items on every board.

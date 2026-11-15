@@ -70,6 +70,7 @@ gpui_kit::assets::icon_assets!(
         Moon,
         Maximize,
         MessageSquare,
+        MessageSquareText,
         Columns2,
         Square,
         FileCode,

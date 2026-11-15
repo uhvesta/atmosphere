@@ -119,6 +119,10 @@ pub struct SessionState {
     pub terminal_bytes: HashMap<(SessionId, usize), Arc<Vec<u8>>>,
     /// The group whose plus menu is open.
     pub terminal_menu: Option<usize>,
+    /// Whether the open session's waiting messages are expanded.
+    pub queue_expanded: bool,
+    /// Queues awaiting explicit retry after a failed delivery.
+    pub failed_queues: BTreeSet<SessionId>,
     /// Whether a new terminal is being started.
     pub opening_terminal: bool,
     /// Loaded text files, keyed by session/repository/path.
@@ -270,12 +274,21 @@ pub enum SessionAction {
     /// Send the first queued message even though the turn may not have
     /// ended (SE-23).
     SendNow,
+    /// Send a particular waiting message, even during a turn.
+    SendQueued(usize),
+    /// Expand or collapse the waiting-message list.
+    ShowQueue(bool),
     /// Take a queued message back into the composer to edit it.
     EditQueued(usize),
     /// Drop a queued message.
     RemoveQueued(usize),
     /// The daemon took a message, or didn't.
-    Sent(SessionId, Result<(), DaemonError>),
+    Sent {
+        session: SessionId,
+        index: usize,
+        text: String,
+        result: Result<(), DaemonError>,
+    },
     /// Start an exited session again on its conversation (SE-14).
     Resume,
     /// Open the fork dialog.
@@ -323,11 +336,16 @@ impl Sessions {
         Self { clients }
     }
 
-    fn send(&self, session: SessionId, text: String) -> Effect<SessionAction> {
+    fn send(&self, session: SessionId, index: usize, text: String) -> Effect<SessionAction> {
         let daemon = self.clients.daemon.clone();
         Effect::future(async move {
             let result = daemon.send(&session, &text).await;
-            SessionAction::Sent(session, result)
+            SessionAction::Sent {
+                session,
+                index,
+                text,
+                result,
+            }
         })
     }
 
@@ -354,22 +372,53 @@ impl Sessions {
 
     /// Sends the first queued message of `session` if its turn ended.
     fn flush(&self, state: &mut SessionState, session: &SessionId) -> Effect<SessionAction> {
-        let ended = state
+        let ended = state.workspace.session(session).is_some_and(|session| {
+            session.turn == Turn::Ended && matches!(session.agent, Agent::Claude | Agent::Copilot)
+        });
+        if !ended || state.sending || state.failed_queues.contains(session) {
+            return Effect::none();
+        }
+        self.send_queued(state, session, 0)
+    }
+
+    fn send_queued(
+        &self,
+        state: &mut SessionState,
+        session: &SessionId,
+        index: usize,
+    ) -> Effect<SessionAction> {
+        if state.sending {
+            return Effect::none();
+        }
+        if !state
+            .views
+            .get(session)
+            .is_some_and(|view| index < view.queue.len())
+        {
+            return Effect::none();
+        }
+        if !state
             .workspace
             .session(session)
-            .is_some_and(|session| session.turn == Turn::Ended);
-        if !ended || state.sending {
+            .is_some_and(|s| s.status.accepts_input())
+        {
+            state.error = Some("This session cannot take a message. Reconnect its machine or resume the agent, then send again.".into());
             return Effect::none();
         }
-        let Some(view) = state.views.get_mut(session) else {
+        // Keep the saved message until its acknowledgement. Closing the app
+        // while the client is pending must not discard it.
+        let Some(text) = state
+            .views
+            .get(session)
+            .and_then(|view| view.queue.get(index))
+            .cloned()
+        else {
             return Effect::none();
         };
-        if view.queue.is_empty() {
-            return Effect::none();
-        }
-        let text = view.queue.remove(0);
+        state.failed_queues.remove(session);
+        state.error = None;
         state.sending = true;
-        self.send(session.clone(), text)
+        self.send(session.clone(), index, text)
     }
 }
 
@@ -406,6 +455,7 @@ impl Reducer for Sessions {
                     .or_default()
                     .ensure_groups(shells);
                 state.terminal_menu = None;
+                state.queue_expanded = false;
                 state.open = Some(id.clone());
                 state.fork = None;
                 state.error = None;
@@ -702,24 +752,21 @@ impl Reducer for Sessions {
                 view.queue.push(text);
                 return self.flush(state, &id);
             }
-            SessionAction::SendNow => {
+            SessionAction::SendNow | SessionAction::SendQueued(_) => {
                 let Some(id) = state.open.clone() else {
                     return Effect::none();
                 };
+                let index = match action {
+                    SessionAction::SendQueued(index) => index,
+                    _ => 0,
+                };
+                return self.send_queued(state, &id, index);
+            }
+            SessionAction::ShowQueue(show) => state.queue_expanded = show,
+            SessionAction::EditQueued(index) => {
                 if state.sending {
                     return Effect::none();
                 }
-                let Some(view) = state.view_mut() else {
-                    return Effect::none();
-                };
-                if view.queue.is_empty() {
-                    return Effect::none();
-                }
-                let text = view.queue.remove(0);
-                state.sending = true;
-                return self.send(id, text);
-            }
-            SessionAction::EditQueued(index) => {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
@@ -732,18 +779,42 @@ impl Reducer for Sessions {
                 }
             }
             SessionAction::RemoveQueued(index) => {
+                if state.sending {
+                    return Effect::none();
+                }
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
                     view.queue.remove(index);
                 }
             }
-            SessionAction::Sent(session, result) => {
+            SessionAction::Sent {
+                session,
+                index,
+                text,
+                result,
+            } => {
                 state.sending = false;
                 match result {
                     // The daemon echoes the message as output.
-                    Ok(()) => return self.flush(state, &session),
-                    Err(error) => state.error = Some(error.to_string()),
+                    Ok(()) => {
+                        if let Some(view) = state.views.get_mut(&session)
+                            && view.queue.get(index) == Some(&text)
+                        {
+                            view.queue.remove(index);
+                        }
+                        let waiting: Vec<_> = state.views.keys().cloned().collect();
+                        return Effect::merge(
+                            waiting
+                                .iter()
+                                .map(|id| self.flush(state, id))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                    Err(error) => {
+                        state.failed_queues.insert(session.clone());
+                        state.error = Some(error.to_string());
+                    }
                 }
             }
             SessionAction::Resume => {
