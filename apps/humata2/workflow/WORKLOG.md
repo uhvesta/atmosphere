@@ -22,8 +22,9 @@ Each agent edits only its own lane; the main agent edits the rest.
 | main | Opus 5.5 | main agent | — | 2026-11-15 | active |
 | minion C1 | — | restyle app to goldens (launched by the owner) | N1 restyle; uncommitted work in `clients/`, `features/{app,session}`, `ui/`, `desktop/tests/native*` | 2026-11-15 | active, outside this workflow |
 | minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | done |
-| minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | running |
-| minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | running |
+| minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
+| minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
+| minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | running |
 
 ## Claims
 
@@ -65,3 +66,7 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 
 - 2026-11-15 main: wrote `workflow/` (WORKFLOW, roles, WORKLOG); started R1.
 - 2026-11-15 R1 done: 10 cohesion problems, 19 goal milestones, layered DAG (critical path LOOK → FL → MACH → SAFE → LINUX → ANYHOST → V1; 2 building lanes + 1 docs lane). Started A1 (advice) and S1 (safety) in parallel.
+- 2026-11-15 S1 done: HEAD = origin/main, LFS complete, no half states, no secrets in the last 20 commits. C1's 32 uncommitted files backed up to `refs/wip/2026-11-15-safety` (67a307ea, pushed). Delete that ref after C1 commits. Two untracked `.claude/handoffs/*.md` stay uncommitted (`.claude/` is never committed).
+- 2026-11-15 main: milestone files (`workflow/milestones/`) added on owner request; agents read their milestone file and its pointers, not the big docs.
+- 2026-11-15 main: started J1 (judge, Fable high) on owner request. Order: owner directions > goldens > SPEC; golden changes listed for the owner, not made.
+- 2026-11-15 main: A1 done (scratchpad `a1-advice.md`), forwarded to J1. Added the `dag-walk` skill (`tools/skills/dag-walk/`, linked locally at `.claude/skills/dag-walk`) and `workflow/CONFIG.md`.

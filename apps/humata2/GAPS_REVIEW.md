@@ -426,3 +426,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 ### e0ae561a: one file per milestone (owner direction 2026-11-15)
 - New `workflow/milestones/README.md`: the template for `milestones/<ID>.md` (status, edges, outcome, exit criterion, pointers into SPEC by ID, frames, decisions and code, out of scope, and the manager's Lane section). WORKFLOW, MAIN, MANAGER and WORKLOG now send agents to their milestone file and its pointers instead of reading SPEC/OVERVIEW whole; lane detail lives in the milestone file, WORKLOG keeps one line per lane.
 - Docs only. The milestone files themselves are written with DAG.md after the advisor's report.
+
+### (this commit): dag-walk skill (owner direction 2026-11-15)
+- New `tools/skills/dag-walk/`: SKILL.md (modes `init`, `plan`, `resume`, `gate`, `close <ID>`) and generic templates (WORKFLOW, roles, milestone, WORKLOG, CONFIG) built from Humata 2's `workflow/`, plus A1's rules: one writer per file, seam files main-agent-only, workers never record snapshots, stubs for workers, lane rollback. New `apps/humata2/workflow/CONFIG.md` holds Humata 2's commands, seam files, never-touch paths, architecture, lane limit, models. CLAUDE.md lists the skill and how to link it into `.claude/skills/` (the link itself stays local, `.claude/` is never committed).
+- Docs only. Look at: SKILL.md's resume steps and CONFIG.md's seam list.
