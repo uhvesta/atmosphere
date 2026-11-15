@@ -1,0 +1,61 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Review diffs (SPEC RV-28–RV-34, PR-22–PR-26, D66): diff specs computed
+# with the git CLI into files, hunks and lines, reviewed snapshots as git
+# objects, per-file Viewed, review plans and the review chat's view state.
+# humatad's DiffService, ViewService and ReviewChatService call it; it
+# runs git on the session's machine and serves nothing itself.
+rust_library(
+    name = "review_diff",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_review_diff",
+    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    deps = [
+        "//apps/humata2/api/proto:humata2_rust",
+        "@crates//:tempfile",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "review_diff_unit_test",
+    crate = ":review_diff",
+)
+
+# Behavioural tests on real git repositories in temporary folders; they run
+# the git on PATH.
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        crate_root = src,
+        deps = [
+            ":review_diff",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+# D66: the git CLI against a big synthetic repo (file list, one file's
+# hunks, a snapshot), printed as timings. Manual: run it on a release
+# build, with `bazel test -c opt :big_repo_bench --test_output=streamed
+# --test_arg=--nocapture`.
+rust_test(
+    name = "big_repo_bench",
+    srcs = ["benches/big_repo.rs"],
+    crate_root = "benches/big_repo.rs",
+    tags = ["manual"],
+    deps = [
+        ":review_diff",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
