@@ -339,7 +339,7 @@ fn a_request_for_the_mac_can_not_be_answered_on_a_machine() {
     let mut policy = policy();
     let asked = request(check(&policy, &as_agent(b()), &note_to(a()), &on_mac()));
     assert_eq!(
-        policy.approve(&user_on_box(), &RequestId::new("r1"), &asked, &Answer::Once),
+        policy.approve(&user_on_box(), &RequestId::new("r1"), &asked, &Answer::Once, answered_at()),
         Err(AnswerError::NeedsHost)
     );
 }

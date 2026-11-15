@@ -180,6 +180,7 @@ error_kinds! {
     UserOnly => "user_only",
     PresenceRequired => "presence_required",
     IdentityMismatch => "identity_mismatch",
+    PeerUnproven => "peer_unproven",
     RevisionConflict => "revision_conflict",
     PlanStale => "plan_stale",
     NameTaken => "name_taken",

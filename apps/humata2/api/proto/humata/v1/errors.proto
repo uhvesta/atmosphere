@@ -68,6 +68,7 @@ message Error {
     RepoNotVisible repo_not_visible = 53;
     StepFailed step_failed = 54;
     PassphraseLocked passphrase_locked = 55;
+    PeerUnproven peer_unproven = 56;
     // A bug in Humata. The only kind without a fix the person can apply;
     // it names the log to attach to a report.
     Internal internal = 99;
@@ -394,6 +395,33 @@ message PeerVersionUnsupported {
   string peer_version = 2;
   string supported_min = 3;
   string supported_max = 4;
+}
+
+// The peer link refused a call because its two ends haven't proved to each
+// other that they hold this machine's enrollment key (GRPC.md §8).
+message PeerUnproven {
+  enum Reason {
+    REASON_UNSPECIFIED = 0;
+    // The machine has no enrollment key: it was never added from the Mac,
+    // or its state was wiped. The fix is to add it from the Mac (LD-12).
+    REASON_NOT_ENROLLED = 1;
+    // The key file is open to other users, isn't the user's, or isn't a
+    // plain file. The fix says not to just chmod it, since someone may
+    // have read it, but to add the machine again for a new key.
+    REASON_KEY_UNSAFE = 2;
+    // The key file couldn't be read or isn't one Humata wrote.
+    REASON_KEY_UNREADABLE = 3;
+    // A call other than Hello, ProveHost or WhoAmI came before ProveHost
+    // succeeded on this link.
+    REASON_HOST_NOT_PROVEN = 4;
+    // ProveHost's proof was wrong. The machine closes the link.
+    REASON_HOST_PROOF_WRONG = 5;
+    // A second Hello, or ProveHost with no answered Hello before it, or
+    // after the host already proved itself.
+    REASON_OUT_OF_ORDER = 6;
+  }
+  Reason reason = 1;
+  MachineId machine = 2;
 }
 
 // A stream resumed from an offset older than what is kept (scrollback

@@ -42,6 +42,12 @@ service CliAuthService {
   rpc BeginCliSession(BeginCliSessionRequest) returns (CliSession);
   rpc EndCliSession(EndCliSessionRequest) returns (EndCliSessionResponse);
   rpc ListCliSessions(ListCliSessionsRequest) returns (ListCliSessionsResponse);
+  // The app's side of ConfirmInApp for a login: the logins waiting for the
+  // user's Allow or Don't Allow, and the answer. The app only: a terminal,
+  // even a logged-in one, can't confirm a login, or anything able to type
+  // there could log in other terminals.
+  rpc ListPendingCliLogins(ListPendingCliLoginsRequest) returns (ListPendingCliLoginsResponse);
+  rpc AnswerCliLogin(AnswerCliLoginRequest) returns (AnswerCliLoginResponse);
   // A token for scripts: a fixed set of agent-holdable capabilities on
   // named channels, never a user-only one. User-only and needs presence.
   rpc CreateScriptToken(CreateScriptTokenRequest) returns (CreateScriptTokenResponse);
@@ -61,12 +67,37 @@ message CliSession {
   // As shown in the confirmation: "Terminal, ttys004".
   string terminal = 3;
   google.protobuf.Timestamp expires_at = 4;
+  // Set in BeginCliSession's reply only, and never again: the credential
+  // the CLI sends on every call from that terminal session. The daemon
+  // keeps only its hash, and takes it only from a process still in the
+  // terminal session the login bound (SEC-11).
+  string token = 5;
 }
 
 message EndCliSessionRequest { string id = 1; }
 message EndCliSessionResponse {}
 message ListCliSessionsRequest {}
 message ListCliSessionsResponse { repeated CliSession sessions = 1; }
+
+message ListPendingCliLoginsRequest {}
+message ListPendingCliLoginsResponse { repeated PendingCliLogin logins = 1; }
+
+// A `humata login` waiting for the user's answer in the app.
+message PendingCliLogin {
+  string id = 1;
+  // As the confirmation shows it: "Terminal, ttys004".
+  string terminal = 2;
+  // How long the login asks to last.
+  uint32 hours = 3;
+  google.protobuf.Timestamp asked_at = 4;
+}
+
+message AnswerCliLoginRequest {
+  string id = 1;
+  // Allow, or Don't Allow.
+  bool allow = 2;
+}
+message AnswerCliLoginResponse {}
 
 message CreateScriptTokenRequest {
   IdempotencyKey idempotency_key = 1;

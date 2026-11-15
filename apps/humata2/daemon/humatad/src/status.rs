@@ -8,6 +8,7 @@ use prost::Message;
 use tonic::codegen::Bytes;
 use tonic::{Code, Status};
 
+use crate::cli_login::LoginUnusable;
 use crate::guard;
 
 /// `google.rpc.Status`, the wrapper the details travel in.
@@ -32,7 +33,7 @@ struct Any {
 
 const ERROR_TYPE_URL: &str = "type.googleapis.com/humata.v1.Error";
 
-fn failure(code: Code, error: pb::Error) -> Status {
+pub(crate) fn failure(code: Code, error: pb::Error) -> Status {
     let message = error.message.clone();
     let details = RpcStatus {
         code: code as i32,
@@ -45,7 +46,7 @@ fn failure(code: Code, error: pb::Error) -> Status {
     Status::with_details(code, message, Bytes::from(details.encode_to_vec()))
 }
 
-fn error(message: impl Into<String>, fix: impl Into<String>, kind: pb::error::Kind) -> pb::Error {
+pub(crate) fn error(message: impl Into<String>, fix: impl Into<String>, kind: pb::error::Kind) -> pb::Error {
     pb::Error {
         message: message.into(),
         fix: fix.into(),
@@ -205,10 +206,140 @@ pub(crate) fn unauthenticated() -> Status {
         Code::Unauthenticated,
         error(
             "humatad2 refused the call: it carried no credential, so the daemon can't tell a person from an agent or a script",
-            "use the Humata app, or run the command in a Humata session tab, where it acts as that session's agent. `humata login` will let your own terminal in, but this build doesn't have it yet. If you are developing Humata, run a test daemon built as humatad2_admin with `serve --admin`; never use it as your real daemon, since it lets anything on your account act as you",
+            "run `humata login` in this terminal and allow it in the Humata app, or use the app itself. A command in a Humata session tab acts as that session's agent. If you are developing Humata, run a test daemon built as humatad2_admin with `serve --admin`; never use it as your real daemon, since it lets anything on your account act as you",
             pb::error::Kind::PresenceRequired(pb::PresenceRequired {
                 accepted: vec![pb::presence_required::Method::CliLogin as i32],
                 caller_in_session_terminal: false,
+            }),
+        ),
+    )
+}
+
+/// A call whose CLI login doesn't work here (SEC-10, SEC-11).
+pub(crate) fn login_unusable(unusable: &LoginUnusable) -> Status {
+    let fix = match unusable {
+        LoginUnusable::Unknown | LoginUnusable::Expired => {
+            "run `humata login` in this terminal again and allow it in the Humata app"
+        }
+        LoginUnusable::OtherTerminal { .. } => {
+            "run `humata login` in this terminal. Don't copy a login to another terminal or run a command with setsid to keep one: a login covers only the terminal session it was made in, and the daemon refuses it anywhere else"
+        }
+        LoginUnusable::NoProcess { .. } => {
+            "run the command on this machine against the daemon's own socket; through a bridge or proxy the daemon can't see which terminal the call came from, so a CLI login can't be used there"
+        }
+    };
+    failure(
+        Code::Unauthenticated,
+        error(
+            format!("humatad2 refused the call: {}", chain(unusable)),
+            fix,
+            pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: vec![pb::presence_required::Method::CliLogin as i32],
+                caller_in_session_terminal: false,
+            }),
+        ),
+    )
+}
+
+/// `humata login`, or a presence prompt, from inside a session's terminal
+/// (SEC-12): the session's agent could answer it.
+pub(crate) fn in_session_terminal() -> Status {
+    failure(
+        Code::PermissionDenied,
+        error(
+            "humata login can't run inside a Humata session's terminal: that session's agent could answer the prompt or use the login",
+            "run `humata login` in a terminal outside Humata. Inside a session, ask the user with inbox_ask instead",
+            pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: Vec::new(),
+                caller_in_session_terminal: true,
+            }),
+        ),
+    )
+}
+
+/// `humata login` from a process with no terminal session to bind.
+pub(crate) fn login_needs_terminal(cause: &dyn std::error::Error) -> Status {
+    failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message: format!(
+                "humata login needs a terminal to bind, and the process that ran it has none: {}",
+                chain(cause)
+            ),
+            fix: "run `humata login` in an interactive terminal; a login covers only that terminal's session. For a script, use a script token instead".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// The user chose Don't Allow for a login.
+pub(crate) fn login_denied() -> Status {
+    failure(
+        Code::PermissionDenied,
+        error(
+            "the login was turned down in the Humata app (Don't Allow)",
+            "if that was a slip, run `humata login` again and choose Allow. If you didn't start this login, something in that terminal tried to act as you: close the terminal rather than allow it",
+            pb::error::Kind::Denied(pb::Denied {
+                source: pb::denied::Source::UserDenied as i32,
+                capability: 0,
+                request: None,
+                user_note: String::new(),
+            }),
+        ),
+    )
+}
+
+/// No one answered a login in the app in time.
+pub(crate) fn login_unanswered(minutes: u64) -> Status {
+    failure(
+        Code::DeadlineExceeded,
+        error(
+            format!("no one answered the login in the Humata app within {minutes} minutes"),
+            "open the Humata app on this Mac and run `humata login` again; the app asks for it there",
+            pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: vec![pb::presence_required::Method::ConfirmInApp as i32],
+                caller_in_session_terminal: false,
+            }),
+        ),
+    )
+}
+
+/// A call only the app may make, such as answering a login.
+pub(crate) fn app_only(what: &str) -> Status {
+    failure(
+        Code::PermissionDenied,
+        error(
+            format!("only the Humata app can {what}: a terminal can't, even a logged-in one, or anything able to type there could log in other terminals"),
+            "do it in the Humata app",
+            pb::error::Kind::Denied(pb::Denied {
+                source: pb::denied::Source::Unspecified as i32,
+                capability: 0,
+                request: None,
+                user_note: String::new(),
+            }),
+        ),
+    )
+}
+
+/// The peer link refused a call: its two ends haven't proved they hold
+/// this machine's enrollment key (GRPC.md §8).
+pub(crate) fn peer_unproven(
+    reason: pb::peer_unproven::Reason,
+    machine: &str,
+    message: impl Into<String>,
+    fix: impl Into<String>,
+) -> Status {
+    failure(
+        Code::Unauthenticated,
+        error(
+            message,
+            fix,
+            pb::error::Kind::PeerUnproven(pb::PeerUnproven {
+                reason: reason as i32,
+                machine: Some(pb::MachineId {
+                    value: machine.to_owned(),
+                }),
             }),
         ),
     )

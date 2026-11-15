@@ -25,7 +25,7 @@ use tonic::{Code, Status, Streaming};
 
 pub const WAIT: Duration = Duration::from_secs(15);
 
-fn binary(variable: &str) -> PathBuf {
+pub fn binary(variable: &str) -> PathBuf {
     let path = std::env::var_os(variable)
         .map(PathBuf::from)
         .unwrap_or_else(|| panic!("set {variable} to the binary's path"));
@@ -64,11 +64,17 @@ pub enum Build {
     Admin,
     /// The release daemon: a call with no credential is refused.
     Release,
+    /// The admin test daemon run with `--admin-pid` for this test's own
+    /// process: the test plays the app, and every other caller (a `humata`
+    /// it starts, say) is judged as the release daemon would.
+    AdminForThisProcess,
 }
 
 pub struct Daemon {
     child: Option<Child>,
     build: Build,
+    /// More `serve` arguments, as `--cli-login-seconds 2`.
+    extra: Vec<String>,
     pub socket: PathBuf,
     pub state: PathBuf,
     pub dir: TempDir,
@@ -84,9 +90,15 @@ impl Daemon {
     }
 
     pub async fn start_build(build: Build, dir: TempDir) -> Self {
+        Self::start_with(build, dir, &[]).await
+    }
+
+    /// As [`Self::start_build`], with more `serve` arguments.
+    pub async fn start_with(build: Build, dir: TempDir, extra: &[&str]) -> Self {
         let mut daemon = Self {
             child: None,
             build,
+            extra: extra.iter().map(|arg| (*arg).to_owned()).collect(),
             socket: dir.path().join("d.sock"),
             state: dir.path().join("state"),
             dir,
@@ -97,13 +109,20 @@ impl Daemon {
 
     async fn launch(&mut self) {
         let mut command = match self.build {
-            Build::Admin => Command::new(binary("HUMATAD2")),
+            Build::Admin | Build::AdminForThisProcess => Command::new(binary("HUMATAD2")),
             Build::Release => Command::new(binary("HUMATAD2_RELEASE")),
         };
         command.arg("serve");
-        if self.build == Build::Admin {
-            command.arg("--admin");
+        match self.build {
+            Build::Admin => {
+                command.arg("--admin");
+            }
+            Build::AdminForThisProcess => {
+                command.arg(format!("--admin-pid={}", std::process::id()));
+            }
+            Build::Release => {}
         }
+        command.args(&self.extra);
         let child = command
             .arg("--socket")
             .arg(&self.socket)

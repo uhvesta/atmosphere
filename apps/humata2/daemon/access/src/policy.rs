@@ -7,6 +7,7 @@
 //! "Always let …" for exactly the target the request offered.
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use crate::call::{BoardAct, BoardRef, Call, GrantTarget, PathScope, Place, Root, Target};
 use crate::capability::{AwayRule, Capability as C, Capability, ChannelRules, Decision, Tier};
@@ -36,6 +37,9 @@ pub struct Grant {
     /// False for a grant made on a machine while the Mac was away. It
     /// applies there at once and is replayed to the Mac (AW-12).
     pub on_host: bool,
+    /// When the user answered. The daemon reads the clock; the policy
+    /// only records it.
+    pub granted_at: SystemTime,
 }
 
 /// The user's answer to a request.
@@ -232,13 +236,14 @@ impl Policy {
 
     /// Approves a request the policy asked for. The approval is checked
     /// against the rules as they are now (IN-21). A grant is made only for
-    /// the target the request offered.
+    /// the target the request offered, and records `at` as when.
     pub fn approve(
         &mut self,
         user: &PresentUser,
         request_id: &RequestId,
         request: &AccessRequest,
         answer: &Answer,
+        at: SystemTime,
     ) -> Result<Approval, AnswerError> {
         if !user.on_host() {
             if user.method() != Some(PresenceMethod::ApprovalPassphrase) {
@@ -290,6 +295,7 @@ impl Policy {
             granted_by: user.method(),
             granted_on: user.machine().clone(),
             on_host: user.on_host(),
+            granted_at: at,
         };
         self.next_grant += 1;
         self.grants.insert(grant.id, grant.clone());

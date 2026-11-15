@@ -104,7 +104,13 @@ fn a_grant_can_not_be_wider_than_the_offer() {
     ];
     for target in wider {
         assert_eq!(
-            policy.approve(&user(), &RequestId::new("r1"), &asked, &Answer::AlwaysLet(target)),
+            policy.approve(
+                &user(),
+                &RequestId::new("r1"),
+                &asked,
+                &Answer::AlwaysLet(target),
+                answered_at(),
+            ),
             Err(AnswerError::TargetNotOffered)
         );
     }
@@ -117,10 +123,41 @@ fn approving_once_makes_no_grant() {
     let call = note_to(a());
     let asked = request(check(&policy, &as_agent(b()), &call, &on_mac()));
     let approval = policy
-        .approve(&user(), &RequestId::new("r1"), &asked, &Answer::Once)
+        .approve(&user(), &RequestId::new("r1"), &asked, &Answer::Once, answered_at())
         .expect("the user approves");
     assert_eq!(approval.grant, None);
     assert!(asks_again(&check(&policy, &as_agent(b()), &call, &on_mac())));
+}
+
+#[test]
+fn a_grant_records_who_asked_which_request_where_and_when() {
+    let mut policy = policy();
+    let asked = request(check(&policy, &as_agent(b()), &note_to(a()), &on_mac()));
+    let offered = asked.always_let.clone().expect("offered");
+    let grant = policy
+        .approve(
+            &user(),
+            &RequestId::new("r7"),
+            &asked,
+            &Answer::AlwaysLet(offered.clone()),
+            answered_at(),
+        )
+        .expect("the user approves")
+        .grant
+        .expect("Always let makes a grant");
+
+    assert_eq!(grant.requester, b().id);
+    assert_eq!(grant.channel, payments());
+    assert_eq!(grant.capability, Capability::SessionNote);
+    assert_eq!(grant.target, offered);
+    assert_eq!(grant.granted_from, RequestId::new("r7"));
+    assert_eq!(grant.granted_on, mac());
+    assert_eq!(grant.granted_at, answered_at());
+    // The app needs no presence method.
+    assert_eq!(grant.granted_by, None);
+    // It is listed, and found by its id.
+    assert_eq!(policy.grants().cloned().collect::<Vec<_>>(), vec![grant.clone()]);
+    assert_eq!(policy.grant(grant.id), Some(&grant));
 }
 
 #[test]
@@ -140,6 +177,7 @@ fn nothing_offered_means_no_always_let() {
             &RequestId::new("r1"),
             &asked,
             &Answer::AlwaysLet(GrantTarget::Session(a().id)),
+            answered_at(),
         ),
         Err(AnswerError::NoStandingApproval)
     );
@@ -223,11 +261,17 @@ fn approving_checks_the_rule_as_it_is_now() {
         .expect("Never is offered");
     let offered = asked.always_let.clone().expect("offered");
     assert!(matches!(
-        policy.approve(&user(), &RequestId::new("r1"), &asked, &Answer::AlwaysLet(offered)),
+        policy.approve(
+            &user(),
+            &RequestId::new("r1"),
+            &asked,
+            &Answer::AlwaysLet(offered),
+            answered_at(),
+        ),
         Err(AnswerError::RuleIsNever { .. })
     ));
     assert!(matches!(
-        policy.approve(&user(), &RequestId::new("r1"), &asked, &Answer::Once),
+        policy.approve(&user(), &RequestId::new("r1"), &asked, &Answer::Once, answered_at()),
         Err(AnswerError::RuleIsNever { .. })
     ));
     assert_eq!(policy.grants().count(), 0);
@@ -257,7 +301,7 @@ fn asking_ahead_grants_what_always_let_would() {
     };
     assert!(ahead.ahead);
     let approval = policy
-        .approve(&user(), &RequestId::new("r1"), &ahead, &Answer::Once)
+        .approve(&user(), &RequestId::new("r1"), &ahead, &Answer::Once, answered_at())
         .expect("the user approves");
     let grant = approval.grant.expect("an approved ask-ahead makes a grant");
     assert_eq!(
@@ -392,12 +436,24 @@ fn a_grant_made_on_a_machine_applies_there_at_once_and_replays_to_the_mac() {
         .present_user(&on_box_away())
         .expect("present");
     assert_eq!(
-        on_box.approve(&app_like, &RequestId::new("r1"), &asked, &Answer::AlwaysLet(offered.clone())),
+        on_box.approve(
+            &app_like,
+            &RequestId::new("r1"),
+            &asked,
+            &Answer::AlwaysLet(offered.clone()),
+            answered_at(),
+        ),
         Err(AnswerError::PassphraseNeeded)
     );
 
     let grant = on_box
-        .approve(&user_on_box(), &RequestId::new("r1"), &asked, &Answer::AlwaysLet(offered))
+        .approve(
+            &user_on_box(),
+            &RequestId::new("r1"),
+            &asked,
+            &Answer::AlwaysLet(offered),
+            answered_at(),
+        )
         .expect("the passphrase answers on the machine")
         .grant
         .expect("a grant");

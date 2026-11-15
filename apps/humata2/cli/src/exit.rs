@@ -32,6 +32,7 @@ pub fn of_kind(kind: &Kind) -> (&'static str, i32) {
         Kind::UserOnly(_) => ("user_only", NEEDS_USER),
         Kind::PresenceRequired(_) => ("presence_required", NEEDS_USER),
         Kind::IdentityMismatch(_) => ("identity_mismatch", NEEDS_USER),
+        Kind::PeerUnproven(_) => ("peer_unproven", DENIED),
         Kind::RevisionConflict(_) => ("revision_conflict", CONFLICT),
         Kind::PlanStale(_) => ("plan_stale", CONFLICT),
         Kind::NameTaken(_) => ("name_taken", CONFLICT),

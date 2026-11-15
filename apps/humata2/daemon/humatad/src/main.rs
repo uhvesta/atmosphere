@@ -4,21 +4,27 @@
 //! connect command can carry a client's calls; `mcp` is the MCP server an
 //! agent starts (MCP.md), a client of that socket.
 
+mod access_service;
 mod attach;
 mod bridge;
+mod cli_login;
 mod daemon;
 mod error;
+mod grant_target;
 mod guard;
 mod identity;
 mod inbox;
+mod link_proof;
 mod mcp;
 mod not_built;
 mod paste;
+mod peer;
 mod peer_link;
 mod serve;
 mod status;
 mod sync;
 mod terminal;
+mod terminal_session;
 
 use std::process::ExitCode;
 

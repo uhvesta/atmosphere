@@ -3,12 +3,12 @@
 use humata2_grpc::humata::v1 as pb;
 use tonic::{Request, Response, Status};
 
-use crate::identity::{self, Caller};
+use crate::identity::{self, Caller, UserVia};
 
 /// This API's version. `api_minor` grows with every addition once Humata 2
 /// ships; until then the protos change in place.
-const API_MAJOR: u32 = 1;
-const API_MINOR: u32 = 0;
+pub(crate) const API_MAJOR: u32 = 1;
+pub(crate) const API_MINOR: u32 = 0;
 
 pub(crate) struct Daemon {
     machine: String,
@@ -44,7 +44,8 @@ impl pb::daemon_service_server::DaemonService for Daemon {
     }
 
     /// A connection with a session token is that session's agent
-    /// (BOUNDARIES.md §2). One with no credential gets no actor: it is
+    /// (BOUNDARIES.md §2), and one with a CLI login from its terminal
+    /// session is the user. One with no credential gets no actor: it is
     /// refused everything else, and this tells it so. The peer link gets
     /// no actor either: it is neither the user nor an agent.
     async fn who_am_i(
@@ -60,10 +61,11 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         let Some(caller) = identity::caller_if_any(&request)? else {
             return Ok(Response::new(no_actor));
         };
+        let presence_possible = matches!(caller, Caller::User(UserVia::CliLogin { .. }));
         let (actor, channel) = match caller {
             // Actor has no peer case; the Mac knows it is on the peer link.
             Caller::Peer => return Ok(Response::new(no_actor)),
-            Caller::User => {
+            Caller::User(_) => {
                 let via = match self.role {
                     pb::DaemonRole::Machine => pb::user_actor::Via::CliOnMachine,
                     _ => pb::user_actor::Via::CliOnHost,
@@ -84,7 +86,7 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         Ok(Response::new(pb::WhoAmIResponse {
             actor: Some(pb::Actor { actor: Some(actor) }),
             channel,
-            presence_possible: false,
+            presence_possible,
             contained: false,
         }))
     }

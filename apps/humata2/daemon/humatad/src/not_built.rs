@@ -49,8 +49,6 @@ fn answer(request: &http::Request<Body>) -> http::Response<Body> {
 }
 
 not_built! {
-    AccessService => access_service_server,
-    CliAuthService => cli_auth_service_server,
     AuditService => audit_service_server,
     BoardService => board_service_server,
     ChannelService => channel_service_server,
@@ -73,15 +71,12 @@ not_built! {
     CommentService => comment_service_server,
     PullRequestReviewService => pull_request_review_service_server,
     ViewService => view_service_server,
-    PeerService => peer_service_server,
     TerminalService => terminal_service_server,
 }
 
 /// Adds to the socket's `router` every client service not built yet.
 pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
     router
-        .add_service(AccessService)
-        .add_service(CliAuthService)
         .add_service(AuditService)
         .add_service(BoardService)
         .add_service(ChannelService)
@@ -107,12 +102,11 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
 }
 
 /// Adds to the peer link's `router` what it carries that isn't built yet:
-/// all of PeerService, and the services the Mac relays to this machine.
+/// the services the Mac relays to this machine. PeerService is `peer`'s.
 /// TerminalService is built, but only in the socket's daemon, which holds
 /// the terminals; this process doesn't (see `peer_link`).
 pub(crate) fn register_peer_link<L>(router: Router<L>) -> Router<L> {
     router
-        .add_service(PeerService)
         .add_service(TerminalService)
         .add_service(FileService)
         .add_service(DiffService)

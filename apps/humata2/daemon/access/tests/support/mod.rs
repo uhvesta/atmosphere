@@ -6,12 +6,19 @@
 
 #![allow(dead_code)]
 
+use std::time::{Duration, SystemTime};
+
 use humata2_access::{
     AccessRequest, Agent, AnswerAt, BoardAct, BoardRef, Call, Capability, ChannelId, Context,
     Effect, Entry, Grant, MachineId, Place, Policy, PresenceMethod, PresentUser, Principal,
     Refusal, RepoPath, RequestId, Root, SessionId, SessionKind, SessionRef, Source, Target,
     Verdict,
 };
+
+/// The time the user answers in these tests.
+pub fn answered_at() -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+}
 
 pub fn mac() -> MachineId {
     MachineId::new("mac")
@@ -184,6 +191,7 @@ pub fn grant_for(policy: &mut Policy, agent: &Principal, call: &Call) -> Grant {
             &RequestId::new("r1"),
             &asked,
             &humata2_access::Answer::AlwaysLet(offered),
+            answered_at(),
         )
         .expect("the user approves")
         .grant

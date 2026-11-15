@@ -50,6 +50,25 @@ pub enum CliError {
     },
     #[error("still waiting for an answer (request {request})")]
     Pending { request: String },
+    /// `humata login` keeps its login under HOME, per terminal session.
+    #[error("there's nowhere to keep this terminal's login: HOME isn't set")]
+    LoginNeedsHome,
+    #[error("there's nowhere to keep this terminal's login: humata isn't in a terminal session")]
+    LoginNeedsTerminal,
+    #[error("the daemon's login reply has no token humata can keep")]
+    NoLoginToken,
+    #[error("couldn't save this terminal's login to {}", .path.display())]
+    SaveLogin {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("couldn't remove this terminal's login at {}", .path.display())]
+    RemoveLogin {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("stopped waiting")]
     Interrupted,
 }
@@ -138,6 +157,37 @@ impl CliError {
                 )
             },
             Self::Interrupted => plain("interrupted", exit::INTERRUPTED, String::new()),
+            Self::LoginNeedsHome => plain(
+                "invalid_field",
+                exit::USAGE,
+                "Set HOME, then run `humata login` again.".into(),
+            ),
+            Self::LoginNeedsTerminal => plain(
+                "invalid_field",
+                exit::USAGE,
+                "Run `humata login` in the terminal you'll use it from.".into(),
+            ),
+            Self::NoLoginToken => plain(
+                "internal",
+                exit::INTERNAL,
+                "This humata and humatad may be different versions; update Humata on this machine, then run `humata login` again.".into(),
+            ),
+            Self::SaveLogin { path, .. } => plain(
+                "internal",
+                exit::INTERNAL,
+                format!(
+                    "Make {} writable by you alone, then run `humata login` again. The login you confirmed stays in humatad until it expires; nothing kept its token, so nothing can use it, and you can end it sooner in the app.",
+                    path.parent().unwrap_or(path).display()
+                ),
+            ),
+            Self::RemoveLogin { path, .. } => plain(
+                "internal",
+                exit::INTERNAL,
+                format!(
+                    "Delete {} yourself. The login is already ended in humatad unless this run reported otherwise; don't copy the file anywhere, since anyone who can read it holds the token until it expires.",
+                    path.display()
+                ),
+            ),
         }
     }
 }

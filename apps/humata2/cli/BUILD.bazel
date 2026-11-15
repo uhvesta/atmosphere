@@ -53,6 +53,7 @@ rust_binary(
 rust_test(
     name = "cli_unit_test",
     crate = ":cli",
+    deps = ["@crates//:tempfile"],
 )
 
 # One test binary per file: each runs commands against a fake daemon and

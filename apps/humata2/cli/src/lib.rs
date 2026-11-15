@@ -12,6 +12,7 @@ pub mod exit;
 mod as_json;
 mod live;
 mod location;
+mod login;
 mod output;
 mod principal;
 mod resolve;
@@ -51,7 +52,7 @@ pub async fn main(args: Vec<OsString>) -> i32 {
             return output::finish(&console, &cli.global, operation, Err(error.into()));
         }
     };
-    run(cli, &daemon, &console, &principal, ctrl_c()).await
+    run(cli, &daemon, &console, &environment, ctrl_c()).await
 }
 
 /// One run against a daemon and console, as the process does it after
@@ -66,7 +67,7 @@ pub async fn run_args<D: Daemon, C: Console>(
     interrupt: impl Future<Output = ()>,
 ) -> i32 {
     match Cli::try_parse_from(&args) {
-        Ok(cli) => run(cli, daemon, console, &principal(environment), interrupt).await,
+        Ok(cli) => run(cli, daemon, console, environment, interrupt).await,
         Err(error) => usage(console, &args, &error),
     }
 }
@@ -75,11 +76,12 @@ async fn run<D: Daemon, C: Console>(
     cli: Cli,
     daemon: &D,
     console: &C,
-    principal: &Principal,
+    environment: &Environment,
     interrupt: impl Future<Output = ()>,
 ) -> i32 {
     let operation = commands::operation(&cli.command);
-    let ctx = Ctx::new(daemon, console, &cli.global, principal);
+    let principal = principal(environment);
+    let ctx = Ctx::new(daemon, console, &cli.global, &principal, environment);
     let result = tokio::select! {
         result = commands::run(&ctx, cli.command) => result,
         () = interrupt => Err(CliError::Interrupted),

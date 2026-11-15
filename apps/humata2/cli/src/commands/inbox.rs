@@ -184,8 +184,9 @@ async fn answer_all<D: Daemon, C: Console>(
     .map(Done::reply)
 }
 
-/// A grant target as text: `session:<s>`, `machine:<m>`, `item:<id>` or
-/// `network:<host>:<port>` (on `--machine` if given).
+/// A grant target as text: `session:<s>` or `network:<host>:<port>` (on
+/// `--machine` if given). Machine-wide and board-item targets aren't offered
+/// (IN-22).
 async fn target<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     text: &str,
@@ -194,7 +195,7 @@ async fn target<D: Daemon, C: Console>(
     let bad = || CliError::BadValue {
         field: "target",
         value: text.into(),
-        expected: "session:<session>, machine:<machine>, item:<id> or network:<host>:<port>",
+        expected: "session:<session> or network:<host>:<port>",
     };
     let (kind, rest) = text.split_once(':').ok_or_else(bad)?;
     if rest.is_empty() {
@@ -202,8 +203,6 @@ async fn target<D: Daemon, C: Console>(
     }
     let target = match kind {
         "session" => Target::Session(ctx.session(rest).await?),
-        "machine" => Target::Machine(ctx.machine(rest).await?),
-        "item" => Target::BoardItem(pb::BoardItemId { value: rest.into() }),
         "network" => {
             let (host, port) = rest.rsplit_once(':').ok_or_else(bad)?;
             let port = port.parse::<u16>().map_err(|_| bad())?;
@@ -365,23 +364,6 @@ pub(super) async fn access<D: Daemon, C: Console>(
             Ok(Done::reply(as_json::typed("humata.v1.WaitResponse", &answered)))
         }
     }
-}
-
-pub(super) async fn login<D: Daemon, C: Console>(
-    ctx: &Ctx<'_, D, C>,
-    hours: u32,
-) -> Result<Done, CliError> {
-    ctx.present_json(rpc::cli_auth::BEGIN_CLI_SESSION, |presence| {
-        pb::BeginCliSessionRequest { presence, hours }
-    })
-    .await
-    .map(Done::reply)
-}
-
-/// Ends this terminal's login: an empty id names the caller's own.
-pub(super) async fn logout<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<Done, CliError> {
-    let request = pb::EndCliSessionRequest { id: String::new() };
-    reply(ctx, rpc::cli_auth::END_CLI_SESSION, &request).await
 }
 
 pub(super) async fn logins<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<Done, CliError> {

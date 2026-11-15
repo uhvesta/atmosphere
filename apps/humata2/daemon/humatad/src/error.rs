@@ -139,6 +139,31 @@ pub(crate) enum DaemonError {
         source: std::io::Error,
     },
 
+    #[error(
+        "couldn't open the peer link's log {}, where it writes its errors so they stay off the link; check that the folder belongs to you and the disk isn't full",
+        path.display()
+    )]
+    PeerLinkLog {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't point stderr at the peer link's log {}, so an error line could corrupt the link; the link wasn't served. Reconnect the machine from the Mac, and if this repeats report it with this message",
+        path.display()
+    )]
+    PeerLinkStderr {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the host's proof on the peer link was wrong, so the link was closed: whatever started `humatad2 serve --stdio` doesn't hold this machine's enrollment key. If the Mac fails to reconnect the same way, forget this machine on the Mac and add it again; if you didn't start this link, something on this machine tried to pose as your Mac"
+    )]
+    PeerHostProofWrong,
+
     #[error("the bridge to humatad2 broke; reconnect")]
     BridgeCopy {
         #[source]

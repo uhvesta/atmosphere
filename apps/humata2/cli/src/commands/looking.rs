@@ -42,7 +42,7 @@ async fn me<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<Json, CliError
     let tier = match ctx.principal {
         _ if agent => "agent",
         Principal::Script { .. } => "script",
-        Principal::Agent { .. } | Principal::User => "user",
+        Principal::Agent { .. } | Principal::LoggedIn { .. } | Principal::User => "user",
     };
     let mut result = as_json::encoded(rpc::daemon::WHO_AM_I.response, &bytes);
     if let Json::Object(fields) = &mut result {

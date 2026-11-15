@@ -17,6 +17,11 @@ pub struct Environment {
     /// `HUMATA_ROOT`: this machine's Humata root, for its machine socket.
     pub root: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// This process's terminal session (its session leader's pid): a
+    /// `humata login` holds for that session only.
+    pub terminal_session: Option<i32>,
+    /// The token `humata login` saved for this terminal session, if any.
+    pub login: Option<String>,
 }
 
 impl Environment {
@@ -33,7 +38,21 @@ impl Environment {
             socket: path("HUMATA_SOCKET"),
             root: path("HUMATA_ROOT"),
             home: path("HOME"),
+            terminal_session: rustix::process::getsid(None)
+                .ok()
+                .map(|leader| leader.as_raw_nonzero().get()),
+            login: None,
         }
+        .with_saved_login()
+    }
+
+    /// With `login` read from where `humata login` saved it for this
+    /// terminal session; unchanged when nothing usable is saved there.
+    pub fn with_saved_login(mut self) -> Self {
+        if let Some(token) = crate::login::path(&self).and_then(|path| crate::login::read(&path)) {
+            self.login = Some(token);
+        }
+        self
     }
 }
 
@@ -46,14 +65,18 @@ pub enum Principal {
     Agent { token: String },
     /// A script (SEC-14): only its token's capabilities and channels.
     Script { token: String },
+    /// The person, logged in from this terminal (SEC-11): the daemon takes
+    /// the token only from a process in the terminal session it bound.
+    LoggedIn { token: String },
     /// The person. With no token and no `humata login`, the daemon refuses
     /// every call but WhoAmI and logging in (SEC-9).
     User,
 }
 
-/// The session token wins over a script token: an agent that has a script
-/// token in its environment is still the agent (provisional, see the
-/// report's gaps).
+/// The session token wins over a script token, and both over a login: an
+/// agent that has a script token in its environment is still the agent
+/// (provisional, see the report's gaps), and a script run from a logged-in
+/// terminal has only its token's capabilities.
 pub fn principal(environment: &Environment) -> Principal {
     if let Some(token) = &environment.session_token {
         return Principal::Agent {
@@ -65,6 +88,11 @@ pub fn principal(environment: &Environment) -> Principal {
             token: token.clone(),
         };
     }
+    if let Some(token) = &environment.login {
+        return Principal::LoggedIn {
+            token: token.clone(),
+        };
+    }
     Principal::User
 }
 
@@ -72,12 +100,15 @@ pub fn principal(environment: &Environment) -> Principal {
 /// GRPC.md doesn't say how a token travels.
 pub(crate) const SESSION_TOKEN_HEADER: &str = "humata-session-token";
 pub(crate) const SCRIPT_TOKEN_HEADER: &str = "humata-script-token";
+/// The daemon's `LOGIN_HEADER`.
+pub(crate) const LOGIN_HEADER: &str = "humata-cli-login";
 
 impl Principal {
     pub(crate) fn header(&self) -> Option<(&'static str, &str)> {
         match self {
             Self::Agent { token } => Some((SESSION_TOKEN_HEADER, token)),
             Self::Script { token } => Some((SCRIPT_TOKEN_HEADER, token)),
+            Self::LoggedIn { token } => Some((LOGIN_HEADER, token)),
             Self::User => None,
         }
     }

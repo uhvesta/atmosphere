@@ -24,6 +24,7 @@ admin = []
 
 [dependencies]
 clap = { workspace = true }
+hmac = { workspace = true }
 humata2-access = { path = "../access" }
 humata2-holder = { workspace = true }
 humata2-mcp = { path = "../mcp" }
@@ -45,6 +46,8 @@ tower = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+hmac = { workspace = true }
 rustix = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }

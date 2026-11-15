@@ -1,11 +1,12 @@
 //! Who a connection is (BOUNDARIES.md §2, MCP.md §1). Each session tab's
 //! shell gets a session token of its own in `HUMATA_SESSION_TOKEN`; a call
-//! that carries one is that session's agent. A call with no credential is
-//! refused, except WhoAmI and logging in, which answer it as
-//! unauthenticated; a test daemon built with the `admin` feature and run
-//! with `--admin` takes it for the user instead. Only hashes of the tokens
-//! are kept, in a 0600 file in the state, so tabs that outlive a daemon
-//! restart keep theirs.
+//! that carries one is that session's agent. A call that carries a CLI
+//! login (`cli_login`) from the terminal session it bound is the user. A
+//! call with no credential is refused, except WhoAmI and logging in, which
+//! answer it as unauthenticated; a test daemon built with the `admin`
+//! feature and run with `--admin` takes it for the user instead. Only
+//! hashes of the session tokens are kept, in a 0600 file in the state, so
+//! tabs that outlive a daemon restart keep theirs.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -19,13 +20,18 @@ use sha2::{Digest, Sha256};
 use tonic::body::Body;
 use tonic::codegen::http;
 use tonic::service::Interceptor;
+use tonic::transport::server::UdsConnectInfo;
 use tonic::{Request, Status};
 
+use crate::cli_login::CliLogins;
 use crate::error::DaemonError;
 use crate::status;
 
 /// The gRPC metadata key a session token travels in.
 pub(crate) const TOKEN_HEADER: &str = "humata-session-token";
+
+/// The gRPC metadata key a CLI login's token travels in.
+pub(crate) const LOGIN_HEADER: &str = "humata-cli-login";
 
 /// A token's random bytes: 32 hex characters.
 const TOKEN_BYTES: usize = 16;
@@ -33,14 +39,22 @@ const TOKEN_BYTES: usize = 16;
 /// Who made a call, as its credential established it.
 #[derive(Clone, Debug)]
 pub(crate) enum Caller {
-    /// The user. Only an admin test daemon finds one today: it takes a call
-    /// with no credential for the user.
-    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
-    User,
+    User(UserVia),
     Agent(AgentCaller),
     /// The Mac, over the peer link it started (`serve --stdio`). Bound to
     /// the link, never to anything a request carries (GRPC.md §3).
     Peer,
+}
+
+/// How the user reached the daemon.
+#[derive(Clone, Debug)]
+pub(crate) enum UserVia {
+    /// The app. Only an admin test daemon finds it today: it takes a call
+    /// with no credential for the user.
+    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
+    App,
+    /// A process in the terminal session that this `humata login` bound.
+    CliLogin { login: String },
 }
 
 /// A session's agent, or anything else running in one of its tabs.
@@ -147,6 +161,16 @@ pub(crate) fn caller_if_any<T>(request: &Request<T>) -> Result<Option<Caller>, S
     }
 }
 
+/// The process at the other end of the call's socket, when the kernel
+/// said. Read when the connection was accepted.
+pub(crate) fn peer_pid<T>(request: &Request<T>) -> Option<i32> {
+    request
+        .extensions()
+        .get::<UdsConnectInfo>()
+        .and_then(|info| info.peer_cred)
+        .and_then(|cred| cred.pid())
+}
+
 fn unchecked() -> Status {
     status::internal(
         "a call reached its handler without its caller being checked",
@@ -224,10 +248,7 @@ impl Identities {
     /// A new token for `tab` of `session`, saved before it's returned.
     /// Blocks on the write.
     pub(crate) fn mint(&self, tab: &str, session: &SessionRecord) -> Result<String, StoreError> {
-        let mut bytes = [0u8; TOKEN_BYTES];
-        rand::fill(&mut bytes[..]);
-        let token = hex(&bytes);
-        let hash = digest(&token);
+        let (token, hash) = new_token();
         let mut tokens = lock(&self.tokens);
         tokens.insert(
             hash.clone(),
@@ -271,42 +292,62 @@ impl Identities {
 }
 
 /// Finds each call's caller from its token and puts it in the request's
-/// extensions. A token this daemon didn't give out, or no credential on a
-/// method not open to anyone, is refused before any handler runs. The
-/// token itself is never logged.
+/// extensions. A token this daemon didn't give out, a CLI login from
+/// outside its terminal session, or no credential on a method not open to
+/// anyone, is refused before any handler runs. A session token wins over
+/// a CLI login. The token itself is never logged.
 #[derive(Clone)]
 pub(crate) struct Authenticate {
     identities: Arc<Identities>,
+    logins: Arc<CliLogins>,
     /// Admin mode: a call with no credential is the user. Test daemons
     /// only; release builds don't have the feature, so not the code.
     #[cfg(feature = "admin")]
-    admin: bool,
+    admin: Option<Admin>,
+}
+
+/// Whose calls with no credential an admin test daemon takes for the user.
+#[cfg(feature = "admin")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Admin {
+    /// Anyone's (`--admin`).
+    Anyone,
+    /// Only this process's (`--admin-pid`), so a test can play the app
+    /// while every other process is judged as by a release daemon.
+    Process(i32),
 }
 
 impl Authenticate {
-    pub(crate) fn new(identities: Arc<Identities>) -> Self {
+    pub(crate) fn new(identities: Arc<Identities>, logins: Arc<CliLogins>) -> Self {
         Self {
             identities,
+            logins,
             #[cfg(feature = "admin")]
-            admin: false,
+            admin: None,
         }
     }
 
-    /// Takes a call with no credential for the user, as a test daemon run
-    /// with `--admin` does.
+    /// Takes a call with no credential from `who` for the user, as a test
+    /// daemon run with `--admin` or `--admin-pid` does.
     #[cfg(feature = "admin")]
-    pub(crate) fn admin(identities: Arc<Identities>) -> Self {
+    pub(crate) fn admin(identities: Arc<Identities>, logins: Arc<CliLogins>, who: Admin) -> Self {
         Self {
             identities,
-            admin: true,
+            logins,
+            admin: Some(who),
         }
     }
 
-    /// Who a call with no credential is, if anyone.
-    fn without_credential(&self) -> Option<Caller> {
+    /// Who a call with no credential from `pid` is, if anyone.
+    #[cfg_attr(not(feature = "admin"), allow(unused_variables))]
+    fn without_credential(&self, pid: Option<i32>) -> Option<Caller> {
         #[cfg(feature = "admin")]
-        if self.admin {
-            return Some(Caller::User);
+        match self.admin {
+            Some(Admin::Anyone) => return Some(Caller::User(UserVia::App)),
+            Some(Admin::Process(admin)) if pid == Some(admin) => {
+                return Some(Caller::User(UserVia::App));
+            }
+            Some(Admin::Process(_)) | None => {}
         }
         None
     }
@@ -314,9 +355,11 @@ impl Authenticate {
 
 impl Interceptor for Authenticate {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        let caller = match request.metadata().get(TOKEN_HEADER) {
-            None => self.without_credential(),
-            Some(value) => match value
+        let open = request.extensions().get::<OpenToAnyone>().is_some();
+        let session = request.metadata().get(TOKEN_HEADER);
+        let login = request.metadata().get(LOGIN_HEADER);
+        let caller = match (session, login) {
+            (Some(value), _) => match value
                 .to_str()
                 .ok()
                 .and_then(|token| self.identities.find(token))
@@ -324,12 +367,28 @@ impl Interceptor for Authenticate {
                 Some(agent) => Some(Caller::Agent(agent)),
                 None => return Err(status::identity_mismatch()),
             },
+            // Judged strictly, even on an admin daemon: a login that
+            // doesn't work here is never taken for the user. On a method
+            // open to anyone it counts as no credential, so a terminal with
+            // a stale login can still log in again.
+            (None, Some(value)) => {
+                let checked = match value.to_str() {
+                    Ok(token) => self.logins.caller(token, peer_pid(&request)),
+                    Err(_) => Err(crate::cli_login::LoginUnusable::Unknown),
+                };
+                match checked {
+                    Ok(login) => Some(Caller::User(UserVia::CliLogin { login })),
+                    Err(_) if open => None,
+                    Err(unusable) => return Err(status::login_unusable(&unusable)),
+                }
+            }
+            (None, None) => self.without_credential(peer_pid(&request)),
         };
         match caller {
             Some(caller) => {
                 request.extensions_mut().insert(caller);
             }
-            None if request.extensions().get::<OpenToAnyone>().is_some() => {
+            None if open => {
                 request.extensions_mut().insert(Unauthenticated);
             }
             None => return Err(status::unauthenticated()),
@@ -338,7 +397,16 @@ impl Interceptor for Authenticate {
     }
 }
 
-fn digest(token: &str) -> String {
+/// A new random token, and the hash that is all the daemon keeps of it.
+pub(crate) fn new_token() -> (String, String) {
+    let mut bytes = [0u8; TOKEN_BYTES];
+    rand::fill(&mut bytes[..]);
+    let token = hex(&bytes);
+    let hash = digest(&token);
+    (token, hash)
+}
+
+pub(crate) fn digest(token: &str) -> String {
     hex(Sha256::digest(token.as_bytes()).as_slice())
 }
 

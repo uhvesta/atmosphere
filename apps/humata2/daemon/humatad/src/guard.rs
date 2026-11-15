@@ -5,12 +5,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use humata2_access::{
     AccessRequest, Agent, Call, Capability, Context, Effect, MachineId, PeerLink, Policy,
-    Principal, SessionKind, Verdict,
+    PresenceMethod, Principal, SessionKind, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use tonic::Status;
 
-use crate::identity::Caller;
+use crate::identity::{Caller, UserVia};
 use crate::status;
 
 /// The policy, with the channel rules every channel starts with, and where
@@ -44,14 +44,7 @@ impl Guard {
 
     /// Checks `call` for `caller`. A refusal is the status to return.
     pub(crate) fn check(&self, caller: &Caller, call: &Call) -> Result<Checked, Status> {
-        let principal = match caller {
-            Caller::User => Principal::App,
-            Caller::Agent(agent) => Principal::Agent(Agent {
-                session: agent.session.clone(),
-                kind: SessionKind::Ordinary,
-            }),
-            Caller::Peer => Principal::Peer(PeerLink::HostToDaemon),
-        };
+        let principal = principal(caller);
         let mut policy = lock(&self.policy);
         if let Caller::Agent(agent) = caller
             && policy.channel_rules(&agent.session.channel).is_none()
@@ -94,6 +87,27 @@ impl Guard {
             Checked::Allowed => Ok(()),
             Checked::Ask(request) => Err(status::needs_approval(request.capability)),
         }
+    }
+}
+
+impl Guard {
+    /// Runs `with` on the policy, given where this daemon checks it: for
+    /// answering requests and changing grants.
+    pub(crate) fn with_policy<R>(&self, with: impl FnOnce(&mut Policy, &Context) -> R) -> R {
+        with(&mut lock(&self.policy), &self.context)
+    }
+}
+
+/// Who `caller` is to the policy.
+pub(crate) fn principal(caller: &Caller) -> Principal {
+    match caller {
+        Caller::User(UserVia::App) => Principal::App,
+        Caller::User(UserVia::CliLogin { .. }) => Principal::Cli(PresenceMethod::CliLogin),
+        Caller::Agent(agent) => Principal::Agent(Agent {
+            session: agent.session.clone(),
+            kind: SessionKind::Ordinary,
+        }),
+        Caller::Peer => Principal::Peer(PeerLink::HostToDaemon),
     }
 }
 

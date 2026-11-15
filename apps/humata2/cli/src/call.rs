@@ -10,7 +10,7 @@ use crate::console::Console;
 use crate::daemon::{Daemon, DaemonError, Rpc, rpc};
 use crate::error::CliError;
 use crate::as_json;
-use crate::principal::Principal;
+use crate::principal::{Environment, Principal};
 
 /// What a command did, for the output to print.
 pub struct Done {
@@ -49,6 +49,9 @@ pub struct Ctx<'a, D, C> {
     pub console: &'a C,
     pub flags: &'a Global,
     pub principal: &'a Principal,
+    /// Where the principal came from, and where `humata login` keeps this
+    /// terminal's login.
+    pub environment: &'a Environment,
     key: String,
 }
 
@@ -58,6 +61,7 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         console: &'a C,
         flags: &'a Global,
         principal: &'a Principal,
+        environment: &'a Environment,
     ) -> Self {
         let key = flags
             .key
@@ -68,6 +72,7 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             console,
             flags,
             principal,
+            environment,
             key,
         }
     }

@@ -400,7 +400,7 @@ macro_rules! kinds {
 
 kinds! {
     NotFound, MachineOffline, HostUnreachable, Denied, UserOnly, PresenceRequired,
-    IdentityMismatch, RevisionConflict, PlanStale, NameTaken, InvalidField, UnpushedWork,
+    IdentityMismatch, PeerUnproven, RevisionConflict, PlanStale, NameTaken, InvalidField, UnpushedWork,
     SessionBusy, ParentReadOnly, MainCloneReadOnly, OutsideHumataFolders, DiskFull, RateLimited,
     GithubCli, GitFailed, PushRefused, SshFailed, HostKeyChanged, ChecksumMismatch, ResumeFailed,
     AgentLacksFeature, ProviderStepFailed, ProviderIdentityInvalid, LoginNeedsUser,

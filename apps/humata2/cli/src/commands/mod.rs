@@ -4,6 +4,7 @@ mod boards;
 mod files;
 mod hosts;
 mod inbox;
+mod login;
 mod looking;
 mod sessions;
 mod settings;
@@ -135,8 +136,8 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
             command,
         } => inbox::inbox(ctx, all, session, with_forks, command).await,
         Command::Access { command } => inbox::access(ctx, command).await,
-        Command::Login { hours } => inbox::login(ctx, hours).await,
-        Command::Logout => inbox::logout(ctx).await,
+        Command::Login { hours } => login::login(ctx, hours).await,
+        Command::Logout => login::logout(ctx).await,
         Command::Logins => inbox::logins(ctx).await,
         Command::Token(command) => inbox::token(ctx, command).await,
         Command::Files(command) => files::files(ctx, command).await,

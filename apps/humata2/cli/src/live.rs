@@ -37,6 +37,7 @@ impl LiveDaemon {
                 let value = MetadataValue::try_from(token).map_err(|_| DaemonError::BadToken {
                     variable: match principal {
                         Principal::Agent { .. } => "HUMATA_SESSION_TOKEN",
+                        Principal::LoggedIn { .. } => "this terminal's saved login",
                         _ => "HUMATA_TOKEN",
                     },
                 })?;

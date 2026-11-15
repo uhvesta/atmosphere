@@ -6,7 +6,10 @@
 //
 // A machine also serves TerminalService, FileService and DiffService on the
 // same link, so the host can relay the app's calls; the host has already
-// checked access, and the machine trusts the caller it was started by.
+// checked access. The machine trusts the link only once the host has proved
+// it holds the machine's enrollment key (Hello, then ProveHost; GRPC.md §8):
+// until then it refuses every call but those two and DaemonService.WhoAmI
+// with Error.peer_unproven.
 syntax = "proto3";
 
 package humata.v1;
@@ -20,10 +23,19 @@ import "humata/v1/inbox.proto";
 import "humata/v1/sessions.proto";
 
 service PeerService {
-  // First call on every link. Fails with Error.identity_mismatch when the
-  // machine's enrollment doesn't match the host's record (a re-imaged or
-  // swapped machine, LD-12) and with peer_version_unsupported outside N-2.
+  // First call on every link, and only one per link. The machine proves it
+  // holds the enrollment key and sends a nonce of its own. The host fails
+  // the link with Error.identity_mismatch when the proof is wrong or the
+  // machine isn't the one on record (a re-imaged or swapped machine, LD-12)
+  // and with peer_version_unsupported outside N-2. The machine refuses it
+  // with peer_unproven when it has no usable key.
   rpc Hello(HelloRequest) returns (HelloResponse);
+
+  // Second call on every link: the host proves it holds the same key. Until
+  // it succeeds, every call but Hello, ProveHost and DaemonService.WhoAmI
+  // is refused with peer_unproven. A wrong proof is refused and the machine
+  // closes the link.
+  rpc ProveHost(ProveHostRequest) returns (ProveHostResponse);
 
   // One per link, for its life. Ordered both ways; each side acks what it
   // has made durable, and both resume from the acks after a reconnect.
@@ -60,11 +72,20 @@ service PeerService {
 
 // ---------------------------------------------------------------------------
 
+// The enrollment key is random bytes the host writes on the machine when it
+// adds it, as hex in a 0600 file, and keeps in the Mac's keychain. Both
+// proofs are HMAC-SHA256 under it, each over a label naming its side, so
+// neither side's proof can be replayed as the other's:
+//   machine: HMAC(key, "humata-peer-machine-v1" || nonce || machine_nonce)
+//   host:    HMAC(key, "humata-peer-host-v1" || machine_nonce || nonce)
+// An uncontained agent on the machine runs as the user (SPEC D1) and can
+// read the key, so the proofs keep out a swapped machine and a contained
+// agent, not an uncontained one.
 message HelloRequest {
   MachineId expected_machine = 1;
   uint32 host_api_major = 2;
   uint32 host_api_minor = 3;
-  // Random; the machine answers with HMAC-SHA256(enrollment_key, nonce).
+  // The host's nonce: 32 to 64 random bytes, new for each link.
   bytes nonce = 4;
   // MP-15 interactive takeover marker, when the link came up that way.
   string sync_marker = 5;
@@ -72,6 +93,7 @@ message HelloRequest {
 
 message HelloResponse {
   MachineId machine = 1;
+  // The machine's proof, as above.
   bytes proof = 2;
   string daemon_version = 3;
   uint32 api_major = 4;
@@ -81,7 +103,17 @@ message HelloResponse {
   // Holders running now, found after a daemon restart (PER-5).
   repeated SessionId running = 7;
   google.protobuf.Timestamp booted_at = 8;
+  // The machine's nonce: exactly 32 random bytes, new for each link, which
+  // the host's proof covers.
+  bytes machine_nonce = 9;
 }
+
+message ProveHostRequest {
+  // The host's proof, as above HelloRequest.
+  bytes proof = 1;
+}
+
+message ProveHostResponse {}
 
 // ---------------------------------------------------------------------------
 

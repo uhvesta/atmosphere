@@ -52,6 +52,7 @@ DAEMON_DEPS = [
     "//apps/humata2/daemon/mcp",
     "//apps/humata2/daemon/store",
     "@crates//:clap",
+    "@crates//:hmac",
     "@crates//:hyper-util",
     "@crates//:prost",
     "@crates//:rand",
@@ -84,10 +85,28 @@ rust_binary(
     deps = DAEMON_DEPS,
 )
 
+# The release daemon's own unit tests: the link proof, the machine id,
+# terminal sessions and CLI logins.
+rust_test(
+    name = "humatad2_unit_test",
+    crate = ":humatad2",
+    deps = ["@crates//:tempfile"],
+)
+
+# Runs a program in a terminal session of its own, for the CLI login
+# tests: macOS has no setsid(1).
+rust_binary(
+    name = "setsid",
+    testonly = True,
+    srcs = ["tests/bin/setsid.rs"],
+    deps = ["@crates//:rustix"],
+)
+
 # Each test starts humatad2 and humata2_holder as the real binaries and
 # talks to them over gRPC on a socket of its own: the admin daemon with
 # --admin as HUMATAD2, and the release one as HUMATAD2_RELEASE for the
-# checks that a call with no credential is refused.
+# checks that a call with no credential is refused. The CLI login tests
+# also run `humata` (HUMATA) in a terminal of their own.
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
@@ -96,20 +115,26 @@ rust_binary(
         data = [
             ":humatad2",
             ":humatad2_admin",
+            ":setsid",
+            "//apps/humata2/cli:humata",
             "//apps/humata2/daemon/holder:humata2_holder",
         ],
         env = {
+            "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
             "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+            "HUMATA2_SETSID": "$(rootpath :setsid)",
             "HUMATAD2": "$(rootpath :humatad2_admin)",
             "HUMATAD2_RELEASE": "$(rootpath :humatad2)",
         },
         deps = [
             ":grpc",
             "//apps/humata2/daemon/store",
+            "@crates//:hmac",
             "@crates//:hyper-util",
             "@crates//:prost",
             "@crates//:rustix",
             "@crates//:serde_json",
+            "@crates//:sha2",
             "@crates//:tempfile",
             "@crates//:tokio",
             "@crates//:tokio-stream",

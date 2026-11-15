@@ -193,8 +193,8 @@ fn pending() -> pb::WaitResponse {
 const ASK_AHEAD: [&str; 6] = [
     "access",
     "ask-ahead",
-    "channel_board_add",
-    "item:it_4",
+    "network_reach",
+    "network:api.example.com:443",
     "--reason",
     "file the follow-ups",
 ];
@@ -211,7 +211,7 @@ async fn json_doesnt_wait_and_exits_12_with_the_request() {
     assert_eq!(printed["error"]["details"]["request"], "rq_9");
     let sent: pb::RequestAccessRequest = daemon.only(rpc::inbox::REQUEST_ACCESS);
     assert_eq!(sent.wait_seconds, 0);
-    assert_eq!(sent.capability, pb::Capability::ChannelBoardAdd as i32);
+    assert_eq!(sent.capability, pb::Capability::NetworkReach as i32);
     assert!(!daemon.called(rpc::inbox::WAIT_FOR_ANSWER));
 }
 

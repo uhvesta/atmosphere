@@ -4,12 +4,14 @@
 //! socket.
 
 use std::ffi::OsString;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{Store, write_atomic};
+use humata2_store::Store;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_stream::wrappers::UnixListenerStream;
@@ -17,6 +19,8 @@ use tonic::service::InterceptorLayer;
 use tonic::transport::Server;
 use tower::util::MapRequestLayer;
 
+use crate::access_service::Access;
+use crate::cli_login::{CliAuth, CliLogins};
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
 use crate::guard::Guard;
@@ -27,6 +31,7 @@ use crate::paste::PASTE_MAX_BYTES;
 use crate::peer_link;
 use crate::sync;
 use crate::terminal::{Terminals, TerminalsConfig};
+use crate::terminal_session::Kernel;
 
 /// What Unix sockets allow in a path, without its terminating NUL.
 #[cfg(target_os = "linux")]
@@ -89,6 +94,17 @@ pub(crate) struct ServeArgs {
     #[cfg(feature = "admin")]
     #[arg(long, conflicts_with = "stdio")]
     admin: bool,
+    /// Test daemons only: as --admin, but only for calls from this
+    /// process, so a test can play the app while every other process is
+    /// judged as a release daemon judges it.
+    #[cfg(feature = "admin")]
+    #[arg(long, conflicts_with_all = ["stdio", "admin"])]
+    admin_pid: Option<i32>,
+    /// Test daemons only: every CLI login lasts this many seconds, not the
+    /// hours it asked for, so tests can see one expire.
+    #[cfg(feature = "admin")]
+    #[arg(long, conflicts_with = "stdio")]
+    cli_login_seconds: Option<u64>,
 }
 
 /// `~/.humata2`, where the daemon lives unless told otherwise.
@@ -110,8 +126,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     };
     if args.stdio {
         private_folder(&state)?;
+        private_folder(&state.join("logs"))?;
         let machine = machine_id(&state.join("machine-id"))?;
-        return peer_link::run(machine, args.sync.as_deref()).await;
+        return peer_link::run(&state, machine, args.sync.as_deref()).await;
     }
     let socket = match args.socket {
         Some(socket) => socket,
@@ -151,7 +168,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let logs = state.join("logs");
     private_folder(&holders)?;
     private_folder(&logs)?;
-    let store = Store::open(state.join("store")).map_err(|source| DaemonError::Store { source })?;
+    let store = Arc::new(Store::open(state.join("store")).map_err(|source| DaemonError::Store { source })?);
     let machine = machine_id(&state.join("machine-id"))?;
     let role = match args.role {
         Role::Host => pb::DaemonRole::Host,
@@ -164,21 +181,33 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         &machine,
     )?);
     #[cfg(feature = "admin")]
-    let authenticate = if args.admin {
-        eprintln!(
-            "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
-        );
-        Authenticate::admin(identities.clone())
-    } else {
-        Authenticate::new(identities.clone())
+    let login_lifetime = args.cli_login_seconds.map(std::time::Duration::from_secs);
+    #[cfg(not(feature = "admin"))]
+    let login_lifetime = None;
+    let logins = Arc::new(CliLogins::new(Box::new(Kernel), login_lifetime));
+    #[cfg(feature = "admin")]
+    let authenticate = match (args.admin, args.admin_pid) {
+        (true, _) => {
+            eprintln!(
+                "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
+            );
+            Authenticate::admin(identities.clone(), logins.clone(), identity::Admin::Anyone)
+        }
+        (false, Some(pid)) => {
+            eprintln!(
+                "humatad2: warning: admin mode: a call with no credential from process {pid} acts as the user. This is a test daemon; don't use it as your real one"
+            );
+            Authenticate::admin(identities.clone(), logins.clone(), identity::Admin::Process(pid))
+        }
+        (false, None) => Authenticate::new(identities.clone(), logins.clone()),
     };
     #[cfg(not(feature = "admin"))]
-    let authenticate = Authenticate::new(identities.clone());
+    let authenticate = Authenticate::new(identities.clone(), logins.clone());
     let guard = Arc::new(Guard::new(&machine, role));
 
     let listener = bind(&socket)?;
     let terminals = Terminals::new(TerminalsConfig {
-        store: Arc::new(store),
+        store: store.clone(),
         machine: machine.clone(),
         holder,
         shell,
@@ -190,6 +219,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         guard: guard.clone(),
         identities: identities.clone(),
     });
+    let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone());
+    let access = Access::new(guard);
 
     // Every call is matched to its caller before a service sees it. The
     // first layer is the outer one: it marks the methods open to anyone,
@@ -198,13 +229,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .layer(MapRequestLayer::new(identity::mark_open))
         .layer(InterceptorLayer::new(authenticate))
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(Daemon::new(
-            machine, role,
+            machine.clone(),
+            role,
         )))
         .add_service(
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
         )
-        .add_service(pb::inbox_service_server::InboxServiceServer::new(Inbox::new(guard)));
+        .add_service(pb::inbox_service_server::InboxServiceServer::new(inbox))
+        .add_service(pb::access_service_server::AccessServiceServer::new(access))
+        .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(CliAuth {
+            logins,
+            store,
+            machine,
+            role,
+        }));
     let router = not_built::register(router);
 
     let stop = stop_signal()?;
@@ -249,21 +288,66 @@ fn private_folder(path: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-/// This machine's id, made once and kept.
+/// This machine's id, made once and kept. Daemons starting for the first
+/// time at once agree on one: each writes an id of its own aside, synced,
+/// and links it into place, which only the first can do; the others read
+/// the first one's.
 fn machine_id(path: &Path) -> Result<String, DaemonError> {
     let failed = |source| DaemonError::MachineId {
         path: path.to_owned(),
         source,
     };
-    match std::fs::read_to_string(path) {
-        Ok(id) if !id.trim().is_empty() => return Ok(id.trim().to_owned()),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(failed(error)),
+    if let Some(id) = read_machine_id(path).map_err(failed)? {
+        return Ok(id);
     }
+    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(failed(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "the path names no file in a folder",
+        )));
+    };
     let id = format!("ma_{}", uuid::Uuid::new_v4().simple());
-    write_atomic(path, id.as_bytes()).map_err(|source| DaemonError::Store { source })?;
-    Ok(id)
+    let aside = folder.join(format!(
+        ".{}.{}.partial",
+        name.to_string_lossy(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let linked = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&aside)?;
+        file.write_all(id.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::hard_link(&aside, path)
+    })();
+    // Linked or not, the id is in place or never will be from this copy.
+    let _ = std::fs::remove_file(&aside);
+    match linked {
+        Ok(()) => {
+            File::open(folder)
+                .and_then(|folder| folder.sync_all())
+                .map_err(failed)?;
+            Ok(id)
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => read_machine_id(path)
+            .map_err(failed)?
+            .ok_or_else(|| failed(ErrorKind::NotFound.into())),
+        Err(error) => Err(failed(error)),
+    }
+}
+
+/// The id kept at `path`, if there is one. An empty file is damage, not a
+/// missing id: making a new one would make the host see a new machine.
+fn read_machine_id(path: &Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(id) if !id.trim().is_empty() => Ok(Some(id.trim().to_owned())),
+        Ok(_) => Err(std::io::Error::new(ErrorKind::InvalidData, "the file is empty")),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Listens on `socket`, 0600 in a folder only this user can open. A socket
@@ -310,4 +394,52 @@ pub(crate) fn stop_signal() -> Result<impl Future<Output = ()>, DaemonError> {
             _ = interrupt.recv() => {}
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+
+    use super::*;
+
+    #[test]
+    fn first_starts_at_once_agree_on_one_machine_id() {
+        const STARTS: usize = 16;
+        for _ in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("machine-id");
+            let barrier = Arc::new(Barrier::new(STARTS));
+            let starts: Vec<_> = (0..STARTS)
+                .map(|_| {
+                    let (path, barrier) = (path.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        machine_id(&path).unwrap()
+                    })
+                })
+                .collect();
+            let ids: Vec<String> = starts.into_iter().map(|start| start.join().unwrap()).collect();
+            assert!(ids.iter().all(|id| *id == ids[0]), "{ids:?}");
+            assert_eq!(read_machine_id(&path).unwrap().as_deref(), Some(ids[0].as_str()));
+            // Nothing is left aside.
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn a_kept_machine_id_is_used_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("machine-id");
+        let first = machine_id(&path).unwrap();
+        assert_eq!(machine_id(&path).unwrap(), first);
+    }
+
+    #[test]
+    fn an_empty_machine_id_is_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("machine-id");
+        std::fs::write(&path, "").unwrap();
+        assert!(matches!(machine_id(&path), Err(DaemonError::MachineId { .. })));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
 }
