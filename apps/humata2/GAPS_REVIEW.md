@@ -92,7 +92,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/diff:view_test //apps/humata2/diff:view_fast_test` (five tests per engine passed). Ran Bazel-managed buildifier and rustfmt on the new test file.
 - Look at: a separate attempted navigation test exposed the viewport-clamped counter on short reviews on both engines. The dependency owns that state; OVERVIEW records it as deferred because patching/repinning is excluded in this shared worktree. D67 remains Provisional and performance gates remain open.
 
-### (this commit): the flaky idle-daemon test and the terminal_test recheck (Daemon and persistence)
+### 28dc871a: the flaky idle-daemon test and the terminal_test recheck (Daemon and persistence)
 - `daemon/humatad/src/serve.rs` `an_idle_daemon_with_a_connected_client_fires_no_timers`: waits for the start's restart report before counting the runtime's wakes. The reconcile runs beside serving, so its blocking steps (and, before 71c9071b, file events and the last good copy they set off) woke the runtime in the one-minute window or the ten-hour one by chance; the bound is "at most 4 more in ten hours".
 - `terminal_test`'s `SizeOutOfRange { claimed: 2097152 }`: 2097152 is `SNAPSHOT_MAX`; a whole snapshot went as one chunk before snapshots were sent in pieces (5c795563). Nothing to change; the pieces test covers it.
 - `restart_test`'s Unauthenticated: not reproduced; left open in OVERVIEW with what it implies.
