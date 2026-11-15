@@ -123,7 +123,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/machines/... //apps/humata2/daemon/humatad/...` (fake_ssh_test's reconnect test fails before: the service step ran on every reconnect). takeover_test failed once under load in the full run, passed 5 alone (new OVERVIEW watch item).
 - Look at: a staged holder alone still restarts the daemon (any pending file does); the systemd check trusts `is-active`, not that the active process is the installed binary.
 
-### (this commit): Operation Cancel and Retry for adding and removing machines (Machines, D61) [minion B]
+### 1bdd1a9e: Operation Cancel and Retry for adding and removing machines (Machines, D61) [minion B]
 - `daemon/machines/src/manage.rs`: `Drive` takes `cancelled`; an add checks it after the host key is pinned, at each step boundary and after each wait between connect attempts, and stops with `ManageError::Cancelled`, which the add's own undo turns into nothing left behind.
 - `daemon/humatad/src/operations.rs`: `CancelOperation` sets the run's cancel flag when the kind is cancellable (ADD_MACHINE), answers an ended operation as it ended, and refuses REMOVE_MACHINE with `not_cancellable`; a cancelled run ends `CANCELLED` with the step it was in shown as not run. `RetryOperation` runs a failed operation's work again under the same id (steps reset, version goes on; D81), and a retry resent with the same key answers with that run. `machine_service.rs`: each operation's work is a reusable `Job` that `launch` registers for Retry.
 - `daemon/machines/testing/fake_machine.rs`: a `hang` flag holds every ssh until cleared, so a test can catch an operation mid-step.
