@@ -36,7 +36,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/desktop:shell_test` (new `a_sessions_side_panel_hides_shows_and_survives_switching_screens`; `home.view.txt` gains the sidebar's Splitter, `home.png` unchanged).
 - Look at: the divider drag isn't exercised by a test; the panel's content is an empty state; `features/layout` still runs unseen.
 
-### (this commit): delete the pane layout feature (Desktop UI)
+### 62218781: delete the pane layout feature (Desktop UI)
 - Owner call 2026-11-15: `features/layout` is gone, with `AppState.panes`, `AppAction::Panes`, `SavedUi.panes` and `ToastAction` (its only button was Undo reset). Toasts are text only. Repinned with `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
 - Verified: `bazel test //apps/humata2/desktop/... //apps/humata2/ui/...`.
 - Look at: a saved `humata2-ui.json` with a `panes` key still loads (`#[serde(default)]`, unknown keys ignored).
