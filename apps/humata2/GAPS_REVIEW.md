@@ -81,7 +81,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/...` (new `the_restart_report_has_what_the_daemon_logged_before_it_stopped`; `a_failed_resume_is_reported_with_what_it_takes_to_diagnose_it` checks the lines).
 - Look at: the log starts over past 4 MiB rather than rotating; the peer link's own `peer-link.log` isn't in the report.
 
-### (this commit): saved review snapshots and one scroll frame (Review pane) [minion C]
+### 0cc329af: saved review snapshots and one scroll frame (Review pane) [minion C]
 - `review/harness/tests/large.rs` dispatches one wheel event before one draw; the old helper drew twice before the explicit third draw. The original 207-per-step failure reproduces; a bound is now checked on every frame, not just the mean.
 - `review/src/model/session.rs` and `view/mod.rs` stop touching the revision when taking an empty queue. Advancing the clock alone left Saved revision 2 against current revision 3; the new snapshot regression failed before this fix. Snapshot fixtures advance 400 ms, and the text/layout/image references now show Saved. Closes the two Review pane gaps in OVERVIEW.
 - Verified: `bazel test //apps/humata2/review:large //apps/humata2/review:snapshots //apps/humata2/review:flows //apps/humata2/review:model_test //apps/humata2/review:review_view_test` (all passed, in the recorded targeted runs). Recorded both snapshot suites; inspected all four image modes and the text/layout diffs.
