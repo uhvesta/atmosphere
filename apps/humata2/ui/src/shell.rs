@@ -9,7 +9,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
-use humata2_app::layout::PaneId;
+use humata2_app::layout::{FullScreen, PaneId};
 use humata2_app::{AppAction, Load, PaneAction, Route};
 use humata2_clients::model::{Scope, SessionId};
 use humata2_session::SessionAction;
@@ -22,7 +22,7 @@ use crate::sidebar::Sidebar;
 use crate::theme;
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
-use crate::{pages, panels};
+use crate::{chrome, pages, panels};
 
 /// The window's root view.
 pub struct Shell {
@@ -38,6 +38,7 @@ pub struct Shell {
     file_filter_value: String,
     _file_filter_subscription: Subscription,
     _appearance: Subscription,
+    viewport: f32,
 }
 
 impl Shell {
@@ -82,6 +83,7 @@ impl Shell {
             file_filter_value: String::new(),
             _file_filter_subscription: file_filter_subscription,
             _appearance: appearance,
+            viewport: 0.,
         }
     }
 
@@ -107,15 +109,10 @@ fn top_bar(
         .border_color(rgb(look.line))
         .when(sidebar_hidden, |bar| {
             bar.child(
-                widgets::ghost(
-                    ui,
-                    "show-sidebar",
-                    "",
-                    AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)),
-                )
-                .icon(IconName::PanelLeft)
-                .accessibility_label("Show sidebar")
-                .tooltip("Show sidebar  ⌘0"),
+                widgets::ghost(ui, "show-sidebar", "", AppAction::ToggleNavigationOverlay)
+                    .icon(IconName::PanelLeft)
+                    .accessibility_label("Show sidebar")
+                    .tooltip("Show sidebar  ⌘0"),
             )
         })
         .child(
@@ -207,21 +204,49 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
         let viewport = f32::from(window.viewport_size().width);
-        let (panel, panel_width, full, in_session) = self.ui.read(|state| {
-            let panel = state.panel().filter(|_| !state.layout.panel.collapsed);
-            let in_session = matches!(state.route, Route::Session(_));
-            let strip = if in_session { 64. } else { 0. };
-            let (_, width) = state
-                .layout
-                .widths(viewport - theme::RAIL_WIDTH - strip, panel.is_some());
-            let full = panel.is_some() && state.session.view().is_some_and(|view| view.widened);
-            (panel, width, full, in_session)
-        });
-        let (load, can_go_back, collapsed, title, restore_error) = self.ui.read(|state| {
+        if self.viewport != viewport {
+            self.viewport = viewport;
+            if self.ui.read(|state| state.navigation_overlay) {
+                self.send(AppAction::CloseNavigationOverlay, cx);
+            }
+        }
+        let (selected_panel, columns, full_screen, in_session, navigation_overlay, strip_width) =
+            self.ui.read(|state| {
+                let in_session = matches!(state.route, Route::Session(_));
+                (
+                    state.panel(),
+                    state
+                        .layout
+                        .columns(viewport, in_session, state.panel().is_some()),
+                    state.full_screen(),
+                    in_session,
+                    state.navigation_overlay,
+                    if state.layout.panel.collapsed {
+                        14.
+                    } else {
+                        64.
+                    },
+                )
+            });
+        let full = full_screen == Some(FullScreen::Panel);
+        let terminal_full = full_screen == Some(FullScreen::Terminal);
+        let panel = selected_panel.filter(|_| full || !columns.panel_hidden);
+        let panel_width = columns.panel;
+        let collapsed = columns.sidebar_hidden;
+        let main_width = if terminal_full {
+            viewport
+        } else {
+            viewport
+                - columns.sidebar
+                - if collapsed { 14. } else { 1. }
+                - panel_width
+                - if panel.is_some() { 1. } else { 0. }
+                - if in_session { strip_width } else { 0. }
+        };
+        let (load, can_go_back, title, restore_error) = self.ui.read(|state| {
             (
                 state.load.clone(),
                 !state.trail.is_empty(),
-                state.layout.sidebar.collapsed,
                 pages::title(state),
                 state.restore_error.clone(),
             )
@@ -284,7 +309,7 @@ impl Render for Shell {
             .bg(rgb(look.content))
             .child(if in_session {
                 self.ui
-                    .read(|state| pages::session_header(&ui, state, collapsed, look))
+                    .read(|state| pages::session_header(&ui, state, collapsed, main_width, look))
                     .into_any_element()
             } else {
                 top_bar(&ui, title, can_go_back, collapsed, look).into_any_element()
@@ -331,8 +356,13 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &keys::CollapseAll, _, cx| {
                 this.send(AppAction::Sidebar(SidebarAction::CollapseAll), cx);
             }))
-            .on_action(cx.listener(|this, _: &keys::ToggleSidebar, _, cx| {
-                this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)), cx);
+            .on_action(cx.listener(move |this, _: &keys::ToggleSidebar, _, cx| {
+                let action = if collapsed {
+                    AppAction::ToggleNavigationOverlay
+                } else {
+                    AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar))
+                };
+                this.send(action, cx);
             }))
             .on_action(cx.listener(|this, _: &keys::GoHome, _, cx| {
                 this.send(AppAction::Switch(Route::Home), cx)
@@ -357,7 +387,7 @@ impl Render for Shell {
                 }
                 let x = f32::from(event.position.x);
                 let width = match pane {
-                    PaneId::Sidebar => x - theme::RAIL_WIDTH,
+                    PaneId::Sidebar => x,
                     PaneId::Panel => viewport - if in_session { 64. } else { 0. } - x,
                 };
                 this.send(AppAction::Pane(PaneAction::Drag(pane, width)), cx);
@@ -368,13 +398,36 @@ impl Render for Shell {
             )
             .when(!full, |shell| {
                 shell
-                    .when(!collapsed, |shell| {
+                    .when(!terminal_full && !collapsed, |shell| {
                         shell
                             .child(self.sidebar.clone())
                             .child(self.divider(PaneId::Sidebar, cx))
                     })
+                    .when(!terminal_full && collapsed, |shell| {
+                        shell.child(
+                            div()
+                                .id("sidebar-strip")
+                                .role(Role::Button)
+                                .aria_label("Show sidebar")
+                                .w(px(14.))
+                                .h_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(rgb(look.sidebar))
+                                .border_r_1()
+                                .border_color(rgb(look.line))
+                                .child(chrome::icon(IconName::ChevronRight, look.secondary, 12.))
+                                .on_click({
+                                    let ui = ui.clone();
+                                    move |_, _, cx| ui.send(AppAction::ToggleNavigationOverlay, cx)
+                                })
+                                .test_support(),
+                        )
+                    })
                     .child(main)
-                    .when_some(panel, |shell, panel| {
+                    .when_some(panel.filter(|_| !terminal_full), |shell, panel| {
                         shell
                             .child(self.divider(PaneId::Panel, cx))
                             .child(self.ui.read(|state| {
@@ -389,8 +442,37 @@ impl Render for Shell {
                                 )
                             }))
                     })
-                    .when(in_session, |shell| {
-                        shell.child(panels::strip(&ui, panel, cx))
+                    .when(in_session && !terminal_full, |shell| {
+                        if strip_width == 14. {
+                            shell.child(
+                                div()
+                                    .id("panel-restore-strip")
+                                    .role(Role::Button)
+                                    .aria_label("Show side panel")
+                                    .w(px(14.))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .bg(rgb(look.sidebar))
+                                    .border_l_1()
+                                    .border_color(rgb(look.line))
+                                    .child(chrome::icon(IconName::ChevronLeft, look.secondary, 12.))
+                                    .on_click({
+                                        let ui = ui.clone();
+                                        move |_, _, cx| {
+                                            ui.send(
+                                                AppAction::Pane(PaneAction::Toggle(PaneId::Panel)),
+                                                cx,
+                                            )
+                                        }
+                                    })
+                                    .test_support(),
+                            )
+                        } else {
+                            shell.child(panels::strip(&ui, selected_panel, cx))
+                        }
                     })
             })
             .when(full, |shell| {
@@ -408,6 +490,31 @@ impl Render for Shell {
                     })
                 }))
             })
+            .when(
+                navigation_overlay && collapsed && !terminal_full && !full,
+                |shell| {
+                    shell.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .child(
+                                div()
+                                    .id("navigation-dismiss")
+                                    .absolute()
+                                    .inset_0()
+                                    .bg(rgba(0x00000040))
+                                    .on_click({
+                                        let ui = ui.clone();
+                                        move |_, _, cx| {
+                                            ui.send(AppAction::CloseNavigationOverlay, cx)
+                                        }
+                                    }),
+                            )
+                            .child(self.sidebar.clone()),
+                    )
+                },
+            )
             .child(self.overlays.clone())
     }
 }

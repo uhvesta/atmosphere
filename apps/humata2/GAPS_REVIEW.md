@@ -231,3 +231,23 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `daemon/humatad/src/inbox.rs`: `tell_answer` publishes the grant an answer made (Created) before the answered request (Updated), for AnswerRequest and AnswerAll. `daemon/humatad/src/access_service.rs`: Access holds the feed; RevokeGrant publishes Deleted with the grant's last state. `daemon/humatad/src/events.rs`: `Filter` passes grants by TOPIC_ACCESS, the channels or sessions asked for, and `sees_session`.
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli/...` (64 tests pass).
 - Look at: suspensions and grants ended with a session aren't told, since nothing makes them yet (D91).
+
+### (this commit): session lifecycle and full-screen presentation (Desktop UI; N1) [minion C1]
+- The session can now put its terminal or panel full screen and return to its saved columns; the choice survives a restart per session. Exited sessions keep their transcript and Resume; offline sessions retain output with a disconnected notice. Selected panel-strip choices close/reopen, and pending Inbox/unsent-comment badges are visible. Frames 03–06 and 09–13 now have real-app comparison images; they remain partial for the differences below.
+- `features/app/src/layout.rs`, `saved.rs` and `lib.rs` own presentation and navigation-overlay state. Narrow windows fold columns without overwriting saved widths. `ui/src/shell.rs`, `sidebar.rs`, `bridge.rs` and `pages.rs` use that state and shared column sizing; `panels.rs` gains actionable full-screen window controls and badges. `clients::fixture::design_session` supplies lifecycle tails and the approved PAY/INF board items. The transcript now contains the mock's literal command text; no cargo command was executed. Terminal output is isolated by selected tab. Panel contents were preserved.
+- Verified: `bazel test //apps/humata2/desktop/... //apps/humata2/ui/... //apps/humata2/features/... //apps/humata2/clients/... --test_output=errors` passed all 8 test targets. New `features/app:presentation_test` has three behavioral TestStore tests (persist/restore both presentations, close full panel, compact-width return); `desktop:native_test` has eight headless tests including a same-window 720px -> 1280px cycle, Resume and output isolation. Native, panels and shell record targets passed; 14 native image/semantic pairs and 16 panel semantic references updated/added; panel PNGs unchanged. No real window opened.
+- Compared: frame 01 <-> `desktop/tests/__snapshots__/native/01-session-working-light.png`.
+- Compared: frame 02 <-> `desktop/tests/__snapshots__/native/02-session-working-dark.png`.
+- Compared: frame 03 <-> `desktop/tests/__snapshots__/native/03-session-needs-you-light.png`.
+- Compared: frame 04 <-> `desktop/tests/__snapshots__/native/04-session-needs-you-dark.png`.
+- Compared: frame 05 <-> `desktop/tests/__snapshots__/native/05-session-exited.png`.
+- Compared: frame 06 <-> `desktop/tests/__snapshots__/native/06-session-offline.png`.
+- Compared: frame 09 <-> `desktop/tests/__snapshots__/native/09-session-no-panel.png`.
+- Compared: frame 10 <-> `desktop/tests/__snapshots__/native/10-terminal-full-screen.png`.
+- Compared: frame 11 <-> `desktop/tests/__snapshots__/native/11-panel-full-screen-diff.png`.
+- Compared: frame 12 <-> `desktop/tests/__snapshots__/native/12-panel-full-screen-board.png`.
+- Compared: frame 13 <-> `desktop/tests/__snapshots__/native/13-columns-collapsed.png`.
+- Compared: frame 15 <-> `desktop/tests/__snapshots__/native/15-sidebar-pinned.png`.
+- Compared: frame 16 <-> `desktop/tests/__snapshots__/native/16-sidebar-fork-selected.png`.
+- Compared: frame 17 <-> `desktop/tests/__snapshots__/native/17-sidebar-channels-folded.png`.
+- Look at: file/plus tabs and two-group split are next; the terminal still draws fixture text and a prompt, so the interactive TerminalPane bridge remains open. Needs-you offers/queued-message bar, Pinned summary/PR row and presence remain. Header truncation, terminal tones, Inbox reasons/preview, Files paths/order, Info metadata/permissions, Changes counts/drafts and Board attention/created-by differ from the frames. The sidebar/header fixture status discrepancy and frame 16 header question remain recorded in OVERVIEW. Home, global Inbox, channel/board pages, Hosts, Settings and overlays are still to restyle; full task remains active.

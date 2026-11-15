@@ -132,24 +132,77 @@ impl Layout {
             collapsed: false,
         };
     }
+}
 
-    /// How wide each pane draws in a window `window` wide, with the panel
-    /// shown or not: saved widths, shrunk in proportion when the main area
-    /// would get narrower than [`MAIN_MIN`]. Collapsed panes are 0.
+/// A session area that can fill the window without changing saved pane sizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FullScreen {
+    /// Only the terminal and its header/tabs.
+    Terminal,
+    /// Only the selected side panel.
+    Panel,
+}
+
+/// Column widths for this viewport. Automatic folds never alter saved sizes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Columns {
+    /// Width of an open sidebar; zero when folded.
+    pub sidebar: f32,
+    /// Width of an open panel; zero when folded.
+    pub panel: f32,
+    /// Sidebar is manually or automatically folded to its 14px strip.
+    pub sidebar_hidden: bool,
+    /// The panel cannot fit or was manually collapsed.
+    pub panel_hidden: bool,
+}
+
+impl Layout {
+    /// Resolve the columns for a live window size. At narrow widths, fold
+    /// navigation before the panel; keep the main area useful and restore
+    /// both columns automatically when space returns.
     #[must_use]
-    pub fn widths(&self, window: f32, panel_shown: bool) -> (f32, f32) {
-        let sidebar = if self.sidebar.collapsed { 0.0 } else { self.sidebar.width };
-        let panel = if self.panel.collapsed || !panel_shown {
-            0.0
+    pub fn columns(&self, viewport: f32, in_session: bool, panel_shown: bool) -> Columns {
+        let right_strip = if !in_session {
+            0.
+        } else if self.panel.collapsed {
+            14.
         } else {
-            self.panel.width
+            64.
         };
-        let room = (window - MAIN_MIN).max(0.0);
+        let available = (viewport - right_strip).max(0.);
+        let panel_wanted = in_session && panel_shown && !self.panel.collapsed;
+        let sidebar_hidden = self.sidebar.collapsed
+            || available
+                < MAIN_MIN
+                    + PaneId::Sidebar.min_width()
+                    + 1.
+                    + if panel_wanted {
+                        PaneId::Panel.min_width() + 1.
+                    } else {
+                        0.
+                    };
+        let left_strip = if sidebar_hidden { 14. } else { 0. };
+        let panel_hidden =
+            !panel_wanted || available - left_strip < MAIN_MIN + PaneId::Panel.min_width() + 1.;
+        let sidebar = if sidebar_hidden {
+            0.
+        } else {
+            self.sidebar.width
+        };
+        let panel = if panel_hidden { 0. } else { self.panel.width };
+        let dividers = if !sidebar_hidden { 1. } else { 0. } + if !panel_hidden { 1. } else { 0. };
+        let room = (available - left_strip - dividers - MAIN_MIN).max(0.);
         let wanted = sidebar + panel;
-        if wanted <= room || wanted == 0.0 {
-            return (sidebar, panel);
+        let scale = if wanted > room && wanted > 0. {
+            room / wanted
+        } else {
+            1.
+        };
+        Columns {
+            sidebar: sidebar * scale,
+            panel: panel * scale,
+            sidebar_hidden,
+            panel_hidden,
         }
-        let scale = room / wanted;
-        (sidebar * scale, panel * scale)
     }
 }

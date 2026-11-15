@@ -4,7 +4,7 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, Bounds, HeadlessAppContext, WindowBounds, WindowOptions, point, px, size,
 };
-use humata2_app::layout::PaneId;
+use humata2_app::layout::{FullScreen, PaneId};
 use humata2_app::{AppAction, PaneAction, Route};
 use humata2_clients::model::{SessionId, Status};
 use humata2_clients::{Clients, Workspace, fixture};
@@ -79,6 +79,21 @@ impl App {
             .update_window(self.window, |_, window, cx| window.render_frame(cx))
             .expect("window stays open");
     }
+    fn snapshot(&mut self, name: &str) {
+        self.draw();
+        let snapshots = snapshots!().expect("snapshot folder");
+        let tree = self
+            .cx
+            .update_window(self.window, |_, window, _| view::capture(window))
+            .expect("window")
+            .expect("view");
+        snapshots.assert_text(&format!("{name}.view"), &tree);
+        let image = self
+            .cx
+            .capture_screenshot(self.window)
+            .expect("headless image");
+        snapshots.assert_image(name, &image, Tolerance::default());
+    }
     fn contains(&mut self, id: &str) -> bool {
         self.draw();
         self.cx
@@ -111,7 +126,7 @@ fn sidebar_navigation_and_folds_act_on_the_open_workspace() {
     );
     app.click("rail-home");
     assert_eq!(app.ui.read(|s| s.route.clone()), Route::Home);
-    assert!(app.ui.read(|s|s.trail.is_empty()));
+    assert!(app.ui.read(|s| s.trail.is_empty()));
     app.click("rail-inbox");
     assert_eq!(app.ui.read(|s| s.route.clone()), Route::Inbox);
     app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
@@ -162,7 +177,11 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
             "ledger",
         ),
     ] {
-        let mut workspace = fixture::design();
+        let mut workspace = fixture::design_session(if pinned {
+            Status::NeedsYou
+        } else {
+            Status::Working
+        });
         let ledger = workspace
             .sessions
             .iter_mut()
@@ -221,4 +240,258 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
             .expect("headless image");
         snapshots.assert_image(name, &image, Tolerance::default());
     }
+}
+
+/// N1: expanding either area uses the same real header/panel controls.
+#[test]
+fn terminal_and_panel_full_screen_return_to_the_same_columns() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Board);
+    let layout = app.ui.read(|s| s.layout);
+    app.click("terminal-full-screen");
+    assert_eq!(app.ui.read(|s| s.full_screen()), Some(FullScreen::Terminal));
+    assert!(!app.contains("sidebar"));
+    assert!(!app.contains("side-panel"));
+    app.click("terminal-full-screen");
+    assert!(app.contains("sidebar"));
+    assert!(app.contains("side-panel"));
+    app.click("expand-panel");
+    assert_eq!(app.ui.read(|s| s.full_screen()), Some(FullScreen::Panel));
+    assert!(app.contains("panel-full-screen"));
+    assert!(!app.contains("terminal"));
+    app.click("expand-panel");
+    assert!(app.contains("terminal"));
+    assert!(app.contains("side-panel"));
+    assert_eq!(app.ui.read(|s| s.layout), layout);
+}
+
+/// The owner's half-screen request: resize the same live headless window,
+/// navigate through its compact sidebar, then widen it again.
+#[test]
+fn a_half_screen_window_can_navigate_and_restore_its_columns() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    let saved = app.ui.read(|s| s.layout);
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(720.), px(760.)));
+            window.bounds_changed(cx);
+        })
+        .expect("resize");
+    app.settle();
+    app.draw();
+    let width = app
+        .cx
+        .update_window(app.window, |_, window, _| {
+            f32::from(window.viewport_size().width)
+        })
+        .expect("viewport");
+    assert_eq!(width, 720.);
+    assert!(app.contains("sidebar-strip"));
+    assert!(app.contains("side-panel"));
+    app.click("sidebar-strip");
+    assert!(app.contains("sidebar-session-brin"));
+    app.click("sidebar-session-brin");
+    assert_eq!(
+        app.ui.read(|s| s.session.open.clone()),
+        Some(SessionId::new("brin"))
+    );
+    assert!(!app.ui.read(|s| s.navigation_overlay));
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(1280.), px(760.)));
+            window.bounds_changed(cx);
+        })
+        .expect("resize back");
+    app.settle();
+    app.draw();
+    assert!(app.contains("sidebar"));
+    assert!(!app.contains("sidebar-strip"));
+    assert_eq!(app.ui.read(|s| s.layout), saved);
+}
+
+/// SE-14/16, N1: the real session layouts in their approved lifecycle states.
+#[test]
+fn session_lifecycle_and_full_screen_reference_images() {
+    for (name, mode, status, panel, full, folded) in [
+        (
+            "03-session-needs-you-light",
+            ThemeMode::Light,
+            Status::NeedsYou,
+            Some(Panel::Inbox),
+            None,
+            false,
+        ),
+        (
+            "04-session-needs-you-dark",
+            ThemeMode::Dark,
+            Status::NeedsYou,
+            Some(Panel::Inbox),
+            None,
+            false,
+        ),
+        (
+            "05-session-exited",
+            ThemeMode::Dark,
+            Status::Exited { code: 0 },
+            Some(Panel::Info),
+            None,
+            false,
+        ),
+        (
+            "06-session-offline",
+            ThemeMode::Light,
+            Status::Offline,
+            Some(Panel::Files),
+            None,
+            false,
+        ),
+        (
+            "09-session-no-panel",
+            ThemeMode::Dark,
+            Status::Working,
+            None,
+            None,
+            false,
+        ),
+        (
+            "10-terminal-full-screen",
+            ThemeMode::Dark,
+            Status::Working,
+            None,
+            Some(FullScreen::Terminal),
+            false,
+        ),
+        (
+            "11-panel-full-screen-diff",
+            ThemeMode::Light,
+            Status::Working,
+            Some(Panel::Changes),
+            Some(FullScreen::Panel),
+            false,
+        ),
+        (
+            "12-panel-full-screen-board",
+            ThemeMode::Dark,
+            Status::Working,
+            Some(Panel::Board),
+            Some(FullScreen::Panel),
+            false,
+        ),
+        (
+            "13-columns-collapsed",
+            ThemeMode::Dark,
+            Status::Working,
+            None,
+            None,
+            true,
+        ),
+    ] {
+        let mut app = App::new(fixture::design_session(status));
+        app.cx.update(|cx| Theme::change(mode, None, cx));
+        app.send(AppAction::Navigate(Route::Session(SessionId::new(
+            "ledger",
+        ))));
+        app.send(AppAction::Session(SessionAction::SetPanel(panel)));
+        if let Some(full) = full {
+            app.send(AppAction::ToggleFullScreen(full));
+        }
+        if folded {
+            app.send(AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)));
+            app.send(AppAction::Pane(PaneAction::Drag(PaneId::Panel, 0.)));
+        }
+        if panel == Some(Panel::Changes) {
+            app.send(AppAction::Review(
+                humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
+                    path: "src/client.rs".into(),
+                    line: 43,
+                }),
+            ));
+            app.send(AppAction::Review(
+                humata2_review::ReviewAction::CommentText(
+                    "Keep insert_legacy until the backfill ends.".into(),
+                ),
+            ));
+            app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
+            app.send(AppAction::Review(
+                humata2_review::ReviewAction::SelectFile {
+                    repo: "api".into(),
+                    path: "src/client.rs".into(),
+                },
+            ));
+        }
+        if panel == Some(Panel::Files) {
+            app.send(AppAction::Session(SessionAction::SelectFile {
+                repo: "api".into(),
+                path: "src/client.rs".into(),
+            }));
+        }
+        for id in ["pr-reviews", "web"] {
+            app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
+                humata2_clients::model::ChannelId::new(id),
+            ))));
+        }
+        app.snapshot(name);
+    }
+}
+
+/// SE-14: either Resume control starts the same exited agent and retains its view.
+#[test]
+fn resuming_an_exited_session_keeps_its_open_panel() {
+    let mut app = App::new(fixture::design_session(Status::Exited { code: 0 }));
+    app.open("ledger", Panel::Info);
+    app.click("resume-agent");
+    assert_eq!(
+        app.ui.read(|s| s
+            .workspace
+            .session(&SessionId::new("ledger"))
+            .expect("session")
+            .status),
+        Status::Idle
+    );
+    assert_eq!(app.ui.read(|s| s.panel()), Some(Panel::Info));
+    assert!(!app.contains("resume-agent"));
+}
+
+/// SE-11: picking the same strip choice closes it; picking it again reopens it.
+#[test]
+fn clicking_the_open_panel_choice_closes_and_reopens_it() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Inbox);
+    assert!(app.contains("panel-badge Inbox"));
+    app.click("panel-tab Inbox");
+    assert_eq!(app.ui.read(|s| s.panel()), None);
+    assert!(!app.contains("side-panel"));
+    app.click("panel-tab Inbox");
+    assert_eq!(app.ui.read(|s| s.panel()), Some(Panel::Inbox));
+    assert!(app.contains("side-panel"));
+}
+
+/// SE-8/10: shell tabs show their own output, and live output remains in its tab.
+#[test]
+fn terminal_tabs_show_only_the_selected_terminals_live_output() {
+    use humata2_clients::model::{Line, Speaker};
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.send(AppAction::Session(SessionAction::Output {
+        session: SessionId::new("ledger"),
+        tab: 1,
+        line: Line {
+            from: Speaker::Tool,
+            text: "shell-result: 42".into(),
+        },
+    }));
+    let capture = |app: &mut App| {
+        app.draw();
+        app.cx
+            .update_window(app.window, |_, window, _| view::capture(window))
+            .expect("window")
+            .expect("view")
+    };
+    assert!(!capture(&mut app).contains("shell-result: 42"));
+    app.click("terminal-tab 1");
+    assert_eq!(app.ui.read(|s| s.session.view().expect("view").tab), 1);
+    assert!(capture(&mut app).contains("shell-result: 42"));
+    app.click("terminal-tab 0");
+    assert!(!capture(&mut app).contains("shell-result: 42"));
 }

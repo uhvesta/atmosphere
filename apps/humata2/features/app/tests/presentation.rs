@@ -1,0 +1,101 @@
+//! N1, SE-12/13: full-screen areas and narrow columns preserve saved layout.
+use humata2_app::layout::{FullScreen, Layout};
+use humata2_app::{App, AppAction, AppState, Route, saved};
+use humata2_clients::model::SessionId;
+use humata2_clients::{Clients, fixture};
+use humata2_session::{Panel, SessionAction, SessionView};
+use std::sync::Arc;
+use tca::{TestClock, TestStore};
+
+#[test]
+fn expanding_either_area_and_returning_preserves_the_columns() {
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    let id = SessionId::new("ledger");
+    state.route = Route::Session(id.clone());
+    state.session.open = Some(id.clone());
+    state.session.views.insert(
+        id.clone(),
+        SessionView {
+            panel: Some(Panel::Board),
+            ..Default::default()
+        },
+    );
+    let layout = state.layout;
+    let mut store = TestStore::new(state, App::new(clients.clone()));
+    store.send(AppAction::ToggleFullScreen(FullScreen::Terminal), |s| {
+        s.full_screens.insert(id.clone(), FullScreen::Terminal);
+    });
+    assert_eq!(store.state().full_screen(), Some(FullScreen::Terminal));
+    assert_eq!(store.state().layout, layout);
+    saved::Saver::new(clients.storage.clone())
+        .save(1, &store.state().saved())
+        .expect("save terminal presentation");
+    assert_eq!(
+        AppState::launch(&clients).full_screen(),
+        Some(FullScreen::Terminal)
+    );
+    store.send(AppAction::Session(SessionAction::ToggleWiden), |s| {
+        s.full_screens.insert(id.clone(), FullScreen::Panel);
+        s.session.views.get_mut(&id).expect("view").widened = true;
+    });
+    assert_eq!(store.state().full_screen(), Some(FullScreen::Panel));
+    let saved = store.state().saved();
+    saved::Saver::new(clients.storage.clone())
+        .save(2, &saved)
+        .expect("save");
+    let restored = AppState::launch(&clients);
+    assert_eq!(restored.full_screen(), Some(FullScreen::Panel));
+    assert_eq!(restored.layout, layout);
+    store.send(AppAction::ToggleFullScreen(FullScreen::Panel), |s| {
+        s.full_screens.remove(&id);
+        s.session.views.get_mut(&id).expect("view").widened = false;
+    });
+    assert_eq!(store.state().full_screen(), None);
+    assert_eq!(store.state().layout, layout);
+    store.finish();
+}
+
+#[test]
+fn closing_the_full_screen_panel_returns_to_the_terminal() {
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    let id = SessionId::new("ledger");
+    state.route = Route::Session(id.clone());
+    state.session.open = Some(id.clone());
+    state.full_screens.insert(id.clone(), FullScreen::Panel);
+    state.session.views.insert(
+        id.clone(),
+        SessionView {
+            panel: Some(Panel::Board),
+            widened: true,
+            ..Default::default()
+        },
+    );
+    let mut store = TestStore::new(state, App::new(clients));
+    store.send(AppAction::Session(SessionAction::SetPanel(None)), |s| {
+        s.full_screens.remove(&id);
+        let view = s.session.views.get_mut(&id).expect("view");
+        view.panel = None;
+        view.widened = false;
+    });
+    assert_eq!(store.state().full_screen(), None);
+    store.finish();
+}
+
+#[test]
+fn half_screen_and_wide_again_restore_sizes_without_saving_automatic_folds() {
+    let layout = Layout::default();
+    let wide = layout.columns(1280., true, true);
+    assert!(!wide.sidebar_hidden && !wide.panel_hidden);
+    let half = layout.columns(720., true, true);
+    assert!(half.sidebar_hidden && !half.panel_hidden);
+    assert!(half.panel >= 200.);
+    assert!(720. - 14. - 64. - 1. - half.panel >= 360.);
+    let small = layout.columns(560., true, true);
+    assert!(small.sidebar_hidden && small.panel_hidden);
+    assert_eq!(layout.columns(1280., true, true), wide);
+    let no_panel = layout.columns(720., true, false);
+    assert!(!no_panel.sidebar_hidden);
+    assert_eq!(no_panel.panel, 0.);
+}

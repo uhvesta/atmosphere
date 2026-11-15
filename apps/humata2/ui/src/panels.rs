@@ -1263,12 +1263,7 @@ pub(crate) fn panel(
                     .bg(rgb(look.content))
                     .border_b_1()
                     .border_color(rgb(look.line))
-                    .child(
-                        row().gap(px(8.)).children(
-                            [0xff5f57, 0xfebc2e, 0x28c840]
-                                .map(|color| div().size(px(12.)).rounded_full().bg(rgb(color))),
-                        ),
-                    )
+                    .child(crate::chrome::lights())
                     .child(div().w(px(4.)))
                     .child(icon(IconName::PanelLeftOpen, look.secondary, 15.))
                     .child(
@@ -1308,6 +1303,18 @@ pub(crate) fn panel(
 
 pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElement + use<> {
     let look = Look::of(cx);
+    let (pending, unsent) = ui.read(|state| {
+        let sessions = family(state);
+        (
+            state
+                .workspace
+                .requests
+                .iter()
+                .filter(|request| request.answer.is_none() && sessions.contains(&request.session))
+                .count(),
+            state.review.queued().len(),
+        )
+    });
     col()
         .id("panel-strip")
         .role(Role::Toolbar)
@@ -1348,6 +1355,7 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                     .when(on == Some(panel), |tab| tab.bg(rgb(look.fill)))
                     .child(
                         col()
+                            .relative()
                             .items_center()
                             .gap(px(2.))
                             .py(px(7.))
@@ -1360,6 +1368,47 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                                 },
                                 15.,
                             ))
+                            .children(
+                                match panel {
+                                    Panel::Inbox => Some(pending),
+                                    Panel::Changes => Some(unsent),
+                                    _ => None,
+                                }
+                                .filter(|count| *count > 0)
+                                .map(|count| {
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "panel-badge {}",
+                                            panel.name()
+                                        )))
+                                        .role(Role::Status)
+                                        .aria_label(format!("{}: {count}", title(panel)))
+                                        .absolute()
+                                        .top(px(-4.))
+                                        .right(px(-8.))
+                                        .min_w(px(16.))
+                                        .h(px(16.))
+                                        .px(px(3.))
+                                        .rounded_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(10.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .bg(rgb(if panel == Panel::Inbox {
+                                            look.selection
+                                        } else {
+                                            look.fill
+                                        }))
+                                        .text_color(rgb(if panel == Panel::Inbox {
+                                            0xffffff
+                                        } else {
+                                            look.secondary
+                                        }))
+                                        .child(count.to_string())
+                                        .test_support()
+                                }),
+                            )
                             .child(text(title(panel)).text_size(px(10.)).text_color(rgb(
                                 if on == Some(panel) {
                                     look.text
@@ -1369,7 +1418,14 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                             ))),
                     )
                     .on_click(move |_, _, cx| {
-                        ui.send(AppAction::Session(SessionAction::SetPanel(Some(panel))), cx)
+                        ui.send(
+                            AppAction::Session(SessionAction::SetPanel(if on == Some(panel) {
+                                None
+                            } else {
+                                Some(panel)
+                            })),
+                            cx,
+                        )
                     })
             }),
         )

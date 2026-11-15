@@ -203,6 +203,12 @@ pub fn large(extra: usize) -> Workspace {
 /// boundary fixtures stable.
 #[must_use]
 pub fn design() -> Workspace {
+    design_session(Status::NeedsYou)
+}
+
+/// The same approved workspace with its open Ledger session in one lifecycle state.
+#[must_use]
+pub fn design_session(ledger_status: Status) -> Workspace {
     let mut workspace = Workspace::default();
     workspace.machines = vec![
         machines().remove(0),
@@ -248,7 +254,7 @@ pub fn design() -> Workspace {
             "Ledger schema migration",
             Agent::Claude,
             "devbox-1",
-            Status::NeedsYou,
+            ledger_status,
             None,
         ),
         (
@@ -330,7 +336,7 @@ pub fn design() -> Workspace {
         value.repo = if channel == "infra" {
             "acme/infra"
         } else {
-            "acme/ledger"
+            "ledger"
         }
         .into();
         value.branch = "ledger-schema".into();
@@ -355,7 +361,7 @@ pub fn design() -> Workspace {
                 Speaker::System,
                 "  ⎿ Updated with 62 additions and 21 removals",
             ),
-            (Speaker::Agent, "● Bash(bazel test //api:ledger_test)"),
+            (Speaker::Agent, "● Bash(cargo test -p api ledger)"),
             (Speaker::Tool, "  ⎿ test result: ok. 14 passed; 0 failed"),
             (Speaker::Agent, ""),
             (Speaker::Agent, "● Updated plan"),
@@ -370,6 +376,47 @@ pub fn design() -> Workspace {
             text: text.into(),
         })
         .collect();
+        let tail: &[(Speaker, &str)] = match status {
+            Status::Working | Status::Offline => &[
+                (Speaker::Agent, ""),
+                (Speaker::Agent, "● Bash(psql -f backfill.sql)"),
+                (Speaker::System, "  ⎿ INSERT 0 48210 … (running)"),
+                (Speaker::Agent, ""),
+                (
+                    Speaker::Agent,
+                    "✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)",
+                ),
+            ],
+            Status::NeedsYou => &[
+                (Speaker::Agent, ""),
+                (Speaker::Agent, "● humata board_item_move PAY-3 → Done"),
+                (Speaker::System, "  ⎿ ⏳ waiting for your approval (Inbox)"),
+                (Speaker::Agent, ""),
+                (
+                    Speaker::Agent,
+                    "? Drop the old ledger_entries index before the switch, or keep",
+                ),
+                (Speaker::Agent, "  both until the backfill ends?"),
+                (Speaker::Agent, "  ❯ 1. Keep both"),
+                (Speaker::System, "    2. Drop it now"),
+                (Speaker::System, "    3. Type something else"),
+            ],
+            Status::Exited { .. } => &[
+                (
+                    Speaker::Agent,
+                    "● All four steps are done. Reads go to entries now.",
+                ),
+                (Speaker::Agent, ""),
+                (Speaker::System, "~/src/ledger (ledger-schema) $ "),
+            ],
+            _ => &[],
+        };
+        value
+            .transcript
+            .extend(tail.iter().map(|(from, text)| Line {
+                from: from.clone(),
+                text: (*text).into(),
+            }));
         workspace.sessions.push(value);
     }
     workspace.requests = vec![
@@ -424,6 +471,83 @@ pub fn design() -> Workspace {
             .requests
             .push(request(id, session, channel, RequestKind::Command, title));
     }
+    workspace.items = [
+        (
+            "PAY-12",
+            "payments-rewrite",
+            "Multi-currency ledgers",
+            ItemStatus::Backlog,
+            None,
+        ),
+        (
+            "INF-4",
+            "infra",
+            "Move CI to devbox runners",
+            ItemStatus::Backlog,
+            None,
+        ),
+        (
+            "PAY-9",
+            "payments-rewrite",
+            "Backfill progress bar",
+            ItemStatus::Todo,
+            Some("ledger"),
+        ),
+        (
+            "PAY-7",
+            "payments-rewrite",
+            "Refund retry with backoff",
+            ItemStatus::Todo,
+            None,
+        ),
+        (
+            "PAY-3",
+            "payments-rewrite",
+            "Ledger schema v2",
+            ItemStatus::InProgress,
+            Some("ledger"),
+        ),
+        (
+            "INF-2",
+            "infra",
+            "Postgres 17 upgrade",
+            ItemStatus::InProgress,
+            Some("postgres"),
+        ),
+        (
+            "PAY-5",
+            "payments-rewrite",
+            "API rate limiter",
+            ItemStatus::InReview,
+            Some("rate"),
+        ),
+        (
+            "PAY-2",
+            "payments-rewrite",
+            "Currency codes table",
+            ItemStatus::Done,
+            None,
+        ),
+        (
+            "INF-1",
+            "infra",
+            "BRIN benchmark harness",
+            ItemStatus::Done,
+            Some("benchmark"),
+        ),
+    ]
+    .into_iter()
+    .map(|(id, channel, title, status, session)| Item {
+        id: ItemId::new(id),
+        scope: Scope::Channel(ChannelId::new(channel)),
+        kind: ItemKind::Task,
+        title: title.into(),
+        status,
+        depends_on: Vec::new(),
+        session: session.map(SessionId::new),
+        parent: None,
+    })
+    .collect();
     workspace.diffs = vec![
         RepoDiff { session: SessionId::new("ledger"), repo: "ledger".into(), base: "main".into(), files: vec![FileDiff {path: "migrations/0042_accounts.sql".into(),added:41,removed:0,lines:Vec::new()}],comments:Vec::new() },
         RepoDiff { session: SessionId::new("ledger"), repo: "api".into(), base: "main".into(), files: vec![

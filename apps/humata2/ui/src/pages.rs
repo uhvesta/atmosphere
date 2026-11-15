@@ -4,9 +4,14 @@ use std::rc::Rc;
 
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::TestTextExt as _;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
-use humata2_app::{PaneAction, layout::PaneId};
+use humata2_app::{
+    PaneAction,
+    layout::{FullScreen, PaneId},
+};
 use humata2_clients::model::{Agent, ForkKind, Session, Speaker, Status};
 use humata2_session::SessionAction;
 
@@ -155,7 +160,13 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
         )
 }
 
-pub(crate) fn session_header(ui: &Rc<Ui>, state: &AppState, collapsed: bool, look: Look) -> Div {
+pub(crate) fn session_header(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    collapsed: bool,
+    width: f32,
+    look: Look,
+) -> Div {
     let Some(session) = state
         .session
         .open
@@ -174,7 +185,12 @@ pub(crate) fn session_header(ui: &Rc<Ui>, state: &AppState, collapsed: bool, loo
         .machines
         .iter()
         .find(|x| x.id == session.machine);
+    let terminal_full = state.full_screen() == Some(FullScreen::Terminal);
+    let compact = width < 560.;
     let mut crumbs = row()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
         .gap(px(5.))
         .text_size(px(11.5))
         .text_color(rgb(look.secondary));
@@ -193,10 +209,17 @@ pub(crate) fn session_header(ui: &Rc<Ui>, state: &AppState, collapsed: bool, loo
         )
         .child("›");
     let mut heading = row()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
         .gap(px(7.))
         .child(chrome::status(session.status))
         .child(
             div()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_size(px(14.))
                 .child(session.title.clone()),
@@ -213,7 +236,7 @@ pub(crate) fn session_header(ui: &Rc<Ui>, state: &AppState, collapsed: bool, loo
         )),
         _ => None,
     };
-    if let Some((words, color)) = note {
+    if let Some((words, color)) = note.filter(|_| !compact) {
         heading = heading.child(
             div()
                 .text_size(px(11.5))
@@ -224,43 +247,74 @@ pub(crate) fn session_header(ui: &Rc<Ui>, state: &AppState, collapsed: bool, loo
     row()
         .h(px(52.))
         .px(px(16.))
-        .gap(px(12.))
+        .gap(px(if compact { 8. } else { 12. }))
         .flex_shrink_0()
         .border_b_1()
         .border_color(rgb(look.line))
         .bg(rgb(look.content))
-        .when(collapsed, |x| {
-            x.child(chrome::lights()).child(chrome::action(
-                ui,
-                "show-sidebar",
-                "Show sidebar",
-                IconName::PanelLeft,
-                AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)),
-                look.secondary,
-            ))
+        .when(collapsed || terminal_full, |x| {
+            x.child(chrome::lights()).child(div().w(px(4.)))
         })
-        .child(col().min_w_0().child(crumbs).child(heading))
-        .child(div().flex_1())
         .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(rgb(look.secondary))
-                .child(format!(
-                    "{} · {}",
-                    if session.agent == Agent::Claude {
-                        "Claude Code"
-                    } else {
-                        session.agent.name()
-                    },
-                    machine.map_or("", |x| x.name.as_str())
-                )),
+            col()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .child(crumbs)
+                .child(heading),
         )
+        .when(!compact, |bar| {
+            bar.child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.secondary))
+                    .child(format!(
+                        "{} · {}",
+                        if session.agent == Agent::Claude {
+                            "Claude Code"
+                        } else {
+                            session.agent.name()
+                        },
+                        machine.map_or("", |x| x.name.as_str())
+                    )),
+            )
+        })
+        .when(matches!(session.status, Status::Exited { .. }), |bar| {
+            bar.child(
+                widgets::primary(
+                    ui,
+                    "resume-agent",
+                    "Resume agent",
+                    AppAction::Session(SessionAction::Resume),
+                )
+                .small()
+                .h(px(24.))
+                .bg(rgb(look.accent))
+                .text_color(rgb(0xffffff)),
+            )
+        })
         .child(chrome::action(
             ui,
             "session-fork",
             "Fork",
             IconName::GitFork,
             AppAction::Session(SessionAction::StartFork(ForkKind::Worktree)),
+            look.secondary,
+        ))
+        .child(chrome::action(
+            ui,
+            "terminal-full-screen",
+            if terminal_full {
+                "Return to columns"
+            } else {
+                "Expand terminal"
+            },
+            if terminal_full {
+                IconName::Minimize2
+            } else {
+                IconName::Maximize2
+            },
+            AppAction::ToggleFullScreen(FullScreen::Terminal),
             look.secondary,
         ))
         .child(chrome::action(
@@ -301,6 +355,8 @@ fn session_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) ->
         .size_full()
         .child(
             row()
+                .id("terminal-tabs")
+                .overflow_x_scroll()
                 .h(px(32.))
                 .flex_shrink_0()
                 .bg(rgb(look.panel))
@@ -309,11 +365,12 @@ fn session_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) ->
                 .children(names.enumerate().map(|(index, name)| {
                     let ui = ui.clone();
                     row()
-                        .id(("terminal-tab", index))
+                        .id(SharedString::from(format!("terminal-tab {index}")))
                         .role(Role::Tab)
                         .aria_label(name.clone())
                         .aria_selected(active == index)
                         .h_full()
+                        .flex_shrink_0()
                         .px(px(12.))
                         .gap(px(6.))
                         .border_r_1()
@@ -337,11 +394,41 @@ fn session_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) ->
                         })
                         .test_support()
                 }))
-                .child(div().flex_1()),
+                .child(div().flex_1())
+                .when(session.status == Status::Offline, |bar| {
+                    bar.child(
+                        row()
+                            .mr(px(12.))
+                            .gap(px(5.))
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(chrome::icon(IconName::WifiOff, look.secondary, 12.))
+                            .child("disconnected"),
+                    )
+                }),
         )
-        .child(terminal_body(session, look))
+        .children(state.session.error.clone().map(|error| {
+            widgets::error_banner(
+                ui,
+                "session-error",
+                error,
+                AppAction::Session(SessionAction::DismissError),
+            )
+        }))
+        .child(terminal_body(ui, state, session, look))
 }
-fn terminal_body(session: &Session, look: Look) -> impl IntoElement {
+fn terminal_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> impl IntoElement {
+    let tab = state.session.view().map_or(0, |view| view.tab);
+    let base = if tab == 0 {
+        session.transcript.as_slice()
+    } else {
+        &[]
+    };
+    let live = state
+        .session
+        .live
+        .get(&(session.id.clone(), tab))
+        .map_or(&[][..], |lines| lines.as_slice());
     col()
         .id("terminal")
         .role(Role::Log)
@@ -349,6 +436,7 @@ fn terminal_body(session: &Session, look: Look) -> impl IntoElement {
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
+        .overflow_x_hidden()
         .px(px(14.))
         .pt(px(10.))
         .pb(px(10.))
@@ -357,14 +445,31 @@ fn terminal_body(session: &Session, look: Look) -> impl IntoElement {
         .font_family("Menlo")
         .text_size(px(12.))
         .line_height(px(17.))
-        .children(session.transcript.iter().map(|line| {
+        .children(base.iter().chain(live).map(|line| {
             div()
                 .text_color(rgb(match line.from {
                     Speaker::System => look.term_dim,
                     Speaker::Tool => 0x30d158,
                     _ => look.term_text,
                 }))
-                .child(line.text.clone())
+                .child(line.text.clone()).test_text(line.text.clone())
         }))
+        .children(match (tab,session.status) {
+            (0,Status::Exited{code})=>Some(row().mt(px(10.)).gap(px(8.)).p(px(8.)).rounded(px(7.)).bg(rgb(look.fill)).font_family(".SystemUIFont").text_size(px(12.))
+                .child(chrome::icon(IconName::X,0xff453a,12.))
+                .child(div().flex_1().min_w_0().child(format!("Agent exited with code {code}. Resume starts it again with this conversation.")))
+                .child(widgets::send(ui,"resume-terminal","Resume",AppAction::Session(SessionAction::Resume)).small())),
+            (_,Status::Offline)=>Some(row().mt(px(10.)).gap(px(8.)).p(px(8.)).rounded(px(7.)).bg(rgb(look.fill)).font_family(".SystemUIFont").text_size(px(12.))
+                .child(chrome::icon(IconName::WifiOff,look.secondary,12.))
+                .child(div().min_w_0().child(format!("Lost the connection to {}. The agent keeps running there; this view catches up when it is back.",session.machine)))),
+            _=>None,
+        })
+        .child(div().flex_1())
+        .when(tab>0 || !matches!(session.status,Status::Exited{..}|Status::NeedsYou),|body|body.child(
+            col().gap(px(2.)).opacity(if session.status==Status::Offline{0.5}else{1.})
+                .child(row().px(px(8.)).py(px(4.)).border_1().border_color(rgb(look.term_dim)).rounded(px(4.)).gap(px(2.))
+                    .child(if tab==0&&session.agent!=Agent::Shell {"> "}else{"$ "}).when(session.status!=Status::Offline,|x|x.child(div().w(px(7.)).h(px(15.)).bg(rgb(look.term_text)))))
+                .when(tab==0&&session.agent!=Agent::Shell,|body|body.child(div().text_color(rgb(look.term_dim)).child("  ⏵⏵ accept edits on (shift+tab to cycle)")))
+        ))
         .test_support()
 }

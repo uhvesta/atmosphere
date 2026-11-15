@@ -28,7 +28,7 @@ use humata2_views::{Views, ViewsAction, ViewsState};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer, StreamEnd};
 
-use crate::layout::{Layout, PaneId};
+use crate::layout::{FullScreen, Layout, PaneId};
 use crate::saved::{SavedUi, Saver};
 
 /// How long a toast shows.
@@ -144,6 +144,10 @@ pub struct AppState {
     pub overlays: Vec<Overlay>,
     /// Pane sizes.
     pub layout: Layout,
+    /// Each session's full-window presentation, independent of pane sizes.
+    pub full_screens: std::collections::BTreeMap<SessionId, FullScreen>,
+    /// A temporary navigation overlay when the sidebar is folded.
+    pub navigation_overlay: bool,
     /// Toasts, oldest first.
     pub toasts: Vec<Toast>,
     /// Why saved state from the last run couldn't be used, shown once.
@@ -191,6 +195,8 @@ impl AppState {
             trail: saved.trail.clone(),
             overlays: Vec::new(),
             layout: saved.layout,
+            full_screens: saved.full_screens.clone(),
+            navigation_overlay: false,
             toasts: Vec::new(),
             restore_error,
             sidebar: SidebarState::default(),
@@ -210,6 +216,14 @@ impl AppState {
         };
         state.sidebar.folding = saved.folding;
         state.session.views = saved.sessions;
+        for (id, view) in &state.session.views {
+            if view.widened {
+                state
+                    .full_screens
+                    .entry(id.clone())
+                    .or_insert(FullScreen::Panel);
+            }
+        }
         state.settings.preferences = saved.preferences;
         state.settings.has_key = clients
             .keychain
@@ -240,6 +254,7 @@ impl AppState {
             trail: self.trail.clone(),
             sessions: self.session.views.clone(),
             layout: self.layout,
+            full_screens: self.full_screens.clone(),
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
             review: self.review.saved.clone(),
@@ -247,6 +262,17 @@ impl AppState {
             views: self.views.decisions.clone(),
             connected: self.hosts.connected(),
         }
+    }
+
+    /// The open session's full-window presentation, if any.
+    #[must_use]
+    pub fn full_screen(&self) -> Option<FullScreen> {
+        let Route::Session(id) = &self.route else {
+            return None;
+        };
+        self.full_screens.get(id).copied().filter(|side| {
+            *side != FullScreen::Panel || (self.panel().is_some() && !self.layout.panel.collapsed)
+        })
     }
 
     /// The open session's side panel, if one shows.
@@ -350,6 +376,12 @@ pub enum AppAction {
     ChannelCreated(Result<ChannelId, DaemonError>),
     /// A pane changed size.
     Pane(PaneAction),
+    /// Expand this session area, or return it to the saved columns.
+    ToggleFullScreen(FullScreen),
+    /// Open/close navigation over a narrow window without changing pane sizes.
+    ToggleNavigationOverlay,
+    /// Navigation or a viewport change dismisses the temporary overlay.
+    CloseNavigationOverlay,
     /// A toast's close button was clicked.
     DismissToast(u64),
     /// A toast's time ran out.
@@ -429,15 +461,42 @@ impl App {
     fn show(&self, state: &mut AppState) -> Effect<AppAction> {
         let workspace = &state.workspace;
         Effect::merge([
-            self.child(state, AppAction::Sidebar(SidebarAction::Show(workspace.clone()))),
-            self.child(state, AppAction::Session(SessionAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Review(ReviewAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Inbox(InboxAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Board(BoardAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Hosts(HostsAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Files(FilesAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Palette(PaletteAction::Show(state.workspace.clone()))),
-            self.child(state, AppAction::Views(ViewsAction::Show(state.workspace.clone()))),
+            self.child(
+                state,
+                AppAction::Sidebar(SidebarAction::Show(workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Session(SessionAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Review(ReviewAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Inbox(InboxAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Board(BoardAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Hosts(HostsAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Files(FilesAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Palette(PaletteAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Views(ViewsAction::Show(state.workspace.clone())),
+            ),
         ])
     }
 
@@ -478,9 +537,9 @@ impl App {
             AppAction::Palette(action) => Palette
                 .reduce(&mut state.palette, action)
                 .map(AppAction::Palette),
-            AppAction::Views(action) => Views
-                .reduce(&mut state.views, action)
-                .map(AppAction::Views),
+            AppAction::Views(action) => {
+                Views.reduce(&mut state.views, action).map(AppAction::Views)
+            }
             _ => Effect::none(),
         }
     }
@@ -498,6 +557,7 @@ impl App {
 
     fn switch(&self, state: &mut AppState, route: Route) -> Effect<AppAction> {
         state.route = route;
+        state.navigation_overlay = false;
         state.trail.clear();
         self.arrive(state)
     }
@@ -509,12 +569,14 @@ impl App {
             Route::Channel(id) => Some(RowKey::Channel(id.clone())),
             _ => None,
         };
-        let mut effects = vec![
-            self.child(state, AppAction::Sidebar(SidebarAction::SetCurrent(current))),
-        ];
+        let mut effects = vec![self.child(
+            state,
+            AppAction::Sidebar(SidebarAction::SetCurrent(current)),
+        )];
         match state.route.clone() {
             Route::Session(id) => {
-                effects.push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
+                effects
+                    .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
                 effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
             }
             Route::Board(scope) => {
@@ -553,7 +615,11 @@ impl App {
             Command::Channel(id) => self.navigate(state, Route::Channel(id)),
             Command::Session(id) => self.navigate(state, Route::Session(id)),
             Command::Pull(number) => {
-                let found = state.workspace.pulls.iter().find(|pull| pull.number == number);
+                let found = state
+                    .workspace
+                    .pulls
+                    .iter()
+                    .find(|pull| pull.number == number);
                 match found.and_then(|pull| pull.session.clone()) {
                     Some(session) => self.navigate(state, Route::Session(session)),
                     None => {
@@ -630,7 +696,9 @@ impl App {
             AppAction::Palette(PaletteAction::Delegate(delegate)) => match delegate {
                 P::Run(command) => self.run(state, command.clone()),
                 P::Closed => {
-                    state.overlays.retain(|overlay| overlay != &Overlay::Palette);
+                    state
+                        .overlays
+                        .retain(|overlay| overlay != &Overlay::Palette);
                     Effect::none()
                 }
             },
@@ -642,11 +710,7 @@ impl App {
         let workspace = Arc::make_mut(&mut state.workspace);
         let mut snapshot = None;
         match event {
-            Event::Output {
-                session,
-                tab,
-                line,
-            } => {
+            Event::Output { session, tab, line } => {
                 return self.child(
                     state,
                     AppAction::Session(SessionAction::Output { session, tab, line }),
@@ -704,7 +768,12 @@ impl App {
         state.last_saved = now.clone();
         let saver = self.saver.clone();
         Effect::future(async move {
-            AppAction::Saved(saver.save(generation, &now).err().map(|error| error.to_string()))
+            AppAction::Saved(
+                saver
+                    .save(generation, &now)
+                    .err()
+                    .map(|error| error.to_string()),
+            )
         })
     }
 }
@@ -762,7 +831,9 @@ impl App {
                     StreamEnd::Finished => {
                         "The daemon stopped sending updates. Reconnecting.".to_owned()
                     }
-                    StreamEnd::Failed(error) => format!("Lost updates from the daemon: {error}. Reconnecting."),
+                    StreamEnd::Failed(error) => {
+                        format!("Lost updates from the daemon: {error}. Reconnecting.")
+                    }
                 };
                 Effect::merge([state.toast(text, &clock), self.load(), self.follow()])
             }
@@ -784,6 +855,10 @@ impl App {
                     if top == Overlay::Palette {
                         state.palette.open = false;
                     }
+                    return Effect::none();
+                }
+                if state.navigation_overlay {
+                    state.navigation_overlay = false;
                     return Effect::none();
                 }
                 if state.session.fork.is_some() {
@@ -812,7 +887,10 @@ impl App {
                 }
                 state.overlays.push(Overlay::Palette);
                 let in_session = matches!(state.route, Route::Session(_));
-                self.child(state, AppAction::Palette(PaletteAction::Open { in_session }))
+                self.child(
+                    state,
+                    AppAction::Palette(PaletteAction::Open { in_session }),
+                )
             }
             AppAction::StartNewSession => {
                 let channel = match &state.route {
@@ -837,7 +915,9 @@ impl App {
                 Effect::none()
             }
             AppAction::StartNewChannel => {
-                state.overlays.push(Overlay::NewChannel(NewChannel::default()));
+                state
+                    .overlays
+                    .push(Overlay::NewChannel(NewChannel::default()));
                 Effect::none()
             }
             AppAction::ShowShortcuts => {
@@ -875,7 +955,9 @@ impl App {
                         let daemon = self.clients.daemon.clone();
                         return Effect::future(async move {
                             AppAction::SessionCreated(
-                                daemon.create_session(&channel, agent, &machine, &title).await,
+                                daemon
+                                    .create_session(&channel, agent, &machine, &title)
+                                    .await,
                             )
                         });
                     }
@@ -914,17 +996,23 @@ impl App {
                             .collect();
                         let daemon = self.clients.daemon.clone();
                         return Effect::future(async move {
-                            AppAction::ChannelCreated(daemon.create_channel(&name, repos, machines).await)
+                            AppAction::ChannelCreated(
+                                daemon.create_channel(&name, repos, machines).await,
+                            )
                         });
                     }
                 }
                 Effect::none()
             }
             AppAction::SessionCreated(result) => {
-                let sheet = state.overlays.iter_mut().rev().find_map(|overlay| match overlay {
-                    Overlay::NewSession(sheet) => Some(sheet),
-                    _ => None,
-                });
+                let sheet = state
+                    .overlays
+                    .iter_mut()
+                    .rev()
+                    .find_map(|overlay| match overlay {
+                        Overlay::NewSession(sheet) => Some(sheet),
+                        _ => None,
+                    });
                 match result {
                     Ok(id) => {
                         state
@@ -942,10 +1030,14 @@ impl App {
                 }
             }
             AppAction::ChannelCreated(result) => {
-                let sheet = state.overlays.iter_mut().rev().find_map(|overlay| match overlay {
-                    Overlay::NewChannel(sheet) => Some(sheet),
-                    _ => None,
-                });
+                let sheet = state
+                    .overlays
+                    .iter_mut()
+                    .rev()
+                    .find_map(|overlay| match overlay {
+                        Overlay::NewChannel(sheet) => Some(sheet),
+                        _ => None,
+                    });
                 match result {
                     Ok(id) => {
                         state
@@ -962,9 +1054,61 @@ impl App {
                     }
                 }
             }
+            AppAction::ToggleNavigationOverlay => {
+                state.navigation_overlay = !state.navigation_overlay;
+                Effect::none()
+            }
+            AppAction::CloseNavigationOverlay => {
+                state.navigation_overlay = false;
+                Effect::none()
+            }
+            AppAction::ToggleFullScreen(side) => {
+                if let Route::Session(id) = &state.route {
+                    if side == FullScreen::Panel && state.panel().is_none() {
+                        return Effect::none();
+                    }
+                    let next = if state.full_screen() == Some(side) {
+                        None
+                    } else {
+                        Some(side)
+                    };
+                    if let Some(next) = next {
+                        state.full_screens.insert(id.clone(), next);
+                    } else {
+                        state.full_screens.remove(id);
+                    }
+                    if side == FullScreen::Panel {
+                        state.layout.panel.collapsed = false;
+                    }
+                    state.session.views.entry(id.clone()).or_default().widened =
+                        next == Some(FullScreen::Panel);
+                    state.navigation_overlay = false;
+                }
+                Effect::none()
+            }
+            AppAction::Session(SessionAction::ToggleWiden) => {
+                self.handle(state, AppAction::ToggleFullScreen(FullScreen::Panel))
+            }
             AppAction::Pane(change) => {
+                if change == PaneAction::Toggle(PaneId::Panel)
+                    && state.panel().is_none()
+                    && matches!(state.route, Route::Session(_))
+                {
+                    return self.handle(
+                        state,
+                        AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
+                    );
+                }
                 match change {
                     PaneAction::Drag(pane, width) => state.layout.drag(pane, width),
+                    PaneAction::Toggle(PaneId::Panel)
+                        if state.full_screen() == Some(FullScreen::Terminal) =>
+                    {
+                        if let Some(id) = &state.session.open {
+                            state.full_screens.remove(id);
+                        }
+                        state.layout.panel.collapsed = false;
+                    }
                     PaneAction::Toggle(pane) => state.layout.toggle(pane),
                     PaneAction::Reset(pane) => state.layout.reset(pane),
                 }
@@ -999,7 +1143,20 @@ impl App {
                 state.review.wrap = state.settings.preferences.wrap_diffs;
                 effect
             }
+            AppAction::Session(SessionAction::SetPanel(None)) => {
+                if let Some(id) = &state.session.open {
+                    if state.full_screens.get(id) == Some(&FullScreen::Panel) {
+                        state.full_screens.remove(id);
+                    }
+                }
+                self.child(state, AppAction::Session(SessionAction::SetPanel(None)))
+            }
             AppAction::Session(SessionAction::SetPanel(Some(panel))) => {
+                if let Some(id) = &state.session.open {
+                    if state.full_screens.get(id) == Some(&FullScreen::Terminal) {
+                        state.full_screens.remove(id);
+                    }
+                }
                 let effect = self.child(
                     state,
                     AppAction::Session(SessionAction::SetPanel(Some(panel))),
@@ -1008,7 +1165,9 @@ impl App {
                     state.layout.panel.collapsed = false;
                 }
                 match (panel, state.session.open.clone()) {
-                    (Panel::Changes, Some(id)) => effect.and(self.child(state, AppAction::Review(ReviewAction::Open(id)))),
+                    (Panel::Changes, Some(id)) => {
+                        effect.and(self.child(state, AppAction::Review(ReviewAction::Open(id))))
+                    }
                     _ => effect,
                 }
             }

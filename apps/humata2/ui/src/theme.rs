@@ -30,8 +30,6 @@ pub const TOAST: u32 = 0x26303d;
 /// A toast's border.
 pub const TOAST_LINE: u32 = 0x3b4c63;
 
-/// The rail's width.
-pub const RAIL_WIDTH: f32 = 0.0;
 /// The top bar's height.
 pub const TOP_BAR: f32 = 52.0;
 /// A sidebar row's height; every row is the same so the list virtualizes.

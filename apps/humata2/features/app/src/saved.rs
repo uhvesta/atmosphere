@@ -21,7 +21,7 @@ use humata2_views::Decisions;
 use serde::{Deserialize, Serialize};
 
 use crate::Route;
-use crate::layout::Layout;
+use crate::layout::{FullScreen, Layout};
 
 /// The storage key the app's state is saved under.
 pub const KEY: &str = "humata2-ui.json";
@@ -38,6 +38,8 @@ pub struct SavedUi {
     pub sessions: BTreeMap<SessionId, SessionView>,
     /// Pane sizes.
     pub layout: Layout,
+    /// Full-window presentation saved per session.
+    pub full_screens: BTreeMap<SessionId, FullScreen>,
     /// What the sidebar folded.
     pub folding: Folding,
     /// Settings.
@@ -92,7 +94,9 @@ pub enum RestoreError {
 #[derive(Debug, thiserror::Error)]
 pub enum SaveError {
     /// Storage refused.
-    #[error("couldn't save where you are: {source}. If Humata restarts now it may open where you were a moment ago.")]
+    #[error(
+        "couldn't save where you are: {source}. If Humata restarts now it may open where you were a moment ago."
+    )]
     Save {
         /// Why.
         #[source]

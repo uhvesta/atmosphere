@@ -291,15 +291,21 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
         let (rows, cursor, current, collapsed, width) = self.ui.read(|state| {
-            let (width, _) = state.layout.widths(
-                f32::from(window.viewport_size().width) - theme::RAIL_WIDTH,
+            let columns = state.layout.columns(
+                f32::from(window.viewport_size().width),
+                matches!(state.route, Route::Session(_)),
                 state.panel().is_some(),
             );
+            let width = if state.navigation_overlay {
+                236.
+            } else {
+                columns.sidebar
+            };
             (
                 state.sidebar.rows.clone(),
                 state.sidebar.cursor.clone(),
                 state.sidebar.current.clone(),
-                state.layout.sidebar.collapsed,
+                columns.sidebar_hidden && !state.navigation_overlay,
                 width,
             )
         });
@@ -402,7 +408,11 @@ impl Render for Sidebar {
                         "sidebar-hide",
                         "Hide sidebar",
                         IconName::PanelLeft,
-                        AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)),
+                        if ui.read(|s| s.navigation_overlay) {
+                            AppAction::CloseNavigationOverlay
+                        } else {
+                            AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar))
+                        },
                         look.secondary,
                     ))
                     .child(chrome::action(

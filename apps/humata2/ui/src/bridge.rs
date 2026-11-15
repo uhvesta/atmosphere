@@ -112,6 +112,7 @@ impl Ui {
                     state.layout.sidebar,
                     state.load.clone(),
                     state.route.clone(),
+                    state.navigation_overlay,
                 )
             },
             move |_| changed(),
@@ -123,7 +124,11 @@ impl Ui {
                     state.load.clone(),
                     state.route.clone(),
                     state.trail.len(),
-                    state.layout,
+                    (
+                        state.layout,
+                        state.full_screens.clone(),
+                        state.navigation_overlay,
+                    ),
                     state.restore_error.clone(),
                     (
                         state.session.clone(),
