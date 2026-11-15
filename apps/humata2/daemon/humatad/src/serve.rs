@@ -280,6 +280,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Link::Local,
     );
     let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone());
+    let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone());
     let access = Access::new(guard.clone());
     let operations = Arc::new(Operations::default());
     let machines = match role {
@@ -306,6 +307,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 .max_decoding_message_size(DECODE_MAX_BYTES),
         )
         .add_service(pb::inbox_service_server::InboxServiceServer::new(inbox))
+        .add_service(pb::diff_service_server::DiffServiceServer::new(review.clone()))
+        .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review))
         .add_service(pb::access_service_server::AccessServiceServer::new(access))
         .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(CliAuth {
             logins,

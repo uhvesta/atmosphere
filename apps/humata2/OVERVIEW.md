@@ -264,9 +264,13 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] MCP relays `review_focus`, `review_note` and `review_prepare` to the pane.
 
 ### review_diff wiring (A2, A8; PR-22–PR-26, D66)
-- [ ] humatad serves DiffService, ReviewChatService, CommentService and ViewService (`src/review.rs`), with a MarkReviewed tree snapshot.
-- [ ] MCP dispatches the 6 review tools; add `humatad/tests/review.rs` and access tests.
-- [ ] The CLI sends a real `shown_tree` (today it's empty); the store persists UserNote and ReviewViewState.
+- [x] humatad serves DiffService and ReviewChatService (`daemon/humatad/src/review.rs`) on the socket. MarkReviewed snapshots per repo the `shown_tree` the client names, else the last GetDiff's new tree, else the working tree; review chat changes reach WatchReviewChanges; the agent may read its own diff, `review_context` and `review_focus`, never MarkReviewed, Undo or the switches (user-only). Test: `//apps/humata2/daemon/humatad:review_test`.
+- [ ] humatad serves CommentService (at least the `note` destination: review_note, review_note_edit, review_note_drop) and ViewService (PrepareView; in a review chat `review_prepare` applies through `ReviewChat::prepare`).
+- [ ] MCP dispatches the 6 review tools (`daemon/humatad/src/mcp.rs` answers every review tool with not built today); add MCP tests beside `tests/review.rs`.
+- [ ] The review state in `src/review.rs` is memory only: the store persists UserNote, ReviewViewState, the switches and the last shown trees, so a restart keeps the review chat and Mark reviewed still snapshots what was shown.
+- [ ] The CLI's empty `shown_tree` is what the proto asks of it ("Empty (the CLI): the last GetDiff's trees"), and the daemon now fills it in; drop this item unless the CLI gets its own diff view.
+- [ ] DiffService on the peer link (a session on another machine) is still not built; the socket's daemon serves it.
+- [ ] `GetDiff` with `other_session` is refused (wire leaves it to the daemon); resolve it to that session's snapshot.
 - [ ] Measure gix end to end.
 
 ### Diff view (`apps/humata2/diff`; D67)

@@ -28,6 +28,7 @@ mod paste;
 mod peer;
 mod peer_link;
 mod restart;
+mod review;
 mod serve;
 mod status;
 mod sync;

@@ -91,7 +91,6 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(AgentService)
         .add_service(MarkService)
         .add_service(ViewStateService)
-        .add_service(DiffService)
         .add_service(CommentService)
         .add_service(PullRequestReviewService)
         .add_service(ViewService)
@@ -105,7 +104,7 @@ pub(crate) fn register_host_only<L>(router: Router<L>) -> Router<L> {
 
 /// Adds to the peer link's `router` what it carries that isn't built yet:
 /// the services the Mac relays to this machine. PeerService is `peer`'s.
-/// TerminalService and FileService are built, but only in the socket's
+/// TerminalService, FileService and DiffService are built, but only in the socket's
 /// daemon, which holds the terminals and the store; this process doesn't
 /// (see `peer_link`).
 pub(crate) fn register_peer_link<L>(router: Router<L>) -> Router<L> {
