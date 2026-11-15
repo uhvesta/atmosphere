@@ -21,6 +21,11 @@ pub enum Capability {
     ViewsPrepare,
     ReviewDraft,
     InboxAsk,
+    // The review chat's three switches (PR-25): Default Allow in a PR
+    // review session, and the user turns each off in the review itself.
+    ReviewFocus,
+    ReviewNote,
+    ReviewOrder,
     // Ask me.
     ChannelBoardEditOthers,
     GlobalRead,
@@ -117,7 +122,7 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 43] = [
+    pub const ALL: [Capability; 46] = [
         Self::OwnBoardWrite,
         Self::ChannelRead,
         Self::ChannelBoardAdd,
@@ -127,6 +132,9 @@ impl Capability {
         Self::ViewsPrepare,
         Self::ReviewDraft,
         Self::InboxAsk,
+        Self::ReviewFocus,
+        Self::ReviewNote,
+        Self::ReviewOrder,
         Self::ChannelBoardEditOthers,
         Self::GlobalRead,
         Self::FilesReadOtherSession,
@@ -173,7 +181,10 @@ impl Capability {
             | Self::FilesFetchLocal
             | Self::ViewsPrepare
             | Self::ReviewDraft
-            | Self::InboxAsk => Tier::DefaultAllow,
+            | Self::InboxAsk
+            | Self::ReviewFocus
+            | Self::ReviewNote
+            | Self::ReviewOrder => Tier::DefaultAllow,
             Self::ChannelBoardEditOthers
             | Self::GlobalRead
             | Self::FilesReadOtherSession
@@ -271,6 +282,9 @@ impl Capability {
             | Self::ViewsPrepare
             | Self::ReviewDraft
             | Self::InboxAsk
+            | Self::ReviewFocus
+            | Self::ReviewNote
+            | Self::ReviewOrder
             | Self::ChannelBoardEditOthers
             | Self::FilesReadOtherSession
             | Self::FilesCopyIn
@@ -330,6 +344,9 @@ impl Capability {
             Self::ViewsPrepare => "prepare views for you",
             Self::ReviewDraft => "draft PR review comments",
             Self::InboxAsk => "ask you a question or ask ahead for access",
+            Self::ReviewFocus => "move your review's view to a file or lines",
+            Self::ReviewNote => "leave you notes in a review",
+            Self::ReviewOrder => "order a review's files",
             Self::ChannelBoardEditOthers => "edit anyone else's board items",
             Self::GlobalRead => "use the global board or other channels",
             Self::FilesReadOtherSession => "read another session's files",

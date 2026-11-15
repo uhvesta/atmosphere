@@ -448,7 +448,7 @@ fn the_capability_list_matches_the_trace_matrix() {
     assert_eq!(all.len(), Capability::ALL.len(), "no capability is listed twice");
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
     // TRACE.md §2's rows.
-    assert_eq!(count(Tier::DefaultAllow), 9);
+    assert_eq!(count(Tier::DefaultAllow), 12);
     assert_eq!(count(Tier::AskMe), 17);
     assert_eq!(count(Tier::AskNoAllow), 1);
     assert_eq!(count(Tier::NeverByDefault), 3);

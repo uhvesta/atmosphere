@@ -802,6 +802,14 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
         (C::OwnSessionManage, Target::Session(session)) if session.id == me.id => {
             need(C::OwnSessionManage)
         }
+        // The review chat acts on its own review only. The session kind
+        // isn't required: the daemon checks the review is open, and the
+        // user's per-review switch decides past this rule.
+        (C::ReviewFocus | C::ReviewNote | C::ReviewOrder, Target::Session(session))
+            if session.id == me.id =>
+        {
+            need(capability)
+        }
         (C::SessionMove, Target::Session(session)) => {
             in_channel(agent, &session.channel, need(C::SessionMove))
         }
