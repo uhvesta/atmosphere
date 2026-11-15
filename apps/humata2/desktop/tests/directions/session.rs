@@ -1,0 +1,1087 @@
+//! The session screen (SE-6 to SE-20): a header, the terminal with its
+//! tabs, and the panel on the right, in each state the session can be in.
+
+use gpui_kit::assets::IconName;
+use gpui_kit::{prelude::*, *};
+
+use crate::kit::*;
+use crate::sidebar::{self, Side};
+
+/// Which panel is open on the right.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    Diff,
+    Inbox,
+    Files,
+    Board,
+    Journal,
+    Info,
+}
+
+/// How the user picks the panel: the options for the owner.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Switch {
+    /// Option A: icon tabs across the top of the panel.
+    Tabs,
+    /// Option B: a labelled strip down the window's right edge (SE-11).
+    Strip,
+    /// Option C: a Panes list on the right (NV-29).
+    Panes,
+}
+
+/// What the terminal shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Term {
+    Working,
+    NeedsYou,
+    Exited,
+    Offline,
+}
+
+/// What fills the window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    Columns,
+    /// The sidebar and the panel collapsed to strips.
+    Collapsed,
+    TerminalFull,
+    PanelFull,
+}
+
+#[derive(Clone, Copy)]
+pub struct Screen {
+    pub panel: Option<Panel>,
+    pub switch: Switch,
+    pub term: Term,
+    pub fill: Fill,
+    pub side: Side,
+}
+
+impl Screen {
+    pub const fn new(panel: Option<Panel>, term: Term) -> Self {
+        Self {
+            panel,
+            switch: Switch::Tabs,
+            term,
+            fill: Fill::Columns,
+            side: Side::at("Ledger schema migration"),
+        }
+    }
+}
+
+pub const PANEL_WIDTH: f32 = 340.;
+
+fn header(look: Look, screen: Screen) -> Div {
+    let full = screen.fill == Fill::TerminalFull;
+    let (dot, words) = match screen.term {
+        Term::Working => (St::Working, None),
+        Term::NeedsYou => (St::NeedsYou, Some(("Needs you", ORANGE))),
+        Term::Exited => (St::Exited, Some(("Agent exited", RED))),
+        Term::Offline => (St::Offline, Some(("devbox-1 is offline", GREY))),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .h(px(52.))
+        .px(px(16.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(c(look.line))
+        .bg(c(look.content))
+        .when(full || screen.fill == Fill::Collapsed, |bar| bar.child(traffic_lights()).child(div().w(px(4.))))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .text_size(px(11.5))
+                        .text_color(c(look.secondary))
+                        .child(div().text_color(c(look.accent)).child("# payments-rewrite"))
+                        .child("›"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.))
+                        .child(status(dot))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child("Ledger schema migration"))
+                        .children(words.map(|(words, hex)| div().text_size(px(11.5)).text_color(c(hex)).child(words))),
+                ),
+        )
+        .child(div().flex_1())
+        .child(secondary(look, "Claude Code · devbox-1"))
+        .when(screen.term == Term::Exited, |bar| {
+            bar.child(button(look, Kind::Primary, "Resume agent").child(div()))
+        })
+        .child(icon(IconName::GitFork, look.secondary))
+        .child(icon(if full { IconName::Minimize2 } else { IconName::Maximize2 }, look.secondary))
+        .when(!full && screen.switch != Switch::Strip, |bar| {
+            bar.child(icon(IconName::PanelRight, if screen.panel.is_some() { look.accent } else { look.secondary }))
+        })
+        .child(icon(IconName::Ellipsis, look.secondary))
+}
+
+fn tab(look: Look, lead: Option<AnyElement>, text: &'static str, on: bool, closable: bool) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h_full()
+        .px(px(12.))
+        .border_r_1()
+        .border_color(c(look.line))
+        .text_size(px(12.))
+        .when(on, |tab| tab.bg(c(look.term)).text_color(c(look.text)))
+        .when(!on, |tab| tab.text_color(c(look.secondary)))
+        .children(lead)
+        .child(text)
+        .when(closable, |tab| tab.child(small_icon(IconName::X, look.tertiary)))
+}
+
+fn tabs(look: Look, screen: Screen) -> Div {
+    let dot = match screen.term {
+        Term::Working => St::Working,
+        Term::NeedsYou => St::NeedsYou,
+        Term::Exited => St::Exited,
+        Term::Offline => St::Offline,
+    };
+    div()
+        .flex()
+        .items_center()
+        .h(px(32.))
+        .flex_shrink_0()
+        .bg(c(look.panel))
+        .border_b_1()
+        .border_color(c(look.line))
+        .child(tab(look, Some(status(dot).into_any_element()), "claude", true, false))
+        .child(tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false))
+        .child(tab(look, Some(small_icon(IconName::FileCode, look.secondary).into_any_element()), "client.rs", false, true))
+        .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)))
+        .child(div().flex_1())
+        .when(screen.term == Term::Offline, |bar| {
+            bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .mr(px(12.))
+                    .text_size(px(11.5))
+                    .text_color(c(look.secondary))
+                    .child(small_icon(IconName::WifiOff, look.secondary))
+                    .child("disconnected"),
+            )
+        })
+        .when(screen.term == Term::Working, |bar| {
+            bar.child(div().mr(px(12.)).child(secondary(look, "1 other can type here")))
+        })
+}
+
+/// A line Humata writes into the terminal, set apart from the program's
+/// own output.
+fn notice(look: Look, glyph: IconName, hex: u32, text: &'static str, action: Option<&'static str>) -> Div {
+    div()
+        .mt(px(10.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(7.))
+        .rounded(px(7.))
+        .bg(c(look.fill))
+        .font_family(SYSTEM_FONT)
+        .text_size(px(12.))
+        .text_color(c(look.text))
+        .child(small_icon(glyph, hex))
+        .child(div().flex_1().child(text))
+        .children(action.map(|action| button(look, Kind::Secondary, action)))
+}
+
+fn transcript(look: Look) -> Vec<Div> {
+    vec![
+        tl(look.term_dim, "~/src/ledger (ledger-schema) $ claude"),
+        tl(look.term_text, "> Design the ledger schema from PAY-3 and move the reads over."),
+        tl(look.term_text, ""),
+        tl(look.term_text, "● Read(ledger/docs/model.md)"),
+        tl(look.term_dim, "  ⎿ Read 212 lines"),
+        tl(look.term_text, "● Write(ledger/migrations/0042_accounts.sql)"),
+        tl(look.term_dim, "  ⎿ Wrote 41 lines"),
+        tl(look.term_text, "● Update(api/src/client.rs)"),
+        tl(look.term_dim, "  ⎿ Updated with 62 additions and 21 removals"),
+        tl(look.term_text, "● Bash(cargo test -p api ledger)"),
+        tl(GREEN, "  ⎿ test result: ok. 14 passed; 0 failed"),
+        tl(look.term_text, ""),
+        tl(look.term_text, "● Updated plan"),
+        tl(GREEN, "  ✓ Add accounts and entries tables"),
+        tl(GREEN, "  ✓ Dual-write from client.rs"),
+        tl(ORANGE, "  ◐ Backfill entries from ledger_entries"),
+        tl(look.term_dim, "    Switch reads, drop the old index"),
+        tl(look.term_text, ""),
+    ]
+}
+
+fn input_box(look: Look, enabled: bool) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .child(
+            div()
+                .px(px(8.))
+                .py(px(4.))
+                .border_1()
+                .border_color(c(look.term_dim))
+                .rounded(px(4.))
+                .flex()
+                .gap(px(2.))
+                .child(tl(if enabled { look.term_text } else { look.term_dim }, "> "))
+                .when(enabled, |input| input.child(div().w(px(7.)).h(px(15.)).bg(c(look.term_text)))),
+        )
+        .child(tl(look.term_dim, "  ⏵⏵ accept edits on (shift+tab to cycle)"))
+}
+
+pub fn terminal(look: Look, term: Term) -> Div {
+    let body = div()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .px(px(14.))
+        .pt(px(10.))
+        .pb(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .bg(c(look.term))
+        .font_family(MONO)
+        .text_size(px(12.))
+        .line_height(px(17.))
+        .text_color(c(look.term_text))
+        .children(transcript(look));
+    match term {
+        Term::Working => body
+            .child(tl(look.term_text, "● Bash(psql -f backfill.sql)"))
+            .child(tl(look.term_dim, "  ⎿ INSERT 0 48210 … (running)"))
+            .child(tl(look.term_text, ""))
+            .child(tl(ORANGE, "✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)"))
+            .child(div().flex_1())
+            .child(input_box(look, true)),
+        Term::NeedsYou => body
+            .child(tl(look.term_text, "● humata board_item_move PAY-3 → Done"))
+            .child(tl(ORANGE, "  ⎿ ⏳ waiting for your approval (Inbox)"))
+            .child(tl(look.term_text, ""))
+            .child(tl(ORANGE, "? Drop the old ledger_entries index before the switch, or keep"))
+            .child(tl(ORANGE, "  both until the backfill ends?"))
+            .child(tl(look.term_text, "  ❯ 1. Keep both"))
+            .child(tl(look.term_dim, "    2. Drop it now"))
+            .child(tl(look.term_dim, "    3. Type something else"))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .font_family(SYSTEM_FONT)
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(7.))
+                    .bg(c(look.fill))
+                    .text_size(px(12.))
+                    .child(small_icon(IconName::MessageSquareText, look.secondary))
+                    .child(div().flex_1().child("2 messages queued · typed when this turn ends"))
+                    .child(div().text_color(c(look.accent)).child("Show")),
+            ),
+        Term::Exited => body
+            .child(tl(look.term_text, "● All four steps are done. Reads go to entries now."))
+            .child(tl(look.term_text, ""))
+            .child(tl(look.term_dim, "~/src/ledger (ledger-schema) $ "))
+            .child(notice(
+                look,
+                IconName::CircleX,
+                RED,
+                "claude exited with code 0. Resume starts it again with this conversation.",
+                Some("Resume"),
+            ))
+            .child(div().flex_1()),
+        Term::Offline => body
+            .child(tl(look.term_text, "● Bash(psql -f backfill.sql)"))
+            .child(tl(look.term_dim, "  ⎿ INSERT 0 48210 … (running)"))
+            .child(notice(
+                look,
+                IconName::WifiOff,
+                GREY,
+                "Lost the connection to devbox-1 at 14:02. The agent keeps running there; this view catches up when it is back.",
+                None,
+            ))
+            .child(div().flex_1())
+            .child(input_box(look, false).opacity(0.5)),
+    }
+}
+
+fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<Div>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .h(px(36.))
+        .px(px(14.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(c(look.line))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+        .children(extra)
+        .child(div().flex_1())
+        .child(small_icon(if full { IconName::Minimize2 } else { IconName::Maximize2 }, look.secondary))
+        .child(small_icon(IconName::X, look.secondary))
+}
+
+/// Option A: the panel's kinds as icon tabs at its top.
+fn panel_tabs(look: Look, on: Panel) -> Div {
+    let item = |glyph: IconName, panel: Panel, count: Option<&'static str>| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .px(px(8.))
+            .h(px(26.))
+            .rounded(px(6.))
+            .when(panel == on, |tab| tab.bg(c(look.fill)))
+            .child(icon(glyph, if panel == on { look.accent } else { look.secondary }))
+            .children(count.map(|count| badge(look, count, panel == Panel::Inbox)))
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .h(px(52.))
+        .px(px(10.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(c(look.line))
+        .child(item(IconName::Inbox, Panel::Inbox, Some("1")))
+        .child(item(IconName::FileDiff, Panel::Diff, Some("2")))
+        .child(item(IconName::FolderTree, Panel::Files, None))
+        .child(item(IconName::SquareKanban, Panel::Board, None))
+        .child(item(IconName::BookOpenText, Panel::Journal, None))
+        .child(item(IconName::Info, Panel::Info, None))
+}
+
+/// Option B: a labelled strip down the right edge (SE-11).
+fn strip(look: Look, on: Option<Panel>) -> Div {
+    let item = |glyph: IconName, panel: Panel, text: &'static str, count: Option<&'static str>| {
+        let lit = on == Some(panel);
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(2.))
+            .w(px(52.))
+            .py(px(7.))
+            .rounded(px(7.))
+            .when(lit, |item| item.bg(c(look.fill)))
+            .child(icon(glyph, if lit { look.accent } else { look.secondary }))
+            .child(div().text_size(px(10.)).text_color(c(if lit { look.text } else { look.secondary })).child(text))
+            .children(count.map(|count| div().absolute().top(px(2.)).right(px(6.)).child(badge(look, count, panel == Panel::Inbox))))
+    };
+    div()
+        .w(px(64.))
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(4.))
+        .pt(px(60.))
+        .flex_shrink_0()
+        .bg(c(look.sidebar))
+        .border_l_1()
+        .border_color(c(look.line))
+        .child(item(IconName::Inbox, Panel::Inbox, "Inbox", Some("1")))
+        .child(item(IconName::FileDiff, Panel::Diff, "Diff", Some("2")))
+        .child(item(IconName::FolderTree, Panel::Files, "Files", None))
+        .child(item(IconName::SquareKanban, Panel::Board, "Board", None))
+        .child(item(IconName::BookOpenText, Panel::Journal, "Journal", None))
+        .child(item(IconName::Info, Panel::Info, "Info", None))
+}
+
+/// Option C: a Panes list on the right (NV-29).
+fn panes(look: Look, on: Option<Panel>) -> Div {
+    let item = |glyph: IconName, text: &'static str, lit: bool, count: Option<&'static str>| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .h(px(25.))
+            .mx(px(8.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .when(lit, |row| row.bg(c(look.fill)))
+            .child(small_icon(glyph, if lit { look.accent } else { look.secondary }))
+            .child(div().flex_1().child(text))
+            .children(count.map(|count| badge(look, count, false)))
+    };
+    div()
+        .w(px(170.))
+        .h_full()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .bg(c(look.sidebar))
+        .border_l_1()
+        .border_color(c(look.line))
+        .text_size(px(12.5))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .h(px(52.))
+                .px(px(16.))
+                .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Panes"))
+                .child(div().text_size(px(11.5)).text_color(c(look.accent)).child("Reset")),
+        )
+        .child(div().px(px(16.)).pb(px(4.)).child(label(look, "This session")))
+        .child(item(IconName::SquareTerminal, "claude", true, None))
+        .child(item(IconName::SquareTerminal, "zsh", false, None))
+        .child(item(IconName::FileDiff, "Diff", on == Some(Panel::Diff), Some("2")))
+        .child(item(IconName::FolderTree, "Files", on == Some(Panel::Files), None))
+        .child(item(IconName::SquareKanban, "Board", on == Some(Panel::Board), None))
+        .child(item(IconName::Inbox, "Inbox", on == Some(Panel::Inbox), Some("1")))
+        .child(item(IconName::BookOpenText, "Journal", on == Some(Panel::Journal), None))
+        .child(item(IconName::Info, "Info", on == Some(Panel::Info), None))
+        .child(div().px(px(16.)).pt(px(12.)).pb(px(4.)).child(label(look, "Everywhere")))
+        .child(item(IconName::Inbox, "Inbox", false, Some("7")))
+        .child(item(IconName::SquareKanban, "Board", false, None))
+        .child(item(IconName::Server, "Hosts", false, None))
+        .child(div().flex_1())
+        .child(div().p(px(14.)).child(secondary(look, "Drag onto a pane's edge to split.")))
+}
+
+fn diff_file(look: Look, name: &'static str, add: &'static str, del: &'static str, on: bool, comments: Option<&'static str>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h(px(24.))
+        .px(px(8.))
+        .rounded(px(5.))
+        .when(on, |row| row.bg(c(look.fill)))
+        .child(small_icon(IconName::FileCode, look.secondary))
+        .child(div().flex_1().whitespace_nowrap().child(name))
+        .children(comments.map(|count| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .text_size(px(11.))
+                .text_color(c(look.accent))
+                .child(small_icon(IconName::MessageSquare, look.accent))
+                .child(count)
+        }))
+        .child(div().text_size(px(11.)).text_color(c(GREEN)).child(add))
+        .child(div().text_size(px(11.)).text_color(c(RED)).child(del))
+}
+
+fn repo(look: Look, name: &'static str, branch: &'static str) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .h(px(26.))
+        .px(px(4.))
+        .child(small_icon(IconName::ChevronDown, look.tertiary))
+        .child(small_icon(IconName::FolderGit2, look.secondary))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+        .child(div().flex_1())
+        .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child(branch))
+}
+
+fn diff_lines(look: Look) -> Div {
+    let line = |n: &'static str, bg: Option<u32>, text: &'static str| {
+        div()
+            .flex()
+            .when_some(bg, |row, bg| row.bg(c(bg)))
+            .child(div().w(px(34.)).pr(px(8.)).text_color(c(look.term_dim)).flex().justify_end().child(n))
+            .child(div().whitespace_nowrap().text_color(c(look.term_text)).child(text))
+    };
+    div()
+        .flex()
+        .flex_col()
+        .py(px(6.))
+        .font_family(MONO)
+        .text_size(px(11.5))
+        .line_height(px(17.))
+        .bg(c(look.term))
+        .child(div().px(px(10.)).text_color(c(look.term_dim)).child("@@ -40,7 +40,12 @@ impl Client {"))
+        .child(line("40", None, "    pub async fn post(&self, entry: Entry)"))
+        .child(line("41", Some(look.del_bg), "-       self.db.insert_legacy(&entry).await?;"))
+        .child(line("41", Some(look.add_bg), "+       let tx = self.db.begin().await?;"))
+        .child(line("42", Some(look.add_bg), "+       tx.insert_entry(&entry).await?;"))
+        .child(line("43", Some(look.add_bg), "+       tx.insert_legacy(&entry).await?;"))
+        .child(line("44", Some(look.add_bg), "+       tx.commit().await?;"))
+}
+
+fn comment(look: Look, who: &'static str, text: &'static str, draft: bool) -> Div {
+    div()
+        .mx(px(10.))
+        .my(px(6.))
+        .p(px(9.))
+        .rounded(px(8.))
+        .bg(c(look.card))
+        .border_1()
+        .border_color(c(if draft { look.accent } else { look.line }))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .font_family(SYSTEM_FONT)
+        .text_size(px(12.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(who))
+                .when(draft, |row| row.child(chip(look, "Draft", look.accent))),
+        )
+        .child(text)
+}
+
+fn diff_panel(look: Look, full: bool) -> Div {
+    let list = div()
+        .flex()
+        .flex_col()
+        .p(px(8.))
+        .gap(px(1.))
+        .text_size(px(12.5))
+        .when(full, |list| list.w(px(300.)).h_full().border_r_1().border_color(c(look.line)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(4.))
+                .pb(px(6.))
+                .child(secondary(look, "3 files · 2 repos"))
+                .child(div().flex_1())
+                .child(div().text_size(px(11.)).text_color(c(GREEN)).child("+184"))
+                .child(div().text_size(px(11.)).text_color(c(RED)).child("−24")),
+        )
+        .child(repo(look, "ledger", "ledger-schema"))
+        .child(diff_file(look, "migrations/0042_accounts.sql", "+41", "−0", false, None))
+        .child(repo(look, "api", "ledger-schema"))
+        .child(diff_file(look, "src/client.rs", "+62", "−21", true, Some("2")))
+        .child(diff_file(look, "src/entry.rs", "+81", "−3", false, None));
+    let view = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(10.))
+                .h(px(30.))
+                .border_y_1()
+                .border_color(c(look.line))
+                .text_size(px(12.))
+                .child(small_icon(IconName::FileCode, look.secondary))
+                .child(div().font_weight(FontWeight::MEDIUM).child("api/src/client.rs"))
+                .child(div().flex_1())
+                .child(secondary(look, "Open in editor")),
+        )
+        .child(diff_lines(look))
+        .child(comment(look, "You", "Wrap the two writes in one transaction so a crash can't leave them out of step.", false))
+        .child(comment(look, "You", "Keep insert_legacy until the backfill ends.", true));
+    div()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(panel_header(
+            look,
+            "Diff",
+            full,
+            Some(div().flex().items_center().gap(px(6.)).child(secondary(look, "against")).child(popup(look, "main"))),
+        ))
+        .child(if full { div().flex_1().flex().child(list).child(view) } else { div().flex_1().flex().flex_col().child(list).child(view) })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .p(px(10.))
+                .border_t_1()
+                .border_color(c(look.line))
+                .child(secondary(look, "1 draft comment"))
+                .child(div().flex_1())
+                .child(button(look, Kind::Primary, "Send 2 comments")),
+        )
+}
+
+pub fn decision_card(look: Look, open: bool) -> Div {
+    let card = card(look).p(px(12.)).gap(px(8.)).text_size(px(12.5));
+    let top = div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(status(St::NeedsYou))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child("Move PAY-3 to Done"))
+        .child(div().flex_1())
+        .child(secondary(look, "2m"));
+    if !open {
+        return card
+            .child(top)
+            .child(secondary(look, "Claude Code in Ledger schema migration"));
+    }
+    card.border_color(c(ORANGE))
+        .child(top)
+        .child(secondary(look, "Claude Code in Ledger schema migration · board_item_move"))
+        .child(div().child(
+            "The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you.",
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .p(px(8.))
+                .rounded(px(6.))
+                .bg(c(look.fill))
+                .text_size(px(11.5))
+                .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child("Item")).child("PAY-3 Ledger schema"))
+                .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child("Move")).child("In progress → Done"))
+                .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child("Created by")).child("You, 3 days ago")),
+        )
+        .child(checkbox(look, false, "Allow this for the rest of the session"))
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(button(look, Kind::Primary, "Allow"))
+                .child(button(look, Kind::Secondary, "Deny"))
+                .child(div().flex_1())
+                .child(button(look, Kind::Secondary, "Reply…")),
+        )
+}
+
+fn inbox_panel(look: Look, full: bool) -> Div {
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .child(panel_header(look, "Inbox", full, Some(secondary(look, "this session and its forks"))))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .p(px(10.))
+                .child(decision_card(look, true))
+                .child(
+                    card(look)
+                        .p(px(12.))
+                        .gap(px(4.))
+                        .text_size(px(12.5))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(small_icon(IconName::GitFork, look.secondary))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child("Push try-brin to origin"))
+                                .child(div().flex_1())
+                                .child(secondary(look, "9m")),
+                        )
+                        .child(secondary(look, "Claude Code in Try BRIN index")),
+                )
+                .child(div().pt(px(6.)).child(label(look, "Allowed without asking")))
+                .child(secondary(look, "✓ Created PAY-9 “Backfill progress bar” · 12m"))
+                .child(secondary(look, "✓ Commented on PAY-3 · 20m")),
+        )
+}
+
+fn files_panel(look: Look, full: bool) -> Div {
+    let entry = |indent: f32, glyph: IconName, name: &'static str, mark: Option<(&'static str, u32)>, on: bool| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(23.))
+            .pl(px(8. + indent))
+            .pr(px(8.))
+            .rounded(px(5.))
+            .when(on, |row| row.bg(c(look.fill)))
+            .child(small_icon(glyph, look.secondary))
+            .child(div().flex_1().child(name))
+            .children(mark.map(|(mark, hex)| div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(c(hex)).child(mark)))
+    };
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .child(panel_header(look, "Files", full, None))
+        .child(div().p(px(10.)).child(field(look, "Filter files", true)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .px(px(6.))
+                .text_size(px(12.5))
+                .child(entry(0., IconName::FolderGit2, "ledger", None, false))
+                .child(entry(14., IconName::FolderOpen, "migrations", None, false))
+                .child(entry(28., IconName::FileCode, "0041_init.sql", None, false))
+                .child(entry(28., IconName::FileCode, "0042_accounts.sql", Some(("A", GREEN)), false))
+                .child(entry(14., IconName::Folder, "docs", None, false))
+                .child(entry(14., IconName::FileText, "README.md", None, false))
+                .child(entry(0., IconName::FolderGit2, "api", None, false))
+                .child(entry(14., IconName::FolderOpen, "src", None, false))
+                .child(entry(28., IconName::FileCode, "client.rs", Some(("M", ORANGE)), true))
+                .child(entry(28., IconName::FileCode, "entry.rs", Some(("M", ORANGE)), false))
+                .child(entry(28., IconName::FileCode, "lib.rs", None, false))
+                .child(entry(14., IconName::FileText, "Cargo.toml", None, false)),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .p(px(10.))
+                .border_t_1()
+                .border_color(c(look.line))
+                .child(button(look, Kind::Secondary, "Open big"))
+                .child(button(look, Kind::Secondary, "Open in editor"))
+                .child(button(look, Kind::Secondary, "Upload…")),
+        )
+}
+
+fn info_panel(look: Look, full: bool) -> Div {
+    let kv = |key: &'static str, value: Div| {
+        div()
+            .flex()
+            .gap(px(10.))
+            .py(px(3.))
+            .child(div().w(px(84.)).flex_shrink_0().text_color(c(look.secondary)).child(key))
+            .child(value.flex_1())
+    };
+    let link = |text: &'static str| div().text_color(c(look.accent)).child(text);
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .child(panel_header(look, "Info", full, None))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .p(px(12.))
+                .text_size(px(12.5))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(kv("Agent", div().child("Claude Code · Opus")))
+                        .child(kv("Machine", div().child("devbox-1 · Ubuntu 24.04")))
+                        .child(kv("Started", div().child("Today 11:40")))
+                        .child(kv("Forks", link("Try BRIN index")))
+                        .child(kv(
+                            "Clones",
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(div().flex().gap(px(6.)).child("ledger").child(chip(look, "ledger-schema", look.secondary)).child(chip(look, "main clone", look.accent)))
+                                .child(div().flex().gap(px(6.)).child("api").child(chip(look, "ledger-schema", look.secondary))),
+                        )),
+                )
+                .child(
+                    card(look)
+                        .p(px(10.))
+                        .gap(px(4.))
+                        .child(div().flex().items_center().gap(px(6.)).child(small_icon(IconName::ShieldCheck, GREEN)).child(div().font_weight(FontWeight::SEMIBOLD).child("Survives restarts")))
+                        .child(secondary(look, "humatad holds this terminal on devbox-1, not the app. After a reboot it runs claude --resume 7f3a… in the same folder. 10,000 lines of scrollback kept on disk there.")),
+                )
+                .child(
+                    card(look)
+                        .p(px(10.))
+                        .gap(px(4.))
+                        .child(div().flex().items_center().gap(px(6.)).child(small_icon(IconName::Bot, look.accent)).child(div().font_weight(FontWeight::SEMIBOLD).child("What this agent may do")))
+                        .child(secondary(look, "Owns this session, its board (4 items), its clones and the 2 items it created. Everything else goes to the Inbox."))
+                        .child(secondary(look, "Not contained: it can read and write anything you can on devbox-1."))
+                        .child(link("Channel rules")),
+                ),
+        )
+}
+
+fn board_panel(look: Look, full: bool) -> Div {
+    let item = |id: &'static str, title: &'static str, state: Option<St>| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(7.))
+            .px(px(10.))
+            .py(px(7.))
+            .rounded(px(7.))
+            .bg(c(look.card))
+            .border_1()
+            .border_color(c(look.line))
+            .child(div().text_size(px(11.)).text_color(c(look.secondary)).child(id))
+            .child(div().flex_1().child(title))
+            .children(state.map(status))
+    };
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .child(panel_header(look, "Board", full, Some(secondary(look, "payments-rewrite"))))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .p(px(10.))
+                .text_size(px(12.5))
+                .child(label(look, "In progress · 2"))
+                .child(item("PAY-3", "Ledger schema", Some(St::NeedsYou)))
+                .child(item("PAY-7", "Refund retries", Some(St::Working)))
+                .child(div().pt(px(6.)).child(label(look, "To do · 2")))
+                .child(item("PAY-9", "Backfill progress bar", None))
+                .child(item("PAY-11", "Drop ledger_entries", None))
+                .child(div().pt(px(6.)).child(label(look, "Done · 5")))
+                .child(item("PAY-2", "Currency codes", None).opacity(0.6)),
+        )
+}
+
+fn journal_panel(look: Look, full: bool) -> Div {
+    let entry = |title: &'static str, note: &'static str| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .p(px(10.))
+            .rounded(px(7.))
+            .bg(c(look.card))
+            .border_1()
+            .border_color(c(look.line))
+            .child(div().flex().items_center().gap(px(6.)).child(small_icon(IconName::Sparkles, PURPLE)).child(div().font_weight(FontWeight::SEMIBOLD).child(title)))
+            .child(secondary(look, note))
+    };
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .child(panel_header(look, "Journal", full, None))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .p(px(10.))
+                .text_size(px(12.5))
+                .child(entry("Review: ledger schema", "A guided walk through the 3 files, risky parts first · 14m"))
+                .child(entry("Backfill plan", "Batches, timings and the rollback · 1h"))
+                .child(entry("Index benchmark", "BRIN vs B-tree on 48k rows · yesterday")),
+        )
+}
+
+fn panel(look: Look, screen: Screen, which: Panel) -> Div {
+    let full = screen.fill == Fill::PanelFull;
+    let body = match which {
+        Panel::Diff => diff_panel(look, full),
+        Panel::Inbox => inbox_panel(look, full),
+        Panel::Files => files_panel(look, full),
+        Panel::Info => info_panel(look, full),
+        Panel::Board => board_panel(look, full),
+        Panel::Journal => journal_panel(look, full),
+    };
+    div()
+        .when(full, |panel| panel.flex_1())
+        .when(!full, |panel| panel.w(px(PANEL_WIDTH)).flex_shrink_0())
+        .h_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .bg(c(look.panel))
+        .text_size(px(12.5))
+        .when(screen.switch == Switch::Tabs && !full, |panel| panel.child(panel_tabs(look, which)))
+        .when(full, |panel| {
+            panel.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .h(px(52.))
+                    .px(px(16.))
+                    .border_b_1()
+                    .border_color(c(look.line))
+                    .bg(c(look.content))
+                    .child(traffic_lights())
+                    .child(div().w(px(4.)))
+                    .child(icon(IconName::PanelLeftOpen, look.secondary))
+                    .child(div().flex().flex_col().child(secondary(look, "# payments-rewrite › Ledger schema migration")).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child("Diff")))
+                    .child(div().flex_1())
+                    .child(button(look, Kind::Secondary, "Show the terminal")),
+            )
+        })
+        .child(body)
+}
+
+fn middle(look: Look, screen: Screen) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .flex()
+        .flex_col()
+        .child(header(look, screen))
+        .when(screen.term == Term::NeedsYou, |column| {
+            column.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .px(px(14.))
+                    .py(px(7.))
+                    .flex_shrink_0()
+                    .bg(c(look.attention_bg))
+                    .border_b_1()
+                    .border_color(c(look.line))
+                    .text_size(px(12.5))
+                    .child(small_icon(IconName::Sparkles, PURPLE))
+                    .child(div().flex_1().child("Claude Code prepared a view: Review: ledger schema"))
+                    .child(button(look, Kind::Secondary, "Open it"))
+                    .child(div().text_color(c(look.secondary)).child("Later")),
+            )
+        })
+        .child(tabs(look, screen))
+        .child(terminal(look, screen.term))
+}
+
+pub fn session(look: Look, screen: Screen) -> Div {
+    let root = div().size_full().flex();
+    match screen.fill {
+        Fill::TerminalFull => return root.child(middle(look, screen)),
+        Fill::PanelFull => return root.child(panel(look, screen, screen.panel.unwrap_or(Panel::Diff))),
+        Fill::Collapsed => {
+            return root
+                .child(sidebar::strip(look))
+                .child(middle(look, screen))
+                .child(
+                    div()
+                        .w(px(14.))
+                        .h_full()
+                        .bg(c(look.panel))
+                        .border_l_1()
+                        .border_color(c(look.line))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(small_icon(IconName::ChevronLeft, look.secondary)),
+                );
+        }
+        Fill::Columns => {}
+    }
+    root.child(sidebar::sidebar(look, screen.side))
+        .child(handle(look, true))
+        .child(middle(look, screen))
+        .when_some(screen.panel, |root, which| root.child(handle(look, true)).child(panel(look, screen, which)))
+        .when(screen.switch == Switch::Strip, |root| root.child(strip(look, screen.panel)))
+        .when(screen.switch == Switch::Panes, |root| root.child(panes(look, screen.panel)))
+}
+
+/// One pane's title row in a split workspace (NV-32): dot, title, ⋯, ✕.
+fn pane_title(look: Look, state: St, title: &'static str, note: &'static str, focused: bool) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .h(px(30.))
+        .px(px(12.))
+        .flex_shrink_0()
+        .bg(c(look.panel))
+        .border_b_1()
+        .border_color(c(if focused { look.accent } else { look.line }))
+        .text_size(px(12.))
+        .child(status(state))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+        .child(secondary(look, note))
+        .child(div().flex_1())
+        .child(small_icon(IconName::Ellipsis, look.secondary))
+        .child(small_icon(IconName::X, look.secondary))
+}
+
+fn small_terminal(look: Look, lines: Vec<Div>) -> Div {
+    div()
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .p(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(1.))
+        .bg(c(look.term))
+        .font_family(MONO)
+        .text_size(px(11.5))
+        .line_height(px(16.))
+        .children(lines)
+}
+
+/// Two sessions' terminals side by side with a diff under them (NV-28).
+pub fn split(look: Look) -> Div {
+    let left = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(pane_title(look, St::NeedsYou, "Ledger schema migration", "claude · devbox-1", true))
+        .child(small_terminal(look, transcript(look)));
+    let right = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(pane_title(look, St::Working, "Benchmark BRIN", "codex · gpu-box", false))
+        .child(small_terminal(
+            look,
+            vec![
+                tl(look.term_dim, "~/src/infra (bench-brin) $ codex"),
+                tl(look.term_text, "> Benchmark BRIN against B-tree on the entries table."),
+                tl(look.term_text, ""),
+                tl(look.term_text, "• Ran pgbench -c 8 -T 60 (btree)"),
+                tl(look.term_dim, "  tps = 4128.3 (without initial connection time)"),
+                tl(look.term_text, "• Ran pgbench -c 8 -T 60 (brin)"),
+                tl(look.term_dim, "  tps = 3990.7 (without initial connection time)"),
+                tl(look.term_text, "• Index sizes: btree 1.2 GB, brin 48 kB"),
+                tl(ORANGE, "• Working (41s • esc to interrupt)"),
+            ],
+        ));
+    let bottom = div()
+        .h(px(250.))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .child(pane_title(look, St::NeedsYou, "Diff", "Ledger schema migration · against main", false))
+        .child(div().flex_1().bg(c(look.term)).child(diff_lines(look)));
+    div()
+        .size_full()
+        .flex()
+        .child(sidebar::sidebar(look, Side::at("Ledger schema migration")))
+        .child(handle(look, false))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(header(look, Screen::new(None, Term::NeedsYou)))
+                .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right))
+                .child(hline(look))
+                .child(bottom),
+        )
+}

@@ -214,7 +214,15 @@ A bug report is text an agent can read and act on: what you did, where, what the
 
 ## N1: A native macOS look and feel (next, owner 2026-11-15)
 The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so it looks and feels as Apple/macOS-native as we can get, while staying a chat-workspace app with channels and sessions.
-- [ ] Waiting on the owner's pick (2026-11-15): three directions are drawn as still mocks in `desktop/tests/__snapshots__/directions/` (A light, Mail-style; B dark, same layout; C dark, Xcode-style navigator tabs and a centred title), by `bazel test //apps/humata2/desktop:directions_test`. Each has a full-height sidebar under the traffic lights with the system font, rounded selection, a unified toolbar and a segmented inspector on the right. Then build it: (sidebar material and vibrancy, system font sizes and weights, SF Symbols-style icons, the unified title bar with toolbar items, native-feeling list selection, sheets and popovers, light and dark following the system). Show it as headless snapshots for the owner to pick from before restyling every screen.
+- [x] Owner's pick (2026-11-15): looks A (light) and B (dark), following the system. The middle of a session is its embedded terminal, not a chat. Sidebar, terminal and right panel are three columns resized by dragging; the terminal or the right panel can each go full screen.
+- [ ] Waiting on the owner's picks among the options in the 37 still mocks in `desktop/tests/__snapshots__/directions/` (`bazel test //apps/humata2/desktop:directions_test`; record with `bazel run //apps/humata2/desktop:directions_test_record`). `opt-a`/`opt-b`/`opt-c` in a file name mark an alternative:
+  - Panel switcher: tabs on top (03), an icon strip at the edge (04), or stacked panes (05).
+  - Sidebar session tree: forks indented with a fork glyph (17) or connector lines (18); channels fold to one row with a status roll-up (19).
+  - Clicking a channel: its Sessions tree table (20) or an overview of sessions, board, what needs you and activity (21). Also drawn: Activity (22) and Repos and machines (23).
+  - Board: kanban (24) with an item drawer (25), a table (26), or a dashboard whose every number opens what it counts (27; new, not in SPEC).
+  - Home: a list (28) or columns (29). Inbox: split (30) or a stream (31).
+  - The session states (working, needs you, exited, offline), panels (Diff, Inbox, Files, Board, Journal, Info), collapsed columns, two terminals split, Pinned, Hosts, Settings, the palette, New session, a toast and first run are drawn too.
+- [ ] Then build it: sidebar material and vibrancy, system font sizes and weights, the unified title bar with toolbar items, native list selection, sheets and popovers, light and dark following the system, and a terminal/panel full-screen state in `features/app` with tests.
 - [ ] Restyle the shell (rail, sidebar, top bar, side panel), then each screen, re-recording snapshots only after the owner signs off on the look.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
 

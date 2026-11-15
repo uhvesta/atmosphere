@@ -53,7 +53,7 @@ filegroup(
 # `bazel run //apps/humata2/desktop:directions_test_record`.
 humata2_snapshot_test(
     name = "directions_test",
-    srcs = ["tests/directions.rs"],
+    srcs = ["tests/directions.rs"] + glob(["tests/directions/*.rs"]),
     compile_data = ["Cargo.toml"],
     crate_root = "tests/directions.rs",
     target_compatible_with = ["@platforms//os:macos"],
