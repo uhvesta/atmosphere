@@ -12,7 +12,7 @@ use humata2_views::ViewsAction;
 
 use crate::{
     bridge::Ui,
-    chrome, pages,
+    chrome,
     theme::Look,
     widgets::{self, col, row},
 };
@@ -316,7 +316,14 @@ fn file_body(
         .into_any_element()
 }
 
-pub(crate) fn body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Div {
+pub(crate) fn body(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    session: &Session,
+    look: Look,
+    terminals: &crate::terminals::Terminals,
+    cx: &mut App,
+) -> Div {
     let fallback = TabGroup {
         tabs: (0..=session.shells.len()).map(Tab::Terminal).collect(),
         selected: state.session.view().map_or(0, |v| v.tab),
@@ -444,8 +451,15 @@ pub(crate) fn body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look)
                                         .into_any_element()
                                 }
                                 Some(Tab::Terminal(tab)) => {
-                                    pages::terminal_body(ui, state, session, *tab, group, look)
-                                        .into_any_element()
+                                    let body = terminals.body(&session.id, *tab, group, cx);
+                                    col().flex_1().min_h_0().bg(rgb(look.term)).child(body)
+                                        .children(match (*tab, session.status) {
+                                            (0, Status::Exited { code }) => Some(row().flex_shrink_0().m(px(14.)).mt(px(0.)).p(px(8.)).gap(px(8.)).rounded(px(7.)).bg(rgb(look.fill)).text_color(rgb(look.text)).text_size(px(12.))
+                                                .child(chrome::icon(IconName::X, 0xff453a, 12.))
+                                                .child(div().flex_1().min_w_0().child(format!("Agent exited with code {code}. Resume starts it again with this conversation.")))
+                                                .child(widgets::send(ui, "resume-terminal", "Resume", AppAction::Session(SessionAction::Resume)))),
+                                            _ => None,
+                                        }).into_any_element()
                                 }
                                 None => div().into_any_element(),
                             })

@@ -46,7 +46,6 @@ pub struct Overlays {
     ui: Rc<Ui>,
     query: Entity<InputState>,
     title: Entity<InputState>,
-    model: Entity<InputState>,
     first_message: Entity<TextareaState>,
     first_message_placeholder: String,
     name: Entity<InputState>,
@@ -65,7 +64,6 @@ impl Overlays {
             InputState::new(window, cx).placeholder("Type a command, a channel or a session")
         });
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("What should it do?"));
-        let model = cx.new(|cx| InputState::new(window, cx).placeholder("Default"));
         let first_message = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Optional. Typed into the agent once it starts.")
@@ -110,19 +108,6 @@ impl Overlays {
             ));
         }
         subscriptions.push(cx.subscribe(
-            &model,
-            |this: &mut Self, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.ui.send(
-                        AppAction::NewSession(NewSessionAction::Model(
-                            input.read(cx).value().to_string(),
-                        )),
-                        cx,
-                    );
-                }
-            },
-        ));
-        subscriptions.push(cx.subscribe(
             &first_message,
             |this: &mut Self, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -139,7 +124,6 @@ impl Overlays {
             ui,
             query,
             title,
-            model,
             first_message,
             first_message_placeholder: "Optional. Typed into the agent once it starts.".into(),
             name,
@@ -377,7 +361,6 @@ impl Render for Overlays {
             }
             Overlay::NewSession(sheet_state) => {
                 sync(&self.title, &sheet_state.title, window, cx);
-                sync(&self.model, &sheet_state.model, window, cx);
                 if self.first_message.read(cx).value().as_ref() != sheet_state.first_message {
                     self.first_message.update(cx, |input, cx| {
                         input.set_value(sheet_state.first_message.clone(), window, cx)
@@ -532,33 +515,7 @@ impl Render for Overlays {
                             })
                     }),
                 );
-                content = content.child(form_row(
-                    "Runs",
-                    col()
-                        .gap(px(6.))
-                        .child(agents)
-                        .child(
-                            row()
-                                .gap(px(8.))
-                                .when(sheet_state.agent != Agent::Shell, |x| {
-                                    x.child(
-                                        div().w(px(84.)).child(
-                                            Input::new(&self.model)
-                                                .small()
-                                                .h(px(24.))
-                                                .aria_label("Model"),
-                                        ),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_size(px(11.5))
-                                        .text_color(rgb(look.secondary))
-                                        .child("An agent’s own TUI, or a plain shell"),
-                                ),
-                        )
-                        .into_any_element(),
-                ));
+                content = content.child(form_row("Runs", agents.into_any_element()));
                 let machine_picker = row()
                     .gap(px(8.))
                     .child(

@@ -41,6 +41,13 @@ pub enum Event {
         /// The line.
         line: Line,
     },
+    /// Bytes from the PTY, with their absolute offset for replay deduplication.
+    TerminalData {
+        session: SessionId,
+        tab: usize,
+        offset: usize,
+        bytes: Vec<u8>,
+    },
     /// A request was added or answered.
     Request(crate::model::Request),
     /// A host went online or offline.
@@ -182,6 +189,12 @@ pub trait Terminals: Send + Sync + 'static {
 
     /// Types `text` and Enter into tab `tab` of `session`.
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()>;
+
+    /// Writes encoded terminal input without adding a newline.
+    fn input(&self, session: &SessionId, tab: usize, bytes: Vec<u8>) -> Reply<()>;
+
+    /// Reports the view's cell dimensions to the running program.
+    fn resize(&self, session: &SessionId, tab: usize, columns: u16, rows: u16) -> Reply<()>;
 }
 
 /// A daemon in memory, starting from [`fixture::standard`] or any
@@ -204,6 +217,7 @@ struct Inner {
     calls: Vec<String>,
     next: u32,
     archived: HashMap<SessionId, (Session, Vec<SessionId>)>,
+    terminal_input: HashMap<(SessionId, usize), Vec<u8>>,
 }
 
 struct Subscriber {
@@ -214,7 +228,15 @@ struct Subscriber {
 impl FakeDaemon {
     /// A fake holding `workspace`, answering on `clock`.
     #[must_use]
-    pub fn new(workspace: Workspace, clock: Arc<dyn Clock>) -> Self {
+    pub fn new(mut workspace: Workspace, clock: Arc<dyn Clock>) -> Self {
+        for session in &workspace.sessions {
+            for tab in 0..=session.shells.len() {
+                workspace
+                    .terminal_bytes
+                    .entry((session.id.clone(), tab))
+                    .or_insert_with(|| fixture::terminal_screen(session, tab));
+            }
+        }
         Self {
             shared: Arc::new(Mutex::new(Inner {
                 workspace,
@@ -224,6 +246,7 @@ impl FakeDaemon {
                 calls: Vec::new(),
                 next: 1,
                 archived: HashMap::new(),
+                terminal_input: HashMap::new(),
             })),
             clock,
             latency: Duration::ZERO,
@@ -394,8 +417,27 @@ impl Inner {
 
     fn changed(&mut self, id: &SessionId) {
         if let Some(session) = self.workspace.session(id).cloned() {
+            if !self.workspace.terminal_bytes.contains_key(&(id.clone(), 0)) {
+                self.terminal_data(id, 0, fixture::terminal_screen(&session, 0));
+            }
             self.emit(Event::Session(session));
         }
+    }
+
+    fn terminal_data(&mut self, session: &SessionId, tab: usize, bytes: Vec<u8>) {
+        let output = self
+            .workspace
+            .terminal_bytes
+            .entry((session.clone(), tab))
+            .or_default();
+        let offset = output.len();
+        output.extend_from_slice(&bytes);
+        self.emit(Event::TerminalData {
+            session: session.clone(),
+            tab,
+            offset,
+            bytes,
+        });
     }
 
     fn output(&mut self, session: &SessionId, tab: usize, from: Speaker, text: &str) {
@@ -412,6 +454,7 @@ impl Inner {
         {
             found.transcript.push(line.clone());
         }
+        self.terminal_data(session, tab, fixture::terminal_line(&line));
         self.emit(Event::Output {
             session: session.clone(),
             tab,
@@ -1227,6 +1270,114 @@ impl Terminals for FakeDaemon {
                 if !echo.is_empty() {
                     inner.output(&id, tab, Speaker::Tool, &echo);
                 }
+                Ok(())
+            },
+        )
+    }
+
+    fn input(&self, session: &SessionId, tab: usize, bytes: Vec<u8>) -> Reply<()> {
+        let id = session.clone();
+        self.reply(
+            None,
+            format!("terminal input {session} {tab} {} bytes", bytes.len()),
+            move |inner| {
+                let session = inner.session_mut(&id)?;
+                if tab > session.shells.len() {
+                    return Err(DaemonError::NotFound {
+                        what: format!("Terminal {tab} of {id}"),
+                    });
+                }
+                if tab == 0 && matches!(session.status, Status::Exited { .. }) {
+                    return Err(DaemonError::Refused {
+                        what: "Typing into this terminal".into(),
+                        reason: "the program has exited. Resume it first".into(),
+                    });
+                }
+                let agent = if tab == 0 {
+                    session.agent
+                } else {
+                    session
+                        .terminal_agents
+                        .get(&tab)
+                        .copied()
+                        .unwrap_or(Agent::Shell)
+                };
+                let mut output = Vec::new();
+                // This is a deterministic fake PTY, never a local command executor.
+                let pending = inner.terminal_input.entry((id.clone(), tab)).or_default();
+                for byte in bytes {
+                    match byte {
+                        b'\r' | b'\n' => {
+                            let text = String::from_utf8_lossy(pending).into_owned();
+                            pending.clear();
+                            output.extend_from_slice(b"\r\n");
+                            let result = if agent == Agent::Shell {
+                                match text.trim() {
+                                    "pwd" => "~/humata".into(),
+                                    "ls" => "notes.md  todo.txt".into(),
+                                    "" => String::new(),
+                                    value => format!("zsh: command not found: {value}"),
+                                }
+                            } else {
+                                format!("Message received by the fake {} terminal.", agent.name())
+                            };
+                            output.extend_from_slice(result.as_bytes());
+                            output.extend_from_slice(if agent == Agent::Shell {
+                                b"\r\n$ "
+                            } else {
+                                b"\r\n> "
+                            });
+                        }
+                        8 | 127 => {
+                            if !pending.is_empty() {
+                                while let Some(byte) = pending.pop() {
+                                    if byte & 0xc0 != 0x80 {
+                                        break;
+                                    }
+                                }
+                                output.extend_from_slice(b"\x08 \x08");
+                            }
+                        }
+                        3 => {
+                            pending.clear();
+                            output.extend_from_slice(b"^C\r\n> ");
+                        }
+                        32..=255 => {
+                            pending.push(byte);
+                            output.push(byte);
+                        }
+                        _ => {}
+                    }
+                }
+                inner.terminal_data(&id, tab, output);
+                Ok(())
+            },
+        )
+    }
+
+    fn resize(&self, session: &SessionId, tab: usize, columns: u16, rows: u16) -> Reply<()> {
+        let id = session.clone();
+        self.reply(
+            None,
+            format!("terminal resize {session} {tab} {columns}x{rows}"),
+            move |inner| {
+                let session = inner.session_mut(&id)?;
+                if tab > session.shells.len() {
+                    return Err(DaemonError::NotFound {
+                        what: format!("Terminal {tab} of {id}"),
+                    });
+                }
+                if columns == 0 || rows == 0 {
+                    return Err(DaemonError::Refused {
+                        what: "Resizing the terminal".into(),
+                        reason: "it must have at least one row and column. Enlarge the window"
+                            .into(),
+                    });
+                }
+                inner
+                    .workspace
+                    .terminal_sizes
+                    .insert((id, tab), (columns, rows));
                 Ok(())
             },
         )

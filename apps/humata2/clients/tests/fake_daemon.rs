@@ -303,3 +303,28 @@ fn adding_an_ssh_destination_reuses_it_and_rejects_a_list() {
         1
     );
 }
+
+/// SE-10/16: bytes go to the selected fake PTY; size and offline checks stay scoped.
+#[test]
+fn raw_terminal_input_waits_for_enter_and_cannot_type_while_offline() {
+    use humata2_clients::Terminals;
+    let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+    let id = SessionId::new("ledger");
+    let initial = daemon.workspace();
+    let agent = initial.terminal_bytes[&(id.clone(), 0)].clone();
+    block_on(daemon.input(&id, 1, b"pwd".to_vec())).unwrap();
+    let before_enter = daemon.workspace().terminal_bytes[&(id.clone(), 1)].clone();
+    assert!(before_enter.ends_with(b"pwd"));
+    block_on(daemon.input(&id, 1, b"\r".to_vec())).unwrap();
+    assert!(daemon.workspace().terminal_bytes[&(id.clone(), 1)].ends_with(b"~/humata\r\n$ "));
+    assert_eq!(daemon.workspace().terminal_bytes[&(id.clone(), 0)], agent);
+    block_on(daemon.resize(&id, 1, 73, 29)).unwrap();
+    assert_eq!(daemon.workspace().terminal_sizes[&(id, 1)], (73, 29));
+    let offline = SessionId::new("partial-brin");
+    let snapshot = daemon.workspace().terminal_bytes.clone();
+    assert!(matches!(
+        block_on(daemon.input(&offline, 0, b"x".to_vec())),
+        Err(DaemonError::Offline { .. })
+    ));
+    assert_eq!(daemon.workspace().terminal_bytes, snapshot);
+}

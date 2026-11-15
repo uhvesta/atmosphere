@@ -37,7 +37,7 @@ Tab "Table"
 Tab "Dashboard"
 Button "New item"
 #board-filter-input
-  #input-4294967316
+  #input-4294967314
     TextInput "Filter" value="" placeholder="Filter"
 Button "Add item to Backlog"
 Button "Add item to To do"

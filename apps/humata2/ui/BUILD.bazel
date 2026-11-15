@@ -28,6 +28,9 @@ rust_library(
     deps = [
         "//apps/humata2/clients",
         "//apps/humata2/report",
+        "//apps/humata2/terminal/pane:terminal_pane",
+        "//apps/humata2/terminal/view:terminal_view",
+        "//apps/humata2/terminal/vt:ghostty_vt",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
         "@crates//:tokio",

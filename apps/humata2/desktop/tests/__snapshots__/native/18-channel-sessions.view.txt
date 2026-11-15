@@ -44,7 +44,7 @@ Tab "Activity"
   Tab "Archived"
   Tab "All"
   #channel-session-filter
-    #input-4294967314
+    #input-4294967312
       TextInput "Filter sessions" value="" placeholder="Filter sessions"
   Link "Ledger schema migration"
     Button "3" description="2 from this session, 1 from forks"

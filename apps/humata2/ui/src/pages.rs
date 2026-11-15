@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::{Sizable as _, input::InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
@@ -12,7 +11,7 @@ use humata2_app::{
     PaneAction,
     layout::{FullScreen, PaneId},
 };
-use humata2_clients::model::{Agent, ForkKind, Session, Speaker, Status};
+use humata2_clients::model::{Agent, ForkKind, Session, Status};
 use humata2_session::SessionAction;
 
 use crate::bridge::Ui;
@@ -54,6 +53,7 @@ pub fn page(
     channel_filter: Entity<InputState>,
     board_inputs: &crate::board::Inputs,
     host_address: Entity<InputState>,
+    terminals: &crate::terminals::Terminals,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -101,7 +101,9 @@ pub fn page(
                     widgets::empty("This session is gone.", "Pick another in the sidebar.")
                         .into_any_element()
                 },
-                |session| session_body(ui, state, session, Look::of(cx)).into_any_element(),
+                |session| {
+                    session_body(ui, state, session, Look::of(cx), terminals, cx).into_any_element()
+                },
             ),
         _ => widgets::empty("Nothing here yet.", "This screen is being built.").into_any_element(),
     }
@@ -289,70 +291,15 @@ pub(crate) fn session_header(
             look.secondary,
         ))
 }
-fn session_body(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Div {
-    crate::session_tabs::body(ui, state, session, look)
-}
-pub(crate) fn terminal_body(
+fn session_body(
     ui: &Rc<Ui>,
     state: &AppState,
     session: &Session,
-    tab: usize,
-    group: usize,
     look: Look,
-) -> impl IntoElement {
-    let base = if tab == 0 {
-        session.transcript.as_slice()
-    } else {
-        &[]
-    };
-    let live = state
-        .session
-        .live
-        .get(&(session.id.clone(), tab))
-        .map_or(&[][..], |lines| lines.as_slice());
-    col()
-        .id(if group==0 { SharedString::from("terminal") } else { SharedString::from("terminal-secondary") })
-        .role(Role::Log)
-        .aria_label(format!("{} terminal", session.title))
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .overflow_x_hidden()
-        .px(px(14.))
-        .pt(px(10.))
-        .pb(px(10.))
-        .gap(px(1.))
-        .bg(rgb(look.term))
-        .font_family("Menlo")
-        .text_size(px(f32::from(state.settings.preferences.font_size)))
-        .line_height(px(f32::from(state.settings.preferences.font_size) + 5.))
-        .children(base.iter().chain(live).map(|line| {
-            div()
-                .text_color(rgb(match line.from {
-                    Speaker::System => look.term_dim,
-                    Speaker::Tool => 0x30d158,
-                    _ => look.term_text,
-                }))
-                .child(line.text.clone()).test_text(line.text.clone())
-        }))
-        .children(match (tab,session.status) {
-            (0,Status::Exited{code})=>Some(row().mt(px(10.)).gap(px(8.)).p(px(8.)).rounded(px(7.)).bg(rgb(look.fill)).font_family(".SystemUIFont").text_size(px(12.))
-                .child(chrome::icon(IconName::X,0xff453a,12.))
-                .child(div().flex_1().min_w_0().child(format!("Agent exited with code {code}. Resume starts it again with this conversation.")))
-                .child(widgets::send(ui,"resume-terminal","Resume",AppAction::Session(SessionAction::Resume)).small())),
-            (_,Status::Offline)=>Some(row().mt(px(10.)).gap(px(8.)).p(px(8.)).rounded(px(7.)).bg(rgb(look.fill)).font_family(".SystemUIFont").text_size(px(12.))
-                .child(chrome::icon(IconName::WifiOff,look.secondary,12.))
-                .child(div().min_w_0().child(format!("Lost the connection to {}. The agent keeps running there; this view catches up when it is back.",session.machine)))),
-            _=>None,
-        })
-        .child(div().flex_1())
-        .when(tab>0 || !matches!(session.status,Status::Exited{..}|Status::NeedsYou),|body|body.child(
-            col().gap(px(2.)).opacity(if session.status==Status::Offline{0.5}else{1.})
-                .child(row().px(px(8.)).py(px(4.)).border_1().border_color(rgb(look.term_dim)).rounded(px(4.)).gap(px(2.))
-                    .child(if (tab==0&&session.agent!=Agent::Shell)||session.terminal_agents.contains_key(&tab) {"> "}else{"$ "}).when(session.status!=Status::Offline,|x|x.child(div().w(px(7.)).h(px(15.)).bg(rgb(look.term_text)))))
-                .when(tab==0&&session.agent!=Agent::Shell,|body|body.child(div().text_color(rgb(look.term_dim)).child("  ⏵⏵ accept edits on (shift+tab to cycle)")))
-        ))
-        .test_support()
+    terminals: &crate::terminals::Terminals,
+    cx: &mut App,
+) -> Div {
+    crate::session_tabs::body(ui, state, session, look, terminals, cx)
 }
 
 fn first_run(ui: &Rc<Ui>, look: Look) -> Div {

@@ -498,16 +498,19 @@ fn clicking_the_open_panel_choice_closes_and_reopens_it() {
 /// SE-8/10: shell tabs show their own output, and live output remains in its tab.
 #[test]
 fn terminal_tabs_show_only_the_selected_terminals_live_output() {
-    use humata2_clients::model::{Line, Speaker};
     let mut app = App::new(fixture::design());
     app.open("ledger", Panel::Info);
-    app.send(AppAction::Session(SessionAction::Output {
+    let offset = app.ui.read(|s| {
+        s.session
+            .terminal_bytes
+            .get(&(SessionId::new("ledger"), 1))
+            .map_or(0, |b| b.len())
+    });
+    app.send(AppAction::Session(SessionAction::TerminalData {
         session: SessionId::new("ledger"),
         tab: 1,
-        line: Line {
-            from: Speaker::Tool,
-            text: "shell-result: 42".into(),
-        },
+        offset,
+        bytes: b"\r\nshell-result: 42\r\n".to_vec(),
     }));
     let capture = |app: &mut App| {
         app.draw();
@@ -945,7 +948,12 @@ fn palette_new_session_and_toast_reference_images() {
     let mut app = App::new(workspace);
     app.open("ledger", Panel::Changes);
     app.file_tab();
-    app.send(AppAction::Review(humata2_review::ReviewAction::SelectFile{repo:"api".into(),path:"src/client.rs".into()}));
+    app.send(AppAction::Review(
+        humata2_review::ReviewAction::SelectFile {
+            repo: "api".into(),
+            path: "src/client.rs".into(),
+        },
+    ));
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.send(AppAction::OpenPalette);
     app.send(AppAction::Palette(P::Query("ledg".into())));
@@ -968,6 +976,10 @@ fn palette_new_session_and_toast_reference_images() {
     assert!(
         app.ui
             .read(|s| s.workspace.session_options[&id].repos == vec!["acme/ledger".to_owned()])
+    );
+    assert!(
+        app.ui
+            .read(|s| s.workspace.session_options[&id].model.is_none())
     );
     assert!(app.ui.read(|s| {
         s.workspace
@@ -1024,7 +1036,12 @@ fn first_run_actions_open_their_forms() {
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.snapshot("33-first-run");
     app.click("first-channel-create");
-    assert!(app.ui.read(|s|matches!(s.overlay(),Some(humata2_app::Overlay::NewChannel(_)))), "overlay after Create: {:?}",app.ui.read(|s|s.overlays.clone()));
+    assert!(
+        app.ui
+            .read(|s| matches!(s.overlay(), Some(humata2_app::Overlay::NewChannel(_)))),
+        "overlay after Create: {:?}",
+        app.ui.read(|s| s.overlays.clone())
+    );
     assert!(app.contains("new-channel-create"));
     app.send(AppAction::Escape);
     app.click("first-machine-add");
@@ -1055,4 +1072,78 @@ fn palette_file_results_open_the_current_sessions_clone() {
             .as_ref()
             .is_some_and(|id| id.as_str() == "ledger")
     }));
+}
+
+/// SE-10/13/16: actual terminal keystrokes, find and resize survive tab switches.
+#[test]
+fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in ["p", "w", "d", "enter"] {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+    let key = (SessionId::new("ledger"), 1);
+    assert!(
+        app.ui
+            .read(|s| s.session.terminal_bytes[&key].ends_with(b"~/humata\r\n$ "))
+    );
+    let wide = app
+        .runtime
+        .block_on(app.ui.clients().daemon.load())
+        .unwrap()
+        .terminal_sizes[&key];
+    app.click("terminal-tab 0");
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("cmd-f", cx))
+        .unwrap();
+    app.settle();
+    assert!(app.contains("find-bar"));
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    app.settle();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(720.), px(760.)));
+            window.bounds_changed(cx);
+        })
+        .unwrap();
+    app.settle();
+    app.draw();
+    app.settle();
+    let narrow = app
+        .runtime
+        .block_on(app.ui.clients().daemon.load())
+        .unwrap()
+        .terminal_sizes[&key];
+    assert!(narrow.0 < wide.0);
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(1280.), px(760.)));
+            window.bounds_changed(cx);
+        })
+        .unwrap();
+    app.settle();
+    app.draw();
+    app.settle();
+    let restored = app
+        .runtime
+        .block_on(app.ui.clients().daemon.load())
+        .unwrap()
+        .terminal_sizes[&key];
+    assert_eq!(restored, wide);
+    assert!(app.contains("terminal"));
+    assert!(
+        app.ui
+            .read(|s| s.session.terminal_bytes[&key].ends_with(b"~/humata\r\n$ "))
+    );
 }

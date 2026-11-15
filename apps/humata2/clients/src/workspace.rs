@@ -21,6 +21,10 @@ pub struct Workspace {
     pub sessions: Vec<Session>,
     /// Explicit launch choices, indexed by session.
     pub session_options: BTreeMap<SessionId, crate::model::SessionOptions>,
+    /// Fake PTY output, in byte order, including ANSI control sequences.
+    pub terminal_bytes: BTreeMap<(SessionId, usize), Vec<u8>>,
+    /// Last terminal size reported by each attached view (columns, rows).
+    pub terminal_sizes: BTreeMap<(SessionId, usize), (u16, u16)>,
     /// Inbox requests, newest first, answered ones included.
     pub requests: Vec<Request>,
     /// Board items on every board.

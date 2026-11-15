@@ -90,8 +90,6 @@ pub struct NewSession {
     pub machine: Option<MachineId>,
     /// Its title.
     pub title: String,
-    /// Optional model override.
-    pub model: String,
     /// Typed once the agent starts.
     pub first_message: String,
     /// Repositories left out of this session.
@@ -381,8 +379,6 @@ pub enum PaneAction {
 /// A change to the New session sheet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NewSessionAction {
-    /// Edit the model override.
-    Model(String),
     /// Edit its first message.
     FirstMessage(String),
     /// Include or leave out one channel repository.
@@ -854,6 +850,22 @@ impl App {
                     AppAction::Session(SessionAction::Output { session, tab, line }),
                 );
             }
+            Event::TerminalData {
+                session,
+                tab,
+                offset,
+                bytes,
+            } => {
+                return self.child(
+                    state,
+                    AppAction::Session(SessionAction::TerminalData {
+                        session,
+                        tab,
+                        offset,
+                        bytes,
+                    }),
+                );
+            }
             Event::Session(session) => {
                 snapshot = Some(session.id.clone());
                 upsert(&mut workspace.sessions, session, |a, b| a.id == b.id);
@@ -1084,11 +1096,6 @@ impl App {
                     agent: state.settings.preferences.default_agent,
                     machine,
                     title: String::new(),
-                    model: if state.settings.preferences.default_agent == Agent::Claude {
-                        "Opus".into()
-                    } else {
-                        String::new()
-                    },
                     first_message: String::new(),
                     excluded_repos: Default::default(),
                     item: None,
@@ -1170,17 +1177,11 @@ impl App {
                     }
                     NewSessionAction::Agent(agent) => {
                         sheet.agent = agent;
-                        sheet.model = if agent == Agent::Claude {
-                            "Opus".into()
-                        } else {
-                            String::new()
-                        };
                     }
                     NewSessionAction::Machine(id) => {
                         sheet.machine = Some(id);
                         sheet.picker = None;
                     }
-                    NewSessionAction::Model(model) => sheet.model = model,
                     NewSessionAction::FirstMessage(text) => sheet.first_message = text,
                     NewSessionAction::Picker(picker) => sheet.picker = picker,
                     NewSessionAction::ToggleRepo(repo) => {
@@ -1215,8 +1216,7 @@ impl App {
                             return Effect::none();
                         }
                         let options = SessionOptions {
-                            model: (!sheet.model.trim().is_empty() && sheet.agent != Agent::Shell)
-                                .then(|| sheet.model.trim().into()),
+                            model: None,
                             repos: state
                                 .workspace
                                 .channel(&channel)

@@ -115,6 +115,8 @@ pub struct SessionState {
     /// Output that arrived after the session's last snapshot, per session
     /// and terminal tab.
     pub live: HashMap<(SessionId, usize), Arc<Vec<Line>>>,
+    /// PTY output received so far, separate for every session and terminal.
+    pub terminal_bytes: HashMap<(SessionId, usize), Arc<Vec<u8>>>,
     /// The group whose plus menu is open.
     pub terminal_menu: Option<usize>,
     /// Whether a new terminal is being started.
@@ -193,6 +195,15 @@ pub enum SessionAction {
         /// The line.
         line: Line,
     },
+    /// An ordered PTY chunk. Replayed bytes are ignored.
+    TerminalData {
+        session: SessionId,
+        tab: usize,
+        offset: usize,
+        bytes: Vec<u8>,
+    },
+    /// A terminal input/size operation failed.
+    TerminalFailed(DaemonError),
     /// A new snapshot of the session arrived, holding the agent tab's
     /// output so far.
     Snapshot(SessionId),
@@ -364,6 +375,12 @@ impl Reducer for Sessions {
     fn reduce(&self, state: &mut SessionState, action: SessionAction) -> Effect<SessionAction> {
         match action {
             SessionAction::Show(workspace) => {
+                for (key, bytes) in &workspace.terminal_bytes {
+                    let current = state.terminal_bytes.entry(key.clone()).or_default();
+                    if bytes.len() > current.len() {
+                        *current = Arc::new(bytes.clone());
+                    }
+                }
                 state.workspace = workspace;
                 let waiting: Vec<_> = state
                     .views
@@ -416,6 +433,26 @@ impl Reducer for Sessions {
                     lines.drain(..extra);
                 }
             }
+            SessionAction::TerminalData {
+                session,
+                tab,
+                offset,
+                bytes,
+            } => {
+                let output = state.terminal_bytes.entry((session, tab)).or_default();
+                if offset > output.len() {
+                    state.error = Some(
+                        "Terminal output has a gap. Reconnect this host from Hosts to load its current output."
+                            .into(),
+                    );
+                } else {
+                    let skip = output.len() - offset;
+                    if skip < bytes.len() {
+                        Arc::make_mut(output).extend_from_slice(&bytes[skip..]);
+                    }
+                }
+            }
+            SessionAction::TerminalFailed(error) => state.error = Some(error.to_string()),
             SessionAction::Snapshot(session) => {
                 state.live.remove(&(session, 0));
             }

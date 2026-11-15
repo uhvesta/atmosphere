@@ -38,7 +38,7 @@ Complementary "Files"
   Button "Expand panel"
   Button "Close panel"
   #session-file-filter
-    #input-4294967312
+    #input-4294967310
       TextInput "Filter files" value="" placeholder="Filter files"
   List "Session files"
     Button "acme/api"
@@ -76,12 +76,7 @@ Button "Later"
 Button "Not now"
 Tab "claude" selected
 Button "New terminal"
-Log "Token refresh retry terminal"
-  text "Claude started · Token refresh retry"
-  text "Please work on: Token refresh retry"
-  text "I'll read the relevant files first."
-  text "Read src/lib.rs (212 lines)"
-  text "Read src/client.rs (98 lines)"
-  text "The retry happens before the token is refreshed, so the second request reuses the expired token."
-  text "Edit src/client.rs (+12 −3)"
-  text "Done. The tests pass: 48 passed, 0 failed."
+Log "Terminal output" description="Claude started · Token refresh retry\nPlease work on: Token refresh retry\nI'll read the relevant files first.\nRead src/lib.rs (212 lines)\nRead src/client.rs (98 lines)\nThe retry happens before the token is refreshed, so the second request reuse\ns the expired token.\nEdit src/client.rs (+12 −3)\nDone. The tests pass: 48 passed, 0 failed.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+  text "Claude started · Token refresh retry\nPlease work on: Token refresh retry\nI'll read the relevant files first.\nRead src/lib.rs (212 lines)\nRead src/client.rs (98 lines)\nThe retry happens before the token is refreshed, so the second request reuse\ns the expired token.\nEdit src/client.rs (+12 −3)\nDone. The tests pass: 48 passed, 0 failed.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+  #terminal-pane
+    #terminal

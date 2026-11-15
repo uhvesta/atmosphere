@@ -23,6 +23,7 @@ mod panels;
 mod shell;
 mod sidebar;
 mod theme;
+mod terminals;
 mod widgets;
 
 use std::borrow::Cow;

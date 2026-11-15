@@ -47,6 +47,7 @@ pub struct Shell {
     _host_address_subscription: Subscription,
     _appearance: Subscription,
     viewport: f32,
+    terminals: crate::terminals::Terminals,
 }
 
 impl Shell {
@@ -116,7 +117,9 @@ impl Shell {
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let terminals = crate::terminals::Terminals::new(&ui, cx);
         Self {
+            terminals,
             ui,
             sidebar,
             sidebar_focus,
@@ -266,6 +269,8 @@ impl Render for Shell {
             }
         }
         let look = Look::of(cx);
+        self.ui
+            .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
         let viewport = f32::from(window.viewport_size().width);
         if self.viewport != viewport {
             self.viewport = viewport;
@@ -395,6 +400,7 @@ impl Render for Shell {
                     self.channel_filter.clone(),
                     &self.board_inputs,
                     self.host_address.clone(),
+                    &self.terminals,
                     window,
                     cx,
                 )

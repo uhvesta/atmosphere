@@ -37,7 +37,7 @@ Tab "Table"
 Tab "Dashboard"
 Button "New item"
 #board-filter-input
-  #input-4294967316
+  #input-4294967314
     TextInput "Filter" value="" placeholder="Filter"
 Dialog "New session" focused
   Button "Choose channel"
@@ -48,12 +48,10 @@ Dialog "New session" focused
   Tab "Copilot"
   Tab "OpenCode"
   Tab "Terminal"
-  #input-4294967304
-    TextInput "Model" value="Opus" placeholder="Default"
   Button "devbox-1"
   Button "Own clone, new branch from main"
   Button "Leave this repo out"
-  #input-4294967306
+  #input-4294967304
     MultilineTextInput "First message" value="" placeholder="Optional. Typed into the agent once it starts, e.g. “Work on PAY-9”."
   Button "Cancel"
   Button "Start session"
