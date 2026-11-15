@@ -5,8 +5,9 @@
 //! refused, and a wrong host proof closes the link.
 //!
 //! The link is one process and one connection, so its handshake state is
-//! the process's. Only Hello and ProveHost are built; the rest of
-//! PeerService answers "not built", behind the gate like everything else.
+//! the process's. Hello, ProveHost and an Uplink that only says where to
+//! resume are built; the rest of PeerService answers "not built", behind
+//! the gate like everything else.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,7 @@ use humata2_chunk::Link;
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use tokio::sync::Notify;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::body::Body;
 use tonic::codegen::http;
 use tonic::service::Interceptor;
@@ -67,6 +69,8 @@ pub(crate) struct Handshake {
     booted_at: Timestamp,
     phase: Mutex<Phase>,
     host_proof_wrong: AtomicBool,
+    /// Whether the link's one Uplink was opened.
+    uplink_opened: AtomicBool,
     close: Notify,
 }
 
@@ -79,6 +83,7 @@ impl Handshake {
             booted_at: attach::now(),
             phase: Mutex::new(Phase::Fresh),
             host_proof_wrong: AtomicBool::new(false),
+            uplink_opened: AtomicBool::new(false),
             close: Notify::new(),
         }
     }
@@ -294,13 +299,36 @@ impl pb::peer_service_server::PeerService for Peer {
         }
     }
 
-    type UplinkStream = Empty<pb::MachineToHost>;
+    type UplinkStream = ReceiverStream<Result<pb::MachineToHost, Status>>;
 
+    /// One per link. This process keeps no journal, mirror or policy yet
+    /// (see `peer_link`), so it says to resume from nothing, reads what the
+    /// host sends without acting on it, and ends its side when the host
+    /// ends its own. Behind the gate, so only a proven host gets here.
     async fn uplink(
         &self,
-        _request: Request<Streaming<pb::HostToMachine>>,
+        request: Request<Streaming<pb::HostToMachine>>,
     ) -> Result<Response<Self::UplinkStream>, Status> {
-        Err(not_built("Uplink"))
+        if self.handshake.uplink_opened.swap(true, Ordering::SeqCst) {
+            return Err(self.handshake.out_of_order(
+                "humatad2 refused a second Uplink on the peer link: a link has one for its life",
+            ));
+        }
+        let mut from_host = request.into_inner();
+        let (to_host, stream) = tokio::sync::mpsc::channel(1);
+        let resume = pb::MachineToHost {
+            message: Some(pb::machine_to_host::Message::Resume(pb::UplinkResume {
+                from: Some(pb::UplinkAck::default()),
+            })),
+        };
+        tokio::spawn(async move {
+            if to_host.send(Ok(resume)).await.is_err() {
+                return;
+            }
+            // Dropping `to_host` once the host's side ends ends this one.
+            while let Ok(Some(_message)) = from_host.message().await {}
+        });
+        Ok(Response::new(ReceiverStream::new(stream)))
     }
 
     async fn launch_session(

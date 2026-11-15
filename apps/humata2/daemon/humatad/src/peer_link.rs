@@ -134,7 +134,7 @@ fn pipe_end<T>(
 
 /// Serves the link on `input` and `output` until the connection ends,
 /// `stop` resolves, or the host's proof is wrong.
-async fn serve_link<R, W>(
+pub(crate) async fn serve_link<R, W>(
     input: R,
     output: W,
     handshake: Arc<Handshake>,

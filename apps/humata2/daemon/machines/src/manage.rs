@@ -33,7 +33,7 @@ use crate::install::{Builds, InstalledFile};
 use crate::known_hosts;
 use crate::link::Link;
 use crate::name::MachineName;
-use crate::runner::{Exit, Output, Runner};
+use crate::runner::{Exit, Invocation, Output, Runner};
 use crate::setup::{self, Progress, RetryPolicy, Setup};
 
 /// How many output lines a failed step keeps (MP-20).
@@ -458,6 +458,15 @@ impl Machines {
         Ok(BusyGuard {
             busy: &self.busy,
             machine: machine.to_owned(),
+        })
+    }
+
+    /// The command that opens `machine`'s peer link.
+    pub fn peer_link(&self, machine: &str) -> Result<Invocation, ManageError> {
+        let link = self.link(&self.get(machine)?)?;
+        link.peer().map_err(|source| ManageError::Quote {
+            machine: machine.to_owned(),
+            source,
         })
     }
 

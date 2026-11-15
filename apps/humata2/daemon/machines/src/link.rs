@@ -158,6 +158,18 @@ impl Link {
         )
     }
 
+    /// The command that carries the host's peer link: `humatad2 serve
+    /// --stdio` on the machine, speaking gRPC on the command's stdio
+    /// (MP-7, GRPC.md §8). It runs until the link ends.
+    pub fn peer(&self) -> Result<Invocation, QuoteError> {
+        self.script(
+            &format!("exec \"$HOME/{BIN_DIR}/humatad2\" serve --stdio"),
+            Purpose::PeerLink,
+            None,
+            None,
+        )
+    }
+
     /// The command to run in a real terminal for an interactive login
     /// (MP-14): the link with an interactive shell on the far end, ready for
     /// [`crate::Takeover`].

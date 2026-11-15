@@ -27,6 +27,7 @@ mod not_built;
 mod operations;
 mod paste;
 mod peer;
+mod peer_client;
 mod peer_link;
 mod restart;
 mod review;

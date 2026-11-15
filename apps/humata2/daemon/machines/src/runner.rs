@@ -37,6 +37,8 @@ pub enum Purpose {
     AuthorizeKey,
     /// The bridge that carries the gRPC stream (TR-2).
     Bridge,
+    /// The host's peer link to the machine's humatad2 (GRPC.md §8).
+    PeerLink,
     /// The link in a real terminal for an interactive login (MP-14).
     Login,
 }

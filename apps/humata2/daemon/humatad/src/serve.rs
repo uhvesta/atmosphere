@@ -379,7 +379,7 @@ fn machine_work(
         ssh_config,
         retry: RetryPolicy::default(),
     });
-    Ok(Work::new(machines, builds, feed))
+    Ok(Work::new(machines, builds, feed, state.to_owned()))
 }
 
 fn beside_this_binary(name: &str) -> PathBuf {

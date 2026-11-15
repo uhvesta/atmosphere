@@ -73,7 +73,7 @@ impl Feed {
 
     /// What a subscriber resuming after `after` gets first, and the live
     /// events from there on.
-    fn subscribe(&self, after: Option<u64>) -> (Vec<Arc<pb::Event>>, broadcast::Receiver<Arc<pb::Event>>) {
+    pub(crate) fn subscribe(&self, after: Option<u64>) -> (Vec<Arc<pb::Event>>, broadcast::Receiver<Arc<pb::Event>>) {
         let kept = lock(&self.kept);
         let live = self.live.subscribe();
         let Some(after) = after else {

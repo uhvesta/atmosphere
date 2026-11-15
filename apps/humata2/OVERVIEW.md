@@ -329,7 +329,11 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [x] EventService machine streaming (minion B): each change to a machine as ListMachines shows it (added, changed, removed) goes on an in-memory feed with resume and Resync (D82). Test: `//apps/humata2/daemon/humatad:machines_test` (`the_feed_tells_each_machine_change_and_a_resume_starts_after_the_last_seen`).
 - [ ] The rest of the feed: sessions, channels, inbox, operations and the other topics, `by` on each event, the machine socket's filtered relay, and a feed that outlives a restart (D82).
 - [ ] launchd for macOS remotes.
-- [ ] A host-side peer-link client with keepalive.
+- [x] A host-side peer-link client with keepalive (minion D): the host dials `humatad2 serve --stdio` through the machine's link command, proves the enrollment key both ways (Hello, ProveHost), opens the Uplink, pings after 30 s idle and ends the link after 20 s unanswered, and dials again after 5–30 s; each link up or down is the machine's reachability on the feed (D83). Test: `//apps/humata2/daemon/humatad:humatad2_unit_test` (`peer_client::tests`).
+- [ ] The host writes its copy of the enrollment key (`<state>/peer-keys/<machine>`) when it adds a machine, then keeps it in the keychain; until then no machine gets a link outside tests (D83).
+- [ ] Run the peer link client over real SSH (Linux batch); a link command that needs host variables can't dial yet.
+- [ ] A reachability (or Machine problem) for a machine whose proof is wrong, so the app can say to add it again (LD-12); fill `daemon_version`, `last_seen_at` and `next_retry_at` from the link (D83).
+- [ ] The Uplink carries nothing yet: the journal mirror, acks, and chunk codecs in Hello.
 - [ ] The remove plan covers sessions and channels, and runs the dispose, leave_channels, provider_delete and find_agents steps.
 - [ ] A real Lima/Linux run, including the four-platform tools bundle (after all I milestones, per the Linux batch rule).
 

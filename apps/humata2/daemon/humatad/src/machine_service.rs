@@ -5,15 +5,18 @@
 //! the errors in the API's terms. A machine's id is its name until
 //! machines get ids of their own (D61).
 //!
-//! What a machine's `reachability` says is what this daemon last saw: the
-//! host doesn't hold a link to each machine yet, so a machine not
-//! connected since humatad2 started is UNSPECIFIED.
+//! What a machine's `reachability` says is what this daemon last saw: an
+//! add or reconnect that worked, and then its peer link (`peer_client`)
+//! coming up or going down. A machine the host holds no enrollment key for
+//! gets no link, so one not connected since humatad2 started is
+//! UNSPECIFIED.
 //!
 //! Each change to a machine as ListMachines shows it goes on the feed
 //! (EventService), after the change is written.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use humata2_access::{Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
@@ -22,12 +25,15 @@ use humata2_machines::{
     AddSsh, Builds, Drive, EntryState, HostEntry, Machines, ManageError, OpStep, StepEvent,
     SystemRunner,
 };
+use tokio::runtime::Handle;
+use tokio::task::AbortHandle;
 use tonic::{Code, Request, Response, Status};
 
 use crate::events::Feed;
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
 use crate::operations::{Operations, Progress, Started};
+use crate::peer_client::{self, CommandDial, Dial, LinkEvent};
 use crate::status;
 
 /// How long a removal plan stays good.
@@ -50,16 +56,28 @@ pub(crate) struct Work {
     feed: Arc<Feed>,
     /// The machines as the feed last told them.
     shown: Mutex<BTreeMap<String, pb::Machine>>,
+    /// The host's copies of machines' enrollment keys, one file each.
+    peer_keys: PathBuf,
+    /// Each machine's peer link supervisor, while one runs.
+    links: Mutex<HashMap<String, AbortHandle>>,
 }
 
 impl Work {
-    pub(crate) fn new(machines: Machines, builds: Box<dyn Builds + Send + Sync>, feed: Arc<Feed>) -> Self {
+    /// `state` is the host's state folder, which holds `peer-keys`.
+    pub(crate) fn new(
+        machines: Machines,
+        builds: Box<dyn Builds + Send + Sync>,
+        feed: Arc<Feed>,
+        state: PathBuf,
+    ) -> Self {
         let work = Self {
             machines,
             builds,
             reach: Mutex::new(HashMap::new()),
             feed,
             shown: Mutex::new(BTreeMap::new()),
+            peer_keys: state.join(peer_client::KEYS_DIR),
+            links: Mutex::new(HashMap::new()),
         };
         *lock(&work.shown) = work.listed().unwrap_or_default();
         work
@@ -129,6 +147,44 @@ impl Work {
         self.publish_machines();
     }
 
+    /// Starts keeping `machine`'s peer link up over `dial`, in place of a
+    /// link already kept. Each time it comes up or goes down the machine's
+    /// reachability changes, on the feed.
+    pub(crate) fn start_link(self: &Arc<Self>, machine: &str, dial: Box<dyn Dial>, runtime: &Handle) {
+        let work = Arc::downgrade(self);
+        let name = machine.to_owned();
+        let report = Box::new(move |event: LinkEvent<'_>| tell_link(&work, &name, event));
+        let key_file = self.peer_keys.join(machine);
+        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report));
+        if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
+            before.abort();
+        }
+    }
+
+    /// Keeps `machine`'s link up through its link command, if the host
+    /// holds its key: the Mac doesn't write one at enrollment yet.
+    fn link_up(self: &Arc<Self>, machine: &str, runtime: &Handle) {
+        if !self.peer_keys.join(machine).exists() {
+            return;
+        }
+        match self.machines.peer_link(machine) {
+            Ok(invocation) => {
+                self.start_link(machine, Box::new(CommandDial::new(machine.to_owned(), invocation)), runtime);
+            }
+            Err(error) => crate::log::say!(
+                "humatad2: couldn't make the peer link command for {machine}: {}",
+                status::chain(&error)
+            ),
+        }
+    }
+
+    /// Stops keeping `machine`'s link up.
+    fn link_down(&self, machine: &str) {
+        if let Some(link) = lock(&self.links).remove(machine) {
+            link.abort();
+        }
+    }
+
     fn machine(&self, entry: &HostEntry) -> pb::Machine {
         let reachability = match entry.state {
             EntryState::Adding | EntryState::Removing => pb::Reachability::Connecting,
@@ -150,9 +206,28 @@ impl Work {
     }
 }
 
+/// A link's change as the machine's reachability, and in the log.
+fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent<'_>) {
+    let Some(work) = work.upgrade() else {
+        return;
+    };
+    match event {
+        LinkEvent::Up { daemon_version } => {
+            crate::log::say!("humatad2: the peer link to {machine} is up, running humatad2 {daemon_version}");
+            work.saw(machine, pb::Reachability::Online);
+        }
+        LinkEvent::Down { error } => {
+            crate::log::say!("humatad2: {}; {}", status::chain(error), error.fix());
+            work.saw(machine, pb::Reachability::Offline);
+        }
+    }
+}
+
 /// At start: finishes or undoes what a restart cut short (PER-27), on a
-/// thread of its own so serving doesn't wait for slow machines.
+/// thread of its own so serving doesn't wait for slow machines, then keeps
+/// each ready machine's peer link up.
 pub(crate) fn recover_in_background(work: Arc<Work>) {
+    let runtime = Handle::try_current().ok();
     std::thread::spawn(move || {
         let mut ignore = |_: StepEvent| {};
         match work.drive(&mut ignore, &|| false, |machines, drive| machines.recover(drive)) {
@@ -172,6 +247,11 @@ pub(crate) fn recover_in_background(work: Arc<Work>) {
                 "humatad2: couldn't finish the machine adds and removals the last run left: {}",
                 status::chain(&error)
             ),
+        }
+        if let (Some(runtime), Ok(entries)) = (runtime, work.machines.list()) {
+            for entry in entries.iter().filter(|entry| entry.state == EntryState::Ready) {
+                work.link_up(&entry.name, &runtime);
+            }
         }
     });
 }
@@ -470,7 +550,10 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let operation = self.run(progress, Arc::new(move |machines, drive| {
             let added = machines.add(&add, plan.clone(), drive);
             match &added {
-                Ok(entry) => work.saw(&entry.name, pb::Reachability::Online),
+                Ok(entry) => {
+                    work.saw(&entry.name, pb::Reachability::Online);
+                    work.link_up(&entry.name, &Handle::current());
+                }
                 Err(error) => work.saw(&name, reach_after(error)),
             }
             added.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
@@ -492,7 +575,10 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             let mut ignore = |_: StepEvent| {};
             let result = work.drive(&mut ignore, &|| false, |machines, drive| machines.reconnect(&name, drive));
             match &result {
-                Ok(entry) => work.saw(&entry.name, pb::Reachability::Online),
+                Ok(entry) => {
+                    work.saw(&entry.name, pb::Reachability::Online);
+                    work.link_up(&entry.name, &Handle::current());
+                }
                 Err(ManageError::Busy { .. } | ManageError::NotFound { .. }) => {}
                 Err(error) => work.saw(&name, reach_after(error)),
             }
@@ -581,6 +667,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             Started::New(progress) => progress,
             Started::Existing(operation) => return Ok(Response::new(operation)),
         };
+        self.work.link_down(&name);
         let operation = self.run(progress, Arc::new(move |machines, drive| {
             machines.remove(&name, drive).map(|()| None)
         }));
