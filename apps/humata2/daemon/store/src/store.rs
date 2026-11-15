@@ -43,7 +43,12 @@ pub(crate) struct Inner {
     pub(crate) database: PathBuf,
     pub(crate) blobs: PathBuf,
     connection: Mutex<Connection>,
+    /// Told after each committed write, outside the database lock.
+    committed: Mutex<Vec<Committed>>,
 }
+
+/// What [`Store::on_commit`] is given.
+type Committed = Box<dyn Fn() + Send + Sync>;
 
 impl Store {
     /// Opens the state in `root`, making it if it's missing, brings its
@@ -66,6 +71,7 @@ impl Store {
             database,
             blobs,
             connection: Mutex::new(connection),
+            committed: Mutex::new(Vec::new()),
         });
         let store = Self {
             journal: Journal::new(inner.clone()),
@@ -114,6 +120,18 @@ impl Store {
     pub fn save_last_good(&self) -> Result<LastGood, StoreError> {
         let connection = self.inner.lock();
         last_good::save(&connection, &self.inner.root)
+    }
+
+    /// Calls `then` after every write this store commits, on the thread
+    /// that wrote, once the database is free again. Keep it quick: a send
+    /// on a channel, say. This is how the daemon learns of writes without
+    /// watching the files or polling (TR-7).
+    pub fn on_commit(&self, then: impl Fn() + Send + Sync + 'static) {
+        self.inner
+            .committed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(Box::new(then));
     }
 
     pub fn root(&self) -> &Path {
@@ -399,6 +417,10 @@ impl Inner {
         fault::commit_point(op, "committing");
         transaction.commit().map_err(self.failed(doing))?;
         fault::commit_point(op, "committed");
+        drop(connection);
+        for then in self.committed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter() {
+            then();
+        }
         Ok(value)
     }
 

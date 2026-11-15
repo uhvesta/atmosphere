@@ -66,3 +66,10 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - `desktop/tests/directions.rs` and `tests/directions/*.rs` draw 37 still mocks (not the app) in looks A and B: session states and panels, three panel-switcher options, full screen and collapsed columns, two sidebar tree styles and folded channels, channel pages (two options plus Activity and Repos and machines), the Board as kanban, item drawer, table and dashboard, Home and Inbox options, Hosts, Settings and overlays. The three earlier frames are replaced.
 - Verified: `bazel test //apps/humata2/desktop:directions_test` (recorded with `directions_test_record`; frames viewed).
 - Look at: the Board dashboard isn't in SPEC; it needs the owner's yes and a BD entry before it's built.
+
+### (this commit): the last good copy follows commits, and the restart wiring is tested (Daemon and persistence; D71)
+- `daemon/store/src/store.rs`: `Store::on_commit` registers a hook called after each committed write, outside the database lock. A refused write calls nothing.
+- `daemon/humatad/src/last_good.rs`: the keeper is woken by that hook instead of file events, so it works under Bazel's darwin sandbox and on any file system; the `notify` dependency is gone from humatad (repinned). A write committed while a copy is being taken now gets a copy of its own (before, it was drained and dropped).
+- The rest of the wiring (`open_or_restore`, `Restored` into reconcile, `ReviveConfig.reports`, `last_start.not_brought_back`) was already in 5c795563; this adds the tests that drive it through the real daemon.
+- Verified: `bazel test //apps/humata2/daemon/store:all //apps/humata2/daemon/humatad:humatad2_unit_test //apps/humata2/daemon/humatad:restart_test`. New: `each_committed_write_is_told_and_a_refused_one_is_not`, `a_copy_is_saved_once_writes_go_quiet` (un-ignored), `a_shell_that_cant_come_back_is_one_line_and_the_others_still_do`, `a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so`.
+- Look at: the two restart tests pass on the code before this commit too (they cover 5c795563's wiring); the keeper tests are the ones that failed before.

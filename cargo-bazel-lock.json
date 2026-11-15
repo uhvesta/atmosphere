@@ -1,5 +1,5 @@
 {
-  "checksum": "bb8c02a81c74786bae612802e9e40993e514891e7398dc653509ce431c42e0e2",
+  "checksum": "6d060624b8d649551f775d9a4d267dd72c26983e8b93176ed8b786f56f5e6b75",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -19810,10 +19810,6 @@
           {
             "id": "hyper-util 0.1.21",
             "target": "hyper_util"
-          },
-          {
-            "id": "notify 8.2.2",
-            "target": "notify"
           },
           {
             "id": "prost 0.14.5",

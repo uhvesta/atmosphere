@@ -34,7 +34,6 @@ humata2-review-diff = { path = "../review_diff" }
 humata2-revive = { workspace = true }
 humata2-store = { workspace = true }
 hyper-util = { workspace = true }
-notify = { workspace = true }
 prost = { workspace = true }
 protoc-gen-prost = { workspace = true }
 protoc-gen-tonic = { workspace = true }

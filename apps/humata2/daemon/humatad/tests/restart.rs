@@ -102,3 +102,51 @@ async fn a_first_start_has_nothing_left_behind() {
     assert!(start.not_brought_back.is_empty());
     assert_eq!(start.restored_copy_taken_unix_ms, 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shell_that_cant_come_back_is_one_line_and_the_others_still_do() {
+    let mut daemon = Daemon::start().await;
+    let lost = machine_shell(&daemon).await;
+    let kept = machine_shell(&daemon).await;
+
+    daemon.kill();
+    kill_holders(&daemon.state).await;
+    // What the lost tab's holder saved can't be read back.
+    let store = Store::open(daemon.state.join("store")).unwrap();
+    let socket = store.tab(&lost.value).unwrap().unwrap().holder_socket;
+    drop(store);
+    let saved = socket.with_extension("scrollback");
+    let _ = std::fs::remove_file(&saved);
+    std::fs::create_dir(&saved).unwrap();
+    daemon.restart().await;
+
+    let start = last_start(&daemon).await;
+    assert_eq!(start.not_brought_back.len(), 1, "{:?}", start.not_brought_back);
+    let line = &start.not_brought_back[0];
+    assert_eq!(line.tab, lost.value);
+    assert!(line.session.is_empty());
+    assert!(!line.problem.is_empty());
+    let mut after = Attach::start(&daemon, open(&kept, 0)).await;
+    after.type_text("echo bac''k\n").await;
+    after.wait_for("back").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so() {
+    let mut daemon = Daemon::start().await;
+    let tab = machine_shell(&daemon).await;
+
+    daemon.kill();
+    kill_holders(&daemon.state).await;
+    let folder = daemon.state.join("store");
+    let copy = Store::open(&folder).unwrap().save_last_good().unwrap();
+    std::fs::write(folder.join("state.sqlite"), vec![0x5a; 8192]).unwrap();
+    daemon.restart().await;
+
+    let start = last_start(&daemon).await;
+    assert_eq!(start.restored_copy_taken_unix_ms, copy.taken_unix_ms);
+    assert!(start.not_brought_back.is_empty(), "{:?}", start.not_brought_back);
+    let mut after = Attach::start(&daemon, open(&tab, 0)).await;
+    after.type_text("echo bac''k\n").await;
+    after.wait_for("back").await;
+}

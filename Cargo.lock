@@ -4586,7 +4586,6 @@ dependencies = [
  "humata2-revive",
  "humata2-store",
  "hyper-util",
- "notify",
  "prost",
  "protoc-gen-prost",
  "protoc-gen-tonic",

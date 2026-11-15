@@ -286,11 +286,12 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] Enforce rustfmt (there is no rustfmt.toml yet).
 
 ### Daemon and persistence (I7; PER-25–PER-31, D71)
-- [ ] `last_good` test `a_copy_is_saved_once_writes_go_quiet` is ignored because Bazel's darwin sandbox delivers no file events. Prove saving another way.
+- [x] The last good copy no longer waits on file events (Bazel's darwin sandbox delivered none): the store calls `Store::on_commit` hooks after each committed write, and humatad's keeper debounces those. Tests: `daemon/humatad:humatad2_unit_test` (`a_copy_is_saved_once_writes_go_quiet`, no longer ignored), `daemon/store:records_test` (`each_committed_write_is_told_and_a_refused_one_is_not`).
 - [ ] Give the background reconcile, `ServerInfo.last_start` and the debounce a decision number and a GRPC entry.
 - [ ] Put humatad's own log lines in restart reports. Write the restart doctor skill (`humata doctor restarts`).
 - [ ] MV-13/MV-14 move export and import, including the store's MV-13 export.
-- [ ] Wire humatad to the store's restart work: call `Store::open_or_restore` and pass `Restored` to reconcile, run `save_last_good` periodically off the async runtime, fill `ReviveConfig.reports`, and show one line per failed session in the app.
+- [x] Wire humatad to the store's restart work: `Store::open_or_restore` with `Restored` passed to reconcile, `save_last_good` after writes go quiet (30 s, at most 10 min) on a blocking thread, `ReviveConfig.reports` filled, and one `NotBroughtBack` line per agent or shell that didn't come back in `ServerInfo.last_start`. Test: `daemon/humatad:restart_test` (`a_shell_that_cant_come_back_is_one_line_and_the_others_still_do`, `a_damaged_state_comes_back_from_its_last_good_copy_and_the_start_says_so`).
+- [ ] Show `last_start`'s lines (and a restore's losses) in the app, as the goldens draw it.
 - [ ] A resume redone after a crash skips the "you were interrupted" note when the conversation already holds it, and then only checks that the agent came up, stayed up and opened no other conversation (D71). Find a stronger check if one exists.
 - [ ] Recheck `terminal_test` (once failed with `SizeOutOfRange { claimed: 2097152 }`) and `restart_test` (once Unauthenticated), and fix the flaky `humatad2_unit_test`.
 

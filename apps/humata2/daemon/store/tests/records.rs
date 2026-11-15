@@ -206,3 +206,24 @@ fn files_and_folders_are_private() {
         }
     }
 }
+
+#[test]
+fn each_committed_write_is_told_and_a_refused_one_is_not() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let told = Arc::new(AtomicUsize::new(0));
+    let counting = told.clone();
+    store.on_commit(move || {
+        counting.fetch_add(1, Ordering::SeqCst);
+    });
+
+    store.put_session(&session("se_a", 1)).unwrap();
+    store.put_tab(&tab("tb_1", Some("se_a"))).unwrap();
+    assert!(store.put_tab(&tab("tb_2", Some("se_missing"))).is_err());
+    store.session("se_a").unwrap();
+
+    assert_eq!(told.load(Ordering::SeqCst), 2);
+}

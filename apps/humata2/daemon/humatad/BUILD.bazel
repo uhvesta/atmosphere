@@ -59,7 +59,6 @@ DAEMON_DEPS = [
     "@crates//:clap",
     "@crates//:hmac",
     "@crates//:hyper-util",
-    "@crates//:notify",
     "@crates//:prost",
     "@crates//:rand",
     "@crates//:rustix",
