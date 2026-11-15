@@ -563,5 +563,6 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Pick:** quiet chrome: no top status text or "Working" badges (a session's state is its dot), actions in ⋯/right-click/⌘K, dialogs only for decisions.
 - **Why:** the owner found the drawn UI rigid, with too many buttons, labels and pop-ups.
 - **Supersedes:** fixed one-side-panel session layouts and tab bars where they differ; the prototype remains the default-layout reference.
+- **Pick (owner, 2026-11-14):** a non-destructive **Reset** button (closes nothing, Undo reset restores the old layout) and pane freedom as one setting, Fixed / Simple (default: up to 4 panes, two levels) / Free, enforced in one place in the layout reducer so it can be restricted or undone easily.
 - **Open:** whether the left sidebar (channels and sessions) stays on the left or becomes one more pane. Recommendation: stays on the left as navigation, collapsible; everything you look at is a pane.
 

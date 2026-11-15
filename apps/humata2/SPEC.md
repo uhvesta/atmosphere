@@ -2283,7 +2283,7 @@ the **default layout** for a screen, not the only one.
 - **NV-28** Any pane can show any one thing: a session's agent terminal, a
   shell, a diff, files, the editor, a board, the Inbox, a review, a spec
   document, a channel's sessions, Hosts, Settings. Panes split side by side
-  or one above the other, as deep as the user likes, so two terminals, two
+  or one above the other, within the limits of NV-35, so two terminals, two
   sessions, or a session next to another session's diff can be seen at once.
 - **NV-29** The **Panes** sidebar sits on the right: the kinds of pane the
   current context offers (for the focused session: its terminals, Diff,
@@ -2298,8 +2298,15 @@ the **default layout** for a screen, not the only one.
 - **NV-31** Each screen opens in its **default layout** (the session page:
   agent terminal, with Diff beside it once there are changes; a channel: its
   sessions; Home: the recent feed). The user's changes to a layout are kept
-  per session and per screen across restarts (NV-16, PER-25); **Reset
-  layout** returns to the default.
+  per session and per screen across restarts (NV-16, PER-25).
+- **NV-31a** **Reset** (a button at the top of the Panes sidebar, also in
+  ⌘K and the window menu) puts the window back to the default layout for
+  what it shows. Reset is never destructive: it closes no session, stops no
+  terminal or program, and drops no draft, selection or scroll position
+  inside a pane's content. Panes it removes from view keep running and stay
+  listed in the Panes sidebar to reopen. The layout before the reset is
+  kept, and **Undo reset** (the toast's action, or ⌘Z) brings it back
+  exactly.
 - **NV-32** The chrome stays quiet. There is no status bar of text at the
   top of the window, no "Working"/"Idle" badges in headers, and no button
   that repeats something the pane or the palette already offers. A
@@ -2309,6 +2316,16 @@ the **default layout** for a screen, not the only one.
 - **NV-33** Dialogs and pop-ups are kept for what needs a decision (a
   destructive action, a form to fill). Anything else opens as a pane or a
   toast, so the user is never stacked in modals.
+- **NV-35** How much freedom panes have is one setting, **Settings ›
+  Layout › Panes**, so it can be narrowed or widened without code changes:
+  - **Fixed**: only the default layouts; panes open and close in their slots,
+    no splitting or moving;
+  - **Simple** (the default): up to 4 panes, splits two levels deep, moved by
+    dragging;
+  - **Free**: any number and depth.
+  Narrowing the setting never closes anything: layouts that no longer fit are
+  shown as their default layout (as Reset does) and come back if the setting
+  is widened again.
 - **NV-34** Panes are virtualized and paused when hidden: a pane that isn't
   visible renders nothing and its terminal keeps only its byte stream, so
   ten panes cost no more than the visible ones.
