@@ -117,7 +117,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/humatad:mcp_test` (the new test fails before: both tools answered not built).
 - Look at: the JSON shape of review_context isn't in MCP.md yet; the four note/prepare tools still answer not built.
 
-### (this commit): a reconnect restarts humatad2 only when something changed (Machines, D61)
+### 17da6d6b: a reconnect restarts humatad2 only when something changed (Machines, D61)
 - `daemon/machines/src/service.rs`: `running_script` prints `humata2.running=systemd|setsid|no`: systemd when the unit file is the one setup writes, lingering is on, the unit is enabled and active, and no boot entry is beside it; setsid when the boot entry is there, the daemon runs and no unit is. The boot entry is one `BOOT_LINE` both scripts use.
 - `check.rs` adds it to the check and `Facts.running`; `setup.rs` goes straight to Ready when no file is pending and `running` is the kind setup would start, so a reconnect leaves the daemon and its connections alone. A changed file, a stopped daemon or a switch to setsid still runs the service step.
 - Verified: `bazel test //apps/humata2/daemon/machines/... //apps/humata2/daemon/humatad/...` (fake_ssh_test's reconnect test fails before: the service step ran on every reconnect). takeover_test failed once under load in the full run, passed 5 alone (new OVERVIEW watch item).
