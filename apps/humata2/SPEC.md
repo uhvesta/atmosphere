@@ -532,6 +532,59 @@ is configurable per machine.
 - **SE-25** `humata attach --read-only` shows the terminal and sends no
   input; it does not count as a writer in SE-24. (provisional, D14)
 
+### Last used (owner direction 2026-11-15, D99)
+
+- **SE-26** Every session records when it was **last used**: the last time
+  the user typed into it, opened it or answered a request from it. Work the
+  agent does on its own does not count. Wherever sessions are listed (a
+  channel's Sessions tab, Home, the Desk, search results) the row can show
+  it and sort by it, so old sessions are easy to find and clean up.
+
+### The Desk (draft for the owner's review, D100)
+
+Frames 34–43 in `desktop/tests/__snapshots__/design/` are drafts, not
+approved goldens.
+
+- **DK-1** The sidebar has a **Desk** row under Board, with its open
+  sessions under it. A Desk session belongs to no channel. It runs an agent's
+  TUI or a plain terminal, with tabs and the two-group split like any session.
+- **DK-2** A Desk session works in a new scratch folder
+  (`~/humata/desk/<name>`) on a machine, or in a folder the user picks. Humata
+  never deletes a picked folder. A scratch folder is deleted 7 days after its
+  session closes unless the user keeps it (**Keep** on the Desk page, or
+  `humata desk keep`).
+- **DK-3** `humata desk move <machine>` copies the folder to another
+  machine and restarts the agent there with its conversation. `humata desk
+  add <owner/repo>` clones the repo's default branch into the folder;
+  removing a repo deletes its clone, not its branch. The folder bar above the
+  tabs does the same: folder, machine picker, repo chips, Add repo, Keep.
+- **DK-4** A Desk session's Board panel shows every channel's items. With
+  the access switch on, its agent can add and change items in any channel
+  without asking; making channels and adding machines asks each time unless
+  that switch is on too.
+- **DK-5** The Desk page lists Open sessions, Documents (markdown files in
+  Desk folders, each with **Copy to a channel…**) and Closed sessions with
+  the days left before their folder goes, sorted by last used (SE-26), with
+  **Clean up…** and **New desk session**.
+- **DK-6** With no channel, Home shows Get set up (make a channel, add a
+  machine, use the Desk) and the sidebar shows "No channels yet" and This Mac
+  with "Add a machine…" (frame 34). A channel with no sessions shows its own
+  checklist: add a repo, pick machines, start a session (frame 35).
+- **DK-7** In any session, a markdown file tab can sit in the second tab
+  group beside the agent's terminal, so the user reads the rendered file
+  while the agent stays in view (frame 41).
+- **DK-8** A markdown tab shows **Preview**, **Source** or **Side by
+  side**. Side by side puts the source on the left and the rendered page on
+  the right; scrolling is linked (the page follows the source) and can be
+  turned off. Comments go on source lines, and the page lights the block
+  they are on with a count. A comment is typed into the session's agent
+  when its turn ends (SE-23), as `[comment on <file>:<lines>]` and the
+  text, and then shows as sent (frame 42). The agent answers in its
+  terminal, not in the comment thread; the terminal can stay in the first
+  tab group beside both (frame 43).
+- **DK-9** (stretch goal, not planned) An MCP tool for the agent to reply
+  in the comment thread. Not needed while the terminal is in view.
+
 ## 6. Forks
 
 - **FK-1** The user can fork any session with **Fork**. The new session sits

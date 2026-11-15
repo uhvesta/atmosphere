@@ -14,6 +14,8 @@
 //! only into its own agents' terminals, one per agent; another copy of the
 //! work is a fork. New session runs any agent's TUI or a plain terminal.
 
+#[path = "design/desk.rs"]
+mod desk;
 #[path = "design/board.rs"]
 mod board;
 #[path = "design/channel.rs"]
@@ -170,6 +172,17 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("31-new-session", LIGHT, |look| overlays::new_session(look, board::kanban(look))),
     ("32-toast", LIGHT, |look| overlays::toast(look, pages::home_list(look), "Archived “Currency codes” and freed 1.4 GB", "Undo")),
     ("33-first-run", DARK, pages::first_run),
+    // Drafts for the owner's review (2026-11-15), not yet signed off.
+    ("34-draft-empty-home", LIGHT, desk::empty_home),
+    ("35-draft-empty-channel", DARK, desk::empty_channel),
+    ("36-draft-desk", LIGHT, desk::desk),
+    ("37-draft-desk-board", DARK, desk::board_session),
+    ("38-draft-desk-move", DARK, desk::move_session),
+    ("39-draft-desk-document", LIGHT, desk::doc_session),
+    ("40-draft-new-desk-session", LIGHT, desk::new_desk),
+    ("41-draft-review-beside-terminal", DARK, desk::split_review),
+    ("42-draft-review-markdown-source", LIGHT, desk::source_review),
+    ("43-draft-review-terminal-source-page", DARK, desk::terminal_source_page),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.

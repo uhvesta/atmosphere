@@ -17,11 +17,17 @@ pub struct Side {
     pub pinned: bool,
     /// Every channel folded to one row.
     pub folded: bool,
+    /// Show the Desk row and its sessions (draft).
+    pub desk: bool,
+    /// No channels and no machines but This Mac yet (draft).
+    pub empty: bool,
+    /// With `empty`, the one channel just made, with nothing in it.
+    pub fresh: Option<&'static str>,
 }
 
 impl Side {
     pub const fn at(selected: &'static str) -> Self {
-        Self { selected, pinned: false, folded: false }
+        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None }
     }
 }
 
@@ -152,6 +158,23 @@ fn channels(look: Look, side: Side) -> Div {
         .child(channel(look, side, "web", false, None, false))
 }
 
+/// The Desk row, with its open sessions under it (draft).
+fn desk(look: Look, side: Side) -> Div {
+    let mut list = div().flex().flex_col().child(nav(look, side, IconName::SquareTerminal, "Desk", None));
+    if !side.empty {
+        list = list
+            .child(session(look, side, St::Working, "Plan Q4 board", 18., None))
+            .child(session(look, side, St::Idle, "BRIN rollout RFC", 18., None));
+    }
+    list
+}
+
+/// A faint line or an accent action where a list has nothing yet.
+fn hint(look: Look, glyph: Option<IconName>, text: &'static str) -> Div {
+    let hex = if glyph.is_some() { look.accent } else { look.tertiary };
+    row(look, glyph.map(|glyph| small_icon(glyph, hex).into_any_element()), text, None, 0., false).text_color(c(hex))
+}
+
 fn section(look: Look, title: &'static str) -> Div {
     div()
         .flex()
@@ -241,21 +264,29 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         })
         .child(div().h(px(4.)))
         .child(nav(look, side, IconName::House, "Home", None))
-        .child(nav(look, side, IconName::Inbox, "Inbox", Some("7")))
+        .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else { Some("7") }))
         .child(nav(look, side, IconName::SquareKanban, "Board", None))
+        .when(side.desk, |bar| bar.child(desk(look, side)))
         .child(section(look, "Channels").child(small_icon(IconName::Plus, look.secondary)))
-        .child(channels(look, side))
+        .when(side.empty, |bar| match side.fresh {
+            Some(name) => bar
+                .child(channel(look, side, name, true, None, false))
+                .child(row(look, None, "No sessions yet", None, 26., false).text_color(c(look.tertiary))),
+            None => bar.child(hint(look, None, "No channels yet")).child(hint(look, Some(IconName::Plus), "New channel…")),
+        })
+        .when(!side.empty, |bar| bar.child(channels(look, side)))
         .child(section(look, "Hosts"))
         .child(row(look, Some(status(St::Working).into_any_element()), "This Mac", None, 0., side.selected == "This Mac"))
-        .child(row(look, Some(status(St::Working).into_any_element()), "devbox-1", None, 0., side.selected == "devbox-1"))
-        .child(row(
+        .when(side.empty, |bar| bar.child(hint(look, Some(IconName::Plus), "Add a machine…")))
+        .when(!side.empty, |bar| bar.child(row(look, Some(status(St::Working).into_any_element()), "devbox-1", None, 0., side.selected == "devbox-1")))
+        .when(!side.empty, |bar| bar.child(row(
             look,
             Some(status(St::Offline).into_any_element()),
             "gpu-box",
             Some(secondary(look, "offline").into_any_element()),
             0.,
             false,
-        ))
+        )))
         .child(div().flex_1())
         .child(div().pb(px(10.)).child(nav(look, side, IconName::Settings, "Settings", None)))
 }

@@ -236,6 +236,7 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
 - [ ] Finish the indented tree, channel Sessions tab, Home/global Inbox lists, terminal tabs and the two-group split, New session with any agent TUI or a plain terminal, sidebar material and vibrancy, system font sizes and weights, the unified title bar with toolbar items, native list selection, sheets and popovers, light/dark following the system across the shell, and terminal full screen (minion C: this pass builds the session panels only; the rest remains the N1 shell work).
 - [ ] Restyle the remaining shell (sidebar, session header, terminal tabs) and each screen until the whole app matches the goldens (minion C: the new panel/strip use D76 tokens; cropped panel references do not claim the earlier shell is already restyled).
 - [ ] Draw the goldens on Linux (in the Linux VM batch, after the I milestones) and in a browser. Find out whether gpui's web target can draw `design.rs` headless; if not, check the frames another way. Never edit `ui-prototype` for this.
+- [ ] Owner to review drafts 34–43 (empty states, the Desk and markdown review, SPEC SE-26 and DK-1–DK-9, D99/D100). Build them only after sign-off; then add the Desk row to every frame's sidebar.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.
 
 ### Pick up here (minion C1)

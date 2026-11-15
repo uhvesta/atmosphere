@@ -742,4 +742,12 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - The check runs per event and per agent subscriber, so a grant revoked later stops the next note, not ones already sent.
 - Reverse: `reads_session` and the Comment arm of `Filter` in `daemon/humatad/src/events.rs`, and the guard and machine passed to `EventSvc::new` in `daemon/humatad/src/serve.rs`.
 
+## D99: Sessions show when they were last used (owner direction 2026-11-15)
+- **Pick:** SE-26. "Last used" is the user's last typing, opening or answer, not the agent's last output, so a long-running agent doesn't make a forgotten session look fresh. Listed sessions can show it and sort by it, for cleanup.
+- Approved frames (18 etc.) are not changed for this now; rows gain it when the screens are next redrawn.
 
+## D100: The Desk, empty states and markdown review (proposed in drafts 34–43). Provisional
+- **Pick:** DK-1–DK-8; DK-9 (agent replies in the comment thread over MCP) is a stretch goal. The owner noted the agent answers in its terminal, so inline replies aren't needed for now. The owner asked for a place, beside Home, Inbox and Board, for ephemeral sessions that manage things (the global board, items and projects, documents), and for barebones screens with no channel or no machine. The owner named it Desk.
+- Scratch folders go 7 days after close unless kept; picked folders are never deleted. Moving a Desk session copies its folder and restarts the agent with its conversation.
+- Once approved: frame 34 replaces or joins 33 (first run), and the Desk row is added to the sidebar in every frame.
+- Reverse: drop `desktop/tests/design/desk.rs`, the `desk`, `empty` and `fresh` fields in `design/sidebar.rs`, frames 34–43 and SPEC DK-1–DK-9.

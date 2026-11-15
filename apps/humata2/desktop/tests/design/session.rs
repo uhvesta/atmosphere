@@ -113,7 +113,7 @@ fn header(look: Look, screen: Screen) -> Div {
         .child(icon(IconName::Ellipsis, look.secondary))
 }
 
-fn tab(look: Look, lead: Option<AnyElement>, text: &'static str, on: bool, closable: bool) -> Div {
+pub fn tab(look: Look, lead: Option<AnyElement>, text: &'static str, on: bool, closable: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -211,7 +211,7 @@ fn transcript(look: Look) -> Vec<Div> {
     ]
 }
 
-fn input_box(look: Look, enabled: bool) -> Div {
+pub fn input_box(look: Look, enabled: bool) -> Div {
     div()
         .flex()
         .flex_col()
@@ -308,7 +308,7 @@ pub fn terminal(look: Look, term: Term) -> Div {
     }
 }
 
-fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<Div>) -> Div {
+pub fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<Div>) -> Div {
     div()
         .flex()
         .items_center()
@@ -326,7 +326,7 @@ fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<Div>)
 }
 
 /// The labelled strip down the right edge that picks the panel (SE-11).
-fn strip(look: Look, on: Option<Panel>) -> Div {
+pub fn strip(look: Look, on: Option<Panel>) -> Div {
     let item = |glyph: IconName, panel: Panel, text: &'static str, count: Option<&'static str>| {
         let lit = on == Some(panel);
         div()
@@ -427,7 +427,7 @@ fn diff_lines(look: Look) -> Div {
         .child(line("44", Some(look.add_bg), "+       tx.commit().await?;"))
 }
 
-fn comment(look: Look, who: &'static str, text: &'static str, draft: bool) -> Div {
+pub fn comment(look: Look, who: &'static str, text: &'static str, draft: bool) -> Div {
     div()
         .mx(px(10.))
         .my(px(6.))
@@ -794,7 +794,7 @@ fn journal_panel(look: Look, full: bool) -> Div {
         )
 }
 
-fn panel(look: Look, screen: Screen, which: Panel) -> Div {
+pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
     let full = screen.fill == Fill::PanelFull;
     let title = match which {
         Panel::Diff => "Diff",

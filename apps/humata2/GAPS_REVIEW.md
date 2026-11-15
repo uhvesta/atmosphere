@@ -374,3 +374,12 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Compared: frame33 <-> `desktop/tests/__snapshots__/native/33-first-run.png`.
 - Compared: updated22 Board drawer with Start a session link and28 Hosts enabled Add button. Other semantic snapshot updates are toolkit input entity IDs after new input entities, including standard Files light/dark; pixels unchanged there.
 - Look at: palette focus outline and shortcut chip styling differ; actual data yields three matching sessions/two files versus mock two/one; recents rank within groups. New session model is editable text and repository choices toggle rather than opening popups; machine arrows are leading, focus outline and dialog height differ. First-run button widths/border differ slightly. Toast omits mock1.4GB freed because archive reports no size, while actual Home/sidebar counts/history remain consistent with fixtures. SSH discovery/key prompts/install progress and real clone/agent/PTy launch are outside this fake flow. Terminal is still a fixture transcript renderer; it is the first full-audit item. Remaining per-frame differences are recorded in OVERVIEW; all33 have foundations, not a completed pixel-match claim. No new Provisional decision. Automatic review rejected an earlier unbounded helper cleanup; the exact unused helpers were removed by bounded edits instead.
+
+### (this commit): draft goldens for empty states, the Desk and markdown review (N1; D99, D100) [owner's review]
+- Drafts 34–43 in `desktop/tests/__snapshots__/design/`, drawn by the new `desktop/tests/design/desk.rs`. They are drafts for the owner, not approved goldens: nothing is built from them yet.
+  - 34 Home with no channels, 35 an empty channel, 36 the Desk page, 37 a Desk session on the global board, 38 `humata desk move/add/keep`, 39 a document tab, 40 New desk session.
+  - 41 the agent's terminal beside a rendered markdown file, 42 markdown Side by side (source with line comments, linked page), 43 the terminal, source and page together.
+- `design/sidebar.rs` gains `desk`, `empty` and `fresh` (all off in frames 01–33); `design/session.rs` makes a few helpers `pub` for reuse.
+- SPEC: SE-26 (sessions record last used, owner direction) and DK-1–DK-9 (the Desk, empty states, markdown review; DK-9 a stretch goal). DECISIONS D99 and D100; OVERVIEW N1 item for the owner's review.
+- Verified: `bazel run //apps/humata2/desktop:design_test_record` passes; frames 01–33 are byte-identical; each new frame inspected.
+- Look at: frames 34–43 against SPEC DK-1–DK-8.
