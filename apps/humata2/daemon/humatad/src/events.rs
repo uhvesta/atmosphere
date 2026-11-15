@@ -155,6 +155,7 @@ struct Filter {
     own_session: Option<String>,
     machines: bool,
     views: bool,
+    inbox: bool,
     channels: Vec<String>,
     sessions: Vec<String>,
 }
@@ -172,11 +173,13 @@ impl Filter {
         let machines = topics.contains(&(pb::Topic::Machines as i32))
             || (topics.is_empty() && request.channels.is_empty() && request.sessions.is_empty());
         let views = topics.is_empty() || topics.contains(&(pb::Topic::Views as i32));
+        let inbox = topics.is_empty() || topics.contains(&(pb::Topic::Inbox as i32));
         Ok(Self {
             user,
             own_session,
             machines,
             views,
+            inbox,
             channels: request.channels.iter().map(|id| id.value.clone()).collect(),
             sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
         })
@@ -188,6 +191,12 @@ impl Filter {
             return true;
         }
         scope.is_some_and(|scope| self.channels.contains(&scope.channel) || self.sessions.contains(&scope.session))
+    }
+
+    /// Whether the caller sees what belongs to `scope`'s session: the user
+    /// every session's, an agent its own.
+    fn sees_session(&self, scope: Option<&Scope>) -> bool {
+        self.user || scope.is_some_and(|scope| self.own_session.as_deref() == Some(scope.session.as_str()))
     }
 
     fn passes(&self, published: &Published) -> bool {
@@ -202,9 +211,14 @@ impl Filter {
                 let sees = if self.user {
                     view.state != pb::ViewState::Draft as i32
                 } else {
-                    scope.is_some_and(|scope| self.own_session.as_deref() == Some(scope.session.as_str()))
+                    self.sees_session(scope)
                 };
                 self.views && sees && self.asked(scope)
+            }
+            // The user sees every request; an agent its own session's, as
+            // ListRequests lists them.
+            Some(pb::event::Payload::Request(_)) => {
+                self.inbox && self.sees_session(scope) && self.asked(scope)
             }
             _ => false,
         }

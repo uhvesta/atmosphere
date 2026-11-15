@@ -280,8 +280,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         compression.clone(),
         Link::Local,
     );
-    let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone());
     let feed = Arc::new(Feed::default());
+    let inbox = Inbox::new(guard.clone(), store.clone(), machine.clone(), feed.clone());
     let review = crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
     let access = Access::new(guard.clone());
     let operations = Arc::new(Operations::default());

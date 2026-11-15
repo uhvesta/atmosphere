@@ -2,7 +2,8 @@
 //! ahead (IN-26), the user's answers, and waiting for them (MCP.md §5).
 //! Approving an ask-ahead or answering "Always let …" makes a grant in the
 //! policy (IN-14, IN-22). Requests and grants live in memory until the
-//! daemon stops.
+//! daemon stops. Each new request and each change to one goes on the
+//! event feed.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -21,6 +22,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
 use crate::attach;
+use crate::events::{Feed, Scope};
 use crate::grant_target;
 use crate::guard::{self, Guard};
 use crate::identity::{self, AgentCaller, Caller, UserVia};
@@ -41,6 +43,8 @@ pub(crate) struct Inbox {
     store: Arc<Store>,
     /// This machine's id.
     machine: String,
+    /// Where new requests and their answers are told.
+    feed: Arc<Feed>,
     state: Mutex<State>,
 }
 
@@ -85,11 +89,12 @@ struct Decided {
 }
 
 impl Inbox {
-    pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>, machine: String) -> Self {
+    pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>, machine: String, feed: Arc<Feed>) -> Self {
         Self {
             guard,
             store,
             machine,
+            feed,
             state: Mutex::new(State::default()),
         }
     }
@@ -103,6 +108,16 @@ impl Inbox {
             .find(|entry| entry.id == id && sees(caller, entry))
             .map(|entry| entry.request.clone())
             .ok_or_else(|| no_request(id))
+    }
+
+    /// Tells the feed of `session`'s request as it now stands.
+    fn tell(&self, change: pb::Change, session: &str, request: &pb::InboxRequest) {
+        let scope = Scope {
+            channel: request.channel.as_ref().map(|channel| channel.value.clone()).unwrap_or_default(),
+            session: session.to_owned(),
+        };
+        self.feed
+            .publish_in(change, pb::event::Payload::Request(request.clone()), scope);
     }
 
     /// The user behind `caller`, who has shown they are there.
@@ -294,6 +309,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             .request
             .send_modify(|held| settle(held, decided, by, at));
         let current = entry.request.borrow().request.clone();
+        self.tell(pb::Change::Updated, &entry.session, &current);
         Ok(Response::new(current))
     }
 
@@ -360,7 +376,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
             entry
                 .request
                 .send_modify(|held| settle(held, decided, by, at));
-            answered.push(entry.request.borrow().request.clone());
+            let current = entry.request.borrow().request.clone();
+            self.tell(pb::Change::Updated, &entry.session, &current);
+            answered.push(current);
         }
         Ok(Response::new(pb::AnswerAllResponse { answered, skipped }))
     }
@@ -408,6 +426,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let made = question(&id, agent, request.question, request.choices);
         let held = Held::new(made);
         let reply = settled(&held);
+        self.tell(pb::Change::Created, &session, &held.request);
         state.add(key, id, session, None, held);
         Ok(Response::new(reply))
     }
@@ -519,6 +538,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let made = access_request(&id, agent, &asked, request.reason, decision);
         let held = Held::new(made);
         let reply = settled(&held);
+        self.tell(pb::Change::Created, &session, &held.request);
         state.add(key, id, session, Some(asked), held);
         Ok(Response::new(reply))
     }
@@ -600,7 +620,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             .iter()
             .find(|entry| entry.id == id && sees(&caller, entry))
             .ok_or_else(|| no_request(&id))?;
-        entry.request.send_if_modified(|held| {
+        let withdrawn = entry.request.send_if_modified(|held| {
             let current = &mut held.request;
             if current.state != pb::RequestState::Pending as i32 {
                 return false;
@@ -613,6 +633,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
             true
         });
         let current = entry.request.borrow().request.clone();
+        if withdrawn {
+            self.tell(pb::Change::Updated, &entry.session, &current);
+        }
         Ok(Response::new(current))
     }
 }

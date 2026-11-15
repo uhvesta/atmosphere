@@ -615,3 +615,90 @@ async fn an_agent_lists_only_its_own_sessions_grants() {
     assert_eq!(own.len(), 1);
     assert!(others.is_empty());
 }
+
+/// A feed subscribed with `request`, from now.
+async fn feed(fixture: &Fixture, request: Request<pb::SubscribeRequest>) -> tonic::Streaming<pb::Event> {
+    pb::event_service_client::EventServiceClient::new(fixture.daemon.channel().await)
+        .subscribe(request)
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+/// The next request event's change, request id and state.
+async fn next_request(events: &mut tonic::Streaming<pb::Event>) -> (i32, pb::RequestId, i32) {
+    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    match event.payload {
+        Some(pb::event::Payload::Request(request)) => (event.change, request.id.unwrap(), request.state),
+        other => panic!("expected an Inbox request, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_feed_tells_of_each_request_and_its_answer() {
+    let fixture = Fixture::start().await;
+    let mut users = feed(&fixture, Request::new(pb::SubscribeRequest::default())).await;
+    let mut agents = feed(&fixture, fixture.as_agent(pb::SubscribeRequest::default())).await;
+    let mut inbox_only = feed(
+        &fixture,
+        Request::new(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Inbox as i32],
+            ..Default::default()
+        }),
+    )
+    .await;
+    let mut other_session = feed(
+        &fixture,
+        Request::new(pb::SubscribeRequest {
+            sessions: vec![session(OTHER)],
+            ..Default::default()
+        }),
+    )
+    .await;
+    let mut machines_only = feed(
+        &fixture,
+        Request::new(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Machines as i32],
+            ..Default::default()
+        }),
+    )
+    .await;
+
+    let answered = fixture.ask("Ship it?").await;
+    fixture.answer(&answered, reply("yes")).await.unwrap();
+    let withdrawn = fixture.ask("Still there?").await;
+    let withdraw = pb::WithdrawRequestRequest {
+        idempotency_key: None,
+        id: Some(withdrawn.clone()),
+    };
+    fixture.inbox().await.withdraw_request(fixture.as_agent(withdraw.clone())).await.unwrap();
+    fixture.inbox().await.withdraw_request(fixture.as_agent(withdraw)).await.unwrap();
+    // Marks the end: nothing after the second withdrawal was told.
+    let last = fixture.ask("Done?").await;
+
+    let (created, updated) = (pb::Change::Created as i32, pb::Change::Updated as i32);
+    let pending = pb::RequestState::Pending as i32;
+    let expected = vec![
+        (created, answered.clone(), pending),
+        (updated, answered, pb::RequestState::Answered as i32),
+        (created, withdrawn.clone(), pending),
+        (updated, withdrawn, pb::RequestState::Withdrawn as i32),
+        (created, last, pending),
+    ];
+    for events in [&mut users, &mut agents, &mut inbox_only] {
+        let mut told = Vec::new();
+        for _ in 0..expected.len() {
+            told.push(next_request(events).await);
+        }
+        assert_eq!(told, expected, "a repeated withdrawal changes nothing, so it isn't told");
+    }
+    for (events, why) in [
+        (&mut other_session, "a feed narrowed to another session"),
+        (&mut machines_only, "a feed of machines only"),
+    ] {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), events.message()).await.is_err(),
+            "{why} hears of no request"
+        );
+    }
+}
