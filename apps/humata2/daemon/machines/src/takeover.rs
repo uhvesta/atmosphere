@@ -4,14 +4,17 @@
 //! (sent with the far terminal in raw mode), and finally the bridge, whose
 //! sync marker means the terminal now carries the gRPC stream.
 //!
-//! It does no I/O: the daemon feeds it what the terminal printed and does
-//! what it answers.
+//! It does no I/O: the daemon feeds it what the terminal printed, tells it
+//! when the time it asks for has passed or the terminal ended, and does what
+//! it answers.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use crate::error::TakeoverError;
 use crate::install::{self, Builds, InstallProblem, InstalledFile, Payload};
 use crate::link::BIN_DIR;
+use crate::name::MachineName;
 use crate::platform::{Arch, Os, Platform};
 use crate::quote::sh_command;
 use crate::runner::Exit;
@@ -36,10 +39,26 @@ pub enum TakeoverAction {
     Failed(TakeoverError),
 }
 
+/// How long the bridge has to print its sync marker. It may wait up to
+/// 10.5 s for a machine daemon it starts itself (D42), and a slow link adds
+/// to that.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(30);
+/// How much of the terminal's output a failure keeps.
+const TAIL_BYTES: usize = 4096;
+const TAIL_LINES: usize = 20;
+
 /// One takeover of one terminal.
 #[derive(Debug)]
 pub struct Takeover {
+    machine: MachineName,
     nonce: String,
+    sync_timeout: Duration,
+    /// When the bridge must have printed its marker by; set once it is
+    /// typed.
+    deadline: Option<Instant>,
+    /// The last [`TAIL_BYTES`] the terminal printed since the login, for a
+    /// failure's output.
+    recent: Vec<u8>,
     state: State,
     /// What arrived since the last whole line (or, at the end, since the
     /// bridge started).
@@ -62,16 +81,16 @@ enum State {
     Over,
 }
 
-impl Default for Takeover {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Takeover {
-    pub fn new() -> Self {
+    /// Takes over a terminal logged in to `machine`, giving the bridge 30 s
+    /// to print its sync marker.
+    pub fn new(machine: MachineName) -> Self {
         Self {
+            machine,
             nonce: install::nonce(),
+            sync_timeout: SYNC_TIMEOUT,
+            deadline: None,
+            recent: Vec::new(),
             state: State::LoggingIn,
             buffer: Vec::new(),
             platform: None,
@@ -93,9 +112,55 @@ impl Takeover {
         }
     }
 
+    /// Gives the bridge `timeout` to print its sync marker instead.
+    pub fn with_sync_timeout(mut self, timeout: Duration) -> Self {
+        self.sync_timeout = timeout;
+        self
+    }
+
     /// Whether the takeover is finished, ready or failed.
     pub fn is_over(&self) -> bool {
         self.state == State::Over
+    }
+
+    /// When to call [`Takeover::time_passed`] if the terminal prints nothing
+    /// that ends the takeover before then. None while there is no deadline:
+    /// logging in and installing take as long as they take.
+    pub fn deadline(&self) -> Option<Instant> {
+        match self.state {
+            State::Sync => self.deadline,
+            _ => None,
+        }
+    }
+
+    /// Tells the takeover it is `now`: past the deadline, it fails with the
+    /// end of the terminal's output.
+    pub fn time_passed(&mut self, now: Instant) -> Vec<TakeoverAction> {
+        match self.deadline() {
+            Some(deadline) if now >= deadline => {
+                let error = TakeoverError::SyncTimedOut {
+                    machine: self.machine.clone(),
+                    waited: self.sync_timeout,
+                    output_tail: self.tail(),
+                };
+                self.fail(error)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The terminal ended (its output closed or its process exited, with
+    /// `exit` when known) before the takeover was over.
+    pub fn ended(&mut self, exit: Option<Exit>) -> Vec<TakeoverAction> {
+        if self.state == State::Over {
+            return Vec::new();
+        }
+        let error = TakeoverError::TerminalEnded {
+            machine: self.machine.clone(),
+            exit,
+            output_tail: self.tail(),
+        };
+        self.fail(error)
     }
 
     /// Feeds what the terminal printed.
@@ -104,6 +169,7 @@ impl Takeover {
             State::LoggingIn | State::Over => return Vec::new(),
             _ => {}
         }
+        self.remember(bytes);
         self.buffer.extend_from_slice(bytes);
         if self.state == State::Sync {
             return self.sync();
@@ -223,6 +289,12 @@ impl Takeover {
                 self.state = state;
                 let mut actions = Vec::new();
                 if state == State::Sync {
+                    // What is buffered was printed before the bridge line
+                    // is typed, so none of it is the bridge's. The newline
+                    // stands for the start of the bridge's first line.
+                    self.buffer.clear();
+                    self.buffer.push(b'\n');
+                    self.deadline = Some(Instant::now() + self.sync_timeout);
                     actions.push(TakeoverAction::MakeLocalRaw);
                 }
                 actions.push(write);
@@ -232,15 +304,24 @@ impl Takeover {
         }
     }
 
-    /// Looks for the bridge's `HUMATA_SYNC_<nonce>` line in the raw bytes.
+    /// Looks for the bridge's `HUMATA_SYNC_<nonce>` line, the whole line,
+    /// in the raw bytes. The typed bridge line's echo holds `--sync
+    /// <nonce>`, never the marker, and a marker for another nonce or with
+    /// more on its line doesn't count.
     fn sync(&mut self) -> Vec<TakeoverAction> {
         let marker = format!("HUMATA_SYNC_{}", self.nonce);
         let Some(start) = find(&self.buffer, marker.as_bytes()) else {
-            // Keep only what could still begin the marker.
+            // Keep only what could still begin the marker, and the byte
+            // before it.
             let keep = self.buffer.len().saturating_sub(marker.len() + 1);
             self.buffer.drain(..keep);
             return Vec::new();
         };
+        let line_start = start > 0 && matches!(self.buffer[start - 1], b'\n' | b'\r');
+        if !line_start {
+            self.buffer.drain(..=start);
+            return self.sync();
+        }
         let mut end = start + marker.len();
         if self.buffer.get(end) == Some(&b'\r') {
             end += 1;
@@ -256,6 +337,7 @@ impl Takeover {
         }
         let leftover = self.buffer.split_off(end);
         self.buffer.clear();
+        self.recent.clear();
         self.state = State::Over;
         match self.platform {
             Some(platform) => vec![TakeoverAction::Ready { platform, leftover }],
@@ -273,7 +355,21 @@ impl Takeover {
     fn fail(&mut self, error: TakeoverError) -> Vec<TakeoverAction> {
         self.state = State::Over;
         self.buffer.clear();
+        self.recent.clear();
         vec![TakeoverAction::Failed(error)]
+    }
+
+    fn remember(&mut self, bytes: &[u8]) {
+        self.recent.extend_from_slice(bytes);
+        let excess = self.recent.len().saturating_sub(TAIL_BYTES);
+        self.recent.drain(..excess);
+    }
+
+    /// The last lines the terminal printed, as text.
+    fn tail(&self) -> String {
+        let text = plain(&self.recent);
+        let lines: Vec<&str> = text.lines().collect();
+        lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n")
     }
 }
 

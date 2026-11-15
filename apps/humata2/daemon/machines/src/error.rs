@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::io;
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -306,6 +307,16 @@ pub enum TakeoverError {
     NoBuild { platform: Platform },
     #[error("installing {file} over the login failed: {problem}")]
     Install { file: InstalledFile, problem: InstallProblem },
+    #[error(
+        "humatad2 on {machine} didn't say it was ready within {}s; the end of the terminal's output is below. Check that humatad2 is installed at ~/.humata2/bin/humatad2 on {machine} and runs: log in over ssh and run the line Humata typed by hand to see its error. If the machine was only slow, for example starting its daemon, open it interactively again",
+        .waited.as_secs_f32()
+    )]
+    SyncTimedOut { machine: MachineName, waited: Duration, output_tail: String },
+    #[error(
+        "the terminal logged in to {machine} ended{} before the takeover finished; the end of its output is below. If humatad2 wasn't found or failed, check ~/.humata2/bin/humatad2 on {machine}: log in over ssh and run the line Humata typed by hand to see its error. Then open it interactively again",
+        .exit.map(|how| format!(" ({how})")).unwrap_or_default()
+    )]
+    TerminalEnded { machine: MachineName, exit: Option<Exit>, output_tail: String },
     #[error(transparent)]
     Quote(#[from] QuoteError),
 }

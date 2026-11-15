@@ -5,14 +5,14 @@
 
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use humata2_machines::{
-    Builds, InstallProblem, InstalledFile, Payload, Platform, Takeover, TakeoverAction,
-    TakeoverError,
+    Builds, Exit, InstallProblem, InstalledFile, MachineName, Payload, Platform, Takeover,
+    TakeoverAction, TakeoverError,
 };
 
 /// Long enough for a slow machine; only reached when the shell never
@@ -27,15 +27,29 @@ impl Builds for AnyPlatform {
     }
 }
 
+/// Short, so the tests that reach it don't wait long, but long enough for
+/// the shell to install and start the fake humatad2 (over 300 ms under
+/// Bazel).
+const SHORT: Duration = Duration::from_secs(3);
+
 /// A humatad2 whose bridge says it is in sync, then echoes the stream.
 fn fake_files() -> Vec<Payload> {
+    files_with_bridge("printf 'HUMATA_SYNC_%s\\n' \"$n\"\nexec cat")
+}
+
+/// The files, with a humatad2 that runs `body` with the sync nonce in `$n`.
+fn files_with_bridge(body: &str) -> Vec<Payload> {
+    let humatad = format!(
+        "#!/bin/sh\nwhile [ \"$#\" -gt 0 ] && [ \"$1\" != --sync ]; do shift; done\nn=$2\n{body}\n"
+    );
     vec![
-        Payload::new(
-            InstalledFile::Humatad,
-            Arc::from(&b"#!/bin/sh\nprintf 'HUMATA_SYNC_%s\\n' \"$3\"\nexec cat\n"[..]),
-        ),
+        Payload::new(InstalledFile::Humatad, Arc::from(humatad.as_bytes())),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
     ]
+}
+
+fn machine() -> MachineName {
+    MachineName::new("box-1").unwrap()
 }
 
 struct Shell {
@@ -81,6 +95,27 @@ impl Shell {
     fn read(&self) -> Vec<u8> {
         self.output.recv_timeout(GUARD).expect("the shell answered")
     }
+
+    /// The next output, or none once `deadline` passes; `Err` once the
+    /// shell's output closed, with how it exited.
+    fn next(&mut self, deadline: Option<Instant>) -> Result<Option<Vec<u8>>, Exit> {
+        let wait = deadline.map_or(GUARD, |deadline| {
+            deadline.saturating_duration_since(Instant::now())
+        });
+        match self.output.recv_timeout(wait) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(RecvTimeoutError::Timeout) if deadline.is_some() => Ok(None),
+            Err(RecvTimeoutError::Timeout) => panic!("the shell didn't answer"),
+            Err(RecvTimeoutError::Disconnected) => {
+                use std::os::unix::process::ExitStatusExt;
+                let status = self.child.wait().unwrap();
+                Err(match status.code() {
+                    Some(code) => Exit::Code(code),
+                    None => Exit::Signal(status.signal().unwrap_or_default()),
+                })
+            }
+        }
+    }
 }
 
 /// What the takeover ended with, and the files it sent.
@@ -96,7 +131,15 @@ fn run(
     builds: &dyn Builds,
     mangle: impl Fn(&[u8]) -> Vec<u8>,
 ) -> (End, Vec<InstalledFile>) {
-    let mut takeover = Takeover::new();
+    run_takeover(Takeover::new(machine()), shell, builds, mangle)
+}
+
+fn run_takeover(
+    mut takeover: Takeover,
+    shell: &mut Shell,
+    builds: &dyn Builds,
+    mangle: impl Fn(&[u8]) -> Vec<u8>,
+) -> (End, Vec<InstalledFile>) {
     let mut actions = takeover.logged_in();
     let mut sent = Vec::new();
     loop {
@@ -117,8 +160,11 @@ fn run(
                 TakeoverAction::Failed(error) => return (End::Failed(error), sent),
             }
         }
-        let chunk = shell.read();
-        actions = takeover.output(&chunk, builds);
+        actions = match shell.next(takeover.deadline()) {
+            Ok(Some(chunk)) => takeover.output(&chunk, builds),
+            Ok(None) => takeover.time_passed(Instant::now()),
+            Err(exit) => takeover.ended(Some(exit)),
+        };
     }
 }
 
@@ -190,4 +236,74 @@ fn a_file_changed_on_the_way_is_not_installed() {
         }
     );
     assert!(!home.path().join(".humata2/bin/humatad2").exists());
+}
+
+#[test]
+fn a_bridge_that_never_syncs_times_out_with_the_end_of_its_output() {
+    let home = tempfile::tempdir().unwrap();
+    let mut shell = Shell::start(home.path());
+    let files = files_with_bridge("echo 'waiting for the socket'\nexec cat");
+    let takeover = Takeover::new(machine()).with_sync_timeout(SHORT);
+
+    let (end, _) = run_takeover(takeover, &mut shell, &AnyPlatform(files), <[u8]>::to_vec);
+
+    let End::Failed(TakeoverError::SyncTimedOut {
+        machine: timed_out,
+        waited,
+        output_tail,
+    }) = end
+    else {
+        panic!("the takeover didn't time out");
+    };
+    assert_eq!(timed_out, machine());
+    assert_eq!(waited, SHORT);
+    assert!(output_tail.contains("waiting for the socket"), "{output_tail}");
+}
+
+#[test]
+fn a_bridge_that_exits_fails_the_takeover_before_the_deadline() {
+    let home = tempfile::tempdir().unwrap();
+    let mut shell = Shell::start(home.path());
+    let files = files_with_bridge("echo 'humatad2: cannot reach the daemon'\nexit 3");
+    let takeover = Takeover::new(machine()).with_sync_timeout(GUARD);
+    let started = Instant::now();
+
+    let (end, _) = run_takeover(takeover, &mut shell, &AnyPlatform(files), <[u8]>::to_vec);
+
+    let End::Failed(TakeoverError::TerminalEnded {
+        exit, output_tail, ..
+    }) = end
+    else {
+        panic!("the takeover didn't fail when the shell ended");
+    };
+    assert!(started.elapsed() < GUARD / 2, "{:?}", started.elapsed());
+    assert_eq!(exit, Some(Exit::Code(3)));
+    assert!(
+        output_tail.contains("humatad2: cannot reach the daemon"),
+        "{output_tail}"
+    );
+}
+
+#[test]
+fn only_the_whole_marker_line_for_this_nonce_counts() {
+    let home = tempfile::tempdir().unwrap();
+    let mut shell = Shell::start(home.path());
+    // The echoed bridge line, another takeover's marker, this one's with
+    // more after it, and with something before it.
+    let files = files_with_bridge(
+        "echo \"exec humatad2 bridge --sync $n\"\n\
+         printf 'HUMATA_SYNC_0123456789abcdef\\n'\n\
+         printf 'HUMATA_SYNC_%sx\\n' \"$n\"\n\
+         printf 'HUMATA_SYNC_%s ready\\n' \"$n\"\n\
+         printf 'say HUMATA_SYNC_%s\\n' \"$n\"\n\
+         exec cat",
+    );
+    let takeover = Takeover::new(machine()).with_sync_timeout(SHORT);
+
+    let (end, _) = run_takeover(takeover, &mut shell, &AnyPlatform(files), <[u8]>::to_vec);
+
+    assert!(
+        matches!(end, End::Failed(TakeoverError::SyncTimedOut { .. })),
+        "the takeover took a marker that wasn't its own"
+    );
 }
