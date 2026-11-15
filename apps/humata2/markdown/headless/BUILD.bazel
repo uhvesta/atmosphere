@@ -1,0 +1,60 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
+
+# The Markdown view's GUI tests: flows through real input; view, layout and
+# image snapshots of the gallery; streaming against a one-shot render;
+# diagram recovery and cache reuse; and headless release timings. They run
+# headless and show no window. `bazel run :<test>_record` records a test's
+# snapshots; read every file it writes before keeping it.
+
+rust_library(
+    name = "headless",
+    testonly = True,
+    srcs = ["src/lib.rs"],
+    compile_data = ["fixtures/gallery.md"],
+    crate_name = "humata2_markdown_headless",
+    data = glob(["fixtures/**"]),
+    deps = [
+        "//apps/humata2/markdown",
+        "@crates//:gpui-kit",
+    ],
+)
+
+TEST_DEPS = [
+    ":headless",
+    "//apps/humata2/engine:engine_test_support",
+    "//apps/humata2/markdown",
+    "//apps/humata2/testing/flow",
+    "//apps/humata2/testing/snapshot",
+    "@crates//:gpui-kit",
+]
+
+[
+    humata2_snapshot_test(
+        name = test,
+        srcs = ["tests/%s.rs" % test],
+        data = glob(["fixtures/**"]),
+        deps = TEST_DEPS,
+    )
+    for test in [
+        "flows",
+        "rendering",
+        "snapshots",
+    ]
+]
+
+# Headless release timings; they print and assert nothing about time:
+#   bazel test -c opt //apps/humata2/markdown/headless:timing --test_output=streamed
+rust_test(
+    name = "timing",
+    srcs = ["tests/timing.rs"],
+    data = glob(["fixtures/**"]),
+    tags = ["manual"],
+    deps = TEST_DEPS,
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

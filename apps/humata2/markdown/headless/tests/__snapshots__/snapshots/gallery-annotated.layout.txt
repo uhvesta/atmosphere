@@ -1,0 +1,106 @@
+window 900x1400, test fonts
+box 0,0 900x1400 bg #ffffff
+  Document "Gallery" 0,0 900x1378
+    Status "Comments without a passage" 0,0 900x101 bg #73737333 border 0,0,1,0 #e5e5e5
+      text "These comments' passages are no longer in the document; select where each belongs and Re-attach it, or Drop it." 8,8 884x52
+      Button "Re-attach comment c4" 722,64 105x28 border 1 #e5e5e5 radius 4
+      Button "Drop comment c4" 835,64 57x28 border 1 #e5e5e5 radius 4
+      text "passage" 8,65 706x26
+    Button "Comment on heading 1" 2,101 16x16
+    Heading "Heading 1, level 1" 28,101 692x46
+      text "Gallery" 28,101 692x46
+      text "Gallery" 28,101 692x36
+    box 720,101 180x1277 border 0,0,0,1 #e5e5e5
+      Comment "Comment: Say which styles the parser keeps." 727,147 167x20 bg #06b6d440 radius 4
+        text "Say which styles the parser keeps." 727,147 167x20
+      Comment "Comment: Add a row for diagrams." 727,711 167x20 bg #06b6d440 radius 4
+        text "Add a row for diagrams." 727,711 167x20
+      Comment "Comment: Label the arrow." 727,1196 167x20 bg #06b6d440 radius 4
+        text "Label the arrow." 727,1196 167x20
+    Button "Comment on paragraph 2" 2,147 16x16
+    Paragraph "Paragraph 2" 28,147 692x64
+      text "Every kind of block the view draws, with strong, emphasis, struck,\ninline code and a link to the spec." 28,147 692x64
+      text "Every kind of block the view draws, with strong, emphasis, struck, " 28,147 643x26
+      underline 595,163 57x1 #0a0a0a
+      text " and a link to the spec." 128,173 231x26
+      box 28,187 101x9 bg #f5f5f5 radius 3
+        text "inline code" 32,176 93x23
+      underline 196,194 153x1 #17171766
+    Button "Comment on heading 3" 2,211 16x16
+    Heading "Heading 3, level 2" 28,211 692x59
+      text "Lists" 28,211 692x59
+      text "Lists" 28,233 692x29
+    Button "Comment on list 4" 2,270 16x16
+    Mark "Changed list 4" 25,270 3x124 bg #eab308
+    List "List 4" 28,270 692x124
+      text "First item\nSecond item with code\nA nested item\nThird item" 28,270 692x124
+      text "First item" 51,270 669x26
+      text "Second item with " 51,300 163x26
+      box 214,314 42x9 bg #f5f5f5 radius 3
+        text "code" 218,302 33x24
+      text "A nested item" 73,326 647x26
+      text "Third item" 51,356 669x26
+    Button "Comment on list 5" 2,394 16x16
+    List "List 5" 28,394 692x68
+      text "One\nTwo" 28,394 692x68
+      text "One" 55,394 665x26
+      text "Two" 55,424 665x26
+    Button "Comment on task list 6" 2,462 16x16
+    List "Task list 6" 28,462 692x68
+      text "Parser\nComments in the margin" 28,462 692x68
+      text "Parser" 51,462 669x26
+      box 28,467 15x15 bg #171717 border 1.5 #171717 radius 4
+      text "Comments in the margin" 51,492 669x26
+      box 28,497 15x15 border 1.5 #737373 radius 4
+    Button "Comment on heading 7" 2,530 16x16
+    Heading "Heading 7, level 2" 28,530 692x58
+      text "Quote and rule" 28,530 692x58
+      text "Quote and rule" 28,552 692x29
+    Button "Comment on quote 8" 2,588 16x16
+    Blockquote "Quote 8" 28,588 692x38
+      box 28,588 692x26 border 0,0,0,2 #e5e5e5
+        text "A quote, with emphasis." 28,588 692x38
+        text "A quote, with emphasis." 45,588 675x26
+    Button "Comment on rule 9" 2,626 16x16
+    box 28,640 692x1 bg #e5e5e5
+    Button "Comment on heading 10" 2,666 16x16
+    Heading "Heading 10, level 2" 28,666 692x45
+      text "Table" 28,666 692x45
+      text "Table" 28,675 692x29
+    Button "Comment on table 11" 2,711 16x16
+    Table "Table 11" 28,711 692x130
+      box 28,711 692x118 bg #ffffff border 1 #e5e5e5
+        box 29,712 690x39 bg #f5f5f5 border 0,0,1,0 #e5e5e5
+          box 98,712 150x38 border 0,1,0,0 #e5e5e5
+          text "Block" 41,719 45x24
+          text "Comment target" 260,719 125x24
+        box 29,751 690x39 border 0,0,1,0 #e5e5e5
+          text "Block\tComment target\nList\titem\nTable\tcell" 28,711 692x130
+          box 98,751 150x38 border 0,1,0,0 #e5e5e5
+          text "List" 41,758 45x24
+          text "item" 260,758 125x24
+        box 98,790 150x38 border 0,1,0,0 #e5e5e5
+        text "Table" 41,797 45x24
+        text "cell" 260,797 125x24
+    Button "Comment on heading 12" 2,841 16x16
+    Heading "Heading 12, level 2" 28,841 692x59
+      text "Code" 28,841 692x59
+      text "Code" 28,863 692x29
+    Button "Comment on code block 13" 2,900 16x16
+    Code "Code block 13" 28,900 692x119
+      box 28,900 692x107 bg #f5f5f5 border 1 #e5e5e5
+        text "fn main() {\n    println!(\"hello\");\n}" 28,900 692x119
+        text "fn main() {\n    println!(\"hello\");\n}" 45,929 658x63
+    Button "Comment on code block 14" 2,1019 16x16
+    Code "Code block 14" 28,1019 692x119
+      box 28,1019 692x107 bg #f5f5f5 border 1 #e5e5e5
+        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 28,1019 692x119
+        text "+-------+     +-------+\n| plan  | --> | ship  |\n+-------+     +-------+" 45,1048 658x63
+    Button "Comment on heading 15" 2,1138 16x16
+    Heading "Heading 15, level 2" 28,1138 692x58
+      text "Diagram" 28,1138 692x58
+      text "Diagram" 28,1160 692x29
+    Button "Comment on diagram 16" 2,1196 16x16
+    Image "Diagram: flowchart LR" 28,1204 692x170 border 2 #06b6d440 radius 6
+  Status "Last event" 0,1378 900x22
+    text "No events yet" 0,1378 900x22

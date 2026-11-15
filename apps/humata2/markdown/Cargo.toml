@@ -1,0 +1,24 @@
+[package]
+name = "humata2-markdown"
+description = "Humata 2's Markdown and Mermaid view: GFM, streaming, virtualized scrolling, selection to source, comments in the margin and rendered diffs."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_markdown"
+path = "src/lib.rs"
+
+[dependencies]
+# syntect: gpui-component highlights fenced code with the app's theme.
+gpui-kit = { workspace = true, features = ["syntect"] }
+# The parser gpui-kit's text view uses (gpui-base 0.9.1 pins 1.0.0), so the
+# block model splits a document exactly as the view does.
+markdown = "1.0.0"
+# Mermaid to SVG without a browser. Not on crates.io; the same pinned commit
+# the UI prototype uses. Default features add a CLI and PNG output.
+mermaid-rs-renderer = { git = "https://github.com/research-developer/mermaid-rs-renderer", rev = "2cdc01421a153bc33d010ddadddf5aefbbf1e38d", default-features = false }
+similar = "3.2.1"
+thiserror.workspace = true
+

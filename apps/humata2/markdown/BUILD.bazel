@@ -1,0 +1,64 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The Markdown and Mermaid view, once per engine (D57): `markdown` on
+# ordinary GPUI from @crates, `markdown_fast` on GPUI Fast from
+# @crates_gpui_fast. The source names no engine; only its gpui-kit differs.
+# Its GUI tests (flows and snapshots) live in headless/, on Humata 2's
+# testing tools.
+GPUI_KIT = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+DEPS = [
+    "@crates//:markdown",
+    "@crates//:mermaid-rs-renderer",
+    "@crates//:similar",
+    "@crates//:thiserror",
+]
+
+[
+    rust_library(
+        name = "markdown" + engine,
+        srcs = glob(["src/*.rs"]),
+        # GPUI's macros find gpui-kit through it.
+        compile_data = ["Cargo.toml"],
+        crate_name = "humata2_markdown",
+        visibility = [
+            "//apps/humata2/desktop:__subpackages__",
+            "//apps/humata2/diff:__subpackages__",
+            "//apps/humata2/markdown/headless:__pkg__",
+            "//apps/humata2/review:__subpackages__",
+            "//apps/humata2/ui:__subpackages__",
+        ],
+        deps = DEPS + [gpui_kit],
+    )
+    for engine, gpui_kit in GPUI_KIT.items()
+]
+
+# The parser, anchor, diff, image and diagram tests, on each engine.
+[
+    rust_test(
+        name = "markdown" + engine + "_test",
+        crate = ":markdown" + engine,
+    )
+    for engine in GPUI_KIT
+]
+
+# The model through the public API: streaming, anchors, selections, diffs.
+[
+    rust_test(
+        name = "model" + engine + "_test",
+        srcs = ["tests/model.rs"],
+        deps = [
+            ":markdown" + engine,
+        ],
+    )
+    for engine in GPUI_KIT
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
