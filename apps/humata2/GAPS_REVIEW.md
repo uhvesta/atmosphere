@@ -392,7 +392,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel run //apps/humata2/desktop:design_test_record` passes; frames 15 and 16 (tallest sidebars) inspected: the Desk row fits above Settings.
 - Look at: frame 15, the tightest sidebar.
 
-### (this commit): spec for resolving and archiving comments (D101)
+### bee8e7ba: spec for resolving and archiving comments (D101)
 - SPEC §11 gains SM-17–SM-21: resolved comments never come back on their own; addressed comments show before/after with Resolve and Resolve N addressed; agents resolve only through `comment_resolve` with a reply, under their own agent access rule; Archive is user-only, hides a comment everywhere, and keeps it under Archived in Info and in the Journal.
 - DECISIONS D101; OVERVIEW N1 items to draw the frames and build it. No code or goldens change.
 - Look at: SM-19 (agent resolve needs a reply) and SM-20 (archive is user-only).
