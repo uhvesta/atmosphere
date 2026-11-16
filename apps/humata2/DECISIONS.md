@@ -956,3 +956,6 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 3. The approved frames' "typed when this turn ends" wording follows D126: the Desk comment box (`desk.rs:805`) uses frame 50's wording, and the session's queued bar (`session.rs:284`) becomes SE-23's "Waiting to send". This supersedes LOOK1's L2 recommendation.
 4. D113 items 1–10 are all fine. Item 5: retire frame 33 and NV-11 (frame 34 covers it, D109). Item 4: keep "Deny all", since the owner already approved it in frame 48.
 
+## D129: Linux has no pixel goldens; web checks them (owner suggestion, advised by a Fable agent, 2026-11-15). Settled
+
+Pixel goldens are recorded on macOS and checked on web. Linux runs every non-image suite, the view-tree snapshots and one launch smoke test: the real binary under X11 and Wayland, frame 01 non-blank, bundled fonts with no missing-glyph boxes, scale 2. Web stands in for Linux layout, not for the Linux platform (fontconfig, shaping, Wayland/X11 and fractional scale are what the smoke test covers). Risk noted for LINUX: GPUI may not draw in the GPU-less static-musl VM and may need glibc plus a software renderer. Applies to LINUX.md, ANYHOST.md and OVERVIEW's N1 item.

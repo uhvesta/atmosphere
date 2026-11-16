@@ -250,7 +250,8 @@ plain shell where it means the same thing.
   that page. Columns: Session (tree connectors `├─ └─ │`, status dot, title,
   fork kind "⑂ code + context / context only / code only", and a red "✉ n"
   inbox count for the session and all its forks), Agent, Machine ("This Mac"
-  shown faint), Status (Needs you in orange), Started. A session with an open
+  shown faint), Status (Needs you in orange), Started, Last used (sorted
+  newest first by default). A session with an open
   pull request shows its number after the status ("Idle · PR #491"), and
   clicking it opens the PR. Above the table are a **Filter sessions** field,
   an **Open / Archived / All** switch (LD-3), and **Expand all** and
@@ -2598,14 +2599,8 @@ daemon and, as far as physically possible, the machine.
   separate list.
 - **NV-10** Short confirmations appear as a toast at the bottom, sometimes
   with one action ("Show Home", "Undo").
-- **NV-11** The first launch of a fresh install, with nothing made yet, shows
-  a welcome in place of every screen (frame 33): a channel is a project (its
-  repos, machines, board and sessions), **Create your first channel** and
-  **Add a machine over SSH**, and a note that GitHub access comes from the
-  `gh` CLI with no sign-in in Humata. It shows once. Each button opens its
-  dialog; when the dialog closes the user is in the new channel, or on Home
-  (DK-6) while there is still none, and the welcome does not come back.
-  (provisional, D109)
+- **NV-11** Retired (D128): a fresh install opens on Home, whose Get set
+  up card (DK-6) does the welcome's job; frame 33 is gone.
 - **DK-6** With no channel, Home shows **Get set up** (make a channel, add a
   machine, use the Desk) under its empty Needs you and Working groups, with
   **New desk session** in its header, and the sidebar shows "No channels

@@ -25,14 +25,15 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | done |
 | minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
 | minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
-| minion ASK | Opus 5.5 | manager | ASK (agent a7b618c1fe3289cef) | 2026-11-15 | active |
+| minion ASK | Opus 5.5 | manager | ASK (agent aade2cf78d04ce55c, fresh after batch 3; earlier a7b618c1fe3289cef) | 2026-11-15 | active |
 | minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | done |
 | minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | done |
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 | minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
 | minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
-| minion W1 | Opus 5.5 | manager | milestone W1 (docs lane, D113 redraws) | 2026-11-15 | active |
+| minion W1 | Opus 5.5 | manager | milestone W1 (docs lane, D113 redraws; agent a4944fb04f53415e9, fresh) | 2026-11-15 | active |
 | minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (43f7fff2) |
+| minion LOOK1 | Opus 5.5 | manager | milestone LOOK1 (UI lane; agent af7e2efa98ee6c9aa, fresh after e07e8653) | 2026-11-15 | active |
 
 ## Claims
 
@@ -55,7 +56,7 @@ Each lane's plan, tasks and workers live in its milestone file
 |---|---|---|---|---|
 | ASK | `milestones/ASK.md` | minion ASK | client, access, card, access-ui | batch 3 (app on fakes): IN-9 card, Agent access tab, flow §26.4 headless |
 | LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
-| W1 | `milestones/W1.md` | minion W1 | inbox-card (after Fable picks) | batch 1: frames 29, 31, 33, 26/27, 48, 18 in files LOOK1 doesn't hold; 01–05, 16, 37–40 wait on LOOK1 |
+| W1 | `milestones/W1.md` | minion W1 | none | batch 1 reported: frames 29, 31, 33, 26/27, 48, 18 in files LOOK1 doesn't hold; 01–05, 16, 37–40 wait on LOOK1 |
 | FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (43f7fff2) |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
@@ -116,3 +117,4 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: FRAMES2 fixes re-recorded (59, 62, 63, 71). Owner approved 56–71 as drawn, D11 (a) as frame 71, and LOOK1's fixes to frames 50/01/05 (handed to LOOK1). Closed FRAMES2; claims released.
 - 2026-11-15 main: ASK batch 3 seams applied (ui mods, OpenRequest arm). Gate 3: features/clients mostly green; sent ASK ui/access.rs Role::Radio + settings access_test, LOOK1 messages_test batch order.
 - 2026-11-15 main: gate 4 green (all unit + desktop; recorded). Fable advisor → D128. Opened W1 (docs lane), minion W1 (Opus 5.5). Gate 5 running (design record now EXACT).
+- 2026-11-15 main: committed LOOK1 batches 1–2 + ASK batch 3 together (shared files) as e07e8653, hash-fill 98f71e90, pushed. W1's pages/overlays/channel edits (after gate 5) left uncommitted. terminal/{embed,lab,session} and three BUILD visibility edits are another session's, left alone. Fresh managers: LOOK1 (T12 batch 3, T10, Send-per-draft 01/11), ASK (D128.2, SEC-14), W1 (log its edits, continue). Owner: managers may ask a Fable (high) advisor directly.

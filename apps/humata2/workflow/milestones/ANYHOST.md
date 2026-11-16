@@ -14,7 +14,7 @@ The same suites pass against a host in a VM. Boundary tests cover unpaired, revo
 
 ## Read these (pointers, nothing else)
 - SPEC: AR-5–AR-9, TR-1, SL-1. Find each with `grep -n '\*\*<ID>\*\*' apps/humata2/SPEC.md` and read the few lines around it.
-- Frames: none new; the browser draws the same frames
+- Frames: none new; the browser draws the same frames and checks them against the macOS pixel goldens (web golden check, D129)
 - Decisions: D34, D57 (grep `^## D<n>:` in DECISIONS.md)
 - Code (under `apps/humata2/`): `engine`, `daemon/humatad/src/serve.rs`, `daemon/humatad/src/guard.rs`, `daemon/humatad/tests/auth.rs`, `desktop/src/main.rs`
 - Also: The web half (wasm build, pairing) needs only FL. If the daemon lane is idle before LINUX, the main agent may start that half early.
