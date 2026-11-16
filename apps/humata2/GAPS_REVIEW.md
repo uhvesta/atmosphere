@@ -558,3 +558,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: the 111-test gate (incl. the new `terminal/pane:unfitted_test`), design, native 37, panels 13 and shell 2 recorded and passing, desktop 4 of 4.
 - Known gaps: the real daemon doesn't send `lost_at` yet; Journal cards have no Open button (VW-10 asks for one, golden 08 doesn't show it). Panes show their first output one frame later.
 - Look at: design 07 and native 05, 06, 08 PNGs; `terminal/pane/src/pane.rs`; `ui/src/panels.rs`; `clients/src/model.rs`.
+
+### (this commit): TIDY leftovers: D17 settled, SM-17–SM-21 traced, test wording (main)
+- D17 settled: the GUI binary stays `desktop` now that D9 removed `app`. TRACE gets rows for SM-17–SM-21 that name the API they still lack (REVIEW adds `comment_resolve`, ArchiveComment and the Archived list). The access tests say "Always allow".
+- Verified: `daemon/access` tests pass, 5 of 5.
+- Known gaps: `HUMATA2_BUNDLE_ID` in `apps/lifr/identity.bzl` is unused but sits in another app's file; left alone.
+- Look at: `api/TRACE.md` §SM.

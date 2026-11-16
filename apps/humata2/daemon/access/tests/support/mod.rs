@@ -177,14 +177,14 @@ pub fn request(verdict: Verdict) -> AccessRequest {
     }
 }
 
-/// Asks with `agent`'s call and approves it with "Always let …" for the
+/// Asks with `agent`'s call and approves it with "Always allow …" for the
 /// offered target; returns the grant.
 pub fn grant_for(policy: &mut Policy, agent: &Principal, call: &Call) -> Grant {
     let asked = request(check(policy, agent, call, &on_mac()));
     let offered = asked
         .always_let
         .clone()
-        .expect("the request offers Always let");
+        .expect("the request offers Always allow");
     policy
         .approve(
             &user(),
@@ -195,7 +195,7 @@ pub fn grant_for(policy: &mut Policy, agent: &Principal, call: &Call) -> Grant {
         )
         .expect("the user approves")
         .grant
-        .expect("Always let makes a grant")
+        .expect("Always allow makes a grant")
 }
 
 /// What a test expects a check to decide.

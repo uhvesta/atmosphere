@@ -145,9 +145,9 @@ Status: **open** (waiting for the user) · **decided**.
 - **Provisional:** cargo, in `spike/gui`'s own workspace, until the spike's numbers keep gpui-kit. Then it moves to crate_universe, with the Metal shader build scripts handled there, before A1.
 - **Reverse:** none needed. It's the order of work.
 
-## D17: The new GUI binary is `desktop`, not `app` (OVERVIEW I0). Open
-- **Why:** `apps/humata2/app` holds the earlier Swift code, which waits on D9.
-- **Reverse:** rename the package once D9 is decided.
+## D17: The new GUI binary is `desktop`, not `app` (OVERVIEW I0). Settled 2026-11-15 (main)
+- **Why:** `apps/humata2/app` held the earlier Swift code. D9 deleted it (TIDY, 4a636632), and every target, test and doc already says `desktop`, so it stays `desktop`.
+- **Reverse:** rename the package; nothing outside `apps/humata2` refers to it.
 
 ## D18: How Linux suites run (OVERVIEW rules). Decided 2026-11-14
 - **Owner:** all tests run on this Mac. Linux runs in the `humata2-linux` Lima VM (2 CPUs, 4 GiB, 20 GiB disk), batched every few milestones.

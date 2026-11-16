@@ -173,7 +173,7 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 `review_summary_draft` (PR-9, PR-12).
 
-### SM: markdown review and comments (13)
+### SM: markdown review and comments (18)
 
 | ID | RPC | MCP | CLI | Note |
 | --- | --- | --- | --- | --- |
@@ -185,6 +185,11 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | SM-13 | CommentService (one model) | comments_list | — | |
 | SM-15 | CommentService.ListComments | comments_list | — | |
 | SM-16 | Comment.addressed, COMMENT_STATUS_ADDRESSED | comments_list | — | |
+| SM-17 | CommentService.ResolveComment, ReopenComment | comments_list | — | re-anchoring and PR updates never reopen: internal |
+| SM-18 | CommentService.ResolveComment | comments_list | — | Resolve N addressed: no batch call yet (REVIEW adds it) |
+| SM-19 | — | `comment_resolve` (not yet in MCP.md) | — | REVIEW adds the tool, its reply note and access rule |
+| SM-20 | — (no ArchiveComment yet) | — | — | user-only; REVIEW adds the RPC |
+| SM-21 | CommentService.ListComments | — | — | Archived list and Unarchive: REVIEW adds them |
 
 ### FM: file manager (15)
 

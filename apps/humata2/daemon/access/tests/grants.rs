@@ -144,7 +144,7 @@ fn a_grant_records_who_asked_which_request_where_and_when() {
         )
         .expect("the user approves")
         .grant
-        .expect("Always let makes a grant");
+        .expect("Always allow makes a grant");
 
     assert_eq!(grant.requester, b().id);
     assert_eq!(grant.channel, payments());
