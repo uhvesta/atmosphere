@@ -1,6 +1,6 @@
 # FRAMES2: The screens for machines, files, forks, PR reviews and views are drawn and signed off
 
-- **Status:** done (this commit; owner approved 2026-11-15)
+- **Status:** done (43f7fff2; owner approved 2026-11-15)
 - **Depends on:**
   - FRAMES1: same files and the same lane; the earlier frames set the patterns
 - **Unblocks:** MACH, FORK, FILES, VIEWS, PR

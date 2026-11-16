@@ -34,7 +34,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 | minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
 | minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
-| minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (this commit) |
+| minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (43f7fff2) |
 
 ## Claims
 
@@ -56,7 +56,7 @@ Each lane's plan, tasks and workers live in its milestone file
 |---|---|---|---|---|
 | ASK | `milestones/ASK.md` | minion ASK | client, access, card, access-ui | batch 3 (app on fakes): IN-9 card, Agent access tab, flow §26.4 headless |
 | LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
-| FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (this commit) |
+| FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (43f7fff2) |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
 Old template, kept for reference:
