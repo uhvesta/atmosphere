@@ -1,6 +1,6 @@
 # BUG: Report a bug as text an agent can act on
 
-- **Status:** in progress (lane BUG)
+- **Status:** done (ed5882ed, 2026-11-15)
 - **Depends on:**
   - LOOK1: a recording names targets by their place in the view tree, which must be stable
   - P0: the app wiring adds an overlay and actions in the split files
@@ -41,4 +41,4 @@ Videos and pictures (never). Any change to the shell beyond the dot, the menu it
 - **Deferred:** D133.7 terminal mark, report palette commands, RPC capture on fakes, drag gestures, pin pick mode.
 - **Waiting on:** main applies seam lines and builds batch 1 (targets in the batch report).
 - **Build gates:** none yet.
-- **Ready to commit:** no.
+- **Ready to commit:** committed in ed5882ed with FL and LOOK1.

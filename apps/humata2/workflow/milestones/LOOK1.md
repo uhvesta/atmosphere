@@ -1,6 +1,6 @@
 # LOOK1: The session page and sidebar look like the goldens
 
-- **Status:** in progress (lane LOOK1). C1 stopped 2026-11-15 at 9e185a5b: start from `apps/humata2/C1_HANDOFF.md`; C1's OVERVIEW block and items are now this lane's to update.
+- **Status:** done (ed5882ed, 2026-11-15). Frame-level leftovers (the Desk row in 16) belong to DESK; the other screens to LOOK2.
 - **Depends on:**
   - D0: the frames and rules it matches are the tidied ones
 - **Unblocks:** LOOK2, FL, BUG, ASK (its exit)
@@ -101,4 +101,4 @@ Manager: minion LOOK1 (Opus 5.5), took over from C1 (9e185a5b) on 2026-11-15.
 - **Build gates (batch 4):** `bazel build //apps/humata2/ui //apps/humata2/desktop:humata2`; `bazel test //apps/humata2/terminal/pane/... //apps/humata2/terminal/view/... //apps/humata2/clients/... //apps/humata2/features/...`; record design (07 changed) with the design record target, then verify; `bazel run //apps/humata2/desktop:native_test_record` then `bazel test //apps/humata2/desktop:native_test`; record then verify `desktop:panels_test` and `desktop:shell_test` (panes now draw their first output one frame later).
 - **Build gates (batch 5):** same as batch 4 (one gate covers both); add `bazel test //apps/humata2/features/views/...` (in features/...).
 - **Build gates (batch 6):** `bazel build //apps/humata2/ui //apps/humata2/desktop:humata2`; `bazel test //apps/humata2/terminal/pane/... //apps/humata2/terminal/view/... //apps/humata2/clients/... //apps/humata2/features/...`; `bazel run //apps/humata2/desktop:native_test_record` then `bazel test //apps/humata2/desktop:native_test`; record then verify `//apps/humata2/desktop:panels_test` and `//apps/humata2/desktop:shell_test`. No golden changes. Expect native captures to change: all session frames (rail, gutter), 05, 06, 12, 14, 15, 16.
-- **Ready to commit:** batch 3 committed (13121e1d). Batches 4 and 5 once their gates pass. Show the owner golden 07 before/after.
+- **Ready to commit:** batch 3 in 13121e1d, batches 4-5 in 4354c48f, the rest in ed5882ed.

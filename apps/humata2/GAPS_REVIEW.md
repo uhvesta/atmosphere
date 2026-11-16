@@ -565,7 +565,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Known gaps: `HUMATA2_BUNDLE_ID` in `apps/lifr/identity.bzl` is unused but sits in another app's file; left alone.
 - Look at: `api/TRACE.md` §SM.
 
-### (this commit): first light on a real daemon, bug reports, LOOK1 batches 6–7 (minions FL, BUG, LOOK1)
+### ed5882ed: first light on a real daemon, bug reports, LOOK1 batches 6–7 (minions FL, BUG, LOOK1)
 - FL: `clients/live` implements the Daemon and Terminals traits over gRPC on the tokio runtime it connected on (D134). humatad publishes session and channel events, including an agent's exit, and the app's status comes only from those events (D136, synth removed). A signed app outside every tab's tree counts as the user; this fails closed (D135, new `daemon/app_peer`). `desktop/install` puts the bundled host tools and the `humata` symlink in place (D137). `humata2 --live`/`--socket` runs the app on This Mac's daemon.
 - BUG: bug reports in the app and the CLI (I9, D133): record, form, pin, copy, snapshot, replay, and the app socket.
 - LOOK1 batches 6–7: re-audit of frames 01–17. Rail pitch, diff gutter, CircleX exit icon, the frame 06 offline layout and the frame 12 asking card (L17). The scrollbar shows only away from the newest output (L16).

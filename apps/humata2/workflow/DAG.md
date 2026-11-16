@@ -27,8 +27,8 @@ milestone file; agents read that file, not this one.
 | [W1](milestones/W1.md) | The owner answers wave 1 and the changed frames are redrawn | L0 | owner + docs | D0: the questions come from the docs tidy | done (e19c3f6d, 13121e1d) |
 | [FRAMES1](milestones/FRAMES1.md) | The screens the next layers need are drawn and signed off | L0 | docs | D0: frames are drawn from the tidied rules | done (59340201) |
 | [FRAMES2](milestones/FRAMES2.md) | The screens for machines, files, forks, PR reviews and views are drawn and signed off | L1 | docs | FRAMES1: same files and the same lane; the earlier frames set the patterns | done (43f7fff2) |
-| [LOOK1](milestones/LOOK1.md) | The session page and sidebar look like the goldens | L0 | UI | D0: the frames and rules it matches are the tidied ones | in progress (lane LOOK1; C1 stopped 2026-11-15, see C1_HANDOFF.md) |
-| [LOOK2](milestones/LOOK2.md) | Every other screen looks like the goldens | L1 | UI | LOOK1: shares the shell, theme and sidebar; and C1 must release the UI files; P0: the panels and native tests must be split before a second manager edits them; W1*: frames 18, 29, 31, 32, 33 change; the app matches the redrawn ones before this closes | blocked |
+| [LOOK1](milestones/LOOK1.md) | The session page and sidebar look like the goldens | L0 | UI | D0: the frames and rules it matches are the tidied ones | done (ed5882ed) |
+| [LOOK2](milestones/LOOK2.md) | Every other screen looks like the goldens | L1 | UI | LOOK1: shares the shell, theme and sidebar; and C1 must release the UI files; P0: the panels and native tests must be split before a second manager edits them; W1*: frames 18, 29, 31, 32, 33 change; the app matches the redrawn ones before this closes | in progress (lane LOOK2) |
 | [FL-D](milestones/FL-D.md) | The daemon holds a real local session that survives restarts | L0 | daemon | D0: the rules it builds are the tidied ones | done (9ec5b5ed) |
 | [FL](milestones/FL.md) | First light: a real session in the app that survives a reboot (0.1) | L1 | daemon + UI seam | FL-D: the app needs real Session and Channel services and holders; LOOK1: a real terminal needs the session page, tabs and sidebar; P0: the real client follows the per-service client traits P0 splits out; FRAMES1: New channel, clone progress and "Couldn't resume" have no frame yet | in progress (lane FL) |
 | [BUG](milestones/BUG.md) | Report a bug as text an agent can act on | L1 | third builder (`report/`) | LOOK1: a recording names targets by their place in the view tree, which must be stable; P0: the app wiring adds an overlay and actions in the split files | in progress (lane BUG) |
@@ -98,11 +98,11 @@ graph TD
   W1["W1: blocked"]
   FRAMES1["FRAMES1: open"]
   FRAMES2["FRAMES2: done"]
-  LOOK1["LOOK1: in progress"]
+  LOOK1["LOOK1: done"]
   LOOK2["LOOK2: blocked"]
   FLD["FL-D: open"]
   FL["FL: blocked"]
-  BUG["BUG: blocked"]
+  BUG["BUG: done"]
   TIDY["TIDY: done"]
   DESK["DESK: blocked"]
   ASK["ASK: blocked"]
