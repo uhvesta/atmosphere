@@ -3,19 +3,24 @@
 //! the writes that returned, or after one more, never torn, and with
 //! every blob file a row names on disk and none that no row names.
 //!
+//! The same holds for the last good copy (PER-31): a power cut while it's
+//! saved or restored leaves a store that opens whole, from the copy or
+//! from what it replaced.
+//!
 //! The writer is this test binary run again with `power_cut_child`
-//! selected; that test does nothing otherwise. It runs one fixed list of
-//! writes over both stores and prints `done <n>` once write `n` returns.
-//! `HUMATA2_STOP_AT` names where it's cut and `HUMATA2_POWER_CUT_ROOTS`
-//! which stores lose what they hadn't synced; a store not named is left as
-//! a `kill -9` leaves it. Needs the store built with `faults`.
+//! selected, in the mode its env var names; that test does nothing
+//! otherwise. The `writes` mode runs one fixed list of writes over both
+//! stores and prints `done <n>` once write `n` returns. `HUMATA2_STOP_AT`
+//! names where it's cut and `HUMATA2_POWER_CUT_ROOTS` which stores lose
+//! what they hadn't synced; a store not named is left as a `kill -9` leaves
+//! it. Needs the store built with `faults`.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use humata2_store::{SessionRecord, Store};
 
@@ -103,15 +108,36 @@ fn root(dir: &Path, side: Side) -> PathBuf {
     })
 }
 
-/// The writer. Runs only when a test below starts it.
+/// The one store the last good copy tests use. Not `dir` itself, so the
+/// `spare` folder the cut keeps its hard links in sits beside it.
+fn store_root(dir: &Path) -> PathBuf {
+    dir.join("store")
+}
+
+/// The writer. Runs only when a test below starts it, in the mode its env
+/// var names.
 #[test]
 fn power_cut_child() {
-    if std::env::var_os(CHILD).is_none() {
+    let Ok(mode) = std::env::var(CHILD) else {
         return;
-    }
+    };
     let dir = PathBuf::from(std::env::var(DIR).unwrap());
-    let host = Store::open(root(&dir, Side::Host)).unwrap();
-    let machine = Store::open(root(&dir, Side::Machine)).unwrap();
+    match mode.as_str() {
+        "writes" => write_work(&dir),
+        "last_good" => {
+            Store::open(store_root(&dir)).unwrap().save_last_good().unwrap();
+        }
+        "restore" => {
+            Store::open_or_restore(store_root(&dir)).unwrap();
+        }
+        other => panic!("no power cut mode {other}"),
+    }
+}
+
+/// Runs [`WORK`] over both stores, printing `done <n>` after each write.
+fn write_work(dir: &Path) {
+    let host = Store::open(root(dir, Side::Host)).unwrap();
+    let machine = Store::open(root(dir, Side::Machine)).unwrap();
     let mut out = std::io::stdout().lock();
     for (n, (side, op)) in WORK.iter().enumerate() {
         let store = match side {
@@ -208,13 +234,13 @@ fn found(dir: &Path, side: Side) -> State {
     }
 }
 
-/// Runs the writer, cut at `stop_at` with `cut` losing what wasn't
-/// synced, and returns how many writes returned before it.
-fn run(dir: &Path, stop_at: &str, cut: &[Side]) -> usize {
-    let roots = std::env::join_paths(cut.iter().map(|side| root(dir, *side))).unwrap();
-    let output = Command::new(std::env::current_exe().unwrap())
+/// Runs the child in `mode` until `stop_at`, with the folders in `roots`
+/// losing what wasn't synced, and returns how it ended.
+fn child(dir: &Path, mode: &str, stop_at: &str, roots: &[PathBuf]) -> Output {
+    let roots = std::env::join_paths(roots).unwrap();
+    Command::new(std::env::current_exe().unwrap())
         .args(["power_cut_child", "--exact", "--nocapture", "--test-threads=1"])
-        .env(CHILD, "1")
+        .env(CHILD, mode)
         .env(DIR, dir)
         .env("HUMATA2_STOP_AT", stop_at)
         .env("HUMATA2_POWER_CUT_ROOTS", roots)
@@ -223,7 +249,14 @@ fn run(dir: &Path, stop_at: &str, cut: &[Side]) -> usize {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+/// Runs the writer, cut at `stop_at` with `cut` losing what wasn't
+/// synced, and returns how many writes returned before it.
+fn run(dir: &Path, stop_at: &str, cut: &[Side]) -> usize {
+    let roots: Vec<PathBuf> = cut.iter().map(|side| root(dir, *side)).collect();
+    let output = child(dir, "writes", stop_at, &roots);
     let done = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| line.contains("done "))
@@ -235,6 +268,13 @@ fn run(dir: &Path, stop_at: &str, cut: &[Side]) -> usize {
         assert_eq!(done, WORK.len(), "the writer ended without finishing");
         done
     }
+}
+
+/// Runs the writer in `mode` cut at `stop_at` with `roots` losing what
+/// wasn't synced, and checks it was cut there rather than finishing.
+fn cut_at(dir: &Path, mode: &str, stop_at: &str, roots: &[PathBuf]) {
+    let output = child(dir, mode, stop_at, roots);
+    assert_eq!(output.status.signal(), Some(9), "{mode} never reached {stop_at}");
 }
 
 /// Every point a write passes, each as often as the work passes it.
@@ -290,4 +330,79 @@ fn a_cut_losing_the_machines_unsynced_writes_leaves_both_stores_as_the_model() {
 #[test]
 fn a_cut_losing_both_unsynced_writes_leaves_both_stores_as_the_model() {
     check(&[Side::Host, Side::Machine]);
+}
+
+/// Overwrites the database's header, as a disk fault might.
+fn damage(root: &Path) {
+    let path = root.join("state.sqlite");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[..16].copy_from_slice(b"not a database!!");
+    fs::write(&path, bytes).unwrap();
+}
+
+/// Every file under `root` a write left part way.
+fn partials(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_owned()];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.to_string_lossy().ends_with(".partial") {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// A store at [`store_root`] holding session `se_a` titled "old" under a
+/// last good copy of it, then session `se_a` retitled `later`, unsaved.
+fn store_with_copy(dir: &Path, later: &str) {
+    let store = Store::open(store_root(dir)).unwrap();
+    store.put_session(&session("se_a", "old")).unwrap();
+    store.save_last_good().unwrap();
+    store.put_session(&session("se_a", later)).unwrap();
+}
+
+#[test]
+fn a_power_cut_while_saving_the_last_good_copy_keeps_a_copy_that_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store_root(dir.path());
+    store_with_copy(dir.path(), "new");
+    cut_at(dir.path(), "last_good", "store.last_good.copied", std::slice::from_ref(&root));
+    damage(&root);
+
+    let (store, restored) = Store::open_or_restore(&root).unwrap();
+
+    assert!(restored.is_some(), "the damaged database wasn't restored");
+    let restored_session = store.session("se_a").unwrap();
+    assert!(
+        restored_session == Some(session("se_a", "old")) || restored_session == Some(session("se_a", "new")),
+        "the restored store has {restored_session:?}"
+    );
+    assert_eq!(partials(&root), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_power_cut_part_way_through_a_restore_is_finished_when_the_store_opens_again() {
+    for stop_at in ["store.restore.copied", "store.restore.moved"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = store_root(dir.path());
+        store_with_copy(dir.path(), "since the copy");
+        damage(&root);
+        cut_at(dir.path(), "restore", stop_at, std::slice::from_ref(&root));
+
+        let (store, restored) = Store::open_or_restore(&root).unwrap();
+
+        let restored = restored.unwrap_or_else(|| panic!("{stop_at}: not restored"));
+        assert!(restored.damaged_kept_at.exists(), "{stop_at}: the damaged database wasn't kept");
+        assert_eq!(store.session("se_a").unwrap(), Some(session("se_a", "old")), "{stop_at}");
+        assert_eq!(partials(&root), Vec::<PathBuf>::new(), "{stop_at}");
+        drop(store);
+        // Restored once: opening again finds nothing to do.
+        let (_, again) = Store::open_or_restore(&root).unwrap();
+        assert!(again.is_none(), "{stop_at}");
+    }
 }
