@@ -91,15 +91,16 @@ struct Row {
     machine: &'static str,
     status: &'static str,
     started: &'static str,
+    used: &'static str,
 }
 
 const ROWS: &[Row] = &[
-    Row { lines: "", fold: Some(true), state: St::NeedsYou, title: "Ledger schema migration", kind: None, inbox: Some("2"), agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 11:40" },
-    Row { lines: "├─ ", fold: Some(true), state: St::Working, title: "Try BRIN index", kind: Some("⑂ code + context"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Working", started: "Today 12:05" },
-    Row { lines: "│  └─ ", fold: None, state: St::Working, title: "Partial BRIN on posted_at", kind: Some("⑂ code only"), inbox: None, agent: "Codex", machine: "gpu-box", status: "Working", started: "Today 12:31" },
-    Row { lines: "└─ ", fold: None, state: St::Idle, title: "Review the schema", kind: Some("⑂ context only"), inbox: None, agent: "Claude Code", machine: "This Mac", status: "Idle", started: "Today 12:50" },
-    Row { lines: "", fold: Some(false), state: St::Working, title: "Refund retries", kind: None, inbox: None, agent: "Copilot", machine: "This Mac", status: "Working", started: "Yesterday" },
-    Row { lines: "", fold: None, state: St::Idle, title: "API rate limiter", kind: None, inbox: None, agent: "Codex", machine: "devbox-1", status: "Idle · PR #491", started: "Mon" },
+    Row { lines: "", fold: Some(true), state: St::NeedsYou, title: "Ledger schema migration", kind: None, inbox: Some("2"), agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 11:40", used: "Today 12:52" },
+    Row { lines: "├─ ", fold: Some(true), state: St::Working, title: "Try BRIN index", kind: Some("⑂ code + context"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Working", started: "Today 12:05", used: "Today 13:02" },
+    Row { lines: "│  └─ ", fold: None, state: St::Working, title: "Partial BRIN on posted_at", kind: Some("⑂ code only"), inbox: None, agent: "Codex", machine: "gpu-box", status: "Working", started: "Today 12:31", used: "Today 12:31" },
+    Row { lines: "└─ ", fold: None, state: St::Idle, title: "Review the schema", kind: Some("⑂ context only"), inbox: None, agent: "Claude Code", machine: "This Mac", status: "Idle", started: "Today 12:50", used: "Today 12:50" },
+    Row { lines: "", fold: Some(false), state: St::Working, title: "Refund retries", kind: None, inbox: None, agent: "Copilot", machine: "This Mac", status: "Working", started: "Yesterday", used: "Today 09:15" },
+    Row { lines: "", fold: None, state: St::Idle, title: "API rate limiter", kind: None, inbox: None, agent: "Codex", machine: "devbox-1", status: "Idle · PR #491", started: "Mon", used: "Tue" },
 ];
 
 fn sessions_table(look: Look) -> Div {
@@ -137,6 +138,7 @@ fn sessions_table(look: Look) -> Div {
             .child(div().w(px(80.)).text_color(c(if row.machine == "This Mac" { look.tertiary } else { look.text })).child(row.machine))
             .child(div().w(px(110.)).text_color(c(status_hex)).child(row.status))
             .child(div().w(px(90.)).text_color(c(look.secondary)).child(row.started))
+            .child(div().w(px(90.)).text_color(c(look.secondary)).child(row.used))
     };
     card(look)
         .overflow_hidden()
@@ -154,7 +156,8 @@ fn sessions_table(look: Look) -> Div {
                 .child(head("Agent").w(px(100.)))
                 .child(head("Machine").w(px(80.)))
                 .child(head("Status").w(px(110.)))
-                .child(head("Started").w(px(90.))),
+                .child(head("Started").w(px(90.)))
+                .child(head("Last used ↓").w(px(90.))),
         )
         .children(ROWS.iter().map(row))
 }

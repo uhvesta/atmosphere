@@ -5,8 +5,7 @@ use gpui_kit::{prelude::*, *};
 
 use crate::channel::{Tab, frame};
 use crate::kit::*;
-use crate::pages::inbox_row;
-use crate::session::decision_card;
+use crate::pages::{inbox_row, request_card};
 
 /// Frame 48: the channel's own requests, the first one open.
 pub fn inbox(look: Look) -> Div {
@@ -40,7 +39,7 @@ pub fn inbox(look: Look) -> Div {
                     .child(inbox_row(look, "Move PAY-3 to Done", "Claude Code · Ledger schema migration", "2m", true, true))
                     .child(inbox_row(look, "Push try-brin to origin", "Claude Code · Try BRIN index", "9m", false, false)),
             )
-            .child(div().flex_1().p(px(20.)).flex().flex_col().gap(px(12.)).child(decision_card(look, true).max_w(px(560.)))),
+            .child(div().flex_1().p(px(20.)).flex().flex_col().gap(px(12.)).child(request_card(look, true).max_w(px(560.)))),
     )
 }
 

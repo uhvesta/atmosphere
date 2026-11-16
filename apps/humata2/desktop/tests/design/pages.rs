@@ -1,11 +1,9 @@
-//! The other screens: Home, Inbox, a channel, Board, Hosts, Settings and
-//! first run.
+//! The other screens: Home, Inbox, Hosts and Settings.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
 
 use crate::kit::*;
-use crate::session::decision_card;
 use crate::sidebar::{self, Side};
 
 pub fn toolbar(look: Look, title: &'static str, note: Option<&'static str>, actions: Vec<Div>) -> Div {
@@ -129,12 +127,112 @@ pub fn inbox_row(look: Look, title: &'static str, from: &'static str, when: &'st
         .child(div().text_size(px(11.5)).text_color(c(if on { look.selection_text } else { look.secondary })).child(from))
 }
 
-/// Inbox: the list, newest needing you first, beside the open request.
-pub fn inbox_split(look: Look) -> Div {
+/// The full open request (IN-9): who asks, why, what it was doing, the rule
+/// behind it, and the answers. `wide` adds the session line and the steps; the
+/// panel leaves them out because the terminal is beside it.
+pub fn request_card(look: Look, wide: bool) -> Div {
+    let step = |mark: u32, call: &'static str, note: &'static str, pending: bool| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(div().size(px(7.)).flex_none().rounded(px(4.)).bg(c(mark)))
+            .child(div().font_family(MONO).text_size(px(11.)).when(!pending, |s| s.text_color(c(look.secondary))).child(call))
+            .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child(note))
+    };
+    let preview_row = |key: &'static str, value: &'static str| div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child(key)).child(value);
+    card(look)
+        .p(px(12.))
+        .gap(px(8.))
+        .text_size(px(12.5))
+        .border_color(c(ORANGE))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(status(St::NeedsYou))
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("Move PAY-3 to Done"))
+                .child(div().flex_1())
+                .child(secondary(look, "2m")),
+        )
+        .child(secondary(look, "Claude Code in Ledger schema migration · board_item_move"))
+        .when(wide, |card| {
+            card.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(secondary(look, "devbox-1 · # payments-rewrite"))
+                    .child(div().flex_1())
+                    .child(div().text_size(px(11.5)).text_color(c(look.accent)).child("Open session ↗")),
+            )
+        })
+        .child(div().child(
+            "The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you.",
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .p(px(8.))
+                .rounded(px(6.))
+                .bg(c(look.fill))
+                .text_size(px(11.5))
+                .child(preview_row("Item", "PAY-3 Ledger schema"))
+                .child(preview_row("Move", "In progress → Done"))
+                .child(preview_row("Created by", "You, 3 days ago")),
+        )
+        .when(wide, |card| {
+            card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(label(look, "What it was doing"))
+                    .child(step(GREEN, "Bash  cargo test -p api", "14 passed", false))
+                    .child(step(GREY, "board_item_get  PAY-3", "In progress, created by you", false))
+                    .child(step(ORANGE, "board_item_move  PAY-3 → Done", "waiting for you", true)),
+            )
+        })
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(5.))
+                .text_size(px(11.5))
+                .child(div().flex_none().text_color(c(look.tertiary)).child("Asks you because:"))
+                .child(div().flex_1().min_w_0().child("Channel board: edit, move or delete anyone else's items"))
+                .child(div().flex_none().text_color(c(look.accent)).child("Change this rule")),
+        )
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(7.))
+                .child(div().mt(px(2.)).size(px(14.)).flex_none().rounded(px(4.)).border_1().border_color(c(look.tertiary)).bg(c(look.card)))
+                .child(div().flex_1().min_w_0().child("Always allow editing, moving or deleting anyone else's items on the payments-rewrite board for this session")),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(button(look, Kind::Primary, "Allow"))
+                .child(button(look, Kind::Secondary, "Deny"))
+                .child(div().flex_1())
+                .child(button(look, Kind::Secondary, "Reply…")),
+        )
+}
+
+/// The inbox page: the list with its Allow all strip beside the open request.
+/// `all` shows answered rows dimmed under each group and the folded group.
+fn inbox_page(look: Look, all: bool) -> Div {
+    let answered = |title: &'static str, from: &'static str, when: &'static str| inbox_row(look, title, from, when, false, false).opacity(0.55);
+    let heading = |name: &'static str| div().px(px(14.)).pt(px(10.)).pb(px(4.)).child(label(look, name));
     page(
         look,
         Side::at("Inbox"),
-        toolbar(look, "Inbox", Some("7 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], 0)]),
+        toolbar(look, "Inbox", Some("7 waiting"), vec![segmented(look, &["Waiting", "Answered", "All"], if all { 2 } else { 0 })]),
         div()
             .flex()
             .text_size(px(12.5))
@@ -146,16 +244,50 @@ pub fn inbox_split(look: Look) -> Div {
                     .flex_col()
                     .border_r_1()
                     .border_color(c(look.line))
-                    .child(div().px(px(14.)).pt(px(10.)).pb(px(4.)).child(label(look, "# payments-rewrite")))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .px(px(14.))
+                            .py(px(10.))
+                            .border_b_1()
+                            .border_color(c(look.line))
+                            .child(button(look, Kind::Secondary, "Allow all 7"))
+                            .child(button(look, Kind::Secondary, "Deny all")),
+                    )
+                    .child(heading("# payments-rewrite"))
                     .child(inbox_row(look, "Move PAY-3 to Done", "Claude Code · Ledger schema migration", "2m", true, true))
                     .child(inbox_row(look, "Push try-brin to origin", "Claude Code · Try BRIN index", "9m", false, false))
                     .child(inbox_row(look, "Which currency for refunds?", "Copilot · Refund retries", "15m", false, false))
-                    .child(div().px(px(14.)).pt(px(10.)).pb(px(4.)).child(label(look, "# infra")))
+                    .when(all, |list| list.child(answered("Create PAY-9 Backfill progress bar", "Claude Code · Ledger schema migration · approved", "40m")))
+                    .child(heading("# infra"))
                     .child(inbox_row(look, "Run a command on gpu-box", "Codex · Benchmark BRIN", "22m", false, false))
-                    .child(inbox_row(look, "Delete the old snapshots", "Claude Code · Upgrade Postgres 17", "1h", false, false)),
+                    .child(inbox_row(look, "Delete the old snapshots", "Claude Code · Upgrade Postgres 17", "1h", false, false))
+                    .when(all, |list| {
+                        list.child(answered("Open port 5432 on gpu-box", "Codex · Benchmark BRIN · denied: use the read replica", "2h")).child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .px(px(14.))
+                                .py(px(10.))
+                                .child(small_icon(IconName::ChevronRight, look.tertiary))
+                                .child(label(look, "Allowed without asking · 12")),
+                        )
+                    }),
             )
-            .child(div().flex_1().p(px(20.)).flex().flex_col().gap(px(12.)).child(decision_card(look, true).max_w(px(560.)))),
+            .child(div().flex_1().p(px(20.)).flex().flex_col().gap(px(12.)).child(request_card(look, true).max_w(px(560.)))),
     )
+}
+
+/// Inbox: the list, newest needing you first, beside the open request.
+pub fn inbox_split(look: Look) -> Div {
+    inbox_page(look, false)
+}
+
+/// Frame 27: the same page with Waiting, Answered and the folded group together.
+pub fn inbox_all(look: Look) -> Div {
+    inbox_page(look, true)
 }
 
 /// Hosts: every machine, its health and what runs on it.
@@ -284,52 +416,9 @@ pub fn settings(look: Look) -> Div {
                         card(look)
                             .child(setting("Appearance", "Follows the system unless you pick one.", segmented(look, &["System", "Light", "Dark"], 0)))
                             .child(setting("Terminal font", "Used by every terminal and the diff.", popup(look, "Menlo 12")))
-                            .child(setting("Sidebar shows Pinned", "Pinned sessions, reviews and machines at the top.", switch(look, true))),
+                            .child(setting("Sidebar shows Pinned", "Pinned sessions, reviews and machines at the top.", switch(look, true)))
+                            .child(setting("Long lines", "Code in the diff, the editor, Files and reviews.", segmented(look, &["Wrap", "Scroll"], 0))),
                     )
-                    .child(label(look, "Panes"))
-                    .child(
-                        card(look)
-                            .p(px(14.))
-                            .gap(px(10.))
-                            .child(radio(look, false, "Fixed", "Default layouts only: sidebar, terminal, one panel."))
-                            .child(radio(look, true, "Simple", "Up to 4 panes, two levels deep, moved by dragging."))
-                            .child(radio(look, false, "Free", "Any number and depth.")),
-                    )
-                    .child(secondary(look, "Narrowing this never closes anything: layouts that no longer fit show their default until you widen it again.")),
             ),
-    )
-}
-
-/// First run, with no channels yet (NV-11).
-pub fn first_run(look: Look) -> Div {
-    div().size_full().flex().child(
-        div()
-            .w(px(236.))
-            .h_full()
-            .bg(c(look.sidebar))
-            .flex()
-            .flex_col()
-            .child(div().h(px(52.)).pl(px(20.)).flex().items_center().child(traffic_lights())),
-    )
-    .child(handle(look, false))
-    .child(
-        div().flex_1().flex().items_center().justify_center().text_size(px(13.)).child(
-            div()
-                .w(px(460.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(12.))
-                .child(icon(IconName::SquareTerminal, look.accent).size(px(40.)))
-                .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Start with a channel"))
-                .child(
-                    div()
-                        .text_color(c(look.secondary))
-                        .text_center()
-                        .child("A channel is a project: its repos, the machines that work on it, its board and its sessions."),
-                )
-                .child(div().flex().gap(px(10.)).pt(px(6.)).child(button(look, Kind::Primary, "Create your first channel")).child(button(look, Kind::Secondary, "Add a machine over SSH")))
-                .child(div().pt(px(8.)).child(secondary(look, "GitHub access comes from the gh CLI. There is no sign-in in Humata."))),
-        ),
     )
 }

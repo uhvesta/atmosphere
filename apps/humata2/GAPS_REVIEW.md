@@ -520,3 +520,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - SPEC: NV-11 is retired (D128, frame 33 is gone) and CH-12 gains a Last used column (W1 pick).
 - Verified: docs only.
 - Look at: DECISIONS D129, LINUX.md Frames line.
+
+### (this commit): W1 batch 1: D113 redraws of frames 18, 26, 27, 29–32 and 48; frame 33 retired (minion W1)
+- 26/27/48: the full IN-9 request card (`pages::request_card`), with an Allow all / Deny all strip. 27 shows All, with answered rows and a folded "Allowed without asking" group. 29: the Panes setting is gone and Long lines is added. 30: the palette shows when each session was used. 31: the model popup is removed. 32: new toast wording. 18 (and 71 under its dialog): a Last used column. 33 and `pages::first_run` are removed (NV-11 retired).
+- Verified: `design_test_record` passed. Only the listed frames and 71 changed.
+- Known gaps: W1's T6–T9 (frames 01–05, 16 and 37–40 in session.rs and desk.rs) are still open.
+- Look at: `desktop/tests/design/pages.rs` (`request_card`, `inbox_page`), PNGs 26, 27 and 29.

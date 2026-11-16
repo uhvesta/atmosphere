@@ -18,7 +18,7 @@ pub fn scrim(look: Look) -> Div {
 
 /// `under` with the palette open over it.
 pub fn palette(look: Look, under: Div) -> Div {
-    let result = |glyph: IconName, text: &'static str, note: &'static str, keys: Option<&'static str>, on: bool| {
+    let result = |glyph: IconName, text: &'static str, note: &'static str, used: Option<&'static str>, keys: Option<&'static str>, on: bool| {
         div()
             .flex()
             .items_center()
@@ -31,6 +31,7 @@ pub fn palette(look: Look, under: Div) -> Div {
             .child(icon(glyph, if on { look.selection_text } else { look.secondary }))
             .child(div().child(text))
             .child(div().flex_1().text_size(px(11.5)).text_color(c(if on { look.selection_text } else { look.secondary })).child(note))
+            .children(used.map(|used| div().text_size(px(11.)).text_color(c(if on { look.selection_text } else { look.tertiary })).child(used)))
             .children(keys.map(|keys| kbd(look, keys)))
     };
     let group = |title: &'static str| div().px(px(16.)).pt(px(8.)).pb(px(3.)).child(label(look, title));
@@ -62,14 +63,14 @@ pub fn palette(look: Look, under: Div) -> Div {
                         .child(div().flex_1()),
                 )
                 .child(group("Sessions"))
-                .child(result(IconName::SquareTerminal, "Ledger schema migration", "# payments-rewrite · needs you", None, true))
-                .child(result(IconName::GitFork, "Try BRIN index", "fork of Ledger schema migration", None, false))
+                .child(result(IconName::SquareTerminal, "Ledger schema migration", "# payments-rewrite · needs you", Some("used Today 12:52"), None, true))
+                .child(result(IconName::GitFork, "Try BRIN index", "fork of Ledger schema migration", Some("used Today 13:02"), None, false))
                 .child(group("Files"))
-                .child(result(IconName::FileCode, "ledger/migrations/0042_accounts.sql", "Ledger schema migration", None, false))
+                .child(result(IconName::FileCode, "ledger/migrations/0042_accounts.sql", "Ledger schema migration", None, None, false))
                 .child(group("Commands"))
-                .child(result(IconName::GitFork, "Fork “Ledger schema migration”", "", Some("⇧⌘F"), false))
-                .child(result(IconName::Columns2, "Toggle side panel", "", Some("⌥⌘0"), false))
-                .child(result(IconName::Maximize2, "Terminal full screen", "", Some("⇧⌘↩"), false)),
+                .child(result(IconName::GitFork, "Fork “Ledger schema migration”", "", None, Some("⇧⌘F"), false))
+                .child(result(IconName::Columns2, "Toggle side panel", "", None, Some("⌥⌘0"), false))
+                .child(result(IconName::Maximize2, "Terminal full screen", "", None, Some("⇧⌘↩"), false)),
         ),
     )
 }
@@ -116,7 +117,7 @@ pub fn new_session(look: Look, under: Div) -> Div {
                         .flex_col()
                         .gap(px(6.))
                         .child(div().flex().child(segmented(look, &["Claude Code", "Codex", "Copilot", "OpenCode", "Terminal"], 0)).child(div().flex_1()))
-                        .child(div().flex().gap(px(8.)).child(popup(look, "Opus")).child(secondary(look, "An agent's own TUI, or a plain shell")).child(div().flex_1())),
+                        .child(div().flex().gap(px(8.)).child(secondary(look, "An agent's own TUI, with its own defaults, or a plain shell")).child(div().flex_1())),
                 ))
                 .child(row("Machine", div().flex().gap(px(8.)).child(popup(look, "devbox-1")).child(secondary(look, "11 GB free")).child(div().flex_1())))
                 .child(row(
