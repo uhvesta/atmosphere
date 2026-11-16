@@ -32,7 +32,7 @@ milestone file; agents read that file, not this one.
 | [FL-D](milestones/FL-D.md) | The daemon holds a real local session that survives restarts | L0 | daemon | D0: the rules it builds are the tidied ones | done (9ec5b5ed) |
 | [FL](milestones/FL.md) | First light: a real session in the app that survives a reboot (0.1) | L1 | daemon + UI seam | FL-D: the app needs real Session and Channel services and holders; LOOK1: a real terminal needs the session page, tabs and sidebar; P0: the real client follows the per-service client traits P0 splits out; FRAMES1: New channel, clone progress and "Couldn't resume" have no frame yet | blocked |
 | [BUG](milestones/BUG.md) | Report a bug as text an agent can act on | L1 | third builder (`report/`) | LOOK1: a recording names targets by their place in the view tree, which must be stable; P0: the app wiring adds an overlay and actions in the split files | blocked |
-| [TIDY](milestones/TIDY.md) | No leftovers from dropped designs in the code or API | L1 | daemon | W1: deleting an API and folders can't be undone; it waits for the owner to confirm D104 and D9 | in progress (lane TIDY) |
+| [TIDY](milestones/TIDY.md) | No leftovers from dropped designs in the code or API | L1 | daemon | W1: deleting an API and folders can't be undone; it waits for the owner to confirm D104 and D9 | done |
 | [DESK](milestones/DESK.md) | A place to work without a channel | L2 | UI | LOOK2: the Desk page reuses the channel page, lists and empty states; FRAMES1: Clean up… has no frame yet; W1*: frame 33 may be retired and frames 37–40 print a new path; match them before this closes | blocked |
 | [ASK](milestones/ASK.md) | Agents ask, I decide | L1 | daemon, then UI | FL-D: an agent's MCP identity is its real session; FL*: flow §26.4 in the app needs a real session on screen; LOOK1*: the session Inbox panel is where the card is drawn; FRAMES1*: the channel's Inbox and Agent access tabs have no frame yet; W1*: the card in frames 03, 04, 26, 27 is redrawn; match it before this closes | in progress (lane ASK) |
 | [MACH](milestones/MACH.md) | Work on another machine | L2 | daemon | FL: a remote session is a local session plus a link; FRAMES2: Add machine, the login dialog and the machine page have no frame yet | blocked |
@@ -103,7 +103,7 @@ graph TD
   FLD["FL-D: open"]
   FL["FL: blocked"]
   BUG["BUG: blocked"]
-  TIDY["TIDY: blocked"]
+  TIDY["TIDY: done"]
   DESK["DESK: blocked"]
   ASK["ASK: blocked"]
   MACH["MACH: blocked"]

@@ -1527,13 +1527,6 @@ impl pb::session_service_server::SessionService for SessionSvc {
         Err(status::not_built("humata.v1.SessionService.DropRepo"))
     }
 
-    async fn set_spec_mode(
-        &self,
-        _request: Request<pb::SetSpecModeRequest>,
-    ) -> Result<Response<pb::Session>, Status> {
-        Err(status::not_built("humata.v1.SessionService.SetSpecMode"))
-    }
-
     async fn plan_push(
         &self,
         _request: Request<pb::PlanPushRequest>,

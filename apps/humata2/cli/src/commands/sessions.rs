@@ -112,7 +112,6 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 repos,
                 first_message: message.unwrap_or_default(),
                 board_item: None,
-                spec_files: Vec::new(),
             };
             reply(ctx, rpc::session::START_SESSION, &request).await
         }
@@ -283,16 +282,6 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 fork: Some(ctx.session(&session).await?),
             };
             reply(ctx, rpc::session::GIVE_OWN_COPY, &request).await
-        }
-        SessionCommand::Spec { session, state } => {
-            let request = pb::SetSpecModeRequest {
-                idempotency_key: ctx.key(),
-                id: Some(ctx.session(&session).await?),
-                enabled: values::on(state),
-                files: Vec::new(),
-                expected_revision: None,
-            };
-            reply(ctx, rpc::session::SET_SPEC_MODE, &request).await
         }
         SessionCommand::Push {
             session,

@@ -1253,7 +1253,6 @@ fn session_json(session: &pb::Session) -> Value {
         "title": session.title,
         "status": lower(session.status().as_str_name(), "SESSION_STATUS_"),
         "machine": session.machine.as_ref().map(|id| id.value.clone()),
-        "spec_mode": session.spec_mode,
         "repos": session.repos.iter().map(|repo| json!({
             "repo": repo.repo.as_ref().map(|repo| format!("{}/{}", repo.owner, repo.name)),
             "branch": repo.branch,

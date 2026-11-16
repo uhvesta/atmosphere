@@ -64,7 +64,6 @@ session_push
 session_rebuild
 session_rename
 session_restore
-session_spec_mode
 session_start
 session_stop
 session_type

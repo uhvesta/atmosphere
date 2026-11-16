@@ -173,12 +173,11 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 `review_summary_draft` (PR-9, PR-12).
 
-### SM: spec mode (16)
+### SM: markdown review and comments (13)
 
 | ID | RPC | MCP | CLI | Note |
 | --- | --- | --- | --- | --- |
-| SM-1, SM-2 | SessionService.SetSpecMode | session_spec_mode | `humata session spec` | |
-| SM-3..SM-5 | FileService.ReadFile | file_read | — | rendering: UI only |
+| SM-3, SM-4 | FileService.ReadFile | file_read | — | rendering: UI only |
 | SM-6, SM-8 | CommentService.CreateComment, EditComment, DropComment | — | `humata comment add` | |
 | SM-7 | CommentService.ReattachComment | — | — | |
 | SM-9, SM-10, SM-14 | CommentService.SendComments | — | — | user-only |

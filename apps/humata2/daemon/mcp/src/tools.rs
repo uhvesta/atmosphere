@@ -157,8 +157,6 @@ operations! {
     SessionAddRepo => "session_add_repo", "session.add_repo";
     /// `SessionService.PlanDropRepo` and `DropRepo` of the caller.
     SessionDropRepo => "session_drop_repo", "session.drop_repo";
-    /// `SessionService.SetSpecMode` of the caller.
-    SessionSpecMode => "session_spec_mode", "session.spec_mode";
     /// `SessionService.GiveOwnCopy` of the caller.
     SessionOwnCopy => "session_own_copy", "session.own_copy";
     /// `SessionService.StopSession`; the caller's own session without
@@ -1077,14 +1075,6 @@ fn definition(operation: Operation) -> Definition {
             "Drop a repository from your session. Usually asks the user first; the card shows what would be lost.",
             Effect::Remove,
             asks(vec![req("repo", repo())]),
-        ),
-        Op::SessionSpecMode => define(
-            "Turn spec mode on or off for your session. Usually asks the user first.",
-            Effect::Change,
-            asks(vec![
-                req("on", boolean()),
-                opt("files", array(relative_path())),
-            ]),
         ),
         Op::SessionOwnCopy => define(
             "Give your session its own copy of a repository it shares. Usually asks the user first.",

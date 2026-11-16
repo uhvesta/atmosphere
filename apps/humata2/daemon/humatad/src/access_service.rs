@@ -1,4 +1,4 @@
-//! AccessService: the grants "Always let …" and approved ask-aheads made,
+//! AccessService: the grants "Always allow …" and approved ask-aheads made,
 //! listed and revoked (IN-19, IN-23). Grants live in the policy, and the
 //! Inbox saves each with the request its answer made, so a restart keeps
 //! them (D96). A revoked grant goes on the event feed; the Inbox tells of

@@ -545,3 +545,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: the gate over api/proto, daemon, cli, clients, features, ui, terminal/pane, terminal/view and desktop:humata2 passes, 111 of 111 (machines_test's feed timing flaked once under load and passed alone).
 - Known gaps: `HUMATA2_BUNDLE_ID` in `apps/lifr/identity.bzl` is now unused.
 - Look at: `Cargo.toml`, `LAYOUT.md`.
+
+### (this commit): TIDY batch 1: spec mode removed, Allow wording; TIDY closed (minion TIDY)
+- D104: `SetSpecMode`, `spec_mode` and `spec_files` are reserved in `sessions.proto`; the MCP tool `session_spec_mode`, `humata session spec`, the daemon handler and the SM-1, SM-2, SM-5 TRACE rows are gone; MCP.md and CLI.md updated. Proto comments, access errors and the inbox labels say "Always allow" and "Allow" instead of "Always let" and "Approve".
+- Verified: the same 111-test gate as batch 2.
+- Known gaps: `daemon/access/tests` still expect "Always let" in a few strings. The inbox label "Always allow “…” to everything" may read awkwardly. TRACE has no rows for SM-17–SM-21.
+- Look at: `api/proto/humata/v1/sessions.proto`, `daemon/humatad/src/inbox.rs`, `daemon/mcp/src/tools.rs`.

@@ -10,7 +10,7 @@ enum Capability {
 
   // ----- Agent rules: one row each on a channel's Agent access tab
   // (IN-17), in the spec's order. Each has a channel-level Allow / Ask me /
-  // Never and may get scoped "Always let …" grants (IN-14, IN-22). What
+  // Never and may get scoped "Always allow …" grants (IN-14, IN-22). What
   // needs no rule at all (IN-16: its own session, its own clones, its own
   // views and requests) has no capability; DecisionSource.OWNED reports it.
   // -----
@@ -70,7 +70,7 @@ enum Capability {
   // "Open a network connection through the Mac": a port forward over the
   // bridge (HO-10..12, BridgeService). Ask me or Never only: HO-11 opens a
   // forward only on the user's approval, so the rule has no Allow, an
-  // "Always let …" for one machine, host and port is the standing approval,
+  // "Always allow …" for one machine, host and port is the standing approval,
   // and it is never low-risk (D20). An uncontained agent can open its own
   // connections from its machine whatever this says (SEC-5, HO-12).
   CAPABILITY_NETWORK_REACH = 20;
@@ -88,7 +88,7 @@ enum Capability {
   // escalation-only before the spec listed them; they are ordinary rules
   // now. -----
 
-  // Rename itself, add or drop a repo, spec files, Give it its own copy.
+  // Rename itself, add or drop a repo, Give it its own copy.
   CAPABILITY_OWN_SESSION_MANAGE = 30;
   // Stop, archive or delete itself.
   CAPABILITY_OWN_SESSION_END = 31;

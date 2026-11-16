@@ -63,7 +63,7 @@ pub struct AccessRequest {
     pub channel: ChannelId,
     pub requester: SessionId,
     pub call: Call,
-    /// What "Always let …" would grant, or `None` when it is not offered.
+    /// What "Always allow …" would grant, or `None` when it is not offered.
     pub always_let: Option<GrantTarget>,
     /// True for an ask-ahead (IN-26): approving grants `always_let` and
     /// runs nothing.
@@ -174,7 +174,7 @@ pub enum Refusal {
     PeerCannotCall,
 
     #[error(
-        "\"{capability}\" has no \"Always let …\" to ask ahead for; make the call itself and the user is asked then"
+        "\"{capability}\" has no \"Always allow …\" to ask ahead for; make the call itself and the user is asked then"
     )]
     NothingToAskAhead { capability: Capability },
 }

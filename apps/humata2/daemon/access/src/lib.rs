@@ -4,7 +4,7 @@
 //! where the check runs ([`Context`]), [`Policy::check`] says whether the
 //! call is allowed, becomes an Inbox request, waits for the Mac, or is
 //! refused with a reason and a fix ([`Verdict`]). The policy holds each
-//! channel's rules and While I'm away rule, and the grants "Always let …"
+//! channel's rules and While I'm away rule, and the grants "Always allow …"
 //! made (BOUNDARIES.md §3 and §4, TRACE.md §2).
 //!
 //! This is policy only: no I/O, no networking, no async. The daemon turns

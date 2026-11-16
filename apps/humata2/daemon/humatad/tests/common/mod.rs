@@ -756,7 +756,6 @@ pub fn start_request(
         repos: Vec::new(),
         first_message: String::new(),
         board_item: None,
-        spec_files: Vec::new(),
     }
 }
 

@@ -241,7 +241,7 @@ message SetDefaultRulesRequest {
   PresenceProof presence = 5;
 }
 
-// What an "Always let …" covers. Exactly the requester and the target the
+// What an "Always allow …" covers. Exactly the requester and the target the
 // card named (IN-14); never a wider kind of target than the request had.
 // IN-22 fixes one kind of target per kind of action:
 //

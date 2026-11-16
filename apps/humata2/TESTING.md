@@ -921,7 +921,7 @@ fn approve_after_opening_the_requester(flow: &mut Flow) {
     flow.snapshot("card");
     flow.click(Role::Button, "Open session ↗");
     flow.expect_selected(Role::Row, card);
-    flow.click(Role::Button, "Approve");
+    flow.click(Role::Button, "Allow");
     flow.snapshot("approved");
 }
 
@@ -962,7 +962,7 @@ panel "Inbox" focused
     text "From API rate limiter · devbox-1"
     link "migrations/0042_balance_cents.sql"
     button "Open session ↗" enabled
-    button "Approve" enabled
+    button "Allow" enabled
     button "Deny" enabled
 ```
 

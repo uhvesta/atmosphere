@@ -152,7 +152,7 @@ message InboxRequest {
   Capability capability = 10;
   Decision rule_decision = 11;
   Undo undo = 12;
-  // IN-9 item 8: the "Always let …" button, exactly as the card offers it.
+  // IN-9 item 8: the "Always allow …" checkbox, exactly as the card offers it.
   // Unset for questions and for capabilities that take no grants.
   AlwaysOption always = 13;
   google.protobuf.Timestamp created_at = 14;
@@ -168,7 +168,7 @@ message InboxRequest {
 }
 
 message AlwaysOption {
-  // "Always let this session read files of “Ledger schema migration”".
+  // "Always allow this session to read files of “Ledger schema migration”".
   string label = 1;
   GrantTarget target = 2;
 }

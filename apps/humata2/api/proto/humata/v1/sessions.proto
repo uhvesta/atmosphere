@@ -1,5 +1,5 @@
 // Sessions: start, fork, move, archive, restore, delete, rebuild, repos,
-// spec mode, push, notes and questions between sessions. The host owns the
+// push, notes and questions between sessions. The host owns the
 // record (SL-1); the session's machine runs it and reports pointers (SL-3).
 syntax = "proto3";
 
@@ -48,8 +48,6 @@ service SessionService {
   // CH-23.
   rpc PlanDropRepo(PlanDropRepoRequest) returns (DropRepoPlan);
   rpc DropRepo(DropRepoRequest) returns (Session);
-  // SM-1, SM-2.
-  rpc SetSpecMode(SetSpecModeRequest) returns (Session);
   // MV-12: per repo branch and change totals.
   rpc PlanPush(PlanPushRequest) returns (PushPlan);
   rpc PushAndOpenPullRequests(PushAndOpenPullRequestsRequest) returns (Operation);
@@ -134,8 +132,9 @@ message Session {
   repeated SessionId forks = 11;
   // PER-12, pinned at launch.
   string conversation_id = 12;
-  bool spec_mode = 13;
-  repeated RepoPath spec_files = 14;
+  // Spec mode, dropped with SM-1 and SM-2 (D104).
+  reserved 13, 14;
+  reserved "spec_mode", "spec_files";
   PullRequestBinding pull_request = 15;
   ArchiveSummary archive = 16;
   BoardItemId board_item = 17;
@@ -174,7 +173,9 @@ message StartSessionRequest {
   // Typed once the agent starts; empty starts at the prompt.
   string first_message = 8;
   BoardItemId board_item = 9;
-  repeated RepoPath spec_files = 10;
+  // A session's spec files, dropped with SM-2 (D104).
+  reserved 10;
+  reserved "spec_files";
 }
 
 message StartSessionResponse {
@@ -364,14 +365,6 @@ message DropRepoRequest {
   SessionId id = 2;
   RepoRef repo = 3;
   PlanToken plan = 4;
-}
-
-message SetSpecModeRequest {
-  IdempotencyKey idempotency_key = 1;
-  SessionId id = 2;
-  bool enabled = 3;
-  repeated RepoPath files = 4;
-  Revision expected_revision = 5;
 }
 
 message PlanPushRequest { SessionId id = 1; }

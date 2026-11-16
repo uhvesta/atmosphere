@@ -1,6 +1,6 @@
 //! InboxService: questions an agent asks the user, access it asks for
 //! ahead (IN-26), the user's answers, and waiting for them (MCP.md §5).
-//! Approving an ask-ahead or answering "Always let …" makes a grant in the
+//! Approving an ask-ahead or answering "Always allow …" makes a grant in the
 //! policy (IN-14, IN-22). Each request, its answer and the grant it made
 //! are saved before anyone hears of them, so a restart keeps the Inbox
 //! and the grants (D96). Each new request and each change to one goes on
@@ -388,7 +388,7 @@ impl Inbox {
                 "answer",
                 Problem::NotAllowedHere,
                 format!("request {id} asks for access: a reply doesn't answer it"),
-                "approve it, approve it with Always let, or deny it",
+                "allow it, allow it with Always allow, or deny it",
             )),
             (Some(access), answer @ A::Approve(_)) => {
                 let grant = self.approve(user, id, access, &Answer::Once, at)?;
@@ -494,7 +494,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
     }
 
     /// The user's answer. Only the first one counts (IN-15); an approval is
-    /// checked against the rule as it is now (IN-21), and "Always let …"
+    /// checked against the rule as it is now (IN-21), and "Always allow …"
     /// grants exactly the target the card offered (IN-14).
     async fn answer_request(
         &self,
@@ -1020,7 +1020,7 @@ fn access_request(
         // Granting is all an approval does; nothing runs to undo.
         undo: pb::Undo::CanBeUndone as i32,
         always: target.map(|target| pb::AlwaysOption {
-            label: format!("Always let “{}” {target_label}", agent.title),
+            label: format!("Always allow “{}” to {target_label}", agent.title),
             target: Some(target),
         }),
         created_at: Some(attach::now()),

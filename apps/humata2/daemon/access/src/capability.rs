@@ -318,7 +318,7 @@ impl Capability {
             && self != Self::SessionType
     }
 
-    /// True when "Always let …" can be offered for it: IN-22 names the
+    /// True when "Always allow …" can be offered for it: IN-22 names the
     /// target such a grant covers.
     pub fn offers_always_let(self) -> bool {
         matches!(

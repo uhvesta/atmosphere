@@ -325,11 +325,6 @@ pub enum SessionCommand {
     Repo(SessionRepoCommand),
     /// A fork's own copy of a repo it reads from its parent.
     OwnCopy { session: String, repo: String },
-    Spec {
-        session: String,
-        #[arg(value_enum)]
-        state: OnOff,
-    },
     Push {
         session: String,
         #[arg(long)]

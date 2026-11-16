@@ -216,7 +216,6 @@ pub fn operation(command: &Command) -> &'static str {
             SessionCommand::Repo(SessionRepoCommand::Add { .. }) => "session.add_repo",
             SessionCommand::Repo(SessionRepoCommand::Drop { .. }) => "session.drop_repo",
             SessionCommand::OwnCopy { .. } => "session.own_copy",
-            SessionCommand::Spec { .. } => "session.spec_mode",
             SessionCommand::Push { .. } => "session.push",
             SessionCommand::Note { .. } => "session.note",
             SessionCommand::Ask { .. } => "session.ask",

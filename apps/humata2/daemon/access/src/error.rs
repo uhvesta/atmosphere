@@ -100,12 +100,12 @@ pub enum AnswerError {
     NeedsHost,
 
     #[error(
-        "\"Always let …\" is not offered for this request; approve it once instead"
+        "\"Always allow …\" is not offered for this request; allow it once instead"
     )]
     NoStandingApproval,
 
     #[error(
-        "the \"Always let …\" target is not the one the request offered (IN-14: it can't be widened or changed); approve with the offered target, or approve once"
+        "the \"Always allow …\" target is not the one the request offered (IN-14: it can't be widened or changed); allow with the offered target, or allow it once"
     )]
     TargetNotOffered,
 }

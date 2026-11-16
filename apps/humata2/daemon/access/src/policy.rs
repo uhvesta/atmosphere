@@ -4,7 +4,7 @@
 //! Checks take `&self`: nothing a caller sends can change the policy. Rules
 //! and grants change only through methods that take a [`PresentUser`], so
 //! the only way a grant appears is the user approving a request with
-//! "Always let …" for exactly the target the request offered.
+//! "Always allow …" for exactly the target the request offered.
 
 use std::collections::BTreeMap;
 use std::time::SystemTime;
@@ -19,7 +19,7 @@ use crate::principal::{
 };
 use crate::verdict::{AccessRequest, AnswerAt, Effect, Refusal, Source, Verdict};
 
-/// A standing approval made by "Always let …" or an approved ask-ahead
+/// A standing approval made by "Always allow …" or an approved ask-ahead
 /// (IN-14, IN-22, IN-26).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
@@ -129,7 +129,7 @@ impl Policy {
     }
 
     /// Decides an agent asking ahead for access to a call it will make
-    /// (IN-26). Approving the request makes the grant "Always let …" would;
+    /// (IN-26). Approving the request makes the grant "Always allow …" would;
     /// a low-risk While I'm away rule never approves it.
     pub fn check_ask_ahead(
         &self,
@@ -571,7 +571,7 @@ struct Need {
     capability: Capability,
     /// The call's exact target, for matching grants.
     asked: Option<GrantTarget>,
-    /// What "Always let …" would grant.
+    /// What "Always allow …" would grant.
     offer: Option<GrantTarget>,
 }
 

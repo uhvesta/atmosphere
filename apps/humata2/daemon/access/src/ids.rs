@@ -53,7 +53,7 @@ string_id!(
     RequestId
 );
 
-/// A grant made by "Always let …" (`GrantId`). The policy assigns these.
+/// A grant made by "Always allow …" (`GrantId`). The policy assigns these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GrantId(u64);
 

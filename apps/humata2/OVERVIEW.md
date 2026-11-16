@@ -25,7 +25,7 @@ This is the order Humata 2 gets built in. Tick a box when its step is done and t
 ## I0: Agree the foundations
 - [x] Fold the spec review (`REVIEW.md`) into `SPEC.md`: fix contradictions, undefined terms and untestable requirements.
 - [x] Agree the boundary specs in `api/`: every requirement maps to an RPC, MCP tool or CLI command, and the capability matrix leaves no gaps. See `api/TRACE.md`; the gaps it still lists are logged as decisions (D20, D21).
-- [ ] Decide what happens to the earlier H2-0/H2-1 code (`apps/humata2/app` (Swift), `bindgen`, `core`, `rehearsal`): keep, fold in, or remove. Waiting on the owner (D9); deleting can't be undone, so nothing is done until then.
+- [x] The earlier H2-0/H2-1 code (`apps/humata2/app` (Swift), `bindgen`, `core`, `rehearsal`) was removed under D9 (minion TIDY); git history keeps it.
 - [x] Lay out the crates and Bazel targets for Humata 2, with the narrowest visibility (see AGENTS.md). See `LAYOUT.md`.
 
 ## I1: State management (tca-rust)
@@ -422,6 +422,6 @@ Work that was started but isn't finished, grouped by area. Each item is open unt
 - [ ] ReportService, script tokens (SEC-14), and the web listener.
 - [x] MCP `inbox_request` asks ahead through RequestAccess and answers `{decision, grant_id}` (D93): `//apps/humata2/daemon/humatad:mcp_test`.
 - [ ] Ask→Inbox (D38.6).
-- [ ] Once the owner confirms D104 (no spec mode), remove what is left of it: `SetSpecMode` and `spec_mode` in `sessions.proto`, the MCP tool `session_spec_mode`, `humata session spec`, and the SM-1, SM-2 and SM-5 rows of `api/TRACE.md`. Until then they stay, unused by SPEC.
+- [x] Spec mode removed under D104 (minion TIDY): `SetSpecMode`, `spec_mode` and `spec_files` are reserved in `sessions.proto`; the MCP tool `session_spec_mode`, `humata session spec` and the SM-1, SM-2 and SM-5 TRACE rows are gone.
 - [x] The Inbox and grants kept across a restart: each request, its answer and its grant saved before anyone hears of them; grants rebuilt exactly as narrow, revoked ones stay revoked, new grant ids never reuse old ones (minion F, D96). Tests: `//apps/humata2/daemon/humatad:inbox_test` (`a_restart_keeps_the_inbox_and_the_grants_still_standing`), `//apps/humata2/daemon/store:inbox_test`.
 - [ ] Decisions waiting on the owner, each with a recommendation in DECISIONS.md: D51, D56, D62 items 7–10, D63's synthetic FS, D67, I5 sign-off, and whether to keep the peer-link pipe-fd change (D64). From the docs tidy (minion J1): D103–D112, the frame changes in D113, and D9 (the Swift-era folders).

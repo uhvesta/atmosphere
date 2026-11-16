@@ -365,7 +365,7 @@ pub(crate) fn answer_failed(error: &AnswerError) -> Status {
                 "answer.always.target",
                 Problem::NotAllowedHere,
                 status::chain(error),
-                "answer with the request's Always let target exactly as offered, or approve once",
+                "answer with the request's Always allow target exactly as offered, or allow it once",
             );
         }
         AnswerError::UnknownChannel { .. } => {

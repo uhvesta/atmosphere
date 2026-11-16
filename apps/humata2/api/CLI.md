@@ -108,7 +108,6 @@ none, only `humata whoami` and `humata login` run.
 | `humata session move <session> --to m` | `session.move` | MoveSession | user; agent: SESSION_MOVE | host |
 | `humata session repo add\|drop <session> <repo>` | `session.add_repo`, `session.drop_repo` | AddRepoToSession, PlanDropRepo/DropRepo | user; agent: OWN_SESSION_MANAGE | host |
 | `humata session own-copy <session> <repo>` | `session.own_copy` | GiveOwnCopy | as repo | host |
-| `humata session spec <session> on\|off` | `session.spec_mode` | SetSpecMode | as repo | host |
 | `humata session push <session> [--repo r]… [--pr] [--from-view v]` | `session.push` | PlanPush, PushAndOpenPullRequests | user (no rule, IN-24); agent: GIT_PUSH. `--from-view` opens a prepared PR view's fields (VW-13) | host (GitHub goes through the Mac) |
 | `humata session note\|ask <session> <text>` | `session.note`, `session.ask` | SendNote, AskSession | user; agent: SESSION_NOTE | per away rule here; waits elsewhere |
 | `humata session type <session> <text> [--at-turn-end]` | `session.type` | TerminalService.Type | user; agent: SESSION_TYPE. With the output fallback or in a shell, `--at-turn-end` queues it as "waiting: turn end not certain" (SE-23) | as note |
