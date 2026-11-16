@@ -564,3 +564,11 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `daemon/access` tests pass, 5 of 5.
 - Known gaps: `HUMATA2_BUNDLE_ID` in `apps/lifr/identity.bzl` is unused but sits in another app's file; left alone.
 - Look at: `api/TRACE.md` §SM.
+
+### (this commit): first light on a real daemon, bug reports, LOOK1 batches 6–7 (minions FL, BUG, LOOK1)
+- FL: `clients/live` implements the Daemon and Terminals traits over gRPC on the tokio runtime it connected on (D134). humatad publishes session and channel events, including an agent's exit, and the app's status comes only from those events (D136, synth removed). A signed app outside every tab's tree counts as the user; this fails closed (D135, new `daemon/app_peer`). `desktop/install` puts the bundled host tools and the `humata` symlink in place (D137). `humata2 --live`/`--socket` runs the app on This Mac's daemon.
+- BUG: bug reports in the app and the CLI (I9, D133): record, form, pin, copy, snapshot, replay, and the app socket.
+- LOOK1 batches 6–7: re-audit of frames 01–17. Rail pitch, diff gutter, CircleX exit icon, the frame 06 offline layout and the frame 12 asking card (L17). The scrollbar shows only away from the newest output (L16).
+- Verified: gates g23, g24 and g26 (63 targets; app, CLI, clients, the live parity suite, the humatad auth/matrix/inbox/sessions/channels/session_events suites, app_peer, install) and, of the three live flows against a real `humatad2_admin`, the lost conversation (§26.2 start through the UI and §26.8 reboot still time out, so `desktop:live_flows_test` is manual). Native 37, panels 13 and shell 2 re-recorded after the report form shifted the input ids; native 16 matches golden 16 apart from the Desk row (DESK).
+- Known gaps: live flows §26.2 (session never listed) and §26.8 (resumed agent never shown) time out; the install and socket wait block the main thread for up to 10 s before the window opens; the daemon doesn't track turn ends; "Couldn't resume" and New channel progress UI are FL T9; no app bundle yet (T10). D133.7 (keep a terminal's text in reports) isn't built.
+- Look at: `clients/live/src/connection.rs`, `daemon/humatad/src/identity.rs`, `daemon/humatad/src/session_service/watch.rs`, `desktop/src/{main,live}.rs`, `desktop/tests/live_flows.rs`, `ui/src/report_view.rs`.

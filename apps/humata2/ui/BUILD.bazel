@@ -33,6 +33,7 @@ rust_library(
         "//apps/humata2/terminal/vt:ghostty_vt",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
+        "@crates//:thiserror",
         "@crates//:tokio",
         "@crates//:unicode-segmentation",
         "@crates//:unicode-width",

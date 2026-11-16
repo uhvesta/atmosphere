@@ -25,6 +25,7 @@ rust_library(
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
         "//apps/humata2/chunk:humata2_chunk",
+        "//apps/humata2/report",
         "@crates//:clap",
         "@crates//:hyper-util",
         "@crates//:prost",
@@ -68,6 +69,7 @@ rust_test(
             ":cli",
             "//apps/humata2/api/proto:humata2_rust",
             "//apps/humata2/chunk:humata2_chunk",
+            "//apps/humata2/report",
             "@crates//:prost",
             "@crates//:serde_json",
             "@crates//:tempfile",

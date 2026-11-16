@@ -117,6 +117,15 @@ pub enum DaemonError {
         /// Why, and what to do instead.
         reason: String,
     },
+    /// This host's daemon doesn't do this yet (D134): not a refusal, so the
+    /// app can hide or disable the action instead of reporting a failure.
+    #[error(
+        "{what} isn't in this release of Humata yet; it comes in a later one. Nothing was changed, so update Humata when a new release is out"
+    )]
+    NotServedYet {
+        /// What was asked.
+        what: String,
+    },
     /// A fake was told to fail this call.
     #[error("{operation:?} failed: {message}. Try again; a test made this fail on purpose")]
     Scripted {

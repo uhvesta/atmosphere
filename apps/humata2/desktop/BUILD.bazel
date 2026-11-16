@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
 
 # Humata 2's desktop app, on fake clients until the real daemon is wired in.
@@ -11,6 +11,8 @@ rust_binary(
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/desktop/install",
         "//apps/humata2/engine",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
@@ -105,6 +107,67 @@ humata2_snapshot_test(
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+# Bug reports as the app does them (I9): record, form, pin, copy, snapshot,
+# replay and the socket, all headless.
+rust_test(
+    name = "report_test",
+    srcs = ["tests/report.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/report.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/report",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# The app on a real humatad2 (FL T8b): a session made through the UI, a
+# reboot that brings it back, and a lost conversation shown as recoverable.
+rust_test(
+    name = "live_flows_test",
+    size = "large",
+    srcs = ["tests/live_flows.rs"] + glob(["tests/live_flows/*.rs"]),
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_flows.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    # Manual until the §26.2 and §26.8 flows pass (FL; the lost-conversation
+    # flow passes): run it by name.
+    tags = [
+        "exclusive",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:thiserror",
         "@crates//:tokio",
     ],
 )

@@ -212,9 +212,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 ];
             }
             "brin" => value.started = "Today 12:05".into(),
+            // D131: Partial BRIN runs Claude Code on devbox-1 (frames 16, 18).
             "partial-brin" => {
-                value.agent = Agent::Codex;
-                value.machine = MachineId::new("gpu-box");
                 value.started = "Today 12:31".into();
                 value.fork = Some(ForkKind::Shared);
             }
@@ -271,7 +270,14 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         })
         .collect();
         let tail: &[(Speaker, &str)] = match status {
-            Status::Working | Status::Offline => &[
+            // Golden 06: the link dropped mid-command, before the spinner
+            // line was drawn.
+            Status::Offline => &[
+                (Speaker::Agent, ""),
+                (Speaker::Agent, "● Bash(psql -f backfill.sql)"),
+                (Speaker::System, "  ⎿ INSERT 0 48210 … (running)"),
+            ],
+            Status::Working => &[
                 (Speaker::Agent, ""),
                 (Speaker::Agent, "● Bash(psql -f backfill.sql)"),
                 (Speaker::System, "  ⎿ INSERT 0 48210 … (running)"),
@@ -651,6 +657,17 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             FileDiff {path:"src/entry.rs".into(),added:81,removed:3,lines:Vec::new()},
         ],comments:vec![Comment {path:"src/client.rs".into(),line:41,body:"Wrap the two writes in one transaction so a crash can't leave them out of step.".into(),sent:true,context:None}] },
     ];
+    // Partial BRIN shares Ledger's working tree (a Shared fork), so its
+    // Diff shows the same changes (golden 16).
+    let shared: Vec<RepoDiff> = workspace
+        .diffs
+        .iter()
+        .map(|diff| RepoDiff {
+            session: SessionId::new("partial-brin"),
+            ..diff.clone()
+        })
+        .collect();
+    workspace.diffs.extend(shared);
     for value in &workspace.sessions {
         workspace.session_files.insert(
             value.id.clone(),

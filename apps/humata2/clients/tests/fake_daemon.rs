@@ -308,7 +308,16 @@ fn adding_an_ssh_destination_reuses_it_and_rejects_a_list() {
 #[test]
 fn raw_terminal_input_waits_for_enter_and_cannot_type_while_offline() {
     use humata2_clients::Terminals;
-    let daemon = FakeDaemon::new(fixture::design(), Arc::new(TestClock::new()));
+    // One session sits on gpu-box, which the design fixture keeps offline.
+    let mut workspace = fixture::design();
+    let offline = SessionId::new("partial-brin");
+    workspace
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == offline)
+        .unwrap()
+        .machine = MachineId::new("gpu-box");
+    let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
     let id = SessionId::new("ledger");
     let initial = daemon.workspace();
     let agent = initial.terminal_bytes[&(id.clone(), 0)].clone();
@@ -320,7 +329,6 @@ fn raw_terminal_input_waits_for_enter_and_cannot_type_while_offline() {
     assert_eq!(daemon.workspace().terminal_bytes[&(id.clone(), 0)], agent);
     block_on(daemon.resize(&id, 1, 73, 29)).unwrap();
     assert_eq!(daemon.workspace().terminal_sizes[&(id, 1)], (73, 29));
-    let offline = SessionId::new("partial-brin");
     let snapshot = daemon.workspace().terminal_bytes.clone();
     assert!(matches!(
         block_on(daemon.input(&offline, 0, b"x".to_vec())),

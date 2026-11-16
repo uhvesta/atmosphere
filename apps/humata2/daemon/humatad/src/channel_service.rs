@@ -23,6 +23,7 @@ use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
+use crate::events::{Feed, Scope};
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller};
 use crate::inbox::{Deferred, Inbox};
@@ -59,6 +60,33 @@ async fn readable_channels(
         channels,
         page: None,
     })
+}
+
+/// Puts `channel` as the store holds it now on the feed, as GetChannel
+/// shows it. Blocking. A channel that can't be read is not told:
+/// publishing never fails the call that changed it.
+fn tell_channel(
+    feed: &Feed,
+    store: &Store,
+    channel: &str,
+    change: pb::Change,
+    by: Option<pb::Actor>,
+) {
+    let Ok(Some(record)) = store.channel(channel) else {
+        return;
+    };
+    let Ok(live) = live_sessions(store, channel) else {
+        return;
+    };
+    feed.publish_in(
+        change,
+        pb::event::Payload::Channel(channel_pb(&record, live)),
+        Scope {
+            channel: channel.to_owned(),
+            session: String::new(),
+        },
+        by,
+    );
 }
 
 /// The longest channel name taken.
@@ -272,12 +300,24 @@ impl ChannelSvc {
         };
         progress.set_step("record", pb::StepState::Done, None);
         let setup = progress.operation();
-        let (starter, record) = (self.starter.clone(), channel.clone());
-        tokio::task::spawn_blocking(move || clone_in_background(starter, record, progress));
-        Ok(Gated::Done(pb::CreateChannelResponse {
-            channel: Some(self.show(channel).await?),
+        let answer = pb::CreateChannelResponse {
+            channel: Some(self.show(channel.clone()).await?),
             setup: Some(setup),
-        }))
+        };
+        let (feed, store, id, by) = (
+            self.operations.feed(),
+            self.starter.store.clone(),
+            channel.id.clone(),
+            identity::actor(caller),
+        );
+        let _ = blocking(move || {
+            tell_channel(&feed, &store, &id, pb::Change::Created, Some(by));
+        })
+        .await;
+        let (starter, record) = (self.starter.clone(), channel);
+        let (feed, by) = (self.operations.feed(), identity::actor(caller));
+        tokio::task::spawn_blocking(move || clone_in_background(starter, record, progress, &feed, by));
+        Ok(Gated::Done(answer))
     }
 
     /// The body of GetChannel; `approved` once the user said yes to it.
@@ -355,6 +395,16 @@ impl ChannelSvc {
                 ));
             }
         };
+        let (feed, store, named, by) = (
+            self.operations.feed(),
+            self.starter.store.clone(),
+            channel.id.clone(),
+            identity::actor(caller),
+        );
+        let _ = blocking(move || {
+            tell_channel(&feed, &store, &named, pb::Change::Updated, Some(by));
+        })
+        .await;
         Ok(Gated::Done(self.show(channel).await?))
     }
 
@@ -613,7 +663,13 @@ fn clone_failed(operation: &str, repo: &str, reason: &str) -> pb::Error {
 
 /// Clones the channel's mains, telling `progress` about each, and ends the
 /// operation. Blocking.
-fn clone_in_background(starter: Starter, channel: ChannelRecord, progress: Progress) {
+fn clone_in_background(
+    starter: Starter,
+    channel: ChannelRecord,
+    progress: Progress,
+    feed: &Feed,
+    by: pb::Actor,
+) {
     let operation = progress
         .operation()
         .id
@@ -670,6 +726,14 @@ fn clone_in_background(starter: Starter, channel: ChannelRecord, progress: Progr
             }
         }
     }
+    // The clones' outcome is part of how the channel shows.
+    tell_channel(
+        feed,
+        &starter.store,
+        &channel.id,
+        pb::Change::Updated,
+        Some(by),
+    );
 }
 
 #[tonic::async_trait]

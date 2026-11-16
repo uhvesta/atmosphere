@@ -189,7 +189,8 @@ fn draw_row(
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .when(*unread > 0, |x| x.font_weight(FontWeight::SEMIBOLD))
+                    // Unread or selected rows read semibold (goldens 01, 16).
+                    .when(*unread > 0 || current, |x| x.font_weight(FontWeight::SEMIBOLD))
                     .child(title.clone()),
             );
             if count > 0 {

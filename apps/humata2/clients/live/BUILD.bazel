@@ -1,0 +1,57 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The app's real daemon client: `Daemon` and `Terminals` over gRPC to a
+# `humatad2` on its Unix socket.
+rust_library(
+    name = "live",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_clients_live",
+    visibility = ["//apps/humata2/desktop:__subpackages__"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/daemon/humatad:grpc",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:uuid",
+    ],
+)
+
+# Unit tests of the pure mapping inside the library.
+rust_test(
+    name = "live_unit_test",
+    crate = ":live",
+)
+
+# One suite, run against the fake and against a real humatad2 (admin build).
+rust_test(
+    name = "parity_test",
+    srcs = ["tests/parity.rs"] + glob(["tests/support/*.rs"]),
+    crate_root = "tests/parity.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "//libs/tca-rust:tca",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

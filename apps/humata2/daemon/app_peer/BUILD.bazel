@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Tells humatad2 whether a socket peer is the signed Humata app, by the peer's
+# audit token and Security.framework, not its pid (D135).
+rust_library(
+    name = "app_peer",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_app_peer",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+    ],
+)
+
+rust_test(
+    name = "app_peer_test",
+    srcs = ["tests/app_peer.rs"],
+    crate_root = "tests/app_peer.rs",
+    deps = [
+        ":app_peer",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

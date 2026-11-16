@@ -23,6 +23,10 @@ pub enum Overlay {
 
 impl App {
     pub(super) fn escape(&self, state: &mut AppState) -> Effect<AppAction> {
+        if state.report.form.is_some() {
+            state.report.form = None;
+            return Effect::none();
+        }
         if let Some(top) = state.overlays.pop() {
             if top == Overlay::Palette {
                 state.palette.open = false;

@@ -1,6 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load(":tonic.bzl", "rust_tonic_services")
 load(":tools.bzl", "tools_bundle")
+load("@lifr_identity//:defs.bzl", "HUMATA2_BUNDLE_ID", "TEAM_ID")
 
 # humatad2, Humata 2's daemon: serves the gRPC API (../../api/GRPC.md) on a
 # Unix socket, or the peer link on stdio with `serve --stdio`; `humatad2
@@ -33,6 +34,8 @@ rust_library(
     srcs = ["codegen/grpc.rs"],
     compile_data = [":tonic_gen"],
     crate_name = "humata2_grpc",
+    # The app's real daemon client speaks the same generated clients.
+    visibility = ["//apps/humata2/clients/live:__pkg__"],
     # The generated code is written for this edition.
     edition = "2021",
     rustc_env = {"HUMATA2_TONIC_RS": "$(execpath :tonic_gen)"},
@@ -47,6 +50,7 @@ rust_library(
 )
 
 DAEMON_DEPS = [
+    "//apps/humata2/daemon/app_peer",
     ":grpc",
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/chunk:humata2_chunk",
@@ -74,10 +78,18 @@ DAEMON_DEPS = [
     "@crates//:uuid",
 ]
 
+# The signed app's identity, which the daemon checks socket peers against
+# (D135): empty in a build without a team, so nothing is taken for the app.
+APP_IDENTITY = {
+    "HUMATA2_BUNDLE_ID": HUMATA2_BUNDLE_ID,
+    "HUMATA2_TEAM_ID": TEAM_ID,
+}
+
 # The release daemon: a call with no credential is refused (SEC-9).
 rust_binary(
     name = "humatad2",
     srcs = glob(["src/**/*.rs"]),
+    rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
     deps = DAEMON_DEPS,
 )
@@ -106,7 +118,25 @@ rust_binary(
     testonly = True,
     srcs = glob(["src/**/*.rs"]),
     crate_features = ["admin"],
+    rustc_env = APP_IDENTITY,
+    # The app client's parity suite and the app's live flows run against it too.
+    visibility = [
+        "//apps/humata2/clients/live:__pkg__",
+        "//apps/humata2/desktop:__pkg__",
+    ],
     deps = DAEMON_DEPS,
+)
+
+# The holder, for the app client's parity suite: the daemon there needs one
+# to start sessions, and the holder is visible only inside daemon/.
+filegroup(
+    name = "holder_for_clients",
+    testonly = True,
+    srcs = ["//apps/humata2/daemon/holder:humata2_holder"],
+    visibility = [
+        "//apps/humata2/clients/live:__pkg__",
+        "//apps/humata2/desktop:__pkg__",
+    ],
 )
 
 # The release daemon's own unit tests: the link proof, the machine id,
@@ -114,6 +144,7 @@ rust_binary(
 rust_test(
     name = "humatad2_unit_test",
     crate = ":humatad2",
+    rustc_env = APP_IDENTITY,
     deps = ["@crates//:tempfile"],
 )
 

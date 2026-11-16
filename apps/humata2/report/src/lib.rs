@@ -22,7 +22,8 @@
 //! 5. [`copy_prompt`] gives the text "Copy report" puts on the clipboard.
 //!
 //! A [`Recorder`] holds the one recording running at a time, so the menu,
-//! the shortcut and `humata report record|stop` agree on it.
+//! the shortcut and `humata report record|stop` agree on it. The [`remote`]
+//! socket is how `humata report record|stop|snapshot` reaches the running app.
 //!
 //! [`read_events`] reads a saved `events.jsonl` back,
 //! [`Captured::flow_script`] turns a recording into a flow test (I4), and
@@ -42,6 +43,8 @@ mod recording;
 mod replay;
 mod scrub;
 mod write;
+
+pub mod remote;
 
 pub use change::Hunk;
 pub use error::{

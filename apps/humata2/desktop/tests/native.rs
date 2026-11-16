@@ -223,8 +223,21 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
         }
         let mut app = App::new(workspace);
         app.cx.update(|cx| Theme::change(mode, None, cx));
-        app.open("ledger", Panel::Changes);
+        // D128.5: frame 16 shows the selected fork itself (SE-6), so the
+        // header reads Partial BRIN on posted_at and the rail has no Inbox
+        // badge.
+        app.open(selected, Panel::Changes);
         app.file_tab();
+        if pinned {
+            // Golden 15: two messages wait while Ledger needs you.
+            for message in [
+                "Keep both indexes until the backfill ends.",
+                "Then check the read path before dropping the old index.",
+            ] {
+                app.send(AppAction::Session(SessionAction::Draft(message.into())));
+                app.send(AppAction::Session(SessionAction::Submit));
+            }
+        }
         app.send(AppAction::Review(
             humata2_review::ReviewAction::SelectFile {
                 repo: "api".into(),
@@ -432,7 +445,23 @@ fn session_lifecycle_and_full_screen_reference_images() {
             true,
         ),
     ] {
-        let mut app = App::new(fixture::design_session(status));
+        // An offline session's program can't redraw when the layout
+        // changes, so frame 06 is laid out while Ledger runs and the link
+        // drops just before the capture, as it would for the person.
+        let mut start = fixture::design_session(status);
+        if status == Status::Offline {
+            for machine in &mut start.machines {
+                if machine.lost_at.is_some() {
+                    machine.online = true;
+                }
+            }
+            for session in &mut start.sessions {
+                if session.status == Status::Offline {
+                    session.status = Status::Working;
+                }
+            }
+        }
+        let mut app = App::new(start);
         app.cx.update(|cx| Theme::change(mode, None, cx));
         app.send(AppAction::Navigate(Route::Session(SessionId::new(
             "ledger",
@@ -487,6 +516,24 @@ fn session_lifecycle_and_full_screen_reference_images() {
             app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
                 humata2_clients::model::ChannelId::new(id),
             ))));
+        }
+        if status == Status::Offline {
+            let offline = fixture::design_session(Status::Offline);
+            let machine = offline
+                .machines
+                .iter()
+                .find(|machine| machine.lost_at.is_some())
+                .expect("the offline fixture says when devbox-1 was lost")
+                .clone();
+            let ledger = offline
+                .sessions
+                .iter()
+                .find(|session| session.id == SessionId::new("ledger"))
+                .expect("the fixture has Ledger")
+                .clone();
+            app.fakes.daemon.emit(humata2_clients::Event::Machine(machine));
+            app.fakes.daemon.emit(humata2_clients::Event::Session(ledger));
+            app.settle();
         }
         app.snapshot(name);
     }
@@ -596,6 +643,17 @@ fn the_plus_menu_splits_once_and_joining_keeps_the_program_running() {
     app.open("ledger", Panel::Info);
     app.send(AppAction::Session(SessionAction::SetPanel(None)));
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    // Golden 14's Diff rail reads 2: one sent comment and this saved draft.
+    app.send(AppAction::Review(
+        humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
+            path: "src/client.rs".into(),
+            line: 43,
+        }),
+    ));
+    app.send(AppAction::Review(humata2_review::ReviewAction::CommentText(
+        "Keep insert_legacy until the backfill ends.".into(),
+    )));
+    app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
     for channel in ["pr-reviews", "web"] {
         app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
             humata2_clients::model::ChannelId::new(channel),

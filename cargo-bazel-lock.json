@@ -1,5 +1,5 @@
 {
-  "checksum": "f700eb1f7979c6faecb6f46041a1a6d742b7aecf6f3b8ad33c03ee08aa07b689",
+  "checksum": "c79d6d87d0e67ea9f79519c58747c037dd024cb7e6908f3d5655057119b2723f",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -18145,6 +18145,47 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-app-peer 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "tokio-stream 0.1.19",
+            "target": "tokio_stream"
+          },
+          {
+            "id": "tonic 0.14.9",
+            "target": "tonic"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_app_peer",
+      "name": "humata2-app-peer",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_app_peer",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-board 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -18323,6 +18364,67 @@
         {
           "Library": {
             "crate_name": "humata2_clients",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-clients-live 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "hyper-util 0.1.21",
+            "target": "hyper_util"
+          },
+          {
+            "id": "prost 0.14.5",
+            "target": "prost"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "tokio-stream 0.1.19",
+            "target": "tokio_stream"
+          },
+          {
+            "id": "tonic 0.14.9",
+            "target": "tonic"
+          },
+          {
+            "id": "tower 0.5.3",
+            "target": "tower"
+          },
+          {
+            "id": "uuid 1.29.2",
+            "target": "uuid"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_clients_live",
+      "name": "humata2-clients-live",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_clients_live",
             "crate_root": "src/lib.rs"
           }
         }
@@ -18604,6 +18706,43 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-install 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
+          },
+          {
+            "id": "sha2 0.11.1",
+            "target": "sha2"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_install",
+      "name": "humata2-install",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_install",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-machines 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -18764,6 +18903,10 @@
           {
             "id": "thiserror 2.0.21",
             "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
           }
         ],
         "deps_dev": [
@@ -19047,6 +19190,10 @@
           {
             "id": "gpui-kit 0.9.1",
             "target": "gpui_kit"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
           },
           {
             "id": "tokio 1.54.1",
@@ -51222,10 +51369,12 @@
     "humata-workspace 0.0.0": "apps/humata/daemon/workspace",
     "humata2-access 0.0.0": "apps/humata2/daemon/access",
     "humata2-app 0.0.0": "apps/humata2/features/app",
+    "humata2-app-peer 0.0.0": "apps/humata2/daemon/app_peer",
     "humata2-board 0.0.0": "apps/humata2/features/board",
     "humata2-chunk 0.0.0": "apps/humata2/chunk",
     "humata2-cli 0.0.0": "apps/humata2/cli",
     "humata2-clients 0.0.0": "apps/humata2/clients",
+    "humata2-clients-live 0.0.0": "apps/humata2/clients/live",
     "humata2-desktop 0.0.0": "apps/humata2/desktop",
     "humata2-diff-view 0.0.0": "apps/humata2/diff",
     "humata2-durable 0.0.0": "apps/humata2/daemon/durable",
@@ -51235,6 +51384,7 @@
     "humata2-holder 0.0.0": "apps/humata2/daemon/holder",
     "humata2-hosts 0.0.0": "apps/humata2/features/hosts",
     "humata2-inbox 0.0.0": "apps/humata2/features/inbox",
+    "humata2-install 0.0.0": "apps/humata2/desktop/install",
     "humata2-machines 0.0.0": "apps/humata2/daemon/machines",
     "humata2-markdown 0.0.0": "apps/humata2/markdown",
     "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",

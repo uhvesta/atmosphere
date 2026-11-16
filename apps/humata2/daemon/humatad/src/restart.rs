@@ -94,6 +94,7 @@ pub(crate) fn in_background(
     identities: Arc<Identities>,
     starter: Starter,
     restored: Option<Restored>,
+    tell: crate::session_service::Tell,
 ) -> Arc<OnceLock<pb::LastStart>> {
     let done = Arc::new(OnceLock::new());
     let setting = done.clone();
@@ -103,6 +104,7 @@ pub(crate) fn in_background(
     tokio::spawn(async move {
         let start = bring_back(&store, &identities, &starter, restored.as_ref(), left).await;
         let _ = setting.set(start);
+        crate::session_service::after_restart(tell).await;
     });
     done
 }

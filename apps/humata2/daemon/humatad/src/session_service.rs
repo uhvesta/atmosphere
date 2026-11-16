@@ -27,6 +27,7 @@ use pb::invalid_field::Problem;
 use tokio::sync::oneshot;
 use tonic::{Code, Request, Response, Status};
 
+use crate::events::{Feed, Scope};
 use crate::channel_service::{Gated, answer_gated, blocking, error_of, failed, gate, timestamp_ms};
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller, Identities};
@@ -34,6 +35,10 @@ use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
 use crate::restart::Tokens;
 use crate::status;
+
+mod watch;
+
+pub(crate) use watch::after_restart;
 
 /// The longest session title taken.
 const TITLE_MAX: usize = 200;
@@ -49,6 +54,77 @@ pub(crate) struct SessionSvc {
     tokens: Arc<Tokens>,
     inbox: Arc<Inbox>,
     machine: String,
+    tell: Tell,
+}
+
+/// Puts a session as the store holds it now on the event feed.
+#[derive(Clone)]
+pub(crate) struct Tell {
+    feed: Arc<Feed>,
+    store: Arc<humata2_store::Store>,
+    machine: String,
+}
+
+impl Tell {
+    pub(crate) fn new(feed: Arc<Feed>, store: Arc<humata2_store::Store>, machine: String) -> Self {
+        Self {
+            feed,
+            store,
+            machine,
+        }
+    }
+
+    /// The session the start operation `operation` recorded, if it got that
+    /// far.
+    async fn session_of(&self, operation: &str) -> Option<String> {
+        let (store, operation) = (self.store.clone(), operation.to_owned());
+        blocking(move || -> Result<Option<String>, StoreError> {
+            Ok(store
+                .session_details()?
+                .into_iter()
+                .find(|detail| detail.operation.as_deref() == Some(operation.as_str()))
+                .map(|detail| detail.session))
+        })
+        .await
+        .ok()?
+        .ok()?
+    }
+
+    /// Reads `session` back and publishes it as GetSession would show it.
+    /// A session that can't be read is not told; publishing never fails
+    /// the call that changed it.
+    async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
+        let (store, key) = (self.store.clone(), session.to_owned());
+        let read = blocking(move || -> Result<Option<Loaded>, StoreError> {
+            let Some(record) = store.session(&key)? else {
+                return Ok(None);
+            };
+            Ok(Some(Loaded {
+                detail: store.session_detail(&key)?,
+                agent: store.agent(&key)?,
+                record,
+            }))
+        })
+        .await;
+        let Ok(Ok(Some(loaded))) = read else {
+            return;
+        };
+        let shown = session_pb(
+            &loaded.record,
+            loaded.detail.as_ref(),
+            loaded.agent.as_ref(),
+            &self.machine,
+        );
+        self.feed.publish_in(
+            change,
+            pb::event::Payload::Session(shown),
+            Scope {
+                channel: loaded.record.channel.clone(),
+                session: loaded.record.id.clone(),
+            },
+            by,
+        );
+    }
 }
 
 /// What the store holds of one session.
@@ -68,7 +144,9 @@ impl SessionSvc {
         inbox: Arc<Inbox>,
     ) -> Self {
         let tokens = Arc::new(Tokens::new(starter.store.clone(), identities));
+        let tell = Tell::new(operations.feed(), starter.store.clone(), machine.clone());
         Self {
+            tell,
             guard,
             operations,
             starter,
@@ -221,14 +299,28 @@ impl SessionSvc {
         let (ready, recorded) = oneshot::channel();
         tokio::spawn(run_start(
             self.starter.clone(),
+            self.tell.clone(),
             self.tokens.clone(),
             start,
             progress,
             keys,
             ready,
+            identity::actor(caller),
         ));
         match recorded.await {
-            Ok(Ok(())) => Ok(Gated::Done(self.started_by(operation).await?)),
+            Ok(Ok(())) => {
+                let started = self.started_by(operation).await?;
+                if let Some(session) = &started.session {
+                    self.tell
+                        .session(
+                            &session.value,
+                            pb::Change::Created,
+                            Some(identity::actor(caller)),
+                        )
+                        .await;
+                }
+                Ok(Gated::Done(started))
+            }
             Ok(Err(refused)) => Err(refused),
             Err(_) => Err(status::internal(
                 "the session's start stopped before it was recorded",
@@ -386,6 +478,9 @@ impl SessionSvc {
             })
             .await?
             .map_err(|error| status::store(error, &self.machine, "save the session's new title"))?;
+            self.tell
+                .session(&id, pb::Change::Updated, Some(identity::actor(caller)))
+                .await;
         }
         Ok(Gated::Done(self.show(&loaded)))
     }
@@ -440,6 +535,9 @@ impl SessionSvc {
         blocking(move || store.put_agent(&saving))
             .await?
             .map_err(|error| status::store(error, &self.machine, "save that the agent stopped"))?;
+        self.tell
+            .session(&id, pb::Change::Updated, Some(identity::actor(caller)))
+            .await;
         self.withdraw_requests_of(&id, pb::WithdrawReason::SessionStopped)
             .await?;
         Ok(Gated::Done(self.show(&loaded)))
@@ -543,6 +641,8 @@ impl SessionSvc {
         } else {
             tokio::spawn(run_resume(
                 self.starter.clone(),
+                self.tell.clone(),
+                identity::actor(caller),
                 self.tokens.clone(),
                 loaded,
                 progress,
@@ -1040,13 +1140,16 @@ fn advance(progress: &Progress, keys: &[String], event: &str) -> String {
 /// that far.
 async fn run_start(
     starter: Starter,
+    tell: Tell,
     tokens: Arc<Tokens>,
     request: StartRequest,
     progress: Progress,
     keys: Vec<String>,
     ready: oneshot::Sender<Result<(), Status>>,
+    by: pb::Actor,
 ) {
     let mut ready = Some(ready);
+    let operation = request.operation.clone();
     let mut current = "write_record".to_owned();
     progress.set_step("write_record", pb::StepState::Running, None);
     let env = |tab: &TabRecord| tokens.env(tab);
@@ -1064,9 +1167,12 @@ async fn run_start(
     match started {
         Ok(started) => {
             progress.set_step("verify", pb::StepState::Done, None);
+            let session = started.session.id;
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
-                value: started.session.id,
+                value: session.clone(),
             })));
+            tell.session(&session, pb::Change::Updated, Some(by)).await;
+            watch::agent(tell, session);
         }
         Err(error) => {
             let (code, failure) = start_error(&error);
@@ -1075,6 +1181,11 @@ async fn run_start(
                 let _ = ready.send(Err(status::failure(code, failure.clone())));
             }
             progress.fail(failure);
+            if let Some(operation) = operation
+                && let Some(session) = tell.session_of(&operation).await
+            {
+                tell.session(&session, pb::Change::Updated, Some(by)).await;
+            }
         }
     }
 }
@@ -1134,7 +1245,14 @@ fn resume_failed(session: &str, reason: ResumeFailure, exit_code: Option<i32>) -
 /// resumes an agent whose record says it should run (it stops a holder
 /// still answering), so the record is saved as resuming first and revive
 /// does the rest for this one agent.
-async fn run_resume(starter: Starter, tokens: Arc<Tokens>, loaded: Loaded, progress: Progress) {
+async fn run_resume(
+    starter: Starter,
+    tell: Tell,
+    by: pb::Actor,
+    tokens: Arc<Tokens>,
+    loaded: Loaded,
+    progress: Progress,
+) {
     let Loaded { record, agent, .. } = loaded;
     let session = record.id.clone();
     progress.set_step("launch", pb::StepState::Running, None);
@@ -1162,6 +1280,8 @@ async fn run_resume(starter: Starter, tokens: Arc<Tokens>, loaded: Loaded, progr
             return;
         }
     }
+    tell.session(&session, pb::Change::Updated, Some(by.clone()))
+        .await;
     let env = |tab: &TabRecord| tokens.env(tab);
     let outcome = resume_agent(&starter.store, &starter.revive, agent, &env).await;
     match outcome {
@@ -1178,13 +1298,16 @@ async fn run_resume(starter: Starter, tokens: Arc<Tokens>, loaded: Loaded, progr
             progress.set_step("launch", pb::StepState::Done, None);
             progress.set_step("verify", pb::StepState::Done, None);
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
-                value: session,
+                value: session.clone(),
             })));
+            watch::agent(tell.clone(), session.clone());
         }
         Ok(Revived::Exited { .. } | Revived::Left) => {
             progress.set_step("launch", pb::StepState::Failed, None);
             progress.fail(error_of(
-                &NotResumed { session },
+                &NotResumed {
+                    session: session.clone(),
+                },
                 "open the session to see its state, then resume again",
                 None,
             ));
@@ -1198,6 +1321,7 @@ async fn run_resume(starter: Starter, tokens: Arc<Tokens>, loaded: Loaded, progr
             ));
         }
     }
+    tell.session(&session, pb::Change::Updated, Some(by)).await;
 }
 
 #[derive(Debug, thiserror::Error)]

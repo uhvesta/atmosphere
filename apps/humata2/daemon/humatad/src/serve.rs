@@ -17,7 +17,6 @@ use humata2_machines::{Builds, Bundle, MANIFEST, Machines, MachinesConfig, Platf
 use humata2_store::Store;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio_stream::wrappers::UnixListenerStream;
 use tonic::service::InterceptorLayer;
 use tonic::transport::Server;
 use tower::util::MapRequestLayer;
@@ -340,11 +339,17 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             holders: holders.clone(),
         },
     );
-    let last_start =
-        restart::in_background(store.clone(), identities.clone(), starter.clone(), restored);
+    let feed = Arc::new(Feed::default());
+    let tell = crate::session_service::Tell::new(feed.clone(), store.clone(), machine.clone());
+    let last_start = restart::in_background(
+        store.clone(),
+        identities.clone(),
+        starter.clone(),
+        restored,
+        tell,
+    );
     last_good::keep(store.clone(), last_good::Quiet::default());
     let compression = Arc::new(Compression::new(&state));
-    let feed = Arc::new(Feed::default());
     let inbox = Arc::new(Inbox::new(
         guard.clone(),
         store.clone(),
@@ -471,11 +476,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         // A bridge that went meanwhile has nothing to hear.
         let _ = ready.write_all(b"\n");
     }
-    let served = router
-        .serve_with_incoming_shutdown(UnixListenerStream::new(listener), stop)
-        .await;
+    let incoming = humata2_app_peer::incoming(listener, app_requirement());
+    let served = router.serve_with_incoming_shutdown(incoming, stop).await;
     let _ = std::fs::remove_file(&socket);
     served.map_err(|source| DaemonError::Serve { source })
+}
+
+/// The signed app's identity (D135), from the build: none in an unsigned
+/// build, or one made outside Bazel, so nothing is taken for the app.
+fn app_requirement() -> Option<humata2_app_peer::Requirement> {
+    humata2_app_peer::Requirement::app(
+        option_env!("HUMATA2_TEAM_ID").unwrap_or_default(),
+        option_env!("HUMATA2_BUNDLE_ID").unwrap_or_default(),
+    )
 }
 
 /// The host's machine list, its own known_hosts and the tools bundle.

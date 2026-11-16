@@ -26,6 +26,7 @@ admin = []
 clap = { workspace = true }
 hmac = { workspace = true }
 humata2-access = { path = "../access" }
+humata2-app-peer = { path = "../app_peer" }
 humata2-chunk = { path = "../../chunk" }
 humata2-holder = { workspace = true }
 humata2-machines = { path = "../machines" }

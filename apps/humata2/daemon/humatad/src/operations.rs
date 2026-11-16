@@ -88,6 +88,12 @@ pub(crate) enum Started {
 }
 
 impl Operations {
+    /// The event feed operations publish on, for the services that hold
+    /// `Operations` to publish their own changes (sessions, channels).
+    pub(crate) fn feed(&self) -> Arc<Feed> {
+        self.feed.clone()
+    }
+
     pub(crate) fn new(feed: Arc<Feed>) -> Self {
         Self {
             table: Mutex::new(Table::default()),

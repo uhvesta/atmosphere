@@ -17,6 +17,7 @@ members = [
     "apps/humata2/daemon/holder",
     "apps/humata2/daemon/revive",
     "apps/humata2/daemon/humatad",
+    "apps/humata2/daemon/app_peer",
     "apps/humata2/chunk",
     "apps/humata2/report",
     "apps/humata2/daemon/mcp",
@@ -31,6 +32,7 @@ members = [
     "apps/humata2/review",
     # Humata 2's desktop app on fake clients (UI before gate G).
     "apps/humata2/clients",
+    "apps/humata2/clients/live",
     "apps/humata2/features/app",
     "apps/humata2/features/board",
     "apps/humata2/features/files",
@@ -44,6 +46,7 @@ members = [
     "apps/humata2/features/views",
     "apps/humata2/ui",
     "apps/humata2/desktop",
+    "apps/humata2/desktop/install",
     "apps/humata2/markdown",
     "apps/humata2/spike/gui",
     "libs/tca-rust",

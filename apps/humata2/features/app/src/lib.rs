@@ -18,12 +18,14 @@ mod new_channel;
 mod new_session;
 mod overlay;
 mod persist;
+mod report;
 mod route;
 mod toast;
 
 pub use new_channel::{NewChannel, NewChannelAction};
 pub use new_session::{NewSession, NewSessionAction, NewSessionPicker};
 pub use overlay::Overlay;
+pub use report::{PinTarget, PinnedComment, ReportAction, ReportForm, ReportKind, ReportState};
 pub use route::Route;
 pub use toast::{Toast, ToastAction};
 
@@ -91,6 +93,8 @@ pub struct AppState {
     pub channel_pages: std::collections::BTreeMap<ChannelId, channel::View>,
     /// Toasts, oldest first.
     pub toasts: Vec<Toast>,
+    /// The bug report form and recording.
+    pub report: ReportState,
     /// Why saved state from the last run couldn't be used, shown once.
     pub restore_error: Option<String>,
     /// The sidebar.
@@ -140,6 +144,7 @@ impl AppState {
             navigation_overlay: false,
             channel_pages: saved.channels.clone(),
             toasts: Vec::new(),
+            report: ReportState::default(),
             restore_error,
             sidebar: SidebarState::default(),
             session: SessionState::default(),
@@ -259,6 +264,8 @@ pub enum AppAction {
     Launch,
     /// The workspace loaded, or didn't.
     Loaded(Result<Workspace, DaemonError>),
+    /// The bug report form and recording.
+    Report(ReportAction),
     /// Undo the action offered by this toast.
     UndoToast(u64),
     /// A toast undo finished.
@@ -571,6 +578,7 @@ impl App {
             }
             AppAction::Event(event) => self.apply(state, event),
             AppAction::EventsEnded(end) => self.events_ended(state, end),
+            AppAction::Report(action) => self.report(state, action),
             AppAction::UndoToast(id) => self.undo_toast(state, id),
             AppAction::Undone { toast, result } => self.toast_undone(state, toast, result),
             AppAction::Retry => {

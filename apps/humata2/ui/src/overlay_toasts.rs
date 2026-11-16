@@ -7,7 +7,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::{prelude::*, *};
-use humata2_app::{AppAction, Toast};
+use humata2_app::{AppAction, Toast, ToastAction};
 use std::rc::Rc;
 
 /// The stack of toasts.
@@ -53,10 +53,10 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                         widgets::ghost(
                             ui,
                             SharedString::from(format!("toast-undo-{}", toast.id)),
-                            if toast.working {
-                                "Restoring…"
-                            } else {
-                                "Undo"
+                            match &toast.action {
+                                Some(ToastAction::OpenReport(_)) => "Add details",
+                                _ if toast.working => "Restoring…",
+                                _ => "Undo",
                             },
                             AppAction::UndoToast(toast.id),
                         )

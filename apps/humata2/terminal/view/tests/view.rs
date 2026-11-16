@@ -437,10 +437,11 @@ fn an_alt_drag_selects_a_block(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn history_keys_and_the_scrollbar_move_through_the_history(cx: &mut TestAppContext) {
+    // Back in the history, so the scrollbar is shown.
     let mut grid = grid_with(&["older output"]);
     grid.set_scrollbar(Some(Scrollbar {
         total: 1000,
-        offset: 990,
+        offset: 500,
         len: u64::from(ROWS),
     }));
     let (handle, view, log) = open(cx, grid);
@@ -468,6 +469,30 @@ fn history_keys_and_the_scrollbar_move_through_the_history(cx: &mut TestAppConte
         let rows = log.borrow().scrolled_to.clone();
         assert_eq!(rows.last(), Some(&ScrollTo::Row(0)), "{rows:?}");
         assert!(view.read(cx).grid().selection(0).is_none(), "the drag didn't select");
+    })
+    .expect("the test window is open");
+}
+
+/// L16: on the newest output the scrollbar is hidden, so a drag along the
+/// right edge selects text instead of moving through the history.
+#[gpui_kit::test]
+fn at_the_newest_output_the_right_edge_selects_instead_of_scrolling(cx: &mut TestAppContext) {
+    let mut grid = grid_with(&["older output"; ROWS as usize]);
+    grid.set_scrollbar(Some(Scrollbar {
+        total: 1000,
+        offset: 1000 - u64::from(ROWS),
+        len: u64::from(ROWS),
+    }));
+    let (handle, view, log) = open(cx, grid);
+    cx.update_window(handle, |_, window, cx| {
+        focus(&view, window, cx);
+        let bounds = window.find("terminal").bounds();
+        let x = bounds.origin.x + bounds.size.width - px(3.);
+        let start = point(x, bounds.origin.y + bounds.size.height - px(2.));
+        let end = point(x, bounds.origin.y + px(2.));
+        window.drag(start, end, cx);
+        assert!(log.borrow().scrolled_to.is_empty(), "the history didn't move");
+        assert!(view.read(cx).grid().selection(0).is_some(), "the drag selected");
     })
     .expect("the test window is open");
 }

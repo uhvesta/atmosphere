@@ -1,0 +1,21 @@
+[package]
+name = "humata2-app-peer"
+description = "Lets humatad2 recognise the signed Humata app on its socket by the peer's code signature (D135)."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_app_peer"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-stream = { workspace = true }

@@ -470,12 +470,14 @@ fn changes(
                                     .min_h(px(line_height))
                                     .when_some(bg, |row, bg| row.bg(rgb(bg)))
                                     .child(
+                                        // The number, a 4 pt gap, then the
+                                        // sign ("41 −"), code where it was.
                                         text(number.map_or_else(String::new, |n| n.to_string()))
-                                            .w(px(gutter_width))
+                                            .w(px((gutter_width - 8.).max(0.)))
                                             .h(px(line_height))
                                             .flex()
                                             .justify_end()
-                                            .pr(px(8.))
+                                            .pr(px(4.))
                                             .text_color(rgb(look.term_dim))
                                             .flex_shrink_0()
                                             .id(SharedString::from(format!(
@@ -485,7 +487,6 @@ fn changes(
                                     )
                                     .child(
                                         text(sign)
-                                            .ml(px(-8.))
                                             .w(px(cell_width))
                                             .h(px(line_height))
                                             .flex_shrink_0()
@@ -967,10 +968,7 @@ fn board_item(
         .session
         .as_ref()
         .and_then(|id| state.workspace.session(id));
-    let asking = state
-        .board
-        .request(item)
-        .map(|request| request.title.clone());
+    let asking = state.board.request(item).map(|request| request.id.clone());
     let label = session.is_none().then(|| {
         state
             .workspace
@@ -987,7 +985,9 @@ fn board_item(
         .px(px(if full { 9. } else { 10. }))
         .py(px(7.))
         .gap(px(6.))
-        .when(item.status == ItemStatus::Done, |card| card.opacity(0.6))
+        // Done fades only in the compact panel; the full board (frame 12)
+        // keeps every column at full strength.
+        .when(!full && item.status == ItemStatus::Done, |card| card.opacity(0.6))
         .when(asking.is_some(), |card| card.bg(rgb(look.attention_bg)));
     if full {
         card = card
@@ -1026,13 +1026,42 @@ fn board_item(
                     .bg(rgb(look.fill))
                     .child(secondary(look, label))
             }))
-            .children(asking.clone().map(|title| {
+            .children(asking.clone().map(|request| {
+                // Review opens the request in the Inbox panel, where it's
+                // answered.
+                let ui = ui.clone();
                 row()
                     .gap(px(6.))
+                    .items_center()
                     .text_size(px(11.))
                     .text_color(rgb(ORANGE))
                     .child(icon(IconName::Inbox, ORANGE, 12.))
-                    .child(text(title))
+                    .child(
+                        text("Asks to move to Done")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap(),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("board-review {}", item.id)))
+                            .label("Review")
+                            .small()
+                            .h(px(24.))
+                            .px(px(10.))
+                            .bg(rgb(look.fill))
+                            .text_color(rgb(look.text))
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                ui.send(
+                                    AppAction::Session(SessionAction::SetPanel(Some(
+                                        Panel::Inbox,
+                                    ))),
+                                    cx,
+                                );
+                                ui.send(AppAction::Inbox(InboxAction::Select(request.clone())), cx);
+                            }),
+                    )
             }));
     } else {
         card = card.child(
@@ -1728,7 +1757,7 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
         .h_full()
         .flex_shrink_0()
         .items_center()
-        .gap(px(4.))
+        .gap(px(5.))
         .pt(px(60.))
         .bg(rgb(if cx.theme().is_dark() {
             0x2a2a2d
@@ -1753,7 +1782,7 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                     .ghost()
                     .selected(on == Some(panel))
                     .w(px(52.))
-                    .h(px(36.))
+                    .h(px(46.))
                     .p_0()
                     .rounded(px(7.))
                     .when(on == Some(panel), |tab| tab.bg(rgb(look.fill)))

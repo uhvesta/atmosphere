@@ -4076,6 +4076,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-app-peer"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "humata2-board"
 version = "0.0.0"
 dependencies = [
@@ -4127,6 +4138,24 @@ dependencies = [
  "tca-rust",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "humata2-clients-live"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "hyper-util",
+ "prost",
+ "serde_json",
+ "tca-rust",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tower",
+ "uuid",
 ]
 
 [[package]]
@@ -4227,6 +4256,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-install"
+version = "0.0.0"
+dependencies = [
+ "rustix",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "humata2-machines"
 version = "0.0.0"
 dependencies = [
@@ -4278,6 +4317,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -4384,6 +4424,7 @@ dependencies = [
  "humata2-sidebar",
  "humata2-views",
  "tca-rust",
+ "thiserror 2.0.21",
  "tokio",
  "unicode-segmentation",
  "unicode-width",
@@ -4438,6 +4479,7 @@ dependencies = [
  "clap",
  "hmac 0.13.0",
  "humata2-access",
+ "humata2-app-peer",
  "humata2-chunk",
  "humata2-holder",
  "humata2-machines",

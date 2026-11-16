@@ -241,3 +241,65 @@ pub enum ReplayError<E: std::error::Error + 'static> {
     )]
     EndDiffers { tree: &'static str, diff: String },
 }
+
+/// Why `humata report` couldn't reach the running app, or the app couldn't
+/// listen for it.
+#[derive(Debug, thiserror::Error)]
+pub enum RemoteError {
+    #[error(
+        "Humata 2 isn't running (no app at {}). Open the app, then run the command again",
+        path.display()
+    )]
+    NotRunning { path: PathBuf },
+
+    #[error(
+        "another Humata 2 is already answering at {}; quit it, or set HUMATA_APP_SOCKET to \
+         another path for this one",
+        path.display()
+    )]
+    InUse { path: PathBuf },
+
+    #[error(
+        "couldn't find the app's socket: HUMATA_APP_SOCKET is unset and HOME isn't set; set \
+         HUMATA_APP_SOCKET to the socket's path"
+    )]
+    NoHome,
+
+    #[error(
+        "couldn't listen at {}; check that its folder exists and belongs to you, or set \
+         HUMATA_APP_SOCKET to another path. Reports from `humata report` won't reach this app \
+         until then",
+        path.display()
+    )]
+    Bind {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't talk to the app at {}; if Humata 2 is stuck or quitting, restart it and run \
+         the command again",
+        path.display()
+    )]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't write the request or answer as JSON; this is a bug in Humata")]
+    Encode {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(
+        "the other side of the socket sent something that isn't a Humata answer; make sure \
+         `humata` and the app are the same version, then run the command again"
+    )]
+    Decode {
+        #[source]
+        source: serde_json::Error,
+    },
+}

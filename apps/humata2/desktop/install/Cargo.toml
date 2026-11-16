@@ -1,0 +1,19 @@
+[package]
+name = "humata2-install"
+description = "Installs Humata 2's host tools from the app bundle into ~/.humata2/bin, registers the launchd agent and links `humata` onto PATH."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_install"
+path = "src/lib.rs"
+
+[dependencies]
+rustix = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

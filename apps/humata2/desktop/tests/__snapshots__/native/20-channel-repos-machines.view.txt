@@ -40,10 +40,8 @@ Tab "Activity"
 #channel-repos
   Button "This Mac"
   Button "devbox-1"
-  Button "gpu-box"
   Button "2 clones"
-  Button "3 clones"
-  Button "1 clone"
+  Button "4 clones"
   Button "2 clones"
   Button "3 clones"
   Button "Add a GitHub repo…" disabled

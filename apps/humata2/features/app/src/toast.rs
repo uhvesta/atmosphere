@@ -4,12 +4,14 @@ use humata2_clients::DaemonError;
 use humata2_clients::model::SessionId;
 use tca::Effect;
 
-use crate::{App, AppAction, AppState, TOAST};
+use crate::{App, AppAction, AppState, ReportForm, TOAST};
 
 /// The action a toast offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToastAction {
     RestoreSession(SessionId),
+    /// Open the bug-report form for a saved report.
+    OpenReport(Box<ReportForm>),
 }
 
 /// A message at the bottom of the window.
@@ -50,8 +52,14 @@ impl App {
         let Some(toast) = state.toasts.iter_mut().find(|t| t.id == id && !t.working) else {
             return Effect::none();
         };
-        let Some(ToastAction::RestoreSession(session)) = toast.action.clone() else {
-            return Effect::none();
+        let session = match toast.action.clone() {
+            Some(ToastAction::RestoreSession(session)) => session,
+            Some(ToastAction::OpenReport(form)) => {
+                state.toasts.retain(|t| t.id != id);
+                state.report.form = Some(*form);
+                return Effect::cancel(format!("toast-{id}"));
+            }
+            None => return Effect::none(),
         };
         toast.working = true;
         let daemon = self.clients.daemon.clone();

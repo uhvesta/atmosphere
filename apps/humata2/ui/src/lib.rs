@@ -9,6 +9,7 @@
 pub mod bridge;
 pub mod keys;
 pub mod record;
+pub mod report_view;
 
 mod access;
 mod board;
@@ -67,6 +68,7 @@ gpui_kit::assets::icon_assets!(
         ArrowRight,
         Ellipsis,
         Circle,
+        CircleX,
         Pin,
         Sun,
         Moon,

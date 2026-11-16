@@ -136,8 +136,21 @@ impl Daemon for LiveDaemon {
         Ok(pump(rpc, response.into_inner()))
     }
 
-    async fn report(&self, _request: ReportRequest) -> Result<ReportReply, DaemonError> {
-        Err(DaemonError::NoReportService)
+    async fn report(&self, request: ReportRequest) -> Result<ReportReply, DaemonError> {
+        use humata2_report::remote;
+        let path = remote::socket_path().map_err(|source| DaemonError::App { source })?;
+        let request = match request {
+            ReportRequest::Record { title } => remote::Request::Record { title },
+            ReportRequest::Stop => remote::Request::Stop,
+            ReportRequest::Snapshot { title } => remote::Request::Snapshot { title },
+        };
+        match remote::ask(&path, &request).await.map_err(|source| DaemonError::App { source })? {
+            Ok(reply) => Ok(ReportReply {
+                folder: reply.folder.unwrap_or_default(),
+                recording: reply.recording,
+            }),
+            Err(refusal) => Err(DaemonError::AppRefused { refusal }),
+        }
     }
 }
 

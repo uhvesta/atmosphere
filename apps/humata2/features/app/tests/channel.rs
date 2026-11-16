@@ -69,12 +69,15 @@ fn channel_filters_keep_ancestors_and_the_page_restores_after_restart() {
 fn archived_and_clone_filters_stay_in_their_channel_with_tree_context() {
     let mut workspace = fixture::design();
     let id = ChannelId::new("payments-rewrite");
-    workspace
+    let partial = workspace
         .sessions
         .iter_mut()
         .find(|s| s.id.as_str() == "partial-brin")
-        .unwrap()
-        .archived = true;
+        .unwrap();
+    partial.archived = true;
+    // The clone filter below picks gpu-box's clone, so this test puts one
+    // session there itself rather than lean on where the fixture puts it.
+    partial.machine = MachineId::new("gpu-box");
     let rows = channel::rows(
         &workspace,
         &id,

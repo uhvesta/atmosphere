@@ -31,9 +31,11 @@ pub enum Part {
     Main = 1,
     /// Overlays and toasts.
     Overlay = 2,
+    /// The recording dot and the bug-report sheet.
+    Report = 3,
 }
 
-const PARTS: [Part; 3] = [Part::Sidebar, Part::Main, Part::Overlay];
+const PARTS: [Part; 4] = [Part::Sidebar, Part::Main, Part::Overlay, Part::Report];
 
 /// The app's reducer, telling the recorder each action it reduces.
 #[derive(Clone)]
@@ -64,7 +66,7 @@ pub struct Ui {
     store: LocalStore<Logged>,
     dirty: Rc<Cell<u8>>,
     wake: Arc<Notify>,
-    panes: RefCell<[Option<EntityId>; 3]>,
+    panes: RefCell<[Option<EntityId>; 4]>,
     observations: RefCell<Vec<Observation>>,
     clients: Clients,
     recorder: Recorder,
@@ -85,7 +87,7 @@ impl Ui {
             store,
             dirty: Rc::new(Cell::new(0)),
             wake: Arc::new(Notify::new()),
-            panes: RefCell::new([None; 3]),
+            panes: RefCell::new([None; 4]),
             observations: RefCell::new(Vec::new()),
             clients,
             recorder,
@@ -163,6 +165,11 @@ impl Ui {
             },
             move |_| changed(),
         ));
+        let changed = mark(Part::Report);
+        observations.push(
+            self.store
+                .observe(|state: &AppState| state.report.clone(), move |_| changed()),
+        );
     }
 
     /// Redraws `id` when `part` changes.

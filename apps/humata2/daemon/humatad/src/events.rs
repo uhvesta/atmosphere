@@ -9,7 +9,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use humata2_access::{Call, ChannelId, MachineId, Refusal, SessionId, SessionRef};
+use humata2_access::{
+    Call, Capability, ChannelId, MachineId, Refusal, SessionId, SessionRef, Target,
+};
 use humata2_grpc::humata::v1 as pb;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -190,6 +192,8 @@ struct Filter {
     access: bool,
     comments: bool,
     operations: bool,
+    session_topic: bool,
+    channel_topic: bool,
     channels: Vec<String>,
     sessions: Vec<String>,
 }
@@ -217,6 +221,8 @@ impl Filter {
         let access = topics.is_empty() || topics.contains(&(pb::Topic::Access as i32));
         let comments = topics.is_empty() || topics.contains(&(pb::Topic::Comments as i32));
         let operations = topics.is_empty() || topics.contains(&(pb::Topic::Operations as i32));
+        let session_topic = topics.is_empty() || topics.contains(&(pb::Topic::Sessions as i32));
+        let channel_topic = topics.is_empty() || topics.contains(&(pb::Topic::Channels as i32));
         Ok(Self {
             caller: caller.clone(),
             guard,
@@ -229,6 +235,8 @@ impl Filter {
             access,
             comments,
             operations,
+            session_topic,
+            channel_topic,
             channels: request.channels.iter().map(|id| id.value.clone()).collect(),
             sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
         })
@@ -270,6 +278,20 @@ impl Filter {
         matches!(self.guard.check(&self.caller, &call), Ok(Checked::Allowed))
     }
 
+    /// Whether the caller may read the channel `scope` names, as
+    /// ListChannels and GetChannel check it. A check that would ask the
+    /// user counts as no.
+    fn reads_channel(&self, scope: Option<&Scope>) -> bool {
+        let Some(scope) = scope else {
+            return false;
+        };
+        let call = Call::Use {
+            capability: Capability::ChannelRead,
+            target: Target::Channel(ChannelId::new(scope.channel.as_str())),
+        };
+        matches!(self.guard.check(&self.caller, &call), Ok(Checked::Allowed))
+    }
+
     fn passes(&self, published: &Published) -> bool {
         let scope = published.scope.as_ref();
         match &published.event.payload {
@@ -304,6 +326,15 @@ impl Filter {
             // an agent its own session's, as GetOperation finds them.
             Some(pb::event::Payload::Operation(_)) => {
                 self.operations && self.sees_session(scope) && self.asked(scope)
+            }
+            // Sessions the caller may read, as ListSessions and GetSession
+            // show them.
+            Some(pb::event::Payload::Session(_)) => {
+                self.session_topic && self.asked(scope) && self.reads_session(scope)
+            }
+            // Channels the caller may read, as ListChannels shows them.
+            Some(pb::event::Payload::Channel(_)) => {
+                self.channel_topic && self.asked(scope) && self.reads_channel(scope)
             }
             Some(pb::event::Payload::Rules(_)) => self.user && self.access && self.asked(scope),
             _ => false,

@@ -288,6 +288,35 @@ fn daemon_failure(error: &DaemonError) -> Failure {
             exit::PRECONDITION,
             "Bug reports arrive in a later humatad; until then, describe the problem in an issue.",
         ),
+        DaemonError::App { source } => match source {
+            humata2_report::remote::RemoteError::NotRunning { .. } => plain(
+                "app_not_running",
+                exit::PRECONDITION,
+                "Open the Humata 2 app, then run the command again. If it is open, it couldn't take the report socket: check its log, or set HUMATA_APP_SOCKET to the same path for both.",
+            ),
+            _ => plain(
+                "app_unreachable",
+                exit::PRECONDITION,
+                "Quit and reopen the Humata 2 app, then run the command again.",
+            ),
+        },
+        DaemonError::AppRefused { refusal } => match refusal.kind {
+            humata2_report::remote::RefusalKind::AlreadyRecording => plain(
+                "already_recording",
+                exit::PRECONDITION,
+                "A recording is already running; `humata report stop` saves it.",
+            ),
+            humata2_report::remote::RefusalKind::NotRecording => plain(
+                "not_recording",
+                exit::PRECONDITION,
+                "Nothing is being recorded; start with `humata report record`.",
+            ),
+            humata2_report::remote::RefusalKind::Failed => plain(
+                "report_failed",
+                exit::INTERNAL,
+                "The report wasn't saved; the message says why. Fix that and run the command again.",
+            ),
+        },
     }
 }
 

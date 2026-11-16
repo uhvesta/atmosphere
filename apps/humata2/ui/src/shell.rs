@@ -18,6 +18,7 @@ use humata2_sidebar::SidebarAction;
 use crate::bridge::{Part, Ui};
 use crate::keys;
 use crate::overlays::Overlays;
+use crate::report_view::ReportView;
 use crate::sidebar::Sidebar;
 use crate::theme;
 use crate::theme::Look;
@@ -30,6 +31,7 @@ pub struct Shell {
     sidebar: Entity<Sidebar>,
     sidebar_focus: FocusHandle,
     overlays: Entity<Overlays>,
+    reports: Entity<ReportView>,
     focus: FocusHandle,
     /// The side whose divider is being dragged.
     dragging: Option<PaneId>,
@@ -64,6 +66,10 @@ impl Shell {
         let overlays = {
             let ui = ui.clone();
             cx.new(|cx| Overlays::new(ui, window, cx))
+        };
+        let reports = {
+            let ui = ui.clone();
+            cx.new(|cx| ReportView::new(ui, window, cx))
         };
         let file_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
         let file_filter_subscription = cx.subscribe(
@@ -126,6 +132,7 @@ impl Shell {
             sidebar,
             sidebar_focus,
             overlays,
+            reports,
             focus,
             dragging: None,
             file_filter,
@@ -670,5 +677,7 @@ impl Render for Shell {
                 },
             )
             .child(self.overlays.clone())
+            .child(self.reports.clone())
+            .map(|root| crate::report_view::actions(root, &self.ui))
     }
 }

@@ -37,8 +37,8 @@ pub trait Daemon {
         requests: mpsc::Receiver<Vec<u8>>,
     ) -> impl Future<Output = Result<Replies, DaemonError>>;
 
-    /// I9 bug reports (D31). The API has no ReportService yet, so the live
-    /// daemon refuses this; the commands are ready for when it lands.
+    /// I9 bug reports (D31, D133): asked of the running app over its own
+    /// socket, not of humatad.
     fn report(&self, request: ReportRequest) -> impl Future<Output = Result<ReportReply, DaemonError>>;
 }
 
@@ -101,6 +101,17 @@ pub enum DaemonError {
     Ended { rpc: &'static str },
     #[error("this humatad can't make bug reports yet: the API has no ReportService (I9, D31)")]
     NoReportService,
+    /// The app's report socket couldn't be reached (D133).
+    #[error("couldn't reach the Humata 2 app for the report: {source}")]
+    App {
+        #[source]
+        source: humata2_report::remote::RemoteError,
+    },
+    /// The app was reached and said no.
+    #[error("the Humata 2 app didn't do it: {}", .refusal.message)]
+    AppRefused {
+        refusal: humata2_report::remote::Refusal,
+    },
 }
 
 fn list(paths: &[PathBuf]) -> String {

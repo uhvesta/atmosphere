@@ -141,6 +141,9 @@ struct Frame {
     extent: gpui_kit::Size<Pixels>,
     scrollbar: Option<Scrollbar>,
     scrollbar_color: Rgb,
+    /// Whether the thumb is being dragged, so it stays drawn when the
+    /// drag reaches the newest output.
+    scrollbar_held: bool,
     preedit: Option<ShapedPreedit>,
     background: Rgb,
     rows: Vec<ShapedRow>,
@@ -678,7 +681,9 @@ impl<G: Grid + 'static> TerminalView<G> {
     /// there is no history to scroll.
     fn thumb(&self) -> Option<(f32, f32)> {
         let frame = self.frame.borrow();
-        let bar = frame.scrollbar.filter(|bar| bar.scrollable())?;
+        let bar = frame
+            .scrollbar
+            .filter(|bar| scrollbar_shown(*bar, frame.scrollbar_held))?;
         thumb(bar, f32::from(frame.extent.height))
     }
 
@@ -699,6 +704,7 @@ impl<G: Grid + 'static> TerminalView<G> {
             height / 2.0
         };
         self.scrollbar_grab = Some(grab);
+        self.frame.borrow_mut().scrollbar_held = true;
         self.drag_scrollbar(y);
         true
     }
@@ -738,6 +744,8 @@ impl<G: Grid + 'static> TerminalView<G> {
                 cx.notify();
             } else {
                 self.scrollbar_grab = None;
+                self.frame.borrow_mut().scrollbar_held = false;
+                cx.notify();
             }
             return;
         }
@@ -772,6 +780,7 @@ impl<G: Grid + 'static> TerminalView<G> {
 
     fn mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
         if event.button == GpuiButton::Left && self.scrollbar_grab.take().is_some() {
+            self.frame.borrow_mut().scrollbar_held = false;
             cx.notify();
             return;
         }
@@ -1004,7 +1013,9 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         ));
     }
 
-    if let Some(bar) = frame.scrollbar.filter(|bar| bar.scrollable())
+    if let Some(bar) = frame
+        .scrollbar
+        .filter(|bar| scrollbar_shown(*bar, frame.scrollbar_held))
         && let Some((top, height)) = thumb(bar, f32::from(bounds.size.height))
     {
         let x = origin.x + bounds.size.width - px(SCROLLBAR_WIDTH + 2.0);
@@ -1017,6 +1028,14 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         );
     }
     frame.paint_failures += failures;
+}
+
+/// Whether the scrollbar is drawn and can be grabbed: only while the view
+/// is back in the history or the thumb is held (L16). At rest on the
+/// newest output it is hidden, and a press at the right edge selects or
+/// reaches the program as anywhere else.
+fn scrollbar_shown(bar: Scrollbar, held: bool) -> bool {
+    bar.scrollable() && (held || !bar.at_bottom())
 }
 
 /// The scrollbar's thumb in a track `extent` pixels tall: its top and

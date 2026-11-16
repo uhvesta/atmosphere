@@ -49,6 +49,10 @@ gpui_kit::actions!(
         Open,
         /// ⌥⌘0: hide or show the session's side panel.
         TogglePanel,
+        /// ⇧⌘R: start or stop recording a bug report.
+        ToggleRecording,
+        /// ⇧⌘S: take a bug report snapshot.
+        TakeSnapshot,
     ]
 );
 
@@ -57,7 +61,7 @@ pub const SIDEBAR: &str = "Sidebar";
 
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 20] = [
+pub const SHORTCUTS: [(&str, &str); 22] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
     ("⇧⌘N", "New channel"),
@@ -78,6 +82,8 @@ pub const SHORTCUTS: [(&str, &str); 20] = [
     ("↑ ↓ Home End", "Move in the sidebar"),
     ("← →", "Fold, unfold, parent, child"),
     ("Enter", "Open the sidebar row; send a message"),
+    ("⇧⌘R", "Start or stop recording a bug report"),
+    ("⇧⌘S", "Take a bug report snapshot"),
 ];
 
 /// Binds every shortcut. Call once at launch.
@@ -98,6 +104,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("cmd-3", GoBoard, None),
         KeyBinding::new("cmd-l", FocusSidebar, None),
         KeyBinding::new("alt-cmd-0", TogglePanel, None),
+        KeyBinding::new("shift-cmd-r", ToggleRecording, None),
+        KeyBinding::new("shift-cmd-s", TakeSnapshot, None),
         KeyBinding::new("up", Up, sidebar),
         KeyBinding::new("down", Down, sidebar),
         KeyBinding::new("left", Out, sidebar),

@@ -26,7 +26,6 @@ use sha2::{Digest, Sha256};
 use tonic::body::Body;
 use tonic::codegen::http;
 use tonic::service::Interceptor;
-use tonic::transport::server::UdsConnectInfo;
 use tonic::{Request, Status};
 
 use crate::cli_login::CliLogins;
@@ -232,9 +231,18 @@ pub(crate) fn caller_if_any<T>(request: &Request<T>) -> Result<Option<Caller>, S
 pub(crate) fn peer_pid<T>(request: &Request<T>) -> Option<i32> {
     request
         .extensions()
-        .get::<UdsConnectInfo>()
-        .and_then(|info| info.peer_cred)
+        .get::<humata2_app_peer::PeerInfo>()
+        .and_then(|info| info.uds.peer_cred)
         .and_then(|cred| cred.pid())
+}
+
+/// Whether the other end of the call's socket is the signed Humata app
+/// (D135), checked when the connection was accepted.
+fn peer_is_app<T>(request: &Request<T>) -> bool {
+    request
+        .extensions()
+        .get::<humata2_app_peer::PeerInfo>()
+        .is_some_and(|info| info.app)
 }
 
 fn unchecked() -> Status {
@@ -496,9 +504,11 @@ impl Authenticate {
         }
     }
 
-    /// Who a call with no credential from `pid` is, if anyone.
-    #[cfg_attr(not(feature = "admin"), allow(unused_variables))]
-    fn without_credential(&self, pid: Option<i32>) -> Option<Caller> {
+    /// Who a call with no credential from `pid` is, if anyone. `app` says
+    /// the peer passed the signed app's code-signing check (D135); even
+    /// then a process inside a session's terminal is not the user, so an
+    /// agent can't borrow the app's binary to act as the user.
+    fn without_credential(&self, pid: Option<i32>, app: bool) -> Option<Caller> {
         #[cfg(feature = "admin")]
         match self.admin {
             Some(Admin::Anyone) => return Some(Caller::User(UserVia::App)),
@@ -507,7 +517,30 @@ impl Authenticate {
             }
             Some(Admin::Process(_)) | None => {}
         }
-        None
+        (app && !self.in_a_session(pid)).then_some(Caller::User(UserVia::App))
+    }
+
+    /// Whether `pid` is inside any tab's process tree. Fails closed: no
+    /// pid, or tabs that can't be read, count as inside.
+    fn in_a_session(&self, pid: Option<i32>) -> bool {
+        let Some(pid) = pid else {
+            return true;
+        };
+        match self.store.tabs() {
+            Ok(tabs) => tabs.iter().any(|tab| {
+                i32::try_from(tab.holder_pid)
+                    .ok()
+                    .filter(|holder| *holder > 0)
+                    .is_some_and(|holder| in_tree(&*self.processes, pid, holder))
+            }),
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: couldn't read the tabs to check that the app's call comes from outside every session, so it is refused: {}",
+                    status::chain(&error)
+                );
+                true
+            }
+        }
     }
 }
 
@@ -563,6 +596,7 @@ impl Authenticate {
         &self,
         mut request: Request<()>,
         pid: Option<i32>,
+        app: bool,
     ) -> Result<Request<()>, Status> {
         let open = request.extensions().get::<OpenToAnyone>().is_some();
         let session = request.metadata().get(TOKEN_HEADER);
@@ -622,7 +656,7 @@ impl Authenticate {
                     Err(unusable) => return Err(status::login_unusable(&unusable)),
                 }
             }
-            (None, None, None) => self.without_credential(pid),
+            (None, None, None) => self.without_credential(pid, app),
         };
         match caller {
             Some(caller) => {
@@ -640,7 +674,8 @@ impl Authenticate {
 impl Interceptor for Authenticate {
     fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
         let pid = peer_pid(&request);
-        self.authenticate(request, pid)
+        let app = peer_is_app(&request);
+        self.authenticate(request, pid, app)
     }
 }
 
@@ -801,7 +836,7 @@ mod tests {
 
         let refused = rig
             .authenticate
-            .authenticate(call(&token, false), Some(31))
+            .authenticate(call(&token, false), Some(31), false)
             .unwrap_err();
         assert_eq!(refused.code(), tonic::Code::PermissionDenied);
         let error = status::error_of(&refused).unwrap();
@@ -809,7 +844,7 @@ mod tests {
 
         let answered = rig
             .authenticate
-            .authenticate(call(&token, true), Some(31))
+            .authenticate(call(&token, true), Some(31), false)
             .unwrap();
         assert!(caller_if_any(&answered).unwrap().is_none());
     }
@@ -825,7 +860,7 @@ mod tests {
         for pid in [31, 32, 33] {
             let accepted = rig
                 .authenticate
-                .authenticate(call(&token, false), Some(pid))
+                .authenticate(call(&token, false), Some(pid), false)
                 .unwrap();
             assert!(matches!(
                 caller(&accepted).unwrap(),
@@ -842,7 +877,7 @@ mod tests {
 
         let refused = rig
             .authenticate
-            .authenticate(call(&token, false), Some(41))
+            .authenticate(call(&token, false), Some(41), false)
             .unwrap_err();
 
         let error = status::error_of(&refused).unwrap();
@@ -855,7 +890,7 @@ mod tests {
         assert!(rig.identities.find(&token).is_none());
         assert!(
             rig.authenticate
-                .authenticate(call(&token, false), Some(31))
+                .authenticate(call(&token, false), Some(31), false)
                 .is_err()
         );
     }
@@ -867,9 +902,37 @@ mod tests {
             put_tab(&rig, "tab_main", holder_pid);
             let token = rig.identities.mint("tab_main", &record()).unwrap();
 
-            let refused = rig.authenticate.authenticate(call(&token, false), pid);
+            let refused = rig.authenticate.authenticate(call(&token, false), pid, false);
 
             assert!(refused.is_err(), "holder {holder_pid}, caller {pid:?}");
+        }
+    }
+
+    #[test]
+    fn the_signed_app_outside_every_session_is_the_user() {
+        let rig = rig();
+        put_tab(&rig, "tab_main", 30);
+
+        let accepted = rig
+            .authenticate
+            .authenticate(Request::new(()), Some(41), true)
+            .unwrap();
+
+        assert!(matches!(
+            caller(&accepted).unwrap(),
+            Caller::User(UserVia::App)
+        ));
+    }
+
+    #[test]
+    fn the_app_inside_a_session_or_unknown_or_unsigned_is_not_the_user() {
+        let rig = rig();
+        put_tab(&rig, "tab_main", 30);
+
+        // Inside the tab's tree, an unknown process, and an unsigned peer.
+        for (pid, app) in [(Some(32), true), (None, true), (Some(41), false)] {
+            let refused = rig.authenticate.authenticate(Request::new(()), pid, app);
+            assert!(refused.is_err(), "caller {pid:?}, app {app}");
         }
     }
 
