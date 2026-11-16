@@ -57,7 +57,6 @@ pub fn access(look: Look) -> Div {
         ("Fetch files from shared/, the channel folder or a main clone into its own clone", 0),
         ("Prepare views for you", 0),
         ("Draft PR review comments", 0),
-        ("Resolve comments sent to its own session, with a reply", 0),
         ("Ask you a question, or ask ahead for access", 0),
         ("Read another session's files (same machine)", 1),
         ("Read files on another machine", 1),
@@ -92,9 +91,14 @@ pub fn access(look: Look) -> Div {
             .child(div().flex_1().min_w_0().whitespace_nowrap().child(text))
             .child(control)
     };
-    let mut rows = vec![row("Read and write its own clones", div().text_color(c(look.tertiary)).child("Always · no setting"))];
+    let always = || div().text_color(c(look.tertiary)).child("Always · no setting");
+    let mut rows = vec![row("Read and write its own clones", always())];
     for (text, default) in rules {
         rows.push(row(text, segmented(look, &["Allow", "Ask me", "Never"], *default)));
+        if *text == "Draft PR review comments" {
+            // D128.2: the daemon never checks this one, so it has no setting.
+            rows.push(row("Resolve comments sent to its own session, with a reply", always()));
+        }
         if *text == "Read another session's files (same machine)" {
             rows.push(
                 div()

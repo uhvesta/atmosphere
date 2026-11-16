@@ -10,7 +10,7 @@ use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
 use humata2_app::layout::PaneId;
-use humata2_app::{AppAction, PaneAction, Route};
+use humata2_app::{AppAction, AppState, PaneAction, Route};
 use humata2_clients::model::{Scope, Status};
 use humata2_sidebar::{Move, Row, RowKey, RowKind, SidebarAction};
 
@@ -179,6 +179,10 @@ fn draw_row(
             if fork {
                 body = body.child(chrome::icon(IconName::GitFork, faint, 12.));
             }
+            let count = ui.read(|s| match &key {
+                RowKey::Session(id) | RowKey::Pinned(id) => inbox_count(s, id, *vip),
+                _ => 0,
+            });
             body = body.child(chrome::status(*status)).child(
                 div()
                     .flex_1()
@@ -188,33 +192,6 @@ fn draw_row(
                     .when(*unread > 0, |x| x.font_weight(FontWeight::SEMIBOLD))
                     .child(title.clone()),
             );
-            // Only a VIP session shows its inbox count; it covers the
-            // pending requests of its forks, however deep.
-            let count = ui.read(|s| match &key {
-                RowKey::Session(id) | RowKey::Pinned(id) if *vip => {
-                    let sessions = &s.workspace.sessions;
-                    let descends = |start: &humata2_clients::model::SessionId| {
-                        let mut at = Some(start);
-                        for _ in 0..=sessions.len() {
-                            let Some(cur) = at else { return false };
-                            if cur == id {
-                                return true;
-                            }
-                            at = sessions
-                                .iter()
-                                .find(|x| &x.id == cur)
-                                .and_then(|x| x.parent.as_ref());
-                        }
-                        false
-                    };
-                    s.workspace
-                        .requests
-                        .iter()
-                        .filter(|r| r.answer.is_none() && descends(&r.session))
-                        .count()
-                }
-                _ => 0,
-            });
             if count > 0 {
                 body = body.child(
                     row()
@@ -723,4 +700,32 @@ impl Render for Sidebar {
             )))
             .into_any_element()
     }
+}
+
+/// Only a VIP session shows its inbox count; it covers the pending requests
+/// of its forks, however deep.
+fn inbox_count(s: &AppState, id: &humata2_clients::model::SessionId, vip: bool) -> usize {
+    if !vip {
+        return 0;
+    }
+    let sessions = &s.workspace.sessions;
+    let descends = |start: &humata2_clients::model::SessionId| {
+        let mut at = Some(start);
+        for _ in 0..=sessions.len() {
+            let Some(cur) = at else { return false };
+            if cur == id {
+                return true;
+            }
+            at = sessions
+                .iter()
+                .find(|x| &x.id == cur)
+                .and_then(|x| x.parent.as_ref());
+        }
+        false
+    };
+    s.workspace
+        .requests
+        .iter()
+        .filter(|r| r.answer.is_none() && descends(&r.session))
+        .count()
 }

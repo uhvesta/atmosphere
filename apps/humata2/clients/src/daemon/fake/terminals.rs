@@ -176,10 +176,23 @@ pub(super) fn resize(
                     reason: "it must have at least one row and column. Enlarge the window".into(),
                 });
             }
-            inner
+            // An agent redraws its screen when the terminal changes size, as a
+            // real TUI does on SIGWINCH, so its input box stays on the last rows.
+            let redraw = (tab == 0
+                && session.agent != Agent::Shell
+                && !matches!(session.status, Status::Exited { .. } | Status::NeedsYou))
+            .then(|| session.clone());
+            let previous = inner
                 .workspace
                 .terminal_sizes
-                .insert((id, tab), (columns, rows));
+                .insert((id.clone(), tab), (columns, rows));
+            if let Some(session) = redraw
+                && previous != Some((columns, rows))
+            {
+                let mut screen = b"\x1b[H\x1b[2J".to_vec();
+                screen.extend(fixture::terminal_screen(&session, tab));
+                inner.terminal_data(&id, tab, screen);
+            }
             Ok(())
         },
     )

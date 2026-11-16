@@ -47,7 +47,7 @@ impl Default for Preferences {
         Self {
             theme: Theme::System,
             font_size: 12,
-            wrap_diffs: true,
+            wrap_diffs: false,
             default_agent: Agent::Claude,
             confirm_destructive: true,
             show_pinned: true,
@@ -142,7 +142,8 @@ impl Reducer for Settings {
 
     fn reduce(&self, state: &mut SettingsState, action: SettingsAction) -> Effect<SettingsAction> {
         if let SettingsAction::Access(action) = action {
-            return access::reduce(&self.clients, &mut state.access, action).map(SettingsAction::Access);
+            return access::reduce(&self.clients, &mut state.access, action)
+                .map(SettingsAction::Access);
         }
         let preferences = &mut state.preferences;
         match action {

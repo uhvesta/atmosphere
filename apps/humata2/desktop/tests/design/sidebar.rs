@@ -23,11 +23,14 @@ pub struct Side {
     pub empty: bool,
     /// With `empty`, the one channel just made, with nothing in it.
     pub fresh: Option<&'static str>,
+    /// Ledger schema migration's own request is waiting (Needs you). Off,
+    /// that session is working and only its fork's request waits.
+    pub asking: bool,
 }
 
 impl Side {
     pub const fn at(selected: &'static str) -> Self {
-        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None }
+        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true }
     }
 }
 
@@ -79,9 +82,18 @@ struct Node {
     inbox: Option<&'static str>,
 }
 
+/// The one session whose own request comes and goes with `Side::asking`.
+const ASKING: &str = "Ledger schema migration";
+
+/// Ledger schema migration's dot and inbox count (its own request and its
+/// fork's, CH-12).
+const fn ledger(side: Side) -> (St, &'static str) {
+    if side.asking { (St::NeedsYou, "2") } else { (St::Working, "1") }
+}
+
 const PAYMENTS: &[Node] = &[
     Node { depth: 0, state: St::NeedsYou, title: "Ledger schema migration", fork: false, unread: true, inbox: Some("2") },
-    Node { depth: 1, state: St::Working, title: "Try BRIN index", fork: true, unread: false, inbox: None },
+    Node { depth: 1, state: St::NeedsYou, title: "Try BRIN index", fork: true, unread: false, inbox: None },
     Node { depth: 2, state: St::Working, title: "Partial BRIN on posted_at", fork: true, unread: false, inbox: None },
     Node { depth: 1, state: St::Idle, title: "Review the schema", fork: true, unread: false, inbox: None },
     Node { depth: 0, state: St::Working, title: "Refund retries", fork: false, unread: true, inbox: None },
@@ -95,6 +107,7 @@ const INFRA: &[Node] = &[
 
 fn node(look: Look, side: Side, node: &Node) -> Div {
     let on = side.selected == node.title;
+    let (state, inbox) = if node.title == ASKING { let (state, count) = ledger(side); (state, Some(count)) } else { (node.state, node.inbox) };
     let faint = if on { look.selection_text } else { look.tertiary };
     // Forks sit under their parent, indented, with a fork glyph.
     let lead = div()
@@ -102,9 +115,9 @@ fn node(look: Look, side: Side, node: &Node) -> Div {
         .items_center()
         .gap(px(5.))
         .when(node.fork, |lead| lead.child(small_icon(IconName::GitFork, faint)))
-        .child(status(node.state));
+        .child(status(state));
     let indent = 10. + 16. * f32::from(node.depth) - if node.fork { 17. } else { 0. };
-    let trail = node.inbox.map(|count| {
+    let trail = inbox.map(|count| {
         div()
             .flex()
             .items_center()
@@ -238,7 +251,7 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         .when(side.pinned, |bar| {
             bar.child(section(look, "Pinned"))
                 .child(
-                    session(look, side, St::NeedsYou, "Ledger schema migration", 0., Some(vip()))
+                    session(look, side, ledger(side).0, ASKING, 0., Some(vip()))
                         .h(px(40.))
                         .items_start()
                         .pt(px(5.))

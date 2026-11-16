@@ -268,11 +268,29 @@ impl Terminals {
         }
     }
 
+    /// Shows or hides the pane's built-in disconnected banner.
+    pub(crate) fn set_offline_banner(
+        &self,
+        session: &SessionId,
+        tab: usize,
+        show: bool,
+        cx: &mut App,
+    ) {
+        if let Some(entry) = self.entries.get(&(session.clone(), tab)) {
+            entry
+                .pane
+                .update(cx, |pane, cx| pane.set_offline_banner(show, cx));
+        }
+    }
+
+    /// The terminal body; `notice` reads as part of the output, under the
+    /// terminal's last row of content.
     pub(crate) fn body(
         &self,
         session: &SessionId,
         tab: usize,
         group: usize,
+        notice: Option<AnyElement>,
         cx: &mut App,
     ) -> AnyElement {
         let key = (session.clone(), tab);
@@ -299,6 +317,17 @@ impl Terminals {
                 .collect::<Vec<_>>()
                 .join("\n")
         });
+        let notice = notice.map(|notice| {
+            let pane = entry.pane.read(cx);
+            let line = pane.line_height(cx);
+            let top = px(10.) + line * pane.content_rows(cx) as f32 + px(8.);
+            div()
+                .absolute()
+                .top(top)
+                .left(px(14.))
+                .right(px(14.))
+                .child(notice)
+        });
         div()
             .id(if group == 0 {
                 "terminal-area"
@@ -309,11 +338,13 @@ impl Terminals {
             .aria_label("Terminal output")
             .aria_description(text.clone())
             .test_text(text)
+            .relative()
             .flex_1()
             .min_h_0()
             .px(px(14.))
             .py(px(10.))
             .child(entry.pane.clone())
+            .children(notice)
             .test_support()
             .into_any_element()
     }

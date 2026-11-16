@@ -78,18 +78,18 @@ pub fn home_list(look: Look) -> Div {
                 .gap(px(20.))
                 .child(group(
                     look,
-                    "Needs you · 2",
+                    "Needs you · 3",
                     vec![
                         session_row(look, St::NeedsYou, "Ledger schema migration", "# payments-rewrite", "Asks to move PAY-3 to Done", "2m", Some(button(look, Kind::Primary, "Review"))),
+                        session_row(look, St::NeedsYou, "Try BRIN index", "fork of Ledger schema", "Asks to push try-brin to origin", "9m", Some(button(look, Kind::Primary, "Review"))),
                         session_row(look, St::Exited, "Upgrade Postgres 17", "# infra", "Exited with code 1 after the dump step", "40m", Some(button(look, Kind::Secondary, "Resume"))),
                     ],
                 ))
                 .child(group(
                     look,
-                    "Working · 3",
+                    "Working · 2",
                     vec![
                         session_row(look, St::Working, "Refund retries", "# payments-rewrite", "Running cargo test -p refunds", "now", None),
-                        session_row(look, St::Working, "Try BRIN index", "fork of Ledger schema", "Writing migrations/0043_brin.sql", "now", None),
                         session_row(look, St::Working, "Benchmark BRIN", "# infra · gpu-box", "pgbench run 2 of 4", "1m", None),
                     ],
                 ))

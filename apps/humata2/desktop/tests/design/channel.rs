@@ -96,8 +96,8 @@ struct Row {
 
 const ROWS: &[Row] = &[
     Row { lines: "", fold: Some(true), state: St::NeedsYou, title: "Ledger schema migration", kind: None, inbox: Some("2"), agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 11:40", used: "Today 12:52" },
-    Row { lines: "├─ ", fold: Some(true), state: St::Working, title: "Try BRIN index", kind: Some("⑂ code + context"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Working", started: "Today 12:05", used: "Today 13:02" },
-    Row { lines: "│  └─ ", fold: None, state: St::Working, title: "Partial BRIN on posted_at", kind: Some("⑂ code only"), inbox: None, agent: "Codex", machine: "gpu-box", status: "Working", started: "Today 12:31", used: "Today 12:31" },
+    Row { lines: "├─ ", fold: Some(true), state: St::NeedsYou, title: "Try BRIN index", kind: Some("⑂ code + context"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 12:05", used: "Today 13:02" },
+    Row { lines: "│  └─ ", fold: None, state: St::Working, title: "Partial BRIN on posted_at", kind: Some("⑂ code only"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Working", started: "Today 12:31", used: "Today 12:31" },
     Row { lines: "└─ ", fold: None, state: St::Idle, title: "Review the schema", kind: Some("⑂ context only"), inbox: None, agent: "Claude Code", machine: "This Mac", status: "Idle", started: "Today 12:50", used: "Today 12:50" },
     Row { lines: "", fold: Some(false), state: St::Working, title: "Refund retries", kind: None, inbox: None, agent: "Copilot", machine: "This Mac", status: "Working", started: "Yesterday", used: "Today 09:15" },
     Row { lines: "", fold: None, state: St::Idle, title: "API rate limiter", kind: None, inbox: None, agent: "Codex", machine: "devbox-1", status: "Idle · PR #491", started: "Mon", used: "Tue" },

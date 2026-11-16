@@ -17,6 +17,6 @@ fn preferences_change_without_losing_other_choices() {
         s.preferences.split_groups = false
     });
     store.send(A::Section(Section::Agents), |s| s.section = Section::Agents);
-    store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = false);
+    store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = true);
     store.finish();
 }

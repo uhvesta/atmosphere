@@ -47,7 +47,9 @@ pub(crate) enum LoginUnusable {
         #[source]
         source: Option<TerminalSessionError>,
     },
-    #[error("the daemon couldn't tell which process made the call, so it can't check the CLI login")]
+    #[error(
+        "the daemon couldn't tell which process made the call, so it can't check the CLI login"
+    )]
     NoProcess {
         #[source]
         source: Option<TerminalSessionError>,
@@ -124,9 +126,9 @@ impl CliLogins {
         match terminal_session::terminal_session(&*self.processes, pid) {
             Ok(found) if found == bound => Ok(id),
             Ok(_) => Err(LoginUnusable::OtherTerminal { source: None }),
-            Err(error @ TerminalSessionError::Read { .. }) => {
-                Err(LoginUnusable::NoProcess { source: Some(error) })
-            }
+            Err(error @ TerminalSessionError::Read { .. }) => Err(LoginUnusable::NoProcess {
+                source: Some(error),
+            }),
             Err(error) => Err(LoginUnusable::OtherTerminal {
                 source: Some(error),
             }),
@@ -172,7 +174,13 @@ impl CliLogins {
     }
 
     /// Makes the login, and returns it with its token.
-    fn grant(&self, bound: TerminalSession, terminal: String, hours: u32, machine: &str) -> pb::CliSession {
+    fn grant(
+        &self,
+        bound: TerminalSession,
+        terminal: String,
+        hours: u32,
+        machine: &str,
+    ) -> pb::CliSession {
         let lasts = self
             .lifetime
             .unwrap_or(Duration::from_secs(u64::from(hours) * 60 * 60));
@@ -206,7 +214,11 @@ impl CliLogins {
         let now = Instant::now();
         let mut state = lock(&self.state);
         state.logins.retain(|_, login| login.expires > now);
-        let mut logins: Vec<_> = state.logins.values().map(|login| login.shown.clone()).collect();
+        let mut logins: Vec<_> = state
+            .logins
+            .values()
+            .map(|login| login.shown.clone())
+            .collect();
         logins.sort_by(|a, b| a.id.cmp(&b.id));
         logins
     }
@@ -243,7 +255,10 @@ impl CliAuth {
                 Ok(session) => session,
                 Err(error @ TerminalSessionError::Read { .. }) => {
                     return Err(status::internal(
-                        format!("couldn't place the process that ran humata login: {}", status::chain(&error)),
+                        format!(
+                            "couldn't place the process that ran humata login: {}",
+                            status::chain(&error)
+                        ),
                         "",
                     ));
                 }
@@ -283,7 +298,9 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
             Some(Caller::User(_)) | None => {}
         }
         let Some(pid) = identity::peer_pid(&request) else {
-            return Err(status::login_unusable(&LoginUnusable::NoProcess { source: None }));
+            return Err(status::login_unusable(&LoginUnusable::NoProcess {
+                source: None,
+            }));
         };
         let request = request.into_inner();
         let hours = match request.hours {
@@ -322,7 +339,12 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
         let answer = tokio::time::timeout(CONFIRM_WAIT, answered).await;
         drop(asked);
         match answer {
-            Ok(Ok(true)) => Ok(Response::new(self.logins.grant(bound, terminal, hours, &self.machine))),
+            Ok(Ok(true)) => Ok(Response::new(self.logins.grant(
+                bound,
+                terminal,
+                hours,
+                &self.machine,
+            ))),
             // The question is gone only when the daemon is stopping.
             Ok(Ok(false) | Err(_)) => Err(status::login_denied()),
             Err(_) => Err(status::login_unanswered(CONFIRM_WAIT.as_secs() / 60)),
@@ -371,7 +393,10 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
         &self,
         request: Request<pb::ListPendingCliLoginsRequest>,
     ) -> Result<Response<pb::ListPendingCliLoginsResponse>, Status> {
-        app_only(&identity::caller(&request)?, "see the logins waiting for an answer")?;
+        app_only(
+            &identity::caller(&request)?,
+            "see the logins waiting for an answer",
+        )?;
         Ok(Response::new(pb::ListPendingCliLoginsResponse {
             logins: self.logins.pending(),
         }))
@@ -453,8 +478,12 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
             let id = channel.value.clone();
             let found = tokio::task::spawn_blocking(move || store.channel(&id))
                 .await
-                .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
-                .map_err(|error| status::store(error, &self.machine, "look up the token's channels"))?;
+                .map_err(|error| {
+                    status::internal(format!("a background task failed: {error}"), "")
+                })?
+                .map_err(|error| {
+                    status::store(error, &self.machine, "look up the token's channels")
+                })?;
             if found.is_none() {
                 return Err(status::not_found(
                     pb::EntityKind::Channel,
@@ -483,7 +512,13 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
             .filter(|value| !value.is_empty());
         let scripts = self.scripts.clone();
         let reply = tokio::task::spawn_blocking(move || {
-            scripts.create(request.name.trim(), &capabilities, &channels, days, key.as_deref())
+            scripts.create(
+                request.name.trim(),
+                &capabilities,
+                &channels,
+                days,
+                key.as_deref(),
+            )
         })
         .await
         .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
@@ -532,7 +567,9 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
 fn user_only(caller: &Caller) -> Result<(), Status> {
     match caller {
         Caller::User(_) => Ok(()),
-        Caller::Agent(_) | Caller::Script(_) => Err(status::refused(&Refusal::UserOnly { capability: None })),
+        Caller::Agent(_) | Caller::Script(_) => {
+            Err(status::refused(&Refusal::UserOnly { capability: None }))
+        }
         Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
     }
 }
@@ -542,7 +579,9 @@ fn app_only(caller: &Caller, what: &str) -> Result<(), Status> {
     match caller {
         Caller::User(UserVia::App) => Ok(()),
         Caller::User(UserVia::CliLogin { .. }) => Err(status::app_only(what)),
-        Caller::Agent(_) | Caller::Script(_) => Err(status::refused(&Refusal::UserOnly { capability: None })),
+        Caller::Agent(_) | Caller::Script(_) => {
+            Err(status::refused(&Refusal::UserOnly { capability: None }))
+        }
         Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
     }
 }

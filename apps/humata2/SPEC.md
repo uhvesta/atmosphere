@@ -270,6 +270,9 @@ plain shell where it means the same thing.
   or session with unread output is shown bold. A folded channel shows the
   status mark of the session that most needs the user and its number of
   sessions (frame 36).
+  A session's dot is Needs you when that session itself has an unanswered
+  request, otherwise its run status; a fork's requests add to its ancestors'
+  ✉ badges but never recolour them (D131).
 - **CH-17** Opening a session clears its unread mark.
 
 ### Growing and shrinking a channel's repos
@@ -335,7 +338,7 @@ plain shell where it means the same thing.
 │ │  └─ ● Partition by month ⑂ c+c ✉ 3      Claude     This Mac  Idle     30m  │
 │ │     └─ ● Monthly + BRIN ⑂ c+c ✉ 3       Claude     This Mac  Working  20m  │
 │ │        ├─ ● Benchmark BRIN ⑂ code ✉ 2   Codex      devbox-1  Needs you 8m  │
-│ │        │  └─ ● Check vacuum ⑂ ctx ✉ 1   Claude     devbox-1  Working  2m   │
+│ │        │  └─ ● Check vacuum ⑂ ctx ✉ 1   Claude     devbox-1  Needs you 2m  │
 │ │        └─ ● Why not hash? ⑂ ctx         Copilot    This Mac  Idle     5m   │
 │ └─ ● Review the migration ⑂ ctx           Codex      This Mac  Idle     25m  │
 │ ● API rate limiter  ✉ 1                   Codex      devbox-1  Working  1d   │

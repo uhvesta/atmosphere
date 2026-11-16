@@ -4,16 +4,17 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ghostty_vt::{ClipboardTarget, Event, Scroll, Terminal, clipboard_read_reply};
+use ghostty_vt::{ClipboardTarget, Event, Grid as _, Scroll, Terminal, clipboard_read_reply};
+use gpui_kit::Pixels;
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
 use gpui_kit::prelude::*;
-use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, SharedString,
-    Subscription, Window, div, px,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
+    SharedString, Subscription, Window, div, px,
 };
 use terminal_view::{Mark, TerminalView, Theme};
 
@@ -55,6 +56,8 @@ pub struct TerminalPane {
     /// Output held while the pane is hidden (NV-34), parsed when it is
     /// shown or when it grows past [`HIDDEN_LIMIT`]; `None` while shown.
     hidden: Option<Vec<u8>>,
+    /// Whether the pane draws its own disconnected banner.
+    offline_banner: bool,
     _view_changes: Subscription,
 }
 
@@ -88,6 +91,7 @@ impl TerminalPane {
             refind_scheduled: false,
             prompt_shown: false,
             hidden: None,
+            offline_banner: true,
             _view_changes: view_changes,
         }
     }
@@ -170,6 +174,36 @@ impl TerminalPane {
         }
     }
 
+    /// Lets the caller show its own notice instead of the built-in
+    /// disconnected banner (on by default).
+    pub fn set_offline_banner(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.offline_banner != show {
+            self.offline_banner = show;
+            cx.notify();
+        }
+    }
+
+    /// Grid rows taken by the program's output from the top (see
+    /// `rows_used`), at most all but the last two rows. 0 for a blank screen.
+    pub fn content_rows(&self, cx: &App) -> usize {
+        let grid = self.view.read(cx).grid();
+        let cursor = grid.cursor();
+        let rows = usize::from(grid.size().rows);
+        rows_used(
+            (0..grid.size().rows).map(|y| {
+                grid.row(y)
+                    .is_some_and(|row| row.cells.iter().any(|cell| !cell.text.trim().is_empty()))
+            }),
+            cursor.visible.then_some(usize::from(cursor.y)),
+        )
+        .min(rows.saturating_sub(2))
+    }
+
+    /// The height of one terminal row, as the theme in use sets it.
+    pub fn line_height(&self, cx: &App) -> Pixels {
+        px(self.view.read(cx).theme().line_height.max(1.0).round())
+    }
+
     /// Whether the session's machine is reachable. While it isn't (SE-16)
     /// typing and pasting are dropped and the pane says so.
     pub fn set_connected(&mut self, connected: bool, cx: &mut Context<Self>) {
@@ -216,7 +250,9 @@ impl TerminalPane {
     /// Answers the program's clipboard read (OSC 52), with `text` once the
     /// user allowed it or `None` to refuse.
     pub fn answer_clipboard_read(&mut self, target: ClipboardTarget, text: Option<&str>) {
-        self.shared.borrow_mut().send(&clipboard_read_reply(target, text));
+        self.shared
+            .borrow_mut()
+            .send(&clipboard_read_reply(target, text));
     }
 
     fn paste(&mut self, text: String, confirmed: bool, cx: &mut Context<Self>) {
@@ -233,7 +269,10 @@ impl TerminalPane {
     fn take_events(&mut self, cx: &mut Context<Self>) {
         let (events, waiting) = {
             let mut shared = self.shared.borrow_mut();
-            (std::mem::take(&mut shared.events), shared.pending_paste.is_some())
+            (
+                std::mem::take(&mut shared.events),
+                shared.pending_paste.is_some(),
+            )
         };
         for event in events {
             cx.emit(event);
@@ -256,23 +295,27 @@ impl TerminalPane {
             return;
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find"));
-        let input_events = cx.subscribe_in(&input, window, |pane: &mut Self, input, event, window, cx| {
-            match event {
-                InputEvent::Change => {
-                    let text = input.read(cx).value().to_string();
-                    pane.update_query(|query| query.text = text, cx);
-                }
-                InputEvent::PressEnter { shift, .. } => {
-                    if *shift {
-                        pane.find_newer(cx);
-                    } else {
-                        pane.find_older(cx);
+        let input_events = cx.subscribe_in(
+            &input,
+            window,
+            |pane: &mut Self, input, event, window, cx| {
+                match event {
+                    InputEvent::Change => {
+                        let text = input.read(cx).value().to_string();
+                        pane.update_query(|query| query.text = text, cx);
                     }
+                    InputEvent::PressEnter { shift, .. } => {
+                        if *shift {
+                            pane.find_newer(cx);
+                        } else {
+                            pane.find_older(cx);
+                        }
+                    }
+                    InputEvent::Focus | InputEvent::Blur => {}
                 }
-                InputEvent::Focus | InputEvent::Blur => {}
-            }
-            let _ = window;
-        });
+                let _ = window;
+            },
+        );
         input.update(cx, |input, cx| input.focus(window, cx));
         self.find = Some(FindBar {
             input,
@@ -289,7 +332,8 @@ impl TerminalPane {
     /// back to the terminal.
     pub fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find.take().is_some() {
-            self.view.update(cx, |view, cx| view.set_marks(Vec::new(), cx));
+            self.view
+                .update(cx, |view, cx| view.set_marks(Vec::new(), cx));
         }
         let focus = self.view.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
@@ -303,7 +347,8 @@ impl TerminalPane {
         }
         if let Some(find) = &self.find {
             let text = query.text.clone();
-            find.input.update(cx, |input, cx| input.set_value(text, window, cx));
+            find.input
+                .update(cx, |input, cx| input.set_value(text, window, cx));
         }
         self.update_query(|current| *current = query, cx);
     }
@@ -364,13 +409,18 @@ impl TerminalPane {
         let Some(find) = &mut self.find else {
             return;
         };
-        let previous = find.current.and_then(|at| find.marks.get(at)).map(|mark| mark.start);
+        let previous = find
+            .current
+            .and_then(|at| find.marks.get(at))
+            .map(|mark| mark.start);
         let (marks, error) = match Finder::new(&find.query) {
             Ok(Some(finder)) => {
                 let terminal = self.view.read(cx).grid();
                 let total = terminal.total_rows() as u64;
                 let marks = finder.search(total, |y| {
-                    u32::try_from(y).ok().and_then(|y| terminal.screen_row(y).ok())
+                    u32::try_from(y)
+                        .ok()
+                        .and_then(|y| terminal.screen_row(y).ok())
                 });
                 (marks, None)
             }
@@ -422,7 +472,9 @@ impl TerminalPane {
                 ..*mark
             })
             .collect();
-        let target = current.and_then(|at| find.marks.get(at)).map(|mark| mark.start.row);
+        let target = current
+            .and_then(|at| find.marks.get(at))
+            .map(|mark| mark.start.row);
         self.view.update(cx, |view, cx| {
             if reveal
                 && let Some(row) = target
@@ -462,7 +514,10 @@ impl TerminalPane {
         let key = event.keystroke.key.as_str();
         let mac = cfg!(target_os = "macos");
         let (find, again) = if mac {
-            (m.platform && !m.control && !m.alt && key == "f" && !m.shift, m.platform && !m.control && !m.alt && key == "g")
+            (
+                m.platform && !m.control && !m.alt && key == "f" && !m.shift,
+                m.platform && !m.control && !m.alt && key == "g",
+            )
         } else {
             (m.control && m.shift && !m.alt && key == "f", false)
         };
@@ -529,7 +584,11 @@ impl TerminalPane {
             .bg(theme.popover)
             .shadow_md()
             .on_action(cx.listener(|pane, _: &Escape, window, cx| pane.close_find(window, cx)))
-            .child(div().w(px(200.)).child(Input::new(&find.input).id("find-input")))
+            .child(
+                div()
+                    .w(px(200.))
+                    .child(Input::new(&find.input).id("find-input")),
+            )
             .child(
                 Button::new("find-case")
                     .label("Aa")
@@ -613,10 +672,15 @@ impl TerminalPane {
             .border_color(theme.warning)
             .bg(theme.popover)
             .child(
-                div().flex_1().min_w(px(0.)).text_sm().text_color(theme.foreground).child(format!(
-                    "Paste {lines} lines? This program didn't ask for bracketed paste, so each \
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .text_sm()
+                    .text_color(theme.foreground)
+                    .child(format!(
+                        "Paste {lines} lines? This program didn't ask for bracketed paste, so each \
                      line break runs the line before it as a command."
-                )),
+                    )),
             )
             .child(
                 h_flex()
@@ -640,6 +704,64 @@ impl TerminalPane {
     }
 }
 
+/// Rows through the end of the output the program wrote from the top: its
+/// first block of text, which ends at a gap of `GAP` blank rows, or through
+/// the cursor row when that is lower and inside the block. A footer the
+/// program pins to the bottom (an agent's input box) is not output, so a
+/// notice placed under the output doesn't cover it.
+fn rows_used(blank_free: impl Iterator<Item = bool>, cursor: Option<usize>) -> usize {
+    const GAP: usize = 3;
+    let mut end = 0;
+    let mut blank = 0;
+    for (y, used) in blank_free.enumerate() {
+        if used {
+            end = y + 1;
+            blank = 0;
+        } else {
+            blank += 1;
+            if end > 0 && blank >= GAP {
+                break;
+            }
+        }
+    }
+    match cursor {
+        Some(y) if y + 1 > end && y < end + GAP => y + 1,
+        _ => end,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rows_used;
+
+    #[test]
+    fn blank_screen_uses_no_rows() {
+        assert_eq!(rows_used([false; 5].into_iter(), None), 0);
+    }
+
+    #[test]
+    fn rows_run_through_the_last_one_with_text() {
+        assert_eq!(
+            rows_used([true, true, true, false, false].into_iter(), None),
+            3
+        );
+    }
+
+    #[test]
+    fn a_visible_cursor_below_the_text_counts() {
+        assert_eq!(
+            rows_used([true, false, false, false].into_iter(), Some(2)),
+            3
+        );
+    }
+
+    #[test]
+    fn a_footer_pinned_to_the_bottom_is_not_output() {
+        let rows = [true, false, true, false, false, false, false, true, true];
+        assert_eq!(rows_used(rows.into_iter(), Some(7)), 3);
+    }
+}
+
 impl Focusable for TerminalPane {
     /// The terminal's own focus, so focusing the pane types into it.
     fn focus_handle(&self, cx: &App) -> FocusHandle {
@@ -657,10 +779,15 @@ impl Render for TerminalPane {
         let pending = shared.pending_paste.clone();
         drop(shared);
         self.prompt_shown = pending.is_some();
-        let find_bar = self.find.as_ref().map(|find| self.render_find_bar(find, cx));
-        let paste_prompt = pending.as_ref().map(|pending| self.render_paste_prompt(pending, cx));
+        let find_bar = self
+            .find
+            .as_ref()
+            .map(|find| self.render_find_bar(find, cx));
+        let paste_prompt = pending
+            .as_ref()
+            .map(|pending| self.render_paste_prompt(pending, cx));
         let theme = cx.theme();
-        let banner = (!connected).then(|| {
+        let banner = (!connected && self.offline_banner).then(|| {
             div()
                 .id("disconnected-banner")
                 .test_support()
@@ -675,7 +802,11 @@ impl Render for TerminalPane {
                 .bg(theme.muted)
                 .text_size(px(12.))
                 .text_color(theme.foreground)
-                .child(Icon::new(IconName::WifiOff).size(px(12.)).text_color(theme.muted_foreground))
+                .child(
+                    Icon::new(IconName::WifiOff)
+                        .size(px(12.))
+                        .text_color(theme.muted_foreground),
+                )
                 .child(
                     "Lost the connection to this program's machine. The program keeps running \
                      there; this view catches up when it is back, and typing is off until then.",

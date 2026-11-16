@@ -163,22 +163,27 @@ fn tab_row(
                 })
                 .copied()
                 .unwrap_or(0);
-            bar.when(peers > 0 && !(split && state.settings.preferences.split_groups), |bar| {
-                let label = format!(
-                    "{peers} other{} can type here",
-                    if peers == 1 { "" } else { "s" }
-                );
-                bar.child(
-                    div()
-                        .id(SharedString::from(format!("terminal-peers-{group}")))
-                        .mr(px(12.))
-                        .text_size(px(11.5))
-                        .text_color(rgb(look.secondary))
-                        .child(label.clone())
-                        .test_text(label)
-                        .test_support(),
-                )
-            })
+            bar.when(
+                session.status == Status::Working
+                    && peers > 0
+                    && !(split && state.settings.preferences.split_groups),
+                |bar| {
+                    let label = format!(
+                        "{peers} other{} can type here",
+                        if peers == 1 { "" } else { "s" }
+                    );
+                    bar.child(
+                        div()
+                            .id(SharedString::from(format!("terminal-peers-{group}")))
+                            .mr(px(12.))
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(label.clone())
+                            .test_text(label)
+                            .test_support(),
+                    )
+                },
+            )
         })
         .when(split, |bar| {
             bar.child(
@@ -205,6 +210,30 @@ fn tab_row(
                     .child("disconnected"),
             )
         })
+}
+
+fn notice(
+    look: Look,
+    glyph: IconName,
+    color: u32,
+    text: String,
+    action: Option<AnyElement>,
+) -> AnyElement {
+    // Terminals::body places it under the terminal's content.
+    row()
+        .w_full()
+        .px(px(10.))
+        .py(px(7.))
+        .gap(px(8.))
+        .items_center()
+        .rounded(px(7.))
+        .bg(rgb(look.fill))
+        .text_color(rgb(look.text))
+        .text_size(px(12.))
+        .child(chrome::icon(glyph, color, 12.))
+        .child(div().flex_1().min_w_0().child(text))
+        .children(action)
+        .into_any_element()
 }
 
 fn menu(ui: &Rc<Ui>, group: usize, split_groups: bool, look: Look) -> Stateful<Div> {
@@ -375,8 +404,9 @@ pub(crate) fn body(
                 .take(1)
                 .map(|offer| {
                     row()
+                        .h(px(40.))
+                        .items_center()
                         .px(px(14.))
-                        .py(px(5.))
                         .gap(px(10.))
                         .flex_shrink_0()
                         .bg(rgb(if look.term == 0xffffff {
@@ -410,9 +440,10 @@ pub(crate) fn body(
                             AppAction::Views(ViewsAction::Accept(offer.title.clone())),
                         )
                         .outline()
-                        .h(px(18.))
-                        .px(px(8.))
-                        .text_size(px(12.5)))
+                        .h(px(24.))
+                        .px(px(11.))
+                        .bg(rgb(look.fill))
+                        .text_size(px(12.)))
                             .child(widgets::ghost(
                             ui,
                             "offer-later",
@@ -485,15 +516,55 @@ pub(crate) fn body(
                                         .into_any_element()
                                 }
                                 Some(Tab::Terminal(tab)) => {
-                                    let body = terminals.body(&session.id, *tab, group, cx);
-                                    col().flex_1().min_h_0().bg(rgb(look.term)).child(body)
-                                        .children(match (*tab, session.status) {
-                                            (0, Status::Exited { code }) => Some(row().flex_shrink_0().m(px(14.)).mt(px(10.)).px(px(10.)).py(px(7.)).gap(px(8.)).items_center().rounded(px(7.)).bg(rgb(look.fill)).text_color(rgb(look.text)).text_size(px(12.))
-                                                .child(chrome::icon(IconName::CircleX, 0xff453a, 12.))
-                                                .child(div().flex_1().min_w_0().child(format!("{} exited with code {code}. Resume starts it again with this conversation.", session.agent.command())))
-                                                .child(widgets::send(ui, "resume-terminal", "Resume", AppAction::Session(SessionAction::Resume)).outline().h(px(18.)).px(px(8.)))),
-                                            _ => None,
-                                        }).into_any_element()
+                                    let notice = match (*tab, session.status) {
+                                        (0, Status::Exited { code }) => Some(notice(
+                                            look,
+                                            IconName::CircleX,
+                                            0xff453a,
+                                            format!(
+                                                "{} exited with code {code}. Resume starts it again with this conversation.",
+                                                session.agent.command()
+                                            ),
+                                            Some(
+                                                widgets::send(
+                                                    ui,
+                                                    "resume-terminal",
+                                                    "Resume",
+                                                    AppAction::Session(SessionAction::Resume),
+                                                )
+                                                .outline()
+                                                .h(px(24.))
+                                                .px(px(11.))
+                                                .into_any_element(),
+                                            ),
+                                        )),
+                                        (_, Status::Offline) => {
+                                            let machine = state
+                                                .workspace
+                                                .machines
+                                                .iter()
+                                                .find(|x| x.id == session.machine)
+                                                .map_or("the machine", |x| x.name.as_str());
+                                            Some(notice(
+                                                look,
+                                                IconName::WifiOff,
+                                                0x8e8e93,
+                                                format!(
+                                                    "Lost the connection to {machine}. The agent keeps running there; this view catches up when it is back."
+                                                ),
+                                                None,
+                                            ))
+                                        }
+                                        _ => None,
+                                    };
+                                    terminals.set_offline_banner(
+                                        &session.id,
+                                        *tab,
+                                        session.status != Status::Offline,
+                                        cx,
+                                    );
+                                    let body = terminals.body(&session.id, *tab, group, notice, cx);
+                                    col().flex_1().min_h_0().bg(rgb(look.term)).child(body).into_any_element()
                                 }
                                 None => div().into_any_element(),
                             })
@@ -550,7 +621,9 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
     let caption = format!(
         "{count} {noun}{} waiting to send{}",
         if count == 1 { "" } else { "s" },
-        status.map(|status| format!(" · {status}")).unwrap_or_default()
+        status
+            .map(|status| format!(" · {status}"))
+            .unwrap_or_default()
     );
     Some(
         col()
@@ -560,7 +633,7 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
             .mt(px(0.))
             .mb(px(8.))
             .px(px(10.))
-            .py(px(3.))
+            .py(px(6.))
             .gap(px(8.))
             .rounded(px(7.))
             .bg(rgb(look.fill))

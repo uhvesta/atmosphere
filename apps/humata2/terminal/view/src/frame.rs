@@ -103,7 +103,12 @@ pub(crate) struct CellColors {
 /// selected cell takes the selection colors, or swaps its own when the
 /// theme has none; an inverse cell swaps; bold palette colors 0-7 become
 /// bright when asked.
-pub(crate) fn cell_colors(cell: &Cell, selected: bool, colors: &Colors, style: &Style) -> CellColors {
+pub(crate) fn cell_colors(
+    cell: &Cell,
+    selected: bool,
+    colors: &Colors,
+    style: &Style,
+) -> CellColors {
     let fg_color = match cell.fg {
         Color::Palette(index) if cell.bold && style.bold_is_bright && index < 8 => {
             Color::Palette(index + 8)
@@ -124,7 +129,12 @@ pub(crate) fn cell_colors(cell: &Cell, selected: bool, colors: &Colors, style: &
 }
 
 /// Plans row `row`, whose selected columns are `selection`.
-pub(crate) fn plan_row(row: &Row, selection: Option<Span>, colors: &Colors, style: &Style) -> RowPlan {
+pub(crate) fn plan_row(
+    row: &Row,
+    selection: Option<Span>,
+    colors: &Colors,
+    style: &Style,
+) -> RowPlan {
     let mut plan = RowPlan::default();
     let mut open: Option<Piece> = None;
     // Empty cells after the open piece, which join it as spaces if text in
@@ -154,11 +164,14 @@ pub(crate) fn plan_row(row: &Row, selection: Option<Span>, colors: &Colors, styl
                     .last()
                     .is_some_and(|fill| fill.col + fill.cols > col && fill.color == drawn.bg);
             if !covered {
-                push_fill(&mut plan.fills, Fill {
-                    col,
-                    cols: cols.max(1),
-                    color: drawn.bg,
-                });
+                push_fill(
+                    &mut plan.fills,
+                    Fill {
+                        col,
+                        cols: cols.max(1),
+                        color: drawn.bg,
+                    },
+                );
             }
         }
         if cols == 0 {
@@ -172,7 +185,15 @@ pub(crate) fn plan_row(row: &Row, selection: Option<Span>, colors: &Colors, styl
             bold: cell.bold,
             italic: cell.italic,
         };
-        decorate(&mut plan.decorations, cell, col, cols, colors, drawn.fg, alpha);
+        decorate(
+            &mut plan.decorations,
+            cell,
+            col,
+            cols,
+            colors,
+            drawn.fg,
+            alpha,
+        );
 
         let has_text = !cell.text.is_empty() && !cell.invisible && cell.text != " ";
         if !has_text {
@@ -199,7 +220,9 @@ pub(crate) fn plan_row(row: &Row, selection: Option<Span>, colors: &Colors, styl
         let alone = stands_alone(cell);
         match open.as_mut() {
             Some(piece) if !alone && piece.style == text_style => {
-                piece.text.extend(std::iter::repeat_n(' ', usize::from(gap)));
+                piece
+                    .text
+                    .extend(std::iter::repeat_n(' ', usize::from(gap)));
                 piece.text.push_str(&cell.text);
                 gap = 0;
             }
@@ -300,7 +323,14 @@ fn stands_alone(cell: &Cell) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    chars.next().is_some() || is_right_to_left(first)
+    chars.next().is_some() || is_right_to_left(first) || is_technical(first)
+}
+
+/// Miscellaneous Technical (U+2300–23FF), such as the "⎿" agents draw in
+/// their gutter. Monospace fonts often lack them, and a fallback glyph of
+/// another width shaped in the same run would push the next cell's text.
+fn is_technical(c: char) -> bool {
+    matches!(u32::from(c), 0x2300..=0x23ff)
 }
 
 /// Letters of scripts written right to left: Hebrew, Arabic, Syriac,
@@ -354,10 +384,20 @@ mod tests {
 
     #[::std::prelude::v1::test]
     fn words_in_one_style_are_one_piece_with_their_spaces() {
-        let cells = vec![text("l"), text("s"), Cell::default(), text("-"), text("l"), Cell::default()];
+        let cells = vec![
+            text("l"),
+            text("s"),
+            Cell::default(),
+            text("-"),
+            text("l"),
+            Cell::default(),
+        ];
         let plan = plan_row(&row(cells), None, &Colors::default(), &STYLE);
         assert_eq!(pieces(&plan), vec![(0, "ls -l")]);
-        assert!(plan.fills.is_empty(), "default backgrounds aren't filled per row");
+        assert!(
+            plan.fills.is_empty(),
+            "default backgrounds aren't filled per row"
+        );
     }
 
     #[::std::prelude::v1::test]
@@ -379,9 +419,20 @@ mod tests {
         // line, the rule and the block are drawn, each in its own cell's
         // color.
         assert_eq!(pieces(&plan), vec![(1, "a b ╱")]);
-        let drawn: Vec<(u16, Rgb)> = plan.drawings.iter().map(|drawn| (drawn.col, drawn.color)).collect();
+        let drawn: Vec<(u16, Rgb)> = plan
+            .drawings
+            .iter()
+            .map(|drawn| (drawn.col, drawn.color))
+            .collect();
         let colors = Colors::default();
-        assert_eq!(drawn, vec![(0, colors.foreground), (2, colors.foreground), (4, colors.palette[1])]);
+        assert_eq!(
+            drawn,
+            vec![
+                (0, colors.foreground),
+                (2, colors.foreground),
+                (4, colors.palette[1])
+            ]
+        );
     }
 
     #[::std::prelude::v1::test]
@@ -390,7 +441,12 @@ mod tests {
             fg: Color::Palette(1),
             ..Cell::default()
         };
-        let cells = vec![text("a"), styled("b", red.clone()), styled("c", red), text("d")];
+        let cells = vec![
+            text("a"),
+            styled("b", red.clone()),
+            styled("c", red),
+            text("d"),
+        ];
         let plan = plan_row(&row(cells), None, &Colors::default(), &STYLE);
         assert_eq!(pieces(&plan), vec![(0, "a"), (1, "bc"), (3, "d")]);
         let colors = Colors::default();
@@ -411,7 +467,10 @@ mod tests {
         };
         let cells = vec![text("a"), wide.clone(), tail.clone(), wide, tail, text("b")];
         let plan = plan_row(&row(cells), None, &Colors::default(), &STYLE);
-        assert_eq!(pieces(&plan), vec![(0, "a"), (1, "日"), (3, "日"), (5, "b")]);
+        assert_eq!(
+            pieces(&plan),
+            vec![(0, "a"), (1, "日"), (3, "日"), (5, "b")]
+        );
     }
 
     #[::std::prelude::v1::test]
@@ -437,7 +496,14 @@ mod tests {
         let plan = plan_row(&row(cells), None, &Colors::default(), &STYLE);
         assert_eq!(
             pieces(&plan),
-            vec![(0, "x"), (1, "e\u{301}"), (2, "y"), (3, "ש"), (4, "ל"), (5, "👩\u{200d}💻")]
+            vec![
+                (0, "x"),
+                (1, "e\u{301}"),
+                (2, "y"),
+                (3, "ש"),
+                (4, "ל"),
+                (5, "👩\u{200d}💻")
+            ]
         );
     }
 
@@ -544,12 +610,18 @@ mod tests {
             bold: true,
             ..Cell::default()
         };
-        assert_eq!(cell_colors(&bold_red, false, &colors, &STYLE).fg, colors.palette[9]);
+        assert_eq!(
+            cell_colors(&bold_red, false, &colors, &STYLE).fg,
+            colors.palette[9]
+        );
         let plain = Style {
             bold_is_bright: false,
             ..STYLE
         };
-        assert_eq!(cell_colors(&bold_red, false, &colors, &plain).fg, colors.palette[1]);
+        assert_eq!(
+            cell_colors(&bold_red, false, &colors, &plain).fg,
+            colors.palette[1]
+        );
     }
 
     #[::std::prelude::v1::test]
@@ -559,7 +631,12 @@ mod tests {
             bg: Color::Palette(2),
             ..Cell::default()
         };
-        let plan = plan_row(&row(vec![styled("p", hidden)]), None, &Colors::default(), &STYLE);
+        let plan = plan_row(
+            &row(vec![styled("p", hidden)]),
+            None,
+            &Colors::default(),
+            &STYLE,
+        );
         assert!(plan.pieces.is_empty());
         assert_eq!(plan.fills.len(), 1);
     }
@@ -570,7 +647,12 @@ mod tests {
             faint: true,
             ..Cell::default()
         };
-        let plan = plan_row(&row(vec![styled("f", faint)]), None, &Colors::default(), &STYLE);
+        let plan = plan_row(
+            &row(vec![styled("f", faint)]),
+            None,
+            &Colors::default(),
+            &STYLE,
+        );
         assert_eq!(plan.pieces[0].style.alpha, 0.5);
     }
 

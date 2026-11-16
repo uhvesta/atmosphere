@@ -96,7 +96,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             "Try BRIN index",
             Agent::Claude,
             "devbox-1",
-            Status::Working,
+            Status::NeedsYou,
             Some("ledger"),
         ),
         (
@@ -283,6 +283,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 (Speaker::System, "    3. Type something else"),
             ],
             Status::Exited { .. } => &[
+                (Speaker::Agent, ""),
                 (
                     Speaker::Agent,
                     "● All four steps are done. Reads go to entries now.",
@@ -401,6 +402,11 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         );
         request.asked = "2m".into();
         request.rule = "board_item_move".into();
+    }
+    // While Ledger works it has not asked to move PAY-3 yet (D128.5): its
+    // family's only request is its fork's push.
+    if ledger_status == Status::Working {
+        workspace.requests.retain(|r| r.id.as_str() != "move-pay-3");
     }
     workspace.file_contents.insert((SessionId::new("ledger"), "api".into(), "src/client.rs".into()),
         "use crate::ledger::{Entry, Ledger};\n\npub fn insert_entry(ledger: &mut Ledger, entry: Entry) {\n    ledger.insert(entry.clone());\n    ledger.insert_legacy(entry);\n}\n".into());

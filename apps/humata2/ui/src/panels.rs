@@ -389,7 +389,7 @@ fn changes(
                 .len();
             let gutter_width = 34_f32.max((digits as f32 + 1.) * cell_width);
             let code_width =
-                width - if full { 300. } else { 0. } - gutter_width - cell_width - 2.;
+                width - if full { 300. } else { 0. } - gutter_width - cell_width - 2. + 8.;
             let columns = ((code_width / cell_width).floor().max(4.)) as usize;
             let scrolling_width = file
                 .lines
@@ -485,6 +485,7 @@ fn changes(
                                     )
                                     .child(
                                         text(sign)
+                                            .ml(px(-8.))
                                             .w(px(cell_width))
                                             .h(px(line_height))
                                             .flex_shrink_0()
@@ -529,9 +530,10 @@ fn changes(
                                     .enumerate()
                                     .filter(|(_, comment)| {
                                         comment.path == file.path
-                                            && comment.context.as_ref().is_none_or(|context| {
-                                                context.repo == diff.repo
-                                            })
+                                            && comment
+                                                .context
+                                                .as_ref()
+                                                .is_none_or(|context| context.repo == diff.repo)
                                     })
                                     .map(|(index, comment)| {
                                         comment_card(ui, state, look, comment, false, Some(index))
@@ -547,7 +549,9 @@ fn changes(
                                                 .as_ref()
                                                 .is_none_or(|context| context.repo == diff.repo)
                                     })
-                                    .map(|comment| comment_card(ui, state, look, comment, true, None)),
+                                    .map(|comment| {
+                                        comment_card(ui, state, look, comment, true, None)
+                                    }),
                             ),
                     ),
             )
@@ -954,6 +958,18 @@ fn board_item(
         .session
         .as_ref()
         .and_then(|id| state.workspace.session(id));
+    let asking = state
+        .board
+        .request(item)
+        .map(|request| request.title.clone());
+    let label = session.is_none().then(|| {
+        state
+            .workspace
+            .item_details
+            .get(&item.id)
+            .and_then(|details| details.session_label.clone())
+    });
+    let label = label.flatten();
     let mut card = card(look)
         .id(SharedString::from(format!("board-item {}", item.id)))
         .role(Role::ListItem)
@@ -962,7 +978,8 @@ fn board_item(
         .px(px(if full { 9. } else { 10. }))
         .py(px(7.))
         .gap(px(6.))
-        .when(item.status == ItemStatus::Done, |card| card.opacity(0.6));
+        .when(item.status == ItemStatus::Done, |card| card.opacity(0.6))
+        .when(asking.is_some(), |card| card.bg(rgb(look.attention_bg)));
     if full {
         card = card
             .p(px(9.))
@@ -987,8 +1004,26 @@ fn board_item(
                     .py(px(1.))
                     .rounded(px(4.))
                     .bg(rgb(look.fill))
-                    .child(status(session.status))
+                    .when(item.status != ItemStatus::Done, |chip| {
+                        chip.child(status(session.status))
+                    })
                     .child(secondary(look, session.title.clone()))
+            }))
+            .children(label.map(|label| {
+                row()
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .bg(rgb(look.fill))
+                    .child(secondary(look, label))
+            }))
+            .children(asking.clone().map(|title| {
+                row()
+                    .gap(px(6.))
+                    .text_size(px(11.))
+                    .text_color(rgb(ORANGE))
+                    .child(icon(IconName::Inbox, ORANGE, 12.))
+                    .child(text(title))
             }));
     } else {
         card = card.child(
@@ -996,7 +1031,11 @@ fn board_item(
                 .gap(px(7.))
                 .child(secondary(look, item.id.to_string()))
                 .child(text(item.title.clone()).flex_1())
-                .children(session.map(|session| status(session.status))),
+                .children(if asking.is_some() {
+                    Some(status(Status::NeedsYou))
+                } else {
+                    session.map(|session| status(session.status))
+                }),
         );
     }
     if let Some(session) = session {
@@ -1049,6 +1088,8 @@ fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
 #[derive(Default)]
 struct FileNode {
     folder: bool,
+    /// When it first arrived: folders keep the order they were reported in.
+    order: usize,
     children: std::collections::BTreeMap<String, FileNode>,
 }
 fn file_rows(
@@ -1062,7 +1103,15 @@ fn file_rows(
     look: Look,
 ) -> Vec<AnyElement> {
     let mut children: Vec<_> = node.children.iter().collect();
-    children.sort_by(|(an, a), (bn, b)| b.folder.cmp(&a.folder).then_with(|| an.cmp(bn)));
+    children.sort_by(|(an, a), (bn, b)| {
+        b.folder.cmp(&a.folder).then_with(|| {
+            if a.folder {
+                a.order.cmp(&b.order).then_with(|| an.cmp(bn))
+            } else {
+                an.cmp(bn)
+            }
+        })
+    });
     let mut rows = Vec::new();
     for (name, child) in children {
         let path = if path.is_empty() {
@@ -1133,7 +1182,7 @@ fn file_rows(
                 .when(selected, |row| row.bg(rgb(look.fill)))
                 .child(icon(
                     if child.folder {
-                        if folded {
+                        if folded || child.children.is_empty() {
                             IconName::Folder
                         } else {
                             IconName::FolderOpen
@@ -1198,6 +1247,7 @@ fn files(
 ) -> Div {
     // The session's own repository first, the rest in the order they arrive.
     let mut repos = Vec::<(String, FileNode)>::new();
+    let mut arrived = 0_usize;
     if !session.repo.is_empty() {
         repos.push((session.repo.clone(), FileNode::default()));
     }
@@ -1218,7 +1268,14 @@ fn files(
         let mut node = &mut repos[at].1;
         for component in file.path.split('/').filter(|part| !part.is_empty()) {
             node.folder = true;
-            node = node.children.entry(component.to_owned()).or_default();
+            arrived += 1;
+            node = node
+                .children
+                .entry(component.to_owned())
+                .or_insert_with(|| FileNode {
+                    order: arrived,
+                    ..FileNode::default()
+                });
         }
         node.folder |= file.folder;
     }
@@ -1322,12 +1379,16 @@ fn files(
                     Button::new("files-open-editor")
                         .label("Open in editor")
                         .small()
+                        .text_color(rgb(look.text))
+                        .opacity(1.)
                         .disabled(true),
                 )
                 .child(
                     Button::new("files-upload")
                         .label("Upload…")
                         .small()
+                        .text_color(rgb(look.text))
+                        .opacity(1.)
                         .disabled(true),
                 ),
         )
@@ -1337,7 +1398,7 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
         row()
             .items_start()
             .gap(px(10.))
-            .py(px(5.))
+            .py(px(3.))
             .child(
                 text(key)
                     .w(px(84.))
@@ -1403,17 +1464,20 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
             .flex_wrap()
             .gap(px(6.))
             .child(text(repo.rsplit('/').next().unwrap_or(repo).to_owned()))
+            .child(chip(session.branch.clone(), look.secondary))
             .when(main, |row| {
-                row.child(chip(session.branch.clone(), look.secondary))
-                    .child(chip("main clone".to_owned(), look.accent))
+                row.child(chip("main clone".to_owned(), look.accent))
             })
     });
     let details = col()
-        .child(kv("Agent", text(if session.agent == humata2_clients::model::Agent::Claude {
+        .child(kv(
+            "Agent",
+            text(if session.agent == humata2_clients::model::Agent::Claude {
                 "Claude Code"
             } else {
                 session.agent.name()
-            })))
+            }),
+        ))
         .child(kv(
             "Machine",
             text(machine.map_or_else(
@@ -1643,16 +1707,18 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                     .ghost()
                     .selected(on == Some(panel))
                     .w(px(52.))
-                    .h(px(48.))
+                    .h(px(36.))
                     .p_0()
                     .rounded(px(7.))
                     .when(on == Some(panel), |tab| tab.bg(rgb(look.fill)))
                     .child(
                         col()
                             .relative()
+                            .w_full()
+                            .h_full()
                             .items_center()
+                            .justify_center()
                             .gap(px(2.))
-                            .py(px(7.))
                             .child(icon(
                                 glyph,
                                 if on == Some(panel) {
@@ -1678,8 +1744,8 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                                         .role(Role::Status)
                                         .aria_label(format!("{}: {count}", title(panel)))
                                         .absolute()
-                                        .top(px(-4.))
-                                        .right(px(-8.))
+                                        .top(px(2.))
+                                        .right(px(6.))
                                         .min_w(px(16.))
                                         .h(px(16.))
                                         .px(px(3.))

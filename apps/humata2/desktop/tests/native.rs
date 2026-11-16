@@ -375,6 +375,22 @@ fn session_lifecycle_and_full_screen_reference_images() {
             false,
         ),
         (
+            "07-session-board-panel",
+            ThemeMode::Dark,
+            Status::Working,
+            Some(Panel::Board),
+            None,
+            false,
+        ),
+        (
+            "08-session-journal-panel",
+            ThemeMode::Light,
+            Status::Working,
+            Some(Panel::Journal),
+            None,
+            false,
+        ),
+        (
             "09-session-no-panel",
             ThemeMode::Dark,
             Status::Working,
@@ -401,7 +417,8 @@ fn session_lifecycle_and_full_screen_reference_images() {
         (
             "12-panel-full-screen-board",
             ThemeMode::Dark,
-            Status::Working,
+            // The golden's PAY-3 card asks to move to Done: Ledger needs you.
+            Status::NeedsYou,
             Some(Panel::Board),
             Some(FullScreen::Panel),
             false,
@@ -561,6 +578,18 @@ fn files_open_in_the_tab_row_and_close_back_to_the_terminal() {
 fn the_plus_menu_splits_once_and_joining_keeps_the_program_running() {
     let mut workspace = fixture::design();
     workspace.views.clear();
+    // Frame 14 shows the agent's plan only, before the question.
+    if let Some(ledger) = workspace
+        .sessions
+        .iter_mut()
+        .find(|x| x.id == SessionId::new("ledger"))
+        && let Some(end) = ledger
+            .transcript
+            .iter()
+            .position(|line| line.text.contains("Switch reads"))
+    {
+        ledger.transcript.truncate(end + 1);
+    }
     let mut app = App::new(workspace);
     app.open("ledger", Panel::Info);
     app.send(AppAction::Session(SessionAction::SetPanel(None)));
@@ -699,7 +728,18 @@ fn home_review_and_resume_act_on_their_own_rows() {
     );
     assert_eq!(app.ui.read(|s| s.panel()), Some(Panel::Inbox));
     app.click("rail-home");
-    app.click("home-needs-action-1");
+    // Home's Needs you group lists sessions in workspace order (HM-1).
+    let postgres = app.ui.read(|s| {
+        s.workspace
+            .sessions
+            .iter()
+            .filter(|x| !x.archived && matches!(x.status, Status::NeedsYou | Status::Exited { .. }))
+            .position(|x| x.id.as_str() == "postgres")
+    });
+    let Some(postgres) = postgres else {
+        panic!("the design workspace has an exited postgres session");
+    };
+    app.click(&format!("home-needs-action-{postgres}"));
     assert_eq!(
         app.ui.read(|s| s.session.open.clone()),
         Some(SessionId::new("postgres"))
@@ -945,7 +985,7 @@ fn layout_settings_keep_the_hidden_group_and_toggle_pinned_rows() {
     assert_eq!(app.ui.read(|s| s.settings.preferences.font_size), 13);
     app.send(AppAction::Settings(T::Section(Section::General)));
     app.click("settings-wrap");
-    assert!(!app.ui.read(|s| s.review.wrap));
+    assert!(app.ui.read(|s| s.review.wrap));
 }
 
 #[test]
@@ -1349,6 +1389,8 @@ fn wrapped_changes_align_the_gutter_and_switch_back_to_one_scrolling_row() {
         repo: "api".into(),
         path: "src/client.rs".into(),
     }));
+    // Diffs clip by default; this flow is about wrapped lines.
+    app.send(AppAction::Review(R::ToggleWrap));
     app.draw();
     app.cx
         .update_window(app.window, |_, window, _| {
@@ -1389,7 +1431,8 @@ fn wrapped_changes_align_the_gutter_and_switch_back_to_one_scrolling_row() {
 /// SE-23/24: pending messages are inspectable; writers belong to one terminal.
 #[test]
 fn queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab() {
-    let mut app = App::new(fixture::design());
+    // Other writers are named while the agent works (frame 01).
+    let mut app = App::new(fixture::design_session(Status::Working));
     app.open("ledger", Panel::Inbox);
     assert!(app.contains("terminal-peers-0"));
     app.send(AppAction::Session(SessionAction::SelectTab(1)));

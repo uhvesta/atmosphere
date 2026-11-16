@@ -12,11 +12,11 @@ use crate::session::{self, Panel};
 use crate::sidebar::Side;
 
 const fn empty(selected: &'static str) -> Side {
-    Side { selected, pinned: false, folded: false, desk: true, empty: true, fresh: None }
+    Side { desk: true, empty: true, ..Side::at(selected) }
 }
 
 const fn desk_side(selected: &'static str) -> Side {
-    Side { selected, pinned: false, folded: true, desk: true, empty: false, fresh: None }
+    Side { folded: true, desk: true, ..Side::at(selected) }
 }
 
 fn step(look: Look, glyph: IconName, title: &'static str, note: &'static str, action: Div) -> Div {
@@ -365,7 +365,7 @@ fn desk_screen(look: Look, side: Side, middle: Div, right: Div, panel: Panel) ->
 /// channels and asks before it makes a channel.
 pub fn board_session(look: Look) -> Div {
     let lines = vec![
-        tl(look.term_dim, "~/humata/desk/plan-q4 $ claude"),
+        tl(look.term_dim, "~/Humata/desk/plan-q4 $ claude"),
         tl(look.term_text, "> Plan Q4 for payments: add the backfill follow-ups, and make a"),
         tl(look.term_text, "  channel for the web revamp."),
         tl(look.term_text, ""),
@@ -390,7 +390,7 @@ pub fn board_session(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Working, "Plan Q4 board", "Claude Code · This Mac", true))
-        .child(place(look, "~/humata/desk/plan-q4", true, "This Mac", &[]))
+        .child(place(look, "~/Humata/desk/plan-q4", true, "This Mac", &[]))
         .child(desk_tabs(look, St::Working, 0, Some(("q4-plan.md", IconName::FileText))))
         .child(term(look, lines).child(div().flex_1()).child(session::input_box(look, true)));
     desk_screen(
@@ -487,15 +487,15 @@ fn desk_files(look: Look, machine: &'static str) -> Div {
 /// its shell.
 pub fn move_session(look: Look) -> Div {
     let lines = vec![
-        tl(look.term_dim, "~/humata/desk/brin-rfc $ humata desk move devbox-1"),
+        tl(look.term_dim, "~/Humata/desk/brin-rfc $ humata desk move devbox-1"),
         tl(look.term_text, "Copying 3 files to devbox-1… done"),
         tl(look.term_text, "claude restarts on devbox-1 with its conversation."),
-        tl(look.term_dim, "~/humata/desk/brin-rfc $ humata desk add acme/ledger acme/api"),
+        tl(look.term_dim, "~/Humata/desk/brin-rfc $ humata desk add acme/ledger acme/api"),
         tl(look.term_text, "Cloned acme/ledger (main) into ./ledger"),
         tl(look.term_text, "Cloned acme/api (main) into ./api"),
-        tl(look.term_dim, "~/humata/desk/brin-rfc $ humata desk keep"),
+        tl(look.term_dim, "~/Humata/desk/brin-rfc $ humata desk keep"),
         tl(look.term_text, "This folder stays after the session closes."),
-        tl(look.term_dim, "~/humata/desk/brin-rfc $ "),
+        tl(look.term_dim, "~/Humata/desk/brin-rfc $ "),
     ];
     let middle = div()
         .flex_1()
@@ -504,7 +504,7 @@ pub fn move_session(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", true))
-        .child(place(look, "~/humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(desk_tabs(look, St::Idle, 1, Some(("rfc-brin.md", IconName::FileText))))
         .child(term(look, lines));
     desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files)
@@ -578,7 +578,7 @@ pub fn doc_session(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", true))
-        .child(place(look, "~/humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(desk_tabs(look, St::Idle, 2, Some(("rfc-brin.md", IconName::FileText))))
         .child(doc);
     desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files)
@@ -619,7 +619,7 @@ pub fn new_desk(look: Look) -> Div {
                         .flex()
                         .flex_col()
                         .gap(px(8.))
-                        .child(radio(look, true, "A new scratch folder", "~/humata/desk/plan-q4 · deleted 7 days after you close it, unless you keep it"))
+                        .child(radio(look, true, "A new scratch folder", "~/Humata/desk/plan-q4 · deleted 7 days after you close it, unless you keep it"))
                         .child(radio(look, false, "A folder on the machine", "Pick one. Humata never deletes it.")),
                 ))
                 .child(row(
@@ -673,7 +673,7 @@ fn md_tab(look: Look, on: bool) -> Div {
 /// the terminal in one tab group, the rendered file in the other.
 pub fn split_review(look: Look) -> Div {
     let lines = vec![
-        tl(look.term_dim, "~/humata/desk/brin-rfc $ claude"),
+        tl(look.term_dim, "~/Humata/desk/brin-rfc $ claude"),
         tl(look.term_text, "> Write up the BRIN rollout as an RFC from bench-results.md."),
         tl(look.term_text, ""),
         tl(look.term_text, "● Read(notes/bench-results.md)"),
@@ -713,7 +713,7 @@ pub fn split_review(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
-        .child(place(look, "~/humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right));
     div()
         .size_full()
@@ -860,7 +860,7 @@ pub fn source_review(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
-        .child(place(look, "~/humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(group_row(
             look,
             vec![
@@ -884,7 +884,7 @@ pub fn source_review(look: Look) -> Div {
 /// at once: the terminal is one tab group, the file side by side the other.
 pub fn terminal_source_page(look: Look) -> Div {
     let lines = vec![
-        tl(look.term_dim, "~/humata/desk/brin-rfc $ claude"),
+        tl(look.term_dim, "~/Humata/desk/brin-rfc $ claude"),
         tl(look.term_text, "> Write up the BRIN rollout as an"),
         tl(look.term_text, "  RFC from bench-results.md."),
         tl(look.term_text, ""),
@@ -930,7 +930,7 @@ pub fn terminal_source_page(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
-        .child(place(look, "~/humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right));
     div()
         .size_full()

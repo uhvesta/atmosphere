@@ -50,6 +50,7 @@ Complementary "Info"
     text "ledger-schema"
     text "main clone"
     text "api"
+    text "ledger-schema"
     text "Survives restarts"
     text "Recovery has not been reported for this session."
     text "What this agent may do"
@@ -69,14 +70,12 @@ Button "Fork"
 Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
+Button "Open it"
 Button "Later"
 Button "Not now"
-Button "Open it"
 Tab "claude" selected
 Tab "zsh"
 Button "New terminal"
-#terminal-peers-0
-  text "1 other can type here"
 Dialog "Fork session" focused
   #input-4294967304 focused
     TextInput "Fork title" value="Review the migration" placeholder="What should the fork do?" focused

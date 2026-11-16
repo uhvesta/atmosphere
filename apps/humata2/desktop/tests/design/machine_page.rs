@@ -117,9 +117,9 @@ fn left(look: Look) -> Div {
                     card(look)
                         .overflow_hidden()
                         .child(session(St::NeedsYou, "Ledger schema migration", "# payments-rewrite", "Claude Code"))
-                        .child(session(St::Working, "Try BRIN index", "# payments-rewrite", "Claude Code"))
+                        .child(session(St::NeedsYou, "Try BRIN index", "# payments-rewrite", "Claude Code"))
                         .child(session(St::Working, "API rate limiter", "# payments-rewrite", "Codex"))
-                        .child(session(St::Idle, "Refund retries", "# payments-rewrite", "Copilot")),
+                        .child(session(St::Working, "Partial BRIN on posted_at", "# payments-rewrite", "Claude Code")),
                 ),
         )
         .child(

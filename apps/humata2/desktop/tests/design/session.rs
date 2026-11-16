@@ -101,7 +101,7 @@ fn header(look: Look, screen: Screen) -> Div {
                         .items_center()
                         .gap(px(7.))
                         .child(status(dot))
-                        .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child("Ledger schema migration"))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(screen.side.selected))
                         .children(words.map(|(words, hex)| div().text_size(px(11.5)).text_color(c(hex)).child(words))),
                 ),
         )
@@ -392,8 +392,18 @@ pub fn strip(look: Look, on: Option<Panel>) -> Div {
 
 /// The panel rail of the Ledger schema migration session: its Inbox count is
 /// its own pending request plus its fork Try BRIN's (the Inbox panel lists both).
-fn ledger_strip(look: Look, on: Option<Panel>) -> Div {
-    rail(look, on, Some("2"))
+/// The rail beside Ledger schema migration: its Inbox counts its own
+/// request only while it asks (`Side::asking`), plus its fork's.
+/// Another selected session (frame 16's fork) has nothing waiting.
+fn ledger_strip(look: Look, on: Option<Panel>, side: Side) -> Div {
+    let inbox = (side.selected == "Ledger schema migration").then_some(if side.asking { "2" } else { "1" });
+    rail(look, on, inbox)
+}
+
+/// `screen`'s sidebar: in a working terminal the session's own request
+/// isn't waiting, so its row is working too (D113 item 9).
+fn side(screen: Screen) -> Side {
+    Side { asking: screen.term != Term::Working, ..screen.side }
 }
 
 fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>) -> Div {
@@ -498,6 +508,15 @@ fn diff_lines(look: Look) -> Div {
 }
 
 pub fn comment(look: Look, who: &'static str, text: &'static str, draft: bool) -> Div {
+    comment_card(look, who, text, draft, false)
+}
+
+/// D126: a saved draft in the Diff panel can be sent on its own.
+fn draft_with_send(look: Look, who: &'static str, text: &'static str) -> Div {
+    comment_card(look, who, text, true, true)
+}
+
+fn comment_card(look: Look, who: &'static str, text: &'static str, draft: bool, send: bool) -> Div {
     div()
         .mx(px(10.))
         .my(px(6.))
@@ -517,7 +536,11 @@ pub fn comment(look: Look, who: &'static str, text: &'static str, draft: bool) -
                 .items_center()
                 .gap(px(6.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(who))
-                .when(draft, |row| row.child(chip(look, "Draft", look.accent))),
+                .when(draft, |row| row.child(chip(look, "Draft", look.accent)))
+                .when(send, |row| {
+                    row.child(div().flex_1())
+                        .child(div().px(px(6.)).text_size(px(11.)).text_color(c(look.accent)).child("Send"))
+                }),
         )
         .child(text)
 }
@@ -569,7 +592,7 @@ fn diff_panel(look: Look, full: bool) -> Div {
         )
         .child(diff_lines(look))
         .child(comment(look, "You", "Wrap the two writes in one transaction so a crash can't leave them out of step.", false))
-        .child(comment(look, "You", "Keep insert_legacy until the backfill ends.", true));
+        .child(draft_with_send(look, "You", "Keep insert_legacy until the backfill ends."));
     div()
         .flex_1()
         .min_h_0()
@@ -592,53 +615,7 @@ fn diff_panel(look: Look, full: bool) -> Div {
                 .border_color(c(look.line))
                 .child(secondary(look, "1 draft comment"))
                 .child(div().flex_1())
-                .child(button(look, Kind::Primary, "Send 2 comments")),
-        )
-}
-
-pub fn decision_card(look: Look, open: bool) -> Div {
-    let card = card(look).p(px(12.)).gap(px(8.)).text_size(px(12.5));
-    let top = div()
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .child(status(St::NeedsYou))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child("Move PAY-3 to Done"))
-        .child(div().flex_1())
-        .child(secondary(look, "2m"));
-    if !open {
-        return card
-            .child(top)
-            .child(secondary(look, "Claude Code in Ledger schema migration"));
-    }
-    card.border_color(c(ORANGE))
-        .child(top)
-        .child(secondary(look, "Claude Code in Ledger schema migration · board_item_move"))
-        .child(div().child(
-            "The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you.",
-        ))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .p(px(8.))
-                .rounded(px(6.))
-                .bg(c(look.fill))
-                .text_size(px(11.5))
-                .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child("Item")).child("PAY-3 Ledger schema"))
-                .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child("Move")).child("In progress → Done"))
-                .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child("Created by")).child("You, 3 days ago")),
-        )
-        .child(checkbox(look, false, "Allow this for the rest of the session"))
-        .child(
-            div()
-                .flex()
-                .gap(px(8.))
-                .child(button(look, Kind::Primary, "Allow"))
-                .child(button(look, Kind::Secondary, "Deny"))
-                .child(div().flex_1())
-                .child(button(look, Kind::Secondary, "Reply…")),
+                .child(button(look, Kind::Primary, "Send 1 comment")),
         )
 }
 
@@ -654,7 +631,7 @@ fn inbox_panel(look: Look, full: bool) -> Div {
                 .flex_col()
                 .gap(px(8.))
                 .p(px(10.))
-                .child(decision_card(look, true))
+                .child(crate::pages::request_card(look, false))
                 .child(
                     card(look)
                         .p(px(12.))
@@ -764,7 +741,7 @@ pub fn info_with(look: Look, full: bool, extra: Option<Div>) -> Div {
                     div()
                         .flex()
                         .flex_col()
-                        .child(kv("Agent", div().child("Claude Code · Opus")))
+                        .child(kv("Agent", div().child("Claude Code")))
                         .child(kv("Machine", div().child("devbox-1 · Ubuntu 24.04")))
                         .child(kv("Started", div().child("Today 11:40")))
                         .child(kv("Forks", div().flex().flex_col().gap(px(3.)).child(link("Try BRIN index")).child(link("Review the schema"))))
@@ -953,7 +930,8 @@ fn middle(look: Look, screen: Screen) -> Div {
                     .child(small_icon(IconName::Sparkles, PURPLE))
                     .child(div().flex_1().child("Claude Code prepared a view: Review: ledger schema"))
                     .child(button(look, Kind::Secondary, "Open it"))
-                    .child(div().text_color(c(look.secondary)).child("Later")),
+                    .child(div().text_color(c(look.secondary)).child("Later"))
+                    .child(div().text_color(c(look.secondary)).child("Not now")),
             )
         })
         .child(tabs(look, screen))
@@ -984,11 +962,11 @@ pub fn session(look: Look, screen: Screen) -> Div {
         }
         Fill::Columns => {}
     }
-    root.child(sidebar::sidebar(look, screen.side))
+    root.child(sidebar::sidebar(look, side(screen)))
         .child(handle(look, true))
         .child(middle(look, screen))
         .when_some(screen.panel, |root, which| root.child(handle(look, true)).child(panel(look, screen, which)))
-        .child(ledger_strip(look, screen.panel))
+        .child(ledger_strip(look, screen.panel, side(screen)))
 }
 
 /// The session screen with `body` as its right panel, `on` lit in the
@@ -999,12 +977,12 @@ pub fn session_with(look: Look, screen: Screen, on: Panel, title: &'static str, 
     if screen.fill == Fill::PanelFull {
         return root.child(panel_shell(look, true, title, body));
     }
-    root.child(sidebar::sidebar(look, screen.side))
+    root.child(sidebar::sidebar(look, side(screen)))
         .child(handle(look, true))
         .child(middle(look, screen))
         .child(handle(look, true))
         .child(panel_shell(look, false, title, body))
-        .child(ledger_strip(look, Some(on)))
+        .child(ledger_strip(look, Some(on), side(screen)))
 }
 
 /// A session-shaped screen from parts: the sidebar at `side`, `middle`
@@ -1148,5 +1126,5 @@ pub fn split(look: Look) -> Div {
                 .child(header(look, Screen::new(None, Term::NeedsYou)))
                 .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right)),
         )
-        .child(ledger_strip(look, None))
+        .child(ledger_strip(look, None, Side::at("Ledger schema migration")))
 }

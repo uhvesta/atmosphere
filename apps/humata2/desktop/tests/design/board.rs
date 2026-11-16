@@ -162,7 +162,7 @@ pub fn drawer(look: Look) -> Div {
         .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Ledger schema v2"))
         .child(line("Status", popup(look, "In progress")))
         .child(line("Channel", div().child("# payments-rewrite")))
-        .child(line("Sessions", div().flex().flex_col().gap(px(4.)).child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child("Ledger schema migration")).child(div().flex().items_center().gap(px(6.)).child(status(St::Working)).child("Try BRIN index"))))
+        .child(line("Sessions", div().flex().flex_col().gap(px(4.)).child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child("Ledger schema migration")).child(div().flex().items_center().gap(px(6.)).child(status(St::NeedsYou)).child("Try BRIN index"))))
         .child(line("Depends on", chip(look, "PAY-2 Currency codes ✓", look.secondary)))
         .child(hline(look))
         .child(
