@@ -1,6 +1,6 @@
 # FORK: Fork, move, archive and rebuild a session
 
-- **Status:** blocked
+- **Status:** done (closed 2026-11-16 at 50711fd6; close gate: 14 humatad flow suites, sessions:all and store:all, 34/34. Owed follow-ups stay in the Lane: the [Humata] notice line at the next agent start (needs revive/agent.rs, held by AWAY), Release carrying the compared fingerprint (proto), D222 an archive the box ran before the host restarted, D221 a re-asked context fork after both restart)
 - **Depends on:**
   - MACH: forks and moves across machines need the link
   - ASK: an agent's fork is an Inbox request

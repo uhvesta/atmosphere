@@ -1,6 +1,6 @@
 # SAFE: Nothing is lost, ever
 
-- **Status:** blocked
+- **Status:** open (lane SAFE, 2026-11-16)
 - **Depends on:**
   - MACH: add machine and install must exist to be cut
   - FORK: moves and forks must exist to be cut

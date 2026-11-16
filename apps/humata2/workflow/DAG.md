@@ -40,13 +40,13 @@ milestone file; agents read that file, not this one.
 | [MACH](milestones/MACH.md) | Work on another machine | L2 | daemon | FL: a remote session is a local session plus a link; FRAMES2: Add machine, the login dialog and the machine page have no frame yet | done (0bdf1434; not_built calls carried to SAFE/FILES follow-ups) |
 | [REVIEW](milestones/REVIEW.md) | Review what the agent changed, in code and in documents (0.2) | L3 | UI, then daemon seam | DESK: markdown comments and diff comments are one model; the document tab opens from the Desk too; FRAMES1: comment states and the comment box in a diff have no frame yet; FL*: sending comments needs a real terminal and turn ends; diffs need real clones | early lane open (REVIEW; closes after hard deps) |
 | [BOARD](milestones/BOARD.md) | Plan the work on boards | L2 | UI + daemon | ASK: agent board edits are access-checked and become requests answered on the item; LOOK2: the board, table, dashboard and item drawer are drawn there | done (this commit; owner's wave: how a session's own items are marked in its Board panel) |
-| [FORK](milestones/FORK.md) | Fork, move, archive and rebuild a session | L3 | daemon + UI | MACH: forks and moves across machines need the link; ASK: an agent's fork is an Inbox request; FRAMES2: Fork, Move, Archive with unpushed work and an archived session have no frame yet | in progress (lane FORK) |
+| [FORK](milestones/FORK.md) | Fork, move, archive and rebuild a session | L3 | daemon + UI | MACH: forks and moves across machines need the link; ASK: an agent's fork is an Inbox request; FRAMES2: Fork, Move, Archive with unpushed work and an archived session have no frame yet | done (50711fd6; owed follow-ups in its Lane) |
 | [FILES](milestones/FILES.md) | Move files and keep disks tidy | L3 | daemon + UI | MACH: transfers ride the machine link; Storage is per machine; FRAMES2: the file manager, transfers tray and Storage have no frame yet | done (0bdf1434; Storage per machine owed) |
 | [AWAY](milestones/AWAY.md) | Keep working with the host closed | L3 | daemon | MACH: away mode is machines without the host; ASK: a machine judges requests against a copy of the rules | in progress (lane AWAY) |
 | [FIND](milestones/FIND.md) | Find and reach anything | L3 | UI + daemon | MACH: search runs over the conversation mirror from every machine; LOOK2: the palette and the Pinned section are drawn there | done (this commit; owed §26.22 steps 1, 3, 4) |
 | [VIEWS](milestones/VIEWS.md) | Agents prepare views; I choose to open them | L4 | UI + daemon | ASK: preparing a view is rule-gated; REVIEW: a prepared review opens in the diff and editor; FRAMES2: the prepared view's tab and Showing bar have no frame yet | blocked |
 | [PR](milestones/PR.md) | Review a pull request with an agent beside me | L4 | UI + daemon | REVIEW: a PR review is the review surface plus drafts; ASK: the review chat's tools are scoped by access; FRAMES2: the PR dialog, review session and Submit review have no frame yet | blocked |
-| [SAFE](milestones/SAFE.md) | Nothing is lost, ever | L4 | daemon | MACH: add machine and install must exist to be cut; FORK: moves and forks must exist to be cut; FILES: transfers must exist to be cut | blocked |
+| [SAFE](milestones/SAFE.md) | Nothing is lost, ever | L4 | daemon | MACH: add machine and install must exist to be cut; FORK: moves and forks must exist to be cut; FILES: transfers must exist to be cut | open (lane SAFE) |
 | [LINUX](milestones/LINUX.md) | The same app on Linux | L5 | exclusive (nothing else builds) | SAFE: the owner's rule: the Linux batch runs only after all infrastructure work; ASK: its boundary suites are part of the batch; BUG: its suites are part of the batch | blocked |
 | [ANYHOST](milestones/ANYHOST.md) | Any client, any host | L6 | daemon | LINUX: a self-hosted host is a Linux host; its suites run in the VM | blocked |
 | [HOOKS](milestones/HOOKS.md) | Agents tell Humata when a turn ends and ask for approval in the Inbox, without terminal guesswork | L3 | daemon | ASK: asks land as Inbox requests; FL: turn ends already detected | done (0bdf1434; live hook checks owed) |
@@ -112,14 +112,14 @@ graph TD
   MACH["MACH: blocked"]
   REVIEW["REVIEW: blocked"]
   BOARD["BOARD: done"]
-  FORK["FORK: blocked"]
+  FORK["FORK: done"]
   FILES["FILES: blocked"]
   AWAY["AWAY: blocked"]
   HOOKS["HOOKS: open"]
   FIND["FIND: done"]
   VIEWS["VIEWS: blocked"]
   PR["PR: blocked"]
-  SAFE["SAFE: blocked"]
+  SAFE["SAFE: open"]
   LINUX["LINUX: blocked"]
   ANYHOST["ANYHOST: blocked"]
   V1["V1: blocked"]
