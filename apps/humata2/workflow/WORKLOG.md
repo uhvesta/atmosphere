@@ -34,6 +34,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 | minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
 | minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
+| minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (this commit) |
 
 ## Claims
 
@@ -43,8 +44,8 @@ Files a lane is editing. No two lanes claim the same file.
 |---|---|
 | C1 | `clients/src/{daemon,fixture,workspace}.rs`, `clients/tests/fake_daemon.rs`, `desktop/tests/native.rs`, `desktop/tests/__snapshots__/native/`, `features/app/src/lib.rs`, `features/session/src/lib.rs`, `ui/BUILD.bazel`, `ui/src/{lib,overlays,pages,session_tabs,shell}.rs`, its OVERVIEW pickup block |
 | P0 | `LAYOUT.md`, `api/{BOUNDARIES,MCP,GRPC}.md` ("Always let" → "Always allow"); `features/app/src/` (lib.rs and new sibling files); `clients/BUILD.bazel`, `clients/src/{daemon,fixture}.rs`, new `clients/src/{daemon,fixture}/`; `ui/src/overlays.rs` and new `ui/src/overlay_*.rs` (all clean in git status when claimed; not panels.rs, native.rs, ui/src/lib.rs) |
-| ASK | `daemon/humatad/src/{identity,restart,terminal_session,inbox,inbox/deferred,inbox/kept,grant_target,session_service,channel_service,terminal,files}.rs`, `daemon/humatad/tests/{auth,inbox,sessions,channels,files,terminal}.rs`, `daemon/humatad/tests/common/mod.rs` (additive), `workflow/milestones/ASK.md` Lane |
-| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal}.rs`, `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
+| ASK | batch 3: `clients/src/{model,workspace,daemon,fixture}.rs`, `clients/src/daemon/fake.rs`, `clients/src/daemon/fake/{inbox,access}.rs`, `clients/src/fixture/rules.rs`, `clients/src/fixture/requests.rs` (confirm with LOOK1), `clients/tests/access.rs`, `features/app/src/events.rs`, `features/settings/src/{lib,access}.rs`, `features/settings/tests/access.rs`, `features/inbox/src/lib.rs`, `features/inbox/tests/answers.rs`, `ui/src/{request_card,access,lists,channel}.rs`, `features/app/tests/inbox_flow.rs`, `workflow/milestones/ASK.md` Lane |
+| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal,machines,items,journal,files}.rs`, `terminal/pane/src/pane.rs`, `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
 
 ## Lanes
 
@@ -53,8 +54,9 @@ Each lane's plan, tasks and workers live in its milestone file
 
 | Lane | Milestone file | Manager | Workers running | State |
 |---|---|---|---|---|
-| ASK | `milestones/ASK.md` | minion ASK | sec15, cards, handlers | batch 2 (daemon): SEC-15, deferred card previews + store flag, more handlers deferred |
+| ASK | `milestones/ASK.md` | minion ASK | client, access, card, access-ui | batch 3 (app on fakes): IN-9 card, Agent access tab, flow §26.4 headless |
 | LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
+| FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (this commit) |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
 Old template, kept for reference:
@@ -106,3 +108,10 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: owner approved frames 44–55 with main's picks (FRAMES1 asked for the 45 Cancel + failed/Retry change) and reads allowed by default (D127.4, sent to ASK). C1 stopped (9e185a5b, C1_HANDOFF.md); its D126 committed, ASK's renumbered D127 (e5ac5a24). Opened LOOK1 as a workflow lane, manager minion LOOK1.
 - 2026-11-15 main: FRAMES1 recorded with the 45 change; design_test pass, 01–43 unchanged. Closed FRAMES1: 59340201. Claims released.
 - 2026-11-15 main: opened FRAMES2 (docs lane), manager minion FRAMES2 (Opus 5.5).
+- 2026-11-15 main: ASK batch 2 reported (B1 SEC-15, B2 previews + Always allow, B3 more handlers defer, B4 reads Allow). Main applied S6 (store InboxEntry.deferred=5), S7 (Authenticate store+Kernel), S8 (feed/inbox before Terminals; TerminalsConfig.inbox). Gate running: //apps/humata2/daemon/... + cli.
+- 2026-11-15 main: ASK batch 2 gate: build green, 70 pass, 3 fail (refusals_test GlobalRead default; auth_test SEC-15 x2; deferred always_allow). Diagnostics sent to minion ASK.
+- 2026-11-15 main: ASK batch 2 gate 73/73. Committed 970e4b28 (+ hash-fill), pushed. D127 items 7, 11–13 logged. ASK next: the app half (flow §26.4, IN-9 card, Agent access tab).
+- 2026-11-15 main: FRAMES2 batch 1 recorded (56–71 new, 01–55 unchanged); 4 frame fixes sent (62 overflow/radio, 63 backdrop, 71 tick, 59 optional).
+- 2026-11-15 main: LOOK1 batches 1–2 reported (D126 per-comment Send; frame audit fixes). Gate running: desktop/ui/features/clients/pane. Owner questions queued: 03/04 wording, frame 50 hint vs D126, frames 05/01 counts.
+- 2026-11-15 main: FRAMES2 fixes re-recorded (59, 62, 63, 71). Owner approved 56–71 as drawn, D11 (a) as frame 71, and LOOK1's fixes to frames 50/01/05 (handed to LOOK1). Closed FRAMES2; claims released.
+- 2026-11-15 main: ASK batch 3 seams applied (ui mods, OpenRequest arm). Gate 3: features/clients mostly green; sent ASK ui/access.rs Role::Radio + settings access_test, LOOK1 messages_test batch order.

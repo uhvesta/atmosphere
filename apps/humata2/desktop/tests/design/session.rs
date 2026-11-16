@@ -173,7 +173,7 @@ fn tabs(look: Look, screen: Screen) -> Div {
 
 /// A line Humata writes into the terminal, set apart from the program's
 /// own output.
-fn notice(look: Look, glyph: IconName, hex: u32, text: &'static str, action: Option<&'static str>) -> Div {
+pub fn notice(look: Look, glyph: IconName, hex: u32, text: &'static str, action: Option<&'static str>) -> Div {
     div()
         .mt(px(10.))
         .flex()
@@ -191,7 +191,7 @@ fn notice(look: Look, glyph: IconName, hex: u32, text: &'static str, action: Opt
         .children(action.map(|action| button(look, Kind::Secondary, action)))
 }
 
-fn transcript(look: Look) -> Vec<Div> {
+pub fn transcript(look: Look) -> Vec<Div> {
     vec![
         tl(look.term_dim, "~/src/ledger (ledger-schema) $ claude"),
         tl(look.term_text, "> Design the ledger schema from PAY-3 and move the reads over."),
@@ -995,6 +995,69 @@ pub fn session_with(look: Look, screen: Screen, on: Panel, title: &'static str, 
         .child(handle(look, true))
         .child(panel_shell(look, false, title, body))
         .child(strip(look, Some(on)))
+}
+
+/// A session-shaped screen from parts: the sidebar at `side`, `middle`
+/// (a header, tabs and body the frame draws itself) and, when given, a
+/// right panel (`on` lit in the strip, `title`, `body`). For the frames
+/// whose header or terminal show a state the stock screen doesn't.
+pub fn shell(look: Look, side: Side, middle: Div, panel: Option<(Panel, &'static str, Div)>) -> Div {
+    let on = panel.as_ref().map(|(on, _, _)| *on);
+    div()
+        .size_full()
+        .flex()
+        .child(sidebar::sidebar(look, side))
+        .child(handle(look, true))
+        .child(middle.flex_1().min_w_0().h_full().flex().flex_col())
+        .when_some(panel, |root, (_, title, body)| root.child(handle(look, true)).child(panel_shell(look, false, title, body)))
+        .child(strip(look, on))
+}
+
+/// A session header like the stock one, with the words given: `crumb`
+/// over the title, the status dot, `words` beside the title, then `right`
+/// before the Fork, full screen, panel and menu icons.
+pub fn header_with(look: Look, crumb: &'static str, dot: St, title: &'static str, words: Option<(&'static str, u32)>, right: Vec<Div>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .h(px(52.))
+        .px(px(16.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(c(look.line))
+        .bg(c(look.content))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .text_size(px(11.5))
+                        .text_color(c(look.secondary))
+                        .child(div().text_color(c(look.accent)).child(crumb))
+                        .child("›"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.))
+                        .child(status(dot))
+                        .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(14.)).child(title))
+                        .children(words.map(|(words, hex)| div().text_size(px(11.5)).text_color(c(hex)).child(words))),
+                ),
+        )
+        .child(div().flex_1())
+        .children(right)
+        .child(icon(IconName::GitFork, look.secondary))
+        .child(icon(IconName::Maximize2, look.secondary))
+        .child(icon(IconName::PanelRight, look.accent))
+        .child(icon(IconName::Ellipsis, look.secondary))
 }
 
 /// One tab group's row in a split: the same tabs as a lone terminal,

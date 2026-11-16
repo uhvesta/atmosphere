@@ -499,3 +499,10 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli:all` 73/73 pass (lint included).
 - Known gaps: the holder pid isn't cached (SEC-15 walks the process tree per call); global board writes have no Ask capability yet (BOARD); grants don't end on archive/delete.
 - Look at: `daemon/humatad/src/identity.rs`, `inbox/deferred.rs`, `terminal.rs`; `tests/auth.rs` release-daemon test.
+
+### (this commit): design frames 56–71 (minion FRAMES2, owner approved 2026-11-15)
+- New goldens: 56 add machine, 57 its login step, 58 unattended setup, 59 machine page (Overview with the four rule rows), 60 machine storage, 61 file manager, 62 fork dialog, 63 move dialog, 64 session moving, 65 archive with unpushed work, 66 archived session, 67 PR review dialog, 68 PR review session, 69 submit review, 70 a prepared view's tab with Showing, 71 delete channel (D11 settled as (a)).
+- Verified: `bazel run //apps/humata2/desktop:design_test_record` passed with frames 01–55 unchanged byte for byte. design_test couldn't run again after the last recording because ASK's uncommitted ui code didn't build at the time.
+- Known gaps: FRAMES2's 13 guesses where SPEC is silent are listed in `workflow/milestones/FRAMES2.md` › Lane; the owner approved the frames as drawn. `desktop/tests/design/` is still not rustfmt-formatted.
+- Look at: `desktop/tests/design/{machines,machine_page,files,fork_move,archive,pr_review,views}.rs`; the 16 PNGs.
+

@@ -40,6 +40,20 @@ mod resume;
 mod session;
 #[path = "design/sidebar.rs"]
 mod sidebar;
+#[path = "design/archive.rs"]
+mod archive;
+#[path = "design/files.rs"]
+mod files;
+#[path = "design/fork_move.rs"]
+mod fork_move;
+#[path = "design/machine_page.rs"]
+mod machine_page;
+#[path = "design/machines.rs"]
+mod machines;
+#[path = "design/pr_review.rs"]
+mod pr_review;
+#[path = "design/views.rs"]
+mod views;
 
 use gpui_kit::{prelude::*, *};
 use humata2_engine::Resources;
@@ -209,6 +223,24 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("53-comment-archived-toast", DARK, comments::archived),
     ("54-info-archived", LIGHT, comments::info_archived),
     ("55-desk-clean-up", LIGHT, cleanup::clean_up),
+    // Drafts (minion FRAMES2, 2026-11-15): stay drafts until the owner
+    // signs them off (milestone FRAMES2).
+    ("56-add-machine", LIGHT, machines::add_machine),
+    ("57-add-machine-login", DARK, machines::add_machine_login),
+    ("58-add-machine-unattended", LIGHT, machines::add_machine_unattended),
+    ("59-machine-page", LIGHT, machine_page::machine),
+    ("60-machine-storage", DARK, machine_page::storage),
+    ("61-file-manager", LIGHT, files::file_manager),
+    ("62-fork-dialog", LIGHT, fork_move::fork),
+    ("63-move-dialog", DARK, fork_move::move_dialog),
+    ("64-session-moving", DARK, fork_move::moving),
+    ("65-archive-unpushed", LIGHT, archive::archive_unpushed),
+    ("66-archived-session", DARK, archive::archived),
+    ("67-pr-review-dialog", LIGHT, pr_review::review_dialog),
+    ("68-pr-review-session", DARK, pr_review::review_session),
+    ("69-pr-submit-review", LIGHT, pr_review::submit_review),
+    ("70-view-tab-showing", LIGHT, views::view_tab),
+    ("71-delete-channel", DARK, archive::delete_channel),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.

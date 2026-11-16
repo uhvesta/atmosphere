@@ -75,7 +75,7 @@ Status: **open** (waiting for the user) · **decided**.
 - Humata 1's Zig-in-Bazel setup for GhosttyKit is reused to build it.
 - Fallback: alacritty_terminal behind the same interface.
 
-## D11: Deleting a channel (REVIEW H7). Open
+## D11: Deleting a channel (REVIEW H7). Settled (a), owner 2026-11-15
 - **Problem:** the spec can create, rename and change a channel, but nothing removes one.
 - **Options:**
   - (a) **Delete channel…** sends everything of the channel to trash, after the unpushed-work check; restorable for 30 days.
@@ -84,6 +84,7 @@ Status: **open** (waiting for the user) · **decided**.
 - **Provisional:** (a). It matches how sessions are deleted (LD-5) and nothing is lost for 30 days. User-only; agents can never delete a channel.
 - **Affects:** CH-24, CH-25, LD-6, the channel page's menu.
 - **Reverse:** narrow it to (b) by refusing while the channel has sessions.
+- **Owner, 2026-11-15:** (a) as frame 71 draws it: everything goes to each host's trash for 30 days, and a session with unpushed work blocks the delete until its own "Delete that work" is ticked.
 
 ## D12: Secrets in the conversation mirror (REVIEW H8). Open
 - **Problem:** the mirror copies every transcript to the Mac (LD-8). Agents often print environment values and tokens, so host variable values reach the Mac inside transcripts, against SEC-1.
@@ -943,3 +944,6 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 11. Batch 2: SEC-15 checks that a tab token comes from a process in that tab's process tree. On a mismatch the tab's token is revoked and IDENTITY_MISUSED is logged; `--admin` test daemons skip the check. **Follow-up:** cache the holder pid.
 12. Batch 2: channel, session and terminal handlers that write defer to the Inbox; streams never defer. `Terminals` wraps `Arc<Core>` (Deref) so a deferred call can run later.
 13. Follow-ups: global board writes need their own Ask capability when BOARD is built; grants end on archive/delete later.
+14. ASK batch 3 (app side): the Agent access reducer lives in the settings crate; a second change to a rule row while the first is still saving is ignored; "Change this rule" sends go-to-channel then the Agent access tab as two actions (fold into one action if the order proves unreliable); the grant checkbox is drawn by hand until the kit has one.
+15. The comment-resolve row (`own_comments_read`, default Allow) stays in IN-17 and frame 49 even though the proto marks that capability deprecated. **Ask the owner:** drop the row, or show it as "Always · no setting" (recommended).
+16. The proto comment says `global_read` defaults to Ask me; SPEC and item 4 say Allow. Fix the proto comment.
