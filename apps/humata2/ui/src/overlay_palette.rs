@@ -48,10 +48,11 @@ impl Overlays {
             }
             list = list.child(
                 div()
+                    .flex_shrink_0()
                     .px(px(16.))
                     .pt(px(8.))
                     .pb(px(3.))
-                    .text_size(px(11.5))
+                    .text_size(px(11.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(look.secondary))
                     .child(name),
@@ -91,6 +92,7 @@ impl Overlays {
                     .role(Role::ListBoxOption)
                     .aria_label(entry.title.clone())
                     .aria_selected(selected)
+                    .flex_shrink_0()
                     .h(px(32.))
                     .mx(px(6.))
                     .px(px(10.))
@@ -100,7 +102,7 @@ impl Overlays {
                     .when(selected, |x| {
                         x.bg(rgb(look.selection)).text_color(rgb(0xffffff))
                     })
-                    .child(chrome::icon(glyph, color, 14.))
+                    .child(chrome::icon(glyph, color, 15.))
                     .child(
                         div()
                             .min_w_0()
@@ -157,22 +159,43 @@ impl Overlays {
         });
         // The cursor past the entries is on a hit, as a place in the hits.
         let selected = palette.cursor.checked_sub(palette.entries.len());
-        list = list.children(ui.read(|s| {
+        let (conversations, no_hits, loading, failed) = ui.read(|s| {
             // Moving a session asks for a machine, not a conversation.
-            if s.palette.asking.is_some() {
-                return None;
-            }
-            let offline = |machine: &humata2_clients::model::MachineId| {
-                s.workspace.machines.iter().any(|m| &m.id == machine && !m.online)
+            let conversations = if s.palette.asking.is_some() {
+                None
+            } else {
+                let offline = |machine: &humata2_clients::model::MachineId| {
+                    s.workspace.machines.iter().any(|m| &m.id == machine && !m.online)
+                };
+                crate::palette_hits::conversations(&s.find, selected, &offline, look, &send_find)
             };
-            crate::palette_hits::conversations(&s.find, selected, &offline, look, &send_find)
-        }));
-        if palette.entries.is_empty() {
+            (
+                conversations,
+                s.find.hits.is_empty(),
+                s.find.loading,
+                s.find.error.is_some(),
+            )
+        });
+        list = list.children(conversations);
+        // One empty-state line when nothing is listed at all. A failed search
+        // says so in its own line, so this one stays away.
+        if palette.entries.is_empty() && no_hits && !failed {
+            let text = if loading {
+                "Searching every machine's conversations…".to_owned()
+            } else if crate::palette_hits::searchable(&palette.query) {
+                format!(
+                    "Nothing matches “{}”. Try fewer letters or fewer words.",
+                    palette.query.trim()
+                )
+            } else {
+                "Nothing matches. Try fewer letters.".to_owned()
+            };
             list = list.child(
                 div()
+                    .flex_shrink_0()
                     .p(px(16.))
                     .text_color(rgb(look.secondary))
-                    .child("Nothing matches. Try fewer letters."),
+                    .child(text),
             );
         }
         col()
@@ -216,10 +239,11 @@ impl Overlays {
                     .gap(px(10.))
                     .border_b_1()
                     .border_color(rgb(look.line))
-                    .child(chrome::icon(IconName::Search, look.secondary, 14.))
+                    .child(chrome::icon(IconName::Search, look.secondary, 15.))
                     .child(
-                        // Frame 30: the text starts one gap after the icon; the input's own pad is 8 pt.
-                        div().flex_1().ml(px(-8.)).child(
+                        // Frame 30: the text starts one gap after the icon. The icon is 15 pt
+                        // and the input's own pad is 8 pt, so the margin is -9 pt.
+                        div().flex_1().ml(px(-9.)).child(
                             Input::new(&self.query)
                                 .aria_label("Search commands")
                                 .appearance(false)

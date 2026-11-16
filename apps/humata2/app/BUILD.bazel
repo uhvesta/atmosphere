@@ -46,3 +46,21 @@ filegroup(
     ],
     tags = ["starlark"],
 )
+
+# Humata 2 (fakes).app: the same window on the made-up workspace, for trying
+# the screens against the design frames (LOOK2). It never installs or starts
+# the host tools.
+humata2_app(
+    name = "app_fakes",
+    bundle_id = HUMATA2_BUNDLE_ID + ".fakes",
+    executable = "//apps/humata2/desktop:humata2_fakes",
+    icon = "//apps/humata2/app/icon:icns",
+    infoplist = "Info.fakes.plist",
+    notices = "@humata2_notices//:THIRD_PARTY_NOTICES.txt",
+    platform = "darwin-arm64",
+    target_compatible_with = [
+        "@platforms//cpu:arm64",
+        "@platforms//os:macos",
+    ],
+    tools = "//apps/humata2/daemon/humatad:tools_mac",
+)

@@ -1,5 +1,6 @@
-//! Home's "Needs you" rows: a session that needs the person, or that has a
-//! pending Inbox request, and a pending request with no session of its own.
+//! Home's "Needs you" rows (HM-1, D158.7): a session whose agent waits on its
+//! own request, that exited or that is offline, and a pending request with no
+//! session on Home. A request on a working or idle session leaves it where it is.
 use humata2_app::{NeedsRow, needs_you};
 use humata2_clients::model::{Request, Session, Status};
 use humata2_clients::{Workspace, fixture};
@@ -16,27 +17,58 @@ fn pending_request(session: &Session) -> Request {
     request
 }
 
-#[test]
-fn a_pending_request_on_an_idle_session_puts_that_session_in_needs_you() {
+/// A workspace with one session in `status` and one pending request on it.
+fn one_session(status: Status) -> (Workspace, Session, Request) {
     let mut workspace = fixture::design();
-    let session = workspace
+    let mut session = workspace
         .sessions
         .iter()
-        .find(|session| session.status == Status::Idle && !session.archived)
-        .expect("the design fixture has an idle session")
+        .find(|session| !session.archived)
+        .expect("the design fixture has a session")
         .clone();
+    session.status = status;
     workspace.sessions = vec![session.clone()];
     let request = pending_request(&session);
     workspace.requests = vec![request.clone()];
+    (workspace, session, request)
+}
+
+#[test]
+fn a_session_waiting_on_its_own_request_needs_you_with_that_request() {
+    let (workspace, session, request) = one_session(Status::NeedsYou);
 
     let summary = needs_you(&workspace);
 
-    assert_eq!(summary.len(), 1);
     assert!(matches!(
         summary.rows.as_slice(),
         [NeedsRow::Session { session: listed, request: Some(asked) }]
             if listed.id == session.id && asked.id == request.id
     ));
+}
+
+#[test]
+fn a_request_on_a_working_or_idle_session_leaves_needs_you_empty() {
+    for status in [Status::Working, Status::Idle] {
+        let (workspace, _, _) = one_session(status);
+        assert!(needs_you(&workspace).is_empty(), "{status:?}");
+    }
+}
+
+#[test]
+fn an_exited_or_offline_session_needs_you_without_a_request_to_review() {
+    for status in [Status::Exited { code: 1 }, Status::Offline] {
+        let (workspace, session, _) = one_session(status);
+
+        let summary = needs_you(&workspace);
+
+        assert!(
+            matches!(
+                summary.rows.as_slice(),
+                [NeedsRow::Session { session: listed, request: None }] if listed.id == session.id
+            ),
+            "{status:?}"
+        );
+    }
 }
 
 #[test]
@@ -49,11 +81,29 @@ fn a_pending_request_with_no_session_gets_its_own_row() {
 
     let summary = needs_you(&workspace);
 
-    assert_eq!(summary.len(), 1);
     assert!(matches!(
         summary.rows.as_slice(),
         [NeedsRow::Request(asked)] if asked.id == request.id
     ));
+}
+
+#[test]
+fn the_design_workspace_lists_the_sessions_frame_25_draws() {
+    let workspace = fixture::design();
+
+    let titles: Vec<&str> = needs_you(&workspace)
+        .rows
+        .iter()
+        .map(|row| match row {
+            NeedsRow::Session { session, .. } => session.title.as_str(),
+            NeedsRow::Request(request) => request.title.as_str(),
+        })
+        .collect();
+
+    assert_eq!(
+        titles,
+        ["Ledger schema migration", "Try BRIN index", "Upgrade Postgres 17"]
+    );
 }
 
 #[test]

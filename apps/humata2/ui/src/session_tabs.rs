@@ -498,29 +498,37 @@ pub(crate) fn body(
                                     offer.title
                                 )),
                         )
-                        .child(widgets::send(
+                        .child(widgets::push_quiet(
                             ui,
                             "offer-open",
                             "Open it",
                             AppAction::Views(ViewsAction::Accept(offer.title.clone())),
+                            look,
+                        ))
+                        .child(
+                            widgets::ghost_in(
+                                look,
+                                ui,
+                                "offer-later",
+                                "Later",
+                                AppAction::Views(ViewsAction::Later(offer.title.clone())),
+                            )
+                            .bg(transparent_black())
+                            .border_color(transparent_black())
+                            .text_color(rgb(look.secondary)),
                         )
-                        .outline()
-                        .h(px(24.))
-                        .px(px(11.))
-                        .bg(rgb(look.fill))
-                        .text_size(px(12.)))
-                            .child(widgets::ghost_in(look,
-                            ui,
-                            "offer-later",
-                            "Later",
-                            AppAction::Views(ViewsAction::Later(offer.title.clone())),
-                        ))
-                        .child(widgets::ghost_in(look,
-                            ui,
-                            "offer-dismiss",
-                            "Not now",
-                            AppAction::Views(ViewsAction::Dismiss(offer.title.clone())),
-                        ))
+                        .child(
+                            widgets::ghost_in(
+                                look,
+                                ui,
+                                "offer-dismiss",
+                                "Not now",
+                                AppAction::Views(ViewsAction::Dismiss(offer.title.clone())),
+                            )
+                            .bg(transparent_black())
+                            .border_color(transparent_black())
+                            .text_color(rgb(look.secondary)),
+                        )
                 }),
         )
         .children(state.session.error.clone().map(|error| {

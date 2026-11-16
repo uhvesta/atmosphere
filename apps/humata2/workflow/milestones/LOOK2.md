@@ -1,6 +1,6 @@
 # LOOK2: Every other screen looks like the goldens
 
-- **Status:** blocked
+- **Status:** done (look_test passes every frame under 0.5%; `app_fakes` built and installed as Humata 2 (fakes))
 - **Depends on:**
   - LOOK1: shares the shell, theme and sidebar; and C1 must release the UI files
   - P0: the panels and native tests must be split before a second manager edits them
@@ -93,7 +93,15 @@ Manager: minion LOOK2 (Fable 5.2 high), opened 2026-11-15 while LOOK1's last bat
     - [ ] W5 toast (T13) · manager · `look2/seams/seam_toast_frees.py`: the archive reply carries the freed size; main applies it.
   - Left for the close:
     - [ ] a last look at the captures main records for batch 3 and the wave, then main cuts and installs the release on fakes
-- **Waiting on:** main: the gate for batch 3 and the wave, with the two seams.
+- **Close pass (minion LOOK2, Opus 5.5, 2026-11-16).** Audit of 18–35 on the g80 captures (page area, 2 pt blocks; Haiku audits plus `look2/close/sim.py`): 18–23, 28, 34, 35 match; 24, 26, 27, 29, 31 differ only where a ruling accepts it once masked; 25 and 32 miss D158.7 on Home; 30 misses on row pitch and an empty Conversations group; 32's Undo is a button. Plan, with the seams in the scratchpad `look2/close/seams/SEAMS.md`:
+    - [x] C1 Home follows dot rule B · manager · `ui/src/lists.rs` (`asks()`: "Asks to move PAY-3 to Done") · seam S1 for main: `features/app/src/home.rs` and `features/app/tests/home_needs_you.rs` (Needs you is NeedsYou, Exited or Offline; exited rows say why and offer Resume).
+    - [x] C2 New session and Settings nits · manager · `ui/src/overlay_new_session.rs` ("11 GB free" and the Branch line top-aligned, First message 12.5 pt), `ui/src/settings.rs` (nav icons 15 pt).
+    - [x] C3 the automated comparison · manager · new `desktop/tests/look.rs` (`look_test`: page right of the sidebar, 2 pt blocks, channel 48, budget 0.5%, one mask per accepted ruling) · seam S2: the BUILD target.
+    - [ ] C4 palette (Fable ruling: hide an empty Conversations group; rows don't shrink; 11 pt headers, 15 pt icons) · FIND's files, seam S4.
+    - [ ] C5 toast Undo as text (BUG2's `ui/src/overlay_toasts.rs`), board Filter placeholder colour (BOARD's `ui/src/board.rs`), request card radius 9 · seams S5, S6.
+    - [ ] C6 release on fakes · seam S3: `:humata2_fakes` binary (`HUMATA2_BACKEND=fakes`), `//apps/humata2/app:app_fakes` ("Humata 2 (fakes)", bundle id `.fakes`), installed beside the live app. 0.1.0 always runs live from its bundle, so it doesn't count.
+  - Exit: `look_test` passes, `native_test` passes but the queue test (another lane's), goldens unchanged, `Humata 2 (fakes).app` in /Applications.
+- **Waiting on:** main: seams S1–S3 and the gate in `look2/close/seams/SEAMS.md`; FIND, BUG2 and BOARD (or main) for S4–S6.
 - **Seams for main:** the scratchpad `look2/seams/seams_wave.md`: Escape closes the font list (`features/app/src/overlay.rs`), and `seam_toast_frees.py`. It also lists every file the wave changed, the goldens that re-record and what the ruling left inconsistent (frames 46, 47, 49, 71).
 - **Build gates (batch 3 + wave):** `bazel build //apps/humata2/clients //apps/humata2/ui //apps/humata2/desktop:humata2`; `bazel test //apps/humata2/clients/... //apps/humata2/features/... //apps/humata2/ui:ui_unit_test`; `bazel run //apps/humata2/desktop:design_test_record` then `bazel test //apps/humata2/desktop:design_test` (only the twenty goldens above, plus DESK's own, may change); record `//apps/humata2/desktop:native_test_record`, `:panels_test_record`, `:shell_test_record`; then `bazel test //apps/humata2/desktop:native_test //apps/humata2/desktop:panels_test //apps/humata2/desktop:shell_test //apps/humata2/desktop:report_test`.
 - **Close check (minion BUG2-LOOK2, 2026-11-15, after g74):** every W1 item and seam is in the tree (no `SplitGroups`, no model picker, `Session.last_used` drawn in the Sessions table, ⌘, and the Settings… menu item, Edit and Window menus, Escape closes the font list, the toast's "Frees n when this closes."). g74: `features/{settings,board,inbox,palette}`, `ui:ui_unit_test`, `desktop:shell_test` pass. `desktop:native_test`, `:panels_test` and `:design_test` fail only on other lanes' intended view changes that need re-recording: MACH's tool versions on the Hosts row (28-hosts), REVIEW3's diff gutter as comment buttons and the placed comment (01, 30 and the changes captures behind them), the Preview/Source/Side by side RadioGroup, and DESK's frames (37, 40, 55, desk-document). No LOOK2 regression is among them.

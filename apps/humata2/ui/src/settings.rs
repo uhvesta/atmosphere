@@ -192,7 +192,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                     .child(chrome::icon(
                         glyph,
                         if selected { 0xffffff } else { look.accent },
-                        14.,
+                        15.,
                     ))
                     .child(name)
                     .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::Section(section)), cx))

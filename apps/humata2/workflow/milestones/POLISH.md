@@ -33,3 +33,5 @@ and about 134 raw hex colours across ui/src skip `Look` entirely.
 - Item 6: not app chrome. The composer box is the agent TUI's own box-drawing output inside the terminal, so the app has nothing to change; the golden idealises it. Closed with no change.
 - Item 5: handed off to FIND (sidebar).
 Lane closed 2026-11-16.
+- Item 10, done: offer banner. Open it is primary, Later is bordered, Not now is a local ghost (session_tabs.rs). Frames 03/04-session-needs-you. Folder 10-offer-banner-primary. Note: golden 03 draws Open it as secondary and Later/Not now as text; the prototype's primary button was followed.
+- Item 10b: goldens win (D76). Open it is secondary grey; Later and Not now are plain text. session_tabs.rs. Folder 10b-offer-banner-golden.

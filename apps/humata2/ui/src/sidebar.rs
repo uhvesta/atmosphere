@@ -606,7 +606,7 @@ impl Render for Sidebar {
                     look,
                 ))
             })
-            .child(chrome::section(look, "Hosts"))
+            .child(chrome::section(look, "Hosts").mt(px(-3.)))
             .children(machines.into_iter().enumerate().map(|(index, m)| {
                 let ui = ui.clone();
                 row()

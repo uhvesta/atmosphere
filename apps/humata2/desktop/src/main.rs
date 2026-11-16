@@ -140,7 +140,13 @@ impl Args {
             Ok(home) => (home, None),
             Err(source) => (PathBuf::new(), Some(source)),
         };
-        let backend = live::backend(live_flag, socket, exe, &home);
+        // The "Humata 2 (fakes)" app (//apps/humata2/app:app_fakes) runs on
+        // the made-up workspace even from a bundle.
+        let backend = if option_env!("HUMATA2_BACKEND") == Some("fakes") {
+            live::Backend::Fakes
+        } else {
+            live::backend(live_flag, socket, exe, &home)
+        };
         let needs_home = data.is_none() || backend != live::Backend::Fakes;
         if let Some(source) = no_home
             && needs_home

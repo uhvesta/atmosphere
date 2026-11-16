@@ -1793,3 +1793,58 @@ SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bas
 - **Pick:** a box does nothing to incoming stages at startup. The host's journal is the record. When the host's take-back on the target fails (the box is offline), the journal stays open, so the host retries the undo when that box's link comes back (a push, no polling). After a successful switch, the host also removes the target's stage, never its session. A paused agent on the source is saved Stopped, so a restart never resumes it.
 - **Gap:** if the host's journal itself is lost, the target's stages are orphaned. That becomes a doctor action the user confirms, never an automatic delete.
 - **Reverse:** a box-side startup rule that drops incoming stages whose agent isn't running.
+
+## D208: A context-only fork runs only on its parent's machine (FORK manager; picked by a Fable 5.2 high subagent, 2026-11-16). Settled (reversible)
+- **Pick:** a context-only fork works in its parent's clones (D185), and agent CLIs work only in a local folder with their own file tools and shell, so it runs where those clones are. Asked for onto another machine, ForkSession and PreviewFork refuse it as a failed precondition that says to fork code + context there instead. FK-8 is amended to say so. In FK-3, the machine row offers only the parent's machine for context only, and picking another machine switches the kind to code + context with a one-line reason.
+- **Why:** a network mount of the parent's folder (B) puts every git status, grep and build on a network filesystem, hangs the agent when the link drops, needs FUSE on every machine, and brings back the mounts D181 turned down. A two-way sync (C) makes two trees, which is what D185 says context only is not, and adds conflicts, `.git` index races and watchers on both sides. Running the agent on the parent's machine under the other machine's label (D) is a misleading status. What "another machine" is wanted for is that machine's compute or toolchain, and only a local copy gives that, which code + context already does (FK-12).
+- Same machine only also amends D185 and D187.
+- **Reverse:** restore FK-8's cross-machine clause and build a link-carried mount of the parent's session folder on the target, gated by the cross-machine read and write rules.
+
+## D209: The palette hides an empty Conversations group (LOOK2 manager; picked by a Fable 5.2 high subagent, 2026-11-16). Settled (reversible)
+- **Pick:** the palette shows its Conversations group only when it has hits, a next page or an error. While a search loads with no hits, nothing is shown if the palette has other entries. With no entries and no hits it shows one line: "Searching every machine's conversations…" while loading, otherwise a "Nothing matches" line that suggests fewer letters (and fewer words for a query of two or more characters).
+- **Why:** frame 30 has no empty group, and an empty header with a spinner under real entries is clutter that offers nothing to act on.
+- **Reverse:** return the group whenever a conversation search runs.
+
+## D210: Two LOOK2 comparison picks (LOOK2 manager, 2026-11-16). Provisional
+- Frame 32's capture keeps Home's Back button, because the archive that raises the toast leaves a trail; look_test masks it.
+- The fixture's `rate` session stays on this Mac, though ruling 2 would put it on devbox-1. Moving it changes the Hosts counts, and the difference is within look_test's budget.
+
+## D211: A moved or rebuilt conversation is mirrored once, by entry count (FORK manager; picked by a Fable 5.2 high subagent, 2026-11-16). Settled (reversible)
+- **Pick:** `Mirror::rebase_source(session, machine, skip)` runs on the host just before the record says a session is on its new machine, both for a move and for a rebuild.
+  - The mirror reads the new file from its start and drops its first `skip` entries.
+  - For a move, `skip` defaults to the entries read from the old file, kept as `source_entries`. A rebuild passes `entry_count` of the lines it sent, which can be fewer while a raw backfill runs.
+  - From then on, the mirror takes reads only from that machine (`""` is this host's own catch_up), so a stale read of the old file adds nothing.
+  - The raw lines start over with the new file.
+  - A failed move rebases back to the old machine. Rebasing twice is safe because `source_entries` holds the skipped entries.
+  - This amends D189's open note, "set the source offset to the copy's length".
+- **Why:**
+  - A move or rebuild rewrites the old folder's paths, so the new file's byte length is unknown to the host.
+  - Bytes from the target (B) need proto changes on two paths and still miss the lines a rebuilt agent writes before the host asks.
+  - An entry count survives path rewrites and scrubbing, and it covers the mirror's lag: what the old file had beyond the mirror is still added.
+  - A machine guard is used instead of an epoch because a session never moves to the machine it is on.
+- **Open:** a restore of a box archive onto another machine doesn't rebase yet.
+- **Reverse:** have the target report its new file's identity and length before the agent starts, and set the offset to that.
+
+## D212: A fork that runs another agent gets the conversation as a handover file plus a summary (FORK manager; picked by a Fable 5.2 high subagent, 2026-11-16). Settled (reversible)
+- **Pick:** FK-6.
+  - A context fork (CODE_AND_CONTEXT or CONTEXT_ONLY) with an agent other than its parent's, or of a parent whose agent keeps no conversation file (OpenCode), starts the new agent on a fresh conversation.
+  - The parent's conversation, cut before `before_turn` when one is given, is copied to `<fork folder>/.humata/handover-<fork id>.jsonl`. That is outside the clones, and named per fork so context-only forks in the parent's folder don't collide.
+  - The first message is a plain digest (D143's, no model) of that file, or of the end of the saved terminal output when there is no transcript. It names the handover file relative to the agent's folder.
+  - It is kept as a FreshSeed row before the launch and typed with keyed input as `[handover <conversation>] …`, so a restart types it once (D153).
+  - The fork's model is the new agent's default, not the parent's, and the access check names the new agent.
+  - The preview sets `seeded_with_summary` and says what the new agent will and won't know.
+  - A CODE_ONLY fork with another agent just starts that agent fresh. Another agent on another machine stays not built.
+- **Why:**
+  - Humata's own state folder is unreadable to a contained agent (SEC-6).
+  - The parent's own file keeps growing past the fork point.
+  - `first_message` is typed unkeyed, so a restart could lose or repeat it.
+- **Open:** deleting a context-only fork doesn't remove its handover file from the parent's folder yet.
+- **Reverse:** restore the agent refusal in `check_fork`.
+
+## D213: How a machine knows its host is reachable (AWAY manager, 2026-11-16). Provisional
+- A machine's daemon starts away and counts its host reachable exactly while the peer link holds a `DaemonService.PeerUplink` open; a newer one ends the older. The host's daemon is always reachable.
+- Calls the host relays (`UserVia::Host`) are judged with the host reachable, since they come through the link itself.
+- PeerUplink is the link process's own call on its proven connection, not a relayed one: the host can't relay it, and it isn't added to the relay allowlist (amends the AWAY verdict's "on the relay allowlist"; the routed table can't hold DaemonService, which the link serves itself).
+- Changes are published as `HostLinkChanged` on TOPIC_MACHINES to the user, and `GetServerInfo.host_reachable` says the current state, so tests wait on state, not sleeps.
+- Until the away journal lands (AWAY T5), calls the policy would journal or answer from the last copy are refused `host_unreachable`, not an internal error.
+- Board's Filter placeholder keeps the input theme's muted colour: gpui-component's Input takes it from the theme on every render, a theme-wide change would touch every input, and frame 24 is within budget (0.006%). (Added to D210, LOOK2, 2026-11-16.)

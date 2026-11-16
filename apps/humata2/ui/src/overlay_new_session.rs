@@ -213,7 +213,9 @@ impl Overlays {
                     .child("An agent's own TUI, with its own defaults, or a plain shell"),
             );
         content = content.child(form_row("Runs", runs.into_any_element()));
+        // Frame 31 tops "11 GB free" with the picker; it isn't centred.
         let machine_picker = row()
+            .items_start()
             .gap(px(8.))
             .child(
                 popup(
@@ -292,6 +294,7 @@ impl Overlays {
                 "First message",
                 Textarea::new(&self.first_message)
                     .h(px(70.))
+                    .text_size(px(12.5))
                     .aria_label("First message")
                     .into_any_element(),
             ));
@@ -308,6 +311,7 @@ impl Overlays {
         content
             .child(
                 row()
+                    .items_start()
                     .gap(px(8.))
                     .pt(px(4.))
                     .child(

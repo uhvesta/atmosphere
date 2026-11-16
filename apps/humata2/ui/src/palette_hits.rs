@@ -17,16 +17,20 @@ use humata2_find::{FindAction, FindState};
 /// `move |action, cx| ui.send(AppAction::Find(action), cx)`.
 pub(crate) type SendFind = Rc<dyn Fn(FindAction, &mut App)>;
 
-/// The fewest characters, spaces not counted, the search runs for; below
-/// it the section stays away.
+/// The fewest characters, spaces not counted, the search runs for.
 const SHORTEST_QUERY: usize = 2;
 
-/// The Conversations section for `find`, or nothing while the query is too
-/// short to search. `selected` is the hit the palette's cursor is on, as a
-/// place in `find.hits`; `offline` says whether a machine is offline now,
-/// so its hits say how old the host's copy is. A click on a hit sends
-/// [`FindAction::Open`] with its place; the palette sends the same for the
-/// selected hit when Enter is pressed.
+/// Whether `query` is long enough to search.
+pub(crate) fn searchable(query: &str) -> bool {
+    query.chars().filter(|c| !c.is_whitespace()).count() >= SHORTEST_QUERY
+}
+
+/// The Conversations section for `find`, or nothing unless the search has
+/// hits, a next page or an error to show. `selected` is the hit the
+/// palette's cursor is on, as a place in `find.hits`; `offline` says whether
+/// a machine is offline now, so its hits say how old the host's copy is. A
+/// click on a hit sends [`FindAction::Open`] with its place; the palette
+/// sends the same for the selected hit when Enter is pressed.
 pub(crate) fn conversations(
     find: &FindState,
     selected: Option<usize>,
@@ -34,20 +38,21 @@ pub(crate) fn conversations(
     look: Look,
     send: &SendFind,
 ) -> Option<AnyElement> {
-    let typed = find.query.chars().filter(|c| !c.is_whitespace()).count();
-    if typed < SHORTEST_QUERY && find.hits.is_empty() && find.error.is_none() && !find.loading {
+    if find.hits.is_empty() && find.next_page.is_empty() && find.error.is_none() {
         return None;
     }
     let mut section = col()
         .id("palette-conversations")
         .role(Role::Group)
         .aria_label("Conversations")
+        .flex_shrink_0()
         .child(
             row()
+                .flex_shrink_0()
                 .px(px(16.))
                 .pt(px(8.))
                 .pb(px(3.))
-                .text_size(px(11.5))
+                .text_size(px(11.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(rgb(look.secondary))
                 .child(div().flex_1().child("Conversations"))
@@ -67,16 +72,6 @@ pub(crate) fn conversations(
             crate::theme::RED,
             true,
         ));
-    } else if find.hits.is_empty() {
-        let text = if find.loading {
-            "Searching every machine's conversations…".to_owned()
-        } else {
-            format!(
-                "No conversation has every word of “{}”. Try fewer or shorter words.",
-                find.query.trim()
-            )
-        };
-        section = section.child(note("palette-hits-empty", text, look.secondary, false));
     }
     let words = words(&find.query);
     for (index, hit) in find.hits.iter().enumerate() {
@@ -105,6 +100,7 @@ fn more_row(selected: bool, look: Look, send: &SendFind) -> AnyElement {
         .role(Role::ListBoxOption)
         .aria_label("More conversations")
         .aria_selected(selected)
+        .flex_shrink_0()
         .h(px(28.))
         .mx(px(6.))
         .px(px(10.))
@@ -127,6 +123,7 @@ fn note(id: &'static str, text: String, color: u32, alert: bool) -> impl IntoEle
         .id(id)
         .role(if alert { Role::Alert } else { Role::Status })
         .aria_label(text.clone())
+        .flex_shrink_0()
         .px(px(16.))
         .py(px(8.))
         .text_size(px(12.))
@@ -167,6 +164,7 @@ fn hit_row(
         .role(Role::ListBoxOption)
         .aria_label(label)
         .aria_selected(selected)
+        .flex_shrink_0()
         .mx(px(6.))
         .px(px(10.))
         .py(px(6.))
@@ -179,7 +177,7 @@ fn hit_row(
         .child(
             row()
                 .gap(px(9.))
-                .child(chrome::icon(IconName::MessageSquareText, color, 14.))
+                .child(chrome::icon(IconName::MessageSquareText, color, 15.))
                 .child(
                     div()
                         .min_w_0()

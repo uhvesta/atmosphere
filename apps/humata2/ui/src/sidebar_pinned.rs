@@ -248,7 +248,7 @@ fn pin_row(
     // the title and badge until the pointer is on the row.
     let mut tools = div()
         .absolute()
-        .top(px(0.))
+        .top(px(if event { 5. } else { 0. }))
         .right(px(6.))
         .h(px(if event { 18. } else { 26. }))
         .flex()
@@ -287,6 +287,7 @@ fn pin_row(
         .aria_label(label)
         .aria_selected(current)
         .h(px(if event { 36. } else { 26. }))
+        .when(event, |x| x.pt(px(5.)))
         .flex_shrink_0()
         .overflow_hidden()
         .mx(px(10.))

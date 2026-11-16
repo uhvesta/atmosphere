@@ -1,5 +1,5 @@
-//! The decision card (IN-9): what is asked, why, what it would do, what the
-//! agent was doing, the rule behind it, and the answers.
+//! The decision card (IN-9): what is asked, why, what it would do, the rule
+//! behind it, and the answers.
 use crate::bridge::Ui;
 use crate::theme::Look;
 use crate::widgets::{col, row};
@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route, channel};
 use humata2_clients::model::{
-    Agent, Answer, LineKind, Preview, Request, RequestKind, RuleSetting, Status,
+    Agent, Answer, LineKind, Preview, Request, RequestKind, Status,
 };
 use humata2_inbox::InboxAction;
 use std::rc::Rc;
@@ -85,15 +85,7 @@ fn agent_name(agent: Agent) -> &'static str {
     }
 }
 
-fn setting_name(setting: RuleSetting) -> &'static str {
-    match setting {
-        RuleSetting::Allow => "Allow",
-        RuleSetting::Ask => "Ask me",
-        RuleSetting::Never => "Never",
-    }
-}
-
-fn labelled(look: Look, label: &'static str, value: impl Into<SharedString>) -> Div {
+fn labelled(look: Look, label: &'static str, value: impl Into<SharedString>, mono: bool) -> Div {
     row()
         .gap(px(8.))
         .items_start()
@@ -103,14 +95,14 @@ fn labelled(look: Look, label: &'static str, value: impl Into<SharedString>) -> 
                 .flex_1()
                 .min_w_0()
                 .text_size(px(11.5))
-                .font_family("Menlo"),
+                .when(mono, |value| value.font_family("Menlo")),
         )
 }
 
 /// The IN-10 preview as labelled rows.
 fn preview(request: &Request, look: Look) -> Div {
     let body = match &request.preview {
-        Preview::Command(command) => col().child(labelled(look, "Command", command.clone())),
+        Preview::Command(command) => col().child(labelled(look, "Command", command.clone(), true)),
         Preview::Text(value) => {
             let label = match request.kind {
                 RequestKind::Network => "Reach",
@@ -119,7 +111,7 @@ fn preview(request: &Request, look: Look) -> Div {
                 RequestKind::Destroy => "Affects",
                 _ => "Detail",
             };
-            col().child(labelled(look, label, value.clone()))
+            col().child(labelled(look, label, value.clone(), false))
         }
         Preview::Diff(lines) => col().gap(px(1.)).children(lines.iter().map(|line| {
             let color = match line.kind {
@@ -187,7 +179,7 @@ pub(crate) fn requester(state: &AppState, request: &Request, tool: bool) -> Stri
 }
 
 /// One request as the decision card. `wide` is the Inbox's detail pane; the
-/// session panel leaves out the machine, channel, Open session and the steps.
+/// session panel leaves out the machine, channel and Open session.
 pub(crate) fn card(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -219,55 +211,96 @@ pub(crate) fn card(
         )
         .child(secondary(look, request.asked.clone()));
 
-    // 2. Who, where, and Open session.
+    // 2. Who asks; in the detail pane, where it runs and a link to its session.
     let by = requester(state, request, true);
-    let place = [machine_name, channel_name]
+    let place = [machine_name, channel_name.map(|name| format!("# {name}"))]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
     let who = row()
         .gap(px(8.))
-        .child(secondary(look, by).flex_1().min_w_0())
-        .when(wide && !place.is_empty(), |r| {
-            r.child(secondary(look, place))
-        })
-        .when(wide, |r| {
-            r.child(button(
-                ui,
-                SharedString::from(format!("open session {}", request.id)),
-                "Open session ↗",
-                vec![AppAction::Inbox(InboxAction::OpenRequest(
-                    request.id.clone(),
-                ))],
-                look,
-                false,
-            ))
-        });
-
-    // 6. The rule line.
-    let rule_line = request.asked_by.as_ref().map(|asked| {
+        .child(secondary(look, by).flex_1().min_w_0());
+    let open_ui = ui.clone();
+    let open_id = request.id.clone();
+    let meta = wide.then(|| {
         row()
             .gap(px(8.))
+            .child(secondary(look, place).flex_1().min_w_0())
             .child(
-                secondary(
-                    look,
-                    format!("{} · {}", setting_name(asked.setting), asked.label),
-                )
-                .flex_1()
-                .min_w_0(),
+                row()
+                    .id(SharedString::from(format!("open session {}", request.id)))
+                    .role(Role::Button)
+                    .aria_label("Open session ↗")
+                    .test_support()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.accent))
+                    .child(text("Open session ↗"))
+                    .on_click(move |_, _, cx| {
+                        open_ui.send(
+                            AppAction::Inbox(InboxAction::OpenRequest(open_id.clone())),
+                            cx,
+                        );
+                    }),
             )
-            .child(div().flex_shrink_0().child(button(
-                ui,
-                SharedString::from(format!("change rule {}", request.id)),
-                "Change this rule",
-                vec![
-                    AppAction::Navigate(Route::Channel(request.channel.clone())),
-                    AppAction::Channel(channel::Action::Tab(channel::Tab::Access)),
-                ],
-                look,
-                false,
-            )))
+    });
+
+    // 5. What the agent was doing: its last steps, the pending call last.
+    let steps = (wide && !request.steps.is_empty()).then(|| {
+        let count = request.steps.len();
+        col()
+            .id(SharedString::from(format!("steps {}", request.id)))
+            .test_support()
+            .gap(px(4.))
+            .child(secondary(look, "What it was doing").font_weight(FontWeight::SEMIBOLD))
+            .children(request.steps.iter().enumerate().map(|(index, step)| {
+                let color = if waiting && index + 1 == count {
+                    ORANGE
+                } else {
+                    GREEN
+                };
+                row()
+                    .gap(px(6.))
+                    .child(div().size(px(6.)).rounded_full().flex_shrink_0().bg(rgb(color)))
+                    .child(
+                        text(step.clone())
+                            .text_size(px(11.5))
+                            .font_family("Menlo"),
+                    )
+            }))
+    });
+
+    // 6. Why it asks you, with the rule's change link when a rule sent it.
+    let why = if request.why_you.is_empty() {
+        request
+            .asked_by
+            .as_ref()
+            .map_or_else(String::new, |asked| asked.label.clone())
+    } else {
+        request.why_you.clone()
+    };
+    let change_rule = request.asked_by.as_ref().map(|_| {
+        button(
+            ui,
+            SharedString::from(format!("change rule {}", request.id)),
+            "Change this rule",
+            vec![
+                AppAction::Navigate(Route::Channel(request.channel.clone())),
+                AppAction::Channel(channel::Action::Tab(channel::Tab::Access)),
+            ],
+            look,
+            false,
+        )
+    });
+    let why_line = (!why.is_empty()).then(|| {
+        row()
+            .gap(px(8.))
+            .items_start()
+            .child(secondary(look, "Asks you because:").flex_shrink_0())
+            .child(text(why).text_size(px(11.5)).flex_1().min_w_0())
+            .children(change_rule)
     });
 
     // 8. The answers.
@@ -381,7 +414,7 @@ pub(crate) fn card(
         .role(Role::Group)
         .aria_label(request.title.clone())
         .test_support()
-        .rounded(px(8.))
+        .rounded(px(9.))
         .bg(rgb(look.card))
         .border_1()
         .border_color(rgb(ORANGE))
@@ -390,27 +423,11 @@ pub(crate) fn card(
         .text_size(px(12.5))
         .child(top)
         .child(who)
+        .children(meta)
         .child(text(request.reason.clone()))
-        .when(!request.why_you.is_empty(), |c| {
-            c.child(secondary(look, request.why_you.clone()))
-        })
         .child(preview(request, look))
-        .when(wide && !request.steps.is_empty(), |c| {
-            c.child(
-                col()
-                    .id(SharedString::from(format!("steps {}", request.id)))
-                    .test_support()
-                    .gap(px(3.))
-                    .child(secondary(look, "What it was doing").font_weight(FontWeight::SEMIBOLD))
-                    .children(request.steps.iter().enumerate().map(|(index, step)| {
-                        let last = index + 1 == request.steps.len();
-                        text(format!("{}. {step}", index + 1))
-                            .text_size(px(11.5))
-                            .when(last, |t| t.font_weight(FontWeight::SEMIBOLD))
-                    })),
-            )
-        })
-        .children(rule_line)
+        .children(steps)
+        .children(why_line)
         .when_some(request.undo_note.clone(), |c, note| {
             c.child(text(note).text_size(px(11.5)).text_color(rgb(RED)))
         })

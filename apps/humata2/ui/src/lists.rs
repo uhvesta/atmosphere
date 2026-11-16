@@ -10,7 +10,9 @@ use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, NeedsRow, Route};
-use humata2_clients::model::{Answer, MachineKind, Request, Session, SessionId, Status};
+use humata2_clients::model::{
+    Answer, MachineKind, Request, RequestKind, Session, SessionId, Status,
+};
 use humata2_inbox::{Bulk, History, InboxAction};
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
@@ -113,8 +115,21 @@ pub(crate) fn toolbar(
         })
 }
 
-/// One session on Home. With a pending `request`, the row's detail is the
-/// request's title and its primary button reviews the request.
+/// What a Home row says its agent waits on (frame 25): "Asks to move PAY-3
+/// to Done" for an action, the question itself for a question.
+fn asks(request: &Request) -> String {
+    if request.kind == RequestKind::Question {
+        return request.title.clone();
+    }
+    let mut title = request.title.chars();
+    match title.next() {
+        Some(first) => format!("Asks to {}{}", first.to_lowercase(), title.as_str()),
+        None => String::new(),
+    }
+}
+
+/// One session on Home. With the `request` its agent waits on, the row says
+/// what it asks and its primary button reviews the request.
 fn home_row(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -127,7 +142,7 @@ fn home_row(
     let ui2 = ui.clone();
     let id = session.id.clone();
     let asked = request.map(|request| request.id.clone());
-    let detail = request.map_or_else(|| session.activity.clone(), |request| request.title.clone());
+    let detail = request.map_or_else(|| session.activity.clone(), asks);
     let place = humata2_clients::desk::place(&state.workspace, &session.channel);
     let description = if let Some(parent) = session
         .parent
@@ -311,8 +326,7 @@ fn session_group(
 }
 
 /// Home's "Needs you" group: a session row for each session that needs the
-/// person or has a pending request, and a row for each pending request that
-/// has no session listed.
+/// person (HM-1), and a row for each pending request with no session on Home.
 fn needs_group(
     ui: &Rc<Ui>,
     state: &AppState,

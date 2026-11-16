@@ -45,7 +45,10 @@ printf 'APPL????' > "$contents/PkgInfo"
 """
 
 def _humata2_app_impl(ctx):
-    app = ctx.actions.declare_directory("Humata2.app")
+    # :app keeps the path release.sh reads; any other bundle (the fakes one)
+    # goes under its own name so both can build in one invocation.
+    bundle = "Humata2.app" if ctx.label.name == "app" else ctx.label.name + "/Humata2.app"
+    app = ctx.actions.declare_directory(bundle)
     executable = ctx.attr.executable[DefaultInfo].files_to_run.executable
     tools = ctx.file.tools
     args = ctx.actions.args()

@@ -4,7 +4,6 @@ use crate::bridge::Ui;
 use crate::widgets::{self, col, row};
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, Toast, ToastAction};
@@ -49,22 +48,32 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                 ))
                 .child(div().child(toast.text.clone()))
                 .when(toast.action.is_some(), |x| {
+                    let working = toast.working;
+                    let label = match &toast.action {
+                        Some(ToastAction::OpenReport(_)) => "Add details",
+                        _ if working => "Restoring…",
+                        _ => "Undo",
+                    };
+                    let undo = AppAction::UndoToast(toast.id);
+                    let ui = ui.clone();
+                    // Frame 32: a bare semibold link on the text line, one gap after the text.
+                    // Restoring dims it and takes no clicks.
                     x.child(
-                        widgets::ghost_in(look,
-                            ui,
-                            SharedString::from(format!("toast-undo-{}", toast.id)),
-                            match &toast.action {
-                                Some(ToastAction::OpenReport(_)) => "Add details",
-                                _ if toast.working => "Restoring…",
-                                _ => "Undo",
-                            },
-                            AppAction::UndoToast(toast.id),
-                        )
-                        .text_color(rgb(0x64a8ff))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        // Frame 32: the action sits one gap after the text, with no pad of its own.
-                        .px_0()
-                        .disabled(toast.working),
+                        div()
+                            .id(SharedString::from(format!("toast-undo-{}", toast.id)))
+                            .role(Role::Button)
+                            .aria_label(label)
+                            .test_support()
+                            .flex_shrink_0()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(0x64a8ff))
+                            .when(working, |x| x.opacity(0.5))
+                            .when(!working, |x| {
+                                x.cursor_pointer().on_click(move |_, _, cx| {
+                                    ui.send(undo.clone(), cx);
+                                })
+                            })
+                            .child(label),
                     )
                 })
                 .when(toast.action.is_none(), |x| {

@@ -23,6 +23,46 @@ rust_binary(
     ],
 )
 
+rust_binary(
+    name = "humata2_fakes",
+    srcs = glob(["src/*.rs"]),
+    # GPUI's macros find gpui-kit through it.
+    compile_data = ["Cargo.toml"],
+    # The "Humata 2 (fakes)" app runs on the made-up workspace even from a
+    # bundle (LOOK2).
+    rustc_env = {"HUMATA2_BACKEND": "fakes"},
+    target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//apps/humata2/app:__pkg__"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/desktop/install",
+        "//apps/humata2/engine",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+# LOOK2: each native capture of frames 18–35 matches its design golden on
+# the page, in 2 pt blocks, with the accepted differences masked (D147, D158).
+rust_test(
+    name = "look_test",
+    srcs = ["tests/look.rs"],
+    crate_root = "tests/look.rs",
+    data = glob([
+        "tests/__snapshots__/design/*.png",
+        "tests/__snapshots__/native/*.png",
+    ]),
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "@crates//:image",
+        "@crates//:thiserror",
+    ],
+)
+
 # The window on fakes, drawn headless (nothing is shown) and kept as view
 # and image snapshots in tests/__snapshots__/. Record with
 # `bazel run //apps/humata2/desktop:shell_test_record`.
