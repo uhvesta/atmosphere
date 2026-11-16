@@ -68,6 +68,12 @@ pub(crate) fn wrap(
         OsString::from(ENV),
         tmpdir,
     ];
+    for (name, value) in &containment.env {
+        let mut assignment = name.clone();
+        assignment.push("=");
+        assignment.push(value);
+        wrapped.push(assignment);
+    }
     wrapped.extend(argv.iter().cloned());
     Ok(wrapped)
 }
@@ -255,9 +261,11 @@ fn subpath(role: &'static str, path: &Path) -> Result<String, ContainError> {
     Ok(format!("(subpath {})", quoted(role, path)?))
 }
 
-/// A regex that matches the path and every path that starts with it, so a
-/// state file's atomic-write temp files are covered too. Regex characters and
-/// quotes in the path are escaped, so they match only themselves.
+/// A regex that matches the path, everything under it, and its siblings that
+/// add a dot-suffix to its name, so a state file's atomic-write temp files
+/// (`.claude.json.tmp.123`) are covered too. A longer name such as
+/// `.claude-backup` is not. Regex characters and quotes in the path are
+/// escaped, so they match only themselves.
 fn regex_prefix(role: &'static str, path: &Path) -> Result<String, ContainError> {
     let text = path.to_str().ok_or_else(|| ContainError::NotUtf8 {
         role,
@@ -270,7 +278,7 @@ fn regex_prefix(role: &'static str, path: &Path) -> Result<String, ContainError>
         }
         escaped.push(ch);
     }
-    Ok(format!("(regex #\"^{escaped}\")"))
+    Ok(format!("(regex #\"^{escaped}(/|\\.|$)\")"))
 }
 
 /// A path as an SBPL string literal: backslashes and quotes escaped.

@@ -93,6 +93,7 @@ impl Layout {
             read_only: Vec::new(),
             temp: self.own.join(".tmp"),
             socket: self.socket.clone(),
+            env: Vec::new(),
         }
     }
 }
@@ -305,6 +306,29 @@ fn a_state_path_is_matched_literally_not_as_a_pattern() {
 }
 
 #[test]
+fn a_state_folder_covers_itself_and_its_temp_siblings_but_not_a_longer_name() {
+    let layout = Layout::new();
+    let home = layout.root.join("home");
+    let state = home.join(".agent");
+    let backup = home.join(".agent-backup");
+    for folder in [&state, &backup] {
+        std::fs::create_dir_all(folder).expect("a folder");
+        std::fs::write(folder.join("settings.json"), "{}\n").expect("a file");
+    }
+    let contained = Containment {
+        agent_state: vec![state.clone()],
+        hidden: vec![home.clone()],
+        ..layout.containment()
+    };
+
+    assert!(allowed(&contained, &write(&state.join("session.json"))));
+    assert!(allowed(&contained, &write(&home.join(".agent.tmp.123"))));
+    assert!(!allowed(&contained, &read(&backup.join("settings.json"))));
+    assert!(!allowed(&contained, &write(&backup.join("session.json"))));
+    assert!(!allowed(&contained, &write(&home.join(".agentfoo"))));
+}
+
+#[test]
 fn a_read_only_file_in_agent_state_is_readable_but_not_writable() {
     let layout = Layout::new();
     let state = layout.root.join(".humata2/agent");
@@ -360,4 +384,23 @@ fn a_hook_file_inside_a_hidden_folder_is_readable_but_not_writable() {
     assert!(allowed(&contained, &read(&hooks)));
     assert!(!allowed(&contained, &write(&hooks)));
     assert!(!allowed(&contained, &read(&layout.state.join("store.db"))));
+}
+
+#[test]
+fn the_contained_command_runs_with_the_variables_it_is_given() {
+    let layout = Layout::new();
+    let config = layout.own.join(".humata/claude");
+    let contained = Containment {
+        env: vec![
+            ("AGENT_CONFIG".into(), config.clone().into_os_string()),
+            ("AGENT_EMPTY".into(), "".into()),
+        ],
+        ..layout.containment()
+    };
+
+    let probe = format!(
+        "test \"$AGENT_CONFIG\" = '{}' && test -z \"$AGENT_EMPTY\" && env | grep -q '^AGENT_EMPTY=$'",
+        config.display()
+    );
+    assert!(allowed(&contained, &probe));
 }

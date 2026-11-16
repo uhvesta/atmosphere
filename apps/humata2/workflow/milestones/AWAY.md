@@ -46,20 +46,20 @@ Script tokens (SEC-14): ASK. The web client (ANYHOST).
     - Workers: A (Haiku high) `away/` + `guard.rs`; B (Haiku high) `peer.rs` + `tests/away_link.rs`.
     - Seams: `scratchpad/away/seams_t3a.py` (proto + stand-in, applied) then `seams_t3b.py`; was `seams_t3.py` (daemon.proto rpc + `host_reachable = 9`, events.proto `HostLinkChanged host_link = 28`, events.rs, relay.rs `proven_may_call`, relay_auth.rs, daemon.rs `with_uplinks`/`peer_uplink`, serve.rs, main.rs, host_relay.rs stub).
     - D213 (provisional): machine starts away until a PeerUplink opens; host's relayed calls judged reachable; PeerUplink is the link's own call, not on the relay allowlist (ROUTED can't hold DaemonService); HostLinkChanged on TOPIC_MACHINES to the user.
-  - [ ] T3b SetApprovalPassphrase on the host (verifier only, snapshot pushed) · after T2 · written, seams t3c applied, awaiting gate
+  - [x] T3b SetApprovalPassphrase on the host (verifier only, snapshot pushed) · after T2 · green, committed 28702e41
     - `away/passphrase.rs`: user only and present (access_service seam), host only (a machine refuses with invalid_field), typed (≥5 words) / generated (returned once) / cleared; Argon2id hash kept under setting `approval_passphrase`, no migration. `updated`/`pending` stay empty until T4's policy copy carries the hash. 6 unit tests.
   - [ ] T4 Policy copy on the machine (store table, snapshot apply, refuse access writes away) · after T3
   - [ ] T5 Away journal of agents' host-state calls; LastCopy reads · after T3, T4
   - [ ] T6 Passphrase `humata login` on a machine while away; `humata inbox` answers there · after T2, T4
   - [ ] T7 Replay on reconnect: order, re-check, SL-6–SL-8, first answer wins · after T5
-  - [ ] T8 Wire Contain agents into launch/resume · after T1 · D217 (network 443+DNS, own agent state, home hidden, TMPDIR, fail closed on Linux)
+  - [x] T8 Wire Contain agents into launch/resume · after T1 · green, committed 28702e41 · D217 (network 443+DNS, own agent state, home hidden, TMPDIR, fail closed on Linux)
     - Contain crate per D217: worker Haiku high (agent_state, read_only, temp, network, `home_rules`).
     - Claims granted 2026-11-16 (settings_service contain sections, revive hook, humatad `contained.rs`, restart.rs field). Contain crate: worker done, plus `also_readable` (hook files in the hidden state folder) and the D217 Linux message. `humatad/src/contained.rs` (settings keys `security.contain_agents`, `channel.<id>.contain_agents`; `Contained` implements revive's `Contain`). Script `scratchpad/away/seams_t8.py` (--check ok): BUILD deps, revive trait/`ContainRefused`/`ReviveError::Contain`, wrap in `start_holder`, 4 `ReviveConfig` literals, main.rs, serve.rs, settings_service.
-    - After the T8 gate, failing tests first:
-      - state paths match whole components only, not `.claude-backup`
-      - a refused contained launch comes back FailedPrecondition with its message
-      - D217 amendment: Claude Code's per-session config copy (`CLAUDE_CONFIG_DIR`, keychain variable, shared `projects` link, reseed each start)
-    - Left: `Session.contained` (needs the launch recorded as contained; no store field yet), the setting reaching machines (T4 snapshot), a precise status code for a refused contained launch (today it's the StartError::Revive mapping).
+    - Follow-ups, written 2026-11-16, awaiting gate:
+      - state paths match whole components only (`^<path>(/|\.|$)`), not `.claude-backup`
+      - a refused contained start answers FailedPrecondition (`scratchpad/away/seams_refused.py`, --check ok)
+      - D217 amendment: `contain/src/claude.rs` `seed_claude_copy` (copy at `<session>/.humata/claude`, `CLAUDE_CONFIG_DIR`, empty `CLAUDE_SECURESTORAGE_CONFIG_DIR`, `projects` linked to the real one, own project folders writable, reseed each start, own project entry kept); `Containment.env`; `contained.rs` `own_state`
+    - Left: `Session.contained` (needs the launch recorded as contained; no store field yet), the setting reaching machines (T4 snapshot), `<session>/.humata/` not git-excluded, the Info card wording (UI).
   - [ ] T9 AW-7 boundary suite and flow §26.10 on the remote rig · last
 - Waiting on: main for seams (argon2 workspace dep, BUILD wiring of the new crates into humatad, proto fields, store migration numbers, `not_built.rs`).
 - Build gates: `contain:boundary_test` and the passphrase tests green (T1, T2)

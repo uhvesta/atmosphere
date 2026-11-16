@@ -6,10 +6,10 @@
 //! instead.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use humata2_contain::{Agent, Containment, home_rules};
+use humata2_contain::{Agent, Containment, hide_from_git, home_rules, seed_claude_copy};
 use humata2_revive::{Contain, ContainRefused};
 use humata2_store::{AgentRecord, Store, StoreError};
 
@@ -98,15 +98,14 @@ impl Contained {
     }
 
     fn containment(&self, session: &humata2_store::SessionRecord, shared: PathBuf) -> Result<Containment, ContainRefused> {
-        let rules = home_rules(agent_of(&session.agent), &self.home)?;
-        let mut hidden = rules.hidden;
+        // Its temp folder and config copy live in `.humata/`, which git
+        // must not show as the session's changes.
+        hide_from_git(&session.folder)?;
+        let agent = agent_of(&session.agent);
+        let own = own_state(agent, &self.home, &self.state, &session.folder)?;
+        let mut hidden = own.hidden;
         hidden.push(self.channels.clone());
         hidden.push(self.state.clone());
-        let mut agent_state = rules.agent_state;
-        if agent_of(&session.agent) == Agent::OpenCode {
-            // The `humata opencode` wrapper keeps its server's state here.
-            agent_state.push(self.state.join("opencode"));
-        }
         Ok(Containment {
             session_folder: session.folder.clone(),
             shared,
@@ -118,11 +117,46 @@ impl Contained {
             ],
             hidden,
             socket: self.socket.clone(),
-            agent_state,
-            read_only: rules.read_only,
+            agent_state: own.agent_state,
+            read_only: own.read_only,
             temp: session.folder.join(".humata").join("tmp"),
+            env: own.env,
         })
     }
+}
+
+/// What one agent keeps of its own when contained, and how it is told.
+struct OwnState {
+    hidden: Vec<PathBuf>,
+    agent_state: Vec<PathBuf>,
+    read_only: Vec<PathBuf>,
+    env: Vec<(OsString, OsString)>,
+}
+
+/// The home-folder rules for `agent` in the session at `folder`. Claude Code
+/// runs on a fresh copy of its config inside the session (D217 amendment):
+/// the real `~/.claude/` and `~/.claude.json` stay readable but not
+/// writable, apart from this session's own conversation folders.
+fn own_state(agent: Agent, home: &Path, state: &Path, folder: &Path) -> Result<OwnState, ContainRefused> {
+    let rules = home_rules(agent, home)?;
+    let mut own = OwnState {
+        hidden: rules.hidden,
+        agent_state: rules.agent_state,
+        read_only: rules.read_only,
+        env: Vec::new(),
+    };
+    match agent {
+        Agent::ClaudeCode => {
+            let copy = seed_claude_copy(home, &folder.join(".humata").join("claude"), folder)?;
+            own.env = copy.env();
+            own.agent_state = copy.projects;
+            own.read_only = Vec::new();
+        }
+        // The `humata opencode` wrapper keeps its server's state here.
+        Agent::OpenCode => own.agent_state.push(state.join("opencode")),
+        Agent::Codex | Agent::CopilotCli | Agent::Other => {}
+    }
+    Ok(own)
 }
 
 impl std::fmt::Debug for Contained {
@@ -173,6 +207,43 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
         (directory, store)
+    }
+
+    #[test]
+    fn a_contained_claude_code_writes_its_copy_and_only_its_own_conversations() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude.json"), "{}\n").unwrap();
+        let folder = directory.path().join("channels/acme/fix-login");
+        std::fs::create_dir_all(&folder).unwrap();
+        let state = directory.path().join("state");
+
+        let own = own_state(Agent::ClaudeCode, &home, &state, &folder).unwrap();
+
+        let copy = folder.join(".humata/claude");
+        assert!(own.env.contains(&("CLAUDE_CONFIG_DIR".into(), copy.clone().into_os_string())));
+        assert!(copy.join(".claude.json").is_file());
+        assert!(!own.agent_state.contains(&home.join(".claude")));
+        assert!(!own.agent_state.contains(&home.join(".claude.json")));
+        assert!(!own.agent_state.is_empty());
+        for path in &own.agent_state {
+            assert!(path.starts_with(home.join(".claude/projects")), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn other_agents_keep_their_own_state_and_get_no_variables() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let state = directory.path().join("state");
+
+        let own = own_state(Agent::Codex, &home, &state, directory.path()).unwrap();
+        assert!(own.agent_state.contains(&home.join(".codex")));
+        assert!(own.env.is_empty());
+        let own = own_state(Agent::OpenCode, &home, &state, directory.path()).unwrap();
+        assert!(own.agent_state.contains(&state.join("opencode")));
     }
 
     #[test]

@@ -1300,6 +1300,16 @@ pub(crate) fn start_error(error: &StartError) -> (Code, pb::Error) {
                 None,
             ),
         ),
+        StartError::Revive {
+            source: humata2_revive::ReviveError::Contain { .. },
+        } => (
+            Code::FailedPrecondition,
+            error_of(
+                error,
+                "the session and its folder were kept: do what the message says, or turn Contain agents off for this channel, then resume the session",
+                None,
+            ),
+        ),
         StartError::Revive { .. } | StartError::FirstMessage { .. } => (
             Code::Unavailable,
             error_of(
@@ -2187,6 +2197,22 @@ mod tests {
     use humata2_store::ChannelRepo;
 
     use super::*;
+
+    #[test]
+    fn a_start_refused_for_containment_is_a_failed_precondition() {
+        let refused = StartError::Revive {
+            source: humata2_revive::ReviveError::Contain {
+                session: "s1".to_owned(),
+                source: humata2_revive::ContainRefused::NoSession {
+                    session: "s1".to_owned(),
+                },
+            },
+        };
+        let (code, error) = start_error(&refused);
+        assert_eq!(code, Code::FailedPrecondition);
+        assert!(!error.message.is_empty());
+        assert!(!error.fix.is_empty());
+    }
 
     fn running() -> AgentState {
         AgentState::Running { holder_pid: 7 }

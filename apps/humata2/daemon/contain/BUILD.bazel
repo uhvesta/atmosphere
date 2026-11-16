@@ -14,6 +14,7 @@ rust_library(
         "//apps/humata2/daemon/revive:__pkg__",
     ],
     deps = [
+        "@crates//:serde_json",
         "@crates//:thiserror",
     ],
 )
@@ -21,7 +22,10 @@ rust_library(
 rust_test(
     name = "contain_unit_test",
     crate = ":contain",
-    deps = ["@crates//:tempfile"],
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
 )
 
 # The boundary suite runs real sandboxed probes. sandbox-exec can't start
