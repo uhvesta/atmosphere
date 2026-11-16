@@ -268,6 +268,8 @@ impl Actor {
                     };
                     let spec = profile.spec();
                     let settings = Settings {
+                        resume_blocked: false,
+                        foreground_session: None,
                         profile: Some(profile.name),
                         recovery: None,
                         history: profile.history,

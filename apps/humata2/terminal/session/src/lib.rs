@@ -192,19 +192,7 @@ impl SessionStore {
         Ok(store)
     }
     pub fn set_recovery(&mut self, id: u64, hint: Option<RecoveryHint>) -> Result<(), Error> {
-        if let Some(hint) = &hint {
-            let valid = |text: &str, max: usize| {
-                !text.is_empty() && text.len() <= max && !text.chars().any(char::is_control)
-            };
-            if !valid(&hint.provider, 64)
-                || !valid(&hint.session_id, 512)
-                || !valid(&hint.working_directory, 4096)
-                || hint.state_paths.len() > 16
-                || hint.state_paths.iter().any(|p| !valid(p, 4096))
-            {
-                return Err(Error::Invalid{reason:"recovery metadata needs a provider, session ID and working directory without control characters, plus at most sixteen state paths".into()});
-            }
-        }
+        validate_recovery_metadata(hint.as_ref())?;
         let before = self.saved.clone();
         let session = self
             .saved
@@ -343,23 +331,37 @@ impl SessionStore {
     }
     /// Creates a new process; reconnecting to an existing process uses `attach` instead.
     pub fn create(&mut self, spec: SessionSpec) -> Result<u64, Error> {
-        self.create_inner(spec, None)
+        self.create_inner(spec, None, None, BTreeMap::new())
     }
 
     /// Reserve a launcher identity before starting its process. Retrying the
     /// same key returns its existing ID, including a failed or exited launch;
     /// it never starts a replacement process or changes that session's spec.
     pub fn create_startup(&mut self, spec: SessionSpec, profile: &str) -> Result<u64, Error> {
-        metadata::validate_startup_key(profile, &self.root.join("workspace.json"))?;
+        self.create_startup_with_metadata(spec, profile, None, BTreeMap::new())
+    }
+
+    /// Reserve launcher identity, recovery hint and wrapper metadata atomically
+    /// before starting the holder. A failed launch leaves that complete durable
+    /// reservation. Retrying an existing key returns its ID without launching
+    /// again or replacing its spec, recovery hint or attributes.
+    pub fn create_startup_with_metadata(
+        &mut self,
+        spec: SessionSpec,
+        key: &str,
+        recovery: Option<RecoveryHint>,
+        attributes: BTreeMap<String, String>,
+    ) -> Result<u64, Error> {
+        metadata::validate_startup_key(key, &self.root.join("workspace.json"))?;
         if let Some(session) = self
             .saved
             .sessions
             .iter()
-            .find(|session| session.startup_profile.as_deref() == Some(profile))
+            .find(|session| session.startup_profile.as_deref() == Some(key))
         {
             return Ok(session.id);
         }
-        self.create_inner(spec, Some(profile.into()))
+        self.create_inner(spec, Some(key.into()), recovery, attributes)
     }
 
     /// Bind an existing legacy session to its launcher without spawning it.
@@ -407,6 +409,8 @@ impl SessionStore {
         &mut self,
         spec: SessionSpec,
         startup_profile: Option<String>,
+        recovery: Option<RecoveryHint>,
+        attributes: BTreeMap<String, String>,
     ) -> Result<u64, Error> {
         metadata::before_create(&self.saved, &self.root.join("workspace.json"))?;
         if spec.cols == 0 || spec.rows == 0 || spec.cols > 1000 || spec.rows > 1000 {
@@ -429,6 +433,8 @@ impl SessionStore {
         let before = self.saved.clone();
         let id = self.saved.next;
         identity::validate_title(id, &spec.title)?;
+        identity::validate_attributes(id, &attributes)?;
+        validate_recovery_metadata(recovery.as_ref())?;
         let uuid = identity::new_uuid()?;
         self.saved.next += 1;
         self.saved.sessions.push(SavedSession {
@@ -436,9 +442,9 @@ impl SessionStore {
             uuid,
             automatic_title: spec.title.clone(),
             name_override: None,
-            attributes: BTreeMap::new(),
+            attributes,
             spec: spec.clone(),
-            recovery: None,
+            recovery,
             startup_profile,
         });
         self.saved.groups[0].push(id);
@@ -847,6 +853,26 @@ impl Writer {
                 source,
             })
     }
+}
+
+fn validate_recovery_metadata(hint: Option<&RecoveryHint>) -> Result<(), Error> {
+    let Some(hint) = hint else {
+        return Ok(());
+    };
+    let valid = |text: &str, max: usize| {
+        !text.is_empty() && text.len() <= max && !text.chars().any(char::is_control)
+    };
+    if !valid(&hint.provider, 64)
+        || !valid(&hint.session_id, 512)
+        || !valid(&hint.working_directory, 4096)
+        || hint.state_paths.len() > 16
+        || hint.state_paths.iter().any(|path| !valid(path, 4096))
+    {
+        return Err(Error::Invalid {
+            reason: "recovery metadata needs a provider, session ID and working directory without control characters, plus at most sixteen state paths".into(),
+        });
+    }
+    Ok(())
 }
 
 fn namespace() -> Result<String, Error> {

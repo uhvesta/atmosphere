@@ -8,6 +8,7 @@ struct Options {
     assets: PathBuf,
     listen: SocketAddr,
     profiles: Option<PathBuf>,
+    agent_resume: Option<PathBuf>,
     starts: Vec<String>,
     history: HistoryPolicy,
 }
@@ -32,6 +33,7 @@ fn options() -> Result<Options, Error> {
             reason: "default address could not be parsed",
         })?;
     let mut profiles = None;
+    let mut agent_resume = None;
     let mut starts = Vec::new();
     let mut off = false;
     let mut lines = 10000;
@@ -43,7 +45,7 @@ fn options() -> Result<Options, Error> {
             off = true;
             continue;
         }
-        let value=args.next().ok_or(Error::Invalid{reason:"an option is missing its value; use --state DIR --holder BINARY --static-dir DIR --listen 127.0.0.1:PORT [--profiles FILE] [--start NAME] [--no-history]"})?;
+        let value=args.next().ok_or(Error::Invalid{reason:"an option is missing its value; use --state DIR --holder BINARY --static-dir DIR --listen 127.0.0.1:PORT [--profiles FILE] [--start NAME] [--agent-resume FILE] [--no-history]"})?;
         match option.to_str() {
             Some("--state") => state = value.into(),
             Some("--holder") => holder = value.into(),
@@ -57,6 +59,7 @@ fn options() -> Result<Options, Error> {
                     })?
             }
             Some("--profiles") => profiles = Some(PathBuf::from(value)),
+            Some("--agent-resume") => agent_resume = Some(PathBuf::from(value)),
             Some("--start") => starts.push(value.to_string_lossy().into_owned()),
             Some("--history-lines") => {
                 lines = value
@@ -84,7 +87,7 @@ fn options() -> Result<Options, Error> {
             }
             _ => {
                 return Err(Error::Invalid {
-                    reason: "unknown option; use --state DIR --holder BINARY --static-dir DIR --listen 127.0.0.1:PORT [--profiles FILE] [--start NAME] [--no-history]",
+                    reason: "unknown option; use --state DIR --holder BINARY --static-dir DIR --listen 127.0.0.1:PORT [--profiles FILE] [--start NAME] [--agent-resume FILE] [--no-history]",
                 });
             }
         }
@@ -97,6 +100,7 @@ fn options() -> Result<Options, Error> {
         })?,
         listen,
         profiles,
+        agent_resume,
         starts,
         history: if off {
             HistoryPolicy::Off
@@ -154,7 +158,37 @@ async fn run() -> Result<(), Error> {
             reason: "browser assets must not contain the private host state directory",
         });
     }
-    let host = Host::start(
+    let resume = if let Some(path) = options.agent_resume {
+        use std::io::Read as _;
+        const MAX_POLICY_BYTES: usize = 1024 * 1024;
+        let file = std::fs::File::open(&path).map_err(|source| Error::Disk {
+            operation: "open trusted agent recovery policies",
+            path: path.clone(),
+            source,
+        })?;
+        let mut bytes = Vec::new();
+        file.take(MAX_POLICY_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|source| Error::Disk {
+                operation: "read trusted agent recovery policies",
+                path: path.clone(),
+                source,
+            })?;
+        if bytes.len() > MAX_POLICY_BYTES {
+            return Err(Error::AgentResumePolicySize {
+                path,
+                maximum: MAX_POLICY_BYTES,
+            });
+        }
+        terminal_host::AgentResumeConfig {
+            profiles: serde_json::from_slice(&bytes)
+                .map_err(|source| Error::Decode { path, source })?,
+            ..Default::default()
+        }
+    } else {
+        terminal_host::AgentResumeConfig::default()
+    };
+    let host = Host::start_with_agent_resume(
         Config {
             state: options.state,
             label: "Terminal host".into(),
@@ -163,6 +197,7 @@ async fn run() -> Result<(), Error> {
         },
         store,
         profiles,
+        resume,
     )
     .await?;
     serve(host, options.listen, assets, token).await

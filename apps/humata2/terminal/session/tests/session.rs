@@ -1,8 +1,88 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     time::Duration,
 };
-use terminal_session::{Endpoint, Record, SessionSpec, SessionStore, Update};
+use terminal_session::{Endpoint, Record, RecoveryHint, SessionSpec, SessionStore, Update};
+
+#[test]
+fn missing_program_keeps_atomic_recovery_metadata_and_retry_never_launches_again() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::Builder::new()
+        .prefix("resume-reservation-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    secure(dir.path());
+    let hint = RecoveryHint {
+        provider: "fixture-provider".into(),
+        session_id: "saved-conversation-1".into(),
+        working_directory: "/tmp".into(),
+        state_paths: vec!["/tmp/provider-state".into()],
+    };
+    let attributes = BTreeMap::from([
+        (
+            "terminal.resume.source".into(),
+            "original-terminal-uuid".into(),
+        ),
+        ("terminal.resume.profile".into(), "trusted-agent".into()),
+    ]);
+    let mut store = SessionStore::open_memory_only(dir.path(), holder()).unwrap();
+    let mut missing = spec();
+    missing.program = dir.path().join("missing-agent-program");
+    assert!(
+        store
+            .create_startup_with_metadata(
+                missing,
+                "resume-once",
+                Some(hint.clone()),
+                attributes.clone()
+            )
+            .is_err()
+    );
+    let saved = store.session(1).unwrap();
+    let uuid = saved.uuid.clone();
+    assert_eq!(saved.recovery.as_ref(), Some(&hint));
+    assert_eq!(saved.attributes, attributes);
+    drop(store);
+    let before = std::fs::read(dir.path().join("workspace.json")).unwrap();
+    let persisted: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(
+        persisted["sessions"][0]["recovery"],
+        serde_json::to_value(&hint).unwrap()
+    );
+    assert_eq!(
+        persisted["sessions"][0]["attributes"],
+        serde_json::to_value(&attributes).unwrap()
+    );
+
+    // If retry executes any holder, this executable leaves an observable marker.
+    let launcher = dir.path().join("retry-holder");
+    std::fs::write(
+        &launcher,
+        "#!/bin/sh\nprintf attempted > \"$(dirname \"$0\")/retry-attempted\"\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut store = SessionStore::open_memory_only(dir.path(), launcher).unwrap();
+    let mut replacement = hint.clone();
+    replacement.session_id = "must-not-replace-the-reservation".into();
+    assert_eq!(
+        store
+            .create_startup_with_metadata(spec(), "resume-once", Some(replacement), BTreeMap::new())
+            .unwrap(),
+        1
+    );
+    let saved = store.session(1).unwrap();
+    assert_eq!(saved.uuid, uuid);
+    assert_eq!(saved.recovery.as_ref(), Some(&hint));
+    assert_eq!(saved.attributes, attributes);
+    assert_eq!(store.sessions().len(), 1);
+    assert!(!dir.path().join("retry-attempted").exists());
+    assert_eq!(
+        std::fs::read(dir.path().join("workspace.json")).unwrap(),
+        before
+    );
+}
 fn secure(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -2,10 +2,15 @@
 //! No files, processes, provider configuration or notification services are read.
 mod adapters;
 mod error;
+mod resume;
 #[cfg(test)]
 mod tests;
 
 pub use error::Error;
+pub use resume::{
+    CLAUDE_RESUME_V1, CODEX_RESUME_V1, COPILOT_RESUME_V1, ResumeAdapter, ResumeError,
+    ResumeIdentity, ResumePlan, ResumePolicy, ResumeRegistry,
+};
 use std::collections::BTreeMap;
 
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;

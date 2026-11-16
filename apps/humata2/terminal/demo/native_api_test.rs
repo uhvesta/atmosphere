@@ -4,7 +4,7 @@ use terminal_host::{
     Config, Host, InjectionOptions, NameSource, Profile, SpawnCwd, SpawnFromOptions,
 };
 use terminal_session::{Endpoint, SessionStore};
-use terminal_wire::SessionState;
+use terminal_wire::{RecoveryHint, SessionState};
 
 #[tokio::test]
 async fn public_handle_discovers_names_injects_forks_and_stops_owned_terminals() {
@@ -14,6 +14,12 @@ async fn public_handle_discovers_names_injects_forks_and_stops_owned_terminals()
         .unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let holder = std::fs::canonicalize(std::env::var_os("HUMATA2_HOLDER").unwrap()).unwrap();
+    let hint = RecoveryHint {
+        provider: "sdk-fixture".into(),
+        session_id: "019a83ae-6368-72f5-90bc-5799b82886a1".into(),
+        working_directory: root.path().display().to_string(),
+        state_paths: vec![root.path().join("provider-state").display().to_string()],
+    };
     let host = Host::start(
         Config {
             state: root.path().into(),
@@ -29,7 +35,7 @@ async fn public_handle_discovers_names_injects_forks_and_stops_owned_terminals()
             args: vec!["-i".into()],
             cwd: root.path().into(),
             endpoint: Endpoint::Local,
-            recovery: None,
+            recovery: Some(hint.clone()),
             history: Default::default(),
         }],
     )
@@ -38,6 +44,7 @@ async fn public_handle_discovers_names_injects_forks_and_stops_owned_terminals()
     let records = host.terminals().await.unwrap();
     assert_eq!(records.len(), 1);
     let terminal = host.terminal(&records[0].uuid).await.unwrap();
+    assert_eq!(terminal.recovery_hint().await.unwrap(), Some(hint));
     let manual = terminal
         .set_name_with_source("Manual shell".into(), NameSource::Manual)
         .await
@@ -95,6 +102,7 @@ async fn public_handle_discovers_names_injects_forks_and_stops_owned_terminals()
     assert_ne!(sibling.uuid, terminal.uuid());
     let sibling_handle = host.terminal(&sibling.uuid).await.unwrap();
     assert_eq!(sibling_handle.route(), sibling.id);
+    assert_eq!(sibling_handle.recovery_hint().await.unwrap(), None);
     let stopped_sibling = sibling_handle.stop().await.unwrap();
     assert_eq!(stopped_sibling.terminal_uuid, sibling.uuid);
     terminal.stop().await.unwrap();

@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 rust_library(
     name = "provider",
@@ -20,6 +21,40 @@ rust_test(
     crate = ":provider",
 )
 
+sh_test(
+    name = "codex_resume_test",
+    timeout = "moderate",
+    srcs = ["tests/codex_resume.sh"],
+    data = ["tests/codex_resume.py"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+exports_files(
+    ["tests/codex_resume.py"],
+    visibility = ["//apps/humata2/terminal/host:__pkg__"],
+)
+
+sh_test(
+    name = "claude_resume_test",
+    timeout = "moderate",
+    srcs = ["tests/claude_resume.sh"],
+    data = [
+        "tests/claude_resume.py",
+        "tests/codex_resume.py",
+    ],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],
@@ -30,4 +65,56 @@ filegroup(
     name = "markdown",
     srcs = ["README.md"],
     tags = ["markdown"],
+)
+
+[
+    sh_test(
+        name = provider + "_fork_test",
+        timeout = "moderate",
+        srcs = ["tests/" + provider + "_fork.sh"],
+        data = [
+            "tests/codex_resume.py",
+            "tests/fork_recovery.py",
+        ],
+        tags = [
+            "external",
+            "manual",
+            "no-sandbox",
+        ],
+        target_compatible_with = ["@platforms//os:macos"],
+    )
+    for provider in [
+        "codex",
+        "claude",
+    ]
+]
+
+# Installed real CLI; isolated offline state and deterministic loopback inference.
+sh_test(
+    name = "copilot_resume_test",
+    timeout = "moderate",
+    srcs = ["tests/copilot_resume.sh"],
+    data = ["tests/copilot_resume.py"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+sh_test(
+    name = "copilot_fork_test",
+    timeout = "moderate",
+    srcs = ["tests/copilot_fork.sh"],
+    data = [
+        "tests/copilot_fork.py",
+        "tests/copilot_resume.py",
+    ],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
 )

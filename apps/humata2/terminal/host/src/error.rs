@@ -64,11 +64,40 @@ pub enum Error {
     )]
     ProviderBinding { terminal: u64, reason: &'static str },
     #[error(
+        "Terminal {terminal}'s provider identity was saved, but its companion settings could not be saved. The new identity remains authoritative. Fix the private recovery folder or disk space, then bind the provider again; do not retry the parent fork."
+    )]
+    RecoverySettingsCommitted {
+        terminal: u64,
+        #[source]
+        source: Box<Error>,
+    },
+    #[error(
         "The structured provider event is invalid. Check the documented adapter schema and field limits before submitting it again."
     )]
     ProviderEvent {
         #[source]
         source: terminal_provider::Error,
+    },
+    #[error(
+        "Agent recovery profile {profile} is not configured. Supply its trusted launch profile or remove the recovery policy before starting the host."
+    )]
+    AgentResumeProfile { profile: String },
+    #[error("Agent recovery policy file {} exceeds {maximum} bytes. Reduce its resume-only arguments or configure policies through the native API; no terminal was started by this launch.", path.display())]
+    AgentResumePolicySize { path: PathBuf, maximum: usize },
+    #[error(
+        "Agent recovery policy for profile {profile} is invalid. Fix its configured adapter, provider or argument limits before starting the host."
+    )]
+    AgentResumePolicy {
+        profile: String,
+        #[source]
+        source: terminal_provider::ResumeError,
+    },
+    #[error(
+        "The host timed out waiting for a reserved agent recovery launch to settle. Preserve its workspace and inspect the reservation before restarting; a process may already exist."
+    )]
+    AgentResumePending {
+        #[source]
+        source: tokio::time::error::Elapsed,
     },
     #[error("Invalid terminal host configuration: {reason}.")]
     Invalid { reason: &'static str },

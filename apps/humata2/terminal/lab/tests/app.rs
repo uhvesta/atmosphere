@@ -390,6 +390,98 @@ fn real_shells_render_move_paste_detach_resume_and_resize_headlessly() {
     })
     .unwrap();
     wait(&runtime, &mut cx, &lab, window);
+    // Keep width fixed: each row change must reach the real local/SSH PTY,
+    // rather than only stretching or clipping a renderer's cached screen.
+    let mut shell_pid = None;
+    let mut sizes = Vec::new();
+    for (phase, height) in [760., 420., 960., 760.].into_iter().enumerate() {
+        cx.update_window(window, |_, w, cx| {
+            w.resize(size(px(1200.), px(height)));
+            w.bounds_changed(cx);
+        })
+        .unwrap();
+        wait(&runtime, &mut cx, &lab, window);
+        let expected = cx.update(|cx| {
+            let terminal = lab.read(cx).terminal(a).unwrap();
+            terminal
+                .read(cx)
+                .pane()
+                .read(cx)
+                .view()
+                .read(cx)
+                .grid()
+                .size()
+        });
+        let bottom = format!("V_BOTTOM_{phase}");
+        let command = format!(
+            r#"set -- $(stty size); printf '\033[2J\033[HSIZE_{phase}=%s,%s,%s,%s\n' "$1" "$2" "$$" "$LAB_STILL"; printf '\033[%s;1H{bottom}' "$1""#
+        );
+        cx.update(|cx| {
+            lab.read(cx)
+                .terminal(a)
+                .unwrap()
+                .update(cx, |terminal, cx| {
+                    terminal.send_text(command, cx);
+                });
+        });
+        cx.update_window(window, |_, w, cx| {
+            let terminal = lab.read(cx).terminal(a).unwrap();
+            w.focus(&terminal.read(cx).focus_handle(cx), cx);
+            w.press("enter", cx);
+        })
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let output = loop {
+            wait(&runtime, &mut cx, &lab, window);
+            let output = screen(&mut cx, &lab, a);
+            if output
+                .lines()
+                .last()
+                .is_some_and(|line| line.starts_with(&bottom))
+            {
+                break output;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "vertical resize did not paint the PTY's last row: {output}"
+            );
+        };
+        let status = output
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("SIZE_{phase}=")))
+            .unwrap();
+        let fields: Vec<_> = status.trim().split(',').collect();
+        assert_eq!(fields.len(), 4);
+        assert_eq!(fields[0].parse::<u16>().unwrap(), expected.rows);
+        assert_eq!(fields[1].parse::<u16>().unwrap(), expected.cols);
+        assert_eq!(
+            fields[3], "original",
+            "resizing must retain the shell environment"
+        );
+        if let Some(pid) = &shell_pid {
+            assert_eq!(fields[2], pid, "resizing must retain the shell process");
+        } else {
+            shell_pid = Some(fields[2].to_owned());
+        }
+        cx.update(|cx| {
+            let terminal = lab.read(cx).terminal(a).unwrap();
+            let grid = terminal.read(cx).pane().read(cx).view().read(cx).grid();
+            assert_eq!(grid.size(), expected);
+            assert_eq!(grid.cursor().y, expected.rows - 1);
+            assert!(
+                grid.is_alternate_screen(),
+                "vertical resize must retain the active TUI screen"
+            );
+        });
+        sizes.push(expected);
+    }
+    assert!(sizes[1].rows < sizes[0].rows);
+    assert!(sizes[2].rows > sizes[0].rows);
+    assert_eq!(
+        sizes[3], sizes[0],
+        "restoring the window restores both PTY dimensions"
+    );
+    assert!(sizes.iter().all(|size| size.cols == sizes[0].cols));
     cx.update(|cx| {
         for id in [a, b] {
             lab.read(cx)

@@ -82,7 +82,7 @@ printf '%s' "${TERMINAL_BROWSER_MIRROR:-0}" | /usr/bin/ssh -F "$TERMINAL_LAB_SSH
   -o BatchMode=yes "$host" "umask 077; cat > '$remote_dir/mirror'"
 printf '%s' "${TERMINAL_BROWSER_FLAGS:-}" | /usr/bin/ssh -F "$TERMINAL_LAB_SSH_CONFIG" \
   -o BatchMode=yes "$host" "umask 077; cat > '$remote_dir/browser-flags.json'"
-printf '%s\n%s\n%s\n' "${TERMINAL_BROWSER_TAB:-0}" "${TERMINAL_BROWSER_STYLE:-0}" "${TERMINAL_BROWSER_CLIPBOARD:-0}" | /usr/bin/ssh -F "$TERMINAL_LAB_SSH_CONFIG" \
+printf '%s\n%s\n%s\n%s\n' "${TERMINAL_BROWSER_TAB:-0}" "${TERMINAL_BROWSER_STYLE:-0}" "${TERMINAL_BROWSER_CLIPBOARD:-0}" "${TERMINAL_BROWSER_RESIZE:-0}" | /usr/bin/ssh -F "$TERMINAL_LAB_SSH_CONFIG" \
   -o BatchMode=yes "$host" "umask 077; cat > '$remote_dir/checks'"
 # An independent control master owns only this reverse loopback forward.
 /usr/bin/ssh -F "$TERMINAL_LAB_SSH_CONFIG" -o BatchMode=yes -o ExitOnForwardFailure=yes \

@@ -243,3 +243,31 @@ humata2_snapshot_test(
         "_fast": "@crates_gpui_fast//:gpui-kit",
     }.items()
 ]
+
+# Real SSH dimensions and bottom-row behavior, without app screenshot baselines.
+[
+    rust_test(
+        name = "vertical_resize_ssh" + engine + "_test",
+        srcs = ["tests/vertical_resize_ssh.rs"],
+        data = ["//apps/humata2/daemon/holder:humata2_holder"],
+        env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+        tags = [
+            "external",
+            "manual",
+        ],
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            ":lib" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/terminal/session",
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            gpui,
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui in {
+        "": "@crates//:gpui-kit",
+        "_fast": "@crates_gpui_fast//:gpui-kit",
+    }.items()
+]

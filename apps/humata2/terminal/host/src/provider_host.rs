@@ -16,6 +16,42 @@ pub struct ProviderBinding {
     context: TrustedContext,
 }
 impl ProviderBinding {
+    /// Activate a provider-created foreground fork, then revoke this old
+    /// binding so delayed background-parent events cannot change recovery back.
+    /// The caller supplies the actual new structured SessionStarted event and
+    /// the expected current parent ID; no provider command or file is inferred.
+    pub async fn activate_fork(
+        &self,
+        parent_session_id: String,
+        event: ProviderEvent,
+        state_paths: Vec<String>,
+    ) -> Result<ProviderBinding, Error> {
+        let mut context = self.context.clone();
+        context.state_paths = state_paths.clone();
+        terminal_provider::validate_event(&context, &event)
+            .map_err(|source| Error::ProviderEvent { source })?;
+        let (reply, answer) = oneshot::channel();
+        self.host
+            .tx
+            .send(Command::Provider(ProviderCommand::Fork {
+                terminal: self.terminal,
+                key: self.key,
+                parent_session_id,
+                event,
+                state_paths,
+                reply,
+            }))
+            .await
+            .map_err(|_| Error::Closed)?;
+        let key = answer.await.map_err(|_| Error::Closed)??;
+        Ok(ProviderBinding {
+            host: self.host.clone(),
+            terminal: self.terminal,
+            key,
+            context,
+        })
+    }
+
     /// Submit an already normalized event, not scraped terminal text.
     pub async fn ingest(&self, event: ProviderEvent) -> Result<(), Error> {
         terminal_provider::validate_event(&self.context, &event)
@@ -65,6 +101,7 @@ impl ProviderObserver {
 struct Bound {
     key: u64,
     context: TrustedContext,
+    active_session: Option<String>,
 }
 struct Observer {
     sender: mpsc::Sender<(u64, ProviderEvent)>,
@@ -76,10 +113,23 @@ pub(super) struct ProviderState {
     observers: Vec<Observer>,
     next: u64,
 }
+impl ProviderState {
+    pub(super) fn invalidate(&mut self, terminal: u64) {
+        self.bindings.remove(&terminal);
+    }
+}
 pub(super) enum ProviderCommand {
     Bind {
         terminal: u64,
         context: TrustedContext,
+        reply: oneshot::Sender<Result<u64, Error>>,
+    },
+    Fork {
+        terminal: u64,
+        key: u64,
+        parent_session_id: String,
+        event: ProviderEvent,
+        state_paths: Vec<String>,
         reply: oneshot::Sender<Result<u64, Error>>,
     },
     Ingest {
@@ -163,9 +213,17 @@ impl Actor {
                 } else {
                     self.provider_state.next = self.provider_state.next.wrapping_add(1);
                     let key = self.provider_state.next;
-                    self.provider_state
-                        .bindings
-                        .insert(terminal, Bound { key, context });
+                    self.provider_state.bindings.insert(
+                        terminal,
+                        Bound {
+                            key,
+                            context,
+                            active_session: self
+                                .processes
+                                .get(&terminal)
+                                .and_then(|p| p.settings.foreground_session.clone()),
+                        },
+                    );
                     Ok(key)
                 };
                 let _ = reply.send(result);
@@ -189,13 +247,71 @@ impl Actor {
                 };
                 let _ = reply.send(result);
             }
+            ProviderCommand::Fork {
+                terminal,
+                key,
+                parent_session_id,
+                event,
+                state_paths,
+                reply,
+            } => {
+                let result = (|| {
+                    let bound = self
+                        .provider_state
+                        .bindings
+                        .get(&terminal)
+                        .filter(|bound| bound.key == key)
+                        .ok_or(Error::ProviderBinding {
+                            terminal,
+                            reason: "the parent binding was replaced",
+                        })?;
+                    let mut fork_context = bound.context.clone();
+                    fork_context.state_paths = state_paths.clone();
+                    terminal_provider::validate_event(&fork_context, &event)
+                        .map_err(|source| Error::ProviderEvent { source })?;
+                    let current = self
+                        .processes
+                        .get(&terminal)
+                        .and_then(|p| p.settings.recovery.as_ref())
+                        .ok_or(Error::ProviderBinding {
+                            terminal,
+                            reason: "the parent conversation is not recorded",
+                        })?;
+                    if current.session_id != parent_session_id
+                        || current.provider != event.provider
+                        || event.session_id == parent_session_id
+                        || !matches!(event.signal, ProviderSignal::SessionStarted { .. })
+                    {
+                        return Err(Error::ProviderBinding {
+                            terminal,
+                            reason: "fork activation needs the exact current parent and a different structured session-start identity",
+                        });
+                    }
+                    let next = self.provider_state.next.checked_add(1).ok_or(
+                        Error::ProviderBinding {
+                            terminal,
+                            reason: "provider binding counter exhausted; restart the native host",
+                        },
+                    )?;
+                    let new_session = event.session_id.clone();
+                    self.ingest_provider(terminal, key, event, Some(&state_paths))?;
+                    self.provider_state.next = next;
+                    if let Some(bound) = self.provider_state.bindings.get_mut(&terminal) {
+                        bound.key = next;
+                        bound.active_session = Some(new_session);
+                        bound.context = fork_context;
+                    }
+                    Ok(next)
+                })();
+                let _ = reply.send(result);
+            }
             ProviderCommand::Ingest {
                 terminal,
                 key,
                 event,
                 reply,
             } => {
-                let result = self.ingest_provider(terminal, key, event);
+                let result = self.ingest_provider(terminal, key, event, None);
                 let _ = reply.send(result);
             }
         }
@@ -205,6 +321,7 @@ impl Actor {
         terminal: u64,
         key: u64,
         event: ProviderEvent,
+        fork_paths: Option<&[String]>,
     ) -> Result<(), Error> {
         let bound = self
             .provider_state
@@ -217,6 +334,17 @@ impl Actor {
             })?;
         terminal_provider::validate_event(&bound.context, &event)
             .map_err(|source| Error::ProviderEvent { source })?;
+        if fork_paths.is_none()
+            && bound
+                .active_session
+                .as_ref()
+                .is_some_and(|id| id != &event.session_id)
+        {
+            return Err(Error::ProviderBinding {
+                terminal,
+                reason: "event belongs to another background or parent conversation; explicitly activate the foreground session",
+            });
+        }
         let process = self
             .processes
             .get(&terminal)
@@ -232,7 +360,8 @@ impl Actor {
                     .cwd
                     .clone()
                     .unwrap_or_else(|| process.info.cwd.clone()),
-                state_paths: bound.context.state_paths.clone(),
+                state_paths: fork_paths
+                    .map_or_else(|| bound.context.state_paths.clone(), <[String]>::to_vec),
             };
             validate_recovery(Some(&hint))?;
             let mut settings = self.settings.clone();
@@ -243,17 +372,24 @@ impl Actor {
                     reason: "terminal settings are unavailable",
                 })?
                 .recovery = Some(hint.clone());
+            if fork_paths.is_some() {
+                if let Some(setting) = settings.get_mut(&terminal) {
+                    setting.foreground_session = Some(event.session_id.clone());
+                }
+            }
             let store = self.store.as_mut().ok_or(Error::ProviderBinding {
                 terminal,
                 reason: "host is launching another terminal; retry after launch completes",
             })?;
-            let old = process.settings.recovery.clone();
             store.set_recovery(terminal, Some(hint))?;
-            if let Err(error) = self.recovery.save_settings(&settings) {
-                // No observer event on failure. Preserve native store identity
-                // when rollback succeeds; a retry is idempotent if it does not.
-                let _ = store.set_recovery(terminal, old);
-                return Err(error);
+            // The workspace is authoritative once this write succeeds. Never
+            // roll it back through another fallible disk write: a failed
+            // rollback could otherwise resume the parent until Host restart.
+            let saved_settings = self.recovery.save_settings(&settings);
+            if saved_settings.is_err() {
+                if let Some(setting) = settings.get_mut(&terminal) {
+                    setting.foreground_session = Some(event.session_id.clone());
+                }
             }
             self.settings = settings;
             if let (Some(p), Some(settings)) = (
@@ -264,6 +400,15 @@ impl Actor {
                 p.info.recovery_available = true;
             }
             self.sessions();
+            if let Err(source) = saved_settings {
+                // No provider observer event or usable parent binding on a
+                // partial commit. A new binding inherits the authoritative ID.
+                self.provider_state.invalidate(terminal);
+                return Err(Error::RecoverySettingsCommitted {
+                    terminal,
+                    source: Box::new(source),
+                });
+            }
         } else if !process.settings.recovery.as_ref().is_some_and(|hint| {
             hint.provider == event.provider && hint.session_id == event.session_id
         }) {

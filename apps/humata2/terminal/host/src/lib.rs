@@ -1,7 +1,18 @@
 //! Native authoritative terminal host. Viewers never own the PTY or VT state.
 #[cfg(test)]
+mod agent_resume_shutdown_tests;
+#[cfg(test)]
 mod adversarial;
 mod auth;
+mod agent_resume;
+#[cfg(test)]
+mod agent_resume_tests;
+#[cfg(test)]
+mod agent_resume_codex_tests;
+#[cfg(test)]
+mod agent_resume_ssh_tests;
+#[cfg(test)]
+mod agent_resume_vm_tests;
 mod error;
 #[cfg(test)]
 mod feature_tests;
@@ -16,6 +27,7 @@ mod recovery;
 mod roaming_tests;
 mod spawn;
 pub use error::Error;
+pub use agent_resume::{AgentResumeConfig, AgentResumeError, AgentResumeObservation, AgentResumeObserver, AgentResumeLaunch};
 pub use gateway::serve;
 use ghostty_vt::{Event as VtEvent, Terminal, clipboard_read_reply};
 pub use native::{
@@ -99,6 +111,7 @@ pub struct Config {
 #[derive(Clone)]
 pub struct Host {
     tx: mpsc::Sender<Command>,
+    resume_events: tokio::sync::broadcast::Sender<AgentResumeObservation>,
 }
 pub(crate) struct QueuedFrame {
     pub frame: ServerFrame,
@@ -117,6 +130,7 @@ enum Command {
         reply: oneshot::Sender<()>,
     },
     Provider(provider_host::ProviderCommand),
+    AgentResume(agent_resume::AgentResumeCommand),
     Spawn(spawn::SpawnCommand),
     Native(native::NativeCommand),
     #[cfg(test)]
@@ -296,6 +310,7 @@ struct Actor {
     native_state: native::NativeState,
     pending_titles: BTreeMap<u64, String>,
     reconnects: reconnect::Reconnects,
+    agent_resumes: agent_resume::AgentResumes,
 }
 impl Host {
     pub async fn start(
@@ -309,6 +324,7 @@ impl Host {
             profiles,
             std::sync::Arc::new(terminal_codec::Registry::default()),
             vec![terminal_codec::LZ4.into(), terminal_codec::ZLIB.into()],
+            AgentResumeConfig::default(),
         )
         .await
     }
@@ -322,7 +338,20 @@ impl Host {
         codecs: std::sync::Arc<terminal_codec::Registry>,
         codec: String,
     ) -> Result<Self, Error> {
-        Self::start_inner(config, store, profiles, codecs, vec![codec]).await
+        Self::start_inner(config, store, profiles, codecs, vec![codec], AgentResumeConfig::default()).await
+    }
+    /// Enable exact-conversation recovery for explicitly configured profiles.
+    /// Default start() never restarts an exited agent. Automatic recovery needs
+    /// a confirmed abnormal child exit; SSH ambiguity never causes a launch.
+    pub async fn start_with_agent_resume(
+        config: Config,
+        store: SessionStore,
+        profiles: Vec<Profile>,
+        resume: AgentResumeConfig,
+    ) -> Result<Self, Error> {
+        Self::start_inner(config, store, profiles,
+            std::sync::Arc::new(terminal_codec::Registry::default()),
+            vec![terminal_codec::LZ4.into(), terminal_codec::ZLIB.into()], resume).await
     }
     async fn start_inner(
         config: Config,
@@ -330,6 +359,7 @@ impl Host {
         profiles: Vec<Profile>,
         codecs: std::sync::Arc<terminal_codec::Registry>,
         codec: Vec<String>,
+        resume: AgentResumeConfig,
     ) -> Result<Self, Error> {
         validate_history(&config.default_history)?;
         let recovery = Recovery::open_with_codecs(config.state.join("recovery"), codecs, codec)?;
@@ -356,6 +386,12 @@ impl Host {
                 });
             }
         }
+        for (name, policy) in &resume.profiles {
+            resume.registry.validate_policy(policy).map_err(|source| Error::AgentResumePolicy { profile: name.clone(), source })?;
+            if !configured.contains_key(name) {
+                return Err(Error::AgentResumeProfile { profile: name.clone() });
+            }
+        }
         for name in &config.start_profiles {
             let profile = configured.get(name).ok_or(Error::Invalid {
                 reason: "a startup profile was not configured",
@@ -379,8 +415,9 @@ impl Host {
                     store.bind_startup_profile(id, name)?;
                 }
             }
-            let previous: BTreeSet<_> = store.sessions().iter().map(|saved| saved.id).collect();
-            let launched = store.create_startup(profile.spec(), name);
+            let launched = store.create_startup_with_metadata(
+                profile.spec(), name, profile.recovery.clone(), BTreeMap::new(),
+            );
             let id = launched.as_ref().ok().copied().or_else(|| {
                 store
                     .sessions()
@@ -389,15 +426,14 @@ impl Host {
                     .map(|saved| saved.id)
             });
             if let Some(id) = id {
-                if !previous.contains(&id) {
-                    store.set_recovery(id, profile.recovery.clone())?;
-                }
                 let saved_hint = store
                     .sessions()
                     .iter()
                     .find(|saved| saved.id == id)
                     .and_then(|saved| saved.recovery.clone());
                 let setting = settings.entry(id).or_insert_with(|| Settings {
+                    resume_blocked: false,
+                    foreground_session: None,
                     profile: Some(name.clone()),
                     recovery: saved_hint,
                     history: profile.history.clone(),
@@ -411,6 +447,7 @@ impl Host {
         let (disk, disk_jobs) = mpsc::channel(8);
         let (disk_results, disk_done) = mpsc::unbounded_channel();
         disk_worker(recovery.clone(), disk_jobs, disk_results);
+        let (resume_events, _) = tokio::sync::broadcast::channel(64);
         let mut actor = Actor {
             store: Some(store),
             profiles: configured,
@@ -440,6 +477,7 @@ impl Host {
             native_state,
             pending_titles: BTreeMap::new(),
             reconnects: reconnect::Reconnects::default(),
+            agent_resumes: agent_resume::AgentResumes::new(resume, resume_events.clone()),
         };
         let sessions = actor
             .store
@@ -448,20 +486,26 @@ impl Host {
             .sessions()
             .to_vec();
         for saved in sessions {
-            let settings = actor
+            let mut settings = actor
                 .settings
                 .get(&saved.id)
                 .cloned()
                 .unwrap_or_else(|| Settings {
-                    profile: saved.startup_profile.clone(),
-                    history: saved
-                        .startup_profile
-                        .as_ref()
-                        .and_then(|name| actor.profiles.get(name))
-                        .map(|profile| profile.history.clone())
-                        .unwrap_or_else(|| actor.default_history.clone()),
+                    resume_blocked: false,
+                    foreground_session: saved.startup_profile.as_deref()
+                        .filter(|key| key.starts_with("agent-resume:"))
+                        .and_then(|_| saved.recovery.as_ref().map(|hint| hint.session_id.clone())),
+                    profile: agent_resume::saved_profile(&saved),
+                    history: agent_resume::saved_history(&saved, &actor),
                     recovery: saved.recovery.clone(),
                 });
+            // Workspace identity is atomically saved before provider-event
+            // acknowledgement. A crash between it and the separate settings
+            // save must not reopen an older parent conversation after a fork.
+            // A known saved conversation is authoritative on reconnection,
+            // including a first fork whose settings write never completed.
+            settings.foreground_session = saved.recovery.as_ref().map(|hint| hint.session_id.clone());
+            settings.recovery = saved.recovery.clone();
             let (vt, offset, exit) = actor.restore(saved.id, &saved.spec, &settings)?;
             let cursor = actor.recovery.reply_cursor(saved.id)?;
             if cursor.pending {
@@ -501,7 +545,7 @@ impl Host {
             );
         }
         tokio::spawn(actor.run());
-        Ok(Self { tx })
+        Ok(Self { tx, resume_events })
     }
     /// Flush bounded screen recovery, detach viewers/transports, and leave holders running.
     pub async fn shutdown(&self) -> Result<(), Error> {
@@ -673,7 +717,7 @@ impl Actor {
             let command = tokio::select! {
                 command=self.rx.recv()=>command,
                 command=self.disk_done.recv(),if disk_open=>{if command.is_none(){disk_open=false;self.failure(None,"recovery_worker","The checkpoint worker stopped. Live terminals remain active; restart the host to restore disk recovery.");}command},
-                _=tick.tick()=>{self.checkpoints();self.reconnect_tick();continue;},
+                _=tick.tick()=>{self.checkpoints();self.reconnect_tick();self.agent_resume_tick();continue;},
             };
             let Some(command) = command else {
                 if !disk_open {
@@ -697,13 +741,14 @@ impl Actor {
                 break;
             }
             if let Command::Shutdown { reply } = command {
+                self.agent_resumes.close();
+                let resumed = self.settle_agent_resume().await;
                 self.native_state.closing();
                 self.reconnects.close().await;
                 let settled = self.settle_mechanical_writes().await;
                 let mut result = self.flush().await;
-                if result.is_ok() {
-                    result = settled;
-                }
+                if result.is_ok() { result = resumed; }
+                if result.is_ok() { result = settled; }
 
                 let (barrier, finished) = oneshot::channel();
                 if self.disk.send(DiskJob::Barrier(barrier)).await.is_err()
@@ -976,6 +1021,7 @@ impl Actor {
   #[cfg(test)]
   Command::ReconnectBackoffFixture{delay,reply}=>{self.reconnects.test_backoff(delay);let _=reply.send(());},
   Command::Provider(command)=>self.provider_command(command),
+  Command::AgentResume(command)=>self.agent_resume_command(command),
   Command::Spawn(command)=>self.spawn_command(command),
   Command::Native(command)=>self.native_command(command),
   #[cfg(test)]
@@ -1005,7 +1051,7 @@ impl Actor {
   Command::Saved{session,generation,result}=>{if let Some(p)=self.processes.get_mut(&session){p.saving=false;p.last_save=Instant::now();if result.is_ok(){p.saved_generation=generation;}}if result.is_err(){self.failure(Some(session),"recovery_write","The checkpoint could not be saved. Check private-folder permissions and free disk space; the previous checkpoint was preserved.");}},
   Command::Removed{session,result}=>{if result.is_err(){self.failure(Some(session),"recovery_remove","Screen persistence is disabled, but the old checkpoint could not be removed. Remove it from the private recovery folder after fixing permissions.");}else{self.sessions();}},
   Command::Created{store,profile,id,attached}=>{
-   self.store=Some(store);self.persist_cwds();if let Some(id)=id {let spec=profile.spec();let settings=Settings{profile:Some(profile.name),recovery:profile.recovery,history:profile.history};let (lines,_)=history_limits(&settings.history);match new_terminal(&spec,lines){Ok(vt)=>self.add(id,&spec,settings,vt,0,None,attached.ok(),ReplyCursor::default()),Err(_)=>self.failure(Some(id),"terminal_create","The terminal engine could not allocate a new screen. Close unused sessions and retry.")};let _=self.recovery.save_settings(&self.settings);self.sessions();}else{self.failure(None,"create_failed","The configured program could not be started. Check the trusted launch profile and holder installation, then retry.");}
+   self.store=Some(store);self.persist_cwds();if let Some(id)=id {let spec=profile.spec();let settings=Settings{resume_blocked:false,foreground_session:None,profile:Some(profile.name),recovery:profile.recovery,history:profile.history};let (lines,_)=history_limits(&settings.history);match new_terminal(&spec,lines){Ok(vt)=>self.add(id,&spec,settings,vt,0,None,attached.ok(),ReplyCursor::default()),Err(_)=>self.failure(Some(id),"terminal_create","The terminal engine could not allocate a new screen. Close unused sessions and retry.")};let _=self.recovery.save_settings(&self.settings);self.sessions();}else{self.failure(None,"create_failed","The configured program could not be started. Check the trusted launch profile and holder installation, then retry.");}
   }
   Command::CreateFailed=>self.failure(None,"create_worker","The launch worker stopped. Existing terminals remain active; restart the host before creating more sessions."),
  }
@@ -1587,6 +1633,10 @@ impl Actor {
                 if !self.require_control(viewer, id) {
                     return;
                 }
+                if let Err(error) = self.record_agent_stop(id) {
+                    self.failure_to(viewer, Some(id), "stop_recovery", &error.to_string());
+                    return;
+                }
                 let Some(p) = self.processes.get_mut(&id) else {
                     return;
                 };
@@ -1623,9 +1673,15 @@ impl Actor {
                 }
                 if let Some(p) = self.processes.get_mut(&id) {
                     p.settings.recovery = hint.clone();
+                    if p.settings.foreground_session.is_some() {
+                        p.settings.foreground_session = hint.as_ref().map(|hint| hint.session_id.clone());
+                    }
                     p.info.recovery_available = hint.is_some();
                     self.settings.insert(id, p.settings.clone());
                 }
+                // Explicit controller selection supersedes the former native
+                // provider binding; late callbacks must rebind before writing.
+                self.provider_state.invalidate(id);
                 if self.recovery.save_settings(&self.settings).is_err() {
                     self.failure_to(
                         viewer,

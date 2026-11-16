@@ -1,4 +1,11 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+sh_binary(
+    name = "vm_fixture_driver",
+    srcs = ["tests/vm_fixture.sh"],
+    tags = ["manual"],
+)
 
 rust_library(
     name = "host",
@@ -45,6 +52,91 @@ rust_test(
     crate = ":host",
     data = ["//apps/humata2/daemon/holder:humata2_holder"],
     env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "agent_resume_codex_test",
+    timeout = "moderate",
+    args = [
+        "--ignored",
+        "actual_codex_host_recovers_exact_conversation_after_owned_child_sigkill",
+        "--nocapture",
+    ],
+    crate = ":host",
+    data = [
+        "//apps/humata2/daemon/holder:humata2_holder",
+        "//apps/humata2/terminal/provider:tests/codex_resume.py",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "TERMINAL_CODEX_HELPER": "$(rootpath //apps/humata2/terminal/provider:tests/codex_resume.py)",
+    },
+    tags = [
+        "external",
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "agent_resume_vm_test",
+    timeout = "long",
+    args = [
+        "--ignored",
+        "agent_resume_vm_tests::",
+        "--nocapture",
+    ],
+    crate = ":host",
+    data = [
+        "tests/vm_fixture.sh",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "TERMINAL_VM_DRIVER": "$(rootpath :tests/vm_fixture.sh)",
+    },
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:aarch64",
+        "@platforms//os:macos",
+    ],
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "agent_resume_ssh_test",
+    args = [
+        "--ignored",
+        "agent_resume_ssh_tests::",
+        "--test-threads=1",
+    ],
+    crate = ":host",
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
     deps = [
         "@crates//:base64",
         "@crates//:tempfile",
@@ -111,6 +203,86 @@ rust_test(
     deps = [
         "@crates//:base64",
         "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "startup_reservation_test",
+    srcs = ["tests/startup_reservation.rs"],
+    data = [
+        ":terminal_host",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "TERMINAL_HOST_BINARY": "$(rootpath :terminal_host)",
+    },
+    deps = [
+        "//apps/humata2/terminal/wire",
+        "@crates//:futures-util",
+        "@crates//:libc",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "hard_kill_test",
+    srcs = ["tests/hard_kill.rs"],
+    data = [
+        ":terminal_host",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "TERMINAL_HOST_BINARY": "$(rootpath :terminal_host)",
+    },
+    deps = [
+        "//apps/humata2/terminal/codec",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/terminal/wire",
+        "@crates//:futures-util",
+        "@crates//:libc",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "hard_kill_ssh_test",
+    srcs = ["tests/hard_kill.rs"],
+    args = [
+        "--ignored",
+        "ssh_",
+        "--test-threads=1",
+    ],
+    data = [
+        ":terminal_host",
+        "//apps/humata2/daemon/holder:humata2_holder",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "TERMINAL_HOST_BINARY": "$(rootpath :terminal_host)",
+    },
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        "//apps/humata2/terminal/codec",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/terminal/wire",
+        "@crates//:futures-util",
+        "@crates//:libc",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
         "@crates//:tokio-tungstenite",
     ],
 )

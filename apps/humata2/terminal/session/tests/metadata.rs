@@ -11,7 +11,7 @@ use std::{
     sync::mpsc,
     time::Duration,
 };
-use terminal_session::{Endpoint, NameSource, SessionSpec, SessionStore};
+use terminal_session::{Endpoint, NameSource, RecoveryHint, SessionSpec, SessionStore};
 
 fn state() -> tempfile::TempDir {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
@@ -221,6 +221,60 @@ fn a_failed_startup_launch_keeps_one_durable_idempotent_reservation() {
     assert!(store.create(spec()).is_err());
     assert_eq!(store.sessions().len(), 2);
     assert!(store.sessions()[1].startup_profile.is_none());
+}
+
+#[test]
+fn invalid_startup_recovery_or_attributes_never_reserve_a_session() {
+    let dir = state();
+    let before = write(dir.path(), &workspace(0));
+    let mut store = open(dir.path()).unwrap();
+    let valid = RecoveryHint {
+        provider: "fixture".into(),
+        session_id: "conversation-1".into(),
+        working_directory: "/tmp".into(),
+        state_paths: vec![],
+    };
+    let mut bad_provider = valid.clone();
+    bad_provider.provider.clear();
+    let mut bad_session = valid.clone();
+    bad_session.session_id = "x".repeat(513);
+    let mut bad_paths = valid.clone();
+    bad_paths.state_paths = vec!["/tmp/state".into(); 17];
+    for hint in [bad_provider, bad_session, bad_paths] {
+        assert!(
+            store
+                .create_startup_with_metadata(spec(), "reserved", Some(hint), BTreeMap::new())
+                .is_err()
+        );
+        assert!(store.sessions().is_empty());
+        assert_eq!(
+            std::fs::read(dir.path().join("workspace.json")).unwrap(),
+            before
+        );
+    }
+    for attributes in [
+        BTreeMap::from([("source".into(), "x".repeat(4097))]),
+        BTreeMap::from([("bad\nkey".into(), "value".into())]),
+    ] {
+        assert!(
+            store
+                .create_startup_with_metadata(spec(), "reserved", Some(valid.clone()), attributes)
+                .is_err()
+        );
+        assert!(store.sessions().is_empty());
+        assert_eq!(
+            std::fs::read(dir.path().join("workspace.json")).unwrap(),
+            before
+        );
+    }
+    // Rejections consumed no ID. A valid request reaches the intentionally
+    // missing holder, after persisting its complete reservation as ID 1.
+    assert!(
+        store
+            .create_startup_with_metadata(spec(), "reserved", Some(valid.clone()), BTreeMap::new())
+            .is_err()
+    );
+    assert_eq!(store.session(1).unwrap().recovery.as_ref(), Some(&valid));
 }
 
 #[test]

@@ -49,6 +49,14 @@ pub enum HandleError {
     )]
     NotRunning { uuid: String },
     #[error(
+        "Stop for terminal {uuid} was not queued because its recovery policy could not be saved. Fix private-folder permissions or available disk space before retrying; saving the stop prevents an unwanted agent restart."
+    )]
+    RecoveryPolicy {
+        uuid: String,
+        #[source]
+        source: Error,
+    },
+    #[error(
         "Terminal {uuid} is starting another operation. Wait for launch to finish before changing its metadata."
     )]
     Busy { uuid: String },
@@ -159,6 +167,22 @@ impl TerminalHandle {
             .map_err(|_| HandleError::Closed)?;
         answer.await.map_err(|_| HandleError::Closed)?
     }
+    /// Native-only recovery metadata, including caller-supplied state paths.
+    /// This is deliberately absent from the viewer's SessionInfo payload.
+    pub async fn recovery_hint(&self) -> Result<Option<RecoveryHint>, HandleError> {
+        let (reply, answer) = oneshot::channel();
+        self.host
+            .tx
+            .send(Command::Native(NativeCommand::Recovery {
+                id: self.id,
+                uuid: self.uuid.clone(),
+                reply,
+            }))
+            .await
+            .map_err(|_| HandleError::Closed)?;
+        answer.await.map_err(|_| HandleError::Closed)?
+    }
+
     pub async fn set_name(&self, title: String) -> Result<SessionInfo, HandleError> {
         self.set_name_with_source(title, NameSource::Programmatic)
             .await
@@ -360,6 +384,11 @@ pub(super) enum NativeCommand {
         uuid: String,
         reply: oneshot::Sender<Result<(u64, u64), HandleError>>,
     },
+    Recovery {
+        id: u64,
+        uuid: String,
+        reply: oneshot::Sender<Result<Option<RecoveryHint>, HandleError>>,
+    },
     Info {
         id: u64,
         uuid: String,
@@ -495,6 +524,12 @@ impl Actor {
                 })();
                 let _ = reply.send(result);
             }
+            NativeCommand::Recovery { id, uuid, reply } => {
+                let _ = reply.send(
+                    self.check_handle(id, &uuid)
+                        .map(|p| p.settings.recovery.clone()),
+                );
+            }
             NativeCommand::Info { id, uuid, reply } => {
                 let _ = reply.send(self.check_handle(id, &uuid).map(|p| p.info.clone()));
             }
@@ -583,6 +618,11 @@ impl Actor {
             .clone()
             .try_reserve_owned()
             .map_err(|_| HandleError::Backpressure)?;
+        self.record_agent_stop(id)
+            .map_err(|source| HandleError::RecoveryPolicy {
+                uuid: uuid.into(),
+                source,
+            })?;
         if let Some(p) = self.processes.get_mut(&id) {
             p.stopping = true;
         }

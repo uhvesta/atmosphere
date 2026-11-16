@@ -155,3 +155,19 @@ remains application policy, separate from the reusable component's provider hook
 The real local OpenSSH fixture is documented in
 [SSH demo setup](platform_test/SSH_DEMO.md) and automated by the repository-root
 `terminal-ssh-demo.sh`. It uses a dedicated no-mount Debian Lima VM.
+
+## Agent recovery is separate from terminal reattachment
+
+Surviving local/SSH holders keep their existing process and terminal UUID when a
+viewer, Host or SSH tunnel disappears. Opt-in agent recovery handles confirmed
+nonzero child exits by launching a fresh process/terminal UUID with the exact
+saved provider conversation ID. It does not replay the original prompt or
+uncertain input, guess a session from terminal text, or create a replacement
+merely because SSH is unavailable. Explicit Stop is durable across Host restart.
+
+The [agent recovery contract](host/AGENT_RECOVERY.md) documents native APIs, the
+standalone `--agent-resume` policy file, hooks, one-attempt reservations, exact
+Codex/Claude Code/Copilot adapters and actual-CLI verification boundaries.
+Additional providers can register a versioned resume adapter. A killed machine's
+process memory is gone; conversation recovery also needs the provider's saved
+state on the original endpoint.

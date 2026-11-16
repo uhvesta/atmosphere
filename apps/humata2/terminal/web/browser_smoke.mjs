@@ -244,6 +244,60 @@ try{
        const clipShot=await call('Page.captureScreenshot',{format:'png'}),clipBytes=Buffer.from(clipShot.data,'base64');requirePaint(pngMetrics(clipBytes));
        await writeFile(path.join(output,`browser-clipboard-${initial.id}.png`),clipBytes);
      }
+     if(process.env.TERMINAL_BROWSER_RESIZE==='1'){
+       const uuid=state.sessions.find(s=>s.id===initial.id)?.uuid;
+       if(!uuid)throw new Error(`Vertical resize needs a stable UUID for terminal ${initial.id}.`);
+       const phases=[],bottomPrefix=`V_BOTTOM_${nonce}_${initial.id}`;
+       let shellPid;
+       for(const [step,height] of [800,500,1000,800].entries()){
+         await call('Emulation.setDeviceMetricsOverride',{width:1280,height,deviceScaleFactor:1,mobile:false});
+         for(let i=0;i<300;i++){
+           state=await inspect();terminal=state.terminals.find(t=>t.id===initial.id);
+           const fit=terminal&&terminal.rows===Math.floor(terminal.viewport.height/terminal.cell.height);
+           if(terminal?.enabled&&fit&&(step===0||terminal.rows!==phases.at(-1).rows))break;
+           await sleep(50);
+         }
+         if(!terminal?.enabled||terminal.rows!==Math.floor(terminal.viewport.height/terminal.cell.height)||(step&&terminal.rows===phases.at(-1).rows))throw new Error(`Vertical resize did not fit terminal ${initial.id} to height ${height}.`);
+         const expected={cols:terminal.cols,rows:terminal.rows};
+         const x=terminal.viewport.x+terminal.cell.width*2,y=terminal.viewport.y+terminal.cell.height*2;
+         await call('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
+         await call('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});await call('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});await settle();
+         const status=`V_SIZE_${nonce}_${initial.id}_${step}`,bottom=`${bottomPrefix}_${step}`;
+         // Query the actual PTY, then address its last row. Split output labels in
+         // the source command so an echoed command cannot satisfy the assertions.
+         const command=`${step===0?`export VERTICAL_KEEP=${nonce}; `:''}set -- $(stty size); printf '\\033[2J\\033[HV_SIZE_${nonce}_${initial.id}_%s=%s,%s,%s,%s\\n' ${step} "$1" "$2" "$$" "$VERTICAL_KEEP"; printf '\\033[%s;1H\\033[38;2;235;76;88mV_BOTTOM_${nonce}_${initial.id}_%s\\033[0m' "$1" ${step}`;
+         await call('Input.insertText',{text:command});
+         await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+         let fields;
+         for(let i=0;i<300;i++){
+           state=await inspect();terminal=state.terminals.find(t=>t.id===initial.id);
+           const lines=terminal?.text.split('\n')||[];
+           const output=lines.find(line=>line.startsWith(status+'='));
+           fields=output?.slice(status.length+1).trim().split(',');
+           if(fields?.length===4&&lines.at(-1)?.startsWith(bottom))break;
+           await sleep(50);
+         }
+         if(!fields||Number(fields[0])!==expected.rows||Number(fields[1])!==expected.cols||fields[3]!==nonce||!terminal?.text.split('\n').at(-1)?.startsWith(bottom)||terminal.cursor.y!==expected.rows-1)throw new Error(`Vertical resize failed PTY dimensions, environment, cursor or bottom-row output in terminal ${initial.id} at height ${height}.`);
+         if(shellPid&&fields[2]!==shellPid)throw new Error(`Vertical resize restarted terminal ${initial.id}'s shell.`);
+         shellPid=fields[2];
+         if(state.sessions.find(s=>s.id===initial.id)?.uuid!==uuid)throw new Error(`Vertical resize changed terminal ${initial.id}'s UUID.`);
+         phases.push({height,...expected,pid:shellPid,cursor:terminal.cursor,offset:terminal.offset,bottom});
+         const image=Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64');requirePaint(pngMetrics(image));
+         const bottomPaint=pngMetrics(image,{x:terminal.viewport.x,y:terminal.viewport.y+(expected.rows-1)*terminal.cell.height,width:Math.min(terminal.viewport.width,expected.cols*terminal.cell.width),height:terminal.cell.height});
+         if(bottomPaint.redProbePixels<20)throw new Error(`The actual bottom-row RGB sentinel was not painted in terminal ${initial.id} at height ${height}.`);
+         phases.at(-1).bottomRedPixels=bottomPaint.redProbePixels;
+         await writeFile(path.join(output,`browser-resize-${initial.id}-${height}-${step}.png`),image);
+       }
+       if(!(phases[1].rows<phases[0].rows&&phases[2].rows>phases[0].rows&&phases[3].rows===phases[0].rows&&phases.every(p=>p.cols===phases[0].cols)))throw new Error(`Vertical resize did not shrink, grow and restore terminal ${initial.id} at constant width.`);
+       const restored=`V_RESTORED_${nonce}_${initial.id}`;
+       await call('Input.insertText',{text:`printf '\\r\\nV_RESTORED_${nonce}_%s\\n' ${initial.id}`});
+       await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+       for(let i=0;i<300;i++){state=await inspect();terminal=state.terminals.find(t=>t.id===initial.id);if(terminal&&outputLines(terminal).includes(restored))break;await sleep(50);}
+       if(!terminal||!outputLines(terminal).includes(restored))throw new Error(`The resized terminal ${initial.id} stopped accepting shell input.`);
+       proof.reloadMarker=restored;proof.uuid=uuid;proof.shellPid=shellPid;
+       proof.offset=terminal.offset;
+       await writeFile(path.join(output,`browser-resize-${initial.id}.json`),jsonArtifact({id:initial.id,uuid,phases,restored:true}));
+     }
 
    }
    if(!checked.length)throw new Error('No live visible terminal was available for browser input.');
@@ -264,6 +318,19 @@ try{
    reloadBootstrap.phase=restoredAfterReload?'interactive':'reload-failed';
    await writeFile(path.join(output,'browser-reload-bootstrap-proof.json'),jsonArtifact(reloadBootstrap));
    if(!restoredAfterReload||afterReloadOrigin===beforeReloadOrigin||!state.connected||JSON.stringify(before)!==JSON.stringify(state.sessions.map(s=>s.id).sort((a,b)=>a-b))||!checked.every(proof=>state.terminals.some(t=>t.id===proof.id&&outputLines(t).includes(proof.reloadMarker||proof.marker))))throw new Error('A new browser document did not restore the same live terminals and their output.');
+   for(const proof of checked.filter(p=>p.uuid)){
+     if(state.sessions.find(s=>s.id===proof.id)?.uuid!==proof.uuid)throw new Error(`Browser reload changed resized terminal ${proof.id}'s UUID.`);
+     let terminal=state.terminals.find(t=>t.id===proof.id);
+     const x=terminal.viewport.x+terminal.cell.width*2,y=terminal.viewport.y+terminal.cell.height*2;
+     await call('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});await call('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1});await call('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1});await settle();
+     const continuation=`V_AFTER_${nonce}_${proof.id}=${proof.shellPid},${nonce}`;
+     await call('Input.insertText',{text:`printf 'V_AFTER_${nonce}_%s=%s,%s\\n' ${proof.id} "$$" "$VERTICAL_KEEP"`});
+     await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+     for(let i=0;i<300;i++){state=await inspect();terminal=state.terminals.find(t=>t.id===proof.id);if(terminal&&outputLines(terminal).includes(continuation))break;await sleep(50);}
+     if(!terminal||!outputLines(terminal).includes(continuation))throw new Error(`Reload after vertical resize did not preserve terminal ${proof.id}'s process and environment.`);
+     proof.afterReloadPidVerified=true;
+   }
+   if(checked.some(p=>p.uuid))await writeFile(path.join(output,'browser-resize-reloaded.png'),Buffer.from((await call('Page.captureScreenshot',{format:'png'})).data,'base64'));
    await writeFile(path.join(output,'browser-input-reload-proof.json'),jsonArtifact({checked,pageOrigins:{before:beforeReloadOrigin,after:afterReloadOrigin},sessionsAfterReload:state.sessions}));
    }else{state=await inspect();await writeFile(path.join(output,'browser-input-proof.json'),jsonArtifact({checked,reloadChecked:false,sessions:state.sessions}));}
  }

@@ -155,3 +155,12 @@ The combined native verification gate built `terminal_host` and passed 58 Host c
 Authentication rejection diagnostics distinguish deadline, EOF, WebSocket error, non-text, oversize, invalid JSON, wrong frame type, protocol mismatch and token mismatch using static categories only. The five-second initial-frame deadline and generic client error are unchanged. The classification test exercises all nine failure paths without exposing credential or frame contents.
 
 See [TRANSPORT.md](TRANSPORT.md) for the evidence-based Mosh decision, automatic SSH reattachment policy, prolonged-outage verification and boundaries. Mosh is not installed or used as a binary host transport.
+
+## Optional agent recovery
+
+`start_with_agent_resume` and the standalone `--agent-resume FILE` opt in selected
+trusted profiles to exact-conversation recovery after a confirmed abnormal child
+exit. Default startup still only reattaches surviving processes. SSH failure
+never implicitly launches an agent. See [AGENT_RECOVERY.md](AGENT_RECOVERY.md) for
+policy JSON, structured session IDs, native launch/error hooks, durable stop and
+reservation semantics, and real provider test results.

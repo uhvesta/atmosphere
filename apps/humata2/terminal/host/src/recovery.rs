@@ -21,6 +21,10 @@ pub(crate) struct Settings {
     pub profile: Option<String>,
     pub recovery: Option<RecoveryHint>,
     pub history: HistoryPolicy,
+    #[serde(default)]
+    pub resume_blocked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_session: Option<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -28,6 +32,8 @@ impl Default for Settings {
             profile: None,
             recovery: None,
             history: HistoryPolicy::default(),
+            resume_blocked: false,
+            foreground_session: None,
         }
     }
 }
@@ -63,6 +69,7 @@ pub(crate) struct Recovery {
     codec: Vec<String>,
 }
 impl Recovery {
+    #[cfg(test)]
     pub(crate) fn open(root: PathBuf) -> Result<Self, Error> {
         Self::open_with_codecs(
             root,
@@ -70,6 +77,7 @@ impl Recovery {
             vec![terminal_codec::LZ4.into(), terminal_codec::ZLIB.into()],
         )
     }
+    #[cfg(test)]
     pub(crate) fn open_with_compression(
         root: PathBuf,
         codecs: Arc<Registry>,

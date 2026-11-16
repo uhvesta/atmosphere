@@ -4,9 +4,56 @@
 
 - Project: `/Users/avestabarzegar/oss/atmosphere-khodr`, branch `atmosphere-khodr`.
 - Owner: minion C1. Shared checkout contains many unrelated dirty lanes.
-- Latest steering: Neovim-specific work is explicitly deferred. Ordinary SSH clipboard, resilient sessions and permission controls are the priorities.
+- Latest steering: vertical resizing, SSH/Host/remote failure recovery, exact provider-session resume and conversation forks. Neovim-specific work remains explicitly deferred.
 - Publishing is authorized. No attribution trailers. All build/test/bench/lint/format commands use Bazel; never Cargo directly.
 - The older main-app/frame goal remains paused and unfinished. This terminal experiment does not close it.
+
+## Recovery milestone (2026-11-16)
+
+- `host/AGENT_RECOVERY.md` is the native/CLI opt-in contract. Default Host behavior
+  reattaches surviving holders and never starts replacement agents. Enabled
+  profiles recover once after positively confirmed nonzero child exit, using a
+  full saved provider ID, same endpoint/cwd and fresh terminal UUID. Startup
+  reservation and identity persist atomically before spawn. Never replay input.
+- Missing SSH/holder is not proof of child death. Only a trusted native
+  orchestrator may attest loss with `resume_agent_after_confirmed_loss`.
+  Explicit Stop persists recovery suppression; shutdown drains in-flight spawn.
+  A launch receipt is not proof of provider acceptance or turn completion.
+- `ProviderBinding::activate_fork(parent, structured_child_start, child_paths)`
+  persists and pins the selected child ID, revokes the parent binding and rejects
+  late background-parent events. The saved workspace ID wins after a settings
+  crash window. Fresh same-machine/cwd terminals remain separate `spawn_from`.
+- Real CLI resume and fork/kill/resume proofs pass: Codex 0.169.0, Claude Code
+  2.1.325, Copilot 1.0.112-0. All use private provider state and deterministic
+  loopback model servers, no personal transcripts or upstream calls. Missing
+  UUIDs fail without creating conversations/model requests. Committed history
+  survives; unfinished turns remain provider-defined. Parent verification
+  excludes child-only messages. Background jobs are not resurrected.
+- Broad Bazel gate96422: all 52 nonmanual terminal targets pass (325.2s).
+  Final performance scheduling gate12135 passes Host and actual Host+Codex;
+  SSH rerun89839 passes9.7s after correcting a mistaken fixture environment
+  variable. A final reviewed companion-settings failure fix follows durable
+  child identity in memory and revokes the parent; final gate9708 passes
+  Host72 active/7 ignored and the real Codex Host recovery (25.0/42.5s).
+- Browser fixture53988 passes (142s): optimized GPUI WebGL on Mac and Linux,
+  fixed-width heights 800→500→1000→800, actual local/SSH rows and last-row
+  pixels/cursor, unchanged PID/UUID/environment, reload, Tab, RGB/OSC8, clipboard,
+  mirrors/control transfer, 12k output and memory saver. Native ordinary/Fast
+  resize tests and dedicated SSH resize targets pass. A pre-existing Fast SSH
+  app golden mismatch occurs before the new phase; it was not re-recorded.
+- Whole-machine gate28349 passes `host:agent_resume_vm_test` (37.5s Rust,
+  38.0s Bazel): fresh isolated Lima/VZ guest forced off, new kernel boot ID,
+  synced conversation/history and identical executable sizes/hashes, no auto
+  during outage, native confirmed-loss exact-ID resume into a fresh UUID/process
+  at the same cwd. Successful VM deleted. The agent is a strict disk-backed
+  fixture; real vendor proofs are separate macOS runs. Sanitized proof is in
+  `/private/tmp/c1-terminal-vm-powerloss-final-28349/vm-powerloss-proof.json`.
+- First power-loss probe left unsynced installed holder/wrapper as zero-byte
+  files while synced conversation/history survived. Fixture deployment now
+  fsyncs those files and directories. Stopped failure evidence remains private
+  at `/tmp/h2-vm-qFQgaY`; do not start or delete unrelated Lima instances.
+  Storage destruction, unsynced data and arbitrary process memory are not
+  recovered by the component.
 
 ## Current state
 
@@ -30,27 +77,27 @@ The three focused goals have direct evidence:
 - Earlier debug Wasm46,596,431B repeatedly OOM-killed Chromium on reload. Explicit viewer teardown alone did not fix it. Same source built with `-c opt` is24,283,027B and passes. No VM resources/swap/timeouts were increased. This is a bounded workload result, not a universal memory ceiling or leak-free guarantee.
 - App `permission_alerts_test`:3 behavior cases and Settings `preferences_test` pass. Native focused2 cases record43815/verify43372 pass: extra alerts and the other lane's D199 routing. Only the extra-alert behavior test belongs to this lane's publication; its reviewed image stays a chat artifact rather than a golden coupled to other dirty UI lanes. Final focused native alert behavior22783 passes in2.4s after removing pixel coupling. Do not scoop D199 source.
 - HOOKS artifacts independently checked: hooks12, settingsagent_asks6, payloads13, CLIhooks6 pass. Actual all-vendor trust/startup certification remains separate work.
-- Live optimized candidate16743 passes basic paint/discovery without input injection. Full input/reload acceptance uses disposable fixture shells, never the user's live shells.
+- Latest live optimized candidate63921 passes basic paint/discovery in12.5s without input injection, then optimized13 is promoted. Full input/reload acceptance uses disposable fixture shells, never the user's live shells. Recovery upgrade proof is private `recovery-upgrade-proof.json`; local41874/41875 and remote6203/6207 retain exact process start times.
 
 ## Live demo
 
 - Private state: `/Users/avestabarzegar/.humata-terminal-demo-c1` (0700).
 - Stable URL/capability is in private `viewer.url`; never copy its token into Git, diagnostics or this handoff.
-- Promoted optimized release: `build-74d58e956fee73bb0a42`, protocol3.
-- Host was gracefully upgraded41873→91516; read current `server.json` before any future signal. Never signal a historical PID without matching its command/state path.
+- Promoted optimized release: `build-c991d30b565fd3ca0e30`, protocol3 (optimized13).
+- Host was gracefully upgraded41873→91516→22003; read current `server.json` before any future signal. Never signal a historical PID without matching its command/state path.
 - Original local holder41874 and Zsh41875 survived, including process start times. Original SSH holder6203 and current Bash6207 survived, including start times. SSH holder argv still records the original fixture Zsh launch; the actual child is Bash after the earlier explicit exec.
 - Workspace migrated schema2→3, preserving routes1/2 and binding existing local/ssh startup profiles; no duplicate shell was launched. UUIDs are now durable.
-- Private pre/post-shutdown rollback metadata/checkpoints: `rollback-v1-20261116-110312` inside that state. Do not restore over a live owner. Older hosts cannot write schema3 safely; a rollback needs the compatible saved schema/checkpoints plus matching binary.
+- Private pre/post-shutdown rollback metadata/checkpoints: latest `rollback-recovery-20261116-095806`, plus earlier `rollback-v1-20261116-110312`, inside that state. Do not restore over a live owner. Older hosts cannot write schema3 safely; a rollback needs the compatible saved schema/checkpoints plus matching binary.
 - Host/holders and VM remain running. Refresh an old browser page to load the new protocol3 viewer.
 - Actual live SSH shell uses its own Bash configuration; no personal Mac dotfiles/history/keys were copied. Historical output still includes the earlier isolated prompt fixture.
 
 ## Frozen artifacts
 
-- Host: `/private/tmp/c1-host-reconnect-final/terminal_host`, SHA256 `c51357ed52c44a58123601236eece09a691e9448302718d2a14c40993c182054`.
+- Host: `/private/tmp/c1-host-recovery-9708/terminal_host`, SHA256 `65464260898618b26d2dbcc0ae513edc181efd8b271ffaf627452c5e08b192b7`. Gate9708 is the final production source.
 - Matching holder: `/Users/avestabarzegar/.humata-terminal-demo-c1/bin/holder-104078dd97a66a8af012`.
-- Optimized viewer: `/private/tmp/c1-terminal-gpui-opt12-91600/bundle`, Wasm SHA256 `3d5ace05871ce3a2df825d4b9f5ae789a56f5ed96c0175d7291258ab78048a43`. Source/manifest copies are adjacent. Opt12 uses lifecycle11 source; later Rust formatting is semantic-only.
+- Optimized viewer: `/private/tmp/c1-terminal-gpui-resize13-67244/bundle`, Wasm SHA256 `e8cb1c83f7d1ddec317d6860e76042e2d729e8f6c59705dfb1f394971545033c`. Source/manifest copies are adjacent. Opt13 passes the complete vertical-resize/browser fixture53988.
 - Debug failure evidence: `/private/tmp/c1-browser11-explicit-cleanup-reload-failure`; do not confuse it with optimized acceptance. Kernel PID13781 ties the fourth OOM kill to that run. The shared event ring did not prove pagehide cleanup completed.
-- User images are under `/Users/avestabarzegar/.codex/visualizations/2026/11/15/01a1dea3-36e0-71d1-a99e-717cc3bb9b22/`. `terminal-optimized-linux-ssh-verified.png` was sent to chat. `terminal-live-protocol3.png` captures the upgraded live demo.
+- User images are under `/Users/avestabarzegar/.codex/visualizations/2026/11/15/01a1dea3-36e0-71d1-a99e-717cc3bb9b22/`. `terminal-optimized-linux-ssh-verified.png` was sent to chat. `terminal-live-protocol3.png` captures the prior upgrade. New resize and live images are in `terminal-resilience-nov16/`.
 
 ## Build and fixture commands
 
@@ -61,13 +108,13 @@ Export `PATH=$PWD/.tools/bin:$PATH`. Warm bases:
 
 Build release browser assets with `bazel build -c opt //apps/humata2/terminal/web:bundle`. The root `terminal-ssh-demo.sh` helper and `platform_test/SSH_DEMO.md` describe the dedicated no-mount Lima OpenSSH fixture. VM `h2-terminal-c1` is Debian13 arm64,1CPU/.75GiB/4GiB; keep it running. Do not change user SSH config, keys, shell files or VM resources to hide test failures.
 
-The runtime fixture receives absolute Bazel-built Host/holder/bundle paths via `TERMINAL_TEST_HOST`, `TERMINAL_TEST_HOLDER`, `TERMINAL_TEST_BUNDLE`, plus trusted `TERMINAL_TEST_SSH_CONFIG`. Set `TERMINAL_TEST_CLI=1`, `TERMINAL_TEST_LINUX_PROOF=1`, and `TERMINAL_BROWSER_{TAB,STYLE,CLIPBOARD,MEMORY,MIRROR,PAN}=1` for full stress acceptance. Node executable: `/Users/avestabarzegar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node`. Every fixture owns/stops its three shells and removes only its scratch directories.
+The runtime fixture receives absolute Bazel-built Host/holder/bundle paths via `TERMINAL_TEST_HOST`, `TERMINAL_TEST_HOLDER`, `TERMINAL_TEST_BUNDLE`, plus trusted `TERMINAL_TEST_SSH_CONFIG`. Set `TERMINAL_TEST_CLI=1`, `TERMINAL_TEST_LINUX_PROOF=1`, and `TERMINAL_BROWSER_{TAB,STYLE,CLIPBOARD,MEMORY,MIRROR,PAN,RESIZE}=1` for full stress acceptance. Node executable: `/Users/avestabarzegar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node`. Every fixture owns/stops its three shells and removes only its scratch directories.
 
 Actual browser runtime tests need `--strategy=TestRunner=local`; keep compilation sandboxed. Mac Chrome gets disposable profiles, mock keychain and basic password storage. The first live candidate attempt omitted this strategy and failed before Page.enable; the corrected local execution passes. Never operate on the user's Chrome profile/keychain.
 
 ## Ownership and publication
 
-- Code commit4e20a245 publishes the terminal experiment with its owned review log and D206. The hash-fill follow-up names it in GAPS_REVIEW. Publishing is authorized; verify the pushed pair against remote main. All three helper agents have completed their scoped work. The three focused goals are verified; further adoption boundaries below remain explicit.
+- Baseline code commit4e20a245 and hash-fill ea510e43 publish the generic terminal experiment. The current recovery/resize/fork milestone extends D206 and has its own GAPS_REVIEW entry. Its final VM gate28349, reviewed Host72/realCodex gate9708 and live candidate63921 pass. All three helper lanes are complete; root owns selective publication and hash-fill. Further adoption boundaries below remain explicit.
 - Every code commit needs same-commit `GAPS_REVIEW.md` and accurate C1 `OVERVIEW` block, then a hash-fill follow-up and authorized push to shared main; verify remote SHA. Commit prefix: `Humata 2 (minion C1): ...`. No attribution trailers.
 - Preserve `.claude/**`, ui-prototype, daemon/proto and every unrelated lane. No broad `git add .`, reset or stash. Use `git -c lfs.storage=/tmp/humata2-minion-c-lfs` for PNG-aware Git operations; inherited LFS storage points outside this checkout.
 - Owned pin artifacts: `/private/tmp/c1-owned-pin-artifacts/owned-native-pins.patch` and `owned-module.patch`. They exclude foreign OpenCode/Find/Marks/Mirror changes and unrelated MODULE moves. Exact native checksum `0022c54cf8b22f150c1b18287ab61cd4ff8a28b0af5c65dcfa10f39f85bd9aba` comes from Bazel's typed digest; mod tidy without repin validates it. External dependency contexts are unchanged.
@@ -77,7 +124,7 @@ Actual browser runtime tests need `--strategy=TestRunner=local`; keep compilatio
 
 ## Remaining adoption boundaries
 
-- Main-daemon/prototype adoption, actual provider startup/trust and full platform IME/accessibility/context-menu/font-fallback coverage remain separate work. Supplied structured provider events are tested; no transcript scraping or agent-completion guessing.
+- Main-daemon/prototype adoption, personal-account provider trust/configuration and full platform IME/accessibility/context-menu/font-fallback coverage remain separate work. Supplied structured provider events are tested; no transcript scraping or agent-completion guessing.
 - No Mosh UDP roaming/predictive echo claim. Reachable networking, SSH trust/auth and a live compatible holder are required. Bounded replay gaps or ambiguous mechanical writes require explicit recovery; disk display state cannot resurrect arbitrary processes after reboot.
 - Sustained throughput/latency under severe CPU/disk contention, ENOSPC/EIO/fsync fault matrix and long-duration retention remain stress work, not universal guarantees.
 - Visible mirrors stay resident. Parking frees allocations for reuse but does not guarantee lower process RSS. Host history/checkpoint policy is independent and may contain recent sensitive output; private permissions and explicit off/bounds remain essential.
