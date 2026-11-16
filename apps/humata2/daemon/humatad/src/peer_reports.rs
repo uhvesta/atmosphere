@@ -170,6 +170,8 @@ impl PeerReports {
     }
 
     /// The machine's first pass of reports is over (see the module doc).
+    /// Only tests call it: no message in the proto ends a snapshot yet.
+    #[cfg(test)]
     pub(crate) fn snapshot_complete(&self, machine: &str) {
         let mut machines = lock(&self.inner.machines);
         if let Some(held) = machines.get_mut(machine) {

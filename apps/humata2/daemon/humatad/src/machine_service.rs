@@ -43,6 +43,7 @@ use crate::operations::{Operations, Progress, Started};
 use crate::peer_client::{self, CommandDial, Dial, LinkError, LinkEvent};
 use crate::peer_reports::PeerReports;
 use crate::status;
+use crate::storage::Storage;
 
 mod forget;
 pub(crate) use forget::Forgetting;
@@ -57,6 +58,8 @@ pub(crate) struct MachineSvc {
     operations: Arc<Operations>,
     /// Where a call a rule sends to Ask me waits for the user (D38.6).
     inbox: Arc<Inbox>,
+    /// What this machine keeps, for the Storage page (LD-13 to LD-15).
+    storage: Arc<Storage>,
 }
 
 /// The wall clock, which tests set.
@@ -535,13 +538,53 @@ pub(crate) fn recover_in_background(work: Arc<Work>) {
 }
 
 impl MachineSvc {
-    pub(crate) fn new(guard: Arc<Guard>, work: Arc<Work>, operations: Arc<Operations>, inbox: Arc<Inbox>) -> Self {
+    pub(crate) fn new(
+        guard: Arc<Guard>,
+        work: Arc<Work>,
+        operations: Arc<Operations>,
+        inbox: Arc<Inbox>,
+        storage: Arc<Storage>,
+    ) -> Self {
         Self {
             guard,
             work,
             operations,
             inbox,
+            storage,
         }
+    }
+
+    /// Storage is the user's page: agents and scripts are refused, and so is
+    /// a machine other than this one, since only this machine's own storage
+    /// is read here (the relay to other machines is not built).
+    fn storage_call(&self, caller: &Caller, machine: Option<&pb::MachineId>) -> Result<(), Status> {
+        match caller {
+            Caller::User(_) => {}
+            Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
+            Caller::Agent(_) | Caller::Script(_) => {
+                return Err(status::refused(&Refusal::UserOnly { capability: None }));
+            }
+        }
+        match machine.map(|id| id.value.as_str()).filter(|name| !name.is_empty()) {
+            Some(name) if name != self.guard.machine() => Err(status::not_found(
+                pb::EntityKind::Machine,
+                name,
+                format!("storage of machine {name} can't be read from here: only this machine's own storage is served"),
+                format!("ask machine {name} itself, or use {} for this machine", self.guard.machine()),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Runs `work` on a blocking thread, as `Storage` does file work.
+    async fn storage_blocking<R: Send + 'static>(
+        &self,
+        work: impl FnOnce(&Storage) -> Result<R, Status> + Send + 'static,
+    ) -> Result<R, Status> {
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || work(&storage))
+            .await
+            .map_err(|error| status::internal(format!("the storage work stopped: {error}"), ""))?
     }
 
     fn require(&self, caller: &Caller, machine: &str, action: MachineActionKind) -> Result<(), Status> {
@@ -1190,23 +1233,34 @@ impl pb::machine_service_server::MachineService for MachineSvc {
 
     async fn get_storage(
         &self,
-        _request: Request<pb::GetStorageRequest>,
+        request: Request<pb::GetStorageRequest>,
     ) -> Result<Response<pb::StorageReport>, Status> {
-        Err(status::not_built("humata.v1.MachineService.GetStorage"))
+        let caller = identity::caller(&request)?;
+        self.storage_call(&caller, request.get_ref().id.as_ref())?;
+        let report = self.storage_blocking(|storage| storage.report(Vec::new())).await?;
+        Ok(Response::new(report))
     }
 
     async fn clear_build_cache(
         &self,
-        _request: Request<pb::ClearBuildCacheRequest>,
+        request: Request<pb::ClearBuildCacheRequest>,
     ) -> Result<Response<pb::ClearBuildCacheResponse>, Status> {
-        Err(status::not_built("humata.v1.MachineService.ClearBuildCache"))
+        let caller = identity::caller(&request)?;
+        self.storage_call(&caller, None)?;
+        let request = request.into_inner();
+        let freed = self.storage_blocking(move |storage| storage.clear_build_cache(&request)).await?;
+        Ok(Response::new(freed))
     }
 
     async fn trim_logs(
         &self,
-        _request: Request<pb::TrimLogsRequest>,
+        request: Request<pb::TrimLogsRequest>,
     ) -> Result<Response<pb::TrimLogsResponse>, Status> {
-        Err(status::not_built("humata.v1.MachineService.TrimLogs"))
+        let caller = identity::caller(&request)?;
+        self.storage_call(&caller, request.get_ref().id.as_ref())?;
+        let request = request.into_inner();
+        let freed = self.storage_blocking(move |storage| storage.trim_logs(&request)).await?;
+        Ok(Response::new(freed))
     }
 
     async fn list_host_variables(

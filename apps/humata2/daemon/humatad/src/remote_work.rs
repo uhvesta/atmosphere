@@ -1362,10 +1362,6 @@ mod tests {
         fn calls(&self) -> Vec<String> {
             lock(&self.state).calls.clone()
         }
-
-        fn set_session(&self, session: &str, status: pb::SessionStatus) {
-            lock(&self.state).sessions.insert(session.to_owned(), status);
-        }
     }
 
     #[tonic::async_trait]

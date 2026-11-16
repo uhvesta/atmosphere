@@ -491,7 +491,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         shell_args,
         root,
         holders,
-        logs,
+        logs: logs.clone(),
         scrollback_bytes: args.scrollback_bytes,
         guard: guard.clone(),
         identities: identities.clone(),
@@ -680,7 +680,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 inbox.clone(),
             );
             Some((
-                MachineSvc::new(guard, work, operations.clone(), inbox.clone()),
+                MachineSvc::new(
+                    guard,
+                    work,
+                    operations.clone(),
+                    inbox.clone(),
+                    Arc::new(crate::storage::Storage::new(
+                        store.clone(),
+                        machine.clone(),
+                        channels_folder.clone(),
+                        bin.clone(),
+                        logs.clone(),
+                    )),
+                ),
                 providers,
                 skills,
             ))

@@ -991,3 +991,32 @@ async fn the_check_step_of_an_add_names_no_gh_version_when_gh_gives_none() {
     assert_eq!(fact(check, "git"), Some("2.47.1"));
     assert_eq!(fact(check, "os"), Some("linux"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_storage_page_reads_this_machines_own_storage_and_no_other() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+
+    let report = host
+        .machines()
+        .await
+        .get_storage(pb::GetStorageRequest { id: None })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(report.measured_at.is_some());
+    assert!(report.total_bytes > 0);
+    assert!(report.rows.iter().any(|row| row.kind == pb::StorageKind::Logs as i32));
+
+    let other = host
+        .machines()
+        .await
+        .get_storage(pb::GetStorageRequest {
+            id: Some(pb::MachineId {
+                value: "nowhere".to_owned(),
+            }),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(other.code(), Code::NotFound);
+}
