@@ -174,7 +174,7 @@ fn draw_row(
             indent = if entry.depth == 0 {
                 8.
             } else {
-                18. + f32::from(entry.depth - 1) * 16. - if fork { 17. } else { 0. }
+                18. + f32::from(entry.depth - 1) * 16. - if fork { 19. } else { 0. }
             };
             if fork {
                 body = body.child(chrome::icon(IconName::GitFork, faint, 12.));
@@ -188,13 +188,31 @@ fn draw_row(
                     .when(*unread > 0, |x| x.font_weight(FontWeight::SEMIBOLD))
                     .child(title.clone()),
             );
+            // Only a VIP session shows its inbox count; it covers the
+            // pending requests of its forks, however deep.
             let count = ui.read(|s| match &key {
-                RowKey::Session(id) | RowKey::Pinned(id) => s
-                    .workspace
-                    .requests
-                    .iter()
-                    .filter(|r| &r.session == id && r.answer.is_none())
-                    .count(),
+                RowKey::Session(id) | RowKey::Pinned(id) if *vip => {
+                    let sessions = &s.workspace.sessions;
+                    let descends = |start: &humata2_clients::model::SessionId| {
+                        let mut at = Some(start);
+                        for _ in 0..=sessions.len() {
+                            let Some(cur) = at else { return false };
+                            if cur == id {
+                                return true;
+                            }
+                            at = sessions
+                                .iter()
+                                .find(|x| &x.id == cur)
+                                .and_then(|x| x.parent.as_ref());
+                        }
+                        false
+                    };
+                    s.workspace
+                        .requests
+                        .iter()
+                        .filter(|r| r.answer.is_none() && descends(&r.session))
+                        .count()
+                }
                 _ => 0,
             });
             if count > 0 {
@@ -287,7 +305,7 @@ fn nav(
         .test_support()
 }
 
-fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
+fn pinned_row(ui: &Rc<Ui>, entry: &Row, current: bool, look: Look) -> Option<AnyElement> {
     let RowKey::Pinned(id) = entry.key.as_ref()? else {
         return None;
     };
@@ -310,8 +328,11 @@ fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
             .id(SharedString::from(format!("sidebar-pinned-{id}")))
             .role(Role::TreeItem)
             .aria_label(session.title.clone())
-            .h(px(if summary { 40. } else { 26. }))
+            .h(px(if summary { 36. } else { 26. }))
             .flex_shrink_0()
+            .when(current, |x| {
+                x.bg(rgb(look.selection)).text_color(rgb(0xffffff))
+            })
             .overflow_hidden()
             .mx(px(10.))
             .px(px(8.))
@@ -319,7 +340,7 @@ fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
             .cursor_pointer()
             .child(
                 row()
-                    .h(px(26.))
+                    .h(px(if summary { 18. } else { 26. }))
                     .gap(px(7.))
                     .child(if pull.is_some() {
                         chrome::icon(IconName::GitPullRequest, look.accent, 12.).into_any_element()
@@ -358,11 +379,9 @@ fn pinned_row(ui: &Rc<Ui>, entry: &Row, look: Look) -> Option<AnyElement> {
                 x.child(
                     div()
                         .pl(px(25.))
-                        .h(px(14.))
-                        .line_height(px(14.))
+                        .h(px(12.))
+                        .line_height(px(12.))
                         .whitespace_nowrap()
-                        .overflow_hidden()
-                        .text_ellipsis()
                         .text_size(px(11.))
                         .text_color(rgb(if session.status == Status::NeedsYou {
                             0xff9f0a
@@ -577,7 +596,17 @@ impl Render for Sidebar {
             )
             .child(div().h(px(if pinned.is_empty() { 0. } else { 8. })))
             .children(pinned.iter().enumerate().map(|(index, entry)| {
-                if let Some(row) = pinned_row(ui, entry, look) {
+                if let Some(row) = pinned_row(
+                    ui,
+                    entry,
+                    match (&entry.key, &current) {
+                        (Some(RowKey::Pinned(a)), Some(RowKey::Session(b) | RowKey::Pinned(b))) => {
+                            a == b
+                        }
+                        _ => false,
+                    },
+                    look,
+                ) {
                     return row;
                 }
                 draw_row(

@@ -1,7 +1,7 @@
 //! Home's grouped lists and the wide Inbox, over the existing feature state.
 use crate::{
     bridge::Ui,
-    chrome, panels,
+    chrome, request_card,
     theme::Look,
     widgets::{self, col, row},
 };
@@ -432,7 +432,7 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                     div()
                         .w_full()
                         .max_w(px(560.))
-                        .child(panels::request_card(ui, state, r, true, look))
+                        .child(request_card::card(ui, state, r, true, look))
                 }))
                 .when(selected.is_none(), |x| {
                     x.child(widgets::empty(

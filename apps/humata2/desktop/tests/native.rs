@@ -213,7 +213,6 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
             Status::Working
         };
         ledger.pinned = pinned;
-        ledger.vip = pinned;
         if pinned {
             workspace
                 .sessions
@@ -1513,7 +1512,7 @@ fn a_failed_queued_message_stays_visible_for_retry() {
     assert!(!app.contains("session-error"));
 }
 
-/// SM-9/10: Review Send waits for the turn and Remove returns the comments to drafts.
+/// SM-9/10: a failed comment hand-over waits visibly, Remove returns the comments to drafts.
 #[test]
 fn review_comments_wait_in_the_session_queue_and_retry_without_losing_their_anchor() {
     use humata2_review::{Anchor, ReviewAction as R};
@@ -1531,6 +1530,12 @@ fn review_comments_wait_in_the_session_queue_and_retry_without_losing_their_anch
         "Keep these writes in one transaction.".into(),
     )));
     app.send(AppAction::Review(R::SaveComment));
+    // Comments deliver at once when the session takes input, so the capture
+    // of comments visibly waiting comes from a failed delivery.
+    app.fakes.daemon.fail_next(
+        humata2_clients::Operation::SendComments,
+        "The connection dropped. Reconnect and try again.",
+    );
     app.click("send-comments");
     assert!(app.ui.read(|s| s.review.queued().is_empty()));
     assert_eq!(app.ui.read(|s| s.session.view().unwrap().queue.len()), 1);
@@ -1552,12 +1557,13 @@ fn review_comments_wait_in_the_session_queue_and_retry_without_losing_their_anch
     app.click("remove-queued-0");
     assert!(app.ui.read(|s| s.session.view().unwrap().queue.is_empty()));
     assert_eq!(app.ui.read(|s| s.review.queued().len()), 1);
-    app.click("send-comments");
+    // Removing the only failed message lifts the pause, so this send goes
+    // at once; make it fail too, to show the retry state.
     app.fakes.daemon.fail_next(
         humata2_clients::Operation::SendComments,
         "The connection dropped. Reconnect and try again.",
     );
-    app.click("send-queued-0");
+    app.click("send-comments");
     assert!(app.contains("session-error"));
     assert_eq!(app.ui.read(|s| s.session.view().unwrap().queue.len()), 1);
     app.snapshot("review-comments-retry");
@@ -1574,6 +1580,47 @@ fn review_comments_wait_in_the_session_queue_and_retry_without_losing_their_anch
     assert_eq!(sent.len(), 1);
     assert!(sent[0].sent);
     app.snapshot("review-comments-sent");
+}
+
+/// SM-9/SE-23: a draft's own Send delivers only that comment; Send all takes the rest.
+#[test]
+fn a_saved_draft_sends_alone_and_send_all_takes_the_rest() {
+    use humata2_review::{Anchor, ReviewAction as R};
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(R::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    let bodies = ["First draft goes alone.", "Second draft waits its turn."];
+    for (line, body) in [(43, bodies[0]), (42, bodies[1])] {
+        app.send(AppAction::Review(R::StartComment(Anchor {
+            path: "src/client.rs".into(),
+            line,
+        })));
+        app.send(AppAction::Review(R::CommentText(body.into())));
+        app.send(AppAction::Review(R::SaveComment));
+    }
+    assert_eq!(app.ui.read(|s| s.review.queued().len()), 2);
+    let delivered = |app: &App, body: &str| {
+        app.fakes
+            .daemon
+            .workspace()
+            .diffs
+            .iter()
+            .filter(|d| d.session == SessionId::new("ledger"))
+            .flat_map(|d| &d.comments)
+            .any(|c| c.body == body && c.sent)
+    };
+    assert!(app.contains("send-comment-0"));
+    app.click("send-comment-0");
+    assert!(delivered(&app, bodies[0]));
+    assert!(!delivered(&app, bodies[1]));
+    assert_eq!(app.ui.read(|s| s.review.queued().len()), 1);
+    assert!(app.ui.read(|s| s.session.view().unwrap().queue.is_empty()));
+    app.click("send-comments");
+    assert!(delivered(&app, bodies[1]));
+    assert!(app.ui.read(|s| s.review.queued().is_empty()));
 }
 
 /// SE-10: keyboard input follows focus; palette editing cannot type into the terminal.

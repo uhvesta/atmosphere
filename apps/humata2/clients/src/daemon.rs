@@ -6,8 +6,8 @@ use tca::BoxFuture;
 use tokio::sync::mpsc;
 
 use crate::model::{
-    Agent, Answer, ChannelId, Comment, ForkKind, ItemId, ItemStatus, Line, MachineId, Recovery,
-    RequestId, Scope, Session, SessionId, Transfer, TransferId,
+    AccessRule, Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
+    RequestId, RuleSetting, Scope, Session, SessionId, Transfer, TransferId,
 };
 use crate::workspace::Workspace;
 
@@ -44,6 +44,13 @@ pub enum Event {
     },
     /// A request was added or answered.
     Request(crate::model::Request),
+    /// A channel's access rules changed.
+    Rules {
+        /// The channel.
+        channel: ChannelId,
+        /// Its rules, in IN-17 order.
+        rules: Vec<AccessRule>,
+    },
     /// A host went online or offline.
     Machine(crate::model::Machine),
     /// A transfer moved on.
@@ -77,6 +84,10 @@ pub enum Operation {
     Archive,
     /// [`Daemon::resume`].
     Resume,
+    /// [`Daemon::set_rule`].
+    SetRule,
+    /// [`Daemon::remove_grant`].
+    RemoveGrant,
 }
 
 /// Why a daemon call failed.
@@ -173,6 +184,16 @@ pub trait Daemon: Send + Sync + 'static {
     fn send_comments(&self, session: &SessionId, comments: Vec<Comment>) -> Reply<()>;
     /// Retries a failed transfer.
     fn retry_transfer(&self, transfer: &TransferId) -> Reply<()>;
+    /// Sets what a channel's rule does; refused for a rule with no setting
+    /// (IN-16).
+    fn set_rule(
+        &self,
+        channel: &ChannelId,
+        capability: &Capability,
+        setting: RuleSetting,
+    ) -> Reply<()>;
+    /// Removes a scoped "Always allow" grant (IN-19).
+    fn remove_grant(&self, grant: &GrantId) -> Reply<()>;
 }
 
 /// The terminals of sessions: typing into tabs other than the agent's.

@@ -8,11 +8,12 @@ use tokio::sync::mpsc;
 use crate::daemon::{Daemon, DaemonError, Event, Events, Operation, Reply, Terminals};
 use crate::fixture;
 use crate::model::{
-    Agent, Answer, ChannelId, Comment, ForkKind, ItemId, ItemStatus, Line, MachineId, Recovery,
-    RequestId, Scope, Session, SessionId, Speaker, Status, TransferId,
+    Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
+    RequestId, RuleSetting, Scope, Session, SessionId, Speaker, Status, TransferId,
 };
 use crate::workspace::Workspace;
 
+mod access;
 mod boards;
 mod channels;
 mod inbox;
@@ -303,6 +304,19 @@ impl Daemon for FakeDaemon {
 
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()> {
         inbox::answer(self, request, answer)
+    }
+
+    fn set_rule(
+        &self,
+        channel: &ChannelId,
+        capability: &Capability,
+        setting: RuleSetting,
+    ) -> Reply<()> {
+        access::set_rule(self, channel, capability, setting)
+    }
+
+    fn remove_grant(&self, grant: &GrantId) -> Reply<()> {
+        access::remove_grant(self, grant)
     }
 
     fn reconnect(&self, machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>> {

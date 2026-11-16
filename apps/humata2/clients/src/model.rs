@@ -62,6 +62,15 @@ id!(
     /// A file transfer between hosts.
     TransferId
 );
+id!(
+    /// A kind of action an agent may take through Humata, which an access
+    /// rule governs (IN-17).
+    Capability
+);
+id!(
+    /// A scoped "Always allow" grant under an access rule (IN-19).
+    GrantId
+);
 
 /// How the app reaches a host.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -450,6 +459,66 @@ pub struct Request {
     pub asked: String,
     /// How it was answered, once it is.
     pub answer: Option<Answer>,
+    /// The call, as a dotted operation id such as `board.item.move` (TP-16).
+    pub operation: String,
+    /// The agent's last few steps, the pending call last.
+    pub steps: Vec<String>,
+    /// Why this needs the user and not the agent's own access.
+    pub why_you: String,
+    /// The access rule that sent it to the user, if one did.
+    pub asked_by: Option<AskedBy>,
+    /// Set only when it can't be undone or undoing costs something (IN-9.7).
+    pub undo_note: Option<String>,
+    /// The answers a question offers, at most four (IN-25).
+    pub choices: Vec<String>,
+}
+
+/// The access rule that turned an agent's call into an Inbox request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AskedBy {
+    /// The kind of action the rule governs.
+    pub capability: Capability,
+    /// The rule's row label, as the Agent access tab shows it.
+    pub label: String,
+    /// What the rule was set to.
+    pub setting: RuleSetting,
+}
+
+/// What an access rule does with an agent's call (IN-17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleSetting {
+    /// Let it through.
+    Allow,
+    /// Put it in the Inbox.
+    Ask,
+    /// Deny it at once, naming the rule (IN-18).
+    Never,
+}
+
+/// A scoped "Always allow" the user granted from a request (IN-19).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grant {
+    /// Its id.
+    pub id: GrantId,
+    /// The session whose request it was granted for.
+    pub session: SessionId,
+    /// Where it applies, in words such as "only under ledger/docs/".
+    pub scope: String,
+    /// When it was granted, as people read it.
+    pub granted: String,
+}
+
+/// One row of a channel's Agent access tab (IN-17).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessRule {
+    /// The kind of action it governs.
+    pub capability: Capability,
+    /// The row's label.
+    pub label: String,
+    /// Its setting; `None` is "Always, no setting" (IN-16).
+    pub setting: Option<RuleSetting>,
+    /// The scoped grants listed under it.
+    pub grants: Vec<Grant>,
 }
 
 /// Which side of a diff a line is on.

@@ -318,10 +318,14 @@ impl Terminals {
             .into_any_element()
     }
 }
+/// The cell is the font's advance rounded up to a whole pixel, so 12 pt Menlo
+/// (7.2 px) would become 8 px, a tenth wider than the design. Half a point
+/// smaller lands on 7 px; the line pitch stays 18 at the default setting.
 fn font_theme(font: u8) -> Theme {
+    let size = f32::from(font) - 0.5;
     Theme {
-        font_size: f32::from(font),
-        line_height: f32::from(font) + 5.,
+        font_size: size,
+        line_height: size + 6.5,
         ..Default::default()
     }
 }

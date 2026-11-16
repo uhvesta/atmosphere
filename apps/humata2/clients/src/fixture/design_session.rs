@@ -22,7 +22,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 address: "dev@devbox-1".into(),
             },
             online: true,
-            detail: "Ubuntu 24.04 · 16 vCPU · 64 GB".into(),
+            detail: "Ubuntu 24.04".into(),
             last_seen: "now".into(),
         },
         Machine {
@@ -174,6 +174,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         .into();
         value.branch = "ledger-schema".into();
         value.unread = u32::from(["ledger", "refund", "postgres"].contains(&id));
+        // Frames 01–17 mark Ledger VIP: its row carries the inbox count (NV-22).
+        value.vip = id == "ledger";
         value.shells = vec!["zsh".into()];
         let (activity, when) = match id {
             "ledger" => ("Asks to move PAY-3 to Done", "2m"),
@@ -274,9 +276,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 (Speaker::Agent, ""),
                 (
                     Speaker::Agent,
-                    "? Drop the old ledger_entries index before the switch, or keep",
+                    "? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?",
                 ),
-                (Speaker::Agent, "  both until the backfill ends?"),
                 (Speaker::Agent, "  ❯ 1. Keep both"),
                 (Speaker::System, "    2. Drop it now"),
                 (Speaker::System, "    3. Type something else"),
@@ -308,11 +309,11 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             "Move PAY-3 to Done",
         ),
         request(
-            "ledger-question",
-            "ledger",
-            "payments-rewrite",
+            "review-question",
+            "pr-482",
+            "pr-reviews",
             RequestKind::Question,
-            "Drop the old ledger_entries index?",
+            "Review the new commits first?",
         ),
     ];
     for (id, session, channel, title) in [
@@ -612,7 +613,22 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 },
                 SessionFile {
                     repo: "ledger".into(),
+                    path: "migrations/0041_init.sql".into(),
+                    folder: false,
+                },
+                SessionFile {
+                    repo: "ledger".into(),
+                    path: "docs".into(),
+                    folder: true,
+                },
+                SessionFile {
+                    repo: "ledger".into(),
                     path: "README.md".into(),
+                    folder: false,
+                },
+                SessionFile {
+                    repo: "api".into(),
+                    path: "src/lib.rs".into(),
                     folder: false,
                 },
                 SessionFile {
@@ -639,6 +655,10 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 ("ledger", "migrations/0042_accounts.sql") => {
                     "CREATE TABLE accounts (\n    id BIGINT PRIMARY KEY,\n    currency CHAR(3) NOT NULL,\n    balance BIGINT NOT NULL DEFAULT 0\n);\n"
                 }
+                ("ledger", "migrations/0041_init.sql") => {
+                    "CREATE TABLE ledger_entries (\n    id BIGINT PRIMARY KEY,\n    posted_at TIMESTAMPTZ NOT NULL\n);\n"
+                }
+                ("api", "src/lib.rs") => "pub mod client;\npub mod entry;\n",
                 ("ledger", "README.md") => {
                     "# Ledger\n\nAccounts and journal entries for payments.\n\nApply migrations in order before starting the backfill.\n"
                 }

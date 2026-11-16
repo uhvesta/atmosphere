@@ -163,7 +163,7 @@ fn tab_row(
                 })
                 .copied()
                 .unwrap_or(0);
-            bar.when(peers > 0, |bar| {
+            bar.when(peers > 0 && !(split && state.settings.preferences.split_groups), |bar| {
                 let label = format!(
                     "{peers} other{} can type here",
                     if peers == 1 { "" } else { "s" }
@@ -376,7 +376,7 @@ pub(crate) fn body(
                 .map(|offer| {
                     row()
                         .px(px(14.))
-                        .py(px(7.))
+                        .py(px(5.))
                         .gap(px(10.))
                         .flex_shrink_0()
                         .bg(rgb(if look.term == 0xffffff {
@@ -408,7 +408,11 @@ pub(crate) fn body(
                             "offer-open",
                             "Open it",
                             AppAction::Views(ViewsAction::Accept(offer.title.clone())),
-                        ))
+                        )
+                        .outline()
+                        .h(px(18.))
+                        .px(px(8.))
+                        .text_size(px(12.5)))
                             .child(widgets::ghost(
                             ui,
                             "offer-later",
@@ -484,10 +488,10 @@ pub(crate) fn body(
                                     let body = terminals.body(&session.id, *tab, group, cx);
                                     col().flex_1().min_h_0().bg(rgb(look.term)).child(body)
                                         .children(match (*tab, session.status) {
-                                            (0, Status::Exited { code }) => Some(row().flex_shrink_0().m(px(14.)).mt(px(0.)).p(px(8.)).gap(px(8.)).rounded(px(7.)).bg(rgb(look.fill)).text_color(rgb(look.text)).text_size(px(12.))
-                                                .child(chrome::icon(IconName::X, 0xff453a, 12.))
-                                                .child(div().flex_1().min_w_0().child(format!("Agent exited with code {code}. Resume starts it again with this conversation.")))
-                                                .child(widgets::send(ui, "resume-terminal", "Resume", AppAction::Session(SessionAction::Resume)))),
+                                            (0, Status::Exited { code }) => Some(row().flex_shrink_0().m(px(14.)).mt(px(10.)).px(px(10.)).py(px(7.)).gap(px(8.)).items_center().rounded(px(7.)).bg(rgb(look.fill)).text_color(rgb(look.text)).text_size(px(12.))
+                                                .child(chrome::icon(IconName::CircleX, 0xff453a, 12.))
+                                                .child(div().flex_1().min_w_0().child(format!("{} exited with code {code}. Resume starts it again with this conversation.", session.agent.command())))
+                                                .child(widgets::send(ui, "resume-terminal", "Resume", AppAction::Session(SessionAction::Resume)).outline().h(px(18.)).px(px(8.)))),
                                             _ => None,
                                         }).into_any_element()
                                 }
@@ -518,6 +522,8 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
         .queue
         .iter()
         .all(|message| matches!(message, humata2_session::QueuedMessage::Comments { .. }));
+    let sending = state.session.sending;
+    let waits = certain && !comments_only;
     let count = if comments_only {
         view.queue
             .iter()
@@ -530,16 +536,21 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
         view.queue.len()
     };
     let noun = if comments_only { "comment" } else { "message" };
+    // SE-23 and D128.3: the bar says "waiting to send"; held text that goes
+    // on its own at the turn's end needs no further note.
+    let status = if failed {
+        Some("send failed")
+    } else if sending {
+        Some("sending")
+    } else if waits {
+        None
+    } else {
+        Some("send manually")
+    };
     let caption = format!(
-        "{count} {noun}{} waiting to send · {}",
+        "{count} {noun}{} waiting to send{}",
         if count == 1 { "" } else { "s" },
-        if failed {
-            "send failed"
-        } else if certain {
-            "after this turn"
-        } else {
-            "send manually"
-        }
+        status.map(|status| format!(" · {status}")).unwrap_or_default()
     );
     Some(
         col()
@@ -547,8 +558,9 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
             .flex_shrink_0()
             .m(px(14.))
             .mt(px(0.))
+            .mb(px(8.))
             .px(px(10.))
-            .py(px(6.))
+            .py(px(3.))
             .gap(px(8.))
             .rounded(px(7.))
             .bg(rgb(look.fill))
@@ -568,7 +580,7 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
                             .child(caption.clone())
                             .test_text(caption),
                     )
-                    .when(!certain, |bar| {
+                    .when(!waits && !sending, |bar| {
                         bar.child(
                             widgets::send(
                                 ui,

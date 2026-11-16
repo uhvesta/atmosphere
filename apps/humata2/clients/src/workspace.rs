@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::model::{
-    Channel, ChannelId, FileEntry, Item, JournalEntry, Machine, MachineId, PreparedView,
+    AccessRule, Channel, ChannelId, FileEntry, Item, JournalEntry, Machine, MachineId, PreparedView,
     PullRequest, RepoDiff, Request, Session, SessionFile, SessionId, Skill, Spec, Transfer,
     Trashed,
 };
@@ -57,6 +57,8 @@ pub struct Workspace {
     pub views: Vec<PreparedView>,
     /// The skills the composer's `/` menu offers.
     pub skills: Vec<Skill>,
+    /// Each channel's access rules, in the order IN-17 lists them.
+    pub rules: BTreeMap<ChannelId, Vec<AccessRule>>,
 }
 
 impl Workspace {

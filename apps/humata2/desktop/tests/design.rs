@@ -57,7 +57,7 @@ mod views;
 
 use gpui_kit::{prelude::*, *};
 use humata2_engine::Resources;
-use humata2_snapshot::{Tolerance, snapshots};
+use humata2_snapshot::{Mode, Tolerance, snapshots};
 
 use kit::{DARK, LIGHT, Look, SYSTEM_FONT, c};
 use session::{Fill, Panel, Screen, Term};
@@ -249,6 +249,13 @@ fn design_goldens() {
     let mut cx = humata2_engine::headless(&Resources::new(MockIcons)).expect("the headless context starts");
     cx.update(humata2_ui::init);
     let snapshots = snapshots!().expect("snapshots are kept beside this file");
+    // Recording must keep even a one-glyph change (a badge count) that fits
+    // within the verify tolerance, so the approved golden is the current mock.
+    let tolerance = if snapshots.mode() == Mode::Record {
+        Tolerance::EXACT
+    } else {
+        Tolerance::default()
+    };
     for (name, look, draw) in FRAMES {
         let (look, draw) = (*look, *draw);
         let options = WindowOptions {
@@ -263,6 +270,6 @@ fn design_goldens() {
             .into();
         cx.run_until_parked();
         let image = cx.capture_screenshot(window).expect("the window draws");
-        snapshots.assert_image(name, &image, Tolerance::default());
+        snapshots.assert_image(name, &image, tolerance);
     }
 }

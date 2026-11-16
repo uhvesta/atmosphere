@@ -1,6 +1,7 @@
 //! A session's page (SE-6–23, FK-1–13): its terminal tabs, the side panel,
-//! and the composer, a box for messages that wait for the agent's turn to
-//! end (SE-21–23). Every session keeps its own [`SessionView`]: tab, panel,
+//! and the composer, a box for typed messages that wait for the agent's turn to
+//! end (SE-21–23). Review comments are an explicit send: they go as soon as
+//! the session takes input, whatever its turn. Every session keeps its own [`SessionView`]: tab, panel,
 //! draft and queue survive switching away and a restart (PER-25).
 //!
 //! Live terminal output arrives as [`SessionAction::Output`] from the
@@ -85,7 +86,8 @@ pub struct SessionView {
     pub widened: bool,
     /// What the composer holds.
     pub draft: String,
-    /// Messages waiting for the turn to end, first to go first.
+    /// The outbox, first to go first. Typed text waits for the turn to end;
+    /// review comments wait only for the session to take input.
     pub queue: Vec<QueuedMessage>,
     /// The selected clone and relative file path in Files.
     #[serde(default)]
@@ -286,7 +288,9 @@ pub enum SessionAction {
     SendQueued(usize),
     /// Expand or collapse the waiting-message list.
     ShowQueue(bool),
-    /// Queue review comments without changing the currently open session.
+    /// Send review comments to `session` (not necessarily the open one) as
+    /// soon as it takes input, whatever its turn (SE-23). They wait in its
+    /// outbox only while it cannot take input or an earlier send failed.
     QueueComments {
         session: SessionId,
         comments: Vec<Comment>,
@@ -393,15 +397,32 @@ impl Sessions {
         Effect::future(async move { SessionAction::Done(future.await) })
     }
 
-    /// Sends the first queued message of `session` if its turn ended.
+    /// Sends the first deliverable queued message of `session`. The kind
+    /// decides: review comments are an explicit send and go as soon as the
+    /// session takes input, whatever its turn; typed text is the wait mode and
+    /// goes only when a hook-backed agent's turn ended. Never sets an error,
+    /// because it runs on every refresh.
     fn flush(&self, state: &mut SessionState, session: &SessionId) -> Effect<SessionAction> {
-        let ended = state.workspace.session(session).is_some_and(|session| {
-            session.turn == Turn::Ended && matches!(session.agent, Agent::Claude | Agent::Copilot)
-        });
-        if !ended || state.sending || state.failed_queues.contains(session) {
+        if state.sending || state.failed_queues.contains(session) {
             return Effect::none();
         }
-        self.send_queued(state, session, 0)
+        let Some(workspace_session) = state.workspace.session(session) else {
+            return Effect::none();
+        };
+        if !workspace_session.status.accepts_input() {
+            return Effect::none();
+        }
+        let ended = workspace_session.turn == Turn::Ended
+            && matches!(workspace_session.agent, Agent::Claude | Agent::Copilot);
+        let Some(index) = state.views.get(session).and_then(|view| {
+            view.queue.iter().position(|message| match message {
+                QueuedMessage::Comments { .. } => true,
+                QueuedMessage::Text(_) => ended,
+            })
+        }) else {
+            return Effect::none();
+        };
+        self.send_queued(state, session, index)
     }
 
     fn send_queued(
@@ -796,6 +817,14 @@ impl Reducer for Sessions {
                     .or_default()
                     .queue
                     .push(QueuedMessage::Comments { comments });
+                if !state
+                    .workspace
+                    .session(&session)
+                    .is_some_and(|s| s.status.accepts_input())
+                {
+                    state.error = Some("This session cannot take the comments yet. Reconnect its machine or resume the agent, then press Send now to deliver them.".into());
+                    return Effect::none();
+                }
                 return self.flush(state, &session);
             }
             SessionAction::EditQueued(index) => {
@@ -806,12 +835,17 @@ impl Reducer for Sessions {
                     && index < view.queue.len()
                 {
                     let message = view.queue.remove(index);
+                    let emptied = view.queue.is_empty();
                     let text = match message {
                         QueuedMessage::Text(text) => text,
                         QueuedMessage::Comments { comments } => {
                             let Some(id) = state.open.clone() else {
                                 return Effect::none();
                             };
+                            // Nothing failed is left: a new send goes at once.
+                            if emptied {
+                                state.failed_queues.remove(&id);
+                            }
                             return Effect::send(SessionAction::Delegate(
                                 Delegate::CommentsUnqueued(id, comments),
                             ));
@@ -822,6 +856,9 @@ impl Reducer for Sessions {
                     } else {
                         view.draft = format!("{text}\n{}", view.draft);
                     }
+                    if emptied && let Some(id) = state.open.clone() {
+                        state.failed_queues.remove(&id);
+                    }
                 }
             }
             SessionAction::RemoveQueued(index) => {
@@ -831,7 +868,14 @@ impl Reducer for Sessions {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
-                    if let QueuedMessage::Comments { comments } = view.queue.remove(index) {
+                    let message = view.queue.remove(index);
+                    // Nothing failed is left: a new send goes at once.
+                    if view.queue.is_empty()
+                        && let Some(id) = state.open.clone()
+                    {
+                        state.failed_queues.remove(&id);
+                    }
+                    if let QueuedMessage::Comments { comments } = message {
                         let Some(id) = state.open.clone() else {
                             return Effect::none();
                         };

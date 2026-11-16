@@ -1,6 +1,6 @@
 use super::FakeDaemon;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
-use crate::model::{Answer, ItemStatus, RequestId, Status};
+use crate::model::{Answer, Grant, GrantId, ItemStatus, RequestId, Status};
 
 pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -> Reply<()> {
     let id = request.clone();
@@ -24,6 +24,38 @@ pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -
             }
             found.answer = Some(answer);
             let request = found.clone();
+            if let (Some(Answer::Always { rule }), Some(asked_by)) =
+                (&request.answer, &request.asked_by)
+            {
+                let grant = Grant {
+                    id: GrantId::new(inner.id("g")),
+                    session: request.session.clone(),
+                    scope: rule.clone(),
+                    granted: "now".to_owned(),
+                };
+                if let Some(row) = inner
+                    .workspace
+                    .rules
+                    .get_mut(&request.channel)
+                    .and_then(|rules| {
+                        rules
+                            .iter_mut()
+                            .find(|row| row.capability == asked_by.capability)
+                    })
+                {
+                    row.grants.push(grant);
+                    let rules = inner
+                        .workspace
+                        .rules
+                        .get(&request.channel)
+                        .cloned()
+                        .unwrap_or_default();
+                    inner.emit(Event::Rules {
+                        channel: request.channel.clone(),
+                        rules,
+                    });
+                }
+            }
             let session = request.session.clone();
             if matches!(
                 request.answer,

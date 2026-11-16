@@ -281,7 +281,7 @@ pub fn terminal(look: Look, term: Term) -> Div {
                     .bg(c(look.fill))
                     .text_size(px(12.))
                     .child(small_icon(IconName::MessageSquareText, look.secondary))
-                    .child(div().flex_1().child("2 messages queued · typed when this turn ends"))
+                    .child(div().flex_1().child("2 messages waiting to send"))
                     .child(div().text_color(c(look.accent)).child("Show")),
             ),
         Term::Exited => body
@@ -387,6 +387,16 @@ pub fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<D
 
 /// The labelled strip down the right edge that picks the panel (SE-11).
 pub fn strip(look: Look, on: Option<Panel>) -> Div {
+    rail(look, on, Some("1"))
+}
+
+/// The panel rail of the Ledger schema migration session: its Inbox count is
+/// its own pending request plus its fork Try BRIN's (the Inbox panel lists both).
+fn ledger_strip(look: Look, on: Option<Panel>) -> Div {
+    rail(look, on, Some("2"))
+}
+
+fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>) -> Div {
     let item = |glyph: IconName, panel: Panel, text: &'static str, count: Option<&'static str>| {
         let lit = on == Some(panel);
         div()
@@ -415,7 +425,7 @@ pub fn strip(look: Look, on: Option<Panel>) -> Div {
         .bg(c(look.sidebar))
         .border_l_1()
         .border_color(c(look.line))
-        .child(item(IconName::Inbox, Panel::Inbox, "Inbox", Some("1")))
+        .child(item(IconName::Inbox, Panel::Inbox, "Inbox", inbox))
         .child(item(IconName::FileDiff, Panel::Diff, "Diff", Some("2")))
         .child(item(IconName::FolderTree, Panel::Files, "Files", None))
         .child(item(IconName::SquareKanban, Panel::Board, "Board", None))
@@ -757,7 +767,7 @@ pub fn info_with(look: Look, full: bool, extra: Option<Div>) -> Div {
                         .child(kv("Agent", div().child("Claude Code · Opus")))
                         .child(kv("Machine", div().child("devbox-1 · Ubuntu 24.04")))
                         .child(kv("Started", div().child("Today 11:40")))
-                        .child(kv("Forks", link("Try BRIN index")))
+                        .child(kv("Forks", div().flex().flex_col().gap(px(3.)).child(link("Try BRIN index")).child(link("Review the schema"))))
                         .child(kv(
                             "Clones",
                             div()
@@ -978,7 +988,7 @@ pub fn session(look: Look, screen: Screen) -> Div {
         .child(handle(look, true))
         .child(middle(look, screen))
         .when_some(screen.panel, |root, which| root.child(handle(look, true)).child(panel(look, screen, which)))
-        .child(strip(look, screen.panel))
+        .child(ledger_strip(look, screen.panel))
 }
 
 /// The session screen with `body` as its right panel, `on` lit in the
@@ -994,7 +1004,7 @@ pub fn session_with(look: Look, screen: Screen, on: Panel, title: &'static str, 
         .child(middle(look, screen))
         .child(handle(look, true))
         .child(panel_shell(look, false, title, body))
-        .child(strip(look, Some(on)))
+        .child(ledger_strip(look, Some(on)))
 }
 
 /// A session-shaped screen from parts: the sidebar at `side`, `middle`
@@ -1138,5 +1148,5 @@ pub fn split(look: Look) -> Div {
                 .child(header(look, Screen::new(None, Term::NeedsYou)))
                 .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right)),
         )
-        .child(strip(look, None))
+        .child(ledger_strip(look, None))
 }

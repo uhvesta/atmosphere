@@ -13,6 +13,7 @@ Run Humata 2 on Linux and get the same screens and the same guarantees.
 
 ## Exit criterion
 The Linux VM batch (2 CPU, 4 GiB, 20 GiB) is green: every suite, the goldens drawn on Linux, real-SSH machine flows, and VM hard-reset cases.
+- The containment suite (SEC-6, from AWAY) passes in the VM. (D128)
 
 ## Read these (pointers, nothing else)
 - SPEC: PER-18, PER-19, PER-28, TR-2. Find each with `grep -n '\*\*<ID>\*\*' apps/humata2/SPEC.md` and read the few lines around it.

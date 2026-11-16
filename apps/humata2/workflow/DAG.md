@@ -84,8 +84,8 @@ and DESK (on fakes, labelled so), then after every real close from FL on.
 
 ## Not in 1.0 (to confirm in W1)
 
-The VM tier (PER-8–PER-10), Contain agents (SEC-6), script tokens (SEC-14), Delete channel (CH-24). No milestone
-owns them.
+Owner, 2026-11-15: only the VM tier (PER-8–PER-10) stays out of 1.0. Contain agents (SEC-6), script tokens (SEC-14)
+and Delete channel (CH-24, D11 (a), frame 71) are in 1.0; their milestone homes are logged in the event log.
 
 ## Graph
 

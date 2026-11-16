@@ -1,6 +1,7 @@
 //! Reviewing a session's changes (RV-1–27): files fold, lines wrap or
-//! scroll, and comments on lines queue up until they are sent to the agent
-//! together (RV-4, RV-6).
+//! scroll, and comments on lines are kept as drafts. Each can be sent on its own, or all
+//! together; an explicit send is delivered without waiting for a turn to end
+//! (RV-4, RV-6, SE-23).
 //!
 //! The rows the view draws are prepared off the UI thread by an effect and
 //! arrive ready to draw ([`ReviewAction::Prepared`]); a newer request
@@ -114,7 +115,9 @@ impl ReviewState {
 /// What the review page asks its parent to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delegate {
-    /// Queue this batch in the session, rather than type during a turn.
+    /// Deliver this batch to the session's terminal now (SE-23); the session
+    /// does not wait for a turn to end. The batch leaves the drafts only once
+    /// the session has retained it.
     QueueComments(SessionId, Vec<Comment>),
     /// Say this in a toast.
     Toast(String),
@@ -147,8 +150,13 @@ pub enum ReviewAction {
     CancelComment,
     /// Drop a queued comment.
     RemoveComment(usize),
-    /// Send every queued comment to the agent.
+    /// Send every saved draft of the shown session to the agent together.
     Send,
+    /// Send only the saved draft at this index; the others stay drafts.
+    SendDraft(usize),
+    /// The box's "Comment" button: save the comment being written and send
+    /// just that one (SM-9). Other drafts stay.
+    SendComment,
     /// The parent retained this batch in the session queue.
     Queued(SessionId, Vec<Comment>),
     /// A queued batch was removed and can be edited again.
@@ -220,44 +228,32 @@ impl Reducer for Review {
                 }
             }
             ReviewAction::SaveComment => {
-                if let Some(session) = state.session.clone()
-                    && let Some((anchor, body)) = state.saved.drafts.remove(&session)
-                    && !body.trim().is_empty()
-                {
-                    let selected_repo = state.saved.selected.get(&session).map(|(repo, _)| repo);
-                    let context = state
-                        .workspace
-                        .diffs
-                        .iter()
-                        .filter(|diff| diff.session == session)
-                        .find_map(|diff| {
-                            if selected_repo.is_some_and(|repo| *repo != diff.repo) {
-                                return None;
-                            }
-                            let file = diff.files.iter().find(|file| file.path == anchor.path)?;
-                            Some(CommentContext {
-                                repo: diff.repo.clone(),
-                                base: diff.base.clone(),
-                                quoted: file
-                                    .lines
-                                    .iter()
-                                    .find(|line| line.new == Some(anchor.line))
-                                    .map(|line| line.text.clone()),
-                            })
-                        });
+                if let Some((session, comment)) = take_comment(state) {
+                    state.saved.queued.entry(session).or_default().push(comment);
+                    return prepare(state);
+                }
+            }
+            ReviewAction::SendComment => {
+                if state.sending {
+                    return Effect::none();
+                }
+                if let Some((session, comment)) = take_comment(state) {
+                    // The comment stays a draft until the session has it, so a
+                    // failed hand-over loses nothing.
                     state
                         .saved
                         .queued
-                        .entry(session)
+                        .entry(session.clone())
                         .or_default()
-                        .push(Comment {
-                            path: anchor.path,
-                            line: anchor.line,
-                            body: body.trim().to_owned(),
-                            sent: false,
-                            context,
-                        });
-                    return prepare(state);
+                        .push(comment.clone());
+                    state.sending = true;
+                    return Effect::merge(vec![
+                        prepare(state),
+                        Effect::send(ReviewAction::Delegate(Delegate::QueueComments(
+                            session,
+                            vec![comment],
+                        ))),
+                    ]);
                 }
             }
             ReviewAction::CancelComment => {
@@ -290,6 +286,22 @@ impl Reducer for Review {
                     session, comments,
                 )));
             }
+            ReviewAction::SendDraft(index) => {
+                if state.sending {
+                    return Effect::none();
+                }
+                let Some(session) = state.session.clone() else {
+                    return Effect::none();
+                };
+                let Some(comment) = state.queued().get(index).cloned() else {
+                    return Effect::none();
+                };
+                state.sending = true;
+                return Effect::send(ReviewAction::Delegate(Delegate::QueueComments(
+                    session,
+                    vec![comment],
+                )));
+            }
             ReviewAction::Queued(session, comments) => {
                 state.sending = false;
                 state.error = None;
@@ -320,6 +332,48 @@ impl Reducer for Review {
         }
         Effect::none()
     }
+}
+
+/// Takes the comment being written for the shown session out of its box and
+/// turns it into a [`Comment`] with the context of the line it is about.
+/// Nothing happens for an empty body (the box is still closed).
+fn take_comment(state: &mut ReviewState) -> Option<(SessionId, Comment)> {
+    let session = state.session.clone()?;
+    let (anchor, body) = state.saved.drafts.remove(&session)?;
+    if body.trim().is_empty() {
+        return None;
+    }
+    let selected_repo = state.saved.selected.get(&session).map(|(repo, _)| repo);
+    let context = state
+        .workspace
+        .diffs
+        .iter()
+        .filter(|diff| diff.session == session)
+        .find_map(|diff| {
+            if selected_repo.is_some_and(|repo| *repo != diff.repo) {
+                return None;
+            }
+            let file = diff.files.iter().find(|file| file.path == anchor.path)?;
+            Some(CommentContext {
+                repo: diff.repo.clone(),
+                base: diff.base.clone(),
+                quoted: file
+                    .lines
+                    .iter()
+                    .find(|line| line.new == Some(anchor.line))
+                    .map(|line| line.text.clone()),
+            })
+        });
+    Some((
+        session,
+        Comment {
+            path: anchor.path,
+            line: anchor.line,
+            body: body.trim().to_owned(),
+            sent: false,
+            context,
+        },
+    ))
 }
 
 /// Prepares the shown session's rows in the background.

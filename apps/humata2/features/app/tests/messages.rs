@@ -71,10 +71,53 @@ fn queue(store: &mut TestStore<App>) {
     );
 }
 
+fn delivery(store: &mut TestStore<App>, ok: bool) {
+    store.receive_matching(
+        "comment delivery result",
+        move |a| matches!(a, A::Session(SessionAction::Sent { result, .. }) if result.is_ok() == ok),
+        |s| s.session.sending = false,
+    );
+}
+
+fn write_draft(store: &mut TestStore<App>, line: u32, body: &str) {
+    use humata2_review::Anchor;
+    store.send(
+        A::Review(ReviewAction::StartComment(Anchor {
+            path: "src/client.rs".into(),
+            line,
+        })),
+        |_| {},
+    );
+    store.send(A::Review(ReviewAction::CommentText(body.into())), |_| {});
+}
+
+/// Bodies of comments delivered to ledger during the test: the fixture's
+/// own already-sent comments are not deliveries.
+fn delivered_bodies(fakes: &Fakes) -> Vec<String> {
+    let ledger = |workspace: &humata2_clients::Workspace| -> Vec<String> {
+        workspace
+            .diffs
+            .iter()
+            .filter(|diff| diff.session == SessionId::new("ledger"))
+            .flat_map(|diff| &diff.comments)
+            .map(|c| c.body.clone())
+            .collect()
+    };
+    let before = ledger(&fixture::design());
+    ledger(&fakes.daemon.workspace())
+        .into_iter()
+        .filter(|body| !before.contains(body))
+        .collect()
+}
+
 #[test]
-fn sending_during_a_turn_queues_metadata_and_a_restart_keeps_it() {
+fn a_failed_delivery_keeps_the_batch_in_the_session_outbox_across_a_restart() {
     let (mut store, clients, fakes, comment) = setup();
+    fakes
+        .daemon
+        .fail_next(Operation::SendComments, "link unavailable");
     queue(&mut store);
+    delivery(&mut store, false);
     let id = SessionId::new("ledger");
     assert!(store.state().review.queued().is_empty());
     assert_eq!(
@@ -82,16 +125,6 @@ fn sending_during_a_turn_queues_metadata_and_a_restart_keeps_it() {
         [QueuedMessage::Comments {
             comments: vec![comment.clone()]
         }]
-    );
-    assert!(
-        !fakes
-            .daemon
-            .workspace()
-            .session(&id)
-            .unwrap()
-            .transcript
-            .iter()
-            .any(|line| line.text.contains(&comment.body))
     );
     saved::Saver::new(clients.storage.clone())
         .save(1, &store.state().saved())
@@ -108,18 +141,11 @@ fn sending_during_a_turn_queues_metadata_and_a_restart_keeps_it() {
 #[test]
 fn removing_a_failed_batch_returns_its_comments_to_drafts() {
     let (mut store, _, fakes, comment) = setup();
-    queue(&mut store);
     fakes
         .daemon
         .fail_next(Operation::SendComments, "link unavailable");
-    store.send(A::Session(SessionAction::SendQueued(0)), |s| {
-        s.session.sending = true
-    });
-    store.receive_matching(
-        "failed comment delivery",
-        |a| matches!(a, A::Session(SessionAction::Sent { result: Err(_), .. })),
-        |s| s.session.sending = false,
-    );
+    queue(&mut store);
+    delivery(&mut store, false);
     assert_eq!(store.state().session.view().unwrap().queue.len(), 1);
     assert!(store.state().review.queued().is_empty());
     store.send(A::Session(SessionAction::RemoveQueued(0)), |_| {});
@@ -135,22 +161,29 @@ fn removing_a_failed_batch_returns_its_comments_to_drafts() {
     );
     assert_eq!(store.state().review.queued(), [comment]);
     assert!(store.state().session.view().unwrap().queue.is_empty());
+    // Nothing failed is left, so sending again goes at once.
+    queue(&mut store);
+    delivery(&mut store, true);
+    assert!(store.state().session.view().unwrap().queue.is_empty());
+    assert!(store.state().review.queued().is_empty());
     store.finish();
 }
 
 #[test]
-fn explicit_send_delivers_the_comment_batch_once_and_removes_only_it() {
+fn explicit_send_delivers_the_batch_during_a_turn_once_and_removes_only_it() {
     let (mut store, _, fakes, comment) = setup();
+    let mut workspace = (*store.state().session.workspace).clone();
+    workspace
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == SessionId::new("ledger"))
+        .unwrap()
+        .turn = humata2_clients::model::Turn::Running;
+    store.send(A::Session(SessionAction::Show(Arc::new(workspace))), |_| {});
     queue(&mut store);
-    store.send(A::Session(SessionAction::SendQueued(0)), |s| {
-        s.session.sending = true
-    });
-    store.receive_matching(
-        "comments delivered",
-        |a| matches!(a, A::Session(SessionAction::Sent { result: Ok(()), .. })),
-        |s| s.session.sending = false,
-    );
+    delivery(&mut store, true);
     assert!(store.state().session.view().unwrap().queue.is_empty());
+    assert!(store.state().review.queued().is_empty());
     let workspace = fakes.daemon.workspace();
     let delivered: Vec<_> = workspace
         .diffs
@@ -169,6 +202,77 @@ fn explicit_send_delivers_the_comment_batch_once_and_removes_only_it() {
             .iter()
             .any(|line| line.text.contains(&comment.body) && line.text.contains(&comment.path))
     );
+    store.finish();
+}
+
+#[test]
+fn send_draft_delivers_only_that_draft_and_keeps_the_others() {
+    let (mut store, _, fakes, first) = setup();
+    write_draft(&mut store, 44, "A second, separate note.");
+    store.send(A::Review(ReviewAction::SaveComment), |_| {});
+    assert_eq!(store.state().review.queued().len(), 2);
+    store.send(A::Review(ReviewAction::SendDraft(0)), |s| {
+        s.review.sending = true
+    });
+    store.receive_matching(
+        "one draft handed over",
+        |a| matches!(a, A::Review(ReviewAction::Delegate(R::QueueComments(_, _)))),
+        |_| {},
+    );
+    delivery(&mut store, true);
+    assert_eq!(store.state().review.queued().len(), 1);
+    assert_eq!(store.state().review.queued()[0].line, 44);
+    assert_eq!(delivered_bodies(&fakes), [first.body]);
+    assert!(store.state().session.view().unwrap().queue.is_empty());
+    store.send(A::Review(ReviewAction::SendDraft(5)), |_| {});
+    store.finish();
+}
+
+#[test]
+fn send_comment_delivers_the_comment_being_written_and_leaves_drafts_alone() {
+    let (mut store, _, fakes, earlier) = setup();
+    write_draft(&mut store, 44, "Send this one now.");
+    store.send(A::Review(ReviewAction::SendComment), |s| {
+        s.review.sending = true
+    });
+    store.receive_matching(
+        "comment handed over",
+        |a| matches!(a, A::Review(ReviewAction::Delegate(R::QueueComments(_, _)))),
+        |_| {},
+    );
+    delivery(&mut store, true);
+    assert_eq!(store.state().review.queued(), [earlier]);
+    assert!(store.state().review.draft().is_none());
+    assert_eq!(delivered_bodies(&fakes), ["Send this one now."]);
+    store.finish();
+}
+
+#[test]
+fn send_comment_with_an_empty_body_does_nothing() {
+    let (mut store, _, fakes, earlier) = setup();
+    write_draft(&mut store, 44, "   ");
+    store.send(A::Review(ReviewAction::SendComment), |_| {});
+    assert_eq!(store.state().review.queued(), [earlier]);
+    assert!(!store.state().review.sending);
+    assert!(delivered_bodies(&fakes).is_empty());
+    store.finish();
+}
+
+#[test]
+fn the_batch_send_still_sends_every_draft_together() {
+    let (mut store, _, fakes, first) = setup();
+    write_draft(&mut store, 44, "Second note.");
+    store.send(A::Review(ReviewAction::SaveComment), |_| {});
+    queue(&mut store);
+    delivery(&mut store, true);
+    assert!(store.state().review.queued().is_empty());
+    // Both drafts went in the one delivery; the fake files each under its
+    // own repo's diff, so compare without the cross-repo order.
+    let mut delivered = delivered_bodies(&fakes);
+    delivered.sort();
+    let mut expected = vec![first.body, "Second note.".to_owned()];
+    expected.sort();
+    assert_eq!(delivered, expected);
     store.finish();
 }
 
@@ -257,40 +361,7 @@ fn retaining_one_batch_does_not_clear_a_newer_draft() {
     );
     assert_eq!(store.state().review.queued().len(), 1);
     assert_eq!(store.state().review.queued()[0].line, 44);
-    store.finish();
-}
-
-#[test]
-fn a_hook_turn_end_delivers_the_waiting_review_batch_without_send_now() {
-    let (mut store, _, fakes, comment) = setup();
-    queue(&mut store);
-    let mut workspace = (*store.state().session.workspace).clone();
-    workspace
-        .sessions
-        .iter_mut()
-        .find(|session| session.id == SessionId::new("ledger"))
-        .unwrap()
-        .turn = humata2_clients::model::Turn::Ended;
-    store.send(A::Session(SessionAction::Show(Arc::new(workspace))), |s| {
-        s.session.sending = true
-    });
-    store.receive_matching(
-        "hook-backed comment delivery",
-        |a| matches!(a, A::Session(SessionAction::Sent { result: Ok(()), .. })),
-        |s| s.session.sending = false,
-    );
-    assert!(store.state().session.view().unwrap().queue.is_empty());
-    assert_eq!(
-        fakes
-            .daemon
-            .workspace()
-            .diffs
-            .iter()
-            .flat_map(|diff| &diff.comments)
-            .filter(|c| c.body == comment.body)
-            .count(),
-        1
-    );
+    delivery(&mut store, true);
     store.finish();
 }
 
@@ -312,7 +383,7 @@ fn a_missing_session_keeps_the_drafts_when_the_parent_cannot_queue_them() {
 
 #[test]
 fn a_batch_queued_after_navigation_still_belongs_to_the_session_that_authored_it() {
-    let (mut store, _, _, comment) = setup();
+    let (mut store, _, fakes, comment) = setup();
     store.send(A::Review(ReviewAction::Send), |s| s.review.sending = true);
     store.send(A::Navigate(Route::Session(SessionId::new("brin"))), |_| {});
     store.receive_matching(
@@ -325,9 +396,16 @@ fn a_batch_queued_after_navigation_still_belongs_to_the_session_that_authored_it
     assert_eq!(
         store.state().session.views[&SessionId::new("ledger")].queue,
         [QueuedMessage::Comments {
-            comments: vec![comment]
+            comments: vec![comment.clone()]
         }]
     );
     assert!(store.state().review.saved.queued[&SessionId::new("ledger")].is_empty());
+    delivery(&mut store, true);
+    assert!(
+        store.state().session.views[&SessionId::new("ledger")]
+            .queue
+            .is_empty()
+    );
+    assert_eq!(delivered_bodies(&fakes), [comment.body]);
     store.finish();
 }

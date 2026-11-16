@@ -506,3 +506,11 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Known gaps: FRAMES2's 13 guesses where SPEC is silent are listed in `workflow/milestones/FRAMES2.md` › Lane; the owner approved the frames as drawn. `desktop/tests/design/` is still not rustfmt-formatted.
 - Look at: `desktop/tests/design/{machines,machine_page,files,fork_move,archive,pr_review,views}.rs`; the 16 PNGs.
 
+
+### (this commit): LOOK1 batches 1–2 and ASK batch 3 (minions LOOK1, ASK)
+- LOOK1: direct and per-comment Send (D126), the frame audit fixes the owner approved for 01, 05 and 50, ledger strip with Inbox 2, Info lists both forks, "N messages waiting to send" caption and chip, design record now uses `Tolerance::EXACT`.
+- ASK batch 3 (app on fakes): IN-9 request card, the Agent access tab in Settings and channels, the fake daemon's access rules, `I::OpenRequest` navigation, and a headless §26.4 flow test.
+- Decisions: D127 items 14–16 and D128 (CH-24 → FORK, SEC-14 → ASK, SEC-6 → AWAY, plus a containment suite in LINUX).
+- Verified: gate 5 passed: all unit tests, records for design, native, panels and shell, and 4/4 desktop tests. 22 design frames changed: 01–09, 14–17, 30, 35, 42, 43, 46, 50, 54, 62 and 65. In 35 and 42–43 the changes are only the "Desk" name and the D126 hint wording.
+- Known gaps: LOOK1's T12 batch 3 and T10 (frames 07 and 08) are still open. ASK still has to apply D128.2 (own_comments_read shows as "Always · no setting") and the SEC-14 late batch, and it can't close before FL. W1's redraws of pages and overlays are not in this commit.
+- Look at: `ui/src/{request_card,access,session_tabs}.rs`, `features/settings/src/access.rs`, `clients/src/daemon/fake/access.rs`, `desktop/tests/design/session.rs`, design PNGs 01, 03, 05 and 50.

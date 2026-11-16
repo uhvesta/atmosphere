@@ -44,6 +44,17 @@ pub(crate) fn terminal_line(line: &Line) -> Vec<u8> {
         Speaker::Tool => "\x1b[32m",
         _ => "\x1b[0m",
     };
+    let orange = "\x1b[38;2;255;159;10m";
+    let color = if line.text.contains("Backfill entries from")
+        || line.text.contains("Backfilling entries")
+        || line.text.contains("waiting for your approval")
+        || line.text.starts_with("? ")
+        || line.text.contains("Working (")
+    {
+        orange
+    } else {
+        color
+    };
     format!("{color}{}\x1b[0m\r\n", line.text.replace('\n', "\r\n")).into_bytes()
 }
 
@@ -68,7 +79,12 @@ pub(crate) fn terminal_screen(session: &Session, tab: usize) -> Vec<u8> {
     }
     if tab != 0 || !matches!(session.status, Status::Exited { .. } | Status::NeedsYou) {
         bytes.extend_from_slice(if tab == 0 && session.agent != Agent::Shell {
-            b"\r\n> "
+            // The agent's own input box and hint, drawn as the program would.
+            "\r\n\x1b[90m╭────────────────────────────────────────────────────────────────────╮\r\n\
+             │\x1b[0m > \x1b[90m\x1b[70G│\r\n\
+             ╰────────────────────────────────────────────────────────────────────╯\r\n  \
+             ⏵⏵ accept edits on (shift+tab to cycle)\x1b[0m\x1b[2A\x1b[4G"
+                .as_bytes()
         } else {
             b"\r\n$ "
         });

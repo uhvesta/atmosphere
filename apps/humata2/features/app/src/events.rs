@@ -40,6 +40,9 @@ impl App {
             Event::Request(request) => {
                 upsert(&mut workspace.requests, request, |a, b| a.id == b.id);
             }
+            Event::Rules { channel, rules } => {
+                workspace.rules.insert(channel, rules);
+            }
             Event::Machine(machine) => {
                 upsert(&mut workspace.machines, machine, |a, b| a.id == b.id);
             }

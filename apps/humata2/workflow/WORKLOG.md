@@ -6,18 +6,15 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
-- **State:** walking the DAG. D0 and P0 done (P0 1a3831dd). Lanes open:
-  FL-D (daemon, minion FL-D) and FRAMES1 (docs, minion FRAMES1).
-- **Next:** gate each batch the managers report. Open the UI lane (LOOK2,
-  with P0's deferred panels.rs/native.rs split) once C1 commits LOOK1 and
-  releases `ui/`. ASK after FL-D. W1 is waiting on the owner (D113 frames,
-  D103–D112).
-- **Not ours in the tree:** C1's uncommitted LOOK1 work (queue/presence in
-  clients workspace.rs, features/session, ui, native.rs + new snapshots, the
-  `terminal_peers` line in clients/src/fixture/design_session.rs);
-  `ui-prototype/` belongs to another session.
+- **State:** walking the DAG. Done: D0, P0, FL-D, FRAMES1, FRAMES2 (43f7fff2). Lanes open: LOOK1 (UI, T12 batch 3 next),
+  ASK (batch 3 app side gated green, uncommitted; can't close before FL), W1 (docs, D113 redraws).
+- **Owner, 2026-11-15:** opinions go to a Fable advisor, not the owner (D128); the owner still sees golden changes as
+  before/after images. W1 answers logged: D103–D112 settled, D9 delete, only the VM tier stays out of 1.0.
+- **Next:** gate 5 (record design EXACT, native, panels, shell) → commit LOOK1 batches 1–2 (not closing) → commit ASK
+  batch 3 → resume LOOK1 T12. W1 redraws in files LOOK1 doesn't hold; session.rs items after LOOK1's commit.
+- **Not ours in the tree:** `ui-prototype/` (another session), `.claude/`.
 - **Lane limit:** 3 managers (2 build, 1 docs).
-- **Last pushed:** 1a3831dd (origin/main).
+- **Last pushed:** 3ad37e47 (origin/main).
 
 ## Roster
 
@@ -34,6 +31,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
 | minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
 | minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
+| minion W1 | Opus 5.5 | manager | milestone W1 (docs lane, D113 redraws) | 2026-11-15 | active |
 | minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (43f7fff2) |
 
 ## Claims
@@ -45,7 +43,8 @@ Files a lane is editing. No two lanes claim the same file.
 | C1 | `clients/src/{daemon,fixture,workspace}.rs`, `clients/tests/fake_daemon.rs`, `desktop/tests/native.rs`, `desktop/tests/__snapshots__/native/`, `features/app/src/lib.rs`, `features/session/src/lib.rs`, `ui/BUILD.bazel`, `ui/src/{lib,overlays,pages,session_tabs,shell}.rs`, its OVERVIEW pickup block |
 | P0 | `LAYOUT.md`, `api/{BOUNDARIES,MCP,GRPC}.md` ("Always let" → "Always allow"); `features/app/src/` (lib.rs and new sibling files); `clients/BUILD.bazel`, `clients/src/{daemon,fixture}.rs`, new `clients/src/{daemon,fixture}/`; `ui/src/overlays.rs` and new `ui/src/overlay_*.rs` (all clean in git status when claimed; not panels.rs, native.rs, ui/src/lib.rs) |
 | ASK | batch 3: `clients/src/{model,workspace,daemon,fixture}.rs`, `clients/src/daemon/fake.rs`, `clients/src/daemon/fake/{inbox,access}.rs`, `clients/src/fixture/rules.rs`, `clients/src/fixture/requests.rs` (confirm with LOOK1), `clients/tests/access.rs`, `features/app/src/events.rs`, `features/settings/src/{lib,access}.rs`, `features/settings/tests/access.rs`, `features/inbox/src/lib.rs`, `features/inbox/tests/answers.rs`, `ui/src/{request_card,access,lists,channel}.rs`, `features/app/tests/inbox_flow.rs`, `workflow/milestones/ASK.md` Lane |
-| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal,machines,items,journal,files}.rs`, `terminal/pane/src/pane.rs`, `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
+| W1 | `desktop/tests/design/{pages,overlays,channel,channel_tabs}.rs`, `workflow/milestones/W1.md` Lane; later, after LOOK1's commit: `desktop/tests/design/{session,desk}.rs` (asked through main) |
+| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal,machines,items,journal,files}.rs`, `terminal/pane/src/pane.rs`, `desktop/tests/design/{session,comments}.rs` (owner-approved golden fixes for frames 01/05/50), `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
 
 ## Lanes
 
@@ -56,6 +55,7 @@ Each lane's plan, tasks and workers live in its milestone file
 |---|---|---|---|---|
 | ASK | `milestones/ASK.md` | minion ASK | client, access, card, access-ui | batch 3 (app on fakes): IN-9 card, Agent access tab, flow §26.4 headless |
 | LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
+| W1 | `milestones/W1.md` | minion W1 | inbox-card (after Fable picks) | batch 1: frames 29, 31, 33, 26/27, 48, 18 in files LOOK1 doesn't hold; 01–05, 16, 37–40 wait on LOOK1 |
 | FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (43f7fff2) |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
@@ -115,3 +115,4 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: LOOK1 batches 1–2 reported (D126 per-comment Send; frame audit fixes). Gate running: desktop/ui/features/clients/pane. Owner questions queued: 03/04 wording, frame 50 hint vs D126, frames 05/01 counts.
 - 2026-11-15 main: FRAMES2 fixes re-recorded (59, 62, 63, 71). Owner approved 56–71 as drawn, D11 (a) as frame 71, and LOOK1's fixes to frames 50/01/05 (handed to LOOK1). Closed FRAMES2; claims released.
 - 2026-11-15 main: ASK batch 3 seams applied (ui mods, OpenRequest arm). Gate 3: features/clients mostly green; sent ASK ui/access.rs Role::Radio + settings access_test, LOOK1 messages_test batch order.
+- 2026-11-15 main: gate 4 green (all unit + desktop; recorded). Fable advisor → D128. Opened W1 (docs lane), minion W1 (Opus 5.5). Gate 5 running (design record now EXACT).

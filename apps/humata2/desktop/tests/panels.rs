@@ -333,22 +333,6 @@ fn sending_comments_from_the_panel_delivers_the_open_sessions_queue() {
     assert!(app.contains("send-comments"));
     app.click("send-comments");
     assert!(app.ui.read(|state| state.review.queued().is_empty()));
-    assert_eq!(
-        app.ui
-            .read(|state| state.session.view().unwrap().queue.len()),
-        1
-    );
-    assert!(
-        !app.fakes
-            .daemon
-            .workspace()
-            .diffs
-            .iter()
-            .flat_map(|d| &d.comments)
-            .any(|c| c.body == "Surface a second auth failure")
-    );
-    app.click("show-queued");
-    app.click("send-queued-0");
     let workspace = app.fakes.daemon.workspace();
     let delivered: Vec<_> = workspace
         .diffs
@@ -360,6 +344,48 @@ fn sending_comments_from_the_panel_delivers_the_open_sessions_queue() {
     assert_eq!(delivered.len(), 1);
     assert!(delivered[0].sent);
     assert!(!app.contains("send-comments"));
+}
+
+/// RV-5, SE-23: sending one saved draft delivers only that comment.
+#[test]
+fn sending_one_draft_leaves_the_others_as_drafts() {
+    use humata2_review::{Anchor, ReviewAction};
+    let mut app = App::new(fixture::standard());
+    app.open("s-auth", Panel::Changes);
+    for (line, body) in [(42, "First note"), (43, "Second note")] {
+        app.send(AppAction::Review(ReviewAction::StartComment(Anchor {
+            path: "src/client.rs".into(),
+            line,
+        })));
+        app.send(AppAction::Review(ReviewAction::CommentText(body.into())));
+        app.send(AppAction::Review(ReviewAction::SaveComment));
+    }
+    assert!(app.contains("send-comment-0"));
+    assert!(app.contains("send-comment-1"));
+    app.click("send-comment-0");
+    app.settle();
+    let remaining: Vec<String> = app.ui.read(|state| {
+        state
+            .review
+            .queued()
+            .iter()
+            .map(|comment| comment.body.clone())
+            .collect()
+    });
+    assert_eq!(remaining, vec!["Second note".to_owned()]);
+    let workspace = app.fakes.daemon.workspace();
+    let delivered: Vec<_> = workspace
+        .diffs
+        .iter()
+        .filter(|d| d.session == SessionId::new("s-auth"))
+        .flat_map(|d| &d.comments)
+        .filter(|c| c.body == "First note" || c.body == "Second note")
+        .collect();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].body, "First note");
+    assert!(app.contains("send-comment-0"));
+    assert!(!app.contains("send-comment-1"));
+    assert!(app.contains("send-comments"));
 }
 
 /// IN-6: a question cannot accidentally use the permission approval button.

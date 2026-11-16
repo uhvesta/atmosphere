@@ -16,6 +16,7 @@ mod items;
 mod journal;
 mod machines;
 mod requests;
+mod rules;
 mod sessions;
 mod terminal;
 
@@ -34,6 +35,7 @@ use items::items;
 use journal::journal;
 use machines::machines;
 use requests::requests;
+use rules::rules;
 use sessions::{session, sessions};
 
 pub use design_session::design_session;
@@ -49,6 +51,13 @@ pub fn standard() -> Workspace {
     };
     workspace.sessions = sessions();
     workspace.requests = requests();
+    workspace.rules = rules(
+        &workspace
+            .channels
+            .iter()
+            .map(|channel| channel.id.clone())
+            .collect::<Vec<_>>(),
+    );
     workspace.items = items();
     workspace.diffs = diffs();
     workspace.files = files();
@@ -188,6 +197,10 @@ pub fn large(extra: usize) -> Workspace {
             purpose: "Many sessions at once".to_owned(),
         });
     }
+    let bulk: Vec<_> = (0..channels)
+        .map(|index| ChannelId::new(format!("bulk-{index:02}")))
+        .collect();
+    workspace.rules.extend(rules(&bulk));
     for index in 0..extra {
         let channel = ChannelId::new(format!("bulk-{:02}", index % channels));
         let parent = if index % 5 == 0 || index < channels {
@@ -223,7 +236,14 @@ pub fn large(extra: usize) -> Workspace {
 /// boundary fixtures stable.
 #[must_use]
 pub fn design() -> Workspace {
-    design_session(Status::NeedsYou)
+    let mut workspace = design_session(Status::NeedsYou);
+    let channels: Vec<_> = workspace
+        .channels
+        .iter()
+        .map(|channel| channel.id.clone())
+        .collect();
+    workspace.rules = rules(&channels);
+    workspace
 }
 
 /// What reconnecting ci-runner does to each of its sessions: one of each

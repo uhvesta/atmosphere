@@ -57,6 +57,8 @@ pub struct InboxState {
     pub reply: Option<(RequestId, String)>,
     /// Answers on their way.
     pub pending: BTreeSet<RequestId>,
+    /// The requests whose "Allow this for the rest of the session" box is ticked (IN-14).
+    pub always: BTreeSet<RequestId>,
     /// A bulk answer waiting for "Are you sure?".
     pub confirm: Option<Bulk>,
     /// What went wrong last.
@@ -103,6 +105,13 @@ impl InboxState {
 pub enum Delegate {
     /// Open the session that asked (IN-4).
     OpenSession(SessionId),
+    /// Open the session that asked this request and select the request (IN-11).
+    OpenRequest {
+        /// The session that asked.
+        session: SessionId,
+        /// The request to show there.
+        request: RequestId,
+    },
     /// Say this in a toast.
     Toast(String),
 }
@@ -142,6 +151,12 @@ pub enum InboxAction {
     Answered(RequestId, Result<(), DaemonError>),
     /// Open the session that asked the selected request.
     OpenRequester,
+    /// Tick or untick "Allow this for the rest of the session" on a request.
+    ToggleAlways(RequestId),
+    /// Answer a question with one of its choices.
+    Choose(RequestId, String),
+    /// Open the session that asked this request, with the request selected.
+    OpenRequest(RequestId),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -214,7 +229,41 @@ impl Reducer for Inbox {
                 state.select_visible();
             }
             InboxAction::Select(id) => state.selected = Some(id),
-            InboxAction::Answer(id, answer) => return self.answer(state, id, answer),
+            InboxAction::Answer(id, answer) => {
+                let answer = match answer {
+                    Answer::Approved if state.always.contains(&id) => {
+                        match state.workspace.requests.iter().find(|r| r.id == id) {
+                            Some(request) if !request.rule.is_empty() => Answer::Always {
+                                rule: request.rule.clone(),
+                            },
+                            _ => Answer::Approved,
+                        }
+                    }
+                    other => other,
+                };
+                return self.answer(state, id, answer);
+            }
+            InboxAction::ToggleAlways(id) => {
+                let grantable = state
+                    .workspace
+                    .requests
+                    .iter()
+                    .any(|r| r.id == id && !r.rule.is_empty() && r.answer.is_none());
+                if grantable && !state.always.remove(&id) {
+                    state.always.insert(id);
+                }
+            }
+            InboxAction::Choose(id, text) => {
+                return self.answer(state, id, Answer::Replied { text });
+            }
+            InboxAction::OpenRequest(id) => {
+                if let Some(request) = state.workspace.requests.iter().find(|r| r.id == id) {
+                    return Effect::send(InboxAction::Delegate(Delegate::OpenRequest {
+                        session: request.session.clone(),
+                        request: id,
+                    }));
+                }
+            }
             InboxAction::Always(id) => {
                 let rule = state
                     .workspace
@@ -268,6 +317,7 @@ impl Reducer for Inbox {
             InboxAction::CancelBulk => state.confirm = None,
             InboxAction::Answered(id, result) => {
                 state.pending.remove(&id);
+                state.always.remove(&id);
                 if let Err(error) = result {
                     state.error = Some(error.to_string());
                 } else if state.selected.as_ref() == Some(&id) && !state.show_answered {

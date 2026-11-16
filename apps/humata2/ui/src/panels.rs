@@ -1,7 +1,7 @@
 //! Session panels drawn to the approved D76 frames. Data and operations
 //! come from the existing feature states and clients.
 use crate::bridge::Ui;
-use crate::widgets::{col, row};
+use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, Selectable as _, TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -180,6 +180,30 @@ fn selected<'a>(
                 .find_map(|diff| diff.files.first().map(|file| (*diff, file)))
         })
 }
+/// How many comments sit on `path` of `repo` for the shown session: the
+/// diff's own, this session's unsent drafts and its queued messages.
+fn file_comments(state: &AppState, diff: &RepoDiff, path: &str) -> usize {
+    let here = |comment: &&Comment| {
+        comment.path == path
+            && comment
+                .context
+                .as_ref()
+                .is_none_or(|context| context.repo == diff.repo)
+    };
+    let queued = state.review.queued().iter().filter(here).count();
+    let pending = state
+        .session
+        .view()
+        .into_iter()
+        .flat_map(|view| &view.queue)
+        .flat_map(|message| match message {
+            humata2_session::QueuedMessage::Comments { comments } => comments.as_slice(),
+            humata2_session::QueuedMessage::Text(_) => &[],
+        })
+        .filter(here)
+        .count();
+    diff.comments.iter().filter(here).count() + queued + pending
+}
 fn changes(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -283,6 +307,7 @@ fn changes(
                     let repo = diff.repo.clone();
                     let path = file.path.clone();
                     let on = picked.is_some_and(|(d, f)| d.repo == repo && f.path == path);
+                    let comments = file_comments(state, diff, &file.path);
                     row()
                         .id(SharedString::from(format!("change-file {repo}/{path}")))
                         .role(Role::ListBoxOption)
@@ -290,7 +315,7 @@ fn changes(
                         .aria_selected(on)
                         .test_support()
                         .gap(px(6.))
-                        .h(px(24.))
+                        .h(px(25.))
                         .px(px(8.))
                         .rounded(px(5.))
                         .cursor_pointer()
@@ -303,6 +328,19 @@ fn changes(
                                 .overflow_hidden()
                                 .whitespace_nowrap(),
                         )
+                        .when(comments > 0, |row| {
+                            row.child(
+                                widgets::row()
+                                    .gap(px(3.))
+                                    .flex_shrink_0()
+                                    .child(icon(IconName::MessageSquare, look.accent, 11.))
+                                    .child(
+                                        text(comments.to_string())
+                                            .text_size(px(11.))
+                                            .text_color(rgb(look.accent)),
+                                    ),
+                            )
+                        })
                         .child(
                             text(format!("+{}", file.added))
                                 .text_size(px(11.))
@@ -351,7 +389,7 @@ fn changes(
                 .len();
             let gutter_width = 34_f32.max((digits as f32 + 1.) * cell_width);
             let code_width =
-                width - if full { 300. } else { 0. } - gutter_width - 2. * cell_width - 2.;
+                width - if full { 300. } else { 0. } - gutter_width - cell_width - 2.;
             let columns = ((code_width / cell_width).floor().max(4.)) as usize;
             let scrolling_width = file
                 .lines
@@ -362,7 +400,7 @@ fn changes(
                 .unwrap_or(0) as f32
                 * cell_width
                 + gutter_width
-                + 2. * cell_width;
+                + cell_width;
             let name = format!("{}/{}", diff.repo, file.path);
             view.child(
                 row()
@@ -374,7 +412,14 @@ fn changes(
                     .border_color(rgb(look.line))
                     .text_size(px(12.))
                     .child(icon(IconName::FileCode, look.secondary, 12.))
-                    .child(text(name.clone()).font_weight(FontWeight::MEDIUM)),
+                    .child(text(name.clone()).font_weight(FontWeight::MEDIUM))
+                    .child(div().flex_1())
+                    .child(
+                        // No editor client exists yet: drawn, but dimmed and inert.
+                        secondary(look, "Open in editor")
+                            .id("change-open-editor")
+                            .opacity(0.5),
+                    ),
             )
             .child(
                 col()
@@ -440,7 +485,7 @@ fn changes(
                                     )
                                     .child(
                                         text(sign)
-                                            .w(px(2. * cell_width))
+                                            .w(px(cell_width))
                                             .h(px(line_height))
                                             .flex_shrink_0()
                                             .text_color(rgb(look.term_text)),
@@ -470,7 +515,6 @@ fn changes(
                     .children(
                         diff.comments
                             .iter()
-                            .chain(queued)
                             .filter(|comment| {
                                 comment.path == file.path
                                     && comment
@@ -478,7 +522,21 @@ fn changes(
                                         .as_ref()
                                         .is_none_or(|context| context.repo == diff.repo)
                             })
-                            .map(|comment| comment_card(look, comment, false))
+                            .map(|comment| comment_card(ui, state, look, comment, false, None))
+                            .chain(
+                                queued
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, comment)| {
+                                        comment.path == file.path
+                                            && comment.context.as_ref().is_none_or(|context| {
+                                                context.repo == diff.repo
+                                            })
+                                    })
+                                    .map(|(index, comment)| {
+                                        comment_card(ui, state, look, comment, false, Some(index))
+                                    }),
+                            )
                             .chain(
                                 pending
                                     .iter()
@@ -489,7 +547,7 @@ fn changes(
                                                 .as_ref()
                                                 .is_none_or(|context| context.repo == diff.repo)
                                     })
-                                    .map(|comment| comment_card(look, comment, true)),
+                                    .map(|comment| comment_card(ui, state, look, comment, true, None)),
                             ),
                     ),
             )
@@ -561,7 +619,14 @@ fn changes(
                 }),
         )
 }
-fn comment_card(look: Look, comment: &Comment, queued: bool) -> Div {
+fn comment_card(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    look: Look,
+    comment: &Comment,
+    queued: bool,
+    draft: Option<usize>,
+) -> Div {
     card(look)
         .mx(px(10.))
         .my(px(6.))
@@ -585,7 +650,21 @@ fn comment_card(look: Look, comment: &Comment, queued: bool) -> Div {
                             .text_size(px(11.))
                             .text_color(rgb(look.accent)),
                     )
-                }),
+                })
+                .child(div().flex_1())
+                .children(draft.map(|index| {
+                    widgets::ghost(
+                        ui,
+                        SharedString::from(format!("send-comment-{index}")),
+                        "Send",
+                        AppAction::Review(ReviewAction::SendDraft(index)),
+                    )
+                    .h(px(20.))
+                    .px(px(6.))
+                    .text_size(px(11.))
+                    .text_color(rgb(look.accent))
+                    .disabled(state.review.sending)
+                })),
         )
         .child(text(comment.body.clone()))
 }
@@ -1011,7 +1090,16 @@ fn file_rows(
             .diffs
             .iter()
             .filter(|diff| Some(&diff.session) == state.session.open.as_ref() && diff.repo == repo)
-            .any(|diff| diff.files.iter().any(|file| file.path == path));
+            .flat_map(|diff| &diff.files)
+            .find(|file| file.path == path)
+            // A file whose every line is added is new; anything else changed.
+            .map(|file| {
+                file.removed == 0
+                    && file
+                        .lines
+                        .iter()
+                        .all(|line| matches!(line.kind, LineKind::Added | LineKind::Hunk))
+            });
         let event = if child.folder {
             SessionAction::ToggleFolder {
                 repo: repo.to_owned(),
@@ -1050,19 +1138,21 @@ fn file_rows(
                         } else {
                             IconName::FolderOpen
                         }
-                    } else {
+                    } else if is_code(name) {
                         IconName::FileCode
+                    } else {
+                        IconName::FileText
                     },
                     look.secondary,
                     12.,
                 ))
                 .child(text(name.clone()).flex_1())
-                .when(changed && !child.folder, |row| {
+                .when_some(changed.filter(|_| !child.folder), |row, added| {
                     row.child(
-                        text("M")
+                        text(if added { "A" } else { "M" })
                             .text_size(px(11.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(ORANGE)),
+                            .text_color(rgb(if added { GREEN } else { ORANGE })),
                     )
                 })
                 .cursor_pointer()
@@ -1084,6 +1174,14 @@ fn file_rows(
     }
     rows
 }
+/// Whether a file name is source code, as opposed to prose or configuration.
+fn is_code(name: &str) -> bool {
+    let extension = name.rsplit_once('.').map_or("", |(_, extension)| extension);
+    !matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "md" | "toml" | "txt" | "json" | "yaml" | "yml" | "lock" | "cfg" | "ini" | ""
+    )
+}
 fn contains_file(node: &FileNode, path: &str, filter: &str) -> bool {
     node.children.iter().any(|(name, child)| {
         let path = format!("{path}/{name}");
@@ -1098,7 +1196,11 @@ fn files(
     input: Entity<InputState>,
     look: Look,
 ) -> Div {
-    let mut repos = std::collections::BTreeMap::<String, FileNode>::new();
+    // The session's own repository first, the rest in the order they arrive.
+    let mut repos = Vec::<(String, FileNode)>::new();
+    if !session.repo.is_empty() {
+        repos.push((session.repo.clone(), FileNode::default()));
+    }
     for file in state
         .workspace
         .session_files
@@ -1106,7 +1208,14 @@ fn files(
         .into_iter()
         .flatten()
     {
-        let mut node = repos.entry(file.repo.clone()).or_default();
+        let at = repos
+            .iter()
+            .position(|(repo, _)| *repo == file.repo)
+            .unwrap_or_else(|| {
+                repos.push((file.repo.clone(), FileNode::default()));
+                repos.len() - 1
+            });
+        let mut node = &mut repos[at].1;
         for component in file.path.split('/').filter(|part| !part.is_empty()) {
             node.folder = true;
             node = node.children.entry(component.to_owned()).or_default();
@@ -1120,6 +1229,9 @@ fn files(
         .to_lowercase();
     let mut rows = Vec::new();
     for (repo, node) in &repos {
+        if node.children.is_empty() && repo != &session.repo {
+            continue;
+        }
         let children = file_rows(ui, state, repo, node, "", 1, &filter, look);
         if !filter.is_empty() && children.is_empty() {
             continue;
@@ -1225,7 +1337,7 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
         row()
             .items_start()
             .gap(px(10.))
-            .py(px(3.))
+            .py(px(5.))
             .child(
                 text(key)
                     .w(px(84.))
@@ -1259,35 +1371,49 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
         || "Recovery has not been reported for this session.".to_owned(),
         |recovery| recovery.label(),
     );
-    let clones = state
+    // The session's own repository (its main clone) first, then the others.
+    let mut clones: Vec<&str> = Vec::new();
+    if !session.repo.is_empty() {
+        clones.push(session.repo.as_str());
+    }
+    for file in state
         .workspace
         .session_files
         .get(&session.id)
         .into_iter()
         .flatten()
-        .map(|file| file.repo.as_str())
-        .chain((!session.repo.is_empty()).then_some(session.repo.as_str()))
-        .collect::<std::collections::BTreeSet<_>>();
+    {
+        if !clones.contains(&file.repo.as_str()) {
+            clones.push(file.repo.as_str());
+        }
+    }
+    let chip = |label: String, color: u32| {
+        text(label)
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(px(4.))
+            .border_1()
+            .border_color(rgb(look.line))
+            .text_size(px(11.))
+            .text_color(rgb(color))
+    };
     let clone_rows = clones.into_iter().map(|repo| {
+        let main = repo == session.repo;
         row()
             .flex_wrap()
             .gap(px(6.))
             .child(text(repo.rsplit('/').next().unwrap_or(repo).to_owned()))
-            .when(repo == session.repo, |row| {
-                row.child(
-                    text(session.branch.clone())
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(rgb(look.line))
-                        .text_size(px(11.))
-                        .text_color(rgb(look.secondary)),
-                )
+            .when(main, |row| {
+                row.child(chip(session.branch.clone(), look.secondary))
+                    .child(chip("main clone".to_owned(), look.accent))
             })
     });
     let details = col()
-        .child(kv("Agent", text(session.agent.name())))
+        .child(kv("Agent", text(if session.agent == humata2_clients::model::Agent::Claude {
+                "Claude Code"
+            } else {
+                session.agent.name()
+            })))
         .child(kv(
             "Machine",
             text(machine.map_or_else(
@@ -1445,6 +1571,30 @@ pub(crate) fn panel(
         .child(body)
 }
 
+/// The comments the Diff panel shows for the session: sent, saved and queued.
+fn changes_badge(state: &AppState) -> usize {
+    let session = state.session.open.as_ref();
+    let queued = state.review.queued().len();
+    let pending: usize = state
+        .session
+        .view()
+        .into_iter()
+        .flat_map(|view| &view.queue)
+        .map(|message| match message {
+            humata2_session::QueuedMessage::Comments { comments } => comments.len(),
+            humata2_session::QueuedMessage::Text(_) => 0,
+        })
+        .sum();
+    let sent: usize = state
+        .workspace
+        .diffs
+        .iter()
+        .filter(|diff| Some(&diff.session) == session)
+        .map(|diff| diff.comments.len())
+        .sum();
+    sent + queued + pending
+}
+
 pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElement + use<> {
     let look = Look::of(cx);
     let (pending, unsent) = ui.read(|state| {
@@ -1456,7 +1606,7 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                 .iter()
                 .filter(|request| request.answer.is_none() && sessions.contains(&request.session))
                 .count(),
-            state.review.queued().len(),
+            changes_badge(state),
         )
     });
     col()

@@ -791,15 +791,6 @@ pub(crate) fn page(
             .child(crate::board::toolbar(ui, state, board_inputs, look))
             .child(crate::board::page(ui, state, board_inputs, look))
             .into_any_element(),
-        Tab::Access => col()
-            .p(px(20.))
-            .child(button(
-                ui,
-                "channel-open-access",
-                "Agent access settings",
-                AppAction::Navigate(Route::Settings),
-                look,
-            ))
-            .into_any_element(),
+        Tab::Access => crate::access::tab(ui, state, channel, look).into_any_element(),
     }
 }

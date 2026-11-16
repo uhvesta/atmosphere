@@ -10,6 +10,7 @@ pub mod bridge;
 pub mod keys;
 pub mod record;
 
+mod access;
 mod board;
 mod channel;
 mod chrome;
@@ -19,6 +20,7 @@ mod lists;
 mod overlays;
 mod pages;
 mod panels;
+mod request_card;
 mod session_tabs;
 mod settings;
 mod shell;

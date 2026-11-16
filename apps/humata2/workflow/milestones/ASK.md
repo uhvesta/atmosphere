@@ -15,6 +15,7 @@ An agent calls a Humata tool. A card with full context appears. Allow, Deny or R
 
 ## Exit criterion
 Daemon first: the capability matrix runs as a boundary suite over MCP and the CLI; Ask becomes an Inbox request that waits and can be collected; grants are scoped, revocable and survive a restart; an added agent's calls are refused (SE-29). Then the app: flow §26.4 against a real daemon, the card carries every part of IN-9, and the Agent access tab edits rules.
+- Script tokens (SEC-14), a late daemon batch: the boundary matrix has a script-token tier, scoped by action and channel, expiring, revocable, and never allowed a user-only action. (D128)
 
 ## Read these (pointers, nothing else)
 - SPEC: IN-1–IN-26, TP-1–TP-17, SEC-3, SEC-7–SEC-12, SEC-15, SE-20, SE-29, ST-4; flow §26.4. Find each with `grep -n '\*\*<ID>\*\*' apps/humata2/SPEC.md` and read the few lines around it.
@@ -26,7 +27,7 @@ Daemon first: the capability matrix runs as a boundary suite over MCP and the CL
 - P0 is splitting some of these files; if a path is gone, look for its parts beside it (`ls` the folder).
 
 ## Out of scope
-The While I'm away rule and journals (AWAY). Board requests answered on the item (BOARD). Contain agents (SEC-6) and script tokens (SEC-14): not in 1.0.
+The While I'm away rule and journals (AWAY). Board requests answered on the item (BOARD). Contain agents (SEC-6): AWAY.
 
 ## Lane (written by the manager)
 - Design notes (daemon part, batch 1):
@@ -85,3 +86,24 @@ The While I'm away rule and journals (AWAY). Board requests answered on the item
 - Build gates (batch 2): gate 1 (main): S6–S8 applied, all build; 70/73 pass. Fixes (tests only, uncompiled): refusals.rs (stale under D127.4: default now allows cross-channel reads, Ask set explicitly); deferred.rs unit test (fixture never saved the session; inbox_requests FK); auth.rs (whoami tier is at `result.tier`; release-daemon test now runs whoami inside the tab after restart, since Attach has no credential on release). Rerun pending.
   Gate 2: 72/73; release-daemon auth_test lost its typed loop: `type_text` only queues input, and dropping the attach right after can close the stream before the line reaches the shell. Fix: the test writes whoami.sh, types `/bin/sh whoami.sh`, and waits for the script's `ready` file before dropping the attach. Rerun pending.
 - Ready to commit (batch 2): after S6–S8 and a green gate. Tests: //apps/humata2/daemon/humatad:{humatad2_unit_test,auth_test,inbox_test,sessions_test,channels_test,terminal_test,mcp_test,matrix_test,access_test}, access crate tests (refusals), store tests; clippy humatad + access.
+
+### Batch 3 (app, on the fakes)
+- Scope: the IN-9 card, Always allow on the card (IN-14), questions (IN-25), Open session ↗ (IN-11), Change this rule, and the channel Agent access tab editing rules and removing grants (IN-17, IN-19, frame 49). Flow §26.4 runs headless on the fakes. **Running it against a real daemon waits for FL's `clients/live`**; ASK can't close before that.
+- Design notes:
+  - Model (additive; old `doing`/`undoable`/`rule` fields stay until panels.rs moves to the new card, then go):
+    - `Request` gains `operation: String` (dotted id, TP-16), `steps: Vec<String>` (pending call last), `why_you: String`, `asked_by: Option<AskedBy>` (`AskedBy { capability, label, setting }`), `undo_note: Option<String>` (red line, IN-9.7) and `choices: Vec<String>` (IN-25).
+    - `rule` is the IN-22 target words. Empty means no grant checkbox.
+  - Rules: new ids `Capability` and `GrantId`, `RuleSetting {Allow, Ask, Never}`, `AccessRule { capability, label, setting: Option<RuleSetting> /* None = Always, no setting (IN-16) */, grants: Vec<Grant> }`, `Grant { id, session, scope, granted }`. `Workspace.rules: BTreeMap<ChannelId, Vec<AccessRule>>` in IN-17 order.
+  - Daemon trait: `set_rule(channel, capability, setting)`, `remove_grant(grant)`, `Event::Rules { channel, rules }`, `Operation::{SetRule, RemoveGrant}`. In the fake, Answer::Always adds a grant under `asked_by`'s rule.
+  - The Agent access reducer lives in `features/settings` (`access.rs`, `SettingsAction::Access(AccessAction)`), so the app needs no new feature crate or BUILD seams. The view is `ui/src/access.rs`, called from `channel.rs`'s `Tab::Access` arm.
+  - The card is `ui/src/request_card.rs`, used by the global Inbox (`lists.rs`) now. panels.rs (LOOK1) switches to it later as a seam.
+  - The grant tick is `InboxState.always`. Allow with the tick sends `Answer::Always { rule }`. A choice sends `Answer::Replied`.
+- Claims (all clean in git when claimed): `clients/src/{model,workspace,daemon,fixture}.rs`, `clients/src/daemon/fake.rs`, `clients/src/daemon/fake/{inbox,access}.rs`, `clients/src/fixture/rules.rs`, `clients/src/fixture/requests.rs` (LOOK1-listed but untouched; coordinator to confirm), `clients/tests/access.rs`, `features/app/src/events.rs`, `features/settings/src/{lib,access}.rs`, `features/settings/tests/access.rs`, `features/inbox/src/lib.rs`, `features/inbox/tests/answers.rs`, `ui/src/{request_card,access,lists,channel}.rs`, `features/app/tests/inbox_flow.rs`
+- Tasks:
+  - [ ] B3.1 client model + fake rules + IN-9 fixture data · worker client (Sonnet, medium) · done (uncompiled): model ids Capability/GrantId (proto snake names, `own_clones` for IN-16), RuleSetting, Grant, AccessRule, AskedBy; Request +operation/steps/why_you/asked_by/undo_note/choices; Workspace.rules; Daemon::set_rule/remove_grant; Event::Rules; fake/access.rs; fixture/rules.rs (33 IN-17 rows; `own_comments_read` kept per SPEC/frame though the proto deprecates it); events.rs folds Event::Rules
+  - [ ] B3.2 Agent access reducer · worker access (Sonnet, medium) · done (uncompiled): features/settings/src/access.rs, `SettingsAction::Access(AccessAction)`, `SettingsState.access`; a second Set on a pending row is ignored; tests/access.rs (manager fixed the row/grant picks)
+  - [ ] B3.3 IN-9 card + grant tick + question answers · worker card (Sonnet, medium) · done (uncompiled): ui/src/request_card.rs, lists.rs uses it; InboxState.always, ToggleAlways, Choose, OpenRequest, Delegate::OpenRequest; tests/answers.rs. Reply field is display-only (needs a shell-owned input entity: follow-up)
+  - [ ] B3.4 Agent access tab view (frame 49) · worker access-ui (Sonnet, medium) · done (uncompiled): ui/src/access.rs, channel.rs Tab::Access arm
+  - [ ] B3.5 flow §26.4 headless on fakes + IN-11 seam lines · worker flow (Sonnet, medium) · done (uncompiled): features/app/tests/inbox_flow.rs (3 tests)
+- Seams (main applies): `ui/src/lib.rs`: `mod access;` `mod request_card;`; `features/app/src/lib.rs` Inbox delegate match: `I::OpenRequest` arm (IN-11). Later (after LOOK1 commits): panels.rs session Inbox uses `request_card::card(.., false, ..)`; design_session.rs requests get asked_by/steps/why_you; drop Request.doing/undoable.
+- Build gates (batch 3): gate 3 (main): seams applied; ui failed (access.rs `Role::Radio` doesn't exist; unused import); settings access_test pending case raced the synchronous fake. Fixes: `Role::RadioButton` (accesskit), import dropped; the pending test starts from a state with the row already pending and checks the fake is untouched. Rerun pending.

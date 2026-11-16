@@ -10,7 +10,6 @@ use crate::kit::*;
 use crate::session::{self, Fill, Panel, Screen, Term};
 
 const LINE_41: &str = "Wrap the two writes in one transaction so a crash can't leave them out of step.";
-const LINE_43: &str = "Keep insert_legacy until the backfill ends.";
 
 /// What sits under each hunk line, and what is lit.
 #[derive(Default)]
@@ -294,7 +293,7 @@ pub fn comment_box(look: Look) -> Div {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child("Typed into claude when its turn ends"))
+                .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child("Saved as a draft; Send types it into claude straight away"))
                 .child(div().flex_1())
                 .child(button(look, Kind::Secondary, "Cancel"))
                 .child(button(look, Kind::Primary, "Comment")),

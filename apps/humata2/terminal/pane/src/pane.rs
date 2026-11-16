@@ -7,7 +7,8 @@ use std::rc::Rc;
 use ghostty_vt::{ClipboardTarget, Event, Scroll, Terminal, clipboard_read_reply};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme as _, h_flex};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -663,17 +664,21 @@ impl Render for TerminalPane {
             div()
                 .id("disconnected-banner")
                 .test_support()
-                .absolute()
-                .bottom(px(0.))
-                .left(px(0.))
-                .right(px(0.))
-                .p(px(6.))
-                .bg(theme.warning.opacity(0.9))
-                .text_sm()
-                .text_color(theme.background)
+                .mx(px(14.))
+                .mb(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(7.))
+                .bg(theme.muted)
+                .text_size(px(12.))
+                .text_color(theme.foreground)
+                .child(Icon::new(IconName::WifiOff).size(px(12.)).text_color(theme.muted_foreground))
                 .child(
-                    "Connection lost. The program keeps running on its machine and this view \
-                     catches up when it reconnects; typing is off until then.",
+                    "Lost the connection to this program's machine. The program keeps running \
+                     there; this view catches up when it is back, and typing is off until then.",
                 )
         });
         div()
@@ -681,8 +686,10 @@ impl Render for TerminalPane {
             .test_support()
             .relative()
             .size_full()
+            .flex()
+            .flex_col()
             .capture_key_down(cx.listener(Self::shortcut))
-            .child(self.view.clone())
+            .child(div().flex_1().min_h_0().child(self.view.clone()))
             .children(find_bar)
             .children(paste_prompt)
             .children(banner)

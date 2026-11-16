@@ -482,6 +482,15 @@ impl App {
             },
             AppAction::Inbox(InboxAction::Delegate(delegate)) => match delegate {
                 I::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
+                I::OpenRequest { session, request } => {
+                    let go = self.navigate(state, Route::Session(session.clone()));
+                    state.inbox.selected = Some(request.clone());
+                    let panel = self.handle(
+                        state,
+                        AppAction::Session(SessionAction::SetPanel(Some(Panel::Inbox))),
+                    );
+                    Effect::merge([go, panel])
+                }
                 I::Toast(text) => state.toast(text.clone(), &clock),
             },
             AppAction::Board(BoardAction::Delegate(delegate)) => match delegate {

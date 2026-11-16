@@ -66,7 +66,8 @@ Status: **open** (waiting for the user) · **decided**.
   - GPUI runs its own executor, not tokio.
 - **Reverse:** reducers stay framework-free, the store bridge lives in one crate, and the terminal and diff sit behind our own interfaces.
 
-## D9: The earlier H2-0/H2-1 code (OVERVIEW I0). Open
+## D9: The earlier H2-0/H2-1 code (OVERVIEW I0). Settled: delete, owner 2026-11-15
+- **Owner, 2026-11-15:** delete the four folders and their Bazel targets (TIDY); git history keeps them.
 - `apps/humata2/app` (Swift), `bindgen`, `core`, `rehearsal`.
 - Deleting them is irreversible, so it isn't done provisionally.
 
@@ -768,7 +769,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Look at:** `desktop/tests/__snapshots__/native/fork-dialog.png` and `fork-dialog-dark.png`. Choice buttons sit inside consequence cards; spacing/focus outlines are provisional. Existing approved frames and sources unchanged by C1.
 - **Reverse:** remove the Fork presentation in `ui/src/overlays.rs` and its bridge observation/input; keep the independently tested fake fork metadata and in-flight reducer guard if desired.
 
-## D103: A second agent in a session (frame 14, SPEC SE-27–SE-29) (proposed by minion J1). Provisional
+## D103: A second agent in a session (frame 14, SPEC SE-27–SE-29) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** D76 and frame 14 allow two agents in one session, one terminal per agent, but SPEC defined a session as one agent. Nothing said which agent sets the status, has turns, gets queued comments, is the MCP identity, or owns the Inbox cards and grants.
 - **Options:**
   - (a) The agent the session started with is its main agent and keeps all of those. An added agent is a terminal that runs an agent: its own conversation (pinned, resumed, moved), a running/exited dot, nothing queued for it, and its calls to Humata's tools refused with a pointer to forking.
@@ -779,7 +780,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Affects:** SE-27–SE-29, the Session concept row, SEC-15, SM-9.
 - **Reverse:** give the added agent its own session token; nothing stored changes shape.
 
-## D104: One markdown review model, and no spec mode (SPEC §11) (proposed by minion J1). Provisional
+## D104: One markdown review model, and no spec mode (SPEC §11) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** Markdown was specified twice: spec mode (SM-1–SM-12: a session mode, Rendered/Source, a contents list, margin comments) and markdown review (DK-7–DK-9, frames 39, 41–43: any markdown tab, Preview/Source/Side by side, comments on source lines).
 - **Pick:** the newer owner sign-offs win (D100, D101, the frames). §11 is now one model: any markdown tab in any session shows Preview, Source or Side by side; comments go on source lines and show inline under them; statuses are draft → queued → sent → addressed → resolved, plus archived; one message shape, `[comment on <path>:<lines>]` then the text (frame 43).
 - **Dropped from SPEC:** SM-1 (spec mode as a session mode), SM-2 (a session's set of spec files), SM-5 (highlighting passages changed since the user last read them; the Diff panel's "Since I last reviewed" shows a Markdown file's changes like any file's), and SM-4's contents list (no frame draws one). "Spec mode" is gone from the concept table, IN-17 and MV-13.
@@ -792,7 +793,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Recommendation:** confirm. Bring back a contents list or SM-5 only with a frame.
 - **Reverse:** restore SM-1, SM-2, SM-5 and the old SM-4, SM-6, SM-8 from the commit before this entry.
 
-## D105: The Inbox card keeps its full context in the frames' layout (SPEC IN-3, IN-6–IN-9, IN-13, IN-14) (proposed by minion J1). Provisional
+## D105: The Inbox card keeps its full context in the frames' layout (SPEC IN-3, IN-6–IN-9, IN-13, IN-14) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** IN-9 required eight parts and a grant for exactly one target. Frames 03 and 26 draw a shorter card with Allow / Deny / Reply… and a checkbox "Allow this for the rest of the session", and a Waiting / Answered / All switch.
 - **Pick:** the owner's rule (2026-11-14: a request carries who asks, what it was doing, the agent's reason, an exact preview, the rule and the undo cost) outranks a frame for what a card carries; the frames win on layout and labels.
   - Labels follow the frames: **Allow**, **Deny**, **Reply…**, **Allow all n**; **Waiting / Answered / All** replaces Show answered; the Allowed without asking log sits under the requests in the session panel (frame 03).
@@ -802,7 +803,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Recommendation:** redraw frames 03, 04, 26 and 27 (D113), as advisor A1 also proposed.
 - **Reverse:** cut IN-9's parts 5–7 and let the card be exactly what the frames draw.
 
-## D106: Boards as frames 21–24 draw them (SPEC BD-11–BD-16) (proposed by minion J1). Provisional
+## D106: Boards as frames 21–24 draw them (SPEC BD-11–BD-16) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** D76 picked the kanban, drawer, table and dashboard, but §13 defined only columns, a drawer and scope pickers.
 - **Pick:** §13 now defines the header (Scope, Board / Table / Dashboard, Filter, New item), the Table, the Dashboard, several sessions per item (BD-16), Depends on (BD-14) and requests answered in place on the item (BD-15, the same answer as its Inbox card).
   - Dependencies are links: ✓ when done, loops refused, nothing blocked by them.
@@ -811,7 +812,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Recommendation:** confirm. Decide later whether starting a session on an item with open dependencies should say so.
 - **Reverse:** BD-14, BD-15 and BD-16 can each be dropped alone.
 
-## D107: The Hosts page shows disk, and two numbers (SPEC HO-3, LD-19, LD-20) (proposed by minion J1). Provisional
+## D107: The Hosts page shows disk, and two numbers (SPEC HO-3, LD-19, LD-20) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** frame 28 draws a disk bar per machine and "11 GB free: new clones stop at 5 GB" with Free space…; LD-19 and LD-20 said low disk shows only where it blocks an action and nowhere else.
 - **Pick:** the frame stands. The owner's rule allows state the user can fix from where it is shown, Free space… sits beside it, and the Hosts columns were already kept on purpose (NV-8). LD-19 and LD-20 now say: where it blocks an action, and on Hosts; no notice on sessions, the sidebar or Home.
 - **Numbers:** new clones stop when a machine would have less than 5 GB free (the frame's text); the bar turns red and the line shows above 85% used (as the frame is drawn).
@@ -819,7 +820,7 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Recommendation:** keep the frame; make the two numbers settings only if they get in the way.
 - **Reverse:** redraw frame 28 without disk and restore the old LD-19 and LD-20.
 
-## D108: Desk rules the frames don't settle (SPEC DK-2, DK-3, DK-10–DK-14) (proposed by minion J1). Provisional
+## D108: Desk rules the frames don't settle (SPEC DK-2, DK-3, DK-10–DK-14) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** the Desk has no channel, but access rules, the trash, moves and paths all hang off channels.
 - **Picks:**
   1. **Rules:** a Desk session uses the defaults for new channels; DK-4's two switches are that session's grants on top (DK-10). No new settings screen is needed. The other option is a rule table of the Desk's own.
@@ -833,26 +834,26 @@ Each is reversible inside `apps/humata2/daemon/machines`.
 - **Recommendation:** confirm 1–6.
 - **Reverse:** each pick is one DK rule.
 
-## D109: First launch (frame 33) and the empty Home (frame 34) (SPEC NV-11, DK-6) (proposed by minion J1). Provisional
+## D109: First launch (frame 33) and the empty Home (frame 34) (SPEC NV-11, DK-6) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** both are "no channels", and nothing said when each shows. D100 kept both.
 - **Pick:** frame 33 shows once, on the first launch of a fresh install; after its dialog closes, Home with Get set up (frame 34) is the empty state from then on.
 - **Recommendation:** retire frame 33 and NV-11 and keep only 34, as advisor A1 proposed. Frame 34 has every action 33 has plus the Desk, and 33's blank sidebar is the one frame without the Desk row D100 put in every frame. It needs the owner, because D100 kept 33.
 - **Reverse:** drop NV-11; DK-6 already covers the empty state.
 
-## D110: Undo after Archive is a delayed delete (SPEC MV-15, frame 32) (proposed by minion J1). Provisional
+## D110: Undo after Archive is a delayed delete (SPEC MV-15, frame 32) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** frame 32's toast offers Undo after an archive, but archiving deletes the clones (LD-1), and SPEC had only Restore, which re-clones what was pushed.
 - **Pick:** as advisor A1 proposed, the session is archived at once and its clones are deleted when the toast goes (10 seconds, or when the app quits). Undo before then is exact and free; after it, only Restore. A restart in between finishes the delete.
 - **Recommendation:** keep. Reword the toast to "frees 1.4 GB", since the disk is not free until the window passes (D113).
 - **Reverse:** make Undo a Restore, and say in the toast that unpushed work is gone.
 
-## D111: Settings sections, and no Panes setting (SPEC ST-18–ST-20, frame 29) (proposed by minion J1). Provisional
+## D111: Settings sections, and no Panes setting (SPEC ST-18–ST-20, frame 29) (proposed by minion J1). Settled, owner 2026-11-15
 - **Problem:** frame 29 lists General, Agents, Machines, Layout, Agent access, Storage, Notifications and Keyboard, and draws Layout › Panes (Fixed / Simple / Free). §24 had neither the sections nor Notifications or Keyboard, and D76 dropped the pane workspace the Panes setting belonged to.
 - **Pick:** ST-18 names the sections and says which entries each holds; Layout keeps Appearance, Terminal font, Sidebar shows Pinned and Long lines, and has no Panes choice. ST-19 (Notifications) and ST-20 (Keyboard) say the least that makes each section an action.
 - **Note:** the app has a Fixed / Simple switch for one or two tab groups. SPEC has no such setting: a session may always split into two groups (SE-27).
 - **Recommendation:** redraw frame 29 without Panes (D113), then remove the switch.
 - **Reverse:** add a setting that turns tab groups off.
 
-## D112: Wording and small behaviours taken from the frames (proposed by minion J1). Provisional
+## D112: Wording and small behaviours taken from the frames (proposed by minion J1). Settled, owner 2026-11-15
 - **Taken from the frames into SPEC:**
   - one table of status marks (hollow ring for idle, red ✕ for exited, grey dot for offline) and "<machine> is offline" in place of "Host offline";
   - **Terminal** as the label for a plain shell; **Full screen** / **Show the terminal** in place of Widen; **Repos and machines**; **Add a GitHub repo…**; a **VIP** badge in place of a "[VIP]" prefix;
@@ -947,3 +948,11 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 14. ASK batch 3 (app side): the Agent access reducer lives in the settings crate; a second change to a rule row while the first is still saving is ignored; "Change this rule" sends go-to-channel then the Agent access tab as two actions (fold into one action if the order proves unreliable); the grant checkbox is drawn by hand until the kit has one.
 15. The comment-resolve row (`own_comments_read`, default Allow) stays in IN-17 and frame 49 even though the proto marks that capability deprecated. **Ask the owner:** drop the row, or show it as "Always · no setting" (recommended).
 16. The proto comment says `global_read` defaults to Ask me; SPEC and item 4 say Allow. Fix the proto comment.
+
+## D128: Homes for the items brought into 1.0, and small picks (advised by a Fable agent, 2026-11-15). Settled
+- The owner brought Contain agents (SEC-6), script tokens (SEC-14) and Delete channel (CH-24) into 1.0; only the VM tier (PER-8–PER-10) stays out. The owner asked that a Fable agent give opinions in place of the owner's.
+1. Delete channel → FORK (it reuses MV-9's unpushed check and the trash; needs MACH and ASK). Script tokens → ASK, as a late daemon batch (one more caller kind through the same guard). Contain agents → AWAY (needs MACH and ASK's rules); LINUX adds the containment suite. Exit lines added to each milestone.
+2. D127.15: the `own_comments_read` row shows as "Always · no setting" like IN-17's first row; the rule is dropped from the settings reducer and fixtures (the proto never checks it).
+3. The approved frames' "typed when this turn ends" wording follows D126: the Desk comment box (`desk.rs:805`) uses frame 50's wording, and the session's queued bar (`session.rs:284`) becomes SE-23's "Waiting to send". This supersedes LOOK1's L2 recommendation.
+4. D113 items 1–10 are all fine. Item 5: retire frame 33 and NV-11 (frame 34 covers it, D109). Item 4: keep "Deny all", since the owner already approved it in frame 48.
+

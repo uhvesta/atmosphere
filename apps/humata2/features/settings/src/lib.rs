@@ -1,6 +1,10 @@
 //! Settings (ST-1–9): how terminals and diffs look, the agent new sessions
 //! start with, and keys kept in the keychain. Saved between launches.
 
+mod access;
+
+pub use access::{AccessAction, AccessState};
+
 use humata2_clients::model::Agent;
 use humata2_clients::{Clients, KeychainError};
 use serde::{Deserialize, Serialize};
@@ -82,6 +86,8 @@ pub struct SettingsState {
     pub has_key: bool,
     /// What went wrong last.
     pub error: Option<String>,
+    /// The channel Agent access tab's in-flight changes.
+    pub access: AccessState,
 }
 
 /// What happens on the settings page.
@@ -109,6 +115,8 @@ pub enum SettingsAction {
     Key(String),
     /// Save the key in the keychain.
     SaveKey,
+    /// The channel Agent access tab.
+    Access(AccessAction),
 }
 
 /// The settings page's reducer.
@@ -133,6 +141,9 @@ impl Reducer for Settings {
     type Action = SettingsAction;
 
     fn reduce(&self, state: &mut SettingsState, action: SettingsAction) -> Effect<SettingsAction> {
+        if let SettingsAction::Access(action) = action {
+            return access::reduce(&self.clients, &mut state.access, action).map(SettingsAction::Access);
+        }
         let preferences = &mut state.preferences;
         match action {
             SettingsAction::Restore(restored) => {
@@ -152,6 +163,7 @@ impl Reducer for Settings {
                 preferences.confirm_destructive = !preferences.confirm_destructive;
             }
             SettingsAction::SetAgent(agent) => preferences.default_agent = agent,
+            SettingsAction::Access(_) => {}
             SettingsAction::Key(key) => state.key = key,
             SettingsAction::SaveKey => {
                 let key = std::mem::take(&mut state.key);

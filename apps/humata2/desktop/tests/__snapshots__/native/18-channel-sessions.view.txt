@@ -47,7 +47,7 @@ Tab "Activity"
     #input-4294967314
       TextInput "Filter sessions" value="" placeholder="Filter sessions"
   Link "Ledger schema migration"
-    Button "3" description="2 from this session, 1 from forks"
+    Button "2" description="1 from this session, 1 from forks"
     Button "Fold session forks"
   Link "Try BRIN index"
     Button "1" description="1 from this session, 0 from forks"

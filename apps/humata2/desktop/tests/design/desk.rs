@@ -802,7 +802,7 @@ fn source_pane(look: Look) -> Div {
             source = source
                 .child(
                     session::comment(look, "You · lines 13–14", "Keep both until range p95 holds for a week on devbox-1, not just until the backfill ends.", true)
-                        .child(secondary(look, "Typed into claude when its turn ends"))
+                        .child(secondary(look, "Saved as a draft; Send types it into claude straight away"))
                         .child(
                             div()
                                 .flex()

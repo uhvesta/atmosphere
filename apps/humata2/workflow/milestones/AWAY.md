@@ -12,6 +12,7 @@ Close the host. SSH to a machine, `humata login`, `humata attach`, answer a requ
 
 ## Exit criterion
 Flow §26.10 passes. The AW-7 table runs as a boundary suite. Journals replay in order and are re-checked against the rules; the first answer wins; conflicts follow SL-6–SL-8.
+- Contain agents (SEC-6): a contained agent's writes outside its session folder and `shared/`, its reads of `~/.ssh`, the `gh` config and other sessions, and any network but the daemon socket all fail, as a boundary suite on macOS. (D128)
 
 ## Read these (pointers, nothing else)
 - SPEC: AW-1–AW-12, SL-5–SL-8, SEC-10–SEC-13, SE-24, SE-25, TP-9, ST-6; flow §26.10. Find each with `grep -n '\*\*<ID>\*\*' apps/humata2/SPEC.md` and read the few lines around it.
@@ -22,7 +23,7 @@ Flow §26.10 passes. The AW-7 table runs as a boundary suite. Journals replay in
 - P0 is splitting some of these files; if a path is gone, look for its parts beside it (`ls` the folder).
 
 ## Out of scope
-Script tokens (SEC-14): not in 1.0. The web client (ANYHOST).
+Script tokens (SEC-14): ASK. The web client (ANYHOST).
 
 ## Lane (written by the manager)
 - Design notes:
