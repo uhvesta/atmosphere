@@ -19,7 +19,7 @@ enum Capability {
   // agent, status), the channel board and Activity. Default Allow. (TP-1)
   CAPABILITY_CHANNEL_READ = 1;
   // "Global board, or other channels and their boards: anything". Default
-  // Ask me. One row in IN-17, so this one capability covers reads and
+  // Allow (D127.4). One row in IN-17, so this one capability covers reads and
   // writes there (D21); GLOBAL_BOARD_WRITE is no longer checked.
   CAPABILITY_GLOBAL_READ = 2;
   // Its own session board: add, edit, move, delete. Default Allow. A rule,

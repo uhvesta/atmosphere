@@ -1039,3 +1039,84 @@ pub async fn approve(daemon: &Daemon, id: &pb::RequestId) {
         .await
         .unwrap();
 }
+
+/// `humata --json <args>` as a script holding `token` (`HUMATA_TOKEN`), with
+/// no session token; the exit code and the JSON printed.
+pub async fn humata_as_script(
+    daemon: &Daemon,
+    token: &str,
+    args: &[&str],
+) -> (i32, serde_json::Value) {
+    let output = tokio::process::Command::new(binary("HUMATA"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", daemon.dir.path())
+        .env("HUMATA_SOCKET", &daemon.socket)
+        .env("HUMATA_TOKEN", token)
+        .arg("--json")
+        .args(args)
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let json = serde_json::from_str(&text).unwrap_or_else(|error| {
+        panic!(
+            "humata printed no JSON ({error}): {text:?}; stderr {:?}",
+            output.stderr
+        )
+    });
+    (output.status.code().unwrap_or(-1), json)
+}
+
+/// A request that carries `token` as a script's credential.
+pub fn as_script<T>(message: T, token: &str) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    request.metadata_mut().insert(
+        "humata-script-token",
+        tonic::metadata::MetadataValue::try_from(token).unwrap(),
+    );
+    request
+}
+
+impl Daemon {
+    pub async fn cli_auth_service(
+        &self,
+    ) -> pb::cli_auth_service_client::CliAuthServiceClient<Channel> {
+        pb::cli_auth_service_client::CliAuthServiceClient::new(self.channel().await)
+    }
+}
+
+/// The user makes a script token; returns its id and secret, or why not.
+pub async fn create_script_token(
+    daemon: &Daemon,
+    name: &str,
+    capabilities: &[pb::Capability],
+    channels: &[&pb::ChannelId],
+    days: u32,
+) -> Result<(String, String), Status> {
+    daemon
+        .cli_auth_service()
+        .await
+        .create_script_token(pb::CreateScriptTokenRequest {
+            name: name.to_owned(),
+            capabilities: capabilities.iter().map(|c| *c as i32).collect(),
+            channels: channels.iter().map(|c| (*c).clone()).collect(),
+            days,
+            ..Default::default()
+        })
+        .await
+        .map(|reply| {
+            let reply = reply.into_inner();
+            (reply.token_id, reply.token)
+        })
+}
+
+/// As [`start_world`], with more `serve` arguments.
+pub async fn start_world_with(extra: &[&str]) -> (Daemon, World) {
+    let dir = folder();
+    let world = World::new(dir.path());
+    let mut args = world.args();
+    args.extend(extra.iter().map(|arg| (*arg).to_owned()));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    (Daemon::start_with(Build::Admin, dir, &refs).await, world)
+}

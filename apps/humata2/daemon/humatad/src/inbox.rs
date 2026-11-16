@@ -427,6 +427,8 @@ fn sees(caller: &Caller, entry: &Entry) -> bool {
     match caller {
         Caller::User(_) => true,
         Caller::Agent(agent) => agent.session.id.as_str() == entry.session,
+        // A script has no session and is not the user: it sees nothing.
+        Caller::Script(_) => false,
         // The Inbox isn't on the peer link; relayed answers come over Uplink.
         Caller::Peer => false,
     }
@@ -631,6 +633,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
         request: Request<pb::AskUserRequest>,
     ) -> Result<Response<pb::WaitResponse>, Status> {
         let caller = identity::caller(&request)?;
+        if matches!(caller, Caller::Script(_)) {
+            return Err(status::refused(&Refusal::ScriptTokenHasNoSession));
+        }
         let Caller::Agent(agent) = &caller else {
             return Err(status::invalid_field(
                 "question",
@@ -687,6 +692,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
         request: Request<pb::RequestAccessRequest>,
     ) -> Result<Response<pb::WaitResponse>, Status> {
         let caller = identity::caller(&request)?;
+        if matches!(caller, Caller::Script(_)) {
+            return Err(status::refused(&Refusal::ScriptTokenHasNoSession));
+        }
         let Caller::Agent(agent) = &caller else {
             return Err(status::invalid_field(
                 "capability",
@@ -867,6 +875,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
         request: Request<pb::WithdrawRequestRequest>,
     ) -> Result<Response<pb::InboxRequest>, Status> {
         let caller = identity::caller(&request)?;
+        if matches!(caller, Caller::Script(_)) {
+            return Err(status::refused(&Refusal::ScriptTokenHasNoSession));
+        }
         if let Caller::User(_) = caller {
             return Err(status::invalid_field(
                 "id",

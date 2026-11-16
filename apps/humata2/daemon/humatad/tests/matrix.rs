@@ -12,6 +12,7 @@ use common::{
     Attach, Daemon, WAIT, approve, binary, create_channel, first_pending, humata_as_agent,
     machine_id, pending_requests, shell_token, start_session, start_world,
 };
+use common::{as_script, create_script_token, humata_as_script, start_world_with};
 use humata2_grpc::humata::v1 as pb;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
@@ -592,4 +593,307 @@ async fn default_allow_tier_is_applied_with_nothing_in_the_inbox() {
     assert_eq!(mcp_outcome(&over_mcp), Outcome::Applied, "{over_mcp}");
     assert_eq!(cli_outcome(code, &json), Outcome::Applied, "{json}");
     assert_eq!(world.inbox_len().await, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Script tokens (SEC-14)
+
+/// A daemon with channel "matrix" (two sessions) and channel "second" (one).
+struct Scripts {
+    daemon: Daemon,
+    _world: common::World,
+    first: pb::ChannelId,
+    second: pb::ChannelId,
+    mine: pb::SessionId,
+    other: pb::SessionId,
+}
+
+impl Scripts {
+    async fn start(extra: &[&str]) -> Self {
+        let (daemon, world) = start_world_with(extra).await;
+        world.remote(OWNER, REPO);
+        world.remote(OWNER, "r2");
+        let (first, setup) = create_channel(&daemon, "matrix", &[(OWNER, REPO)]).await;
+        assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{setup:?}");
+        let (second, setup) = create_channel(&daemon, "second", &[(OWNER, "r2")]).await;
+        assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{setup:?}");
+        let (mine, _) = start_session(&daemon, &first, "me").await;
+        let (other, _) = start_session(&daemon, &first, "other").await;
+        start_session(&daemon, &second, "elsewhere").await;
+        Self {
+            daemon,
+            _world: world,
+            first: first.id.unwrap_or_default(),
+            second: second.id.unwrap_or_default(),
+            mine,
+            other,
+        }
+    }
+
+    async fn inbox_len(&self) -> usize {
+        self.daemon
+            .inbox_service()
+            .await
+            .list_requests(pb::ListRequestsRequest {
+                include_answered: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .requests
+            .len()
+    }
+
+    /// A token that reads the first channel.
+    async fn token_for(&self, name: &str) -> (String, String) {
+        create_script_token(
+            &self.daemon,
+            name,
+            &[pb::Capability::ChannelRead],
+            &[&self.first],
+            0,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Reading the channel through the CLI, as the script.
+    async fn topology(&self, token: &str, channel: &pb::ChannelId) -> Outcome {
+        let (code, json) =
+            humata_as_script(&self.daemon, token, &["topology", "--channel", &channel.value]).await;
+        script_outcome(code, &json)
+    }
+}
+
+/// `cli_outcome`, with a refused credential told apart: it shares exit 5
+/// with the user-only class, so the error kind decides.
+fn script_outcome(code: i32, json: &Value) -> Outcome {
+    // The daemon refuses an unusable token as an identity problem; a
+    // bare Unauthenticated status is the same class.
+    if matches!(
+        json["error"]["kind"].as_str(),
+        Some("unauthenticated" | "identity_mismatch")
+    ) {
+        return Outcome::Other("unauthenticated".to_owned());
+    }
+    cli_outcome(code, json)
+}
+
+fn unauthenticated() -> Outcome {
+    Outcome::Other("unauthenticated".to_owned())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_matrix_holds_for_a_script_token() {
+    let world = Scripts::start(&[]).await;
+    let (_, token) = create_script_token(
+        &world.daemon,
+        "ci",
+        &[pb::Capability::GlobalRead, pb::Capability::ChannelRead],
+        &[&world.first],
+        0,
+    )
+    .await
+    .unwrap();
+    // A rule of Ask me doesn't hold a script: tokens skip channel rules.
+    pb::access_service_client::AccessServiceClient::new(world.daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(world.first.clone()),
+            capability: pb::Capability::GlobalRead as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let local = world.daemon.dir.path().join("local.txt");
+    std::fs::write(&local, "hello").unwrap();
+    let machine = machine_id(&world.daemon).await.value;
+    let location = format!("{machine}:{}/{OWNER}/{REPO}/note.txt", world.mine.value);
+    let local = local.display().to_string();
+    let first = world.first.value.clone();
+    let mut failures = Vec::new();
+
+    let rows: Vec<(&str, Vec<&str>, Outcome)> = vec![
+        ("listed, rule Ask me", vec!["channels"], Outcome::Applied),
+        (
+            "listed, its channel",
+            vec!["topology", "--channel", &first],
+            Outcome::Applied,
+        ),
+        (
+            "not listed",
+            vec!["session", "stop", &world.other.value],
+            Outcome::Denied,
+        ),
+        (
+            "listed, other channel",
+            vec!["topology", "--channel", &world.second.value],
+            Outcome::Denied,
+        ),
+        (
+            "files, no session",
+            vec!["files", "put", &local, &location],
+            Outcome::Denied,
+        ),
+        ("user-only token ls", vec!["token", "ls"], Outcome::UserOnly),
+        (
+            "user-only rule",
+            vec!["access", "set", "global_read", "never", "--channel", &first],
+            Outcome::UserOnly,
+        ),
+    ];
+    for (row, args, expect) in rows {
+        let (code, json) = humata_as_script(&world.daemon, &token, &args).await;
+        let got = script_outcome(code, &json);
+        if got != expect {
+            failures.push(format!("{row}: expected {expect:?}, got {got:?}: {json}"));
+        }
+    }
+    if world.inbox_len().await != 0 {
+        failures.push("a script's call put a request in the Inbox".to_owned());
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_cannot_be_made_for_a_user_only_action() {
+    let world = Scripts::start(&[]).await;
+    for capability in [pb::Capability::AccessChange, pb::Capability::PeerReport] {
+        let refused = create_script_token(&world.daemon, "x", &[capability], &[&world.first], 0)
+            .await
+            .unwrap_err();
+        let (field, _) = common::invalid_field(&refused);
+        assert_eq!(field, "capabilities", "{capability:?}");
+    }
+    let too_long = create_script_token(
+        &world.daemon,
+        "x",
+        &[pb::Capability::ChannelRead],
+        &[&world.first],
+        91,
+    )
+    .await
+    .unwrap_err();
+    common::invalid_field(&too_long);
+    let (_, token) = create_script_token(
+        &world.daemon,
+        "ok",
+        &[pb::Capability::ChannelRead],
+        &[&world.first],
+        90,
+    )
+    .await
+    .unwrap();
+
+    // A script holding a valid token can't make or revoke tokens.
+    let over_grpc = world
+        .daemon
+        .cli_auth_service()
+        .await
+        .create_script_token(as_script(
+            pb::CreateScriptTokenRequest {
+                name: "mine".to_owned(),
+                capabilities: vec![pb::Capability::ChannelRead as i32],
+                channels: vec![world.first.clone()],
+                days: 1,
+                ..Default::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        common::error_of(&over_grpc).kind,
+        Some(pb::error::Kind::UserOnly(_))
+    ));
+    let first = world.first.value.clone();
+    let (code, json) = humata_as_script(
+        &world.daemon,
+        &token,
+        &[
+            "token", "create", "--name", "mine", "--capability", "channel_read", "--channel",
+            &first,
+        ],
+    )
+    .await;
+    assert_eq!(script_outcome(code, &json), Outcome::UserOnly, "{json}");
+    let listed = world
+        .daemon
+        .cli_auth_service()
+        .await
+        .list_script_tokens(pb::ListScriptTokensRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.tokens.len(), 1, "{listed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoked_token_stops_at_once_and_a_kept_one_survives_a_restart() {
+    let mut world = Scripts::start(&[]).await;
+    let (revoked_id, revoked) = world.token_for("revoked").await;
+    let (kept_id, kept) = world.token_for("kept").await;
+    assert_eq!(world.topology(&revoked, &world.first).await, Outcome::Applied);
+    assert_eq!(world.topology(&kept, &world.first).await, Outcome::Applied);
+
+    world
+        .daemon
+        .cli_auth_service()
+        .await
+        .revoke_script_token(pb::RevokeScriptTokenRequest {
+            token_id: revoked_id,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        world.topology(&revoked, &world.first).await,
+        unauthenticated()
+    );
+    assert_eq!(world.topology(&kept, &world.first).await, Outcome::Applied);
+
+    world.daemon.restart().await;
+
+    assert_eq!(world.topology(&kept, &world.first).await, Outcome::Applied);
+    assert_eq!(
+        world.topology(&revoked, &world.first).await,
+        unauthenticated()
+    );
+    let listed = world
+        .daemon
+        .cli_auth_service()
+        .await
+        .list_script_tokens(pb::ListScriptTokensRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        listed.tokens.iter().any(|entry| entry.token_id == kept_id),
+        "{listed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_token_is_refused() {
+    let world = Scripts::start(&["--script-token-seconds", "3"]).await;
+    let (_, token) = create_script_token(
+        &world.daemon,
+        "short",
+        &[pb::Capability::ChannelRead],
+        &[&world.first],
+        0,
+    )
+    .await
+    .unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(world.topology(&token, &world.first).await, Outcome::Applied);
+    let lifetime = std::time::Duration::from_secs(3);
+    if let Some(left) = (lifetime + std::time::Duration::from_millis(500))
+        .checked_sub(started.elapsed())
+    {
+        tokio::time::sleep(left).await;
+    }
+    assert_eq!(world.topology(&token, &world.first).await, unauthenticated());
 }

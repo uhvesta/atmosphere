@@ -33,6 +33,7 @@ mod peer_link;
 mod restart;
 mod review;
 mod rules_kept;
+mod script_tokens;
 mod serve;
 mod session_service;
 mod status;

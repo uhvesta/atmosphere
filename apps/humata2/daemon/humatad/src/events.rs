@@ -204,6 +204,7 @@ impl Filter {
         let (user, own_session) = match caller {
             Caller::User(_) => (true, None),
             Caller::Agent(agent) => (false, Some(agent.session.id.to_string())),
+            Caller::Script(_) => return Err(status::script_has_no_event_feed()),
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
         };
         let topics = &request.topics;

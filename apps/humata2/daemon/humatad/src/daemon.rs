@@ -117,6 +117,15 @@ impl pb::daemon_service_server::DaemonService for Daemon {
                 });
                 (user, None)
             }
+            Caller::Script(script) => {
+                let actor = identity::actor(&Caller::Script(script));
+                return Ok(Response::new(pb::WhoAmIResponse {
+                    actor: Some(actor),
+                    channel: None,
+                    presence_possible: false,
+                    contained: false,
+                }));
+            }
             Caller::Agent(agent) => {
                 let channel = pb::ChannelId {
                     value: agent.session.channel.to_string(),

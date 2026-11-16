@@ -222,6 +222,9 @@ impl pb::access_service_server::AccessService for Access {
         let own = match &caller {
             Caller::User(_) => None,
             Caller::Agent(agent) => Some(agent.session.id.clone()),
+            Caller::Script(_) => {
+                return Err(status::refused(&Refusal::UserOnly { capability: None }));
+            }
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
         };
         let request = request.into_inner();
@@ -386,6 +389,9 @@ impl pb::access_service_server::AccessService for Access {
                     )
                 })?;
                 AgentCaller::of(&record, &here)
+            }
+            Caller::Script(_) => {
+                return Err(status::refused(&Refusal::ScriptTokenHasNoSession));
             }
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
         };

@@ -209,7 +209,14 @@ message Actor {
     UserActor user = 1;
     AgentActor agent = 2;
     SystemActor system = 3;
+    ScriptActor script = 4;
   }
+}
+
+// A script calling with a script token (SEC-14).
+message ScriptActor {
+  string token_id = 1;
+  string name = 2;
 }
 
 message UserActor {

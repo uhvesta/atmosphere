@@ -10,6 +10,7 @@ use tonic::{Code, Status};
 
 use crate::cli_login::LoginUnusable;
 use crate::guard;
+use crate::script_tokens::ScriptTokenUnusable;
 
 /// `google.rpc.Status`, the wrapper the details travel in.
 #[derive(Clone, PartialEq, prost::Message)]
@@ -241,6 +242,41 @@ pub(crate) fn login_unusable(unusable: &LoginUnusable) -> Status {
                 accepted: vec![pb::presence_required::Method::CliLogin as i32],
                 caller_in_session_terminal: false,
             }),
+        ),
+    )
+}
+
+/// A call whose script token doesn't work here (SEC-14).
+pub(crate) fn script_token_unusable(unusable: &ScriptTokenUnusable) -> Status {
+    let fix = match unusable {
+        ScriptTokenUnusable::Expired { .. } => {
+            "make a new token with `humata token create`; a token can't be renewed once it has expired"
+        }
+        ScriptTokenUnusable::Unknown => {
+            "the token was revoked or made by another daemon; list this daemon's tokens with `humata token ls` and make a new one with `humata token create`"
+        }
+    };
+    failure(
+        Code::Unauthenticated,
+        error(
+            format!("humatad2 refused the call: {}", chain(unusable)),
+            fix,
+            pb::error::Kind::IdentityMismatch(pb::IdentityMismatch {
+                claimed: None,
+                claimed_machine: None,
+            }),
+        ),
+    )
+}
+
+/// A script asking for the event feed, which is for the app and sessions.
+pub(crate) fn script_has_no_event_feed() -> Status {
+    failure(
+        Code::PermissionDenied,
+        error(
+            "the event feed is for the app and for sessions; a script's token doesn't get it",
+            "run `humata` commands from the script and read their output instead of subscribing to events",
+            pb::error::Kind::UserOnly(pb::UserOnly { capability: 0 }),
         ),
     )
 }

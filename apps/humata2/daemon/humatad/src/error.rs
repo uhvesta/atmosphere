@@ -48,6 +48,12 @@ pub(crate) enum DaemonError {
         source: humata2_store::StoreError,
     },
 
+    #[error("couldn't load the script tokens")]
+    ScriptTokens {
+        #[source]
+        source: crate::script_tokens::ScriptTokensError,
+    },
+
     #[error(
         "the holder {} isn't there; reinstall Humata on this machine, or pass --holder",
         path.display()

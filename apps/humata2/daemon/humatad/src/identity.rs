@@ -4,7 +4,10 @@
 //! login (`cli_login`) from the terminal session it bound is the user. A
 //! call with no credential is refused, except WhoAmI and logging in, which
 //! answer it as unauthenticated; a test daemon built with the `admin`
-//! feature and run with `--admin` takes it for the user instead. A session
+//! feature and run with `--admin` takes it for the user instead. A call
+//! with a script token (`humata token create`, SEC-14) is that script: not
+//! the user, with no session of its own; it wins over a CLI login and
+//! loses to a session token, and is not bound to a process tree. A session
 //! token is good only from the process tree of its tab's holder; used from
 //! anywhere else it is refused and replaced at the session's next resume
 //! (SEC-15). Only
@@ -27,6 +30,7 @@ use tonic::transport::server::UdsConnectInfo;
 use tonic::{Request, Status};
 
 use crate::cli_login::CliLogins;
+use crate::script_tokens::{ScriptCaller, ScriptTokenUnusable, ScriptTokens};
 use crate::error::DaemonError;
 use crate::status;
 use crate::terminal_session::{self, Processes};
@@ -37,6 +41,9 @@ pub(crate) const TOKEN_HEADER: &str = "humata-session-token";
 /// The gRPC metadata key a CLI login's token travels in.
 pub(crate) const LOGIN_HEADER: &str = "humata-cli-login";
 
+/// The gRPC metadata key a script token travels in.
+pub(crate) const SCRIPT_HEADER: &str = "humata-script-token";
+
 /// A token's random bytes: 32 hex characters.
 const TOKEN_BYTES: usize = 16;
 
@@ -45,6 +52,9 @@ const TOKEN_BYTES: usize = 16;
 pub(crate) enum Caller {
     User(UserVia),
     Agent(AgentCaller),
+    /// A script with a token (SEC-14). Never the user, and it has no
+    /// session.
+    Script(ScriptCaller),
     /// The Mac, over the peer link it started (`serve --stdio`). Bound to
     /// the link, never to anything a request carries (GRPC.md §3).
     Peer,
@@ -186,6 +196,10 @@ pub(crate) fn actor(caller: &Caller) -> pb::Actor {
                 value: agent.agent.clone(),
             }),
             session_title: agent.title.clone(),
+        }),
+        Caller::Script(script) => Actor::Script(pb::ScriptActor {
+            token_id: script.id.clone(),
+            name: script.name.clone(),
         }),
         Caller::Peer => Actor::System(pb::SystemActor { reason: 0 }),
     };
@@ -416,11 +430,12 @@ impl Identities {
 /// extensions. A token this daemon didn't give out, a CLI login from
 /// outside its terminal session, or no credential on a method not open to
 /// anyone, is refused before any handler runs. A session token wins over
-/// a CLI login. The token itself is never logged.
+/// a script token, which wins over a CLI login. The token itself is never logged.
 #[derive(Clone)]
 pub(crate) struct Authenticate {
     identities: Arc<Identities>,
     logins: Arc<CliLogins>,
+    scripts: Arc<ScriptTokens>,
     /// Where the tabs and their holders' pids are, to place a token's use.
     store: Arc<Store>,
     processes: Arc<dyn Processes>,
@@ -445,12 +460,14 @@ impl Authenticate {
     pub(crate) fn new(
         identities: Arc<Identities>,
         logins: Arc<CliLogins>,
+        scripts: Arc<ScriptTokens>,
         store: Arc<Store>,
         processes: Arc<dyn Processes>,
     ) -> Self {
         Self {
             identities,
             logins,
+            scripts,
             store,
             processes,
             #[cfg(feature = "admin")]
@@ -464,6 +481,7 @@ impl Authenticate {
     pub(crate) fn admin(
         identities: Arc<Identities>,
         logins: Arc<CliLogins>,
+        scripts: Arc<ScriptTokens>,
         store: Arc<Store>,
         processes: Arc<dyn Processes>,
         who: Admin,
@@ -471,6 +489,7 @@ impl Authenticate {
         Self {
             identities,
             logins,
+            scripts,
             store,
             processes,
             admin: Some(who),
@@ -548,8 +567,9 @@ impl Authenticate {
         let open = request.extensions().get::<OpenToAnyone>().is_some();
         let session = request.metadata().get(TOKEN_HEADER);
         let login = request.metadata().get(LOGIN_HEADER);
-        let caller = match (session, login) {
-            (Some(value), _) => match value
+        let script = request.metadata().get(SCRIPT_HEADER);
+        let caller = match (session, script, login) {
+            (Some(value), _, _) => match value
                 .to_str()
                 .ok()
                 .and_then(|token| self.identities.find(token))
@@ -573,11 +593,25 @@ impl Authenticate {
                 }
                 None => return Err(status::identity_mismatch()),
             },
+            // A script token (SEC-14): judged strictly like a login, and
+            // not bound to a process tree. On a method open to anyone an
+            // unusable one counts as no credential.
+            (None, Some(value), _) => {
+                let checked = match value.to_str() {
+                    Ok(token) => self.scripts.caller(token),
+                    Err(_) => Err(ScriptTokenUnusable::Unknown),
+                };
+                match checked {
+                    Ok(script) => Some(Caller::Script(script)),
+                    Err(_) if open => None,
+                    Err(unusable) => return Err(status::script_token_unusable(&unusable)),
+                }
+            }
             // Judged strictly, even on an admin daemon: a login that
             // doesn't work here is never taken for the user. On a method
             // open to anyone it counts as no credential, so a terminal with
             // a stale login can still log in again.
-            (None, Some(value)) => {
+            (None, None, Some(value)) => {
                 let checked = match value.to_str() {
                     Ok(token) => self.logins.caller(token, pid),
                     Err(_) => Err(crate::cli_login::LoginUnusable::Unknown),
@@ -588,7 +622,7 @@ impl Authenticate {
                     Err(unusable) => return Err(status::login_unusable(&unusable)),
                 }
             }
-            (None, None) => self.without_credential(pid),
+            (None, None, None) => self.without_credential(pid),
         };
         match caller {
             Some(caller) => {
@@ -712,9 +746,11 @@ mod tests {
         let file = dir.path().join("tokens");
         let identities = Arc::new(Identities::load(file.clone(), &store, "ma_here").unwrap());
         let logins = Arc::new(CliLogins::new(Box::new(Fake::default()), None));
+        let scripts = Arc::new(ScriptTokens::load(store.clone(), None).unwrap());
         let authenticate = Authenticate::new(
             identities.clone(),
             logins,
+            scripts,
             store.clone(),
             Arc::new(processes()),
         );

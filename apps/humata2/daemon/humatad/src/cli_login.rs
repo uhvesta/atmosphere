@@ -4,13 +4,16 @@
 //! a call carrying it is the present user only from a process still in
 //! that terminal session. Logins live in memory: a daemon restart ends
 //! them all, so nothing on disk lets another process of this user forge
-//! one. Script tokens aren't built yet.
+//! one.
+//!
+//! The service also makes, lists and revokes script tokens (SEC-14), which
+//! only the user may do; the tokens themselves live in `script_tokens`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use humata2_access::Refusal;
+use humata2_access::{Refusal, Tier};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
@@ -18,7 +21,9 @@ use pb::invalid_field::Problem;
 use tokio::sync::oneshot;
 use tonic::{Request, Response, Status};
 
+use crate::grant_target::capability_of;
 use crate::identity::{self, Caller, UserVia};
+use crate::script_tokens::ScriptTokens;
 use crate::status;
 use crate::terminal_session::{self, Processes, TerminalSession, TerminalSessionError};
 
@@ -218,6 +223,7 @@ impl CliLogins {
 /// The service, over the logins and what it needs to place a caller.
 pub(crate) struct CliAuth {
     pub(crate) logins: Arc<CliLogins>,
+    pub(crate) scripts: Arc<ScriptTokens>,
     /// Where the session tabs are, to refuse a login from inside one.
     pub(crate) store: Arc<Store>,
     pub(crate) machine: String,
@@ -270,6 +276,9 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
     ) -> Result<Response<pb::CliSession>, Status> {
         match identity::caller_if_any(&request)? {
             Some(Caller::Agent(_)) => return Err(status::in_session_terminal()),
+            Some(Caller::Script(_)) => {
+                return Err(status::refused(&Refusal::UserOnly { capability: None }));
+            }
             Some(Caller::Peer) => return Err(status::refused(&Refusal::PeerCannotCall)),
             Some(Caller::User(_)) | None => {}
         }
@@ -331,7 +340,9 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
             (Caller::User(UserVia::CliLogin { login }), true) => login,
             (Caller::User(_), true) => return Err(status::missing("id")),
             (Caller::User(_), false) => id,
-            (Caller::Agent(_), _) => return Err(status::refused(&Refusal::UserOnly { capability: None })),
+            (Caller::Agent(_) | Caller::Script(_), _) => {
+                return Err(status::refused(&Refusal::UserOnly { capability: None }));
+            }
             (Caller::Peer, _) => return Err(status::refused(&Refusal::PeerCannotCall)),
         };
         if !self.logins.end(&id) {
@@ -346,7 +357,9 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
     ) -> Result<Response<pb::ListCliSessionsResponse>, Status> {
         match identity::caller(&request)? {
             Caller::User(_) => {}
-            Caller::Agent(_) => return Err(status::refused(&Refusal::UserOnly { capability: None })),
+            Caller::Agent(_) | Caller::Script(_) => {
+                return Err(status::refused(&Refusal::UserOnly { capability: None }));
+            }
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
         }
         Ok(Response::new(pb::ListCliSessionsResponse {
@@ -386,23 +399,141 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
 
     async fn create_script_token(
         &self,
-        _request: Request<pb::CreateScriptTokenRequest>,
+        request: Request<pb::CreateScriptTokenRequest>,
     ) -> Result<Response<pb::CreateScriptTokenResponse>, Status> {
-        Err(status::not_built("humata.v1.CliAuthService.CreateScriptToken"))
+        user_only(&identity::caller(&request)?)?;
+        let request = request.into_inner();
+        if request.name.trim().is_empty() {
+            return Err(status::missing("name"));
+        }
+        if request.capabilities.is_empty() {
+            return Err(status::invalid_field(
+                "capabilities",
+                Problem::Missing,
+                "a script token needs at least one capability",
+                "name the capabilities the script needs, such as channel.read, and send it again",
+            ));
+        }
+        let mut capabilities = Vec::new();
+        for value in &request.capabilities {
+            let Some(capability) = capability_of(*value) else {
+                return Err(status::invalid_field(
+                    "capabilities",
+                    Problem::UnknownValue,
+                    format!("capability {value} isn't one this daemon knows"),
+                    "list the capabilities with `humata access`, and name one of those",
+                ));
+            };
+            if !matches!(
+                capability.tier(),
+                Tier::DefaultAllow | Tier::AskMe | Tier::NeverByDefault
+            ) {
+                return Err(status::invalid_field(
+                    "capabilities",
+                    Problem::NotAllowedHere,
+                    format!(
+                        "a script token can't hold {capability}: it can hold only what an agent could be allowed, never an action only the user may take"
+                    ),
+                    "remove it from the token; do that action yourself in the app or the CLI",
+                ));
+            }
+            if !capabilities.contains(&capability) {
+                capabilities.push(capability);
+            }
+        }
+        let mut channels: Vec<String> = Vec::new();
+        for channel in &request.channels {
+            if channel.value.is_empty() {
+                return Err(status::missing("channels"));
+            }
+            if channels.contains(&channel.value) {
+                continue;
+            }
+            let store = self.store.clone();
+            let id = channel.value.clone();
+            let found = tokio::task::spawn_blocking(move || store.channel(&id))
+                .await
+                .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
+                .map_err(|error| status::store(error, &self.machine, "look up the token's channels"))?;
+            if found.is_none() {
+                return Err(status::not_found(
+                    pb::EntityKind::Channel,
+                    &channel.value,
+                    format!("there is no channel {}", channel.value),
+                    "list the channels, and name one of those; a token can cover only channels that exist",
+                ));
+            }
+            channels.push(channel.value.clone());
+        }
+        let days = match request.days {
+            0 => 30,
+            days if days > 90 => {
+                return Err(status::invalid_field(
+                    "days",
+                    Problem::OutOfRange,
+                    format!("a script token lasts at most 90 days, not {days}"),
+                    "ask for 90 days or fewer, then make a new token when it expires",
+                ));
+            }
+            days => days,
+        };
+        let key = request
+            .idempotency_key
+            .map(|key| key.value)
+            .filter(|value| !value.is_empty());
+        let scripts = self.scripts.clone();
+        let reply = tokio::task::spawn_blocking(move || {
+            scripts.create(request.name.trim(), &capabilities, &channels, days, key.as_deref())
+        })
+        .await
+        .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
+        .map_err(|error| status::internal(status::chain(&error), ""))?;
+        Ok(Response::new(reply))
     }
 
     async fn list_script_tokens(
         &self,
-        _request: Request<pb::ListScriptTokensRequest>,
+        request: Request<pb::ListScriptTokensRequest>,
     ) -> Result<Response<pb::ListScriptTokensResponse>, Status> {
-        Err(status::not_built("humata.v1.CliAuthService.ListScriptTokens"))
+        user_only(&identity::caller(&request)?)?;
+        Ok(Response::new(pb::ListScriptTokensResponse {
+            tokens: self.scripts.list(),
+        }))
     }
 
     async fn revoke_script_token(
         &self,
-        _request: Request<pb::RevokeScriptTokenRequest>,
+        request: Request<pb::RevokeScriptTokenRequest>,
     ) -> Result<Response<pb::RevokeScriptTokenResponse>, Status> {
-        Err(status::not_built("humata.v1.CliAuthService.RevokeScriptToken"))
+        user_only(&identity::caller(&request)?)?;
+        let id = request.into_inner().token_id;
+        if id.is_empty() {
+            return Err(status::missing("token_id"));
+        }
+        let scripts = self.scripts.clone();
+        let target = id.clone();
+        let went = tokio::task::spawn_blocking(move || scripts.revoke(&target))
+            .await
+            .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
+            .map_err(|error| status::internal(status::chain(&error), ""))?;
+        if !went {
+            return Err(status::not_found(
+                pb::EntityKind::Unspecified,
+                &id,
+                format!("no script token {id} exists"),
+                "it was revoked already; list tokens with `humata token ls`",
+            ));
+        }
+        Ok(Response::new(pb::RevokeScriptTokenResponse {}))
+    }
+}
+
+/// Refuses everyone but the user, from the app or a CLI login.
+fn user_only(caller: &Caller) -> Result<(), Status> {
+    match caller {
+        Caller::User(_) => Ok(()),
+        Caller::Agent(_) | Caller::Script(_) => Err(status::refused(&Refusal::UserOnly { capability: None })),
+        Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
     }
 }
 
@@ -411,7 +542,7 @@ fn app_only(caller: &Caller, what: &str) -> Result<(), Status> {
     match caller {
         Caller::User(UserVia::App) => Ok(()),
         Caller::User(UserVia::CliLogin { .. }) => Err(status::app_only(what)),
-        Caller::Agent(_) => Err(status::refused(&Refusal::UserOnly { capability: None })),
+        Caller::Agent(_) | Caller::Script(_) => Err(status::refused(&Refusal::UserOnly { capability: None })),
         Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
     }
 }

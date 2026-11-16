@@ -112,6 +112,7 @@ pub(crate) fn principal(caller: &Caller) -> Principal {
             session: agent.session.clone(),
             kind: SessionKind::Ordinary,
         }),
+        Caller::Script(script) => Principal::Script(script.token.clone()),
         Caller::Peer => Principal::Peer(PeerLink::HostToDaemon),
     }
 }

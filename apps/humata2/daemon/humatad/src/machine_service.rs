@@ -541,7 +541,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let caller = identity::caller(&request)?;
         let machines = match caller {
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            Caller::Agent(_) => Vec::new(),
+            Caller::Agent(_) | Caller::Script(_) => Vec::new(),
             Caller::User(_) => {
                 let work = self.work.clone();
                 let entries = tokio::task::spawn_blocking(move || {
@@ -566,7 +566,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let not_found = || status_of(&ManageError::NotFound { machine: name.clone() });
         match caller {
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            Caller::Agent(_) => return Err(not_found()),
+            Caller::Agent(_) | Caller::Script(_) => return Err(not_found()),
             Caller::User(_) => {}
         }
         let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;

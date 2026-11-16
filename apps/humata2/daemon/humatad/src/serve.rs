@@ -132,6 +132,10 @@ pub(crate) struct ServeArgs {
     #[cfg(feature = "admin")]
     #[arg(long, conflicts_with = "stdio")]
     cli_login_seconds: Option<u64>,
+    /// How long every script token lasts instead of the days it asked for, so tests can see one expire.
+    #[cfg(feature = "admin")]
+    #[arg(long, conflicts_with = "stdio")]
+    script_token_seconds: Option<u64>,
     /// The folder every channel's folder is made in (FC-1). Default:
     /// Humata inside --root.
     #[arg(long)]
@@ -245,6 +249,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let login_lifetime = None;
     let logins = Arc::new(CliLogins::new(Box::new(Kernel), login_lifetime));
     #[cfg(feature = "admin")]
+    let script_lifetime = args.script_token_seconds.map(std::time::Duration::from_secs);
+    #[cfg(not(feature = "admin"))]
+    let script_lifetime = None;
+    let scripts = Arc::new(
+        crate::script_tokens::ScriptTokens::load(store.clone(), script_lifetime)
+            .map_err(|source| DaemonError::ScriptTokens { source })?,
+    );
+    #[cfg(feature = "admin")]
     let authenticate = match (args.admin, args.admin_pid) {
         (true, _) => {
             crate::log::say!(
@@ -253,6 +265,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             Authenticate::admin(
                 identities.clone(),
                 logins.clone(),
+                scripts.clone(),
                 store.clone(),
                 Arc::new(Kernel),
                 identity::Admin::Anyone,
@@ -265,6 +278,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             Authenticate::admin(
                 identities.clone(),
                 logins.clone(),
+                scripts.clone(),
                 store.clone(),
                 Arc::new(Kernel),
                 identity::Admin::Process(pid),
@@ -273,6 +287,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         (false, None) => Authenticate::new(
             identities.clone(),
             logins.clone(),
+            scripts.clone(),
             store.clone(),
             Arc::new(Kernel),
         ),
@@ -281,6 +296,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let authenticate = Authenticate::new(
         identities.clone(),
         logins.clone(),
+        scripts.clone(),
         store.clone(),
         Arc::new(Kernel),
     );
@@ -429,6 +445,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(
             CliAuth {
                 logins,
+                scripts: scripts.clone(),
                 store,
                 machine,
                 role,

@@ -210,6 +210,19 @@ const MIGRATIONS: &[&str] = &[
         rules BLOB NOT NULL
     ) STRICT;
 ",
+    "
+    -- Script tokens (SEC-14): a long-lived credential for a script, limited
+    -- to the capabilities and channels it was made with. Only the hash of the
+    -- token is kept, never the token; the entry is the daemon's encoding of
+    -- what the token may do and who it is for.
+    CREATE TABLE script_tokens (
+        id TEXT PRIMARY KEY,
+        hash TEXT NOT NULL UNIQUE,
+        entry BLOB NOT NULL,
+        expires_unix_ms INTEGER NOT NULL,
+        last_used_unix_ms INTEGER NOT NULL
+    ) STRICT;
+",
 ];
 
 /// The schema this build writes and reads.

@@ -23,6 +23,7 @@ mod records;
 mod reviews;
 mod rules;
 mod schema;
+mod script_tokens;
 mod store;
 mod views;
 
@@ -39,4 +40,5 @@ pub use records::{
 };
 pub use rules::SavedRules;
 pub use schema::SCHEMA_VERSION;
+pub use script_tokens::SavedScriptToken;
 pub use store::Store;

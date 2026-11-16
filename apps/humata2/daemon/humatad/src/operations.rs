@@ -24,11 +24,13 @@ use crate::events::{Feed, Scope};
 use crate::identity::{self, Caller};
 use crate::status;
 
-/// Who may see an operation: the user sees all, an agent its session's.
+/// Who may see an operation: the user sees all, an agent its session's,
+/// a script those its token started (SEC-14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Owner {
     User,
     Session(String),
+    Script(String),
 }
 
 impl Owner {
@@ -36,6 +38,7 @@ impl Owner {
         match caller {
             Caller::User(_) => Ok(Self::User),
             Caller::Agent(agent) => Ok(Self::Session(agent.session.id.as_str().to_owned())),
+            Caller::Script(script) => Ok(Self::Script(script.id.clone())),
             Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
         }
     }

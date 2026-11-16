@@ -6,8 +6,8 @@ use crate::model::{
 
 use RuleSetting::{Allow, Ask, Never};
 
-/// The IN-17 rows in order: capability, label, default. `None` is the
-/// IN-16 row with no setting.
+/// The IN-17 rows in order: capability, label, default. `None` is a row
+/// with no setting: the IN-16 row, and comment resolving (D128.2).
 const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ("own_clones", "Read and write its own clones", None),
     ("own_board_write", "Its own session board: add, edit, move, delete", Some(Allow)),
@@ -24,10 +24,11 @@ const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ),
     ("views_prepare", "Prepare views for you", Some(Allow)),
     ("review_draft", "Draft PR review comments", Some(Allow)),
+    // No setting either (D128.2): the daemon never checks this capability.
     (
         "own_comments_read",
         "Resolve comments sent to its own session, with a reply",
-        Some(Allow),
+        None,
     ),
     ("inbox_ask", "Ask you a question, or ask ahead for access", Some(Allow)),
     ("files_read_other_session", "Read another session's files (same machine)", Some(Ask)),
