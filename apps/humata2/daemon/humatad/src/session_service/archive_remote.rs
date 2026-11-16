@@ -19,6 +19,7 @@
 //! the host has compared it with what it restored and found nothing more
 //! there (`compare`, D224).
 
+mod bring;
 mod compare;
 mod pending;
 
@@ -38,6 +39,7 @@ use crate::host_relay::{LinkState, Links, RelayError, Relayed, assigned};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
 use crate::status;
+use bring::Bringing;
 use compare::{More, Restored, Theirs};
 use pending::Pending;
 
@@ -1138,11 +1140,12 @@ impl SessionSvc {
     /// (D224). With nothing more there, the copy goes to its trash, its
     /// records are dropped, and what it reported of the session meanwhile is
     /// forgotten. A copy with more, or one that couldn't be compared, is
-    /// kept, and the next link compares again. Tries again on each new link
-    /// while the call fails for the link; ends once the machine is forgotten
-    /// or has no copy, and `journal` goes then. Nothing is released unless
-    /// the host's record names this Mac: a restore cut short before its
-    /// switch left the session on the machine.
+    /// first brought over into a side folder of the session (`bring`); if
+    /// that fails it is kept, and the next link compares again. Tries again
+    /// on each new link while the call fails for the link; ends once the
+    /// machine is forgotten or has no copy, and `journal` goes then.
+    /// Nothing is released unless the host's record names this Mac: a
+    /// restore cut short before its switch left the session on the machine.
     async fn release_when_linked(self, mut journal: Pending) {
         let Pending::Release {
             session,
@@ -1177,16 +1180,29 @@ impl SessionSvc {
             match self.compare_copy(&session, &machine, restored.as_ref()).await {
                 Compared::Gone => break,
                 Compared::NothingMore => {}
-                Compared::More(more) => {
-                    crate::log::say!(
-                        "humatad2: session {session} runs here now, but its old copy on {machine} has more than was restored here: {more}. The copy on {machine} is kept until that can be brought over; Humata compares again when {machine} is next linked or Humata next starts"
-                    );
-                    if let Pending::Release { kept, .. } = &mut journal {
-                        *kept = Some(more.to_string());
+                Compared::More(more, summary) => {
+                    // What the machine has more of comes here first, into a
+                    // side folder of the session; only then does its copy go.
+                    let bringing = Bringing {
+                        machine: &machine,
+                        operation: &operation,
+                        session: &session,
+                        more: &more,
+                        summary: summary.as_ref(),
+                    };
+                    if let Err(error) = self.bring_over(&carry, bringing).await {
+                        if !error.is_link() {
+                            crate::log::say!(
+                                "humatad2: session {session} runs here now, but its old copy on {machine} has more than was restored here ({more}) and couldn't be brought over: {error}. The copy on {machine} is kept; Humata tries again when {machine} is next linked or Humata next starts"
+                            );
+                        }
+                        if let Pending::Release { kept, .. } = &mut journal {
+                            *kept = Some(more.to_string());
+                        }
+                        self.keep(&journal).await;
+                        stale = Some(generation);
+                        continue;
                     }
-                    self.keep(&journal).await;
-                    stale = Some(generation);
-                    continue;
                 }
             }
             match carry.release(&machine, &operation, &session, &channel).await {
@@ -1234,10 +1250,11 @@ impl SessionSvc {
             summary,
         };
         let restored = restored.cloned();
+        let summary = theirs.summary.clone();
         match blocking(move || compare::compare(restored.as_ref(), &theirs, compare::holds)).await {
             Ok(None) => Compared::NothingMore,
-            Ok(Some(more)) => Compared::More(more),
-            Err(_) => Compared::More(More(vec![compare::Extra::TurnsUnknown, compare::Extra::NoSummary])),
+            Ok(Some(more)) => Compared::More(more, summary),
+            Err(_) => Compared::More(More(vec![compare::Extra::TurnsUnknown, compare::Extra::NoSummary]), summary),
         }
     }
 
@@ -1389,8 +1406,10 @@ enum Compared {
     Gone,
     /// Nothing there that the restore didn't bring: the copy may go.
     NothingMore,
-    /// More there, or something couldn't be learned: the copy stays.
-    More(More),
+    /// More there, or something couldn't be learned: the copy stays until
+    /// what it has more of is brought over. The machine's archive summary
+    /// comes along when it was read.
+    More(More, Option<pb::ArchiveSummary>),
 }
 
 /// What a machine's removal does with one of its sessions (CH-8, LD-10).

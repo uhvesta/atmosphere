@@ -431,33 +431,56 @@ async fn a_mirror_restore_releases_box_1s_copy_after_a_host_restart_and_stays_he
     stays_here(&rig, &id).await;
 }
 
-/// Waits until the host has compared box-1's copy of `id` with what it
-/// restored here and kept the copy: the release's journal records what
-/// box-1 had more of. The host writes that only after the comparison, and
-/// then waits for a new link before it compares again, so once it is there
-/// this link's decision is made and a release can't still be under way.
-/// Nothing on the host's feeds tells of it.
-async fn kept_after_comparing(rig: &Rig, id: &pb::SessionId) {
-    let journal = rig.host.state.join("carry").join("remote_archive").join(format!("{}.release.json", id.value));
-    let compared = || {
-        std::fs::read(&journal)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .is_some_and(|value| value.get("kept").is_some_and(|kept| !kept.is_null()))
+/// The side folder the host brought box-1's copy of `id` into, under the
+/// session's folder here, once it is complete: its final name appears only
+/// after the copy was checked and its notice written. Nothing on the host's
+/// feeds tells of it.
+async fn brought_from_box_1(rig: &Rig, channel: &pb::Channel) -> std::path::PathBuf {
+    let sides = rig.host_path(channel, "sessions/cache-warmup/.humata");
+    let complete = || {
+        std::fs::read_dir(&sides).ok().and_then(|entries| {
+            entries.flatten().map(|entry| entry.path()).find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("from-box-1-") && !name.ends_with(".partial"))
+            })
+        })
     };
     let deadline = tokio::time::Instant::now() + LONG;
-    while !compared() {
-        assert!(tokio::time::Instant::now() < deadline, "the host never compared box-1's copy");
+    loop {
+        if let Some(side) = complete() {
+            return side;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the host never brought box-1's copy into {}", sides.display());
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-/// D224: box-1's archive restored on this Mac from the mirror while box-1
-/// is away, when box-1's clone had a file never committed. Back, box-1
-/// still has that the restore didn't bring, so its copy is kept, and the
-/// session stays live here.
+/// Every file under `root` with its contents read as text, lossily.
+fn texts_under(root: &Path) -> Vec<(std::path::PathBuf, String)> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_owned()];
+    while let Some(folder) = stack.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.push((path, String::from_utf8_lossy(&bytes).into_owned()));
+            }
+        }
+    }
+    found
+}
+
+/// D224's carry: box-1's archive restored on this Mac from the mirror while
+/// box-1 is away, when box-1's clone had a file never committed. Back,
+/// box-1 has more than the restore brought, so what it holds is carried
+/// into a side folder of the session here, with a notice that names the
+/// work that is gone, and only then does box-1 let its copy go. The
+/// session's own clone here is untouched, and it stays live here.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_mirror_restore_keeps_box_1s_copy_when_box_1_has_more_than_was_restored() {
+async fn a_mirror_restore_brings_what_box_1_had_more_of_into_a_side_folder_then_releases_its_copy() {
     let (rig, channel, id) = on_box().await;
     say(&rig, &id, r#"{"type":"user","message":{"content":"said on box-1"}}"#).await;
     mirrored(&rig, &id, "said on box-1").await;
@@ -480,9 +503,17 @@ async fn a_mirror_restore_keeps_box_1s_copy_when_box_1_has_more_than_was_restore
     rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
 
     rig.link_back("box-1").await;
-    kept_after_comparing(&rig, &id).await;
-    let store = rig.the("box-1").store();
-    assert!(store.session(&id.value).unwrap().is_some(), "box-1 keeps its record of the session");
-    assert!(store.archive(&id.value).unwrap().is_some(), "box-1 keeps its archive of the session");
+    let side = brought_from_box_1(&rig, &channel).await;
+    released_on_box_1(&rig, &id).await;
+
+    let files = texts_under(&side);
+    assert!(
+        files.iter().any(|(path, text)| path.extension().is_some_and(|ext| ext == "jsonl") && text.contains("said on box-1")),
+        "box-1's conversation was brought: {:?}",
+        files.iter().map(|(path, _)| path).collect::<Vec<_>>()
+    );
+    let notice = std::fs::read_to_string(side.join("NOTICE.md")).expect("the side folder has a notice");
+    assert!(notice.contains("wip.txt"), "the notice names the work that is gone: {notice}");
+    assert!(!rig.host_path(&channel, CLONE).join("wip.txt").exists(), "the live clone here is untouched");
     stays_here(&rig, &id).await;
 }

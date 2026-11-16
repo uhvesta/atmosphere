@@ -39,12 +39,12 @@ pub use staged_fork::{ForkPack, ForkPackError, ForkPacked};
 /// The folder under a channel's own where an operation's staged files wait.
 pub const CARRY_DIR: &str = ".carry";
 
-const STAGE: &str = "stage";
+pub(crate) const STAGE: &str = "stage";
 const INCOMING: &str = "in";
-const MANIFEST: &str = "manifest.json";
-const RECORDS: &str = "records.sqlite";
-const AGENT: &str = "agent";
-const TABS: &str = "tabs";
+pub(crate) const MANIFEST: &str = "manifest.json";
+pub(crate) const RECORDS: &str = "records.sqlite";
+pub(crate) const AGENT: &str = "agent";
+pub(crate) const TABS: &str = "tabs";
 const SAVED: &str = "scrollback";
 
 /// The biggest file whose text is searched for the old folder's path.
@@ -131,7 +131,7 @@ pub enum ManifestProblem {
     Parse(#[source] serde_json::Error),
 }
 
-fn io(doing: &'static str, path: &Path) -> impl FnOnce(std::io::Error) -> CarryError {
+pub(crate) fn io(doing: &'static str, path: &Path) -> impl FnOnce(std::io::Error) -> CarryError {
     let path = path.to_owned();
     move |source| CarryError::Io { doing, path, source }
 }
@@ -168,7 +168,7 @@ pub struct Item {
 }
 
 impl Item {
-    fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         match self.area {
             Area::Folder => self.rel.clone(),
             Area::Agent => format!("the agent's file {}", self.rel),
@@ -248,7 +248,7 @@ pub struct Discard {
     pub what: String,
 }
 
-fn sha_of_file(path: &Path) -> std::io::Result<(u64, String)> {
+pub(crate) fn sha_of_file(path: &Path) -> std::io::Result<(u64, String)> {
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 16];
@@ -275,7 +275,7 @@ fn sha_of_text(text: &str) -> String {
 /// Every file and link under `root`, as items of `area`, in name order.
 /// Folders hold nothing of their own; a socket or other special file is
 /// left out, as no copy could carry it.
-fn items_under(area: Area, root: &Path) -> Result<Vec<Item>, CarryError> {
+pub(crate) fn items_under(area: Area, root: &Path) -> Result<Vec<Item>, CarryError> {
     let mut found = Vec::new();
     walk(area, root, "", &mut found)?;
     found.sort_by(|a, b| a.rel.cmp(&b.rel));
@@ -317,7 +317,7 @@ fn digest_of(items: &[Item]) -> String {
 
 /// Checks that what is under `root` for `area` is exactly `wanted`, naming
 /// the first item that is missing, different or extra.
-fn verify(area: Area, root: &Path, wanted: &[&Item]) -> Result<(), CarryError> {
+pub(crate) fn verify(area: Area, root: &Path, wanted: &[&Item]) -> Result<(), CarryError> {
     let actual = if wanted.is_empty() && !root.exists() { Vec::new() } else { items_under(area, root)? };
     let have: BTreeMap<&str, &Item> = actual.iter().map(|item| (item.rel.as_str(), item)).collect();
     for item in wanted {

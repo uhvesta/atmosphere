@@ -4,6 +4,7 @@
 //! a session can run (PER-12). Knows nothing about gRPC.
 
 mod agents;
+mod bring;
 mod carry;
 mod desk;
 mod error;
@@ -22,6 +23,7 @@ mod start;
 mod work;
 
 pub use agents::{AgentKind, Agents, LaunchPlan, TurnEnd};
+pub use bring::{Brought, check_brought};
 pub use carry::{CARRY_DIR, CarryError, Discard, ForkPack, ForkPackError, ForkPacked, Packed, Unpacked};
 pub use error::{AgentError, GitError, LayoutError, NameError, SetupError, StartError};
 pub use desk::{
