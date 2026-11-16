@@ -54,3 +54,10 @@ Manager: minion BUG2 (Opus 5.5). Design picks: D159 (Fable 5.2 high advisor).
 | w-t5 (Sonnet) | T5 desktop flows | `desktop/tests/report.rs` | done, checked |
 | w-a (Sonnet) | W-A engine PNG of the window, secrets masked in pixels, marks.svg overlay (owner scope change 2026-11-15) | `ui/src/record.rs`, `report/src/*`, `report/tests/*`, `report/BUILD.bazel` | done (record.rs edits went in live before the seams rule; video wiring in seams2.py) |
 | w-b (Sonnet) | W-B video: APNG pipeline + sampler (D160) | new `report/src/video.rs`, `report/tests/video.rs`, `ui/src/record_video.rs` | done (wiring in seams2.py) |
+
+### Close check (minion BUG2-LOOK2, 2026-11-15, after g74)
+- Every seam (seams.py to seams4.py) is in the tree; g74 passed all of BUG2's suites (`report:*`, `features/app:report_test`, `features/palette:report_commands_test`, `clients/live:live_unit_test`, `ui:ui_unit_test`, `desktop:report_test`).
+- Found and fixed: the report named a recording's video by placeholder names (`recording.mp4`, `.webm`, `.gif`) the app never writes, so `report.md` left out `video.png`/`video.jsonl` and the prompt listed them with no description. `report/src/write.rs` now lists `video.png` and `video.jsonl` (names from `report/src/video.rs`) with what they hold. Test first: `report/tests/picture.rs` `a_recordings_video_is_named_with_what_it_holds_in_the_summary_and_the_prompt` (replaces the placeholder `recording.mp4` test). `report:{picture,prompt,video}_test` pass.
+- **GAPS_REVIEW note:** BUG2 close pass: the report and the copied prompt name the recording's real video files (`report/src/{write,video}.rs`, `report/tests/picture.rs`).
+- **Left, outside the exit criterion:** round stroke caps, RPC status sent in trailers after a stream starts, a `humata report draw` CLI (OVERVIEW › Pick up here (minion BUG2)).
+- **Ready to commit:** yes.

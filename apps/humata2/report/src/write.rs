@@ -58,18 +58,23 @@ pub(crate) const MARKS: (&str, &str) = (
     "the drawn marks (numbered like the Drawings list) and pinned comments (C1, C2) laid over window.png",
 );
 
-/// A video of a recording, when the app made one, under the first name
-/// found.
-pub(crate) const VIDEOS: [(&str, &str); 3] = [
-    ("recording.mp4", "a video of the window during the recording, drawn by the app itself"),
-    ("recording.webm", "a video of the window during the recording, drawn by the app itself"),
-    ("recording.gif", "a video of the window during the recording, drawn by the app itself"),
-];
+/// The recording's video as the engine drew it, when the app made one:
+/// an animated PNG of the window.
+pub(crate) const VIDEO: (&str, &str) = (
+    crate::video::PNG,
+    "an animated picture (APNG) of the window during the recording, frames drawn by the app itself, with secrets covered",
+);
+
+/// When each frame of `video.png` was shown, when the app made a video.
+pub(crate) const VIDEO_FRAMES: (&str, &str) = (
+    crate::video::JSONL,
+    "one JSON line for each frame of video.png: when it was shown (at_ms, delay_ms) and the box of the window that changed",
+);
 
 /// The picture and video files of a report, in the order the prompt lists
 /// them.
 pub(crate) fn picture_files() -> impl Iterator<Item = (&'static str, &'static str)> {
-    [WINDOW, MARKS].into_iter().chain(VIDEOS)
+    [WINDOW, MARKS, VIDEO, VIDEO_FRAMES].into_iter()
 }
 
 /// Ends the name of a report folder being written.

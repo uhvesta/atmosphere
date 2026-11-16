@@ -23,10 +23,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::json;
 
 /// The file holding the animation.
-const PNG: &str = "video.png";
+pub(crate) const PNG: &str = "video.png";
 
 /// The file listing each frame, one JSON object a line.
-const JSONL: &str = "video.jsonl";
+pub(crate) const JSONL: &str = "video.jsonl";
 
 /// How often the app is asked for a frame, in milliseconds.
 pub const SAMPLE_MS: u64 = 200;

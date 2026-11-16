@@ -10,6 +10,7 @@ use humata2_report::{
     Bounds, Comment, Drawing, Form, PixelBox, Point, Secrets, Shape, Size, Stroke, copy_prompt,
     fill_form, mask, scrub, write, write_window,
 };
+use humata2_report::video::Video;
 use image::{Rgba, RgbaImage};
 use support::{Driver, add_button, draft_field, item};
 
@@ -211,14 +212,23 @@ fn the_prompt_and_the_summary_name_the_pictures_when_present() {
 }
 
 #[test]
-fn a_video_in_the_folder_is_listed_in_the_prompt() {
+fn a_recordings_video_is_named_with_what_it_holds_in_the_summary_and_the_prompt() {
     let reports = tempfile::tempdir().expect("a temporary folder");
     let dir = saved(reports.path());
-    fs::write(dir.join("recording.mp4"), b"not really a video").expect("writes");
+    let mut video = Video::new(1);
+    video.push(0, 8, 6, white(8, 6).as_raw()).expect("keeps the frame");
+    video.write(&dir).expect("writes the video").expect("there is a video");
+    fill_form(&dir, marked(Vec::new(), Vec::new()), &Secrets::new()).expect("fills in");
 
     let prompt = copy_prompt(&dir).expect("makes the prompt");
+    let summary = fs::read_to_string(dir.join("report.md")).expect("the summary");
 
-    assert!(prompt.contains("recording.mp4"), "{prompt}");
+    for file in ["video.png", "video.jsonl"] {
+        assert!(summary.contains(&format!("- `{file}`: ")), "{summary}");
+        let folder = dir.canonicalize().expect("the folder exists");
+        let listed = format!("- {}: ", folder.join(file).display());
+        assert!(prompt.contains(&listed), "{prompt}");
+    }
 }
 
 #[test]
