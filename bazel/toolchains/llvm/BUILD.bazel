@@ -1,0 +1,4 @@
+exports_files(
+    ["llvm_no_rtlib_on_macos.patch"],
+    visibility = ["//:__pkg__"],
+)

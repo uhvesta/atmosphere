@@ -447,6 +447,12 @@ impl Carry {
         }
     }
 
+    /// `<state>/carry/remote_archive`, where a remote archive's or restore's
+    /// follow-ups wait for a machine's link (D222).
+    pub(crate) fn remote_archive_folder(&self) -> PathBuf {
+        self.0.state.join("carry").join("remote_archive")
+    }
+
     /// The fork is over, made or undone; its journal goes.
     pub(crate) async fn fork_done(&self, operation: &str) {
         let path = self.0.state.join("carry").join("forks").join(format!("{operation}.json"));
@@ -563,6 +569,46 @@ pub(crate) struct ForkJournal {
     /// fork may be on the target from here), copied, unpacked, or recorded
     /// (the host's record is written and the agent is being started).
     pub(crate) phase: String,
+    /// Set for a context-only fork on the parent's own machine (D218,
+    /// D221): what the host asked that machine, so a restart asks again
+    /// under the same key. None for a fork that copies.
+    pub(crate) context: Option<ContextAsk>,
+}
+
+/// What the host asked a machine for a context-only fork of one of its own
+/// sessions, as the fork's journal keeps it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ContextAsk {
+    pub(crate) title: String,
+    pub(crate) before_turn: u32,
+    /// The fork's agent as asked; empty: the parent's.
+    pub(crate) agent: String,
+    pub(crate) model: String,
+    /// The machine's operation once it answered; empty before.
+    pub(crate) asked: String,
+}
+
+impl ContextAsk {
+    fn value(&self) -> serde_json::Value {
+        json!({
+            "title": self.title,
+            "before_turn": self.before_turn,
+            "agent": self.agent,
+            "model": self.model,
+            "asked": self.asked,
+        })
+    }
+
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        Some(Self {
+            title: text("title")?,
+            before_turn: u32::try_from(value.get("before_turn")?.as_u64()?).ok()?,
+            agent: text("agent")?,
+            model: text("model")?,
+            asked: text("asked")?,
+        })
+    }
 }
 
 impl ForkJournal {
@@ -576,6 +622,7 @@ impl ForkJournal {
             "channel": self.channel,
             "folder": self.folder,
             "phase": self.phase,
+            "context": self.context.as_ref().map(ContextAsk::value),
             "at_unix_ms": now_ms(),
         })
     }
@@ -591,6 +638,10 @@ impl ForkJournal {
             channel: text("channel")?,
             folder: text("folder")?,
             phase: text("phase")?,
+            context: match value.get("context") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(context) => Some(ContextAsk::from_value(context)?),
+            },
         })
     }
 }

@@ -506,8 +506,13 @@ async fn a_copy_left_on_an_offline_target_is_taken_back_when_its_link_is_up() {
     rig.the_mut("box-2").relaunch(&[]).await;
     rig.link_back("box-2").await;
     let box_two = clone_on(&rig, "box-2", &channel);
-    rig.wait_session(&id, "box-2's copy taken back", |_| !box_two.exists()).await;
-    assert!(rig.the("box-2").store().session(&id.value).unwrap().is_none(), "box-2 has no record of it");
+    // Box-2 trashes the folder before it drops the records; the host tells
+    // the session again once the whole take-back has answered.
+    let box_two_store = rig.the("box-2").store();
+    rig.wait_session(&id, "box-2's copy and record taken back", |_| {
+        !box_two.exists() && box_two_store.session(&id.value).unwrap().is_none()
+    })
+    .await;
     assert!(staged(&rig, "box-2", &channel).is_empty(), "box-2 keeps nothing staged");
     assert!(holder_answers(&rig.the("box-1").tabs()[0]), "the agent still runs on box-1");
 }

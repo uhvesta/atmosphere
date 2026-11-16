@@ -621,6 +621,7 @@ impl Forker {
                 channel: self.channel.id.clone(),
                 folder: self.fork_folder(),
                 phase: phase.to_owned(),
+                context: None,
             })
             .await;
         stop_point(&format!("fork-{phase}"));
@@ -909,6 +910,10 @@ impl SessionSvc {
             return;
         };
         for journal in carry.fork_journals() {
+            if journal.context.is_some() {
+                self.recover_context_when_linked(carry.clone(), journal, Some(started.clone()));
+                continue;
+            }
             let (svc, carry, started) = (self.clone(), carry.clone(), started.clone());
             tokio::spawn(async move {
                 started.wait().await;

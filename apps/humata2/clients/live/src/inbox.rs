@@ -608,6 +608,7 @@ mod tests {
     #[test]
     fn a_row_without_a_decision_has_no_setting() {
         let reply = pb::ChannelRules {
+            copy: None,
             rules: vec![
                 pb::Rule {
                     capability: pb::Capability::GlobalRead as i32,

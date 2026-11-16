@@ -71,12 +71,28 @@ impl pb::access_service_server::AccessService for Access {
         Ok(Response::new(pb::ListCapabilitiesResponse { capabilities }))
     }
 
-    /// The user reads a channel's rules, with the grants under each.
+    /// The user reads a channel's rules, with the grants under each. On a
+    /// machine they are the policy copy's, the rules it judges by (D220).
     async fn get_channel_rules(
         &self,
         request: Request<pb::GetChannelRulesRequest>,
     ) -> Result<Response<pb::ChannelRules>, Status> {
         let caller = identity::caller(&request)?;
+        if self.reads_copy(&caller) {
+            let channel = channel_of(request.into_inner().channel)?;
+            self.ensure_known(&channel).await?;
+            let copy = self.copy_stamp().await?;
+            let rules = self.guard.with_policy(|policy, _| {
+                // A channel the copy doesn't hold is judged by the defaults;
+                // reading it adds nothing to the policy.
+                let rules = policy
+                    .channel_rules(&ChannelId::new(channel.as_str()))
+                    .unwrap_or_else(|| policy.new_channel_rules())
+                    .clone();
+                channel_rules_pb(policy, &channel, &rules, None, copy)
+            });
+            return Ok(Response::new(rules));
+        }
         self.require_user(&caller)?;
         let channel = channel_of(request.into_inner().channel)?;
         self.ensure_known(&channel).await?;
@@ -162,6 +178,15 @@ impl pb::access_service_server::AccessService for Access {
         request: Request<pb::GetDefaultRulesRequest>,
     ) -> Result<Response<pb::DefaultRules>, Status> {
         let caller = identity::caller(&request)?;
+        if self.reads_copy(&caller) {
+            let copy = self.copy_stamp().await?;
+            let rules = self.guard.with_policy(|policy, _| pb::DefaultRules {
+                revision: None,
+                copy,
+                ..default_pb(policy, 0)
+            });
+            return Ok(Response::new(rules));
+        }
         self.require_user(&caller)?;
         let revision = self.default_revision().await?;
         let rules = self
@@ -475,6 +500,31 @@ impl pb::access_service_server::AccessService for Access {
 }
 
 impl Access {
+    /// D220: on a machine the user reads the rules from the policy copy,
+    /// whether the host is reachable or away. Everyone else, and every read
+    /// on the host, goes through [`Access::require_user`].
+    fn reads_copy(&self, caller: &Caller) -> bool {
+        !self.guard.host_link().on_host() && matches!(caller, Caller::User(_))
+    }
+
+    /// Which copy a machine's rules come from; `None` when the host never
+    /// sent one, so they are the defaults.
+    async fn copy_stamp(&self) -> Result<Option<pb::PolicyCopyStamp>, Status> {
+        let store = Arc::clone(&self.store);
+        off_runtime(move || {
+            crate::away::kept_policy_stamp(&store).map_err(|error| {
+                status::internal(
+                    format!(
+                        "couldn't read the rules this machine keeps: {}",
+                        status::chain(&error)
+                    ),
+                    "",
+                )
+            })
+        })
+        .await
+    }
+
     /// Refuses anyone but the user, naming IN-23.
     fn require_user(&self, caller: &Caller) -> Result<(), Status> {
         self.guard.require(
@@ -597,8 +647,28 @@ fn channel_of(channel: Option<pb::ChannelId>) -> Result<String, Status> {
 
 /// The channel's rules and the grants under them, as clients see them.
 fn channel_pb(policy: &Policy, channel: &str, revision: u64) -> pb::ChannelRules {
+    let rules = policy
+        .channel_rules(&ChannelId::new(channel))
+        .cloned()
+        .unwrap_or_default();
+    channel_rules_pb(
+        policy,
+        channel,
+        &rules,
+        Some(pb::Revision { value: revision }),
+        None,
+    )
+}
+
+/// `rules`, a channel's, and the grants under them, as clients see them.
+fn channel_rules_pb(
+    policy: &Policy,
+    channel: &str,
+    rules: &humata2_access::ChannelRules,
+    revision: Option<pb::Revision>,
+    copy: Option<pb::PolicyCopyStamp>,
+) -> pb::ChannelRules {
     let id = ChannelId::new(channel);
-    let rules = policy.channel_rules(&id).cloned().unwrap_or_default();
     let grants: Vec<pb::Grant> = policy
         .grants()
         .filter(|grant| grant.channel == id)
@@ -608,9 +678,10 @@ fn channel_pb(policy: &Policy, channel: &str, revision: u64) -> pb::ChannelRules
         channel: Some(pb::ChannelId {
             value: channel.to_owned(),
         }),
-        rules: rules_kept::rules_pb(&rules, &grants),
+        rules: rules_kept::rules_pb(rules, &grants),
         away: Some(rules_kept::away_pb(rules.away())),
-        revision: Some(pb::Revision { value: revision }),
+        revision,
+        copy,
     }
 }
 
@@ -620,6 +691,7 @@ fn default_pb(policy: &Policy, revision: u64) -> pb::DefaultRules {
         rules: rules_kept::rules_pb(rules, &[]),
         away: Some(rules_kept::away_pb(rules.away())),
         revision: Some(pb::Revision { value: revision }),
+        copy: None,
     }
 }
 

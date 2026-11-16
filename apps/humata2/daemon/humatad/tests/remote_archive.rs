@@ -346,9 +346,87 @@ async fn restoring_box_1s_archive_on_this_mac_while_box_1_is_away_uses_the_mirro
 
     // Back, box-1 drops its copy: the session runs here alone.
     rig.link_back("box-1").await;
+    released_on_box_1(&rig, &id).await;
+    stays_here(&rig, &id).await;
+}
+
+/// Waits until box-1's store no longer holds `id`: box-1 let its copy go.
+/// Nothing on the host's feeds tells of it.
+async fn released_on_box_1(rig: &Rig, id: &pb::SessionId) {
     let deadline = tokio::time::Instant::now() + LONG;
     while rig.the("box-1").store().session(&id.value).unwrap().is_some() {
         assert!(tokio::time::Instant::now() < deadline, "box-1 kept its copy of the session");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Box-1, back and done with its copy, didn't take `id` back: the host's
+/// record names this Mac, and the session is live and unarchived here.
+async fn stays_here(rig: &Rig, id: &pb::SessionId) {
+    let host = rig.host_id().await;
+    let shown = rig.session(id).await;
+    assert_eq!(shown.machine, Some(host), "the session still runs on this Mac");
+    assert!(is_live(&shown), "the session is still live here: {shown:?}");
+    assert!(shown.archive.is_none(), "the session isn't archived again");
+    assert!(listed(rig).await.contains(id), "the session is in the plain list");
+}
+
+/// D222: a link lost while box-1 archives, then a restart of the host while
+/// box-1 is away. Once box-1 is back the host still learns it archived the
+/// session and lists it archived.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_archive_whose_link_was_lost_shows_archived_after_a_host_restart_once_box_1_is_back() {
+    let (mut rig, _channel, id) = on_box().await;
+    let hold = hold_remote_archives(&mut rig).await;
+    rig.wait_session(&id, "live again", is_live).await;
+
+    let started = start_archive(&rig, &id, pb::ArchiveChoice::Archive).await;
+    recorded_on_box_1(&rig, &id).await;
+    rig.link_lost("box-1").await;
+    release(&hold).await;
+    rig.ended(&started).await;
+
+    // Box-1 stays away through the host's restart: its daemon is down, so
+    // the restart doesn't wait for its link.
+    rig.the_mut("box-1").kill();
+    rig.restart_host(&[]).await;
+    assert!(rig.session(&id).await.archive.is_none(), "nothing is known of box-1's archive yet");
+    rig.the_mut("box-1").relaunch(&[]).await;
+    rig.link_back("box-1").await;
+
+    let archived = rig.wait_session(&id, "archived", |s| s.archive.is_some()).await;
+    assert_eq!(archived.machine, Some(Rig::box_id("box-1")));
+    assert!(!listed(&rig).await.contains(&id), "an archived session leaves the plain list");
+}
+
+/// D222 and the flip back: box-1's archive restored on this Mac from the
+/// mirror while box-1 is away, then a restart of the host. Once box-1 is
+/// back it lets its copy go, and its reports don't take the session back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_restore_releases_box_1s_copy_after_a_host_restart_and_stays_here() {
+    let (mut rig, channel, id) = on_box().await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on box-1"}}"#).await;
+    mirrored(&rig, &id, "said on box-1").await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+    rig.link_lost("box-1").await;
+
+    let host = rig.host_id().await;
+    let ended = restore(&rig, &id, Some(host.clone())).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+
+    rig.the_mut("box-1").kill();
+    rig.restart_host(&[]).await;
+    rig.wait_session(&id, "live on this Mac after the restart", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+    assert!(rig.the("box-1").store().session(&id.value).unwrap().is_some(), "box-1 was away, so its copy is still there");
+
+    rig.the_mut("box-1").relaunch(&[]).await;
+    rig.link_back("box-1").await;
+    released_on_box_1(&rig, &id).await;
+    stays_here(&rig, &id).await;
 }

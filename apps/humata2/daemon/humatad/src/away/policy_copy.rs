@@ -104,6 +104,7 @@ impl PolicySource {
                 rules: rules_kept::rules_pb(rules, &[]),
                 away: Some(rules_kept::away_pb(rules.away())),
                 revision: None,
+                copy: None,
             });
             if let Some(on) = contained::channel(&self.store, id.as_str()).map_err(store_error)? {
                 channel_contain.push(pb::ChannelContain {
@@ -131,6 +132,7 @@ impl PolicySource {
                 rules: rules_kept::rules_pb(defaults, &[]),
                 away: Some(rules_kept::away_pb(defaults.away())),
                 revision: None,
+                copy: None,
             }),
             approval_verifier: passphrase::verifier(&self.store).map_err(store_error)?,
             contain_agents: contained::global(&self.store).map_err(store_error)?.0,
@@ -270,15 +272,33 @@ impl PolicySource {
 /// before the Inbox puts its grants back. Nothing kept leaves the default
 /// rules, with While I'm away at Wait.
 pub(crate) fn restore(store: &Arc<Store>, guard: &Arc<Guard>) -> Result<(), CopyError> {
-    let Some(saved) = store.setting(COPY_KEY).map_err(|source| CopyError::Store { source })? else {
+    let Some(snapshot) = kept(store)? else {
         return Ok(());
     };
+    PolicySource::new(guard.clone(), store.clone()).apply(&snapshot).map(drop)
+}
+
+/// Which copy this machine's rules come from (D220): its revision and the
+/// host's time when it made it. `None` when the host never sent one.
+pub(crate) fn kept_stamp(store: &Store) -> Result<Option<pb::PolicyCopyStamp>, CopyError> {
+    Ok(kept(store)?.map(|snapshot| pb::PolicyCopyStamp {
+        revision: snapshot.revision,
+        at: snapshot.at,
+    }))
+}
+
+/// The copy this machine keeps, if the host ever sent one.
+fn kept(store: &Store) -> Result<Option<pb::PolicySnapshot>, CopyError> {
+    let Some(saved) = store.setting(COPY_KEY).map_err(|source| CopyError::Store { source })? else {
+        return Ok(None);
+    };
     if saved.value.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let bytes = from_hex(&saved.value).ok_or(CopyError::NotHex)?;
-    let snapshot = pb::PolicySnapshot::decode(bytes.as_slice()).map_err(|source| CopyError::Damaged { source })?;
-    PolicySource::new(guard.clone(), store.clone()).apply(&snapshot).map(drop)
+    pb::PolicySnapshot::decode(bytes.as_slice())
+        .map(Some)
+        .map_err(|source| CopyError::Damaged { source })
 }
 
 /// Keeps the copy and the settings it carries.

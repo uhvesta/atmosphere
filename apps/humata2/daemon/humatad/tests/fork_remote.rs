@@ -550,3 +550,45 @@ async fn a_fork_cut_short_by_a_host_restart_is_undone_or_finished() {
         assert!(holder_answers(&common::stored_tabs(&rig.host.state)[0]), "{at}: the parent runs on");
     }
 }
+
+/// D218, D221: a host killed right after box-1 took a context-only fork of
+/// box-1's session lists that fork at its next start, once box-1's link is
+/// up: on box-1, with the parent as its fork origin, exactly once, and
+/// box-1 made it only once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_context_only_fork_on_a_box_cut_short_by_a_host_restart_is_listed_once_the_box_is_linked() {
+    let mut rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let parent = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&parent, "live", is_live).await;
+
+    rig.restart_host(&[("HUMATA2_STOP_AT", "fork-context-asked")]).await;
+    let _ = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .fork_session(request(&parent, pb::ForkKind::ContextOnly, &one))
+        .await;
+    rig.host_stopped().await;
+    rig.restart_host(&[]).await;
+
+    let shown = rig.wait_session(&parent, "its fork listed", |s| !s.forks.is_empty()).await;
+    assert_eq!(shown.forks.len(), 1, "one fork: {:?}", shown.forks);
+    let id = shown.forks[0].clone();
+    let child = rig.wait_session(&id, "live on box-1", |s| s.machine.as_ref() == Some(&one) && is_live(s)).await;
+    let origin = child.fork_origin.expect("the fork has its origin");
+    assert_eq!(origin.parent.as_ref(), Some(&parent));
+    assert_eq!(origin.kind, pb::ForkKind::ContextOnly as i32);
+
+    let deadline = tokio::time::Instant::now() + remote_rig::LONG;
+    while fork_journals(&rig) != 0 {
+        assert!(tokio::time::Instant::now() < deadline, "the fork's journal was never done with");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .sessions;
+    assert_eq!(listed.len(), 2, "the parent and its fork, once: {listed:?}");
+    assert_eq!(rig.the("box-1").store().sessions().unwrap().len(), 2, "box-1 made the fork once");
+}

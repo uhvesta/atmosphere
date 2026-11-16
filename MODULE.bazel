@@ -5,6 +5,15 @@ bazel_dep(name = "rules_cc", version = "0.2.26")
 bazel_dep(name = "rules_go", version = "0.63.0")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "llvm", version = "0.8.18")
+
+# @llvm passes -rtlib=compiler-rt on every link; clang's Darwin driver ignores
+# it (it always links libclang_rt.osx), so every macOS link warned. The patch
+# keeps it for ELF targets only.
+single_version_override(
+    module_name = "llvm",
+    patch_strip = 1,
+    patches = ["//bazel/toolchains/llvm:llvm_no_rtlib_on_macos.patch"],
+)
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")

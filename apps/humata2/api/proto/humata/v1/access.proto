@@ -203,7 +203,18 @@ message ChannelRules {
   ChannelId channel = 1;
   repeated Rule rules = 2;
   AwayRule away = 3;
+  // Unset on a machine: its rules are a copy (D220) and can't be changed there.
   Revision revision = 4;
+  // On a machine, the policy copy these rules come from; unset on the host
+  // and on a machine the host never sent a copy (D220).
+  PolicyCopyStamp copy = 5;
+}
+
+// Which policy copy a machine's rules come from (AW-8, D220): the copy's
+// revision and the host's time when it made it.
+message PolicyCopyStamp {
+  uint64 revision = 1;
+  google.protobuf.Timestamp at = 2;
 }
 
 message GetChannelRulesRequest { ChannelId channel = 1; }
@@ -228,7 +239,10 @@ message SetAwayRuleRequest {
 message DefaultRules {
   repeated Rule rules = 1;
   AwayRule away = 2;
+  // Unset on a machine (D220).
   Revision revision = 3;
+  // As ChannelRules.copy.
+  PolicyCopyStamp copy = 4;
 }
 
 message GetDefaultRulesRequest {}

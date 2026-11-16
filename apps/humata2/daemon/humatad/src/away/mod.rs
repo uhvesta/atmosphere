@@ -10,5 +10,5 @@ mod uplink;
 
 pub(crate) use link::HostLink;
 pub(crate) use passphrase::set_approval_passphrase;
-pub(crate) use policy_copy::{PolicySource, restore as restore_policy_copy};
+pub(crate) use policy_copy::{PolicySource, kept_stamp as kept_policy_stamp, restore as restore_policy_copy};
 pub(crate) use uplink::{UplinkStream, Uplinks};

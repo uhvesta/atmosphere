@@ -1,0 +1,18 @@
+--- a/toolchain/args/BUILD.bazel	2026-11-16 08:40:02
++++ b/toolchain/args/BUILD.bazel	2026-11-16 08:40:02
+@@ -874,9 +874,12 @@
+     actions = [
+         "@rules_cc//cc/toolchains/actions:link_actions",
+     ],
+-    args = [
+-        "-rtlib=compiler-rt",
+-    ],
++    # clang's Darwin driver always links libclang_rt.osx and ignores -rtlib,
++    # so passing it there only warns on every link.
++    args = select({
++        "@platforms//os:macos": [],
++        "//conditions:default": ["-rtlib=compiler-rt"],
++    }),
+ )
+ 
+ cc_args(

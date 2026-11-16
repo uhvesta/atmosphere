@@ -13,7 +13,11 @@
 //! the host's row to the next time the link comes up: the host asks the
 //! machine then whether it archived the session. A restore on this Mac
 //! while the machine is away takes the conversation from the host's mirror
-//! and lets the machine's copy go the next time its link comes up.
+//! and lets the machine's copy go the next time its link comes up. Both
+//! follow-ups are kept on disk before they wait (`pending`), so a restart
+//! of the host goes on with them (D222).
+
+mod pending;
 
 use std::collections::HashMap;
 
@@ -26,11 +30,12 @@ use super::fork::hold_point;
 use super::lineage::publish_family;
 use super::{Gated, Loaded, SessionSvc, now_ms, run_resume, start_error, watch};
 use crate::channel_service::{blocking, error_of, failed, timestamp_ms};
-use crate::carry::Place;
+use crate::carry::{Carry, Place};
 use crate::host_relay::{LinkState, Links, RelayError, Relayed, assigned};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
 use crate::status;
+use pending::Pending;
 
 /// Why an archive or restore of a session on another machine couldn't go on.
 #[derive(Debug, thiserror::Error)]
@@ -149,6 +154,19 @@ fn host_summary(
     }
 }
 
+/// A machine's own archive of a session: its summary and the pointers it
+/// shows for the session.
+struct Archived {
+    summary: pb::ArchiveSummary,
+    pointers: Vec<pb::Pointer>,
+}
+
+/// The pointers an archive row takes: the machine's own, where its answer
+/// carries any, over what it last reported (D218).
+fn pointers_of<'a>(theirs: &'a [pb::Pointer], reported: &'a [pb::Pointer]) -> &'a [pb::Pointer] {
+    if theirs.is_empty() { reported } else { theirs }
+}
+
 /// A call to `machine` that failed: its own answer stays as it is, a link
 /// that broke under the call is "offline".
 pub(super) fn machine_failed(machine: &str, source: Status) -> Status {
@@ -185,15 +203,23 @@ pub(super) fn mirror_steps(
 }
 
 /// The error of a link to `machine` lost while it was `doing` something it
-/// finishes on its own.
+/// finishes on its own. An archive is checked again once the machine
+/// reconnects (D218).
 fn lost_link(machine: &str, doing: &'static str) -> Status {
+    let fix = if doing == "archive" {
+        format!(
+            "{machine} may still have archived the session: Humata checks when {machine} reconnects and shows it archived then. Reconnect {machine} rather than archiving again"
+        )
+    } else {
+        "reconnect the machine and look at the session: the machine finishes what it started on its own".to_owned()
+    };
     failed(
         Code::Unavailable,
         &RemoteError::LinkLost {
             machine: machine.to_owned(),
             doing,
         },
-        "reconnect the machine and look at the session: the machine finishes what it started on its own",
+        &fix,
         None,
     )
 }
@@ -355,16 +381,32 @@ impl SessionSvc {
         progress.set_step("stop", pb::StepState::Running, None);
         // What the machine last reported, before its archive may clear it.
         let reported = self.reported_pointers(&machine, &id);
+        // Kept before the machine is asked: a restart that cuts the wait
+        // short still learns whether the machine archived it (D222).
+        let mut journal = Pending::Reconcile {
+            session: id.clone(),
+            machine: machine.clone(),
+            reported: reported.clone(),
+            by: by.clone(),
+            asked: None,
+        };
         let mut asked_machine = false;
         let ended = async {
             let relayed = self.relayed_to(&id, &machine)?;
             let request = assigned(asked, None).map_err(Status::from)?;
+            self.keep(&journal).await;
             asked_machine = true;
             let first = relayed
                 .session()
                 .archive_session(request)
                 .await
                 .map_err(|source| machine_failed(&machine, source));
+            // The machine's operation, so a later check can wait for it to
+            // end rather than find the archive still under way.
+            if let (Ok(answer), Pending::Reconcile { asked, .. }) = (&first, &mut journal) {
+                *asked = answer.get_ref().id.as_ref().map(|id| id.value.clone());
+                self.keep(&journal).await;
+            }
             hold_point("archive-remote-asked").await;
             follow_to_end(&relayed, &machine, first?.into_inner(), &progress, || lost_link(&machine, "archive")).await
         }
@@ -382,12 +424,15 @@ impl SessionSvc {
                 // The machine may finish the archive on its own; the host
                 // learns of it once the link is back.
                 if asked_machine && refused.code() == Code::Unavailable {
-                    tokio::spawn(self.clone().reconcile_when_linked(id, machine, reported, by));
+                    tokio::spawn(self.clone().reconcile_when_linked(journal));
+                } else if asked_machine {
+                    self.settled(&journal).await;
                 }
                 return;
             }
         };
         if ended.state != pb::OperationState::Succeeded as i32 {
+            self.settled(&journal).await;
             progress.fail(operation_error(&machine, "archive", &ended));
             return;
         }
@@ -396,6 +441,7 @@ impl SessionSvc {
             progress.fail(status::error_of(&refused).unwrap_or_default());
             return;
         }
+        self.settled(&journal).await;
         drop(guard);
         progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
             value: id.clone(),
@@ -412,14 +458,21 @@ impl SessionSvc {
             .unwrap_or_default()
     }
 
-    /// What `machine`'s own archive of `session` says, when it has one.
-    async fn archived_on(&self, machine: &str, session: &str) -> Result<Option<pb::ArchiveSummary>, Status> {
+    /// What `machine`'s own archive of `session` says, when it has one, with
+    /// the pointers it shows for the session.
+    async fn archived_on(&self, machine: &str, session: &str) -> Result<Option<Archived>, Status> {
         let relayed = self.relayed_to(session, machine)?;
         let request = pb::GetSessionRequest {
             id: Some(pb::SessionId { value: session.to_owned() }),
         };
         match relayed.session().get_session(tonic::Request::new(request)).await {
-            Ok(shown) => Ok(shown.into_inner().archive),
+            Ok(shown) => {
+                let shown = shown.into_inner();
+                Ok(shown.archive.map(|summary| Archived {
+                    summary,
+                    pointers: shown.pointers,
+                }))
+            }
             Err(refused) if refused.code() == Code::NotFound => Ok(None),
             Err(refused) => Err(machine_failed(machine, refused)),
         }
@@ -428,24 +481,81 @@ impl SessionSvc {
     /// After a link lost while `machine` archived `session`: each time the
     /// link comes up, asks the machine whether it archived the session, and
     /// writes the host's row when it did. Ends once the machine answers, or
-    /// once it is forgotten.
-    async fn reconcile_when_linked(self, session: String, machine: String, reported: Vec<pb::Pointer>, by: pb::Actor) {
-        let Ok(links) = self.links_to(&session, &machine) else {
+    /// once it is forgotten; `journal` goes then. A failure other than the
+    /// link's leaves it for the next start.
+    async fn reconcile_when_linked(self, journal: Pending) {
+        let Pending::Reconcile {
+            session,
+            machine,
+            reported,
+            by,
+            asked,
+        } = &journal
+        else {
+            return;
+        };
+        let Ok(links) = self.links_to(session, machine) else {
             return;
         };
         let mut stale = None;
-        while let Some(generation) = next_link_up(&links, &machine, stale).await {
-            match self.reconcile_archive(&session, &machine, &reported, &by).await {
-                Ok(()) => return,
+        while let Some(generation) = next_link_up(&links, machine, stale).await {
+            match self.reconcile_archive(session, machine, reported, by, asked.as_deref()).await {
+                Ok(()) => break,
                 Err(refused) if refused.code() == Code::Unavailable => stale = Some(generation),
                 Err(refused) => {
                     crate::log::say!(
-                        "humatad2: couldn't learn whether {machine} archived session {session}: {}; look at the session on {machine} and archive it again",
+                        "humatad2: couldn't learn whether {machine} archived session {session}: {}; Humata asks again when {machine} is next linked or Humata next starts. Forgetting {machine} drops the question",
                         refused.message()
                     );
-                    return;
+                    stale = Some(generation);
                 }
             }
+        }
+        // Answered, or the machine was forgotten (which archives its
+        // sessions on its own): nothing is left to learn.
+        self.settled(&journal).await;
+    }
+
+    /// Keeps `journal` on disk, so a restart goes on with it. Best effort: a
+    /// follow-up that can't be kept still runs, and the log says so.
+    async fn keep(&self, journal: &Pending) {
+        let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
+            return;
+        };
+        let kept = journal.clone();
+        if let Ok(Err(error)) = blocking(move || pending::write(&root, &kept)).await {
+            crate::log::say!(
+                "humatad2: {}; if Humata restarts before the machine is back, look at session {} on it",
+                status::chain(&error),
+                journal.session()
+            );
+        }
+    }
+
+    /// `journal` is done or moot; its file goes.
+    async fn settled(&self, journal: &Pending) {
+        let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
+            return;
+        };
+        let done = journal.clone();
+        let _ = blocking(move || pending::remove(&root, &done)).await;
+    }
+
+    /// Goes on with the follow-ups the last run left waiting on a machine's
+    /// link, once the start is done (D222). Call it once the carry is set.
+    pub(super) fn recover_remote_archives_after(&self, started: std::sync::Arc<crate::restart::Started>) {
+        let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
+            return;
+        };
+        for journal in pending::read_all(&root) {
+            let (svc, started) = (self.clone(), started.clone());
+            tokio::spawn(async move {
+                started.wait().await;
+                match journal {
+                    Pending::Reconcile { .. } => svc.reconcile_when_linked(journal).await,
+                    Pending::Release { .. } => svc.release_when_linked(journal).await,
+                }
+            });
         }
     }
 
@@ -457,7 +567,13 @@ impl SessionSvc {
         machine: &str,
         reported: &[pb::Pointer],
         by: &pb::Actor,
+        asked: Option<&str>,
     ) -> Result<(), Status> {
+        // An archive still under way when the link came back is waited for,
+        // outside the session's lock.
+        if let Some(operation) = asked {
+            self.machine_operation_ended(session, machine, operation).await?;
+        }
         let guard = self.lifecycle.lock_of(session).lock_owned().await;
         let loaded = match self.load(session).await {
             Ok(loaded) => loaded,
@@ -488,6 +604,31 @@ impl SessionSvc {
         Ok(())
     }
 
+    /// Waits until `machine`'s operation `id` ends. One the machine no longer
+    /// knows ended with a restart of it, which finished or undid its work.
+    async fn machine_operation_ended(&self, session: &str, machine: &str, id: &str) -> Result<(), Status> {
+        let relayed = self.relayed_to(session, machine)?;
+        let watched = relayed
+            .operation()
+            .watch_operation(pb::WatchOperationRequest {
+                id: Some(pb::OperationId { value: id.to_owned() }),
+                from_version: 0,
+            })
+            .await;
+        let mut stream = match watched {
+            Ok(stream) => stream.into_inner(),
+            Err(refused) if refused.code() == Code::NotFound => return Ok(()),
+            Err(refused) => return Err(machine_failed(machine, refused)),
+        };
+        loop {
+            match stream.message().await {
+                Ok(Some(operation)) if finished(&operation) => return Ok(()),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return Err(lost_link(machine, "archive")),
+            }
+        }
+    }
+
     /// What follows the host's row for a session its machine archived: its
     /// grants and requests end, and the feeds show it archived.
     async fn after_remote_archive(&self, id: &str, by: pb::Actor) {
@@ -516,12 +657,16 @@ impl SessionSvc {
     async fn write_remote_row(
         &self,
         loaded: &Loaded,
-        theirs: Option<pb::ArchiveSummary>,
+        theirs: Option<Archived>,
         reported: &[pb::Pointer],
     ) -> Result<(), Status> {
         let id = loaded.record.id.clone();
         let archived = now_ms();
-        let summary = host_summary(loaded, theirs, reported, archived);
+        let (summary, pointers) = match theirs {
+            Some(Archived { summary, pointers }) => (Some(summary), pointers),
+            None => (None, Vec::new()),
+        };
+        let summary = host_summary(loaded, summary, pointers_of(&pointers, reported), archived);
         let row = ArchiveRow {
             session_id: id.clone(),
             archived_unix_ms: archived,
@@ -905,6 +1050,25 @@ impl SessionSvc {
             progress.set_step(&format!("clone:{name}"), pb::StepState::Done, None);
         }
 
+        // Kept before the switch: a restart after it still lets the
+        // machine's copy go (D222). The release checks the record first.
+        let journal = Pending::Release {
+            session: id.clone(),
+            machine: machine.clone(),
+            channel: record.channel.clone(),
+            operation: operation.clone(),
+        };
+        self.keep(&journal).await;
+        // An archive this restore undoes has nothing left to learn; a check
+        // still running finds the record here and leaves it (D222).
+        self.settled(&Pending::Reconcile {
+            session: id.clone(),
+            machine: machine.clone(),
+            reported: Vec::new(),
+            by: pb::Actor::default(),
+            asked: None,
+        })
+        .await;
         // Switch: the new file repeats exactly the entries of the lines
         // written, so the mirror adds only what follows (D211).
         let here = self.machine.clone();
@@ -922,6 +1086,7 @@ impl SessionSvc {
             Err(refused) => Some(error_from(&refused)),
         };
         if let Some(failure) = failure {
+            self.settled(&journal).await;
             self.rebase_mirror(&id, &machine, None).await;
             progress.fail(failure);
             return;
@@ -930,7 +1095,7 @@ impl SessionSvc {
         if let Some(remote) = &self.remote {
             remote.forget_session(&machine, &id).await;
         }
-        tokio::spawn(self.clone().release_when_linked(machine, id.clone(), record.channel.clone(), operation));
+        tokio::spawn(self.clone().release_when_linked(journal));
         self.tell.session(&id, pb::Change::Updated, Some(by.clone())).await;
         publish_family(&self.tell, &id, Some(by.clone())).await;
 
@@ -950,29 +1115,61 @@ impl SessionSvc {
 
     /// After a restore here while `machine` was away: the next time its link
     /// comes up, its copy of the session goes to its trash and its records
-    /// are dropped. Tries again on each new link while the call fails for
-    /// the link; ends once the machine is forgotten.
-    async fn release_when_linked(self, machine: String, session: String, channel: String, operation: String) {
+    /// are dropped, and what it reported of the session meanwhile is
+    /// forgotten. Tries again on each new link while the call fails for the
+    /// link; ends once the machine is forgotten, and `journal` goes then.
+    /// Nothing is released unless the host's record names this Mac: a
+    /// restore cut short before its switch left the session on the machine.
+    async fn release_when_linked(self, journal: Pending) {
+        let Pending::Release {
+            session,
+            machine,
+            channel,
+            operation,
+        } = &journal
+        else {
+            return;
+        };
         let Some(carry) = self.carry.get().cloned() else {
             return;
         };
         let links = carry.links().clone();
         let mut stale = None;
-        while let Some(generation) = next_link_up(&links, &machine, stale).await {
-            match carry.release(&machine, &operation, &session, &channel).await {
-                Ok(()) => return,
+        while let Some(generation) = next_link_up(&links, machine, stale).await {
+            match self.load(session).await {
+                Ok(loaded) if loaded.record.machine == self.machine => {}
+                Ok(_) => break,
+                Err(refused) if refused.code() == Code::NotFound => break,
+                Err(refused) => {
+                    crate::log::say!(
+                        "humatad2: session {session}'s old copy on {machine} is still there, because its record here couldn't be read: {}; Humata tries again when {machine} is next linked or Humata next starts",
+                        refused.message()
+                    );
+                    stale = Some(generation);
+                    continue;
+                }
+            }
+            match carry.release(machine, operation, session, channel).await {
+                Ok(()) => {
+                    // A report it sent before letting go isn't the session's.
+                    if let Some(remote) = &self.remote {
+                        remote.forget_session(machine, session).await;
+                    }
+                    break;
+                }
                 Err(refused) if matches!(refused.code(), Code::Unavailable | Code::Unknown | Code::Cancelled) => {
                     stale = Some(generation);
                 }
                 Err(refused) => {
                     crate::log::say!(
-                        "humatad2: session {session} runs here now, but its old copy on {machine} is still there: {}",
+                        "humatad2: session {session} runs here now, but its old copy on {machine} is still there: {}; Humata tries again when {machine} is next linked or Humata next starts",
                         refused.message()
                     );
-                    return;
+                    stale = Some(generation);
                 }
             }
         }
+        self.settled(&journal).await;
     }
 
     /// The machine's copy of the session goes to its trash and its records
@@ -1169,4 +1366,69 @@ fn asked_twice() -> Status {
         "an approved call was sent to Ask me a second time",
         "repeat the call",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use humata2_store::{SessionDetail, SessionRepo, StartStep};
+
+    use super::*;
+
+    fn loaded() -> Loaded {
+        Loaded {
+            record: SessionRecord {
+                id: "se_1".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: "box-1".to_owned(),
+                title: "Cache warmup".to_owned(),
+                agent: "claude".to_owned(),
+                folder: PathBuf::from("/work/se_1"),
+                created_unix_ms: 0,
+            },
+            detail: Some(SessionDetail {
+                session: "se_1".to_owned(),
+                repos: vec![SessionRepo {
+                    owner: "acme".to_owned(),
+                    name: "payments".to_owned(),
+                    branch: "cache-warmup".to_owned(),
+                    path: PathBuf::from("/work/se_1/payments"),
+                }],
+                model: None,
+                first_message: None,
+                start: StartStep::Done,
+                operation: None,
+                revision: 0,
+            }),
+            agent: None,
+            summary_source: Default::default(),
+        }
+    }
+
+    fn pointer(subject: &str) -> pb::Pointer {
+        pb::Pointer {
+            repo: Some(pb::RepoRef {
+                owner: "acme".to_owned(),
+                name: "payments".to_owned(),
+            }),
+            unpushed_subjects: vec![subject.to_owned()],
+            ..Default::default()
+        }
+    }
+
+    fn subjects(theirs: &[pb::Pointer], reported: &[pb::Pointer]) -> Vec<String> {
+        let summary = host_summary(&loaded(), Some(pb::ArchiveSummary::default()), pointers_of(theirs, reported), 0);
+        summary.repos[0].unpushed_subjects.clone()
+    }
+
+    #[test]
+    fn the_machines_own_pointers_win_over_what_it_last_reported() {
+        assert_eq!(subjects(&[pointer("Warm on start")], &[pointer("Older work")]), ["Warm on start"]);
+    }
+
+    #[test]
+    fn what_the_machine_last_reported_fills_in_when_its_answer_has_no_pointers() {
+        assert_eq!(subjects(&[], &[pointer("Older work")]), ["Older work"]);
+    }
 }

@@ -34,7 +34,9 @@ impl SessionSvc {
             let marked = (journal.phase != "aborted").then(|| Moving::begin(&journal.session));
             self.recover_when_linked_after(Some(started.clone()), journal, marked);
         }
-        self.recover_forks_after(started);
+        self.recover_forks_after(started.clone());
+        // D222: a remote archive's or restore's follow-up the last run left.
+        self.recover_remote_archives_after(started);
     }
 
     /// Finishes or undoes the move `journal` names once the links of its

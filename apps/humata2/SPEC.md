@@ -2509,7 +2509,7 @@ daemon and, as far as physically possible, the machine.
   | Anything the rules say Never | denied | denied |
   | An Ask on something on this machine (another session here, start or fork here, type into a session here) | Inbox request; the call waits | per the While I'm away rule |
   | Anything that needs another machine or GitHub (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | done or asked | waits, or under Skip denied saying the host is away; never low-risk |
-  | User-only calls | user-only (SEC-9) | only answering requests the machine holds, with the passphrase |
+  | User-only calls | user-only (SEC-9) | only answering requests the machine holds, with the passphrase, and reading the rules the machine judges by (D220) |
 
   (provisional, D3)
 - **AW-8** While the host is away, a machine judges calls against the last copy

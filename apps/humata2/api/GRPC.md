@@ -523,7 +523,7 @@ is no call for it there.
 | Anything the snapshot says Never, or a hard limit | denied | denied |
 | An Ask on something on this machine (another session's files here, start or fork here, type into a session here) | Inbox request; the call waits | per the away rule: **Wait** (request journaled, the call waits, answerable on the machine), **Skip** (denied with `user_away`), **Allow low-risk** (applied if the kind is low-risk and journaled for the record, else Wait) |
 | Anything that needs another machine or GitHub through the Mac (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | applied or asked | **waits** (TP-9) or, under Skip, denied with `host_unreachable`. Never low-risk (AW-11): the host must route it. A port forward can't be approved on the machine (HO-11) |
-| User-only calls | per BOUNDARIES.md | only answering requests the machine holds, with the approval passphrase |
+| User-only calls | per BOUNDARIES.md | only answering requests the machine holds, with the approval passphrase, and reading the rules from the policy copy (`ChannelRules.copy`, D220) |
 
 ### 9.4 Answers
 
