@@ -111,3 +111,5 @@ side on fakes. Cross-machine transfers wait for MACH's link (requests below).
 - **Gate (manager, 2026-11-15):** built `humatad2`, `humatad2_admin`, `desktop:humata2`; passed `humatad:{humatad2_unit_test,remote_files_test,remote_transfers_test,file_ops_test,trash_test,files_test,transfers_test,transfer_end_test}` and `//apps/humata2/daemon/transfers:all` (kill matrix and power cut included): 16 of 16. Flows §26.7 and §26.15 pass against real daemons (`remote_transfers_test`).
 - **GAPS_REVIEW note:** FILES R+V: host-driven transfers and file calls to other machines, resume from the confirmed offset after a link loss, offline judged from the status itself; open: retention runner (behind FORK), MACH's GetStorage/ClearBuildCache/TrimLogs handlers, the optional harness tidy-ups in `files-wiring/harness-needs.md`.
 - **Ready to commit:** yes (main commits; the lane is ready to close)
+
+**Closed 2026-11-16** in freeze 2 (0bdf1434) after gate g80; release humata2-v0.1.0 installed in /Applications. Open gaps are carried in GAPS_REVIEW.md (freeze 2 entry).

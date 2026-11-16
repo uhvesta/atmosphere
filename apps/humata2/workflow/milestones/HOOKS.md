@@ -61,3 +61,5 @@ ACP and any adapter process that replaces the TUI. Gemini permission answers (it
   - Codex `--remote` second client: verified live on 0.169.0, facts in HOOKS-research.md. A second app-server client sees the TUI's thread, turns and approvals, and can answer them (first answer wins, `serverRequest/resolved` is the truth) and interrupt. A `humata codex` wrapper like OpenCode's is possible but not built, and it rests on an experimental API.
   - Claude Channels: deferred, docs only. A live run needs a claude.ai login, a dev flag with a startup dialog, and changes to the real ~/.claude. No developer switch gates any code yet.
 - Ready to commit: core yes; T6 after `features/app:request_gone_test`, `desktop:live_inbox_test`, `clients/live:all` pass; docs seam pending; D199 after seam 5, hooks_test, settings tests, clients:all, clients/live:all, ui:all, every_action_test pass
+
+**Closed 2026-11-16** in freeze 2 (0bdf1434) after gate g80; release humata2-v0.1.0 installed in /Applications. Open gaps are carried in GAPS_REVIEW.md (freeze 2 entry).

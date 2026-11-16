@@ -1,6 +1,6 @@
 # AWAY: Keep working with the host closed
 
-- **Status:** blocked
+- **Status:** in progress (lane AWAY)
 - **Depends on:**
   - MACH: away mode is machines without the host
   - ASK: a machine judges requests against a copy of the rules

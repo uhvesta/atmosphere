@@ -150,3 +150,5 @@ The While I'm away rule and journals (AWAY). Board requests answered on the item
   - [x] T5.0 the Default Allow (board) tier of the matrix runs now BoardService is served: `#[ignore]` dropped in `daemon/humatad/tests/matrix.rs`; passes (manager)
 - Claims (batch 5, after the freeze): also `cli/src/call.rs`, `daemon/humatad/src/{identity,terminal,restart,session_service,inbox,inbox/deferred}.rs`, `daemon/humatad/tests/terminal.rs`, `ui/src/panel_inbox.rs`; anchored lines in `serve.rs` and `api/proto/humata/v1/inbox.proto`. Decisions: D178.
 - Claims (batch 5): `daemon/humatad/tests/matrix.rs`, new `clients/live/src/inbox.rs`, new `clients/live/tests/inbox.rs`, new `desktop/tests/live_flows/inbox.rs`; additive seam lines in FL's `clients/live/{BUILD.bazel,src/lib.rs,src/connection.rs,src/daemon.rs,src/events.rs}` and `desktop/tests/live_flows.rs`; this Lane.
+
+**Closed 2026-11-16** in freeze 2 (0bdf1434) after gate g80; release humata2-v0.1.0 installed in /Applications. Open gaps are carried in GAPS_REVIEW.md (freeze 2 entry).
