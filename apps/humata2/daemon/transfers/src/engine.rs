@@ -1015,7 +1015,6 @@ impl Transfers {
                 }));
             }
             sink.sync().map_err(dst)?;
-            confirmed = offset;
             drop(sink);
             self.update(id, false, |s| s.rec.phase = Phase::Verifying)?;
             let expected = digest_of(hasher);

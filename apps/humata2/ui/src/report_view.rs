@@ -603,7 +603,9 @@ impl ReportView {
                             .accessibility_label(format!("Remove comment on {}", comment.target))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if at < this.comments.len() {
-                                    this.comments.remove(at);
+                                    // Dropping its subscription stops
+                                    // listening to the removed field.
+                                    drop(this.comments.remove(at));
                                 }
                                 this.ui
                                     .send(AppAction::Report(ReportAction::Unpin(at)), cx);

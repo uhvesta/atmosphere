@@ -15,8 +15,11 @@
 //! while the machine is away takes the conversation from the host's mirror
 //! and lets the machine's copy go the next time its link comes up. Both
 //! follow-ups are kept on disk before they wait (`pending`), so a restart
-//! of the host goes on with them (D222).
+//! of the host goes on with them (D222). The machine's copy goes only once
+//! the host has compared it with what it restored and found nothing more
+//! there (`compare`, D224).
 
+mod compare;
 mod pending;
 
 use std::collections::HashMap;
@@ -35,6 +38,7 @@ use crate::host_relay::{LinkState, Links, RelayError, Relayed, assigned};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
 use crate::status;
+use compare::{More, Restored, Theirs};
 use pending::Pending;
 
 /// Why an archive or restore of a session on another machine couldn't go on.
@@ -1049,6 +1053,20 @@ impl SessionSvc {
         for name in &repos {
             progress.set_step(&format!("clone:{name}"), pb::StepState::Done, None);
         }
+        // What the machine's copy is compared with before it goes (D224).
+        let cloned = detail.repos.clone();
+        let (lines, restored) = match blocking(move || {
+            let restored = Restored::of(&lines, &cloned);
+            (lines, restored)
+        })
+        .await
+        {
+            Ok(read) => read,
+            Err(refused) => {
+                progress.fail(error_from(&refused));
+                return;
+            }
+        };
 
         // Kept before the switch: a restart after it still lets the
         // machine's copy go (D222). The release checks the record first.
@@ -1057,6 +1075,8 @@ impl SessionSvc {
             machine: machine.clone(),
             channel: record.channel.clone(),
             operation: operation.clone(),
+            restored: Some(restored),
+            kept: None,
         };
         self.keep(&journal).await;
         // An archive this restore undoes has nothing left to learn; a check
@@ -1114,19 +1134,24 @@ impl SessionSvc {
     }
 
     /// After a restore here while `machine` was away: the next time its link
-    /// comes up, its copy of the session goes to its trash and its records
-    /// are dropped, and what it reported of the session meanwhile is
-    /// forgotten. Tries again on each new link while the call fails for the
-    /// link; ends once the machine is forgotten, and `journal` goes then.
-    /// Nothing is released unless the host's record names this Mac: a
-    /// restore cut short before its switch left the session on the machine.
-    async fn release_when_linked(self, journal: Pending) {
+    /// comes up, the host compares the machine's copy with what it restored
+    /// (D224). With nothing more there, the copy goes to its trash, its
+    /// records are dropped, and what it reported of the session meanwhile is
+    /// forgotten. A copy with more, or one that couldn't be compared, is
+    /// kept, and the next link compares again. Tries again on each new link
+    /// while the call fails for the link; ends once the machine is forgotten
+    /// or has no copy, and `journal` goes then. Nothing is released unless
+    /// the host's record names this Mac: a restore cut short before its
+    /// switch left the session on the machine.
+    async fn release_when_linked(self, mut journal: Pending) {
         let Pending::Release {
             session,
             machine,
             channel,
             operation,
-        } = &journal
+            restored,
+            ..
+        } = journal.clone()
         else {
             return;
         };
@@ -1135,8 +1160,8 @@ impl SessionSvc {
         };
         let links = carry.links().clone();
         let mut stale = None;
-        while let Some(generation) = next_link_up(&links, machine, stale).await {
-            match self.load(session).await {
+        while let Some(generation) = next_link_up(&links, &machine, stale).await {
+            match self.load(&session).await {
                 Ok(loaded) if loaded.record.machine == self.machine => {}
                 Ok(_) => break,
                 Err(refused) if refused.code() == Code::NotFound => break,
@@ -1149,11 +1174,26 @@ impl SessionSvc {
                     continue;
                 }
             }
-            match carry.release(machine, operation, session, channel).await {
+            match self.compare_copy(&session, &machine, restored.as_ref()).await {
+                Compared::Gone => break,
+                Compared::NothingMore => {}
+                Compared::More(more) => {
+                    crate::log::say!(
+                        "humatad2: session {session} runs here now, but its old copy on {machine} has more than was restored here: {more}. The copy on {machine} is kept until that can be brought over; Humata compares again when {machine} is next linked or Humata next starts"
+                    );
+                    if let Pending::Release { kept, .. } = &mut journal {
+                        *kept = Some(more.to_string());
+                    }
+                    self.keep(&journal).await;
+                    stale = Some(generation);
+                    continue;
+                }
+            }
+            match carry.release(&machine, &operation, &session, &channel).await {
                 Ok(()) => {
                     // A report it sent before letting go isn't the session's.
                     if let Some(remote) = &self.remote {
-                        remote.forget_session(machine, session).await;
+                        remote.forget_session(&machine, &session).await;
                     }
                     break;
                 }
@@ -1170,6 +1210,82 @@ impl SessionSvc {
             }
         }
         self.settled(&journal).await;
+    }
+
+    /// Compares `machine`'s copy of `session` with what a restore here
+    /// brought (D224). Whatever can't be learned counts as more.
+    async fn compare_copy(&self, session: &str, machine: &str, restored: Option<&Restored>) -> Compared {
+        let summary = match self.relayed_to(session, machine) {
+            Ok(relayed) => {
+                let request = pb::GetSessionRequest {
+                    id: Some(pb::SessionId { value: session.to_owned() }),
+                };
+                match relayed.session().get_session(tonic::Request::new(request)).await {
+                    Ok(shown) => shown.into_inner().archive,
+                    // The machine holds no copy: nothing is there to keep.
+                    Err(refused) if refused.code() == Code::NotFound => return Compared::Gone,
+                    Err(_) => None,
+                }
+            }
+            Err(_) => None,
+        };
+        let theirs = Theirs {
+            turns: self.machine_turns(session, machine).await,
+            summary,
+        };
+        let restored = restored.cloned();
+        match blocking(move || compare::compare(restored.as_ref(), &theirs, compare::holds)).await {
+            Ok(None) => Compared::NothingMore,
+            Ok(Some(more)) => Compared::More(more),
+            Err(_) => Compared::More(More(vec![compare::Extra::TurnsUnknown, compare::Extra::NoSummary])),
+        }
+    }
+
+    /// The turns of `machine`'s conversation of `session`, read as the
+    /// host's mirror reads it (ReadMirror) and by the rule the restore's are
+    /// counted with; `None` when it can't be read whole.
+    async fn machine_turns(&self, session: &str, machine: &str) -> Option<Vec<humata2_mirror::TurnMark>> {
+        let links = self.links_to(session, machine).ok()?;
+        let mut decoder = humata2_chunk::Decoder::new();
+        let (mut lines, mut offset, mut source) = (Vec::new(), 0_u64, String::new());
+        let mut rewrites = 0_u32;
+        loop {
+            let channel = links.channel(machine).ok()?;
+            let request = pb::ReadMirrorRequest {
+                session: Some(pb::SessionId { value: session.to_owned() }),
+                offset,
+                max_bytes: 0,
+                source: source.clone(),
+                // Raw bytes only.
+                accept_codecs: Vec::new(),
+            };
+            let answer = pb::history_service_client::HistoryServiceClient::new(channel)
+                .read_mirror(request)
+                .await
+                .ok()?
+                .into_inner();
+            let header = crate::compression::header(answer.codec, answer.raw_size, answer.crc32, &answer.data)?;
+            let (more, rewritten, next_offset) = (answer.more, answer.rewritten, answer.next_offset);
+            let data = decoder.decode(header, answer.data).ok()?;
+            if rewritten {
+                // Rewritten twice while it was read: it isn't settled, so
+                // it can't be compared now.
+                rewrites += 1;
+                if rewrites > 1 {
+                    return None;
+                }
+                lines.clear();
+            } else if more && next_offset <= offset {
+                return None;
+            }
+            lines.extend_from_slice(&data);
+            source = answer.source;
+            if !more {
+                break;
+            }
+            offset = next_offset;
+        }
+        blocking(move || humata2_mirror::turns_in(&lines)).await.ok()
     }
 
     /// The machine's copy of the session goes to its trash and its records
@@ -1265,6 +1381,16 @@ impl SessionSvc {
             .await
             .map(drop)
     }
+}
+
+/// What the comparison of a machine's copy with a restore here found.
+enum Compared {
+    /// The machine holds no copy of the session.
+    Gone,
+    /// Nothing there that the restore didn't bring: the copy may go.
+    NothingMore,
+    /// More there, or something couldn't be learned: the copy stays.
+    More(More),
 }
 
 /// What a machine's removal does with one of its sessions (CH-8, LD-10).

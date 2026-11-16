@@ -373,12 +373,6 @@ impl Documents {
         self.reattach.clone()
     }
 
-    /// Whether the document has a page, which it has once its text is here.
-    pub(crate) fn has(&self, session: &SessionId, repo: &str, path: &str) -> bool {
-        self.pages
-            .contains_key(&(session.clone(), repo.to_owned(), path.to_owned()))
-    }
-
     /// Brings the pages, the comment field and the link in step with the
     /// store. Called before each draw of the window.
     pub(crate) fn sync(&mut self, ui: &Rc<Ui>, window: &mut Window, cx: &mut App) {

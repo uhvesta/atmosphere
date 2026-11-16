@@ -2,7 +2,7 @@
 //! places a fork before a turn is cut at.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::{self, BufRead, BufReader, ErrorKind};
 use std::path::Path;
 
 use serde_json::Value;
@@ -40,13 +40,23 @@ pub fn turns_of(file: &Path) -> Result<Vec<TurnMark>, MirrorError> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(io(error)),
     };
-    let mut reader = BufReader::new(open);
+    marks(BufReader::new(open)).map_err(io)
+}
+
+/// The turns of `lines`, a conversation's bytes from its start, by the rule
+/// [`turns_of`] reads a file with.
+pub fn turns_in(lines: &[u8]) -> Vec<TurnMark> {
+    // Reading from memory never fails.
+    marks(lines).unwrap_or_default()
+}
+
+fn marks(mut reader: impl BufRead) -> io::Result<Vec<TurnMark>> {
     let mut turns = Vec::new();
     let mut offset = 0_u64;
     let mut line = Vec::new();
     loop {
         line.clear();
-        let read = reader.read_until(b'\n', &mut line).map_err(io)?;
+        let read = reader.read_until(b'\n', &mut line)?;
         if read == 0 || line.last() != Some(&b'\n') {
             break;
         }

@@ -5,17 +5,15 @@ use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, Selectable as _, TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
 use humata2_clients::model::{
-    Answer, Comment, Item, ItemStatus, LineKind, Preview, RepoDiff, Request, RequestKind, Scope,
-    Session, SessionId, Status,
+    Comment, Item, ItemStatus, LineKind, RepoDiff, Request, Scope, Session, SessionId, Status,
 };
 use humata2_inbox::InboxAction;
-use humata2_clients::comments::{Comment as DaemonComment, Status as CommentStatus};
+use humata2_clients::comments::Comment as DaemonComment;
 use humata2_review::ReviewAction;
 use humata2_review::comments::CommentsAction;
 use humata2_session::{Panel, SessionAction};

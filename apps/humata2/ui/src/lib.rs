@@ -45,7 +45,6 @@ mod sidebar_pinned;
 mod starting;
 mod sidebar;
 mod sidebar_desk;
-mod storage_view;
 mod terminals;
 mod theme;
 mod transfers_tray;

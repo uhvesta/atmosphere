@@ -28,6 +28,11 @@ use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
+/// How long a run waits for its operation. Each operation finishes in
+/// seconds; the bound is generous because a test machine busy with a
+/// build can starve the fake machine's scripts for a minute.
+const OP_WAIT: &str = "300";
+
 /// `humata`'s exit codes (CLI.md §7).
 const OK: i32 = 0;
 const USAGE: i32 = 2;
@@ -198,7 +203,7 @@ impl Host {
     /// Adds box-1 over the fake ssh with `humata host add`, the way a person
     /// does: once to read the host's key, once to trust it.
     fn add_box(&self) {
-        let first = self.run(&["host", "add", "me@box-1.internal", "--name", "box-1", "--wait", "60"]);
+        let first = self.run(&["host", "add", "me@box-1.internal", "--name", "box-1", "--wait", OP_WAIT]);
         let fingerprint = presented_fingerprint(&first);
         let added = self.run(&[
             "host",
@@ -249,7 +254,7 @@ fn a_machine_is_added_after_its_key_is_trusted_shown_reconnected_and_removed_by_
     assert!(host.machine("box-1").is_none());
 
     // First contact stops at the host's key, naming it, and installs nothing.
-    let first = host.run(&["host", "add", "me@box-1.internal", "--name", "box-1", "--wait", "60"]);
+    let first = host.run(&["host", "add", "me@box-1.internal", "--name", "box-1", "--wait", OP_WAIT]);
     let fingerprint = presented_fingerprint(&first);
     assert!(machine.installed("humatad2").is_none());
     assert!(host.machine("box-1").is_none());
@@ -311,7 +316,7 @@ fn a_machine_is_added_after_its_key_is_trusted_shown_reconnected_and_removed_by_
     assert!(host.machine("box-1").is_some());
 
     // The token does what the plan said, and the run waits for it.
-    let removed = host.run(&["host", "remove", "box-1", "--plan", &token, "--wait", "60"]);
+    let removed = host.run(&["host", "remove", "box-1", "--plan", &token, "--wait", OP_WAIT]);
     assert_eq!(removed.code, OK, "{}", removed.stdout);
     assert_eq!(removed.result()["state"], "succeeded", "{}", removed.stdout);
     assert!(host.machine("box-1").is_none());
@@ -323,7 +328,7 @@ fn an_unconfirmed_removal_goes_ahead_with_yes() {
     let machine = FakeMachine::new();
     let host = Host::start(&machine);
     host.add_box();
-    let removed = host.run(&["host", "remove", "box-1", "--yes", "--wait", "60"]);
+    let removed = host.run(&["host", "remove", "box-1", "--yes", "--wait", OP_WAIT]);
     assert_eq!(removed.code, OK, "{}", removed.stdout);
     assert!(host.machine("box-1").is_none());
 }
@@ -412,21 +417,27 @@ fn a_provider_makes_a_machine_runs_its_actions_and_deletes_what_it_made() {
     assert_eq!(missing.code, USAGE, "{}", missing.stdout);
     assert!(!host.path("created").exists());
 
-    let created = host.run(&["provider", "create", "fake", "box-1", "--param", "zone=a", "--wait", "60"]);
+    let created = host.run(&["provider", "create", "fake", "box-1", "--param", "zone=a", "--wait", OP_WAIT]);
     assert_eq!(created.code, OK, "{}", created.stdout);
-    assert_eq!(created.result()["state"], "succeeded", "{}", created.stdout);
+    assert_eq!(
+        created.result()["state"],
+        "succeeded",
+        "{}\nssh log:\n{}",
+        created.stdout,
+        machine.ssh_log()
+    );
     assert!(host.path("created").exists());
     let made = host.machine("box-1").expect("the machine was made");
     assert_eq!(made["provider"], "fake");
     host.linked();
 
     // Status says stopped, so the machine shows as stopped.
-    let status = host.run(&["provider", "status", "box-1", "--wait", "60"]);
+    let status = host.run(&["provider", "status", "box-1", "--wait", OP_WAIT]);
     assert_eq!(status.code, OK, "{}", status.stdout);
     assert_eq!(host.machine("box-1").unwrap()["reachability"], "stopped");
 
     // An action the provider doesn't define is refused.
-    let stop = host.run(&["provider", "stop", "box-1", "--wait", "60"]);
+    let stop = host.run(&["provider", "stop", "box-1", "--wait", OP_WAIT]);
     assert_eq!(stop.code, USAGE, "{}", stop.stdout);
 
     // Delete removes the machine by its plan and runs the provider's delete.
@@ -434,7 +445,7 @@ fn a_provider_makes_a_machine_runs_its_actions_and_deletes_what_it_made() {
     assert_eq!(planned.code, OK, "{}", planned.stdout);
     assert_eq!(planned.json["outcome"], "planned");
     assert!(host.machine("box-1").is_some());
-    let deleted = host.run(&["provider", "delete", "box-1", "--yes", "--wait", "60"]);
+    let deleted = host.run(&["provider", "delete", "box-1", "--yes", "--wait", OP_WAIT]);
     assert_eq!(deleted.code, OK, "{}", deleted.stdout);
     assert!(host.machine("box-1").is_none());
     assert!(!host.path("created").exists());
@@ -465,7 +476,7 @@ fn a_first_skills_sync_prints_its_plan_applies_with_its_token_and_the_next_one_h
     assert!(!synced.exists());
 
     // The plan's token applies it, and the run waits for the operation.
-    let applied = host.run(&["skills", "sync", "box-1", "--plan", &token, "--wait", "60"]);
+    let applied = host.run(&["skills", "sync", "box-1", "--plan", &token, "--wait", OP_WAIT]);
     assert_eq!(applied.code, OK, "{}", applied.stdout);
     assert_eq!(applied.result()["state"], "succeeded", "{}", applied.stdout);
     let deadline = Instant::now() + WAIT;

@@ -11,6 +11,8 @@ use humata2_store::StoreError;
 use prost::Message;
 use serde_json::{Value, json};
 
+use super::compare::{Restored, RestoredRepo, Turn};
+
 /// A follow-up that waits for `machine`'s link.
 #[derive(Clone, Debug)]
 pub(super) enum Pending {
@@ -33,6 +35,13 @@ pub(super) enum Pending {
         channel: String,
         /// The restore's operation, which named what the machine staged.
         operation: String,
+        /// What the restore brought here, which the machine's copy is
+        /// compared with before it goes (D224). A journal from before has
+        /// none, and its copy is kept.
+        restored: Option<Restored>,
+        /// What the machine's copy had more of at the last comparison, so
+        /// it was kept.
+        kept: Option<String>,
     },
 }
 
@@ -88,12 +97,16 @@ impl Pending {
                 machine,
                 channel,
                 operation,
+                restored,
+                kept,
             } => json!({
                 "kind": self.kind(),
                 "session": session,
                 "machine": machine,
                 "channel": channel,
                 "operation": operation,
+                "restored": restored.as_ref().map(restored_value),
+                "kept": kept,
             }),
         }
     }
@@ -122,10 +135,61 @@ impl Pending {
                 machine: text("machine")?,
                 channel: text("channel")?,
                 operation: text("operation")?,
+                // Missing or unreadable: unknown, so the copy is kept.
+                restored: value.get("restored").and_then(restored_of),
+                kept: text("kept"),
             }),
             _ => None,
         }
     }
+}
+
+fn restored_value(restored: &Restored) -> Value {
+    json!({
+        "turns": restored.turns,
+        "last_turn": restored.last_turn.as_ref().map(|turn| json!({
+            "index": turn.index,
+            "first_line": turn.first_line,
+            "at": turn.at,
+        })),
+        "repos": restored.repos.iter().map(|repo| json!({
+            "owner": repo.owner,
+            "name": repo.name,
+            "path": repo.path.display().to_string(),
+            "sha": repo.sha,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn restored_of(value: &Value) -> Option<Restored> {
+    let text = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    let number = |value: &Value, key: &str| value.get(key).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+    let last_turn = match value.get("last_turn")? {
+        Value::Null => None,
+        turn => Some(Turn {
+            index: number(turn, "index")?,
+            first_line: text(turn, "first_line")?,
+            at: text(turn, "at"),
+        }),
+    };
+    let repos = value
+        .get("repos")?
+        .as_array()?
+        .iter()
+        .map(|repo| {
+            Some(RestoredRepo {
+                owner: text(repo, "owner")?,
+                name: text(repo, "name")?,
+                path: PathBuf::from(text(repo, "path")?),
+                sha: text(repo, "sha")?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(Restored {
+        turns: number(value, "turns")?,
+        last_turn,
+        repos,
+    })
 }
 
 /// Bytes kept as a JSON array of numbers.
@@ -231,6 +295,34 @@ mod tests {
         assert_eq!(asked.as_deref(), Some("op_9"));
     }
 
+    fn restored() -> Restored {
+        Restored {
+            turns: 2,
+            last_turn: Some(Turn {
+                index: 2,
+                first_line: "Now the tests".to_owned(),
+                at: Some("2026-11-16T10:05:00Z".to_owned()),
+            }),
+            repos: vec![RestoredRepo {
+                owner: "acme".to_owned(),
+                name: "api".to_owned(),
+                path: PathBuf::from("/work/se_1/api"),
+                sha: "1111111111111111111111111111111111111111".to_owned(),
+            }],
+        }
+    }
+
+    fn release(restored: Option<Restored>, kept: Option<String>) -> Pending {
+        Pending::Release {
+            session: "se_1".to_owned(),
+            machine: "box-1".to_owned(),
+            channel: "ch_1".to_owned(),
+            operation: "op_1".to_owned(),
+            restored,
+            kept,
+        }
+    }
+
     #[test]
     fn a_release_reads_back_as_written() {
         let Pending::Release {
@@ -238,12 +330,9 @@ mod tests {
             machine,
             channel,
             operation,
-        } = kept(&Pending::Release {
-            session: "se_1".to_owned(),
-            machine: "box-1".to_owned(),
-            channel: "ch_1".to_owned(),
-            operation: "op_1".to_owned(),
-        })
+            restored: read,
+            kept: was_kept,
+        } = kept(&release(Some(restored()), Some("1 later turn(s)".to_owned())))
         else {
             panic!("a release reads back as a release");
         };
@@ -251,18 +340,48 @@ mod tests {
             [session, machine, channel, operation],
             ["se_1", "box-1", "ch_1", "op_1"].map(str::to_owned)
         );
+        assert_eq!(read, Some(restored()));
+        assert_eq!(was_kept.as_deref(), Some("1 later turn(s)"));
+    }
+
+    #[test]
+    fn a_release_with_no_turns_restored_reads_back_as_written() {
+        let none = Restored {
+            turns: 0,
+            last_turn: None,
+            repos: Vec::new(),
+        };
+        let Pending::Release { restored: read, .. } = kept(&release(Some(none.clone()), None)) else {
+            panic!("a release reads back as a release");
+        };
+        assert_eq!(read, Some(none));
+    }
+
+    #[test]
+    fn a_release_kept_before_the_comparison_reads_with_nothing_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let old = json!({
+            "kind": "release",
+            "session": "se_1",
+            "machine": "box-1",
+            "channel": "ch_1",
+            "operation": "op_1",
+        });
+        std::fs::write(store.join("se_1.release.json"), old.to_string()).unwrap();
+        let read = read_all(&store);
+        assert!(
+            matches!(read.as_slice(), [Pending::Release { restored: None, kept: None, .. }]),
+            "{read:?}"
+        );
     }
 
     #[test]
     fn a_reconcile_and_a_release_of_one_session_are_kept_apart() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store");
-        let release = Pending::Release {
-            session: "se_1".to_owned(),
-            machine: "box-1".to_owned(),
-            channel: "ch_1".to_owned(),
-            operation: "op_1".to_owned(),
-        };
+        let release = release(None, None);
         let reconcile = Pending::Reconcile {
             session: "se_1".to_owned(),
             machine: "box-1".to_owned(),

@@ -166,7 +166,6 @@ static RECORDINGS: AtomicU64 = AtomicU64::new(0);
 pub struct Mark {
     recording: u64,
     seq: u64,
-    bytes: usize,
     current: Trees,
 }
 
@@ -222,7 +221,6 @@ impl Recording {
         Mark {
             recording: self.id,
             seq: self.next_seq,
-            bytes: self.bytes,
             current: self.current.clone(),
         }
     }

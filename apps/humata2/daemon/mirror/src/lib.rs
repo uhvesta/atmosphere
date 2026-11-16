@@ -55,4 +55,4 @@ pub use mirror::{
 pub use scrub::Scrubber;
 pub use source::{Lines, MAX_CHUNK, read_lines};
 pub use transcript::{Entry, OwnTools, Read, Role, parse_lines, read_from};
-pub use turns::{TurnMark, turns_of};
+pub use turns::{TurnMark, turns_in, turns_of};

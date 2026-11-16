@@ -430,3 +430,59 @@ async fn a_mirror_restore_releases_box_1s_copy_after_a_host_restart_and_stays_he
     released_on_box_1(&rig, &id).await;
     stays_here(&rig, &id).await;
 }
+
+/// Waits until the host has compared box-1's copy of `id` with what it
+/// restored here and kept the copy: the release's journal records what
+/// box-1 had more of. The host writes that only after the comparison, and
+/// then waits for a new link before it compares again, so once it is there
+/// this link's decision is made and a release can't still be under way.
+/// Nothing on the host's feeds tells of it.
+async fn kept_after_comparing(rig: &Rig, id: &pb::SessionId) {
+    let journal = rig.host.state.join("carry").join("remote_archive").join(format!("{}.release.json", id.value));
+    let compared = || {
+        std::fs::read(&journal)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|value| value.get("kept").is_some_and(|kept| !kept.is_null()))
+    };
+    let deadline = tokio::time::Instant::now() + LONG;
+    while !compared() {
+        assert!(tokio::time::Instant::now() < deadline, "the host never compared box-1's copy");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// D224: box-1's archive restored on this Mac from the mirror while box-1
+/// is away, when box-1's clone had a file never committed. Back, box-1
+/// still has that the restore didn't bring, so its copy is kept, and the
+/// session stays live here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mirror_restore_keeps_box_1s_copy_when_box_1_has_more_than_was_restored() {
+    let (rig, channel, id) = on_box().await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on box-1"}}"#).await;
+    mirrored(&rig, &id, "said on box-1").await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    std::fs::write(clone.join("wip.txt"), "not committed yet\n").unwrap();
+    rig.wait_session(&id, "reporting its work", |s| s.pointers.iter().any(|pointer| pointer.dirty_files > 0))
+        .await;
+    // A plain archive refuses work (MV-9); box-1's summary still lists it.
+    let started = start_archive(&rig, &id, pb::ArchiveChoice::ArchiveAndDeleteWork).await;
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+    rig.link_lost("box-1").await;
+
+    let host = rig.host_id().await;
+    let ended = restore(&rig, &id, Some(host.clone())).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+
+    rig.link_back("box-1").await;
+    kept_after_comparing(&rig, &id).await;
+    let store = rig.the("box-1").store();
+    assert!(store.session(&id.value).unwrap().is_some(), "box-1 keeps its record of the session");
+    assert!(store.archive(&id.value).unwrap().is_some(), "box-1 keeps its archive of the session");
+    stays_here(&rig, &id).await;
+}
