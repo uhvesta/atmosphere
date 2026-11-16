@@ -41,6 +41,18 @@ pub(crate) struct State {
     /// the entries; see `raw.rs`.
     #[serde(default)]
     pub raw: Raw,
+    /// The entries read from the current file (since `offset` last started
+    /// from 0 on a new file), the skipped ones included.
+    #[serde(default)]
+    pub source_entries: u64,
+    /// Entries a carried file repeats from the start of its reads, which
+    /// are dropped instead of added (`Mirror::rebase_source`).
+    #[serde(default)]
+    pub skip: u64,
+    /// The one machine whose file is read since a rebase: `Some("")` is
+    /// this host's own `catch_up`. `None` (never rebased): any.
+    #[serde(default)]
+    pub bound: Option<String>,
 }
 
 /// The names saved by `describe`.

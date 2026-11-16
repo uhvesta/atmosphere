@@ -132,7 +132,7 @@ pub async fn reconcile(
         let folder = tab.session.as_ref().and_then(|id| folders.get(id)).cloned();
         let id = tab.id.clone();
         report.shell(config, &tab);
-        let outcome = revive_shell(store, config, tab, folder, &giving).await;
+        let outcome = revive_shell(store, config, tab, folder, &giving, None).await;
         report.mask(&std::mem::take(&mut *lock(&given)));
         report.shell_outcome(&outcome);
         reconciled.shells.push((id, outcome));
@@ -174,6 +174,53 @@ pub async fn restart_agent(
     line: &str,
 ) -> Result<Revived, ReviveError> {
     revive_listed(store, config, record, env, Why::Moved(line)).await
+}
+
+/// Starts each of `session`'s shell tabs whose holder is gone again, as
+/// [`reconcile`] does, as a new shell in the session's folder with the
+/// output its old holder saved; one whose holder answers is left. `line`
+/// is shown after that output, after `[Humata] `. Run when a session's
+/// agent is resumed, so the shell tabs a move brought in come back with it
+/// (MV-13). One that fails doesn't stop the rest.
+pub async fn restart_shells(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    session: &str,
+    env: Env<'_>,
+    line: &str,
+) -> Result<Vec<(String, Result<ShellRevived, ReviveError>)>, ReviveError> {
+    let (tabs, record) = blocking({
+        let (store, id) = (store.clone(), session.to_owned());
+        move || (store.tabs(), store.session(&id))
+    })
+    .await?;
+    let tabs = tabs.map_err(|source| store_error(session, "list the session's tabs", source))?;
+    let folder = record
+        .map_err(|source| store_error(session, "read the session", source))?
+        .map(|record| record.folder);
+    let agent_tab = blocking({
+        let (store, id) = (store.clone(), session.to_owned());
+        move || store.agent(&id)
+    })
+    .await?
+    .map_err(|source| store_error(session, "read the session's agent", source))?
+    .map(|agent| agent.tab);
+    let mut shells: Vec<TabRecord> = tabs
+        .into_iter()
+        .filter(|tab| {
+            tab.kind == TabKind::Shell
+                && tab.session.as_deref() == Some(session)
+                && agent_tab.as_deref() != Some(tab.id.as_str())
+        })
+        .collect();
+    shells.sort_by_key(|tab| (tab.created_unix_ms, tab.id.clone()));
+    let mut restarted = Vec::new();
+    for tab in shells {
+        let id = tab.id.clone();
+        let outcome = revive_shell(store, config, tab, folder.clone(), env, Some(line)).await;
+        restarted.push((id, outcome));
+    }
+    Ok(restarted)
 }
 
 /// Looks up the agent's tab, then brings the agent back for `why`.
@@ -276,12 +323,15 @@ async fn launch_or_resume(
 }
 
 /// A fresh shell in the tab's folder when its holder is gone (PER-16).
+/// `why`, if given, is the line shown after `[Humata] ` in place of the
+/// one that says the machine restarted.
 async fn revive_shell(
     store: &Arc<Store>,
     config: &ReviveConfig,
     mut tab: TabRecord,
     folder: Option<PathBuf>,
     env: Env<'_>,
+    why: Option<&str>,
 ) -> Result<ShellRevived, ReviveError> {
     let what = format!("shell tab {}", tab.id);
     if probe(&tab.holder_socket).await.is_some() {
@@ -318,10 +368,13 @@ async fn revive_shell(
     let cwd = folder
         .filter(|folder| folder.is_dir())
         .unwrap_or_else(|| config.home.clone());
-    let line = format!(
-        "[Humata] This terminal stopped: its machine restarted or its holder was killed. Programs that were running in it are gone, and output after this point wasn't saved. This is a new shell in {}.",
-        cwd.display()
-    );
+    let line = match why {
+        Some(why) => format!("[Humata] {why} This is a new shell in {}.", cwd.display()),
+        None => format!(
+            "[Humata] This terminal stopped: its machine restarted or its holder was killed. Programs that were running in it are gone, and output after this point wasn't saved. This is a new shell in {}.",
+            cwd.display()
+        ),
+    };
     let spec = HolderSpec {
         holder: config.holder.clone(),
         socket: tab.holder_socket.clone(),

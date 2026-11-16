@@ -417,6 +417,15 @@ mod tests {
         ) -> Result<tonic::Response<pb::CompleteRelayResponse>, Status> {
             Err(Status::unimplemented("not used"))
         }
+
+        type PeerUplinkStream = tokio_stream::wrappers::ReceiverStream<Result<pb::MachineToHost, Status>>;
+
+        async fn peer_uplink(
+            &self,
+            _request: Request<tonic::Streaming<pb::HostToMachine>>,
+        ) -> Result<tonic::Response<Self::PeerUplinkStream>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
     }
 
     /// A channel to an in-memory machine tagged `tag`.

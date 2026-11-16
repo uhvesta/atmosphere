@@ -103,6 +103,7 @@ impl World {
 
     fn config(&self) -> ReviveConfig {
         ReviveConfig {
+            contain: None,
             holder: holder_binary(),
             logs: self.root.join("logs"),
             scrollback_bytes: 1 << 20,

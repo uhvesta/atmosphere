@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use humata2_holder::HolderError;
+use humata2_contain::ContainError;
 use humata2_store::StoreError;
 
 /// What launching or reviving a session can fail at. A resume the agent
@@ -60,4 +61,32 @@ pub enum ReviveError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("session {session}'s agent must run contained and can't, so it wasn't started")]
+    Contain {
+        session: String,
+        #[source]
+        source: ContainRefused,
+    },
+}
+
+/// Why an agent that must run contained can't be (D217).
+#[derive(Debug, thiserror::Error)]
+pub enum ContainRefused {
+    #[error(transparent)]
+    Contain(#[from] ContainError),
+
+    #[error(
+        "couldn't read whether session {session} runs contained, so it wasn't started rather than risk running it uncontained; check the disk has space and Humata's folder is readable, then start the session again"
+    )]
+    Setting {
+        session: String,
+        #[source]
+        source: StoreError,
+    },
+
+    #[error(
+        "session {session} or its channel is no longer on this machine, so there's no folder to contain it in; start a new session in the channel"
+    )]
+    NoSession { session: String },
 }

@@ -1,0 +1,16 @@
+[package]
+name = "humata2-passphrase"
+description = "Humata 2's approval passphrase: generated or typed, kept as an Argon2id hash, locked after five wrong tries (SEC-13)."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_passphrase"
+path = "src/lib.rs"
+
+[dependencies]
+argon2 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }

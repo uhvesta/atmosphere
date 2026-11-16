@@ -64,6 +64,8 @@ DAEMON_DEPS = [
     "//apps/humata2/daemon/marks",
     "//apps/humata2/daemon/mcp",
     "//apps/humata2/daemon/mirror",
+    "//apps/humata2/daemon/contain",
+    "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
     "//apps/humata2/daemon/revive",
     "//apps/humata2/daemon/sessions",

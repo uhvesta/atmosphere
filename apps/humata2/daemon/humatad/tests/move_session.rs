@@ -511,3 +511,113 @@ async fn a_copy_left_on_an_offline_target_is_taken_back_when_its_link_is_up() {
     assert!(staged(&rig, "box-2", &channel).is_empty(), "box-2 keeps nothing staged");
     assert!(holder_answers(&rig.the("box-1").tabs()[0]), "the agent still runs on box-1");
 }
+
+/// The texts of every entry the host's mirror holds for `id`.
+async fn mirror_texts(rig: &Rig, id: &pb::SessionId) -> Vec<String> {
+    let mut history = pb::history_service_client::HistoryServiceClient::new(rig.channel().await);
+    let mut request = pb::ReadTurnsRequest { session: Some(id.clone()), ..Default::default() };
+    let mut texts = Vec::new();
+    loop {
+        let response = history.read_turns(request.clone()).await.expect("the mirror reads").into_inner();
+        texts.extend(response.entries.into_iter().map(|entry| entry.text));
+        let next = response.page.map(|page| page.next_page_token).unwrap_or_default();
+        if next.is_empty() {
+            return texts;
+        }
+        request.page = Some(pb::PageRequest { page_size: 0, page_token: next });
+    }
+}
+
+/// Waits until the host's mirror of `id` holds an entry with `text`: the
+/// mirror follows the machine and tells no feed, so this asks again.
+async fn mirrored(rig: &Rig, id: &pb::SessionId, text: &str) {
+    let deadline = std::time::Instant::now() + remote_rig::LONG;
+    while !mirror_texts(rig, id).await.iter().any(|entry| entry.contains(text)) {
+        assert!(std::time::Instant::now() < deadline, "the host's mirror never held {text:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// D209: the moved conversation is the new machine's file, which repeats
+/// what the host's mirror held; the mirror adds only what follows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_conversation_is_mirrored_once() {
+    let rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
+    let (one, two) = (Rig::box_id("box-1"), Rig::box_id("box-2"));
+    let on = [rig.host_id().await, one.clone(), two.clone()];
+    let channel = rig.create_channel("Payments", &[REPO], &on).await;
+    let id = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&id, "live", is_live).await;
+    // JSON lines, as real agents write: the mirror keeps only those (D189.4).
+    say(&rig, &id, r#"{"type":"user","message":{"content":"before the move"}}"#).await;
+    mirrored(&rig, &id, "before the move").await;
+
+    let ended = move_to(&rig, &id, &two).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "the move failed: {:?}", ended.error);
+    rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"after the move"}}"#).await;
+    mirrored(&rig, &id, "after the move").await;
+
+    let texts = mirror_texts(&rig, &id).await;
+    let held = |text: &str| texts.iter().filter(|entry| entry.contains(text)).count();
+    assert_eq!(held("before the move"), 1, "{texts:?}");
+    assert_eq!(held("after the move"), 1, "{texts:?}");
+}
+
+/// MV-13: the session's shell tab comes along as a new shell in the
+/// session's folder on box-2, starting with the output it had saved, and
+/// box-1's shell stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_session_s_shell_tab_comes_back_on_the_new_machine_with_its_output() {
+    let rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
+    let (one, two) = (Rig::box_id("box-1"), Rig::box_id("box-2"));
+    let on = [rig.host_id().await, one.clone(), two.clone()];
+    let channel = rig.create_channel("Payments", &[REPO], &on).await;
+    let id = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&id, "live", is_live).await;
+    let tab = rig
+        .host
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest { session: Some(id.clone()), ..Default::default() })
+        .await
+        .expect("a shell tab opens on box-1")
+        .into_inner()
+        .id
+        .expect("the tab has an id");
+    let open = |tab: &pb::TabId| pb::AttachOpen { session: Some(id.clone()), ..common::open(tab, 0) };
+    let mut shell = common::Attach::start(&rig.host, open(&tab)).await;
+    // The shell prints the sum, so the typed line alone never matches.
+    shell.type_text("echo shell-said-$((40+2))\r").await;
+    shell.wait_for("shell-said-42").await;
+    drop(shell);
+    let old = rig
+        .the("box-1")
+        .tabs()
+        .into_iter()
+        .find(|record| record.id == tab.value)
+        .expect("box-1 keeps the shell tab");
+    // Its holder saves output beside its socket on its own beat; the move
+    // carries what was saved.
+    let saved = old.holder_socket.with_extension("scrollback");
+    let deadline = std::time::Instant::now() + remote_rig::LONG;
+    while !std::fs::read(&saved).is_ok_and(|bytes| bytes.windows(13).any(|window| window == b"shell-said-42")) {
+        assert!(std::time::Instant::now() < deadline, "box-1's shell never saved its output");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    let ended = move_to(&rig, &id, &two).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "the move failed: {:?}", ended.error);
+    rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+
+    let tabs = rig.the("box-2").tabs();
+    assert_eq!(tabs.len(), 2, "the agent's tab and the shell's: {tabs:?}");
+    let agent = common::agent_tab(&rig.host, &id).await;
+    let arrived = tabs.iter().find(|record| record.id != agent.value).expect("the shell tab came along");
+    assert!(holder_answers(arrived), "the shell runs on box-2");
+    let mut shell = common::Attach::start(&rig.host, open(&pb::TabId { value: arrived.id.clone() })).await;
+    shell.wait_for("shell-said-42").await;
+    shell.wait_for("This is a new shell in").await;
+    assert!(rig.the("box-1").tabs().is_empty(), "box-1 forgot the session's tabs");
+    assert!(!holder_answers(&old), "box-1's shell stopped");
+}

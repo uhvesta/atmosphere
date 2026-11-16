@@ -25,6 +25,34 @@ impl Fixture {
     /// conversation.
     async fn new() -> Self {
         let (daemon, world) = start_world().await;
+        Self::in_world(daemon, world).await
+    }
+
+    /// As [`Fixture::new`], with a second agent, [`OTHER`], beside the test
+    /// one, and the parent's conversation line written as Claude's JSONL so
+    /// it can be summarized.
+    async fn with_other_agent() -> Self {
+        Self::with_other_agent_and(&[]).await
+    }
+
+    /// [`Fixture::with_other_agent`] with environment variables for the
+    /// daemon's start.
+    async fn with_other_agent_and(env: &[(&str, &str)]) -> Self {
+        let dir = common::folder();
+        let world = World::new(dir.path());
+        let mut agents: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(&world.agents).unwrap()).unwrap();
+        let mut other = agents[0].clone();
+        other["name"] = serde_json::Value::from(OTHER);
+        agents.push(other);
+        std::fs::write(&world.agents, serde_json::Value::from(agents).to_string()).unwrap();
+        let args = world.args();
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let daemon = Daemon::start_with_env(common::Build::Admin, dir, &refs, env).await;
+        Self::in_world(daemon, world).await
+    }
+
+    async fn in_world(daemon: Daemon, world: World) -> Self {
         world.remote("acme", "api");
         let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
         let (id, _) = start_session(&daemon, &channel, "Fix login").await;
@@ -41,7 +69,7 @@ impl Fixture {
         git(&["-C", &text, "commit", "-m", "login"]);
         std::fs::write(clone.join("README.md"), "acme/api\nchanged\n").unwrap();
         std::fs::write(clone.join("notes.txt"), "untracked\n").unwrap();
-        say(&fixture.daemon, &fixture.parent_id(), "remember the retry").await;
+        say(&fixture.daemon, &fixture.parent_id(), &said_as_jsonl("remember the retry")).await;
         fixture
     }
 
@@ -125,6 +153,32 @@ fn conversation(world: &World, session: &pb::Session) -> String {
 
 fn branch_of(clone: &Path) -> String {
     git(&["-C", &clone.display().to_string(), "branch", "--show-current"])
+}
+
+/// The second agent a [`Fixture::with_other_agent`] daemon knows.
+const OTHER: &str = "other";
+
+/// `line` as a user message in Claude's JSONL, as the test agent writes
+/// every line it reads to its conversation.
+fn said_as_jsonl(line: &str) -> String {
+    serde_json::json!({"type": "user", "message": {"role": "user", "content": line}}).to_string()
+}
+
+/// The file a fork that runs another agent is handed the conversation in.
+fn handover_file(folder: &Path, fork: &pb::Session) -> PathBuf {
+    folder
+        .join(".humata")
+        .join(format!("handover-{}.jsonl", fork.id.as_ref().unwrap().value))
+}
+
+/// Waits until the fork's agent has read the first line of its handover
+/// message and the summary line that names what was asked.
+async fn wait_handed_over(daemon: &Daemon, fork: &pb::SessionId) -> Attach {
+    let tab = agent_tab(daemon, fork).await;
+    let mut attach = Attach::start(daemon, open(&tab, 0)).await;
+    attach.wait_for("got: [handover").await;
+    attach.wait_for("remember the retry").await;
+    attach
 }
 
 /// Waits until the daemon on `daemon.socket` stops answering: a stop
@@ -314,4 +368,165 @@ async fn a_fork_cut_after_its_agent_started_is_kept_at_restart() {
     let fork = common::wait_running(&fixture.daemon, fork.id.as_ref().unwrap()).await;
     assert_eq!(fork.fork_origin.clone().unwrap().parent, Some(fixture.parent_id()));
     assert!(conversation(&fixture.world, &fork).contains("remember the retry"));
+}
+
+#[tokio::test]
+async fn a_fork_with_another_agent_is_handed_the_conversation_and_a_summary() {
+    let fixture = Fixture::with_other_agent().await;
+    let mut request = fixture.request(pb::ForkKind::CodeAndContext, "Ask the other one");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    let preview = fixture
+        .daemon
+        .session_service()
+        .await
+        .preview_fork(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(preview.seeded_with_summary);
+
+    let (operation, fork) = fork_of(&fixture.daemon, request).await;
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{operation:?}");
+    let fork = fork.unwrap();
+    assert_eq!(fork.agent.as_ref().map(|agent| agent.value.as_str()), Some(OTHER));
+    let fork = common::wait_running(&fixture.daemon, fork.id.as_ref().unwrap()).await;
+    wait_handed_over(&fixture.daemon, fork.id.as_ref().unwrap()).await;
+
+    // The code is copied as for any fork; the conversation is handed over
+    // as a file beside the clones, not resumed.
+    let to = fixture.clone_of(&fork);
+    assert_eq!(std::fs::read_to_string(to.join("notes.txt")).unwrap(), "untracked\n");
+    let handover = std::fs::read_to_string(handover_file(to.parent().unwrap(), &fork)).unwrap();
+    assert!(handover.contains("remember the retry"));
+    let own = conversation(&fixture.world, &fork);
+    assert_eq!(own.matches("[handover").count(), 1, "{own}");
+    assert!(own.contains(".humata/handover-"), "the message names the file: {own}");
+}
+
+#[tokio::test]
+async fn a_context_only_fork_with_another_agent_hands_over_in_its_parents_folder() {
+    let fixture = Fixture::with_other_agent().await;
+    let mut request = fixture.request(pb::ForkKind::ContextOnly, "Read along");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    let (operation, fork) = fork_of(&fixture.daemon, request).await;
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{operation:?}");
+    let fork = fork.unwrap();
+    assert_eq!(fork.agent.as_ref().map(|agent| agent.value.as_str()), Some(OTHER));
+    wait_handed_over(&fixture.daemon, fork.id.as_ref().unwrap()).await;
+    let folder = fixture.clone_of(&fixture.parent).parent().unwrap().to_owned();
+    let handover = std::fs::read_to_string(handover_file(&folder, &fork)).unwrap();
+    assert!(handover.contains("remember the retry"));
+}
+
+#[tokio::test]
+async fn a_code_only_fork_with_another_agent_starts_it_with_nothing_to_read() {
+    let fixture = Fixture::with_other_agent().await;
+    let mut request = fixture.request(pb::ForkKind::CodeOnly, "Fresh eyes");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    let preview = fixture
+        .daemon
+        .session_service()
+        .await
+        .preview_fork(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!preview.seeded_with_summary);
+    let (operation, fork) = fork_of(&fixture.daemon, request).await;
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{operation:?}");
+    let fork = common::wait_running(&fixture.daemon, fork.unwrap().id.as_ref().unwrap()).await;
+    assert_eq!(fork.agent.as_ref().map(|agent| agent.value.as_str()), Some(OTHER));
+    assert!(!handover_file(fixture.clone_of(&fork).parent().unwrap(), &fork).exists());
+    assert!(!conversation(&fixture.world, &fork).contains("remember the retry"));
+}
+
+#[tokio::test]
+async fn a_fork_with_an_agent_humata_does_not_know_is_refused() {
+    let fixture = Fixture::with_other_agent().await;
+    let mut request = fixture.request(pb::ForkKind::CodeAndContext, "Nobody");
+    request.agent = Some(pb::AgentId { value: "nobody".to_owned() });
+    let refused = fixture
+        .daemon
+        .session_service()
+        .await
+        .fork_session(request)
+        .await
+        .unwrap_err();
+    assert_eq!(common::invalid_field(&refused).0, "agent");
+    assert_eq!(fixture.sessions().await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_handover_cut_after_the_launch_is_typed_once_after_a_restart() {
+    let mut fixture = Fixture::with_other_agent().await;
+    fixture
+        .daemon
+        .restart_env(&[("HUMATA2_STOP_AT", "fork.verify")])
+        .await;
+    last_start(&fixture.daemon).await;
+    let mut request = fixture.request(pb::ForkKind::CodeAndContext, "Cut at the handover");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    let _ = fixture.daemon.session_service().await.fork_session(request).await;
+    wait_dead(&fixture.daemon).await;
+    fixture.daemon.restart().await;
+    last_start(&fixture.daemon).await;
+
+    let fork = fixture
+        .sessions()
+        .await
+        .into_iter()
+        .find(|s| s.id != Some(fixture.parent_id()))
+        .expect("the fork past its launch is kept");
+    let fork = common::wait_running(&fixture.daemon, fork.id.as_ref().unwrap()).await;
+    wait_handed_over(&fixture.daemon, fork.id.as_ref().unwrap()).await;
+    let own = conversation(&fixture.world, &fork);
+    assert_eq!(own.matches("[handover").count(), 1, "{own}");
+}
+
+/// Archiving a context-only fork frees only what is its own: its handover
+/// file goes, and the parent's folder and clones it worked in stay.
+#[tokio::test]
+async fn freeing_a_context_only_fork_removes_its_handover_file_and_keeps_its_parents_folder() {
+    let fixture = Fixture::with_other_agent_and(&[("HUMATA2_ARCHIVE_UNDO_MS", "0")]).await;
+    let mut request = fixture.request(pb::ForkKind::ContextOnly, "Read along");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    let (operation, fork) = fork_of(&fixture.daemon, request).await;
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{operation:?}");
+    let fork = fork.unwrap();
+    let fork_id = fork.id.clone().unwrap();
+    wait_handed_over(&fixture.daemon, &fork_id).await;
+    let clone = fixture.clone_of(&fixture.parent);
+    let handover = handover_file(clone.parent().unwrap(), &fork);
+    assert!(handover.is_file(), "the fork was handed {}", handover.display());
+
+    let service = fixture.daemon.session_service().await;
+    let plan = service
+        .clone()
+        .plan_archive(pb::PlanArchiveRequest { id: Some(fork_id.clone()) })
+        .await
+        .unwrap()
+        .into_inner();
+    let started = service
+        .clone()
+        .archive_session(pb::ArchiveSessionRequest {
+            idempotency_key: None,
+            id: Some(fork_id.clone()),
+            choice: pb::ArchiveChoice::Archive as i32,
+            plan: plan.token,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let archived = finished(&fixture.daemon, &started).await;
+    assert_eq!(archived.state, pb::OperationState::Succeeded as i32, "{archived:?}");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while handover.exists() {
+        assert!(Instant::now() < deadline, "{} was never removed", handover.display());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(clone.join("login.rs").is_file(), "the parent's clone stays");
+    assert!(clone.join("notes.txt").is_file(), "the parent's untracked work stays");
+    let parent = get_session(&fixture.daemon, &fixture.parent_id()).await;
+    assert_eq!(parent.repos.len(), 1, "the parent keeps its repo");
 }

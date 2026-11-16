@@ -14,7 +14,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
-use humata2_board::{Ask, BoardAction as A, Choice, Filter, Mode, PickerKind};
+use humata2_board::{Ask, BoardAction as A, Choice, ChannelView, Filter, Mode, PickerKind};
 use humata2_clients::model::{Agent, Answer, Item, ItemId, ItemStatus as S, Scope};
 use humata2_inbox::InboxAction;
 use std::rc::Rc;
@@ -181,6 +181,20 @@ fn act(
 ) -> Button {
     button(ui, id, label, AppAction::Board(action), look, false)
 }
+fn view_label(state: &AppState, view: &ChannelView) -> String {
+    let session_title = |id: &humata2_clients::model::SessionId| {
+        state
+            .workspace
+            .session(id)
+            .map_or_else(|| id.to_string(), |s| s.title.clone())
+    };
+    match view {
+        ChannelView::Channel => "Channel board".into(),
+        ChannelView::WithSessions => "Channel + every session board".into(),
+        ChannelView::SessionAndForks(id) => format!("{} and its forks", session_title(id)),
+        ChannelView::OneSession(id) => format!("{}'s board", session_title(id)),
+    }
+}
 fn scope_name(state: &AppState) -> String {
     match &state.board.scope {
         Scope::Global => {
@@ -190,10 +204,20 @@ fn scope_name(state: &AppState) -> String {
                 "All channels".into()
             }
         }
-        Scope::Channel(id) => state
+        Scope::Channel(id) => {
+            let name = state
+                .workspace
+                .channel(id)
+                .map_or_else(|| id.to_string(), |c| format!("# {}", c.name));
+            match state.board.channel_view() {
+                ChannelView::Channel => name,
+                view => format!("{name} · {}", view_label(state, &view)),
+            }
+        }
+        Scope::Session { channel, .. } => state
             .workspace
-            .channel(id)
-            .map_or_else(|| id.to_string(), |c| format!("# {}", c.name)),
+            .channel(channel)
+            .map_or_else(|| channel.to_string(), |c| format!("# {}", c.name)),
     }
 }
 
@@ -364,7 +388,7 @@ fn item_card(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> impl Int
                         look,
                         match &item.scope {
                             Scope::Global => "Global".into(),
-                            Scope::Channel(id) => state
+                            Scope::Channel(id) | Scope::Session { channel: id, .. } => state
                                 .workspace
                                 .channel(id)
                                 .map_or_else(|| id.to_string(), |c| c.name.clone()),
@@ -557,7 +581,7 @@ fn table(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                             look,
                             match &item.scope {
                                 Scope::Global => "Global".into(),
-                                Scope::Channel(id) => state
+                                Scope::Channel(id) | Scope::Session { channel: id, .. } => state
                                     .workspace
                                     .channel(id)
                                     .map_or_else(|| id.to_string(), |c| c.name.clone()),
@@ -619,10 +643,7 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
         .workspace
         .items
         .iter()
-        .filter(|i| match &state.board.scope {
-            Scope::Global => !state.board.view.global_only || i.scope == Scope::Global,
-            scope => &i.scope == scope,
-        })
+        .filter(|i| state.board.in_scope(i))
         .collect();
     let waiting = items
         .iter()
@@ -704,7 +725,7 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
     for channel in &state.workspace.channels {
         let lane: Vec<_> = items
             .iter()
-            .filter(|i| i.scope == Scope::Channel(channel.id.clone()))
+            .filter(|i| i.scope.channel() == Some(&channel.id))
             .collect();
         if lane.is_empty() {
             continue;
@@ -1348,6 +1369,7 @@ fn scope_of(item: &Item) -> String {
     match &item.scope {
         Scope::Global => "Global board".into(),
         Scope::Channel(id) => format!("# {id}"),
+        Scope::Session { channel, session } => format!("# {channel} · {session}'s board"),
     }
 }
 
@@ -1379,6 +1401,18 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look) -
                         SharedString::from(format!("board-scope {}", c.id)),
                         format!("# {}", c.name),
                         A::SetScope(Scope::Channel(c.id.clone())),
+                        look,
+                    )
+                }))
+                .children(state.board.channel_views().into_iter().map(|view| {
+                    act(
+                        ui,
+                        SharedString::from(format!(
+                            "board-channel-view {}",
+                            view_label(state, &view)
+                        )),
+                        view_label(state, &view),
+                        A::SetChannelView(view),
                         look,
                     )
                 })),

@@ -101,7 +101,7 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 | --- | --- | --- | --- | --- |
 | FK-1..FK-4 | SessionService.PreviewFork, ForkSession, ListTurns | session_fork | `humata session fork` | |
 | FK-5, FK-6 | PeerService.ExportConversation/ImportConversation | session_fork | `humata session fork` | |
-| FK-7, FK-8 | FileService.* (parent's clones, read-only) | files_list, file_read | `humata files` | IN-20 |
+| FK-7, FK-8 | FileService.* (the parent's clones, read and written as its own; same machine only) | files_list, file_read | `humata files` | D185, D187, D208 |
 | FK-9 | SessionService.GiveOwnCopy | session_own_copy | `humata session own-copy` | |
 | FK-10 | Internal (first terminal line) | — | — | |
 | FK-11 | ActivityService.ListActivity | — | `humata activity` | |

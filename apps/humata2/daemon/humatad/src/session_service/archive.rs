@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use humata2_access::{Capability, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{GitError, RepoWork, repo_work};
+use humata2_sessions::{GitError, RepoWork, handover_file, repo_work};
 use humata2_store::{
-    AgentState, ArchiveRow, ArchiveState, SessionDetail, StoreError,
+    AgentState, ArchiveRow, ArchiveState, SessionDetail, Store, StoreError,
 };
 use pb::invalid_field::Problem;
 use prost::Message;
@@ -181,10 +181,54 @@ struct Work {
 }
 
 /// Reads the work in each clone of `detail`. Blocking: it runs git.
-fn works_of(detail: Option<&SessionDetail>) -> Result<Vec<Work>, ArchiveError> {
+/// Who else works in a session's folder, as a context-only fork works in
+/// its parent's (D187, D214).
+#[derive(Default)]
+struct Sharers {
+    /// Another session there isn't archived: the work in the folder is its.
+    live: bool,
+    /// Another session there isn't freed: the folder stays.
+    unfreed: bool,
+}
+
+/// The other sessions of this machine whose folder is `session`'s.
+fn sharers_of(store: &Store, session: &str) -> Result<Sharers, StoreError> {
+    let mut sharers = Sharers::default();
+    let Some(record) = store.session(session)? else {
+        return Ok(sharers);
+    };
+    for other in store.sessions()? {
+        if other.id == record.id || other.machine != record.machine || other.folder != record.folder {
+            continue;
+        }
+        match store.archive(&other.id)? {
+            None => {
+                sharers.live = true;
+                sharers.unfreed = true;
+            }
+            Some(row) if row.state != ArchiveState::Freed => sharers.unfreed = true,
+            Some(_) => {}
+        }
+    }
+    Ok(sharers)
+}
+
+/// The work in the session's clones. A session whose folder another live
+/// session works in has none of its own: that work is the other's (D214).
+fn works_of(
+    store: &Store,
+    session: &str,
+    detail: Option<&SessionDetail>,
+) -> Result<Vec<Work>, ArchiveError> {
+    let shared = sharers_of(store, session)
+        .map_err(|source| ArchiveError::Store {
+            session: session.to_owned(),
+            source,
+        })?
+        .live;
     let mut works = Vec::new();
     for repo in detail.iter().flat_map(|detail| detail.repos.iter()) {
-        let work = if repo.path.join(".git").exists() {
+        let work = if !shared && repo.path.join(".git").exists() {
             Some(repo_work(&repo.path).map_err(|source| ArchiveError::Work {
                 owner: repo.owner.clone(),
                 name: repo.name.clone(),
@@ -333,6 +377,19 @@ fn remove_session_folder(
     })
 }
 
+/// Removes a file of the session's own in a folder it shares; one that
+/// isn't there is already gone.
+fn remove_own_file(path: &Path) -> Result<(), ArchiveError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ArchiveError::Remove {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
 pub(super) fn failure_of(status: &Status) -> pb::Error {
     status::error_of(status).unwrap_or_else(|| pb::Error {
         message: status.message().to_owned(),
@@ -375,8 +432,8 @@ impl SessionSvc {
                 None,
             ));
         }
-        let detail = loaded.detail.clone();
-        let works = blocking(move || works_of(detail.as_ref())).await?.map_err(|error| {
+        let (store, key, detail) = (self.starter.store.clone(), id.clone(), loaded.detail.clone());
+        let works = blocking(move || works_of(&store, &key, detail.as_ref())).await?.map_err(|error| {
             failed(
                 Code::FailedPrecondition,
                 &error,
@@ -479,8 +536,8 @@ impl SessionSvc {
         if spends_plan && !self.lifecycle.plan_is_live(PlanKind::Archive, &token, &id) {
             return Err(stale());
         }
-        let detail = loaded.detail.clone();
-        let works = blocking(move || works_of(detail.as_ref()))
+        let (store, key, detail) = (self.starter.store.clone(), id.clone(), loaded.detail.clone());
+        let works = blocking(move || works_of(&store, &key, detail.as_ref()))
             .await?
             .map_err(|error| {
                 failed(
@@ -908,7 +965,8 @@ impl SessionSvc {
                     session: id.clone(),
                     source,
                 })?;
-            let works = blocking(move || works_of(detail.as_ref()))
+            let (store, key) = (self.starter.store.clone(), id.clone());
+            let works = blocking(move || works_of(&store, &key, detail.as_ref()))
                 .await
                 .map_err(|source| ArchiveError::Stop {
                     session: id.clone(),
@@ -979,6 +1037,29 @@ impl SessionSvc {
     /// row is still archived: a restore in the window left no row.
     async fn free_folder(&self, session: &str) -> Result<(), ArchiveError> {
         let guard = self.lifecycle.lock_of(session).lock_owned().await;
+        // Sessions that share a folder free it one at a time, so the last
+        // one sees the others freed and removes it (D214).
+        let (store, key) = (self.starter.store.clone(), session.to_owned());
+        let folder = blocking(move || store.session(&key))
+            .await
+            .map_err(|source| ArchiveError::Stop {
+                session: session.to_owned(),
+                source: Box::new(source),
+            })?
+            .map_err(|source| ArchiveError::Store {
+                session: session.to_owned(),
+                source,
+            })?
+            .map(|record| record.folder);
+        let folder_guard = match &folder {
+            Some(folder) => Some(
+                self.lifecycle
+                    .lock_of(&format!("folder:{}", folder.display()))
+                    .lock_owned()
+                    .await,
+            ),
+            None => None,
+        };
         let (store, key) = (self.starter.store.clone(), session.to_owned());
         let layout_root = self.starter.layout.root.clone();
         let here = self.machine.clone();
@@ -999,14 +1080,20 @@ impl SessionSvc {
                 if super::remote::elsewhere(&record, &here) {
                     return Ok(false);
                 }
-                let channel = store
-                    .channel(&record.channel)
-                    .map_err(store_error)?
-                    .ok_or_else(|| ArchiveError::NoChannel {
-                        session: key.clone(),
-                        channel: record.channel.clone(),
-                    })?;
-                remove_session_folder(&layout_root, &channel.folder, &record.folder)?;
+                if sharers_of(&store, &key).map_err(store_error)?.unfreed {
+                    // Another session still works here: only what is this
+                    // session's own goes.
+                    remove_own_file(&record.folder.join(handover_file(&key)))?;
+                } else {
+                    let channel = store
+                        .channel(&record.channel)
+                        .map_err(store_error)?
+                        .ok_or_else(|| ArchiveError::NoChannel {
+                            session: key.clone(),
+                            channel: record.channel.clone(),
+                        })?;
+                    remove_session_folder(&layout_root, &channel.folder, &record.folder)?;
+                }
             }
             store
                 .put_archive(&ArchiveRow {
@@ -1021,6 +1108,7 @@ impl SessionSvc {
             session: session_key.clone(),
             source: Box::new(source),
         })??;
+        drop(folder_guard);
         drop(guard);
         if freed {
             self.tell

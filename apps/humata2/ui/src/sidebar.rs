@@ -267,7 +267,7 @@ pub(crate) fn nav(
         .flex()
         .items_center()
         .gap(px(7.))
-        .h(px(25.))
+        .h(px(26.))
         .mx(px(10.))
         .px(px(8.))
         .rounded(px(6.))
@@ -449,6 +449,19 @@ impl Render for Sidebar {
                     .collect::<Vec<_>>(),
             )
         });
+        // FIND (NV-20 to NV-25): the host's pins, in the person's order.
+        let send_pinned: crate::sidebar_pinned::SendPinned = Rc::new({
+            let ui = ui.clone();
+            move |action, cx: &mut App| ui.send(AppAction::Pinned(action), cx)
+        });
+        let shown = current.as_ref().map(|key| match key {
+            RowKey::Session(id) => humata2_clients::marks::Thing::Session(id.clone()),
+            RowKey::Channel(id) => humata2_clients::marks::Thing::Channel(id.clone()),
+        });
+        let pinned = ui.read(|s| {
+            crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
+        });
+        let pinned_shown = pinned.is_some();
         widgets::col()
             .id("sidebar")
             .role(Role::Navigation)
@@ -515,7 +528,7 @@ impl Render for Sidebar {
                     .role(Role::Button)
                     .aria_label("Search")
                     .mx(px(10.))
-                    .mt(px(-4.))
+                    .mt(px(if pinned_shown { -4. } else { 0. }))
                     .mb(px(6.))
                     .h(px(26.))
                     .px(px(8.))
@@ -534,20 +547,7 @@ impl Render for Sidebar {
                     })
                     .test_support(),
             )
-            // FIND (NV-20 to NV-25): the host's pins, in the person's order.
-            .children({
-                let send_pinned: crate::sidebar_pinned::SendPinned = Rc::new({
-                    let ui = ui.clone();
-                    move |action, cx: &mut App| ui.send(AppAction::Pinned(action), cx)
-                });
-                let shown = current.as_ref().map(|key| match key {
-                    RowKey::Session(id) => humata2_clients::marks::Thing::Session(id.clone()),
-                    RowKey::Channel(id) => humata2_clients::marks::Thing::Channel(id.clone()),
-                });
-                ui.read(|s| {
-                    crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
-                })
-            })
+            .children(pinned)
             .child(div().h(px(4.)))
             .child(nav(
                 ui,
@@ -606,7 +606,7 @@ impl Render for Sidebar {
                     look,
                 ))
             })
-            .child(chrome::section(look, "Hosts").mt(px(-3.)))
+            .child(chrome::section(look, "Hosts").mt(px(if pinned_shown { -3. } else { 0. })))
             .children(machines.into_iter().enumerate().map(|(index, m)| {
                 let ui = ui.clone();
                 row()

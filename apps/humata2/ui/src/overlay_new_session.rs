@@ -170,6 +170,7 @@ impl Overlays {
                     Input::new(&self.title)
                         .small()
                         .min_h(px(26.))
+                        .text_size(px(12.5))
                         .focus_bordered(false)
                         .aria_label("Title"),
                 )

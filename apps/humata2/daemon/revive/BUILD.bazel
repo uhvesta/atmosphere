@@ -6,6 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # running, and writes a restart report of what it found and did.
 # humatad2 runs it when it starts.
 REVIVE_DEPS = [
+    "//apps/humata2/daemon/contain",
     "//apps/humata2/report",
     "@crates//:notify",
     "@crates//:rustix",

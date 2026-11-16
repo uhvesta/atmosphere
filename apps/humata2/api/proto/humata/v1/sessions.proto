@@ -235,8 +235,14 @@ message RebuildFrom {
   // Where the lost machine kept the session, so paths in the lines can be
   // made this machine's own.
   string old_folder = 3;
-  // The host's scrubbed copy of the conversation file, whole lines.
+  // The host's scrubbed copy of the conversation file, whole lines. The host
+  // now sends it as `conversation_staged` instead, so no message size bounds
+  // it; read only when that is empty.
   bytes conversation = 4;
+  // Where the host copied that file in the channel's folder on this machine,
+  // `.carry/<operation>/conversation.jsonl`; this machine removes the
+  // `.carry/<operation>` folder once it has read it. Empty: no file was sent.
+  string conversation_staged = 5;
 }
 
 message StartSessionResponse {
@@ -597,6 +603,10 @@ service SessionCarryService {
   // switched: removes the copy, the agent's files and the records brought in.
   // On the old machine it removes the staged files.
   rpc Abort(CarryAbortRequest) returns (CarryAbortResponse);
+  // On the machine that has the parent of a fork onto another machine: the
+  // branch the fork's clones would get there and the bytes they would copy
+  // (FK-4). It stages nothing.
+  rpc PreviewFork(CarryPreviewForkRequest) returns (CarryPreviewForkResponse);
 }
 
 message CarryPackRequest {
@@ -666,3 +676,20 @@ message CarryAbortRequest {
 }
 
 message CarryAbortResponse {}
+
+message CarryPreviewForkRequest {
+  // The parent.
+  SessionId session = 1;
+  // The fork's title, cleaned by the host; the branch is picked from it.
+  string title = 2;
+  // As ForkSessionRequest.branch; empty: picked from the title.
+  string branch = 3;
+}
+
+message CarryPreviewForkResponse {
+  // The branch every one of the fork's clones would be on.
+  string branch = 1;
+  // The parent's repositories, which the fork would copy.
+  repeated RepoRef repos = 2;
+  uint64 copy_bytes = 3;
+}

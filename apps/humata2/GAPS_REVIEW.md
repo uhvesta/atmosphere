@@ -639,3 +639,16 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: look_test PASSED; features/app:all, ui_unit_test, design_test, panels_test PASSED; `app_fakes` built with `-c opt` and installed. native_test fails only on the known queue:: tests (Codex C1 engine work).
 - Known gaps: the Board placeholder text is not settable; a fakes GitHub release needs release.sh parameters.
 - Look at: `desktop/tests/look.rs`, `ui/src/{overlay_palette,palette_hits,overlay_toasts,request_card,sidebar,sidebar_pinned}.rs`, `app/app.bzl`, `desktop/src/main.rs`.
+
+### BUG2 and FIND close; FORK's third slices, BOARD session boards, AWAY T1–T3b and T8, DESK look, POLISH 13–15 (minions BUG2, FIND, FORK, BOARD, AWAY, DESK, POLISH)
+
+- BUG2 closed: a stream that fails after its headers is recorded a second time (D215, `clients/live/src/recorded.rs`). Still open outside its exit: round stroke caps, a `humata report draw` CLI, Help › Report a Bug.
+- FIND closed. Owed: §26.22 step 1 (KP-6, C1), step 4 (PR-1, the PR milestone), step 3 (the desktop live rig needs a second machine; moving itself passes in `humatad:move_session_test`). The KP-1 audit covers app actions, not OS menu items.
+- FORK: a rebuild carries its conversation as a file; moved or rebuilt conversations are mirrored once by entry count (D211); moves carry shell tabs (MV-13); forks running another agent get a handover file plus a summary (FK-6, D212); archiving a context-only fork no longer deletes its parent's folder (D214, a data-loss fix). Cross-machine slice still open.
+- BOARD: archived sessions' items are hidden everywhere and their boards refuse new items until restored; "a session and its forks" covers every depth; session boards in the app (BD-5–BD-8, D216, BD-8 reworded per the Fable pick).
+- AWAY: machines know whether the host is reachable, and the link outlives its machine's daemon (D213); the approval passphrase is set on the host (Argon2id hash only); contained agents (D217) wired into launch and resume, with Settings and per-channel switches.
+- DESK: look_test covers the Desk frames; header icon boxes and the docked panel border fixed (D219).
+- POLISH 13–15: sidebar nav rows and the Search/Hosts offsets only with Pinned; the New session Title text size.
+- Verified: BUG2+FIND gate (36 targets) PASSED; FORK gate (humatad2, fork, archive, context_fork, remote_archive, mcp, fork_remote, rebuild_session) PASSED; BOARD C1+C2, DESK look, native, look, design, panels, shell PASSED; AWAY T3 (away_link, relay, remote, peer_stdio) and T8 (contain unit and boundary, revive, sessions kill matrices) PASSED.
+- Known gaps: AWAY T8: Session.contained isn't recorded yet; the setting reaches machines only with T4; contained agents may read keychain items that open without a prompt (D217, owner's wave). BOARD: how a session's own items are marked in its Board panel (owner's wave).
+- Look at: `clients/live/src/recorded.rs`, `daemon/humatad/src/session_service/{archive,fork,start_fresh}.rs`, `daemon/humatad/src/board_service/hidden.rs`, `features/board/src/lib.rs`, `daemon/humatad/src/{away/,contained.rs,guard.rs,peer.rs}`, `daemon/contain/`, `daemon/revive/src/lib.rs`, `ui/src/{sidebar,chrome,panels,overlay_new_session}.rs`.

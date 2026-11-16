@@ -1,6 +1,6 @@
 # FIND: Find and reach anything
 
-- **Status:** ready to close
+- **Status:** done (this commit, 2026-11-16). Owed: §26.22 step 1 (KP-6, C1), step 4 (PR-1, the PR milestone), step 3 (the desktop live rig needs a second machine; moving itself passes in `humatad:move_session_test`). The KP-1 audit covers app actions, not OS menu items.
 - **Depends on:**
   - MACH: search runs over the conversation mirror from every machine
   - LOOK2: the palette and the Pinned section are drawn there
@@ -56,3 +56,18 @@ The palette's look (LOOK2). Review this PR from a pasted link (PR).
 - **Ready to commit:** yes
 - **Known gaps:** highlights come from the query words; offline flag passed by the caller; PR-review pins open Changes; the daemon's channel-session MoveSession is FORK's (MV-2, not_built until it lands; the app side is done); Review a pull request dialog is the PR milestone's (D197 hides the entry until then); VIP's palette icon is Bell (the design draws VIP as a text badge, no glyph); remote machine_name is the id; scrubber empty until SetHostVariable; local mirror truncation gap; D189 open item MV-2/LD-4 carried history offset; headless paste into the palette unproven; live_flows_test lacks palette/find/settings deps, so the flow compares Debug names.
 - **GAPS_REVIEW note:** FIND: ⌘K runs every action (KP-1 audit), finds turns on every machine (D186, D189) and opens them in a Conversation tab; pins/VIP live on the host. Gaps as listed above.
+
+### Close check (minion BUG2/FIND, 2026-11-16)
+Exit criterion against the tree:
+- **Proven:** a search hit opens the turn on a real daemon (`desktop:live_flows_test --test_arg=find::`, step 2; `app:find_conversation_test`, `session:conversation_test`). KP-1 audit (`features/app:every_action_test`: palette commands, routes, Settings sections and rows, key bindings). Pins and VIP on the host in two clients at once (`clients/live:marks_live_test` `pins_and_vip_marks_show_in_two_clients_at_once`; the flow's step 5 does pins only). Search over other machines (`daemon/humatad:remote_history_test`, `daemon/mirror:remote_source_test`).
+- **Flow §26.22 is not run as written.** The live test passes, but three of its five steps differ from SPEC:
+  1. Step 1: ⌘K is pressed on the session page, not in a focused `claude` terminal tab, and nothing checks that the key never reaches the agent (KP-6). No test covers KP-6. The terminal is C1's code.
+  2. Step 3: the test opens the inline machine ask, then presses Escape. It never picks gpu-box or starts a move, because the daemon's channel-session MoveSession is FORK's (MV-2). The app side is proven on fakes (`app:move_from_palette_test`).
+  3. Step 4: the URL is typed, not pasted (⌘V doesn't reach the headless palette). The test asserts that no Review this PR entry shows (D197), because the Review a pull request dialog is the PR milestone's. SPEC says the entry opens the dialog with the PR filled in.
+- **Also unverified:** the KP-1 audit leaves out the menu-only OS actions (Quit, Hide, Hide Others, Show All, Minimize, Zoom, the Edit menu's actions) in `desktop/src/main.rs`. Read KP-1 as app actions only, or add them. The flow tells commands apart by their `Debug` names (the target has no palette, find or settings deps). LD-23's "as of its last sync" depends on an offline flag that the caller passes.
+- **Main's ruling (2026-11-16):** FIND closes. Owed and recorded here and in GAPS:
+  - Step 1 (⌘K in a focused agent terminal; the key never reaches the agent; KP-6) is owed by C1.
+  - Step 4 (a pasted PR link opens Review this PR with the PR filled in; PR-1) is owed by the PR milestone.
+  - Step 3 is also owed, by the live rig. Moving a session works on a real daemon (`humatad:move_session_test`, `humatad:fork_remote_test`), but `desktop/tests/live_flows/world.rs` starts one humatad2 with no peers, so the app's workspace has only This Mac and there is no second machine to pick. The multi-machine rig lives only in humatad's tests (`daemon/humatad/tests/common/remote_rig.rs`: ssh shim, per-box daemons, setsid, links). Bringing it to `desktop:live_flows_test` is its own task, and it needs BUILD data deps. Until then, step 3's check that only other machines are offered passes on an empty list, so it proves nothing; the test stops at the ask and Escape. The app's pick → ConfirmMove → `daemon.move_session` is proven on fakes (`app:move_from_palette_test`).
+  - KP-1 covers app actions only. The OS menu items in `desktop/src/main.rs` (Quit, Hide, Hide Others, Show All, Minimize, Zoom, the Edit menu) are outside it, so the audit is complete as it stands.
+- **Ready to commit / close:** yes.

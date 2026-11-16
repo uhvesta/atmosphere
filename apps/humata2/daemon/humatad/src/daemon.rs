@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 
+use crate::away::{UplinkStream, Uplinks};
 use crate::compression::Compression;
 
 use crate::identity::{self, Caller, UserVia};
@@ -27,6 +28,9 @@ pub(crate) struct Daemon {
     /// The socket's relay state (D144). None on the peer link, where
     /// BeginRelay and CompleteRelay answer "not built".
     relay: Option<Arc<RelayAuth>>,
+    /// The host's link as this daemon sees it (AWAY). None on the peer
+    /// link, where PeerUplink answers "not built".
+    uplinks: Option<Arc<Uplinks>>,
 }
 
 impl Daemon {
@@ -37,6 +41,15 @@ impl Daemon {
             compression: None,
             last_start: None,
             relay: None,
+            uplinks: None,
+        }
+    }
+
+    /// Takes the peer link's PeerUplink and answers host_reachable (AWAY).
+    pub(crate) fn with_uplinks(self, uplinks: Arc<Uplinks>) -> Self {
+        Self {
+            uplinks: Some(uplinks),
+            ..self
         }
     }
 
@@ -95,6 +108,10 @@ impl pb::daemon_service_server::DaemonService for Daemon {
                 .map(|compression| compression.offered(Link::Local))
                 .unwrap_or_default(),
             last_start,
+            host_reachable: self
+                .uplinks
+                .as_ref()
+                .map_or(self.role != pb::DaemonRole::Machine, |uplinks| uplinks.reachable()),
         }))
     }
 
@@ -187,5 +204,22 @@ impl pb::daemon_service_server::DaemonService for Daemon {
             )
             .map_err(|refusal| refusal.status())?;
         Ok(Response::new(pb::CompleteRelayResponse {}))
+    }
+
+    type PeerUplinkStream = UplinkStream;
+
+    /// AWAY: held by the peer link while the host's Uplink is open; the
+    /// host is reachable exactly while one is.
+    async fn peer_uplink(
+        &self,
+        request: Request<Streaming<pb::HostToMachine>>,
+    ) -> Result<Response<Self::PeerUplinkStream>, Status> {
+        let Some(uplinks) = &self.uplinks else {
+            return Err(status::not_built("humata.v1.DaemonService.PeerUplink"));
+        };
+        let caller = identity::caller_if_any(&request)?;
+        uplinks
+            .open(caller.as_ref(), request.into_inner())
+            .map(Response::new)
     }
 }

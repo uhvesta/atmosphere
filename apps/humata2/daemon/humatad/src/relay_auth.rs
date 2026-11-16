@@ -311,7 +311,7 @@ impl RelayAuth {
         if carries_credential {
             return Err(Refusal::CarriedCredential);
         }
-        if !relay::allows(method) {
+        if !relay::proven_may_call(method) {
             return Err(Refusal::OffList {
                 method: method.to_owned(),
             });

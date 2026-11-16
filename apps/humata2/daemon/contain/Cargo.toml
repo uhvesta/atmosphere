@@ -1,0 +1,17 @@
+[package]
+name = "humata2-contain"
+description = "Humata 2's agent containment: an OS sandbox around an agent's launch command (SEC-6)."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_contain"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

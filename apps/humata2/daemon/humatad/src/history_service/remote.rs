@@ -328,6 +328,7 @@ async fn sync(
             let mirror = mirror.clone();
             let id = session.to_owned();
             let new_source = answer.source;
+            let reader = machine.to_owned();
             blocking(move || {
                 mirror.take(
                     &id,
@@ -337,6 +338,7 @@ async fn sync(
                         next_offset,
                         source: &new_source,
                         rewritten,
+                        machine: &reader,
                     },
                 )
             })

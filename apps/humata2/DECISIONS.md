@@ -1848,3 +1848,73 @@ SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bas
 - Changes are published as `HostLinkChanged` on TOPIC_MACHINES to the user, and `GetServerInfo.host_reachable` says the current state, so tests wait on state, not sleeps.
 - Until the away journal lands (AWAY T5), calls the policy would journal or answer from the last copy are refused `host_unreachable`, not an internal error.
 - Board's Filter placeholder keeps the input theme's muted colour: gpui-component's Input takes it from the theme on every render, a theme-wide change would touch every input, and frame 24 is within budget (0.006%). (Added to D210, LOOK2, 2026-11-16.)
+
+## D215: A stream that fails after its headers is recorded a second time (BUG2 manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
+- The live client's recording layer (`clients/live/src/recorded.rs`) still tells each call once, at its headers.
+- A stream that later fails is told a second time: a non-ok `grpc-status` in its trailers, or a body that breaks (its tonic status code). The second call has the same method and start time; its duration is the time until the failure.
+- A stream that ends well, or that the app drops or cancels, adds nothing, so a recording doesn't end with a stray "cancelled" for the event watch.
+- **Why:** the agent reading a report learns what failed. A long-lived watch still open when the recording stops stays visible, and a healthy stream doesn't double the events. No new field is needed.
+- **Reverse:** drop `Streaming::watch` from `Recorded::call`.
+
+## D216: Session boards in the app, a session's forks, and what hiding an archived session's items means (BOARD manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
+- **Daemon, hidden (amends D155's "Also"):** an item is hidden when its board is an archived session's board. Hidden items are left out of every ListItems view and its counts; GetItem, GetItemHistory and every write answer them exactly like a missing item, a new Depends-on edge to one included. Stored edges to a hidden item stay (the loop check uses them) but aren't answered. An item merely worked on by an archived session stays visible. Restore brings everything back with no bookkeeping. Trashed sessions and channels: the store moves a deleted channel's rows out (D194), so nothing else is hidden yet.
+- **Daemon, SessionWithForks (BD-5):** the session's board plus every descendant fork's by true parent, at any depth, walking through archived forks but leaving out their boards; an archived root lists nothing.
+- **App model:** `Scope::Session { channel, session }` with `Scope::channel()`; the live client maps it from `BoardItem.board`. Exhaustive matches make every site choose.
+- **App, channel board scope (BD-5, BD-6):** a persisted `ChannelView { Channel (default), WithSessions, SessionAndForks(id), OneSession(id) }` in the board's `View`; `BoardState.scope` stays the page. A saved session that's gone shows as Channel without rewriting the save. New item follows BD-6. Forks are computed from `Session.parent` in the workspace (the daemon's shown parent), any depth.
+- **App, Global board (BD-7) and the session panel (BD-8):** the Global board leaves session items out. The session panel shows the session's channel's board together with that session's own board items, the session's own first in each lane; the header names the channel and New item there creates a channel item.
+- **Golden conflict (settled by a second Fable 5.2 high pick, 2026-11-16):** frames 07/12 draw Ledger's panel with channel items (channel subtitle, channel labels, other sessions' chips), as frame 37 draws the Desk panel, so BD-8 is reworded to match them rather than the frames redrawn. No golden is owed a redraw: 07, 12, 21–24 and 37 stand, and the native 07/12 setup keeps the shared channel fixtures (no re-homing). SPEC BD-8 and SE-11 are reworded to match (main applies the seam). Still open for the owner's next wave, blocking nothing: no frame draws a session-board item inside the panel; until one does, it reuses frame 37's accent outline.
+- **Gives up:** the session panel is not a private per-session list (a session-only view lives in the channel board's Scope picker); an archived session's board is unreadable and takes no new items until restore; a loop refusal may name a hidden key; session items on a channel board show only once a session scope is picked.
+- **Reverse:** drop the hidden predicate and the descendant walk in `board_service.rs`; drop `Scope::Session` and `ChannelView`.
+
+## D214: Sessions that share a folder are archived and freed without touching each other's work (FORK manager; picked by a Fable 5.2 high subagent, 2026-11-16). Settled (reversible)
+- **Problem:** a context-only fork works in its parent's folder (D187). Archiving it listed the parent's uncommitted work as its own, and freeing it deleted the parent's folder and clones.
+- **Pick:**
+  - Work check (plan, archive, summary): a session has no work of its own while another session of the same machine with the same folder has no archive row. So it gets plain Archive. A sharer that is archiving or archived doesn't count, so the last live sharer gets the full check and choices.
+  - Free: while another sharer isn't freed, only the session's own handover file (`.humata/handover-<id>.jsonl`) goes and the row is marked freed. The last sharer to be freed removes the folder as before.
+  - Frees of sharers run one at a time under a lock keyed by the folder, so the last one sees the others freed.
+  - Restore needs nothing new: it clones only repos whose `.git` is missing.
+- **Why:** archive and free are the only removal path, so refusing to archive a context fork would leave it unremovable without copies it never wanted. This also covers archiving the parent while its context fork runs.
+- **Reverse:** refuse to archive a context-only fork until Give it its own copy or its parent is archived, and drop the sharer lookups.
+
+## D217: What a contained agent may reach (AWAY manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
+- **Problem:** SEC-6 allows only the daemon's socket and writes only in the session folder and `shared/`. Every agent needs its model's HTTPS API and writes its own config and login state in the home folder, so a contained agent as written couldn't work.
+- **Pick:**
+  - **Network:** outbound TCP to port 443 on any host, DNS (the resolver's socket and port 53) and the daemon's socket. Inbound, other ports (22 included) and local TCP stay denied. SEC-6 and HO-12 read "Its only network connections are HTTPS and its daemon's socket." A host-allowlist proxy is deferred past 1.0, because it would also break package fetches and custom providers. `git push` and `gh` failing is intended: pushes and PR actions go through Humata (PR-8, IN-24).
+  - **Agent state:** the launched agent's own config folders, from a fixed list per agent, are readable and writable. Other agents' config folders are hidden. Keychain logins stay reachable.
+  - **Home:** non-hidden home folders (Documents, Desktop, Downloads, other repos) and a fixed credential list are hidden: `~/.ssh`, gh, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials` and gcloud. Toolchain dot-folders, git config and `~/Library` stay readable, except Humata's own folders.
+  - **Temp files:** `TMPDIR` points inside the session's own space.
+  - **Scope:** both the global setting and the channel override are in 1.0. The channel control reads "Contain agents: Default (On/Off) · On · Off".
+  - **Linux:** a contained launch or resume fails closed and never falls back to uncontained; the same holds for any profile error. The session stays stopped with its history intact. The message reads: "Can't start this session contained: Contain agents isn't available on Linux machines yet. Start it on a Mac, or turn Contain agents off for this channel. Agents there will then be able to read and write anything your user can on <machine>."
+  - **Shown:** only on the Info panel's "What this agent may do" card (SE-20), from `Session.contained`. When the setting is on and the session isn't contained yet, the card reads "Not contained yet. Applies when this session next resumes."
+- **Gaps, unverified, to test:**
+  - A contained agent can edit its own agent's settings or hooks, which later uncontained sessions load. Separable settings files are read-only; `~/.claude.json` can't be.
+  - Keychain items that open without a prompt (such as git's stored HTTPS credential) may be readable.
+- **Reverse:** drop the 443 and DNS rules, the agent-state allowances and the home hides, which brings back SEC-6 as written.
+- **Amendment (picked by a Fable 5.2 high subagent, 2026-11-16; Provisional): a contained Claude Code runs on a per-session copy of its config.** This closes the `~/.claude.json` gap.
+  - **How:** a contained launch or resume sets `CLAUDE_CONFIG_DIR` to a folder in the session's own space. The real `~/.claude/` and `~/.claude.json` become read-only to the contained agent. Uncontained sessions use the real config as before.
+  - **Login:** `CLAUDE_SECURESTORAGE_CONFIG_DIR` is set to empty so the usual keychain login is still found. This variable is undocumented and seen only in the 2.1.325 binary, so it must be tested.
+  - **Transcripts stay shared:** the copy's `projects` links to `~/.claude/projects`, and only this session's own project folder there is writable. Pin, resume, mirror, carry and archive read the usual path. That the agent writes through the link is unverified and must be tested.
+  - **Doesn't flow back to the user's real config (for the owner's wave):**
+    - settings changed in the session
+    - per-project trust and allowed tools
+    - MCP servers added
+    - todos
+    - rewind checkpoints
+    - usage counters
+    - onboarding state
+
+    Only the conversation transcript flows back.
+  - **Reseeded at every launch and resume, from the user's:** `.claude.json`, settings, `CLAUDE.md`, hooks, agents, commands, skills and plugins. `.credentials.json` is never copied.
+  - **Kept across resumes:** todos, checkpoints, and this session's own project entry (trust, allowed tools).
+  - **Fails closed:** a seed error stops the launch, like any profile error.
+  - **Info card:** "Uses a copy of your Claude Code settings, refreshed each time this session starts. Settings, MCP servers and permissions it changes stay in this session. Its conversation is saved as usual."
+  - **Accepted loss:** if Contain is turned off later, the session keeps its conversation but loses the todos and checkpoints from its contained runs.
+  - **Reverse:** drop the two variables and give write access back to both paths.
+
+## D219: The Desk frames in look_test: the terminal grid is masked, the header cluster and panel border are fixed (DESK manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
+- **Problem:** look_test now checks Desk frames 36, 37, 38, 40 and 55 (39 is REVIEW's). 36, 40 and 55 match within budget (at most 0.05%). 37 and 38 missed it (3.7% and 1.4%), for three shared reasons that frames 01–17 show too.
+- **1. The terminal grid (masked).** The grid draws whole-pixel cells (D22; `ui/src/terminals.rs` `font_theme` uses Menlo 11.5 so a cell is 7 px), and the goldens draw Menlo 12 text at 7.2. Long lines drift, "⎿" loses its space, and the fake agent's input box sits about 20 pt high. look_test masks the whole terminal body on 37 and 38 (`TERMINAL_BODY`): the cell pitch moves every row, so masking only the text rows would wrongly suggest the rest matches. native_test's recordings still cover the grid. The mask goes when a shared fix lands; that fix also brings 01–17 into look_test.
+- **2. The session header's right cluster (fixed).** `chrome::action` put each 15 pt icon in a 16 pt box, so the cluster sat 0.5–3 pt left of the goldens. The box becomes 15 pt (`ui/src/chrome.rs`).
+- **3. The side panel's border (fixed).** The panel drew its border inside its own width, after the divider's 1 pt. So the panel was 1 pt narrow and its content sat 1 pt right. The panel now spans the divider's point (`ui/src/panels.rs`, width + 1 with a -1 margin).
+- **Why not mask 2 and 3:** they are layout defects that no ruling accepts. Masking them would hide a real bug. Leaving 37 and 38 out would drop two of the Desk's five frames from its own check.
+- **Reverse:** put the 16 pt box and the inner border back, and mask the header cluster and the panel on 37 and 38 under this decision.

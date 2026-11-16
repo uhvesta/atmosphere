@@ -14,6 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 humata2-clients = { path = ".." }
+http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 prost = { workspace = true }
 sha2 = { workspace = true }

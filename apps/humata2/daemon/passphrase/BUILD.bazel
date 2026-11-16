@@ -1,0 +1,33 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The approval passphrase (SEC-13, AW-5): at least five words, generated from
+# a word list or typed, kept only as an Argon2id hash, checked on a machine
+# while its host is away, and locked for 15 minutes after five wrong tries.
+# Pure: the daemon keeps the hash and the lockout in its store.
+rust_library(
+    name = "passphrase",
+    srcs = glob(["src/*.rs"]),
+    compile_data = ["src/words.txt"],
+    crate_name = "humata2_passphrase",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "@crates//:argon2",
+        "@crates//:rand",
+        "@crates//:thiserror",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [":passphrase"],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

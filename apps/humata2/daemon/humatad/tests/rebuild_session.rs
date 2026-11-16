@@ -46,11 +46,28 @@ async fn say(rig: &Rig, id: &pb::SessionId, line: &str) {
 /// unpushed commit and a dirty file; box-1 then dies and is forgotten.
 /// Returns the pushed sha.
 async fn forgotten(rig: &mut Rig, channel: &pb::Channel) -> (pb::SessionId, String) {
+    forgotten_after(rig, channel, 0).await
+}
+
+/// As [`forgotten`], with `padding` JSON lines of a KiB each written to
+/// the agent's conversation before it is told "before the loss", and the
+/// host's mirror holding all of them before box-1 dies.
+async fn forgotten_after(rig: &mut Rig, channel: &pb::Channel, padding: usize) -> (pb::SessionId, String) {
     let one = Rig::box_id("box-1");
     let id = rig.start_on(channel, &one, "Cache warmup").await;
     let session = rig.wait_session(&id, "live", is_live).await;
-    // A JSON line, as real agents write: the mirror keeps only those (D189.4).
-    say(rig, &id, r#"{"text":"before the loss"}"#).await;
+    if padding > 0 {
+        let file = rig.the("box-1").conversation(&rig.the("box-1").conversation_id(&id));
+        let line = format!("{{\"text\":\"padding {}\"}}\n", "x".repeat(1000));
+        let mut written = std::fs::OpenOptions::new().append(true).create(true).open(&file).unwrap();
+        std::io::Write::write_all(&mut written, line.repeat(padding).as_bytes()).unwrap();
+    }
+    // A user message in Claude's JSONL, as real agents write: the raw lines keep
+    // only JSON lines (D189.4), and the mirror's turns only messages.
+    say(rig, &id, r#"{"type":"user","message":{"content":"before the loss"}}"#).await;
+    if padding > 0 {
+        mirrored(rig, &id, "before the loss").await;
+    }
     let clone = rig.the("box-1").path(channel, CLONE).display().to_string();
     let branch = &session.repos[0].branch;
     std::fs::write(format!("{clone}/pushed.txt"), "pushed\n").unwrap();
@@ -82,6 +99,33 @@ async fn forgotten(rig: &mut Rig, channel: &pb::Channel) -> (pb::SessionId, Stri
         .expect("box-1 is forgotten");
     rig.wait_session(&id, "archived as lost", |s| s.archive.as_ref().is_some_and(|a| a.machine_lost)).await;
     (id, pushed)
+}
+
+/// The texts of every entry the host's mirror holds for `id`.
+async fn mirror_texts(rig: &Rig, id: &pb::SessionId) -> Vec<String> {
+    let mut history = pb::history_service_client::HistoryServiceClient::new(rig.channel().await);
+    let mut request = pb::ReadTurnsRequest { session: Some(id.clone()), ..Default::default() };
+    let mut texts = Vec::new();
+    loop {
+        let response = history.read_turns(request.clone()).await.expect("the mirror reads").into_inner();
+        texts.extend(response.entries.into_iter().map(|entry| entry.text));
+        let next = response.page.map(|page| page.next_page_token).unwrap_or_default();
+        if next.is_empty() {
+            return texts;
+        }
+        request.page = Some(pb::PageRequest { page_size: 0, page_token: next });
+    }
+}
+
+/// Waits until the host's mirror of `id` holds an entry with `text`. The
+/// mirror follows the machine on its own and tells no feed, so this asks
+/// again until it does, within the rig's long wait.
+async fn mirrored(rig: &Rig, id: &pb::SessionId, text: &str) {
+    let deadline = std::time::Instant::now() + remote_rig::LONG;
+    while !mirror_texts(rig, id).await.iter().any(|entry| entry.contains(text)) {
+        assert!(std::time::Instant::now() < deadline, "the host's mirror never held {text:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 async fn rebuild(rig: &Rig, id: &pb::SessionId, on: &pb::MachineId, key: &str) -> pb::Operation {
@@ -157,4 +201,50 @@ async fn rebuild_killed_at_rebuild_clone_api_stays_archived_and_rebuildable() {
     rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
     let clone = rig.the("box-2").path(&channel, CLONE).display().to_string();
     assert_eq!(git(&["-C", &clone, "rev-parse", "HEAD"]), pushed);
+}
+
+/// A conversation larger than one gRPC message (6 MiB here) still comes
+/// back whole: the host sends it as a file, not inside StartSession.
+#[tokio::test(flavor = "multi_thread")]
+async fn rebuild_carries_a_conversation_larger_than_one_message() {
+    let (mut rig, channel) = rig_and_channel().await;
+    let (id, _) = forgotten_after(&mut rig, &channel, 6 * 1024).await;
+    let two = Rig::box_id("box-2");
+
+    let ended = rebuild(&rig, &id, &two, "rebuild-big").await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+    let box_two = rig.the("box-2");
+    let talk = std::fs::read_to_string(box_two.conversation(&box_two.conversation_id(&id))).unwrap();
+    assert_eq!(talk.matches("padding").count(), 6 * 1024, "every line came back");
+    assert!(talk.contains("before the loss"));
+    assert!(staged_none(&rig.the("box-2").path(&channel, ".carry")), "nothing left staged on box-2");
+    assert!(staged_none(&rig.host_path(&channel, ".carry")), "nothing left staged on the host");
+}
+
+/// Whether `carry` holds nothing.
+fn staged_none(carry: &std::path::Path) -> bool {
+    std::fs::read_dir(carry).map_or(true, |mut entries| entries.next().is_none())
+}
+
+/// The rebuilt conversation repeats what the host's mirror held: the mirror
+/// reads the new machine's file without adding that history twice (D209).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebuilt_conversation_is_mirrored_once() {
+    let (mut rig, channel) = rig_and_channel().await;
+    let (id, _) = forgotten_after(&mut rig, &channel, 1).await;
+    let two = Rig::box_id("box-2");
+
+    let ended = rebuild(&rig, &id, &two, "rebuild-once").await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"after the rebuild"}}"#).await;
+    mirrored(&rig, &id, "after the rebuild").await;
+
+    let texts = mirror_texts(&rig, &id).await;
+    let held = |text: &str| texts.iter().filter(|entry| entry.contains(text)).count();
+    // The padding line is JSON but no message, so the mirror holds no entry
+    // for it; it only puts a non-entry line before the history.
+    assert_eq!(held("before the loss"), 1, "{texts:?}");
+    assert_eq!(held("after the rebuild"), 1, "{texts:?}");
 }

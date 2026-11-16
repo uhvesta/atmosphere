@@ -401,6 +401,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let reports = state.join("restarts");
     private_folder(&reports)?;
     let revive = restart::Revive {
+        contain: Some(Arc::new(crate::contained::Contained::new(
+            store.clone(),
+            channels_folder.clone(),
+            state.clone(),
+            socket.clone(),
+            root.clone(),
+        ))),
         holder: holder.clone(),
         logs: logs.clone(),
         scrollback_bytes: args.scrollback_bytes,
@@ -422,6 +429,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         },
     );
     let feed = Arc::new(Feed::default());
+    // AWAY: the peer link's PeerUplink, and whether the host is reachable.
+    let uplinks = Arc::new(crate::away::Uplinks::new(guard.host_link(), feed.clone()));
     let tell = crate::session_service::Tell::new(feed.clone(), store.clone(), machine.clone());
     let last_start = restart::in_background(
         store.clone(),
@@ -620,7 +629,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // SL-4: a rebuilt session's conversation comes from the host's mirror.
     {
         let history = history.clone();
+        let rebase = history.clone();
         session_svc.use_raw_lines(Arc::new(move |session| history.raw_lines(session)));
+        // MV-13, D209: a moved or rebuilt conversation is mirrored once.
+        session_svc.use_rebase(Arc::new(move |session, machine, skip| rebase.rebase_source(session, machine, skip)));
     }
     let settings = crate::settings_service::SettingsSvc::new(guard.clone(), store.clone(), machine.clone(), feed.clone());
     // The default branch prefix is the host's gh login; a start never waits for it (D196).
@@ -686,7 +698,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             Daemon::new(machine.clone(), role)
                 .offering(compression)
                 .started(last_start)
-                .with_relay(relay),
+                .with_relay(relay)
+                .with_uplinks(uplinks),
         ))
         .add_service(pb::file_service_server::FileServiceServer::new(files))
         .add_service(pb::trash_service_server::TrashServiceServer::new(trash))

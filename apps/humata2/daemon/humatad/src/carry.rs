@@ -214,6 +214,30 @@ impl Carry {
             .map(tonic::Response::into_inner)
     }
 
+    /// What a fork of `parent` on `machine` would get there (FK-4): the
+    /// branch and the bytes, staging nothing. `typed` empty: picked from
+    /// `title`.
+    pub(crate) async fn preview_fork(
+        &self,
+        machine: &str,
+        parent: &str,
+        title: &str,
+        typed: &str,
+    ) -> Result<pb::CarryPreviewForkResponse, Status> {
+        if self.is_host(machine) {
+            return self.0.local.preview_fork(parent, title, typed).await;
+        }
+        let mut client = self.client(machine)?;
+        client
+            .preview_fork(pb::CarryPreviewForkRequest {
+                session: Some(pb::SessionId { value: parent.to_owned() }),
+                title: title.to_owned(),
+                branch: typed.to_owned(),
+            })
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
     /// Takes a carried new session in whole: a box always does, the host
     /// does here because it has no record of a fork before this.
     pub(crate) async fn unpack_new(
@@ -405,6 +429,58 @@ impl Carry {
         let _ = blocking(move || std::fs::remove_file(path)).await;
     }
 
+    /// Writes where a fork onto or from another machine stands, in
+    /// `<state>/carry/forks`, so a restart can finish or undo it. Best
+    /// effort, as a move's journal is.
+    pub(crate) async fn journal_fork(&self, entry: &ForkJournal) {
+        let folder = self.0.state.join("carry").join("forks");
+        let path = folder.join(format!("{}.json", entry.operation));
+        let (operation, value) = (entry.operation.clone(), entry.value());
+        let written = blocking(move || {
+            std::fs::create_dir_all(&folder)?;
+            let bytes = serde_json::to_vec_pretty(&value).unwrap_or_default();
+            humata2_store::write_atomic(&path, &bytes).map_err(std::io::Error::other)
+        })
+        .await;
+        if let Ok(Err(error)) = written {
+            crate::log::say!("humatad2: couldn't write the journal of fork {operation}: {error}");
+        }
+    }
+
+    /// The fork is over, made or undone; its journal goes.
+    pub(crate) async fn fork_done(&self, operation: &str) {
+        let path = self.0.state.join("carry").join("forks").join(format!("{operation}.json"));
+        let _ = blocking(move || std::fs::remove_file(path)).await;
+    }
+
+    /// The forks a run left unfinished. Read once at start; a journal that
+    /// can't be read is logged and left in place.
+    pub(crate) fn fork_journals(&self) -> Vec<ForkJournal> {
+        let folder = self.0.state.join("carry").join("forks");
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") || !path.is_file() {
+                continue;
+            }
+            let read = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|value| ForkJournal::from_value(&value));
+            match read {
+                Some(journal) => found.push(journal),
+                None => crate::log::say!(
+                    "humatad2: couldn't read the journal {} of a fork, so that fork isn't finished or undone. Nothing was deleted; look at the fork's machine, then delete the file",
+                    path.display()
+                ),
+            }
+        }
+        found
+    }
+
     /// The moves a run left unfinished, as their journals say. Read once at
     /// start, before anything is served. A journal that can't be read is
     /// logged and left in place.
@@ -470,6 +546,55 @@ impl Carry {
     }
 }
 
+/// Where a fork onto or from another machine stands, as its journal keeps
+/// it.
+#[derive(Clone, Debug)]
+pub(crate) struct ForkJournal {
+    pub(crate) operation: String,
+    pub(crate) parent: String,
+    /// The fork's id.
+    pub(crate) session: String,
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) channel: String,
+    /// `sessions/<name>` once the pack named it; empty before.
+    pub(crate) folder: String,
+    /// The last step reached: started, packed, copying (something of the
+    /// fork may be on the target from here), copied, unpacked, or recorded
+    /// (the host's record is written and the agent is being started).
+    pub(crate) phase: String,
+}
+
+impl ForkJournal {
+    fn value(&self) -> serde_json::Value {
+        json!({
+            "operation": self.operation,
+            "parent": self.parent,
+            "session": self.session,
+            "from": self.from,
+            "to": self.to,
+            "channel": self.channel,
+            "folder": self.folder,
+            "phase": self.phase,
+            "at_unix_ms": now_ms(),
+        })
+    }
+
+    fn from_value(value: &serde_json::Value) -> Option<Self> {
+        let text = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+        Some(Self {
+            operation: text("operation")?,
+            parent: text("parent")?,
+            session: text("session")?,
+            from: text("from")?,
+            to: text("to")?,
+            channel: text("channel")?,
+            folder: text("folder")?,
+            phase: text("phase")?,
+        })
+    }
+}
+
 /// A move a run left unfinished, as its journal says (MV-14).
 #[derive(Clone, Debug)]
 pub(crate) struct Journaled {
@@ -505,6 +630,13 @@ impl CarryClient {
 
     async fn abort(&mut self, request: pb::CarryAbortRequest) -> Result<tonic::Response<pb::CarryAbortResponse>, Status> {
         self.0.abort(crate::host_relay::assigned(request, None).map_err(Status::from)?).await
+    }
+
+    async fn preview_fork(
+        &mut self,
+        request: pb::CarryPreviewForkRequest,
+    ) -> Result<tonic::Response<pb::CarryPreviewForkResponse>, Status> {
+        self.0.preview_fork(crate::host_relay::assigned(request, None).map_err(Status::from)?).await
     }
 }
 

@@ -24,7 +24,7 @@ pub(crate) fn action(
         .id(id)
         .role(Role::Button)
         .aria_label(label)
-        .size(px(16.))
+        .size(px(15.))
         .flex_shrink_0()
         .flex()
         .items_center()

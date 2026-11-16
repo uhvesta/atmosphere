@@ -9,7 +9,10 @@
 //! is copied from where it stands. The new machine **unpacks**: it checks
 //! every hash against the manifest before anything is used, rewrites the old
 //! folder's path in the files that name it, places the agent's files and
-//! brings the records in. **Release** names what the old machine puts in its
+//! brings the records in. The session's shell tabs travel as their saved
+//! output: each comes back on the new machine as a new tab whose shell
+//! starts in the session's folder with that output above it, once the
+//! agent resumes there. **Release** names what the old machine puts in its
 //! trash once the agent runs on the new one.
 //!
 //! Nothing here knows about gRPC, links or the trash; the daemon drives it.
@@ -19,7 +22,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use humata2_store::{AgentState, StoreError, Take};
+use humata2_holder::saved_scrollback_path;
+use humata2_store::{AgentState, StoreError, TabKind, TabRecord, Take};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -40,6 +44,8 @@ const INCOMING: &str = "in";
 const MANIFEST: &str = "manifest.json";
 const RECORDS: &str = "records.sqlite";
 const AGENT: &str = "agent";
+const TABS: &str = "tabs";
+const SAVED: &str = "scrollback";
 
 /// The biggest file whose text is searched for the old folder's path.
 const REWRITE_MAX: u64 = 16 << 20;
@@ -144,6 +150,8 @@ pub enum Area {
     Agent,
     /// The records' side file.
     Records,
+    /// A shell tab's saved output, as `<tab>.scrollback`.
+    Tabs,
 }
 
 /// One file (or link) of the move manifest (MV-14).
@@ -165,6 +173,7 @@ impl Item {
             Area::Folder => self.rel.clone(),
             Area::Agent => format!("the agent's file {}", self.rel),
             Area::Records => "the session's records".to_owned(),
+            Area::Tabs => format!("the saved output of shell tab {}", self.rel),
         }
     }
 }
@@ -196,6 +205,18 @@ pub struct Manifest {
     pub conversation_id: String,
     pub agent_files: AgentFiles,
     pub items: Vec<Item>,
+    /// The session's shell tabs, oldest first (MV-13).
+    #[serde(default)]
+    pub tabs: Vec<CarriedTab>,
+}
+
+/// A shell tab of the session. Its saved output, if its holder saved any,
+/// is staged as `tabs/<id>.scrollback`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedTab {
+    pub id: String,
+    pub title: String,
+    pub created_unix_ms: i64,
 }
 
 /// What a pack staged.
@@ -285,9 +306,10 @@ fn walk(area: Area, folder: &Path, prefix: &str, found: &mut Vec<Item>) -> Resul
 
 fn digest_of(items: &[Item]) -> String {
     let mut hasher = Sha256::new();
-    // The records change as the agent stops; what must not change meanwhile
-    // is the folder and the agent's own files.
-    for item in items.iter().filter(|item| item.area != Area::Records) {
+    // The records change as the agent stops, and shells keep printing,
+    // their output carried as it stood; what must not change meanwhile is
+    // the folder and the agent's own files.
+    for item in items.iter().filter(|item| !matches!(item.area, Area::Records | Area::Tabs)) {
         hasher.update(format!("{:?}\0{}\0{}\0{}\n", item.area, item.rel, item.size, item.sha256));
     }
     hex(&hasher.finalize())
@@ -494,6 +516,11 @@ impl Starter {
         if agent_dir.is_dir() {
             items.extend(items_under(Area::Agent, &agent_dir)?);
         }
+        let tabs = self.stage_shell_tabs(session, agent.as_ref().map(|agent| agent.tab.as_str()), &stage)?;
+        let tabs_dir = stage.join(TABS);
+        if tabs_dir.is_dir() {
+            items.extend(items_under(Area::Tabs, &tabs_dir)?);
+        }
         let (size, sha256) = sha_of_file(&stage.join(RECORDS)).map_err(io("read", &stage.join(RECORDS)))?;
         items.push(Item { area: Area::Records, rel: RECORDS.to_owned(), size, sha256, link: None });
 
@@ -507,6 +534,7 @@ impl Starter {
             conversation_id,
             agent_files,
             items: items.clone(),
+            tabs,
         };
         let path = stage.join(MANIFEST);
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|source| CarryError::Manifest {
@@ -522,6 +550,97 @@ impl Starter {
             bytes: items.iter().map(|item| item.size).sum(),
             agent_running,
         })
+    }
+
+    /// `session`'s shell tabs on this machine, oldest first; `agent_tab` is
+    /// the agent's own, which isn't one.
+    fn shell_tabs(&self, session: &str, agent_tab: Option<&str>) -> Result<Vec<TabRecord>, CarryError> {
+        let mut tabs: Vec<TabRecord> = self
+            .store
+            .tabs()
+            .map_err(store("list the session's tabs"))?
+            .into_iter()
+            .filter(|tab| {
+                tab.kind == TabKind::Shell && tab.session.as_deref() == Some(session) && agent_tab != Some(tab.id.as_str())
+            })
+            .collect();
+        tabs.sort_by_key(|tab| (tab.created_unix_ms, tab.id.clone()));
+        Ok(tabs)
+    }
+
+    /// Copies each shell tab's saved output into `stage`'s `tabs` folder
+    /// as it stands now; its shell goes on running here until the move is
+    /// released.
+    fn stage_shell_tabs(&self, session: &str, agent_tab: Option<&str>, stage: &Path) -> Result<Vec<CarriedTab>, CarryError> {
+        let tabs = self.shell_tabs(session, agent_tab)?;
+        let target = stage.join(TABS);
+        let mut carried = Vec::new();
+        for tab in tabs {
+            plain_tab_id(&tab.id)?;
+            let saved = saved_scrollback_path(&tab.holder_socket);
+            if saved.is_file() {
+                fs::create_dir_all(&target).map_err(io("create", &target))?;
+                match fs::copy(&saved, target.join(format!("{}.{SAVED}", tab.id))) {
+                    Ok(_) => {}
+                    // Its holder was shut down meanwhile, taking the file.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(source) => return Err(CarryError::Io { doing: "copy", path: saved, source }),
+                }
+            }
+            carried.push(CarriedTab { id: tab.id, title: tab.title, created_unix_ms: tab.created_unix_ms });
+        }
+        Ok(carried)
+    }
+
+    /// The holder sockets of `session`'s shell tabs here, so the machine a
+    /// session left can stop its shells before it forgets their tabs.
+    pub fn shell_sockets(&self, session: &str) -> Result<Vec<PathBuf>, CarryError> {
+        let agent = self.store.agent(session).map_err(store("read the session's agent"))?;
+        Ok(self
+            .shell_tabs(session, agent.as_ref().map(|agent| agent.tab.as_str()))?
+            .into_iter()
+            .map(|tab| tab.holder_socket)
+            .collect())
+    }
+
+    /// Saves each carried shell tab as a new tab of `session` here, its
+    /// staged output put where its holder will start from. The shell
+    /// itself starts when the agent resumes. An unpack done again first
+    /// drops what the earlier one brought.
+    fn bring_tabs(&self, manifest: &Manifest, stage: &Path) -> Result<(), CarryError> {
+        self.drop_shell_tabs(&manifest.session)?;
+        for carried in &manifest.tabs {
+            plain_tab_id(&carried.id)?;
+            let id = format!("tb_{}", uuid::Uuid::new_v4().simple());
+            let socket = self.holders.join(format!("{id}.sock"));
+            let staged = stage.join(TABS).join(format!("{}.{SAVED}", carried.id));
+            if staged.is_file() {
+                fs::create_dir_all(&self.holders).map_err(io("create", &self.holders))?;
+                fs::copy(&staged, saved_scrollback_path(&socket)).map_err(io("copy", &staged))?;
+            }
+            let tab = TabRecord {
+                id,
+                session: Some(manifest.session.clone()),
+                kind: TabKind::Shell,
+                title: carried.title.clone(),
+                holder_socket: socket,
+                holder_pid: 0,
+                created_unix_ms: carried.created_unix_ms,
+            };
+            self.store.put_tab(&tab).map_err(store("save a shell tab of the session"))?;
+        }
+        Ok(())
+    }
+
+    /// Forgets `session`'s shell tabs here and their saved output. Only for
+    /// a session whose shells don't run here.
+    fn drop_shell_tabs(&self, session: &str) -> Result<(), CarryError> {
+        let agent = self.store.agent(session).map_err(store("read the session's agent"))?;
+        for tab in self.shell_tabs(session, agent.as_ref().map(|agent| agent.tab.as_str()))? {
+            remove(&saved_scrollback_path(&tab.holder_socket))?;
+            self.store.remove_tab(&tab.id).map_err(store("remove a shell tab of the session"))?;
+        }
+        Ok(())
     }
 
     /// Where the incoming files of `operation` are, in `channel`'s folder:
@@ -557,6 +676,7 @@ impl Starter {
         } else {
             verify(Area::Agent, &agent_dir, &of(Area::Agent))?;
         }
+        verify(Area::Tabs, &stage.join(TABS), &of(Area::Tabs))?;
         let records = stage.join(RECORDS);
         let wanted = of(Area::Records);
         match fs::symlink_metadata(&records) {
@@ -608,6 +728,7 @@ impl Starter {
             .import_session(session, &records, take)
             .map_err(store("bring the session's records in"))?;
         self.make_ready(&manifest, &folder, take)?;
+        self.bring_tabs(&manifest, &stage)?;
         Ok(Unpacked {
             files: u32::try_from(manifest.items.len()).unwrap_or(u32::MAX),
             bytes: manifest.items.iter().map(|item| item.size).sum(),
@@ -710,6 +831,7 @@ impl Starter {
         keep(remove(&self.layout.sessions(&channel.folder).join(name)));
         keep(remove(&self.carry_dir(&channel, operation)));
         if had_records {
+            keep(self.drop_shell_tabs(session));
             keep(match take {
                 Take::Everything => self.store.remove_session(session).map_err(store("remove the incoming session")),
                 Take::AgentOnly => {
@@ -760,6 +882,15 @@ impl Starter {
     pub fn unstage(&self, operation: &str, channel: &str) -> Result<(), CarryError> {
         let channel = self.carry_channel(channel)?;
         remove(&self.carry_dir(&channel, operation))
+    }
+}
+
+/// A tab id names files, so it must be one plain name.
+fn plain_tab_id(id: &str) -> Result<(), CarryError> {
+    if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Ok(())
+    } else {
+        Err(CarryError::Unexpected { item: format!("a shell tab named {id:?}") })
     }
 }
 
@@ -848,6 +979,7 @@ mod tests {
             agents: Agents::from_json(agents.as_bytes()).unwrap(),
             home: root.to_owned(),
             revive: ReviveConfig {
+                contain: None,
                 holder: PathBuf::from("/nonexistent"),
                 logs: root.join("logs"),
                 scrollback_bytes: 1 << 16,
@@ -966,6 +1098,76 @@ mod tests {
             assert_eq!(new.store.session("se_1").unwrap().unwrap().folder, moved);
             assert_eq!(new.store.session_detail("se_1").unwrap().unwrap().repos[0].path, moved.join("api"));
         }
+    }
+
+    /// A shell tab of `se_1` on `starter` whose holder saved `output`, and
+    /// the agent's own tab.
+    fn shell_tab(starter: &Starter, id: &str, output: &[u8]) -> PathBuf {
+        let socket = starter.holders.join(format!("{id}.sock"));
+        fs::create_dir_all(&starter.holders).unwrap();
+        fs::write(saved_scrollback_path(&socket), output).unwrap();
+        for (tab, kind) in [(id, TabKind::Shell), ("tb_old", TabKind::Agent)] {
+            starter
+                .store
+                .put_tab(&TabRecord {
+                    id: tab.to_owned(),
+                    session: Some("se_1".to_owned()),
+                    kind,
+                    title: format!("{tab} title"),
+                    holder_socket: starter.holders.join(format!("{tab}.sock")),
+                    holder_pid: 7,
+                    created_unix_ms: 5,
+                })
+                .unwrap();
+        }
+        socket
+    }
+
+    fn shells_of(starter: &Starter) -> Vec<TabRecord> {
+        starter.store.tabs().unwrap().into_iter().filter(|tab| tab.kind == TabKind::Shell).collect()
+    }
+
+    #[test]
+    fn a_shell_tab_arrives_as_a_new_tab_of_the_session_starting_from_its_saved_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (machine(&dir.path().join("old"), false), machine(&dir.path().join("new"), false));
+        let folder = session(&old);
+        let socket = shell_tab(&old, "tb_sh", b"saved shell output");
+
+        let packed = old.pack("op_1", "se_1").unwrap();
+        fs::write(saved_scrollback_path(&socket), b"saved shell output, and more").unwrap();
+        assert_eq!(old.pack("op_1", "se_1").unwrap().digest, packed.digest, "a shell printing doesn't count as a change");
+        old.pack("op_1", "se_1").unwrap();
+        copy_over(&old, &new, &folder);
+        new.unpack("op_1", "se_1", "ch_1", Take::Everything).unwrap();
+
+        let shells = shells_of(&new);
+        assert_eq!(shells.len(), 1, "{shells:?}");
+        let arrived = &shells[0];
+        assert_eq!(arrived.session.as_deref(), Some("se_1"));
+        assert_eq!(arrived.title, "tb_sh title");
+        assert_ne!(arrived.id, "tb_sh", "the new machine names its own tab");
+        assert!(arrived.holder_socket.starts_with(&new.holders));
+        assert_eq!(fs::read(saved_scrollback_path(&arrived.holder_socket)).unwrap(), b"saved shell output, and more");
+        assert_eq!(old.shell_sockets("se_1").unwrap(), vec![socket], "the old machine can stop its shell");
+    }
+
+    #[test]
+    fn taking_an_incoming_copy_back_drops_the_shell_tabs_it_brought() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (machine(&dir.path().join("old"), false), machine(&dir.path().join("new"), false));
+        let folder = session(&old);
+        shell_tab(&old, "tb_sh", b"saved");
+        old.pack("op_1", "se_1").unwrap();
+        copy_over(&old, &new, &folder);
+        new.unpack("op_1", "se_1", "ch_1", Take::Everything).unwrap();
+        let saved = saved_scrollback_path(&shells_of(&new)[0].holder_socket);
+
+        new.abort_incoming("op_1", "se_1", "ch_1", "sessions/fix", Take::Everything).unwrap();
+
+        assert!(shells_of(&new).is_empty());
+        assert!(!saved.exists());
+        assert!(old.layout.session("payments", "fix").exists() && shells_of(&old).len() == 1, "the old machine keeps its own");
     }
 
     #[test]

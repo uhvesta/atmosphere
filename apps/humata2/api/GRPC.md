@@ -159,7 +159,7 @@ a machine checks only calls it answers alone, using the host's last
 | BridgeService (hosts) | host; the forward's two ends are the session's machine and the Mac | host socket; forwarded from the session's machine | HO-10, HO-11: the only way anything but Humata's own calls crosses the bridge |
 | SettingsService, AgentService, MarkService, ViewStateService (settings) | host | host socket | User-only writes (BOUNDARIES.md §5) |
 | EventService (events) | host | host socket; machine socket relays a filtered feed | |
-| SessionCarryService (sessions) | the machine a session leaves or reaches | machine socket; host socket, relayed. Host only | Moving a session (Move): `Pack` freezes the session and packs its work and conversation, `Unpack` lays it down on the new machine, `Release` deletes the old copy once the new one runs, and `Abort` undoes a half-done move. A fork onto another machine packs through the same calls: `CarryPackRequest.fork` (a `CarryFork`: the fork's id, title, kind, turn and typed branch) packs a copy and leaves the parent running (a typed branch git won't take, or one a parent on this Mac already uses, is refused when ForkSession is called; a box parent's taken names are checked at pack), and `CarryPackResponse.branch` and `conversation_id` give the fork's branch and conversation. Only the host's relayed calls are honoured, never the user or an agent (D203) |
+| SessionCarryService (sessions) | the machine a session leaves or reaches | machine socket; host socket, relayed. Host only | Moving a session (Move): `Pack` freezes the session and packs its work and conversation, `Unpack` lays it down on the new machine, `Release` deletes the old copy once the new one runs, and `Abort` undoes a half-done move. A fork onto another machine packs through the same calls: `CarryPackRequest.fork` (a `CarryFork`: the fork's id, title, kind, turn and typed branch) packs a copy and leaves the parent running (a typed branch git won't take, or one a parent on this Mac already uses, is refused when ForkSession is called; a box parent's taken names are checked at pack), and `CarryPackResponse.branch` and `conversation_id` give the fork's branch and conversation. `PreviewFork` answers, on the parent's machine, the branch a fork onto another machine would get and the bytes it would copy, staging nothing; the host's SessionService.PreviewFork uses it for a fork elsewhere. A context-only fork runs only on its parent's machine, so a fork or preview of one elsewhere is refused (D208). The host keeps a journal of each fork elsewhere at `<state>/carry/forks/<operation>.json`, written at every phase; after a restart it finishes a fork whose record was written and undoes any other one, staged files included. Only the host's relayed calls are honoured, never the user or an agent (D203) |
 | PeerService (peer) | each remote machine | peer link only | §8 |
 
 ## 5. Conventions
@@ -268,12 +268,16 @@ adding it again makes a new machine. What each idempotency key answered
 is kept in `forget-answers.json` beside `hosts.json` (the newest 256), so
 a retry after a host restart answers the same. `RebuildSession` sends the target
 machine a host-only `StartSession` with `rebuild` set (a `RebuildFrom`:
-each repo's branch, the folder name, the old folder and the mirror's
-scrubbed conversation lines). The machine clones each branch at its origin
+each repo's branch, the folder name, the old folder and where the mirror's
+scrubbed conversation lines were staged). The host copies those lines as a
+file to `.carry/<name>/conversation.jsonl` in the channel's folder on the
+machine, the way a move copies files, so no message size bounds them, and
+drops its own copy. The machine clones each branch at its origin
 tip, the last pushed sha, writes the lines with the old folder's paths made
-its own, resumes the agent and tells it what was lost. The record moves to
-the new machine only once that succeeds. The conversation goes in one
-unary message, so the gRPC message limit bounds it for now.
+its own, removes the staged folder, resumes the agent and tells it what
+was lost. The record moves to the new machine only once that succeeds.
+`RebuildFrom.conversation`, the lines inline, is read only when nothing
+was staged.
 
 What humatad2 builds of `EventService` so far (D82): machine events only
 (`Machine` payloads, to the user; an agent sees none, as ListMachines

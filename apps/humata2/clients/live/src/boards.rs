@@ -40,9 +40,16 @@ fn column(status: ItemStatus) -> Option<pb::BoardColumn> {
 }
 
 fn scope(item: &pb::BoardItem) -> Scope {
-    match item.channel.as_ref() {
-        Some(channel) if !channel.value.is_empty() => Scope::Channel(ChannelId::new(channel.value.clone())),
-        _ => Scope::Global,
+    let channel = match item.channel.as_ref() {
+        Some(channel) if !channel.value.is_empty() => ChannelId::new(channel.value.clone()),
+        _ => return Scope::Global,
+    };
+    match item.board.as_ref().and_then(|board| board.board.as_ref()) {
+        Some(pb::board_ref::Board::Session(id)) => Scope::Session {
+            channel,
+            session: SessionId::new(id.value.clone()),
+        },
+        _ => Scope::Channel(channel),
     }
 }
 
@@ -174,6 +181,7 @@ fn board_ref(scope: &Scope) -> pb::BoardRef {
         Scope::Channel(channel) => pb::board_ref::Board::Channel(pb::ChannelId {
             value: channel.as_str().to_owned(),
         }),
+        Scope::Session { session, .. } => pb::board_ref::Board::Session(session_wire(session)),
     };
     pb::BoardRef { board: Some(board) }
 }

@@ -372,6 +372,8 @@ impl Filter {
             Some(pb::event::Payload::Marks(_)) => self.user && self.marks,
             Some(pb::event::Payload::Rules(_)) => self.user && self.access && self.asked(scope),
             Some(pb::event::Payload::Settings(_)) => self.user && self.settings,
+            // AWAY: whether this machine has its host, as GetServerInfo says.
+            Some(pb::event::Payload::HostLink(_)) => self.user && self.machines,
             _ => false,
         }
     }

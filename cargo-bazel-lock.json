@@ -1,5 +1,5 @@
 {
-  "checksum": "f31fddc05e58de526b50bd16261654592e60c68cca2a100cf6b588da906a6afc",
+  "checksum": "19aa440b6c53386143e3a569280537f2dbd7197368496f68eaecdb273a9a2c91",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -1675,7 +1675,10 @@
     "argon2 0.6.0": {
       "common_attrs": {
         "crate_features": [
-          "alloc"
+          "alloc",
+          "default",
+          "getrandom",
+          "password-hash"
         ],
         "deps": {
           "common": [
@@ -1686,6 +1689,10 @@
             {
               "id": "blake2 0.11.0",
               "target": "blake2"
+            },
+            {
+              "id": "password-hash 0.6.1",
+              "target": "password_hash"
             }
           ],
           "selects": {
@@ -18722,6 +18729,10 @@
       "common_attrs": {
         "deps": [
           {
+            "id": "http-body-util 0.1.5",
+            "target": "http_body_util"
+          },
+          {
             "id": "hyper-util 0.1.21",
             "target": "hyper_util"
           },
@@ -18777,6 +18788,35 @@
         {
           "Library": {
             "crate_name": "humata2_clients_live",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-contain 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_contain",
+      "name": "humata2-contain",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_contain",
             "crate_root": "src/lib.rs"
           }
         }
@@ -19420,6 +19460,37 @@
         {
           "Library": {
             "crate_name": "humata2_palette",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-passphrase 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "argon2 0.6.0",
+            "target": "argon2"
+          },
+          {
+            "id": "rand 0.10.3",
+            "target": "rand"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_passphrase",
+      "name": "humata2-passphrase",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_passphrase",
             "crate_root": "src/lib.rs"
           }
         }
@@ -29413,6 +29484,21 @@
     },
     "password-hash 0.6.1": {
       "common_attrs": {
+        "crate_features": [
+          "alloc",
+          "getrandom",
+          "phc"
+        ],
+        "deps": [
+          {
+            "id": "getrandom 0.4.3",
+            "target": "getrandom"
+          },
+          {
+            "id": "phc 0.6.1",
+            "target": "phc"
+          }
+        ],
         "edition": "2024"
       },
       "library_target_name": "password_hash",
@@ -29932,6 +30018,10 @@
     },
     "phc 0.6.1": {
       "common_attrs": {
+        "crate_features": [
+          "alloc",
+          "getrandom"
+        ],
         "deps": [
           {
             "id": "base64ct 1.8.3",
@@ -29940,6 +30030,10 @@
           {
             "id": "ctutils 0.4.8",
             "target": "ctutils"
+          },
+          {
+            "id": "getrandom 0.4.3",
+            "target": "getrandom"
           }
         ],
         "edition": "2024"
@@ -53016,6 +53110,7 @@
     }
   },
   "direct_deps": [
+    "argon2 0.6.0",
     "axum 0.8.9",
     "base64 0.23.1",
     "bzip2 0.6.1",
@@ -53094,6 +53189,7 @@
     "humata2-cli 0.0.0": "apps/humata2/cli",
     "humata2-clients 0.0.0": "apps/humata2/clients",
     "humata2-clients-live 0.0.0": "apps/humata2/clients/live",
+    "humata2-contain 0.0.0": "apps/humata2/daemon/contain",
     "humata2-desk 0.0.0": "apps/humata2/features/desk",
     "humata2-desktop 0.0.0": "apps/humata2/desktop",
     "humata2-diff-view 0.0.0": "apps/humata2/diff",
@@ -53113,6 +53209,7 @@
     "humata2-mirror 0.0.0": "apps/humata2/daemon/mirror",
     "humata2-opencode 0.0.0": "apps/humata2/daemon/opencode",
     "humata2-palette 0.0.0": "apps/humata2/features/palette",
+    "humata2-passphrase 0.0.0": "apps/humata2/daemon/passphrase",
     "humata2-report 0.0.0": "apps/humata2/report",
     "humata2-review 0.0.0": "apps/humata2/features/review",
     "humata2-review-diff 0.0.0": "apps/humata2/daemon/review_diff",

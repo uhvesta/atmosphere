@@ -522,7 +522,8 @@ is configurable per machine.
   (Owner clarification, 2026-11-15; D126.)
 - **SE-11** The right strip has, top to bottom: **Inbox** (badge: pending
   requests of the session and its forks), **Diff** (badge: unsent comments),
-  **Files**, **Board** (the session's board), **Journal**, **Info**. Clicking
+  **Files**, **Board** (its channel's board and its own items, BD-8),
+  **Journal**, **Info**. Clicking
   one opens its panel beside the terminal; clicking it again closes it. The
   header's panel toggle (⌥⌘0) hides and shows the open panel.
 - **SE-12** An open panel has a header with its name, **Full screen** (the
@@ -731,7 +732,7 @@ review) are in §11.
     that knows the conversation.
   - **Context only**: a new agent that knows the conversation and works in
     the parent's clones, reading and writing them like the parent, so two
-    agents work on one tree. A fresh agent in the parent's code is a
+    agents work on one tree, on the parent's machine. A fresh agent in the parent's code is a
     context-only fork followed by `/clear` (D185).
   - **Code only**: new clones copied from the parent's files, and a fresh agent
     with no conversation.
@@ -739,7 +740,9 @@ review) are in §11.
   listed by name, when the agent can fork at a turn); agent
   (preselected from the default, ST-15; any agent may be chosen; plain
   shell only for code only); machine
-  (any online machine of the channel).
+  (any online machine of the channel; for context only, the parent's
+  machine). Picking another machine with context only selected switches the
+  kind to code + context and says why in one line (D208).
 - **FK-4** The dialog shows a preview of the result as text (see diagram):
   the parent with its repos and turn count, and the fork's clones, branch and
   conversation.
@@ -754,9 +757,9 @@ review) are in §11.
   the same rules as its own clones. Its diff, files and editor show the
   parent's files, and both agents' edits appear together; nothing stops the
   two from editing the same file at once (D185).
-- **FK-8** A context-only fork may run on another machine; it then reads and
-  writes its parent's files across the bridge (rule-gated as cross-machine
-  reads and writes).
+- **FK-8** A context-only fork runs on its parent's machine, because it
+  works in the parent's clones. To work on another machine, fork code +
+  context there (FK-12) (D208).
 - **FK-9** **Give it its own copy** turns a context-only fork into code +
   context: Humata copies the parent's files as they are now onto a new branch
   in the fork's own clones, and from then on the agent can edit them.
@@ -1566,8 +1569,10 @@ and frame 37 a Desk session's.
   session items). Its **Scope** picker offers **All channels** (everything,
   the default), **Global items only**, or one channel. Cards there also show
   their channel.
-- **BD-8** The session strip's Board panel shows that session's board, one
-  column under another. Made full screen, it shows the columns side by side
+- **BD-8** The session strip's Board panel shows the session's channel's
+  board (the header names the channel) together with that session's own
+  board items, one column under another. The session's own items come first
+  in their lane. New item there creates a channel item. Made full screen, it shows the columns side by side
   (frame 12). A Desk session's Board panel is DK-4's.
 - **BD-9** An agent creating, editing, moving or deleting items follows the
   channel's agent access rules (IN-17): by default it may do anything on its

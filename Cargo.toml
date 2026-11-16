@@ -26,6 +26,8 @@ members = [
     "apps/humata2/daemon/mirror",
     "apps/humata2/daemon/marks",
     "apps/humata2/daemon/opencode",
+    "apps/humata2/daemon/contain",
+    "apps/humata2/daemon/passphrase",
     "apps/humata2/cli",
     "apps/humata2/engine",
     "apps/humata2/ui-prototype",
@@ -97,6 +99,8 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 png = "0.18.1"
 # Humata 2's peer link proves both ends with the enrollment key.
 hmac = "0.13.0"
+# Humata 2 keeps the approval passphrase only as an Argon2id hash.
+argon2 = "0.6"
 # Humata 2 tests drive the daemon over a Unix socket with these.
 # Humata 2's OpenCode link talks to the agent's own loopback server (D201).
 http-body-util = "0.1.5"

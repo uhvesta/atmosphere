@@ -42,9 +42,13 @@ const SCROLLBACK_READ: usize = 64 * 1024;
 /// paste whole doesn't take the return as part of it.
 const TYPE_PAUSE: Duration = Duration::from_millis(100);
 
+/// How a fork's handover message starts: it tells the message from a start
+/// fresh one, so a restart types it under the same tag (FK-6, D212).
+const HANDOVER_LEAD: &str = "Humata: you are a fork of";
+
 /// What the seed was made from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Source {
+pub(super) enum Source {
     /// The old conversation file.
     Transcript,
     /// The tail of the saved terminal output.
@@ -300,7 +304,7 @@ async fn run(
 
     let env = |tab: &TabRecord| tokens.env(tab);
     let launched = match fresh_launch(&starter, &record.agent, &old, &session) {
-        Ok((launch, marker)) => match keep_seed(&starter.store, &session, &launch, &seed).await {
+        Ok((launch, marker)) => match keep_seed(&starter.store, &session, &launch.conversation_id, &seed).await {
             Some(error) => Err(error),
             None => launch_agent(
                 &starter.store,
@@ -399,17 +403,17 @@ fn store_failure(
     }
 }
 
-/// Keeps `seed` for `launch`'s conversation until it is typed: `Some(error)`
-/// if it couldn't be.
+/// Keeps `seed` for `conversation` until it is typed: `Some(error)` if it
+/// couldn't be.
 async fn keep_seed(
     store: &Arc<Store>,
     session: &str,
-    launch: &AgentLaunch,
+    conversation: &str,
     seed: &str,
 ) -> Option<StartFreshError> {
     let row = FreshSeed {
         session_id: session.to_owned(),
-        conversation_id: launch.conversation_id.clone(),
+        conversation_id: conversation.to_owned(),
         seed: seed.to_owned(),
         created_unix_ms: now_ms(),
     };
@@ -506,14 +510,37 @@ fn holds_seed(file: &Path, conversation: &str) -> bool {
     let Ok(bytes) = std::fs::read(file) else {
         return false;
     };
-    let tag = seed_tag(conversation);
-    bytes.windows(tag.len()).any(|window| window == tag.as_bytes())
+    [SeedKind::StartFresh, SeedKind::Handover].iter().any(|kind| {
+        let tag = kind.tag(conversation);
+        bytes.windows(tag.len()).any(|window| window == tag.as_bytes())
+    })
 }
 
-/// What the first message for `conversation` starts with: it tells a
-/// conversation that had it from one that didn't.
-fn seed_tag(conversation: &str) -> String {
-    format!("[start fresh {conversation}]")
+/// What a kept first message is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SeedKind {
+    StartFresh,
+    /// A fork handed another agent's conversation (FK-6, D212).
+    Handover,
+}
+
+impl SeedKind {
+    fn of(seed: &str) -> Self {
+        if seed.starts_with(HANDOVER_LEAD) {
+            Self::Handover
+        } else {
+            Self::StartFresh
+        }
+    }
+
+    /// What the first message for `conversation` starts with: it tells a
+    /// conversation that had it from one that didn't.
+    fn tag(self, conversation: &str) -> String {
+        match self {
+            Self::StartFresh => format!("[start fresh {conversation}]"),
+            Self::Handover => format!("[handover {conversation}]"),
+        }
+    }
 }
 
 /// The launch for a new conversation in `old`'s folder, tab and terminal,
@@ -563,7 +590,7 @@ async fn type_seed(
         source,
     };
     let key = format!("{session}/fresh-{conversation}");
-    let text = format!("{} {seed}", seed_tag(conversation));
+    let text = format!("{} {seed}", SeedKind::of(seed).tag(conversation));
     for (key, data) in [
         (format!("{key}/text"), text.as_bytes()),
         (format!("{key}/return"), b"\r".as_slice()),
@@ -670,6 +697,121 @@ fn plain_tail(output: &[u8]) -> Option<String> {
         return None;
     }
     Some(tail_chars(plain, SCROLLBACK_MAX))
+}
+
+/// Keeps a fork's handover message for `conversation` before its agent
+/// starts, so a restart types it if the fork is cut before it is (D212).
+/// The error, as the operation shows it, if it couldn't be kept.
+pub(super) async fn keep_handover(
+    store: &Arc<Store>,
+    fork: &str,
+    conversation: &str,
+    seed: &str,
+) -> Result<(), pb::Error> {
+    match keep_seed(store, fork, conversation, seed).await {
+        None => Ok(()),
+        Some(error) => Err(error_of(&error, "check humatad2's log, then fork again", None)),
+    }
+}
+
+/// Types a fork's kept handover message into its agent, once, and forgets
+/// it; one the terminal couldn't be reached for stays for the next restart.
+/// The failure's chain, if it wasn't typed.
+pub(super) async fn hand_over(
+    store: &Arc<Store>,
+    socket: &Path,
+    fork: &str,
+    conversation: &str,
+    seed: &str,
+) -> Result<(), String> {
+    let typed = type_seed(socket, fork, conversation, seed).await;
+    if !matches!(typed, Err(StartFreshError::Seed { .. })) {
+        forget_seed(store, fork, conversation).await;
+    }
+    typed.map_err(|error| status::chain(&error))
+}
+
+/// Forgets a fork's handover message: the fork stopped before its agent ran.
+pub(super) async fn drop_handover(store: &Arc<Store>, fork: &str, conversation: &str) {
+    forget_seed(store, fork, conversation).await;
+}
+
+/// What a fork handed its parent's conversation can be told, as the
+/// preview describes it: what its first message would be made from.
+/// `file` is the parent's conversation, None when its agent keeps none.
+/// Blocking.
+pub(super) fn handover_source(file: Option<&Path>, socket: &Path) -> Source {
+    handover_digest(file, 0, socket).0
+}
+
+/// The digest a fork's first message holds: of the parent's conversation
+/// before turn `before_turn` (all of it at 0), or else the end of its
+/// saved terminal output. Blocking.
+fn handover_digest(file: Option<&Path>, before_turn: u32, socket: &Path) -> (Source, Option<String>) {
+    if let Some(file) = file
+        && let Ok(opened) = std::fs::File::open(file)
+    {
+        let limit = match before_turn {
+            0 => Some(u64::MAX),
+            turn => humata2_mirror::turns_of(file)
+                .ok()
+                .and_then(|turns| turns.iter().find(|mark| mark.index == turn).map(|mark| mark.offset)),
+        };
+        if let Some(limit) = limit
+            && let Some(digest) = digest_of(std::io::BufReader::new(std::io::Read::take(opened, limit)))
+        {
+            return (Source::Transcript, Some(digest));
+        }
+    }
+    match saved_tail(socket) {
+        Some(tail) => (Source::Scrollback, Some(tail)),
+        None => (Source::Nothing, None),
+    }
+}
+
+/// What the parent of a fork that runs another agent, or whose agent kept
+/// no conversation file, hands it.
+pub(super) struct Handover<'a> {
+    pub(super) title: &'a str,
+    pub(super) agent: &'a str,
+    /// The parent's conversation file, None when its agent keeps none.
+    pub(super) file: Option<&'a Path>,
+    pub(super) before_turn: u32,
+    /// The parent's terminal, whose saved output stands in for a transcript.
+    pub(super) socket: &'a Path,
+    /// Where the fork finds the conversation, from its own folder.
+    pub(super) handed: &'a Path,
+}
+
+/// What a fork handed its parent's conversation is told first (FK-6, D212):
+/// a plain digest and where the transcript is. Blocking.
+pub(super) fn handover_seed(handover: &Handover<'_>) -> String {
+    let (source, digest) = handover_digest(handover.file, handover.before_turn, handover.socket);
+    let mut seed = format!(
+        "{HANDOVER_LEAD} the session \u{201c}{}\u{201d}, which ran {}.",
+        handover.title, handover.agent
+    );
+    match (source, digest) {
+        (Source::Transcript, Some(digest)) => {
+            seed.push_str(
+                " Its conversation was handed over to you: you know what was said and done there, but not that agent's exact internal state. Here is a plain summary:\n",
+            );
+            seed.push_str(&digest);
+            seed.push_str(&format!(
+                "\nThe full transcript is at {} in this folder (read it if you need more).",
+                handover.handed.display()
+            ));
+        }
+        (Source::Scrollback, Some(digest)) => {
+            seed.push_str(
+                " Its conversation couldn't be read, so this is the end of its terminal output, as plain text, not a transcript:\n",
+            );
+            seed.push_str(&digest);
+        }
+        _ => seed.push_str(" Nothing of its conversation could be handed over, only its title."),
+    }
+    seed.push_str("\nRun `git status` and check your work before continuing.");
+    seed
 }
 
 /// What a start-fresh agent is told first.
@@ -972,11 +1114,74 @@ mod tests {
     }
 
     #[test]
+    fn a_handover_summarizes_the_parents_conversation_and_names_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("c.jsonl");
+        std::fs::write(&file, [user("add retries"), assistant("added them")].join("\n") + "\n").unwrap();
+        let handed = Path::new(".humata/handover-se_1.jsonl");
+        let seed = handover_seed(&Handover {
+            title: "Fix login",
+            agent: "claude",
+            file: Some(&file),
+            before_turn: 0,
+            socket: &dir.path().join("none.sock"),
+            handed,
+        });
+        assert_eq!(SeedKind::of(&seed), SeedKind::Handover);
+        assert!(seed.contains("add retries") && seed.contains("added them"), "{seed}");
+        assert!(seed.contains(".humata/handover-se_1.jsonl"), "{seed}");
+        assert_eq!(handover_source(Some(&file), &dir.path().join("none.sock")), Source::Transcript);
+    }
+
+    #[test]
+    fn a_handover_before_a_turn_leaves_out_what_came_from_that_turn_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("c.jsonl");
+        std::fs::write(&file, [user("first ask"), user("second ask")].join("\n") + "\n").unwrap();
+        let seed = handover_seed(&Handover {
+            title: "Fix login",
+            agent: "claude",
+            file: Some(&file),
+            before_turn: 2,
+            socket: &dir.path().join("none.sock"),
+            handed: Path::new("h.jsonl"),
+        });
+        assert!(seed.contains("first ask"), "{seed}");
+        assert!(!seed.contains("second ask"), "{seed}");
+    }
+
+    #[test]
+    fn a_handover_with_nothing_to_read_says_only_the_title_is_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("none.sock");
+        assert_eq!(handover_source(None, &socket), Source::Nothing);
+        let seed = handover_seed(&Handover {
+            title: "Fix login",
+            agent: "opencode",
+            file: None,
+            before_turn: 0,
+            socket: &socket,
+            handed: Path::new("h.jsonl"),
+        });
+        assert_eq!(SeedKind::of(&seed), SeedKind::Handover);
+        assert!(!seed.contains("h.jsonl"), "no file is named when none was handed over: {seed}");
+    }
+
+    #[test]
+    fn a_conversation_that_had_its_handover_is_told_from_one_that_did_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("c.jsonl");
+        std::fs::write(&file, format!("{} {HANDOVER_LEAD} x\n", SeedKind::Handover.tag("c-new"))).unwrap();
+        assert!(holds_seed(&file, "c-new"));
+        assert!(!holds_seed(&file, "c-other"));
+    }
+
+    #[test]
     fn a_conversation_that_had_its_first_message_is_told_from_one_that_did_not() {
         let dir = std::env::temp_dir().join(format!("h2-seed-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("c.jsonl");
-        std::fs::write(&file, user(&format!("{} pick up the build", seed_tag("c-new")))).unwrap();
+        std::fs::write(&file, user(&format!("{} pick up the build", SeedKind::StartFresh.tag("c-new")))).unwrap();
         assert!(holds_seed(&file, "c-new"));
         assert!(!holds_seed(&file, "c-other"));
         assert!(!holds_seed(&dir.join("missing.jsonl"), "c-new"));

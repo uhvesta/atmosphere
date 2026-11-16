@@ -18,7 +18,7 @@ use std::sync::{Arc, OnceLock};
 
 use humata2_access::{AgentId, Capability, ChannelId, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_mirror::MirrorError;
+use humata2_mirror::{MirrorError, entry_count};
 use humata2_revive::ReviveError;
 use humata2_sessions::{AgentError, GitError, pick_branch, remote_url, restore_clone};
 use humata2_store::{
@@ -32,6 +32,7 @@ use tonic::{Code, Request, Status};
 use super::fork::stop_point;
 use super::lineage::publish_family;
 use super::{COLS, Gated, ROWS, SessionSvc, clean_title, now_ms, watch};
+use crate::carry::Place;
 use crate::channel_service::{blocking, error_of, failed};
 use crate::host_relay::assigned;
 use crate::identity::{self, Caller};
@@ -41,6 +42,11 @@ use crate::status;
 /// The host's scrubbed copy of a session's conversation file: `None` when
 /// the mirror keeps none for it.
 pub(crate) type RawLines = Arc<dyn Fn(&str) -> Result<Option<Vec<u8>>, MirrorError> + Send + Sync>;
+
+/// Points the host's mirror of a session at its conversation's new file:
+/// the session, its new machine (`""`: the host), and how many entries
+/// that file repeats (`None`: as many as the old one held).
+pub(crate) type Rebase = Arc<dyn Fn(&str, &str, Option<u64>) -> Result<(), MirrorError> + Send + Sync>;
 
 /// The longest list of names or commits the note to the agent spells out.
 const NAMED: usize = 10;
@@ -77,6 +83,14 @@ enum RebuildError {
         #[source]
         source: io::Error,
     },
+    #[error("couldn't read the conversation the host sent to {path}")]
+    ReadConversation {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("{staged:?} is not where a host stages a conversation")]
+    BadStaged { staged: String },
     #[error("the agent {agent} can't be started here")]
     Agent {
         agent: String,
@@ -93,6 +107,20 @@ enum RebuildError {
     },
     #[error("the daemon stopped the rebuild's work early")]
     Task(#[source] tokio::task::JoinError),
+}
+
+/// The file a rebuild's conversation is staged as, in `.carry/<name>`.
+const STAGED_FILE: &str = "conversation.jsonl";
+
+/// Whether `staged` is `.carry/<name>/conversation.jsonl` with a name of
+/// letters, digits and underscores only: the one shape a host sends.
+fn staged_shape(staged: &str) -> bool {
+    let mut parts = staged.split('/');
+    let (carry, name, file, rest) = (parts.next(), parts.next(), parts.next(), parts.next());
+    carry == Some(humata2_sessions::CARRY_DIR)
+        && name.is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        && file == Some(STAGED_FILE)
+        && rest.is_none()
 }
 
 /// A plain name for one folder: no path, no dots that climb.
@@ -170,12 +198,41 @@ fn only_host() -> Status {
 
 /// The host's way to what its mirror kept: set once by `serve`.
 #[derive(Clone, Default)]
-pub(super) struct Lines(Arc<OnceLock<RawLines>>);
+pub(super) struct Lines(Arc<OnceLock<RawLines>>, Arc<OnceLock<Rebase>>);
 
 impl SessionSvc {
     /// Gives the host's SessionService the mirror's scrubbed lines. Once.
     pub(crate) fn use_raw_lines(&self, lines: RawLines) {
         let _ = self.raw_lines.0.set(lines);
+    }
+
+    /// Gives the host's SessionService the way to point its mirror at a
+    /// moved or rebuilt conversation. Once.
+    pub(crate) fn use_rebase(&self, rebase: Rebase) {
+        let _ = self.raw_lines.1.set(rebase);
+    }
+
+    /// Points the host's mirror of `session` at its file on `machine` (MV-13,
+    /// D209), before the record says the session is there. Best effort: a
+    /// mirror that can't be pointed may mirror the history twice, which loses
+    /// nothing, so the move or rebuild goes on and the log says why.
+    pub(super) async fn rebase_mirror(&self, session: &str, machine: &str, skip: Option<u64>) {
+        let Some(rebase) = self.raw_lines.1.get().cloned() else {
+            return;
+        };
+        let here = if machine == self.machine { String::new() } else { machine.to_owned() };
+        let (id, shown) = (session.to_owned(), machine.to_owned());
+        match blocking(move || rebase(&id, &here, skip)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => crate::log::say!(
+                "humatad2: couldn't point the mirror of session {session} at its file on {shown}; its history may show twice: {}",
+                status::chain(&error)
+            ),
+            Err(status) => crate::log::say!(
+                "humatad2: couldn't point the mirror of session {session} at its file on {shown}: {}",
+                status.message()
+            ),
+        }
     }
 
     // -- the host's half --------------------------------------------------
@@ -310,7 +367,11 @@ impl SessionSvc {
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         let sent = self.ask_machine(&progress, &record, &summary, &channel, &target).await;
         let outcome = match sent {
-            Ok(()) => self.switch_to(&record, &summary, &target).await,
+            Ok(written) => {
+                // The new file repeats exactly the entries of the lines sent.
+                self.rebase_mirror(&id, &target, Some(written)).await;
+                self.switch_to(&record, &summary, &target).await
+            }
             Err(error) => Err(error),
         };
         drop(guard);
@@ -325,8 +386,34 @@ impl SessionSvc {
         }
     }
 
+    /// Copies the mirror's `lines` into the channel's folder on `target`,
+    /// as a file, so no message size bounds them, and says where. The
+    /// host's own copy goes once it was sent, sent or not.
+    async fn send_conversation(&self, channel: &ChannelRecord, target: &str, lines: Vec<u8>) -> Result<String, pb::Error> {
+        let Some(carry) = self.carry.get().cloned() else {
+            return Err(failure_of(&only_host()));
+        };
+        let name = format!("rb_{}", uuid::Uuid::new_v4().simple());
+        let folder = format!("{}/{name}", humata2_sessions::CARRY_DIR);
+        let staged = format!("{folder}/{STAGED_FILE}");
+        let here = self.starter.layout.channel(&channel.folder).join(&folder);
+        let (made, file) = (here.clone(), here.join(STAGED_FILE));
+        let written = blocking(move || write_lines(&file, &lines)).await.map_err(|status| failure_of(&status))?;
+        if let Err(error) = written {
+            let _ = blocking(move || std::fs::remove_dir_all(made)).await;
+            return Err(error_of(&error, "check the host's disk has room, then rebuild again", None));
+        }
+        let host = Place { machine: String::new(), channel: channel.id.clone(), folder: channel.folder.clone() };
+        let there = Place { machine: target.to_owned(), ..host.clone() };
+        let copied = carry.copy(&format!("{name}_conversation"), (&host, &staged), (&there, &folder)).await;
+        let _ = blocking(move || std::fs::remove_dir_all(made)).await;
+        copied.map_err(|status| failure_of(&status))?;
+        Ok(staged)
+    }
+
     /// Hands `target` the session and waits for its operation to end,
-    /// mirroring its steps into `progress`.
+    /// mirroring its steps into `progress`. Returns how many mirror entries
+    /// the conversation it sent holds.
     async fn ask_machine(
         &self,
         progress: &Progress,
@@ -334,7 +421,7 @@ impl SessionSvc {
         summary: &pb::ArchiveSummary,
         channel: &ChannelRecord,
         target: &str,
-    ) -> Result<(), pb::Error> {
+    ) -> Result<u64, pb::Error> {
         let Some(remote) = &self.remote else {
             return Err(failure_of(&only_host()));
         };
@@ -360,6 +447,7 @@ impl SessionSvc {
             .and_then(|repo| repo.path.parent())
             .map(|folder| folder.display().to_string())
             .unwrap_or_default();
+        let mut written = 0;
         let rebuild = pb::RebuildFrom {
             repos: summary
                 .repos
@@ -375,7 +463,14 @@ impl SessionSvc {
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             old_folder,
-            conversation: lines.unwrap_or_default(),
+            conversation: Vec::new(),
+            conversation_staged: match lines {
+                Some(lines) if !lines.is_empty() => {
+                    written = entry_count(&lines);
+                    self.send_conversation(channel, target, lines).await?
+                }
+                _ => String::new(),
+            },
         };
         let asked = pb::StartSessionRequest {
             idempotency_key: None,
@@ -436,7 +531,7 @@ impl SessionSvc {
             }
         }
         if latest.state == pb::OperationState::Succeeded as i32 {
-            Ok(())
+            Ok(written)
         } else {
             Err(latest.error.unwrap_or_else(|| {
                 error_of(
@@ -520,6 +615,14 @@ impl SessionSvc {
                 Code::InvalidArgument,
                 &RebuildError::BadFolder { folder: rebuild.folder.clone() },
                 "the host sends the session's folder name; rebuild it from the host again",
+                None,
+            ));
+        }
+        if !rebuild.conversation_staged.is_empty() && !staged_shape(&rebuild.conversation_staged) {
+            return Err(failed(
+                Code::InvalidArgument,
+                &RebuildError::BadStaged { staged: rebuild.conversation_staged.clone() },
+                "the host stages the conversation itself; rebuild it from the host again",
                 None,
             ));
         }
@@ -629,7 +732,7 @@ impl SessionSvc {
             record,
             detail,
             channel,
-            rebuild.conversation,
+            Conversation { lines: rebuild.conversation, staged: rebuild.conversation_staged },
             rebuild.old_folder,
             note,
             identity::actor(caller),
@@ -650,7 +753,7 @@ impl SessionSvc {
         record: SessionRecord,
         mut detail: SessionDetail,
         channel: ChannelRecord,
-        conversation: Vec<u8>,
+        conversation: Conversation,
         old_folder: String,
         note: Option<String>,
         by: pb::Actor,
@@ -660,6 +763,11 @@ impl SessionSvc {
         let built = self
             .rebuild_steps(&progress, &record, &mut detail, &channel, &conversation, &old_folder, note, &mut current)
             .await;
+        // What the host staged here goes, built or not; best effort.
+        if let Some(staged) = std::path::Path::new(&conversation.staged).parent().filter(|_| !conversation.staged.is_empty()) {
+            let folder = self.starter.layout.channel(&channel.folder).join(staged);
+            let _ = blocking(move || std::fs::remove_dir_all(folder)).await;
+        }
         match built {
             Ok(()) => {
                 progress.set_step("verify", pb::StepState::Done, None);
@@ -690,7 +798,7 @@ impl SessionSvc {
         record: &SessionRecord,
         detail: &mut SessionDetail,
         channel: &ChannelRecord,
-        conversation: &[u8],
+        conversation: &Conversation,
         old_folder: &str,
         note: Option<String>,
         current: &mut String,
@@ -726,11 +834,21 @@ impl SessionSvc {
             .map_err(|source| (RebuildError::Agent { agent: record.agent.clone(), source }, false))?;
         let conversation_id = uuid::Uuid::new_v4().hyphenated().to_string();
         let plan = kind.launch(&starter.home, &record.folder, &conversation_id);
+        let conversation = if conversation.staged.is_empty() {
+            conversation.lines.clone()
+        } else {
+            let path = starter.layout.channel(&channel.folder).join(&conversation.staged);
+            let read = path.clone();
+            blocking(move || std::fs::read(read))
+                .await
+                .map_err(|status| (RebuildError::ReadConversation { path: path.clone(), source: io::Error::other(status.message().to_owned()) }, false))?
+                .map_err(|source| (RebuildError::ReadConversation { path, source }, false))?
+        };
         // With no lines the agent starts a conversation of its own.
         let resume = !conversation.is_empty();
         if resume {
             let lines = replaced(
-                conversation,
+                &conversation,
                 old_folder.as_bytes(),
                 record.folder.display().to_string().as_bytes(),
             );
@@ -800,6 +918,13 @@ impl SessionSvc {
     }
 }
 
+/// The conversation a host sends with a rebuild: in the message (older
+/// hosts) or staged as a file in the channel's folder.
+struct Conversation {
+    lines: Vec<u8>,
+    staged: String,
+}
+
 /// Writes the conversation file's lines, whole or not at all.
 fn write_lines(path: &std::path::Path, lines: &[u8]) -> Result<(), RebuildError> {
     let fail = |source| RebuildError::Conversation { path: path.to_owned(), source };
@@ -858,4 +983,27 @@ async fn undo(store: Arc<humata2_store::Store>, record: &SessionRecord) -> Resul
     })
     .await
     .map_err(RebuildError::Task)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::staged_shape;
+
+    #[test]
+    fn only_a_carry_folder_of_plain_name_holding_the_conversation_is_staged() {
+        assert!(staged_shape(".carry/rb_0f3a/conversation.jsonl"));
+        for bad in [
+            "",
+            ".carry/conversation.jsonl",
+            ".carry//conversation.jsonl",
+            ".carry/../conversation.jsonl",
+            ".carry/rb_0f3a/other.jsonl",
+            ".carry/rb_0f3a/conversation.jsonl/more",
+            "sessions/rb_0f3a/conversation.jsonl",
+            "/etc/rb_0f3a/conversation.jsonl",
+            ".carry/rb-0f3a/conversation.jsonl",
+        ] {
+            assert!(!staged_shape(bad), "{bad:?} was taken as staged");
+        }
+    }
 }

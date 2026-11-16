@@ -50,7 +50,7 @@ mod turns;
 pub use error::MirrorError;
 pub use mirror::{
     Chunk, FORMAT_VERSION, Hit, Mirror, MirrorEntry, Page, PageAsk, Query, RawConversation,
-    SessionMeta,
+    SessionMeta, entry_count,
 };
 pub use scrub::Scrubber;
 pub use source::{Lines, MAX_CHUNK, read_lines};

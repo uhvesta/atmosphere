@@ -936,3 +936,32 @@ async fn an_approved_request_is_waited_for_with_inbox_wait() {
         "{waited}"
     );
 }
+
+/// 26.5: forking only some repos, or with a first message, isn't built, so
+/// `session_fork` refuses either as an invalid field and nothing forks.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_of_some_repos_or_with_a_first_message_is_refused_as_an_invalid_field() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let base = json!({
+        "machine": "",
+        "kind": "code_and_context",
+        "reason": "try another approach",
+    });
+    let mut some_repos = base.clone();
+    some_repos["repos"] = json!(["acme/api"]);
+    let mut with_message = base.clone();
+    with_message["first_message"] = json!("start with the tests");
+    for (id, arguments) in [(1, some_repos), (2, with_message)] {
+        let result = mcp.call(id, "session_fork", arguments.clone()).await;
+        assert_eq!(result["isError"], true, "{arguments}: {result}");
+        assert_eq!(result["structuredContent"]["error"]["kind"], "invalid_field", "{arguments}: {result}");
+    }
+    let sessions = pb::session_service_client::SessionServiceClient::new(fixture.daemon.channel().await)
+        .list_sessions(pb::ListSessionsRequest { include_archived: true, ..Default::default() })
+        .await
+        .unwrap()
+        .into_inner()
+        .sessions;
+    assert_eq!(sessions.len(), 2, "nothing forked: {sessions:?}");
+}

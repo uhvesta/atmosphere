@@ -90,7 +90,14 @@ message Event {
     ProvisionalIdResolved provisional_id_resolved = 25;
     PointersUpdated pointers = 26;
     Resync resync = 27;
+    HostLinkChanged host_link = 28;
   }
+}
+
+// AWAY: a machine's daemon gained or lost its host's link (GRPC.md §9).
+// Sent on TOPIC_MACHINES, to the user only, by machines' daemons.
+message HostLinkChanged {
+  bool reachable = 1;
 }
 
 // AW-6: one machine's journal has been replayed up to `through`.

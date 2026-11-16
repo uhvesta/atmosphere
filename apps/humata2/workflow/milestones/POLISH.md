@@ -35,3 +35,8 @@ and about 134 raw hex colours across ui/src skip `Look` entirely.
 Lane closed 2026-11-16.
 - Item 10, done: offer banner. Open it is primary, Later is bordered, Not now is a local ghost (session_tabs.rs). Frames 03/04-session-needs-you. Folder 10-offer-banner-primary. Note: golden 03 draws Open it as secondary and Later/Not now as text; the prototype's primary button was followed.
 - Item 10b: goldens win (D76). Open it is secondary grey; Later and Not now are plain text. session_tabs.rs. Folder 10b-offer-banner-golden.
+- Item 11 (08), done: Inbox request card. Meta line "machine · # channel" with blue "Open session ↗"; preview rows in a grey rounded box; "What it was doing" as dot rows and "Asks you because" + "Change this rule" kept per golden 26. request_card.rs. Frames 26/27. Committed 48fc0a65.
+- Item 12 (07), done: sidebar offsets. Pinned event row pt 5 (tools follow), Hosts header mt -3. sidebar_pinned.rs, sidebar.rs. Frames 15/16/17/25. Committed 48fc0a65.
+- Item 13: sidebar nav rows back to 26 pt; Search mt -4 only when Pinned shows (frame 18 had drifted ~13 display px). sidebar.rs. Folder 13-sidebar-nav-rows. Awaiting record.
+- Item 14: Hosts header mt -3 only when Pinned shows (non-pinned frames had Hosts 5 display px high). sidebar.rs. Folder 14-hosts-offset. Awaiting record.
+- Item 15: New session Title input text 12.5 px (was shrunk by .small()). overlay_new_session.rs. First message textarea inset left (gpui-kit). Folder 15-new-session-fields. Awaiting record.

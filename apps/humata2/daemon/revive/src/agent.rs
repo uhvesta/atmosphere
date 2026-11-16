@@ -468,6 +468,15 @@ pub(crate) async fn start_holder(
     env: Vec<(OsString, OsString)>,
     line: Option<&str>,
 ) -> Result<Spawned, ReviveError> {
+    let argv = match &config.contain {
+        Some(contain) => contain
+            .wrap(record, argv)
+            .map_err(|source| ReviveError::Contain {
+                session: record.session.clone(),
+                source,
+            })?,
+        None => argv.to_vec(),
+    };
     let Some((program, args)) = argv.split_first() else {
         return Err(ReviveError::NoCommand {
             session: record.session.clone(),

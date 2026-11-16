@@ -1,6 +1,6 @@
 # BOARD: Plan the work on boards
 
-- **Status:** blocked
+- **Status:** done (this commit, 2026-11-16): stage C1 and C2 green at main's gate
 - **Depends on:**
   - ASK: agent board edits are access-checked and become requests answered on the item
   - LOOK2: the board, table, dashboard and item drawer are drawn there
@@ -54,3 +54,21 @@ The Inbox card itself (ASK). A board view prepared by an agent (VIEWS).
 - B1–B6 done. B1 is the app contract (Event::Item/ItemGone, remove_dependency, set_item_session, item_history, ItemChange). B4 is the live client (`clients/live/src/boards.rs`). B5 is the reducer: ask, choices, picker, history, Refresh, and SE-3 in the fake. B6 is the drawer views.
 - The tests for B4 were written in parallel with it. They passed when they first compiled, so they never ran red. Review B4's diff (`clients/live/src/boards.rs`) closely.
 - **GAPS_REVIEW-ready:** BOARD stage B. Review `clients/live/src/{boards,daemon,events,connection}.rs`, `features/board/src/lib.rs`, `ui/src/board.rs`, `features/app/src/{lib,events}.rs` (Refresh arm, Item events), `clients/src/{model,daemon}.rs`, `clients/src/daemon/fake/{boards,sessions}.rs`, and the tests `features/board/tests/drawer.rs`, `features/app/tests/board_start.rs`, `clients/live/tests/boards.rs`, `desktop/tests/live_boards.rs`. Also a one-wait fix in `desktop/tests/live_flows.rs` (the test raced the first load).
+
+### Stage C (2026-11-16, manager minion BOARD; picks in D216)
+- **Where stage A and B stand:** both are committed and green. No file is uncompiled, nothing of BOARD is under any `tests/pending/`, and no stage A seam is left. Evidence: every BOARD file is tracked and unmodified since freeze 2; WORKLOG events of 2026-11-15 (all 13 BOARD targets pass, the live-client mutation check); and gate g80 on `//apps/humata2/...` (376/379, none of them BOARD's). The milestone's exit criterion holds. What's left is the outcome's "session boards" and D155's archived hiding, which became buildable once FORK landed `fork_origins()` and `archives()` in the store.
+- **C1 daemon [green at main's gate 2026-11-16; commits with the next batch]:** hidden items (an archived session's board) and SessionWithForks at any depth. `daemon/humatad/src/board_service.rs` (+ `board_service/`). Failing tests written by the manager at the end of `daemon/humatad/tests/boards.rs`: `a_session_and_its_forks_lists_every_forks_board_and_nothing_else`, `an_archived_sessions_items_are_hidden_and_come_back_on_restore`, `an_archived_fork_drops_out_of_its_parents_family` (helpers `start_with_forks`, `start_seeded`, `listed`, `set_archived`). Worker: Haiku (implementation). Gap closed after the gate: `an_archived_sessions_board_takes_no_new_items_until_restored`; `create` refuses an archived session's board as not found (manager).
+- **C2 app [tests written, Haiku workers implementing]:** session boards in the app (BD-5–BD-8).
+  - Seam (main): `seam_scope_session.py` adds `Scope::Session { channel, session }` and `Scope::channel()` to `clients/src/model.rs`. Apply it with the C2 batch, because it breaks the exhaustive matches until they get their arms.
+  - `clients/live/src/boards.rs`: `scope()` reads `BoardItem.board`, and `board_ref` gains the session arm.
+  - `features/board/src/lib.rs`: a persisted `ChannelView` in `View`, so `matches` follows BD-5 and BD-7 (Global leaves session items out). The scope menu offers one entry per session with forks, then one per session, and New item follows BD-6. The Sessions picker uses `scope.channel()`.
+  - `ui/src/{board,panel_board}.rs`: the session panel shows its channel's board with the session's own items first (BD-8 as reworded, `session_panel`). The ui labels take the new arm; the scope menu lists `channel_views()`; the dashboard uses `in_scope`.
+  - Seam (main): `seam_app_arms.py` gives the new arm to `ui/src/desk_board.rs` (DESK's), `features/app/tests/every_action.rs` and `features/app/src/new_session.rs` (an item session for a session item starts in its channel). `seam_spec_bd8.py` rewords SPEC BD-8 and SE-11.
+  - `desktop/tests/native/session.rs`: no change; 07/12 keep the shared channel fixtures.
+  - Tests first:
+    - `features/board/tests/scope.rs`: Global leaves out session items; each ChannelView shows its set; a gone or archived session reads as Channel; the picker offers forks only for sessions with forks; New item in OneSession goes to that session; the session panel lists own items first, then the channel's.
+    - `clients/live/tests/boards.rs`: a session item maps to `Scope::Session`.
+- **07/12 vs BD-7/BD-8 (settled in D216 by a Fable pick):** BD-8 is reworded so the panel shows the channel's board plus the session's own items; no golden is owed a redraw. Left for the owner's next wave, blocking nothing: how a session-board item is marked inside the panel (no frame draws one; interim frame 37's accent outline).
+- **Targets:**
+  - C1: `//apps/humata2/daemon/humatad:boards_test`, `:board_tools_test`, `:humatad2_unit_test` (rerun boards_test for the create gap).
+  - C2: adds `//apps/humata2/features/board:all`, `//apps/humata2/clients/live:boards_test`, `//apps/humata2/features/app:all`, `//apps/humata2/ui:ui_unit_test`, `//apps/humata2/desktop:{design_test,look_test,live_boards_test}`, and the native session/board tests (07/12 must still match).

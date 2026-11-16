@@ -287,6 +287,7 @@ impl SessionSvc {
             pass: std::sync::atomic::AtomicU32::new(0),
             placing: AtomicBool::new(false),
             agent_ran: AtomicBool::new(true),
+            rebased: AtomicBool::new(false),
         };
         tokio::spawn(async move { mover.run(held).await });
         Ok(Gated::Done(operation))
@@ -344,6 +345,8 @@ struct Mover {
     /// The agent ran on the old machine when the move packed it; until
     /// then nothing was stopped, so an undo has nothing to start again.
     agent_ran: AtomicBool,
+    /// The host's mirror was pointed at the new machine's copy.
+    rebased: AtomicBool,
 }
 
 impl Mover {
@@ -651,6 +654,10 @@ impl Mover {
     /// The host's record names the new machine, and what the old one last
     /// reported is forgotten (SL-1, SL-3).
     async fn switch(&self) -> Result<(), Status> {
+        // Before the record says so: the mirror then reads the new
+        // machine's copy alone, and the history it holds is not added twice.
+        self.rebased.store(true, Ordering::SeqCst);
+        self.svc.rebase_mirror(&self.session, &self.to, None).await;
         let mut record = self.record.clone();
         record.machine.clone_from(&self.to);
         let store = self.svc.starter.store.clone();
@@ -715,6 +722,9 @@ impl Mover {
     /// operation ends FAILED naming the step (MV-3).
     async fn undo(&self, failure: Failure) {
         let Failure { step, status: cause, cancelled } = failure;
+        if self.rebased.load(Ordering::SeqCst) {
+            self.svc.rebase_mirror(&self.session, &self.from, None).await;
+        }
         let mut taken_back = true;
         if self.placing.load(Ordering::SeqCst) {
             // An agent the resume started there stops before its copy goes.
@@ -833,6 +843,7 @@ pub(super) async fn recover(
         pass: std::sync::atomic::AtomicU32::new(0),
         placing: AtomicBool::new(true),
         agent_ran: AtomicBool::new(journal.agent_ran),
+        rebased: AtomicBool::new(false),
     };
     let outcome = match journal.phase.as_str() {
         "resumed" => mover.finish(true).await,
@@ -917,5 +928,37 @@ impl Mover {
         Ok(loaded
             .agent
             .is_some_and(|agent| matches!(agent.state, AgentState::Running { .. })))
+    }
+}
+
+/// The line a session's shell tab starts with when its agent's resume
+/// starts it again, after the output its old holder saved.
+const SHELL_BACK: &str = "This terminal's earlier shell is gone: the session moved to this machine, or its shell had stopped. \
+     Programs that ran in it didn't come along; the output above is what it had saved.";
+
+/// Starts the session's shell tabs whose holders are gone, such as those a
+/// move brought in (MV-13). A shell that can't start is logged and leaves
+/// the resume as it is: its tab stays, and the next resume or restart tries
+/// again.
+pub(super) async fn restart_session_shells(
+    starter: &humata2_sessions::Starter,
+    session: &str,
+    env: humata2_revive::Env<'_>,
+) {
+    match humata2_revive::restart_shells(&starter.store, &starter.revive, session, env, SHELL_BACK).await {
+        Ok(shells) => {
+            for (tab, outcome) in shells {
+                if let Err(error) = outcome {
+                    crate::log::say!(
+                        "humatad2: session {session}'s shell tab {tab} didn't start again: {}",
+                        status::chain(&error)
+                    );
+                }
+            }
+        }
+        Err(error) => crate::log::say!(
+            "humatad2: couldn't start session {session}'s shell tabs again: {}",
+            status::chain(&error)
+        ),
     }
 }

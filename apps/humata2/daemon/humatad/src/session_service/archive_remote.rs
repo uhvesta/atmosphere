@@ -562,6 +562,10 @@ impl SessionSvc {
         }
 
         // Switch: the record names this Mac, and the archive row goes.
+        // The mirror first reads the conversation taken here, which repeats
+        // what it held from the machine, so nothing shows twice (D211).
+        let here = self.machine.clone();
+        self.rebase_mirror(&id, &here, None).await;
         let mut record = loaded.record.clone();
         record.machine.clone_from(&self.machine);
         let (store, saved, key) = (self.starter.store.clone(), record.clone(), id.clone());
@@ -573,6 +577,7 @@ impl SessionSvc {
         match switched {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
+                self.rebase_mirror(&id, &machine, None).await;
                 progress.fail(error_of(
                     &error,
                     "fix the cause the message names, then restore again",
@@ -581,6 +586,7 @@ impl SessionSvc {
                 return;
             }
             Err(refused) => {
+                self.rebase_mirror(&id, &machine, None).await;
                 progress.fail(error_from(&refused));
                 return;
             }

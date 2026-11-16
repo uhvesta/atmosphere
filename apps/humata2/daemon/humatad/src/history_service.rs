@@ -115,6 +115,13 @@ impl HistorySvc {
             .map(|raw| raw.data))
     }
 
+    /// The session's conversation now lives in a new file on `machine`
+    /// (`""`: this host) that starts with what the old one held; see
+    /// [`humata2_mirror::Mirror::rebase_source`] (MV-13, D209).
+    pub(crate) fn rebase_source(&self, session: &str, machine: &str, skip: Option<u64>) -> Result<(), MirrorError> {
+        self.shared.mirror()?.rebase_source(session, machine, skip)
+    }
+
     /// The machines' links and reports (the host only; a machine's own
     /// daemon has none and mirrors no other machine). From now on a link
     /// coming up, or a machine reporting on a session, has the host read that

@@ -5,6 +5,7 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
+import "humata/v1/peer.proto";
 
 service DaemonService {
   // Versions, role and features. Clients call it first and refuse to go on
@@ -20,6 +21,13 @@ service DaemonService {
   // D144: the link hands over the host's nonce and ProveHost proof as
   // received; on success this connection is the host's.
   rpc CompleteRelay(CompleteRelayRequest) returns (CompleteRelayResponse);
+  // AWAY (GRPC.md §9): the peer link's process opens this on its proven
+  // relay connection when the host opens the link's Uplink, before it
+  // answers the host's Resume, and carries the Uplink's messages both ways
+  // through it. The machine's daemon counts its host reachable exactly
+  // while one is open; a newer one ends the older. The host can't relay
+  // it, and every other caller is refused.
+  rpc PeerUplink(stream HostToMachine) returns (stream MachineToHost);
 }
 
 enum DaemonRole {
@@ -59,6 +67,10 @@ message ServerInfo {
   // while the daemon is still bringing sessions back, which it does while
   // it already serves (an agent may take 30 s to resume).
   LastStart last_start = 8;
+  // A machine's daemon: whether its host's link is up now (GRPC.md §9).
+  // While it isn't, the machine judges its own clients' calls as AW-7
+  // says for the host away. The host's daemon always says true.
+  bool host_reachable = 9;
 }
 
 message LastStart {

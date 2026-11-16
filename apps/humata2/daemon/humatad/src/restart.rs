@@ -25,6 +25,8 @@ const SETTLE: Duration = Duration::from_secs(1);
 
 /// Where and how the sessions are brought back.
 pub(crate) struct Revive {
+    /// SEC-6: what contains agents when their setting says so.
+    pub(crate) contain: Option<Arc<dyn humata2_revive::Contain>>,
     pub(crate) holder: PathBuf,
     pub(crate) logs: PathBuf,
     pub(crate) scrollback_bytes: usize,
@@ -64,6 +66,7 @@ pub(crate) fn starter(store: &Arc<Store>, revive: Revive, sessions: Sessions) ->
         agents: sessions.agents,
         home: revive.home.clone(),
         revive: ReviveConfig {
+            contain: revive.contain,
             holder: revive.holder,
             logs: revive.logs,
             scrollback_bytes: revive.scrollback_bytes,

@@ -159,3 +159,58 @@ async fn undo_inside_the_window_restores_it_on_box_1_in_place() {
     assert!(back.archive.is_none());
     assert_eq!(std::fs::read_to_string(clone.join(".git").join("humata-test-marker")).unwrap(), "kept through the archive\n");
 }
+
+/// Every entry the host's mirror of `id` holds, page by page.
+async fn mirror_texts(rig: &Rig, id: &pb::SessionId) -> Vec<String> {
+    let mut history = pb::history_service_client::HistoryServiceClient::new(rig.channel().await);
+    let mut request = pb::ReadTurnsRequest { session: Some(id.clone()), ..Default::default() };
+    let mut texts = Vec::new();
+    loop {
+        let response = history.read_turns(request.clone()).await.expect("the mirror reads").into_inner();
+        texts.extend(response.entries.into_iter().map(|entry| entry.text));
+        let next = response.page.map(|page| page.next_page_token).unwrap_or_default();
+        if next.is_empty() {
+            return texts;
+        }
+        request.page = Some(pb::PageRequest { page_size: 0, page_token: next });
+    }
+}
+
+/// Waits until the host's mirror of `id` holds an entry with `text`: the
+/// mirror follows the machine and tells no feed, so this asks again.
+async fn mirrored(rig: &Rig, id: &pb::SessionId, text: &str) {
+    let deadline = tokio::time::Instant::now() + LONG;
+    while !mirror_texts(rig, id).await.iter().any(|entry| entry.contains(text)) {
+        assert!(tokio::time::Instant::now() < deadline, "the host's mirror never held {text:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// D211: box-1's archive restored on this Mac brings its conversation here
+/// as a file that repeats what the host's mirror held; the mirror adds only
+/// what follows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conversation_restored_on_this_mac_is_mirrored_once() {
+    let (rig, channel, id) = on_box().await;
+    // JSON lines, as real agents write: the mirror keeps only those (D189.4).
+    say(&rig, &id, r#"{"type":"user","message":{"content":"before the restore"}}"#).await;
+    mirrored(&rig, &id, "before the restore").await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+
+    let host = rig.host_id().await;
+    let ended = restore(&rig, &id, Some(host.clone())).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"after the restore"}}"#).await;
+    mirrored(&rig, &id, "after the restore").await;
+
+    let texts = mirror_texts(&rig, &id).await;
+    let held = |text: &str| texts.iter().filter(|entry| entry.contains(text)).count();
+    assert_eq!(held("before the restore"), 1, "{texts:?}");
+    assert_eq!(held("after the restore"), 1, "{texts:?}");
+}

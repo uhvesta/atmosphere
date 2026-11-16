@@ -821,6 +821,24 @@ pub enum Scope {
     Global,
     /// A channel's board.
     Channel(ChannelId),
+    /// A session's board, in its channel (BD-1, BD-8).
+    Session {
+        /// The session's channel.
+        channel: ChannelId,
+        /// The session.
+        session: SessionId,
+    },
+}
+
+impl Scope {
+    /// The channel the board belongs to; `None` for the Global board.
+    #[must_use]
+    pub fn channel(&self) -> Option<&ChannelId> {
+        match self {
+            Self::Global => None,
+            Self::Channel(channel) | Self::Session { channel, .. } => Some(channel),
+        }
+    }
 }
 
 /// A board item's size.

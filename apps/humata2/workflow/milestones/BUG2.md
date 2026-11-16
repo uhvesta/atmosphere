@@ -1,6 +1,6 @@
 # BUG2: Report, annotate and draw from anywhere
 
-- **Status:** open (lane BUG2, 2026-11-15)
+- **Status:** done (this commit, 2026-11-16)
 - **Depends on:** BUG (done, ed5882ed); LOOK2* (shares ui files: palette, overlays; claim around LOOK2's claims)
 - **Unblocks:** LINUX (its suites join the batch)
 - **Layer:** L2 · **Lane:** BUG2
@@ -61,3 +61,9 @@ Manager: minion BUG2 (Opus 5.5). Design picks: D159 (Fable 5.2 high advisor).
 - **GAPS_REVIEW note:** BUG2 close pass: the report and the copied prompt name the recording's real video files (`report/src/{write,video}.rs`, `report/tests/picture.rs`).
 - **Left, outside the exit criterion:** round stroke caps, RPC status sent in trailers after a stream starts, a `humata report draw` CLI (OVERVIEW › Pick up here (minion BUG2)).
 - **Ready to commit:** yes.
+
+### Last pass (minion BUG2, 2026-11-16, after LOOK2 closed)
+- Checked the exit criterion against the tree: palette commands (`palette:report_commands_test`, `app:report_test`), draw mode and the prompt naming the element (`desktop:report_test` `draw_circle_names_the_element`), comments added/edited/removed from the form (`app:report_test` `pinning_edits_comments_and_resets_copied`, Remove buttons in `ui/src/report_view.rs`), RPCs recorded and replayed (`desktop:report_test` `rpc_calls_are_recorded_and_replay_still_matches`; desktop wires `observe_calls` in `desktop/src/live.rs`), `window.png`/`marks.svg`/`video.png` with secrets masked (`report:{picture,video}_test`, `desktop:report_test`, `ui:ui_unit_test`). All in place.
+- **Closed the "error kind" gap for streams (D215):** a stream that fails after its headers (non-ok `grpc-status` trailer, or a broken body) is told a second time with its code; one that ends well or is dropped adds nothing. Tests first in `clients/live/src/recorded.rs` (`a_stream_that_fails_after_its_headers_is_told_again_with_its_code`, `a_stream_whose_body_breaks_is_told_with_the_breaks_code`; the existing tests now use `tonic::body::Body`). Seam: scratchpad `bug2find/seam_http_body_util.py --check` (http-body-util dep in `clients/live/{BUILD.bazel,Cargo.toml}`, then repin). Targets: `//apps/humata2/clients/live:live_unit_test`, `//apps/humata2/clients/live:live`, `//apps/humata2/desktop:humata2`, `//apps/humata2/desktop:report_test`.
+- **Left, outside the exit criterion:** round stroke caps (no lyon in ui); a `humata report draw` CLI; the Help › Report a Bug menu has only Start/Stop and Take Snapshot (the palette also has Report a bug… and Open the last bug report).
+- **Ready to commit:** yes, once the targets above pass.

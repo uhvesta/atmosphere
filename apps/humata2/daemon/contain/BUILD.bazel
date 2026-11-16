@@ -1,0 +1,46 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Contain agents (SEC-6, D1, D128): wraps an agent's launch command in an OS
+# sandbox that lets it write only inside its session folder, shared/ and the
+# paths it is given, hides the folders it is given from its reads, and allows
+# no network but its daemon's socket. macOS uses a generated sandbox-exec
+# profile; Linux (Landlock plus a network namespace) is LINUX's.
+rust_library(
+    name = "contain",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_contain",
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/revive:__pkg__",
+    ],
+    deps = [
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "contain_unit_test",
+    crate = ":contain",
+    deps = ["@crates//:tempfile"],
+)
+
+# The boundary suite runs real sandboxed probes. sandbox-exec can't start
+# inside Bazel's own darwin sandbox, so these run unsandboxed.
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        tags = ["no-sandbox"],
+        deps = [
+            ":contain",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

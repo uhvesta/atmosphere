@@ -228,12 +228,17 @@ impl Mirror {
         // The index may have missed an append that was saved before a crash.
         index.sync_session(session, &dir, &state, &meta)?;
 
+        if state.bound.as_deref().is_some_and(|bound| !bound.is_empty()) {
+            // The session moved off this host: its file here is not read.
+            return Ok(0);
+        }
         let mut own_tools = state.own_tools.clone();
         let read = read_from(file, state.offset, &mut own_tools)?;
-        let (entries, next_seq, turn) = number(&state, read.entries, scrubber);
+        let (read_entries, skip) = skipped(read.entries, state.skip);
+        let (entries, next_seq, turn) = number(&state, read_entries, scrubber);
         // Nothing new: the saved state already says all of it, so don't
         // pay for another fsync'd save just to move "as of".
-        if entries.is_empty() && read.next_offset == state.offset && own_tools == state.own_tools {
+        if entries.is_empty() && read.next_offset == state.offset && own_tools == state.own_tools && skip == state.skip {
             return Ok(0);
         }
         let next = Progress {
@@ -244,6 +249,8 @@ impl Mirror {
             own_tools,
             backfill: state.raw.backfill.clone(),
             raw: RawChange::Keep,
+            source_entries: state.source_entries + (state.skip - skip) + entries.len() as u64,
+            skip,
         };
         commit(&mut index, session, &dir, &meta, &state, next, &entries)?;
         Ok(entries.len())
@@ -261,6 +268,35 @@ impl Mirror {
             Some(cursor) => (cursor.offset, cursor.source),
             None => (state.offset, state.source),
         })
+    }
+
+    /// The session's conversation now lives in a new file on `machine`
+    /// (`""`: this host, which reads it with [`Mirror::catch_up`]) that
+    /// starts with what the old file held, as a move or a rebuild writes it
+    /// (MV-13, D209). From now on only that machine's reads are taken; the
+    /// file is read from its start, the first `skip` entries read (by
+    /// default, as many as were read from the old file) are dropped, and the
+    /// rest are added as usual. The raw lines start over with the new file.
+    /// Doing it again, or back to the old machine when a move fails, is
+    /// safe. A rebuild passes the [`entry_count`] of the lines it wrote, as
+    /// those may be fewer than were read.
+    pub fn rebase_source(&self, session: &str, machine: &str, skip: Option<u64>) -> Result<(), MirrorError> {
+        let _index = self.lock();
+        let dir = self.dir(session);
+        let state = session::load_state(&dir)?;
+        let generation = state.raw.generation + 1;
+        raw::start(&dir, generation, b"")?;
+        let skip = skip.unwrap_or(state.source_entries);
+        let state = State {
+            offset: 0,
+            source: String::new(),
+            raw: Raw { kept: false, generation, committed_len: 0, backfill: None },
+            source_entries: skip,
+            skip,
+            bound: Some(machine.to_owned()),
+            ..state
+        };
+        session::save_state(&dir, &state)
     }
 
     /// Whether the session keeps raw lines yet. A session mirrored before
@@ -342,6 +378,10 @@ impl Mirror {
         raw::trim(&dir, &state.raw)?;
         let meta = session::load_meta(&dir)?.unwrap_or_default();
         index.sync_session(session, &dir, &state, &meta)?;
+        if state.bound.as_deref().is_some_and(|bound| bound != chunk.machine) {
+            // Read from a machine the session has left.
+            return Ok(None);
+        }
         let (entries, next) = match &state.raw.backfill {
             Some(cursor) if !chunk.rewritten => {
                 if chunk.from != cursor.offset {
@@ -365,6 +405,8 @@ impl Mirror {
                         source: chunk.source.to_owned(),
                     }),
                     raw: RawChange::Append(chunk.data.to_vec()),
+                    source_entries: state.source_entries,
+                    skip: state.skip,
                 };
                 (Vec::new(), next)
             }
@@ -374,8 +416,11 @@ impl Mirror {
                 }
                 let mut own_tools = state.own_tools.clone();
                 let read = parse_lines(chunk.data, &mut own_tools);
+                let (read, skip) = skipped(read, state.skip);
+                let skipped_now = state.skip - skip;
                 // The lines were scrubbed on the machine.
                 let (entries, next_seq, turn) = number(&state, read, &Scrubber::default());
+                let before = if chunk.rewritten { 0 } else { state.source_entries };
                 let raw = if chunk.rewritten {
                     RawChange::Restart(chunk.data.to_vec())
                 } else {
@@ -389,6 +434,8 @@ impl Mirror {
                     own_tools,
                     backfill: None,
                     raw,
+                    source_entries: before + skipped_now + entries.len() as u64,
+                    skip,
                 };
                 (entries, next)
             }
@@ -507,6 +554,8 @@ struct Progress {
     /// The backfill's place after this append; `None` once it is done.
     backfill: Option<Cursor>,
     raw: RawChange,
+    source_entries: u64,
+    skip: u64,
 }
 
 /// How an append changes the session's raw file.
@@ -532,6 +581,23 @@ pub struct Chunk<'a> {
     pub source: &'a str,
     /// The machine's file is a new one: `from` is not checked.
     pub rewritten: bool,
+    /// The machine that read it: after [`Mirror::rebase_source`] only the
+    /// session's new machine's chunks are taken.
+    pub machine: &'a str,
+}
+
+/// How many entries the mirror would read from `lines`, complete lines of a
+/// conversation from its start: what a rebuild passes to
+/// [`Mirror::rebase_source`].
+pub fn entry_count(lines: &[u8]) -> u64 {
+    parse_lines(lines, &mut OwnTools::default()).len() as u64
+}
+
+/// `read` without its first `skip` entries, and how many are left to skip.
+fn skipped(mut read: Vec<Entry>, skip: u64) -> (Vec<Entry>, u64) {
+    let dropped = read.len().min(usize::try_from(skip).unwrap_or(usize::MAX));
+    read.drain(..dropped);
+    (read, skip - dropped as u64)
 }
 
 /// Numbers `read` after the state's last entry, scrubbed; also returns the
@@ -597,6 +663,9 @@ fn commit(
         as_of: session::now(),
         source: next.source,
         raw,
+        source_entries: next.source_entries,
+        skip: next.skip,
+        bound: state.bound.clone(),
     };
     session::save_state(dir, &state)?;
     index.add(session, meta, &state.as_of, entries)

@@ -26,10 +26,10 @@ use humata2_store::{ChannelRecord, ForkOrigin, SessionDetail, SessionRecord, Ses
 use pb::invalid_field::Problem;
 use tonic::{Code, Status};
 
-use super::fork::not_built_part;
+use super::fork::{human_bytes, not_built_part, stop_point};
 use super::lineage::publish_family;
 use super::{COLS, Gated, Loaded, ROWS, SessionSvc, Tell, advance, clean_title, now_ms, start_error, watch};
-use crate::carry::{Carry, Place};
+use crate::carry::{Carry, ForkJournal, Place};
 use crate::channel_service::{blocking, failed};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
@@ -61,8 +61,42 @@ enum ForkElsewhereError {
     FolderTaken { folder: String, machine: String },
     #[error("the parent's start wasn't recorded on this machine, so it can't be forked onto another")]
     NoDetail { session: String },
+    #[error(
+        "a context-only fork works in session {session}'s clones on {machine}, so it can only run on {machine}"
+    )]
+    ContextOnlyElsewhere { session: String, machine: String },
     #[error("the fork's agent didn't start on {machine}")]
     NotStarted { machine: String },
+}
+
+/// A fork elsewhere, checked and the access rule passed.
+struct Elsewhere {
+    carry: Carry,
+    parent: Loaded,
+    from: String,
+    to: String,
+    channel: ChannelRecord,
+    copy: pb::ForkKind,
+    title: String,
+}
+
+/// The preview's words for a fork elsewhere (FK-4).
+fn elsewhere_text(checked: &Elsewhere, before_turn: u32, plan: &pb::CarryPreviewForkResponse) -> String {
+    let repos: Vec<&str> = plan.repos.iter().map(|repo| repo.name.as_str()).collect();
+    let context = match (checked.copy, before_turn) {
+        (pb::ForkKind::CodeOnly, _) => "starts a fresh conversation".to_owned(),
+        (_, 0) => "carries on the conversation from a copy of it".to_owned(),
+        (_, turn) => format!("carries on the conversation up to turn {turn} from a copy of it"),
+    };
+    format!(
+        "Forks \u{201c}{}\u{201d} into a new session on {} on branch {} in {}. It copies the code as it is now on {}, with committed, uncommitted and untracked files ({}), and {context}.",
+        checked.parent.record.title,
+        checked.to,
+        plan.branch,
+        repos.join(", "),
+        checked.from,
+        human_bytes(plan.copy_bytes),
+    )
 }
 
 /// The machine `record` lives on, from this host's point of view.
@@ -115,15 +149,15 @@ impl SessionSvc {
             .map_err(|error| refused(&error))
     }
 
-    /// ForkSession when the fork or its parent is on another machine than
-    /// this host: the operation that makes it. None when the fork is a local
-    /// one, which the caller goes on with.
-    pub(super) async fn fork_elsewhere_of(
+    /// The checks of a fork whose parent or target is on another machine
+    /// than this host, and the access rule passed. None when the fork is a
+    /// local one, which the caller goes on with.
+    async fn check_elsewhere(
         &self,
         caller: &Caller,
         request: &pb::ForkSessionRequest,
         approved: bool,
-    ) -> Result<Option<Gated<pb::Operation>>, Status> {
+    ) -> Result<Option<Gated<Elsewhere>>, Status> {
         let (Some(carry), Some(remote)) = (self.carry.get().cloned(), self.remote.clone()) else {
             return Ok(None);
         };
@@ -154,8 +188,20 @@ impl SessionSvc {
         let copy = match pb::ForkKind::try_from(request.kind) {
             Ok(pb::ForkKind::CodeAndContext) => pb::ForkKind::CodeAndContext,
             Ok(pb::ForkKind::CodeOnly) => pb::ForkKind::CodeOnly,
+            Ok(pb::ForkKind::ContextOnly) if from != to => {
+                // D208: it works in the parent's clones, which are on `from`.
+                return Err(failed(
+                    Code::FailedPrecondition,
+                    &ForkElsewhereError::ContextOnlyElsewhere {
+                        session: parent.record.id.clone(),
+                        machine: from.clone(),
+                    },
+                    "fork with code and context to work on another machine, or fork with context only onto the parent's machine",
+                    None,
+                ));
+            }
             Ok(pb::ForkKind::ContextOnly) => {
-                return Err(not_built_part(FORK_SESSION, "a context-only fork on another machine"));
+                return Err(not_built_part(FORK_SESSION, "a context-only fork of a session on another machine"));
             }
             _ => {
                 return Err(status::invalid_field(
@@ -171,7 +217,7 @@ impl SessionSvc {
                 "before_turn",
                 Problem::NotAllowedHere,
                 "a fork before a turn carries the conversation up to that turn, and a code-only fork carries none",
-                "fork with CODE_AND_CONTEXT or CONTEXT_ONLY, or set before_turn to 0 to fork from now",
+                "fork with CODE_AND_CONTEXT, or set before_turn to 0 to fork from now",
             ));
         }
         self.check_typed_branch(&parent, &from, &carry, &request.branch).await?;
@@ -241,6 +287,74 @@ impl SessionSvc {
             clean_title(&format!("Fork of {}", parent.record.title))?
         } else {
             title
+        };
+        Ok(Some(Gated::Done(Elsewhere {
+            carry,
+            parent,
+            from,
+            to,
+            channel,
+            copy,
+            title,
+        })))
+    }
+
+    /// PreviewFork when the fork or its parent is on another machine than
+    /// this host: the branch and size, measured on the parent's machine,
+    /// with nothing staged. None when the fork is a local one.
+    pub(super) async fn preview_fork_elsewhere_of(
+        &self,
+        caller: &Caller,
+        request: &pb::ForkSessionRequest,
+        approved: bool,
+    ) -> Result<Option<Gated<pb::ForkPreview>>, Status> {
+        let checked = match self.check_elsewhere(caller, request, approved).await? {
+            None => return Ok(None),
+            Some(Gated::Ask(asked)) => return Ok(Some(Gated::Ask(asked))),
+            Some(Gated::Done(checked)) => checked,
+        };
+        let plan = checked
+            .carry
+            .preview_fork(&checked.from, &checked.parent.record.id, &checked.title, &request.branch)
+            .await?;
+        let text = elsewhere_text(&checked, request.before_turn, &plan);
+        Ok(Some(Gated::Done(pb::ForkPreview {
+            text,
+            branches: plan
+                .repos
+                .iter()
+                .map(|repo| pb::preview_branch_names_response::Name {
+                    repo: Some(repo.clone()),
+                    branch: plan.branch.clone(),
+                    suffix_reason: String::new(),
+                })
+                .collect(),
+            copy_bytes: plan.copy_bytes,
+            seeded_with_summary: false,
+        })))
+    }
+
+    /// ForkSession when the fork or its parent is on another machine than
+    /// this host: the operation that makes it. None when the fork is a local
+    /// one, which the caller goes on with.
+    pub(super) async fn fork_elsewhere_of(
+        &self,
+        caller: &Caller,
+        request: &pb::ForkSessionRequest,
+        approved: bool,
+    ) -> Result<Option<Gated<pb::Operation>>, Status> {
+        let Elsewhere {
+            carry,
+            parent,
+            from,
+            to,
+            channel,
+            copy,
+            title,
+        } = match self.check_elsewhere(caller, request, approved).await? {
+            None => return Ok(None),
+            Some(Gated::Ask(asked)) => return Ok(Some(Gated::Ask(asked))),
+            Some(Gated::Done(checked)) => checked,
         };
         if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
             return Ok(Some(Gated::Done(operation)));
@@ -417,6 +531,7 @@ struct Forker {
 
 impl Forker {
     async fn run(self) {
+        self.reached("started").await;
         match self.go().await {
             Ok(()) => {
                 let by = Some(identity::actor(&self.caller));
@@ -430,6 +545,25 @@ impl Forker {
             }
             Err(failure) => self.undo(failure).await,
         }
+        self.carry.fork_done(&self.operation).await;
+    }
+
+    /// Journals that the fork reached `phase`, so a restart can finish or
+    /// undo it, then the test stop point `fork-<phase>`.
+    async fn reached(&self, phase: &str) {
+        self.carry
+            .journal_fork(&ForkJournal {
+                operation: self.operation.clone(),
+                parent: self.parent.id.clone(),
+                session: self.session.clone(),
+                from: self.from.clone(),
+                to: self.to.clone(),
+                channel: self.channel.id.clone(),
+                folder: self.fork_folder(),
+                phase: phase.to_owned(),
+            })
+            .await;
+        stop_point(&format!("fork-{phase}"));
     }
 
     fn take_progress(&self) -> Option<Progress> {
@@ -471,9 +605,13 @@ impl Forker {
         let name = packed.folder.rsplit('/').next().unwrap_or_default().to_owned();
         let folder = format!("sessions/{name}");
         *self.staged.lock().unwrap_or_else(PoisonError::into_inner) = folder.clone();
+        self.reached("packed").await;
         self.step("copy", self.copy(&packed, &folder)).await?;
+        self.reached("copied").await;
         self.step("unpack", self.unpack(&folder)).await?;
+        self.reached("unpacked").await;
         self.step("launch", self.record_and_launch(&packed.branch, &name)).await?;
+        self.unstage_target().await;
         self.set_step("verify", pb::StepState::Done, None);
         Ok(())
     }
@@ -493,6 +631,7 @@ impl Forker {
             ));
         }
         self.placing.store(true, Ordering::SeqCst);
+        self.reached("copying").await;
         self.carry
             .copy(
                 &format!("{}_folder", self.operation),
@@ -510,19 +649,28 @@ impl Forker {
     }
 
     /// The target checks every hash and takes the fork in; what was staged
-    /// is no longer needed on either machine.
+    /// on the parent's machine is no longer needed. The target keeps its
+    /// staged records until the fork is recorded: they are how an undo
+    /// there knows the records it brought in are the fork's to take back.
     async fn unpack(&self, folder: &str) -> Result<(), Status> {
         self.carry
             .unpack_new(&self.to, &self.operation, &self.session, &self.channel.id)
             .await?;
-        for (machine, place) in [(&self.from, &self.at_from), (&self.to, &self.at_to)] {
-            // Best effort: the fork is in; what is left is staging.
-            let _ = self
-                .carry
-                .abort(machine, &self.operation, &self.session, place, folder, false)
-                .await;
-        }
+        // Best effort: the fork is in; what is left is staging.
+        let _ = self
+            .carry
+            .abort(&self.from, &self.operation, &self.session, &self.at_from, folder, false)
+            .await;
         Ok(())
+    }
+
+    /// Once the fork is recorded, the target's staged files go too. Best
+    /// effort: the fork is made, and what is left is staging.
+    async fn unstage_target(&self) {
+        let _ = self
+            .carry
+            .abort(&self.to, &self.operation, &self.session, &self.at_to, &self.fork_folder(), false)
+            .await;
     }
 
     /// The host's own record of a fork that lives on a box, then the
@@ -576,6 +724,7 @@ impl Forker {
         })
         .await?
         .map_err(|error| status::store(error, &self.svc.machine, "save the fork"))?;
+        self.reached("recorded").await;
         self.resume().await
     }
 
@@ -626,21 +775,7 @@ impl Forker {
     /// parent was never touched.
     async fn undo(&self, failure: Failure) {
         let Failure { step, status: cause } = failure;
-        if self.placing.load(Ordering::SeqCst) {
-            let folder = self.fork_folder();
-            let _ = self
-                .carry
-                .abort_new(&self.to, &self.operation, &self.session, &self.at_to, &folder)
-                .await;
-        }
-        let _ = self
-            .carry
-            .abort(&self.from, &self.operation, &self.parent.id, &self.at_from, "", false)
-            .await;
-        if self.recorded.load(Ordering::SeqCst) {
-            let (store, id) = (self.svc.starter.store.clone(), self.session.clone());
-            let _ = blocking(move || store.remove_session(&id)).await;
-        }
+        let _ = self.take_back().await;
         let why = status::error_of(&cause);
         let reason = why
             .as_ref()
@@ -669,9 +804,125 @@ impl Forker {
         }
     }
 
+    /// Takes back what the fork put on the target and what it staged on
+    /// either machine, and the host's record of it. Err names the first
+    /// part that couldn't be taken back; the rest is still tried.
+    async fn take_back(&self) -> Result<(), Status> {
+        let mut first = Ok(());
+        if self.placing.load(Ordering::SeqCst) {
+            let folder = self.fork_folder();
+            first = first.and(
+                self.carry
+                    .abort_new(&self.to, &self.operation, &self.session, &self.at_to, &folder)
+                    .await,
+            );
+        }
+        let staging = self
+            .carry
+            .abort(&self.from, &self.operation, &self.parent.id, &self.at_from, "", false)
+            .await;
+        first = first.and(staging);
+        if self.recorded.load(Ordering::SeqCst) {
+            let (store, id) = (self.svc.starter.store.clone(), self.session.clone());
+            let removed = blocking(move || store.remove_session(&id))
+                .await?
+                .map_err(|error| status::store(error, &self.svc.machine, "remove the fork's record"));
+            first = first.and(removed);
+        }
+        first
+    }
+
     /// `sessions/<name>` of the folder the fork is copied to, from what the
     /// pack named; empty before it did.
     fn fork_folder(&self) -> String {
         self.staged.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
+}
+
+impl SessionSvc {
+    /// The forks onto or from another machine the last run cut short: each
+    /// is finished once its agent's record was written, and undone before
+    /// that, when the start is done and its machines' links are up. Nothing
+    /// polls; a machine that stays offline keeps its fork waiting.
+    pub(super) fn recover_forks_after(&self, started: Arc<crate::restart::Started>) {
+        let Some(carry) = self.carry.get().cloned() else {
+            return;
+        };
+        for journal in carry.fork_journals() {
+            let (svc, carry, started) = (self.clone(), carry.clone(), started.clone());
+            tokio::spawn(async move {
+                started.wait().await;
+                for machine in [&journal.from, &journal.to] {
+                    if !carry.is_host(machine) && super::move_recover::wait_up(carry.links(), machine).await.is_err() {
+                        crate::log::say!(
+                            "humatad2: the fork {} of session {} was cut short, and {machine} was forgotten before it could be finished or undone. Nothing was deleted; look at the fork's machine",
+                            journal.session, journal.parent
+                        );
+                        return;
+                    }
+                }
+                let operation = journal.operation.clone();
+                match recover_fork(svc, carry.clone(), journal).await {
+                    Ok(()) => carry.fork_done(&operation).await,
+                    Err(error) => crate::log::say!(
+                        "humatad2: couldn't finish or undo fork {operation}: {}. Nothing was deleted; the next start tries again",
+                        status::chain(&error)
+                    ),
+                }
+            });
+        }
+    }
+}
+
+/// Finishes the fork `journal` names when its record was written, or
+/// undoes it.
+async fn recover_fork(svc: SessionSvc, carry: Carry, journal: ForkJournal) -> Result<(), Status> {
+    let parent = svc.load(&journal.parent).await?;
+    let channel = svc.find_channel(&journal.channel).await?;
+    let place = |machine: &str| Place {
+        machine: machine.to_owned(),
+        channel: channel.id.clone(),
+        folder: channel.folder.clone(),
+    };
+    let placing = matches!(journal.phase.as_str(), "copying" | "copied" | "unpacked" | "recorded");
+    let Some(parent_detail) = parent.detail.clone() else {
+        return Err(status::internal("the parent of a fork cut short has no start record", ""));
+    };
+    let forker = Forker {
+        svc: svc.clone(),
+        carry,
+        caller: Caller::User(crate::identity::UserVia::Host),
+        operation: journal.operation.clone(),
+        session: journal.session.clone(),
+        fork: pb::CarryFork::default(),
+        parent_detail,
+        parent: parent.record,
+        at_from: place(&journal.from),
+        at_to: place(&journal.to),
+        channel,
+        from: journal.from.clone(),
+        to: journal.to.clone(),
+        progress: Mutex::new(None),
+        placing: AtomicBool::new(placing),
+        recorded: AtomicBool::new(true),
+        staged: Mutex::new(journal.folder.clone()),
+    };
+    if journal.phase == "recorded" {
+        // The fork is made; only its agent's start may be owed. One that
+        // can't start is a stopped fork the user resumes, never lost work.
+        forker.unstage_target().await;
+        if let Err(error) = forker.resume().await {
+            crate::log::say!(
+                "humatad2: the fork {} was made before the restart, but its agent didn't start: {}. Resume it from its tab",
+                journal.session,
+                status::chain(&error)
+            );
+        }
+        svc.tell.session(&journal.session, pb::Change::Created, None).await;
+        publish_family(&svc.tell, &journal.parent, None).await;
+        return Ok(());
+    }
+    forker.take_back().await?;
+    svc.tell.session(&journal.parent, pb::Change::Updated, None).await;
+    Ok(())
 }

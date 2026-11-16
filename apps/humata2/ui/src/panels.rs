@@ -274,8 +274,11 @@ pub(crate) fn panel(
         .text_color(rgb(look.text))
         .bg(rgb(look.panel))
         .when(!full, |panel| {
+            // The border takes the divider's 1 pt, so the panel keeps its
+            // full width inside it, as the frames draw it.
             panel
-                .w(px(width))
+                .w(px(width + 1.))
+                .ml(px(-1.))
                 .flex_shrink_0()
                 .border_l_1()
                 .border_color(rgb(look.line))

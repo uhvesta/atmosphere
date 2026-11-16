@@ -452,13 +452,23 @@ impl pb::access_service_server::AccessService for Access {
         Ok(Response::new(explained))
     }
 
+    /// SEC-13, SEC-7: the user only, present, on the host.
     async fn set_approval_passphrase(
         &self,
-        _request: Request<pb::SetApprovalPassphraseRequest>,
+        request: Request<pb::SetApprovalPassphraseRequest>,
     ) -> Result<Response<pb::SetApprovalPassphraseResponse>, Status> {
-        Err(status::not_built(
-            "humata.v1.AccessService.SetApprovalPassphrase",
-        ))
+        let caller = identity::caller(&request)?;
+        self.require_user(&caller)?;
+        self.present_user(&caller)?;
+        let _changing = self.changing.lock().await;
+        let set = crate::away::set_approval_passphrase(
+            &self.store,
+            self.guard.host_link().on_host(),
+            self.guard.machine(),
+            request.into_inner(),
+        )
+        .await?;
+        Ok(Response::new(set))
     }
 }
 

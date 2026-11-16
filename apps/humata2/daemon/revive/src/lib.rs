@@ -25,9 +25,9 @@ use std::time::Duration;
 use humata2_store::TabRecord;
 
 pub use agent::launch_agent;
-pub use error::ReviveError;
+pub use error::{ContainRefused, ReviveError};
 pub use reconcile::{
-    Reconciled, Revived, ShellRevived, reconcile, restart_agent, resume_agent,
+    Reconciled, Revived, ShellRevived, reconcile, restart_agent, restart_shells, resume_agent,
 };
 pub use report::RestartReports;
 
@@ -51,6 +51,23 @@ pub struct ReviveConfig {
     pub settle: Duration,
     /// Where each reconcile writes its restart report (PER-29).
     pub reports: RestartReports,
+    /// SEC-6: runs agents contained when their session's setting says so.
+    /// `None` runs every agent as launched.
+    pub contain: Option<std::sync::Arc<dyn Contain>>,
+}
+
+/// SEC-6 (D217): what every agent launch and resume asks for the argv to
+/// run, so a change to Contain agents applies at the next one. A session
+/// that must run contained and can't is refused: it never runs uncontained
+/// instead.
+pub trait Contain: std::fmt::Debug + Send + Sync {
+    /// The argv that runs `argv` for `record`'s session: contained when its
+    /// channel or Settings says so, `argv` itself when not.
+    fn wrap(
+        &self,
+        record: &humata2_store::AgentRecord,
+        argv: &[OsString],
+    ) -> Result<Vec<OsString>, ContainRefused>;
 }
 
 /// The variables a tab's program gets, such as its session token; the

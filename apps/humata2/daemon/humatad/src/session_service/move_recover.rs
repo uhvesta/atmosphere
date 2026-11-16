@@ -34,6 +34,7 @@ impl SessionSvc {
             let marked = (journal.phase != "aborted").then(|| Moving::begin(&journal.session));
             self.recover_when_linked_after(Some(started.clone()), journal, marked);
         }
+        self.recover_forks_after(started);
     }
 
     /// Finishes or undoes the move `journal` names once the links of its
@@ -90,7 +91,7 @@ async fn links_up(carry: &Carry, journal: &Journaled) -> Result<(), String> {
     Ok(())
 }
 
-async fn wait_up(links: &Links, machine: &str) -> Result<(), ()> {
+pub(super) async fn wait_up(links: &Links, machine: &str) -> Result<(), ()> {
     let mut state = links.watch(machine);
     state
         .wait_for(|now| matches!(now, LinkState::Up { .. }))

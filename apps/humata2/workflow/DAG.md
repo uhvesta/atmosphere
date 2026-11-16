@@ -33,17 +33,17 @@ milestone file; agents read that file, not this one.
 | [FL-D](milestones/FL-D.md) | The daemon holds a real local session that survives restarts | L0 | daemon | D0: the rules it builds are the tidied ones | done (9ec5b5ed) |
 | [FL](milestones/FL.md) | First light: a real session in the app that survives a reboot (0.1) | L1 | daemon + UI seam | FL-D: the app needs real Session and Channel services and holders; LOOK1: a real terminal needs the session page, tabs and sidebar; P0: the real client follows the per-service client traits P0 splits out; FRAMES1: New channel, clone progress and "Couldn't resume" have no frame yet | done (0bdf1434; humata2-v0.1.0 installed) |
 | [BUG](milestones/BUG.md) | Report a bug as text an agent can act on | L1 | third builder (`report/`) | LOOK1: a recording names targets by their place in the view tree, which must be stable; P0: the app wiring adds an overlay and actions in the split files | done (ed5882ed) |
-| [BUG2](milestones/BUG2.md) | Report, annotate and draw from anywhere (palette commands, draw on snapshots, live RPCs in recordings) | L2 | BUG2 | BUG: builds on the report library and app wiring; LOOK2*: shares palette/overlay ui files | in progress (lane BUG2) |
+| [BUG2](milestones/BUG2.md) | Report, annotate and draw from anywhere (palette commands, draw on snapshots, live RPCs in recordings) | L2 | BUG2 | BUG: builds on the report library and app wiring; LOOK2*: shares palette/overlay ui files | done (this commit) |
 | [TIDY](milestones/TIDY.md) | No leftovers from dropped designs in the code or API | L1 | daemon | W1: deleting an API and folders can't be undone; it waits for the owner to confirm D104 and D9 | done |
 | [DESK](milestones/DESK.md) | A place to work without a channel | L2 | UI | LOOK2: the Desk page reuses the channel page, lists and empty states; FRAMES1: Clean up… has no frame yet; W1*: frame 33 may be retired and frames 37–40 print a new path; match them before this closes | early lane open (DESK; closes after LOOK2, REVIEW) |
 | [ASK](milestones/ASK.md) | Agents ask, I decide | L1 | daemon, then UI | FL-D: an agent's MCP identity is its real session; FL*: flow §26.4 in the app needs a real session on screen; LOOK1*: the session Inbox panel is where the card is drawn; FRAMES1*: the channel's Inbox and Agent access tabs have no frame yet; W1*: the card in frames 03, 04, 26, 27 is redrawn; match it before this closes | done (0bdf1434; gaps in GAPS_REVIEW freeze 2) |
 | [MACH](milestones/MACH.md) | Work on another machine | L2 | daemon | FL: a remote session is a local session plus a link; FRAMES2: Add machine, the login dialog and the machine page have no frame yet | done (0bdf1434; not_built calls carried to SAFE/FILES follow-ups) |
 | [REVIEW](milestones/REVIEW.md) | Review what the agent changed, in code and in documents (0.2) | L3 | UI, then daemon seam | DESK: markdown comments and diff comments are one model; the document tab opens from the Desk too; FRAMES1: comment states and the comment box in a diff have no frame yet; FL*: sending comments needs a real terminal and turn ends; diffs need real clones | early lane open (REVIEW; closes after hard deps) |
-| [BOARD](milestones/BOARD.md) | Plan the work on boards | L2 | UI + daemon | ASK: agent board edits are access-checked and become requests answered on the item; LOOK2: the board, table, dashboard and item drawer are drawn there | early lane open (BOARD; closes after ASK, LOOK2) |
+| [BOARD](milestones/BOARD.md) | Plan the work on boards | L2 | UI + daemon | ASK: agent board edits are access-checked and become requests answered on the item; LOOK2: the board, table, dashboard and item drawer are drawn there | done (this commit; owner's wave: how a session's own items are marked in its Board panel) |
 | [FORK](milestones/FORK.md) | Fork, move, archive and rebuild a session | L3 | daemon + UI | MACH: forks and moves across machines need the link; ASK: an agent's fork is an Inbox request; FRAMES2: Fork, Move, Archive with unpushed work and an archived session have no frame yet | in progress (lane FORK) |
 | [FILES](milestones/FILES.md) | Move files and keep disks tidy | L3 | daemon + UI | MACH: transfers ride the machine link; Storage is per machine; FRAMES2: the file manager, transfers tray and Storage have no frame yet | done (0bdf1434; Storage per machine owed) |
 | [AWAY](milestones/AWAY.md) | Keep working with the host closed | L3 | daemon | MACH: away mode is machines without the host; ASK: a machine judges requests against a copy of the rules | in progress (lane AWAY) |
-| [FIND](milestones/FIND.md) | Find and reach anything | L3 | UI + daemon | MACH: search runs over the conversation mirror from every machine; LOOK2: the palette and the Pinned section are drawn there | early lane open (FIND; closes after MACH, LOOK2) |
+| [FIND](milestones/FIND.md) | Find and reach anything | L3 | UI + daemon | MACH: search runs over the conversation mirror from every machine; LOOK2: the palette and the Pinned section are drawn there | done (this commit; owed §26.22 steps 1, 3, 4) |
 | [VIEWS](milestones/VIEWS.md) | Agents prepare views; I choose to open them | L4 | UI + daemon | ASK: preparing a view is rule-gated; REVIEW: a prepared review opens in the diff and editor; FRAMES2: the prepared view's tab and Showing bar have no frame yet | blocked |
 | [PR](milestones/PR.md) | Review a pull request with an agent beside me | L4 | UI + daemon | REVIEW: a PR review is the review surface plus drafts; ASK: the review chat's tools are scoped by access; FRAMES2: the PR dialog, review session and Submit review have no frame yet | blocked |
 | [SAFE](milestones/SAFE.md) | Nothing is lost, ever | L4 | daemon | MACH: add machine and install must exist to be cut; FORK: moves and forks must exist to be cut; FILES: transfers must exist to be cut | blocked |
@@ -111,12 +111,12 @@ graph TD
   ASK["ASK: blocked"]
   MACH["MACH: blocked"]
   REVIEW["REVIEW: blocked"]
-  BOARD["BOARD: blocked"]
+  BOARD["BOARD: done"]
   FORK["FORK: blocked"]
   FILES["FILES: blocked"]
   AWAY["AWAY: blocked"]
   HOOKS["HOOKS: open"]
-  FIND["FIND: blocked"]
+  FIND["FIND: done"]
   VIEWS["VIEWS: blocked"]
   PR["PR: blocked"]
   SAFE["SAFE: blocked"]

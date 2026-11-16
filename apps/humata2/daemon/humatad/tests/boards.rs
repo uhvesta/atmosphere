@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use common::{Attach, Daemon, WAIT, error_of, folder, invalid_field, not_found, open, state_folder};
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{ChannelRecord, SessionRecord, Store};
+use humata2_store::{ArchiveRow, ArchiveState, ChannelRecord, ForkOrigin, SessionRecord, Store};
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Code, Request, Status};
@@ -22,6 +22,12 @@ const AGENT: &str = "se_agent";
 /// Another session in the same channel, with no tab.
 const OTHER: &str = "se_other";
 const TOKEN_HEADER: &str = "humata-session-token";
+/// A fork of AGENT.
+const FORK: &str = "se_fork";
+/// A fork of FORK.
+const GRAND: &str = "se_grand";
+/// Another fork of AGENT, archived in the tests that need it.
+const SIDE: &str = "se_side";
 
 struct World {
     daemon: Daemon,
@@ -31,6 +37,31 @@ struct World {
 
 impl World {
     async fn start() -> Self {
+        Self::start_seeded(|_, _| {}).await
+    }
+
+    /// AGENT with forks: FORK and SIDE under it, GRAND under FORK.
+    async fn start_with_forks() -> Self {
+        Self::start_seeded(|store, folder| {
+            for (at, (id, parent)) in [(FORK, AGENT), (GRAND, FORK), (SIDE, AGENT)].into_iter().enumerate() {
+                store.put_session(&payments_session(id, folder)).unwrap();
+                store
+                    .put_fork_origin(&ForkOrigin {
+                        session_id: id.to_owned(),
+                        parent: parent.to_owned(),
+                        kind: pb::ForkKind::CodeAndContext as i32,
+                        before_turn: 0,
+                        created_unix_ms: i64::try_from(at).unwrap() + 1,
+                    })
+                    .unwrap();
+            }
+        })
+        .await
+    }
+
+    /// Starts the daemon on a store with the two channels, AGENT and OTHER,
+    /// and whatever `seed` adds.
+    async fn start_seeded(seed: impl FnOnce(&Store, &Path)) -> Self {
         let dir = folder();
         let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
         for (id, name) in [(PAYMENTS, "Payments"), (PAYROLL, "Payroll")] {
@@ -49,18 +80,9 @@ impl World {
                 .unwrap();
         }
         for id in [AGENT, OTHER] {
-            store
-                .put_session(&SessionRecord {
-                    id: id.to_owned(),
-                    channel: PAYMENTS.to_owned(),
-                    machine: String::new(),
-                    title: id.to_owned(),
-                    agent: "zsh".to_owned(),
-                    folder: dir.path().to_owned(),
-                    created_unix_ms: 0,
-                })
-                .unwrap();
+            store.put_session(&payments_session(id, dir.path())).unwrap();
         }
+        seed(&store, dir.path());
         drop(store);
         let daemon = Daemon::start_in(dir).await;
         let tab = daemon
@@ -223,6 +245,50 @@ impl World {
             .into_inner()
     }
 
+    /// The ids a view lists, every page.
+    async fn listed(&self, view: pb::board_view::View) -> Vec<String> {
+        self.boards()
+            .await
+            .list_items(pb::ListItemsRequest {
+                view: Some(pb::BoardView { view: Some(view) }),
+                page: Some(pb::PageRequest {
+                    page_size: 500,
+                    page_token: String::new(),
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .items
+            .iter()
+            .map(id_of)
+            .collect()
+    }
+
+    /// Archives `id`, or restores it, as the store records it, across a
+    /// restart of the daemon.
+    async fn set_archived(&mut self, id: &str, archived: bool) {
+        self.daemon.kill();
+        let store = Store::open(state_folder(self.daemon.dir.path()).join("store")).unwrap();
+        if archived {
+            store
+                .put_archive(&ArchiveRow {
+                    session_id: id.to_owned(),
+                    archived_unix_ms: 1,
+                    state: ArchiveState::Archived,
+                    summary: Vec::new(),
+                    // The undo window never closes, so nothing is freed.
+                    free_after_unix_ms: i64::MAX,
+                })
+                .unwrap();
+        } else {
+            store.remove_archive(id).unwrap();
+        }
+        drop(store);
+        self.daemon.restart().await;
+    }
+
     /// The request an agent's call is waiting on.
     fn waiting_on(status: &Status) -> pb::RequestId {
         assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
@@ -231,6 +297,32 @@ impl World {
             other => panic!("expected approval_pending, got {other:?}"),
         }
     }
+}
+
+fn payments_session(id: &str, folder: &Path) -> SessionRecord {
+    SessionRecord {
+        id: id.to_owned(),
+        channel: PAYMENTS.to_owned(),
+        machine: String::new(),
+        title: id.to_owned(),
+        agent: "zsh".to_owned(),
+        folder: folder.to_owned(),
+        created_unix_ms: 0,
+    }
+}
+
+fn session_board(id: &str) -> pb::BoardRef {
+    pb::BoardRef {
+        board: Some(pb::board_ref::Board::Session(session(id))),
+    }
+}
+
+fn session_with_forks(id: &str) -> pb::board_view::View {
+    pb::board_view::View::SessionWithForks(session(id))
+}
+
+fn channel_with_sessions(id: &str) -> pb::board_view::View {
+    pb::board_view::View::ChannelWithSessions(pb::ChannelId { value: id.to_owned() })
 }
 
 fn session(id: &str) -> pb::SessionId {
@@ -786,4 +878,97 @@ async fn history_records_what_happened_in_order_with_its_kind() {
     }
     assert!(history.entries.iter().all(|entry| !entry.lost_conflict));
     assert!(history.entries.iter().all(|entry| entry.at.is_some()));
+}
+
+// BD-5: "A session and its forks" is the session's board and the boards of
+// the forks made from it, at any depth (D155: a fork's board starts empty).
+#[tokio::test]
+async fn a_session_and_its_forks_lists_every_forks_board_and_nothing_else() {
+    let world = World::start_with_forks().await;
+    let mine = id_of(&world.make(session_board(AGENT), "mine", pb::BoardColumn::ToDo).await);
+    let fork = id_of(&world.make(session_board(FORK), "fork", pb::BoardColumn::ToDo).await);
+    let grand = id_of(&world.make(session_board(GRAND), "grand", pb::BoardColumn::ToDo).await);
+    let side = id_of(&world.make(session_board(SIDE), "side", pb::BoardColumn::ToDo).await);
+    let other = id_of(&world.make(session_board(OTHER), "other", pb::BoardColumn::ToDo).await);
+    let on_channel = id_of(&world.make(channel(PAYMENTS), "channel", pb::BoardColumn::ToDo).await);
+
+    let mut family = world.listed(session_with_forks(AGENT)).await;
+    family.sort();
+    let mut expected = vec![mine, fork.clone(), grand.clone(), side];
+    expected.sort();
+    assert_eq!(family, expected);
+    assert!(!family.contains(&other) && !family.contains(&on_channel));
+
+    // A fork's own family leaves out its parent and its siblings.
+    let mut under_fork = world.listed(session_with_forks(FORK)).await;
+    under_fork.sort();
+    let mut expected = vec![fork, grand];
+    expected.sort();
+    assert_eq!(under_fork, expected);
+}
+
+// D155: items of an archived session are hidden from every list, and come
+// back when it is restored.
+#[tokio::test]
+async fn an_archived_sessions_items_are_hidden_and_come_back_on_restore() {
+    let mut world = World::start().await;
+    let theirs = id_of(&world.make(session_board(OTHER), "theirs", pb::BoardColumn::ToDo).await);
+    let on_channel = id_of(&world.make(channel(PAYMENTS), "channel", pb::BoardColumn::ToDo).await);
+
+    world.set_archived(OTHER, true).await;
+    assert_eq!(world.listed(channel_with_sessions(PAYMENTS)).await, vec![on_channel.clone()]);
+    assert!(world.listed(pb::board_view::View::Board(session_board(OTHER))).await.is_empty());
+    assert!(world.listed(session_with_forks(OTHER)).await.is_empty());
+    // Hidden means hidden everywhere: read by its id it is missing, and so
+    // is a write to it (D216).
+    let missing = world.get(&theirs).await.unwrap_err();
+    assert_eq!(missing.code(), Code::NotFound, "{missing:?}");
+    let refused = world.move_to(&theirs, pb::BoardColumn::Done, None).await.unwrap_err();
+    assert_eq!(refused.code(), Code::NotFound, "{refused:?}");
+    // A dependency on it is left out of what the user reads.
+    world.set_archived(OTHER, false).await;
+    world.update(&on_channel, depends(&theirs), None).await.unwrap();
+    world.set_archived(OTHER, true).await;
+    assert!(world.get(&on_channel).await.unwrap().depends_on.is_empty());
+
+    world.set_archived(OTHER, false).await;
+    let mut back = world.listed(channel_with_sessions(PAYMENTS)).await;
+    back.sort();
+    let mut expected = vec![theirs, on_channel];
+    expected.sort();
+    assert_eq!(back, expected);
+}
+
+// An archived fork drops out of its parent's family; its own forks stay.
+#[tokio::test]
+async fn an_archived_fork_drops_out_of_its_parents_family() {
+    let mut world = World::start_with_forks().await;
+    let mine = id_of(&world.make(session_board(AGENT), "mine", pb::BoardColumn::ToDo).await);
+    let fork = id_of(&world.make(session_board(FORK), "fork", pb::BoardColumn::ToDo).await);
+    let grand = id_of(&world.make(session_board(GRAND), "grand", pb::BoardColumn::ToDo).await);
+
+    world.set_archived(FORK, true).await;
+    let mut family = world.listed(session_with_forks(AGENT)).await;
+    family.sort();
+    let mut expected = vec![mine, grand];
+    expected.sort();
+    assert_eq!(family, expected);
+    assert!(!family.contains(&fork));
+}
+
+// D216: an archived session's board takes no new items, as a missing
+// session's board doesn't; restored, it takes them again.
+#[tokio::test]
+async fn an_archived_sessions_board_takes_no_new_items_until_restored() {
+    let mut world = World::start().await;
+    world.set_archived(OTHER, true).await;
+    let refused = world
+        .try_make(session_board(OTHER), "late", pb::BoardColumn::ToDo)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::NotFound, "{refused:?}");
+
+    world.set_archived(OTHER, false).await;
+    let made = world.make(session_board(OTHER), "back", pb::BoardColumn::ToDo).await;
+    assert_eq!(world.listed(pb::board_view::View::Board(session_board(OTHER))).await, vec![id_of(&made)]);
 }

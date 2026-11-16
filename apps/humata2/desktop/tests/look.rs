@@ -1,15 +1,18 @@
-//! LOOK2's exit check: each native capture of frames 18–35 matches its design
-//! golden within tolerance, on the page (right of the sidebar).
+//! LOOK2's and DESK's exit check: each native capture of frames 18–38, 40
+//! and 55 matches its design golden within tolerance, on the page (right of
+//! the sidebar).
 //!
 //! The captures are what `native_test` records from its flows and the
 //! goldens are what `design_test` draws (D76), so this test reads both
 //! folders and draws nothing. The sidebar is left out: frames 01–17 cover it,
-//! and the goldens of 18–35 don't draw the Desk row the app has.
+//! and the goldens of 18–35 don't draw the Desk row the app has. Frame 39 is
+//! REVIEW's and joins with its document.
 //!
 //! Pixels are compared in 2 × 2 pt blocks (the captures are 2x), so a glyph
 //! anti-aliased half a pixel apart doesn't count, while a moved row, a wrong
 //! colour or a missing button does. Places the decisions accept as different
-//! (D147, D158) are masked per frame; each mask says which ruling allows it.
+//! (D147, D158, D219) are masked per frame; each mask says which ruling
+//! allows it.
 //! A frame fails when more than its budget of the page's blocks differ.
 
 use std::path::{Path, PathBuf};
@@ -73,6 +76,11 @@ const FIGURES_WHY: &str = "D147.9: the dashboard's figures come from the items";
 /// Controls with no action yet are drawn disabled; the frames draw them live.
 const ADD_REPO_WHY: &str = "D147 L4: Add a GitHub repo… is disabled until it acts";
 const HEADER_ACTIONS_WHY: &str = "D147 L4: the channel's Pin and … are disabled until they act";
+/// A Desk session's terminal body, between the tabs row and the window's
+/// bottom, left of the side panel's border.
+const TERMINAL_BODY: Rect = Rect(237, 118, 638, 642);
+const TERMINAL_GRID_WHY: &str = "D219.1: the grid's cell is a whole 7 px, the frame's Menlo 12 \
+     advances 7.2; rows and the agent's input box sit off the frame's";
 
 const FRAMES: &[Frame] = &[
     frame("18-channel-sessions"),
@@ -159,6 +167,20 @@ const FRAMES: &[Frame] = &[
         ],
         budget: BUDGET,
     },
+    // The Desk (DESK). The session frames show a terminal beside a panel.
+    frame("36-desk"),
+    Frame {
+        name: "37-desk-board",
+        masks: &[(TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        budget: BUDGET,
+    },
+    Frame {
+        name: "38-desk-move",
+        masks: &[(TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        budget: BUDGET,
+    },
+    frame("40-new-desk-session"),
+    frame("55-desk-clean-up"),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -272,7 +294,7 @@ fn compare(frame: &Frame, capture: &RgbaImage, golden: &RgbaImage) -> Result<Com
 }
 
 #[test]
-fn every_page_from_18_to_35_matches_its_golden() {
+fn every_page_from_18_matches_its_golden() {
     let folder = snapshots();
     let outputs = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR").map(PathBuf::from);
     let mut misses = Vec::new();

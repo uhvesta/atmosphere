@@ -39,7 +39,7 @@ pub use rename::BranchRename;
 pub use recover::{Leftovers, Recovery, recover};
 pub use setup::{NewChannel, clone_mains, create_channel};
 pub use start::{RepoName, StartRequest, Started, Starter};
-pub use fork::{ForkCopy, ForkPlan, ForkRequest};
+pub use fork::{ForkCopy, ForkPlan, ForkRequest, handover_file};
 pub use restore::{RestoredFrom, restore_clone};
 pub use work::{FileChange, RepoWork, repo_work};
 pub use own_copy::OwnCopyError;

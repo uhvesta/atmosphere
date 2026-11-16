@@ -8,11 +8,13 @@
 //! dependencies) are read and saved without another write in between.
 
 mod asks;
+mod hidden;
 mod history;
 mod keys;
 mod rank;
 mod scope;
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use humata2_access::{AccessRequest, BoardAct, BoardRef, Call, Refusal};
@@ -248,19 +250,28 @@ impl BoardSvc {
             )
     }
 
-    /// Item `key` as the caller may see it: one that is deleted, missing or
-    /// unreadable looks the same, as not found (BD-14). `tombstones` lets a
-    /// deleted one through, for its history.
+    /// Item `key` as the caller may see it: one that is deleted, hidden,
+    /// missing or unreadable looks the same, as not found (BD-14, D216).
+    /// `tombstones` lets a deleted one through, for its history.
     fn load(&self, caller: &Caller, key: &str, tombstones: bool) -> Result<BoardItemRecord, Status> {
-        match self.store.board_item(key) {
-            Ok(Some(item))
-                if (tombstones || !item.deleted) && self.can_read(caller, self.policy_of(&item)) =>
-            {
-                Ok(item)
-            }
-            Ok(_) => Err(no_item(key)),
-            Err(error) => Err(self.failed(error, "read the board item")),
+        let item = match self.store.board_item(key) {
+            Ok(Some(item)) if tombstones || !item.deleted => item,
+            Ok(_) => return Err(no_item(key)),
+            Err(error) => return Err(self.failed(error, "read the board item")),
+        };
+        if !self.can_read(caller, self.policy_of(&item)) {
+            return Err(no_item(key));
         }
+        match hidden::is_hidden_now(&self.store, &item) {
+            Ok(false) => Ok(item),
+            Ok(true) => Err(no_item(key)),
+            Err(error) => Err(self.failed(error, "read the board item's archive")),
+        }
+    }
+
+    /// The ids of archived sessions, read once for the call.
+    fn archived(&self) -> Result<HashSet<String>, Status> {
+        hidden::archived(&self.store).map_err(|error| self.failed(error, "read the archived sessions"))
     }
 
     /// Checks a write on `board` for the caller; `Some` when its rule asks.
@@ -310,28 +321,39 @@ impl BoardSvc {
             .map_or_else(|| item.created_by.clone(), |entry| entry.by)
     }
 
-    fn dependency(&self, caller: &Caller, key: &str) -> pb::Dependency {
+    /// The dependency on `key` as the caller sees it, or `None` when `key` is
+    /// hidden: such an edge is left out (D216).
+    fn dependency(&self, caller: &Caller, key: &str, archived: &HashSet<String>) -> Option<pb::Dependency> {
         let id = Some(pb::BoardItemId {
             value: key.to_owned(),
         });
         match self.store.board_item(key) {
+            Ok(Some(item)) if hidden::is_hidden(&item, archived) => None,
             Ok(Some(item)) if !item.deleted && self.can_read(caller, self.policy_of(&item)) => {
-                pb::Dependency {
+                Some(pb::Dependency {
                     id,
                     title: item.title,
                     column: column_pb(item.column) as i32,
-                }
+                })
             }
-            _ => pb::Dependency {
+            _ => Some(pb::Dependency {
                 id,
                 ..Default::default()
-            },
+            }),
         }
     }
 
     /// `item` for the API. Only the user sees the requests waiting on it
-    /// (`asks`), and dependencies the caller can't read show no title.
-    fn item_pb(&self, caller: &Caller, item: &BoardItemRecord, asks: &[pb::InboxRequest]) -> pb::BoardItem {
+    /// (`asks`), dependencies the caller can't read show no title, and
+    /// dependencies on hidden items are left out (`archived` is the call's
+    /// archived sessions).
+    fn item_pb(
+        &self,
+        caller: &Caller,
+        item: &BoardItemRecord,
+        asks: &[pb::InboxRequest],
+        archived: &HashSet<String>,
+    ) -> pb::BoardItem {
         let pending = if matches!(caller, Caller::User(_)) {
             pending_for(item, asks)
         } else {
@@ -366,7 +388,7 @@ impl BoardSvc {
             depends_on: item
                 .depends_on
                 .iter()
-                .map(|key| self.dependency(caller, key))
+                .filter_map(|key| self.dependency(caller, key, archived))
                 .collect(),
             done_at: item.done_unix_ms.map(timestamp_ms),
             pending,
@@ -375,14 +397,14 @@ impl BoardSvc {
     }
 
     /// Puts the item as it is now on the feed.
-    fn tell(&self, caller: &Caller, change: pb::Change, item: &BoardItemRecord) {
+    fn tell(&self, caller: &Caller, change: pb::Change, item: &BoardItemRecord, archived: &HashSet<String>) {
         let session = match &item.board {
             BoardKey::Session(id) => id.clone(),
             _ => String::new(),
         };
         self.feed.publish_in(
             change,
-            pb::event::Payload::BoardItem(self.item_pb(caller, item, &[])),
+            pb::event::Payload::BoardItem(self.item_pb(caller, item, &[], archived)),
             Scope {
                 channel: item.channel.clone(),
                 session,
@@ -486,10 +508,10 @@ impl BoardSvc {
         })
     }
 
-    fn response(&self, caller: &Caller, item: &BoardItemRecord) -> pb::WriteItemResponse {
+    fn response(&self, caller: &Caller, item: &BoardItemRecord, archived: &HashSet<String>) -> pb::WriteItemResponse {
         pb::WriteItemResponse {
             delivery: pb::Delivery::Applied as i32,
-            item: Some(self.item_pb(caller, item, &[])),
+            item: Some(self.item_pb(caller, item, &[], archived)),
             journal: None,
             provisional_id: None,
         }
@@ -505,16 +527,17 @@ impl BoardSvc {
     ) -> Result<Applied, Status> {
         match write {
             BoardWrite::Applied(item) => {
+                let archived = self.archived()?;
                 if item.revision != before {
                     let change = if item.deleted {
                         pb::Change::Deleted
                     } else {
                         pb::Change::Updated
                     };
-                    self.tell(caller, change, &item);
+                    self.tell(caller, change, &item, &archived);
                 }
                 Ok(Applied::Done(Box::new(Done {
-                    response: self.response(caller, &item),
+                    response: self.response(caller, &item, &archived),
                     deleted: item.deleted.then(|| item.key.clone()),
                 })))
             }
@@ -549,6 +572,22 @@ impl BoardSvc {
         };
         let board = request.board.as_ref().ok_or_else(|| status::missing("board"))?;
         let (key, channel, channel_name) = self.resolve_board(board)?;
+        // D216: an archived session's board is hidden, so it takes no new
+        // items, as a missing session's board doesn't.
+        if let BoardKey::Session(session) = &key {
+            match self.store.archive(session) {
+                Ok(None) => {}
+                Ok(Some(_)) => {
+                    return Err(status::not_found(
+                        pb::EntityKind::Session,
+                        session,
+                        format!("session {session} is archived, so its board takes no new items"),
+                        "restore the session first, or add the item to its channel's board",
+                    ));
+                }
+                Err(error) => return Err(self.failed(error, "check whether the board's session is archived")),
+            }
+        }
         let sessions = self.known_sessions(&request.sessions, "sessions")?;
         let depends_on = self.readable_targets(caller, &request.depends_on)?;
         let policy = board_for_policy(&key, &channel, &self.machine);
@@ -587,9 +626,10 @@ impl BoardSvc {
                 depends_on,
             })
             .map_err(|error| self.failed(error, "make the board item"))?;
-        self.tell(caller, pb::Change::Created, &item);
+        let archived = self.archived()?;
+        self.tell(caller, pb::Change::Created, &item, &archived);
         Ok(Applied::Done(Box::new(Done {
-            response: self.response(caller, &item),
+            response: self.response(caller, &item, &archived),
             deleted: None,
         })))
     }
@@ -809,7 +849,15 @@ impl BoardSvc {
             }
             View::ChannelWithSessions(channel) => read(self.store.board_items_in_channel(&channel.value)),
             View::SessionWithForks(session) => {
-                read(self.store.board_items(&[BoardKey::Session(session.value.clone())]))
+                let origins = self
+                    .store
+                    .fork_origins()
+                    .map_err(|error| self.failed(error, "list the forks"))?;
+                let boards: Vec<BoardKey> = hidden::family(&origins, &session.value)
+                    .into_iter()
+                    .map(BoardKey::Session)
+                    .collect();
+                read(self.store.board_items(&boards))
             }
             View::GlobalWithChannels(scope) if scope.global_only => {
                 read(self.store.board_items(&[BoardKey::Global]))
@@ -837,11 +885,16 @@ impl BoardSvc {
             .map(|column| column_number(*column, "columns"))
             .collect::<Result<Vec<_>, _>>()?;
         let (size, start) = page_of(request.page.as_ref())?;
+        let archived = self.archived()?;
         // Boards the caller can't read are left out, not refused: a scope
-        // that spans boards shows the ones it may see.
+        // that spans boards shows the ones it may see. Hidden items (D216)
+        // are left out of every view, the counts included.
         let mut readable: Vec<(BoardKey, bool)> = Vec::new();
         let mut visible = Vec::new();
         for item in self.in_view(view)? {
+            if hidden::is_hidden(&item, &archived) {
+                continue;
+            }
             let known = readable.iter().find(|(board, _)| *board == item.board).map(|(_, ok)| *ok);
             let ok = match known {
                 Some(ok) => ok,
@@ -873,7 +926,10 @@ impl BoardSvc {
             String::new()
         };
         Ok(pb::ListItemsResponse {
-            items: page.iter().map(|item| self.item_pb(caller, item, asks)).collect(),
+            items: page
+                .iter()
+                .map(|item| self.item_pb(caller, item, asks, &archived))
+                .collect(),
             counts,
             page: Some(pb::PageResponse { next_page_token }),
         })
@@ -915,7 +971,8 @@ impl pb::board_service_server::BoardService for BoardSvc {
         let me = self.clone();
         blocking(move || {
             let item = me.load(&caller, &id, false)?;
-            Ok(me.item_pb(&caller, &item, &asks))
+            let archived = me.archived()?;
+            Ok(me.item_pb(&caller, &item, &asks, &archived))
         })
         .await?
         .map(Response::new)

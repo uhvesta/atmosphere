@@ -561,6 +561,7 @@ fn failed(entry: &mut Entry, error: &ReviveError) {
             ReviveError::Holder { .. } => "start its terminal",
             ReviveError::NoCommand { .. } => "find the command to run",
             ReviveError::Background { .. } => "run a background task",
+            ReviveError::Contain { .. } => "start its agent contained",
             ReviveError::ScrubReport { .. } | ReviveError::WriteReport { .. } | ReviveError::RestartJson { .. } => {
                 "write the restart report"
             }

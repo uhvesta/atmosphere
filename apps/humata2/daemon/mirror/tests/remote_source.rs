@@ -49,6 +49,7 @@ fn chunk(from: u64, lines: &Lines) -> Chunk<'_> {
         next_offset: lines.next_offset,
         source: &lines.source,
         rewritten: lines.rewritten,
+        machine: MACHINE,
     }
 }
 

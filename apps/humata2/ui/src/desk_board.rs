@@ -66,7 +66,7 @@ fn lane(look: Look, title: String) -> Div {
 /// Where an item lives: "# channel", or "Global" for a global item.
 fn place(state: &AppState, scope: &Scope) -> String {
     match scope {
-        Scope::Channel(id) => format!(
+        Scope::Channel(id) | Scope::Session { channel: id, .. } => format!(
             "# {}",
             state
                 .workspace

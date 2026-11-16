@@ -363,10 +363,20 @@ impl pb::peer_service_server::PeerService for Peer {
 
     type UplinkStream = ReceiverStream<Result<pb::MachineToHost, Status>>;
 
-    /// One per link. This process keeps no journal, mirror or policy yet
-    /// (see `peer_link`), so it says to resume from nothing, reads what the
-    /// host sends without acting on it, and ends its side when the host
-    /// ends its own. Behind the gate, so only a proven host gets here.
+    /// One per link: the host's word that the Mac is reachable (AWAY T3).
+    /// Before Resume, the socket daemon's PeerUplink is opened on the link's
+    /// proven connection, so the daemon counts the host reachable from the
+    /// moment the host sees Resume. If that open fails, the link still runs
+    /// and the daemon counts the host away until the link is redialled.
+    /// Resume says to resume from nothing: this process keeps no journal,
+    /// mirror or policy yet (AWAY T4/T5). Then the machine reports its
+    /// sessions. Each message the host sends goes to the daemon's
+    /// PeerUplink, and each message the daemon sends goes to the host. The
+    /// two are carried until one ends: a daemon whose PeerUplink ends with an
+    /// error (a newer link replaced it) ends the host's Uplink with that
+    /// error, and a clean end of it ends the host's Uplink too. When the
+    /// host's side ends, the daemon's requests end. Behind the gate, so only
+    /// a proven host gets here.
     async fn uplink(
         &self,
         request: Request<Streaming<pb::HostToMachine>>,
@@ -376,26 +386,30 @@ impl pb::peer_service_server::PeerService for Peer {
                 "humatad2 refused a second Uplink on the peer link: a link has one for its life",
             ));
         }
-        let mut from_host = request.into_inner();
+        let from_host = request.into_inner();
         let (to_host, stream) = tokio::sync::mpsc::channel(1);
-        let resume = pb::MachineToHost {
-            message: Some(pb::machine_to_host::Message::Resume(pb::UplinkResume {
-                from: Some(pb::UplinkAck::default()),
-            })),
-        };
         let relay = self.handshake.relay.clone();
         tokio::spawn(async move {
+            // The daemon's PeerUplink is open before the host sees Resume.
+            let (to_daemon, daemon_inbox) = tokio::sync::mpsc::channel::<pb::HostToMachine>(16);
+            let daemon = open_daemon_uplink(&relay, daemon_inbox).await;
+            let resume = pb::MachineToHost {
+                message: Some(pb::machine_to_host::Message::Resume(pb::UplinkResume {
+                    from: Some(pb::UplinkAck::default()),
+                })),
+            };
             if to_host.send(Ok(resume)).await.is_err() {
                 return;
             }
             // D139: after Resume the machine reports its sessions. The
-            // task ends with this one (host's side ended) or by itself;
-            // `to_host` stays held here so the Uplink stays open and
-            // silent when the reporting ends first.
+            // reporter is stopped once the carrying ends, which also drops
+            // its hold on `to_host`.
             let reporter = tokio::spawn(report_sessions(relay, to_host.clone()));
-            while let Ok(Some(_message)) = from_host.message().await {}
+            carry_uplink(from_host, to_daemon, daemon, &to_host).await;
             reporter.abort();
-            // Dropping `to_host` once the host's side ends ends this one.
+            let _ = reporter.await;
+            // Dropping `to_host` ends the host's Uplink; dropping
+            // `to_daemon` ends the daemon's PeerUplink requests.
         });
         Ok(Response::new(ReceiverStream::new(stream)))
     }
@@ -1030,6 +1044,95 @@ async fn report_sessions(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Opens the socket daemon's PeerUplink on the link's proven connection,
+/// with the host's messages going in on `inbox`. None when it can't be
+/// opened (the link has no proven connection, or the daemon refused it): a
+/// line says so, and the link carries on without the daemon.
+async fn open_daemon_uplink(
+    relay: &Relay,
+    inbox: tokio::sync::mpsc::Receiver<pb::HostToMachine>,
+) -> Option<Streaming<pb::MachineToHost>> {
+    let opened = match relay.proven_channel() {
+        Some(channel) => pb::daemon_service_client::DaemonServiceClient::new(channel)
+            .peer_uplink(ReceiverStream::new(inbox))
+            .await
+            .map(Response::into_inner),
+        None => Err(Status::unavailable(
+            "the peer link has no proven connection to this machine's daemon: the daemon didn't accept the host's proof, or no daemon answered when the link started",
+        )),
+    };
+    match opened {
+        Ok(daemon) => Some(daemon),
+        Err(failure) => {
+            crate::log::say!(
+                "humatad2: the peer link couldn't open its uplink on this machine's daemon, so the machine acts as if its host were away until the link is redialled: {}",
+                failure.message()
+            );
+            None
+        }
+    }
+}
+
+/// The daemon's next PeerUplink message, or none ever when there is no
+/// daemon, so that branch of `carry_uplink` never fires.
+async fn next_daemon_message(
+    daemon: &mut Option<Streaming<pb::MachineToHost>>,
+) -> Result<Option<pb::MachineToHost>, Status> {
+    match daemon {
+        Some(stream) => stream.message().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Carries the host's messages to the daemon's PeerUplink and the daemon's
+/// to the host, until the host's side ends. The host's end (or a failure of
+/// it) returns, which drops `to_daemon` and so ends the daemon's requests.
+/// The link outlives the machine's daemon: a daemon that stops or restarts
+/// ends its PeerUplink, but not the host's Uplink, so the host doesn't see
+/// the machine lost (the daemon counts the host away until the next link).
+/// Only a newer link replacing this one (`Aborted`) ends the host's Uplink,
+/// with that status.
+async fn carry_uplink(
+    mut from_host: Streaming<pb::HostToMachine>,
+    to_daemon: tokio::sync::mpsc::Sender<pb::HostToMachine>,
+    mut daemon: Option<Streaming<pb::MachineToHost>>,
+    to_host: &tokio::sync::mpsc::Sender<Result<pb::MachineToHost, Status>>,
+) {
+    loop {
+        tokio::select! {
+            host = from_host.message() => match host {
+                Ok(Some(message)) => {
+                    // With no daemon nothing reads `to_daemon`, so a send
+                    // could wait forever once its buffer fills.
+                    if daemon.is_some() {
+                        let _ = to_daemon.send(message).await;
+                    }
+                }
+                Ok(None) | Err(_) => return,
+            },
+            from_daemon = next_daemon_message(&mut daemon) => match from_daemon {
+                Ok(Some(message)) => {
+                    if to_host.send(Ok(message)).await.is_err() {
+                        return;
+                    }
+                }
+                Err(status) if status.code() == tonic::Code::Aborted => {
+                    let _ = to_host.send(Err(status)).await;
+                    return;
+                }
+                Ok(None) => daemon = None,
+                Err(failure) => {
+                    crate::log::say!(
+                        "humatad2: this machine's daemon ended the peer link's uplink, so it counts its host away until the host links again; the link itself stays up: {}",
+                        failure.message()
+                    );
+                    daemon = None;
+                }
+            },
         }
     }
 }

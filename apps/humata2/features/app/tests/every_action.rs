@@ -338,7 +338,7 @@ fn next_route(at: Option<&Route>, s: &Samples) -> Option<Route> {
         Some(Route::Home) => Route::Inbox,
         Some(Route::Inbox) => Route::Board(Scope::Global),
         Some(Route::Board(Scope::Global)) => Route::Board(Scope::Channel(s.channel.clone())),
-        Some(Route::Board(Scope::Channel(_))) => Route::Channel(s.channel.clone()),
+        Some(Route::Board(Scope::Channel(_) | Scope::Session { .. })) => Route::Channel(s.channel.clone()),
         Some(Route::Channel(_)) => Route::Session(s.session.clone()),
         Some(Route::Session(_)) => Route::Hosts,
         Some(Route::Hosts) => Route::Files,
@@ -356,7 +356,9 @@ fn route_command(route: &Route) -> Command {
         Route::Home => Command::Home,
         Route::Inbox => Command::Inbox,
         Route::Board(Scope::Global) => Command::Board,
-        Route::Board(Scope::Channel(id)) => Command::ChannelBoard(id.clone()),
+        Route::Board(Scope::Channel(id) | Scope::Session { channel: id, .. }) => {
+            Command::ChannelBoard(id.clone())
+        }
         Route::Channel(id) => Command::Channel(id.clone()),
         Route::Session(id) => Command::Session(id.clone()),
         Route::Hosts => Command::Hosts,

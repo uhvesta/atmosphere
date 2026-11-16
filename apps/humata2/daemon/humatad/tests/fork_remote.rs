@@ -332,3 +332,154 @@ async fn a_bad_or_taken_typed_branch_is_refused_when_the_fork_is_asked_for() {
     assert_eq!(listed.len(), 2, "only the parents: {listed:?}");
     assert!(!rig.the("box-1").path(&channel, FORK).exists());
 }
+
+/// D208, FK-8: a context-only fork works in its parent's clones, so it
+/// runs only on its parent's machine. Asked for onto another machine, from
+/// this Mac or from a box, it is refused at once and nothing is made.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_context_only_fork_onto_another_machine_is_refused() {
+    let rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let here = rig.start_on(&channel, &host, "Cache warmup").await;
+    let there = rig.start_on(&channel, &one, "Retry queue").await;
+    rig.wait_session(&here, "live", is_live).await;
+    rig.wait_session(&there, "live", is_live).await;
+
+    for (from, to) in [(&here, &one), (&there, &host)] {
+        let refused = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+            .fork_session(request(from, pb::ForkKind::ContextOnly, to))
+            .await
+            .expect_err("a context-only fork elsewhere is refused at once");
+        assert_eq!(refused.code(), Code::FailedPrecondition, "{refused:?}");
+        let previewed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+            .preview_fork(request(from, pb::ForkKind::ContextOnly, to))
+            .await
+            .expect_err("its preview is refused the same way");
+        assert_eq!(previewed.code(), Code::FailedPrecondition, "{previewed:?}");
+    }
+    let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .sessions;
+    assert_eq!(listed.len(), 2, "only the parents: {listed:?}");
+    assert!(!rig.the("box-1").path(&channel, FORK).exists());
+}
+
+/// FK-4, FK-8: the preview of a fork onto or from a box names the new
+/// branch the fork's clones would get, a branch the parent isn't on, and
+/// what the copy would weigh, measured on the parent's machine. Previewing
+/// makes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn previewing_a_fork_onto_or_from_a_box_names_its_branch_and_size_and_makes_nothing() {
+    let rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let here = rig.start_on(&channel, &host, "Cache warmup").await;
+    let there = rig.start_on(&channel, &one, "Retry queue").await;
+    let parents = [
+        rig.wait_session(&here, "live", is_live).await,
+        rig.wait_session(&there, "live", is_live).await,
+    ];
+
+    for ((from, to), parent) in [(&here, &one), (&there, &host)].into_iter().zip(&parents) {
+        for kind in [pb::ForkKind::CodeAndContext, pb::ForkKind::CodeOnly] {
+            let preview = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+                .preview_fork(request(from, kind, to))
+                .await
+                .expect("the preview answers")
+                .into_inner();
+            assert_eq!(preview.branches.len(), parent.repos.len(), "{kind:?}: {preview:?}");
+            for (named, repo) in preview.branches.iter().zip(&parent.repos) {
+                assert!(!named.branch.is_empty(), "{kind:?}: {preview:?}");
+                assert_ne!(named.branch, repo.branch, "a new branch: {preview:?}");
+            }
+            assert!(preview.copy_bytes > 0, "{kind:?}: {preview:?}");
+            assert!(!preview.text.is_empty());
+        }
+    }
+    let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .sessions;
+    assert_eq!(listed.len(), 2, "only the parents: {listed:?}");
+    assert!(!rig.the("box-1").path(&channel, FORK).exists());
+    assert!(staged_at(&rig.host_path(&channel, "")).is_empty());
+}
+
+/// What `machine`'s channel folder has staged under `.carry`.
+fn staged_at(folder: &Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(folder.join(".carry"))
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default()
+}
+
+/// The host's fork journals left in its state.
+fn fork_journals(rig: &Rig) -> usize {
+    std::fs::read_dir(rig.host.state.join("carry").join("forks"))
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0)
+}
+
+/// A host killed while it forks this Mac's session onto box-1 undoes the
+/// fork at its next start when the agent's record wasn't written yet: no
+/// fork on box-1, nothing staged on either machine, the parent runs on.
+/// Killed once the record was written, it finishes it: the fork runs on
+/// box-1 with the parent's work.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_cut_short_by_a_host_restart_is_undone_or_finished() {
+    for (at, finished) in [("fork-packed", false), ("fork-copied", false), ("fork-unpacked", false), ("fork-recorded", true)] {
+        let mut rig = Rig::start(&["box-1"], &[REPO]).await;
+        let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+        let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+        let parent = rig.start_on(&channel, &host, "Cache warmup").await;
+        rig.wait_session(&parent, "live", is_live).await;
+        let head = make_work(&rig.host_path(&channel, PARENT));
+
+        rig.restart_host(&[("HUMATA2_STOP_AT", at)]).await;
+        let _ = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+            .fork_session(request(&parent, pb::ForkKind::CodeAndContext, &one))
+            .await;
+        rig.host_stopped().await;
+        rig.restart_host(&[]).await;
+
+        if finished {
+            let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+                .list_sessions(pb::ListSessionsRequest::default())
+                .await
+                .unwrap()
+                .into_inner()
+                .sessions;
+            let fork = listed
+                .iter()
+                .filter_map(|session| session.id.clone())
+                .find(|id| id != &parent)
+                .unwrap_or_else(|| panic!("{at}: the fork is recorded: {listed:?}"));
+            rig.wait_session(&fork, "live on box-1", |s| s.machine.as_ref() == Some(&one) && is_live(s)).await;
+            let to = rig.the("box-1").path(&channel, FORK);
+            assert!(git(&["-C", &text(&to), "merge-base", "--is-ancestor", &head, "HEAD"]).is_empty(), "{at}: the parent's commit is in the fork");
+        } else {
+            let fork_on_box = rig.the("box-1").path(&channel, FORK);
+            let box_staging = rig.the("box-1").path(&channel, "");
+            let host_staging = rig.host_path(&channel, "");
+            rig.wait_session(&parent, "the fork undone", |s| {
+                is_live(s) && !fork_on_box.exists() && staged_at(&box_staging).is_empty() && staged_at(&host_staging).is_empty()
+            })
+            .await;
+            let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+                .list_sessions(pb::ListSessionsRequest::default())
+                .await
+                .unwrap()
+                .into_inner()
+                .sessions;
+            assert_eq!(listed.len(), 1, "{at}: only the parent: {listed:?}");
+            assert!(rig.the("box-1").store().sessions().unwrap().is_empty(), "{at}: box-1 keeps no record of the fork");
+        }
+        rig.wait_session(&parent, "the journal done with", |_| fork_journals(&rig) == 0).await;
+        assert!(holder_answers(&common::stored_tabs(&rig.host.state)[0]), "{at}: the parent runs on");
+    }
+}

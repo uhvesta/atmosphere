@@ -516,3 +516,23 @@ async fn a_move_after_subscribing_is_pushed_as_an_item_change() {
         }
     }
 }
+
+// D216: an item made on a session's board comes back on that session's board,
+// with its channel, so the app can place it under BD-5–BD-8.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_board_item_is_listed_on_that_sessions_board() {
+    let world = World::start().await;
+    let (channel, repo, mac) = world.channel().await;
+    let session = world.session(&channel, &repo, &mac, SessionOptions::default()).await;
+    let scope = Scope::Session {
+        channel: channel.clone(),
+        session: session.clone(),
+    };
+
+    let id = world.create_item(scope.clone(), "Check the ledger totals").await;
+
+    let workspace = world.load().await;
+    let item = listed(&workspace, &id);
+    assert_eq!(item.scope, scope);
+    assert_eq!(item.scope.channel(), Some(&channel));
+}

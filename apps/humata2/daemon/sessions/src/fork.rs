@@ -1,11 +1,11 @@
-//! Forking a session on this machine, from now (FK-1..FK-5): a new session
-//! in the same channel with the same agent, clones that are exact copies of
+//! Forking a session on this machine, from now (FK-1..FK-6): a new session
+//! in the same channel with the parent's agent or another one, clones that are exact copies of
 //! the parent's (changes, untracked and ignored files included) on a new
 //! branch, and, when asked, a copy of the parent's conversation.
 
 use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use humata2_mirror::MirrorError;
 use humata2_revive::Env;
@@ -45,6 +45,12 @@ pub struct ForkRequest {
     pub before_turn: u32,
     /// A branch typed in the dialog (FC-15), used as typed; None: picked from the title.
     pub branch: Option<String>,
+    /// The agent the fork runs; None: its parent's. Another agent, with
+    /// context, is handed the conversation as a file (FK-6, D212).
+    pub agent: Option<String>,
+    /// The fork's conversation id when the host chose it, so it can keep the
+    /// fork's first message for it before the launch; a fresh one when None.
+    pub conversation: Option<String>,
     pub operation: Option<String>,
     pub cols: u16,
     pub rows: u16,
@@ -59,7 +65,25 @@ pub struct ForkPlan {
     pub copy_bytes: u64,
 }
 
+/// Where, in a fork's folder, a fork whose agent can't resume its parent's
+/// conversation finds it (FK-6, D212): outside the clones, named for the
+/// fork so context-only forks sharing their parent's folder don't collide.
+pub fn handover_file(fork: &str) -> PathBuf {
+    Path::new(".humata").join(format!("handover-{fork}.jsonl"))
+}
+
 impl Starter {
+    /// Whether a fork of a session running `parent_agent`, carrying `copy`
+    /// and running `agent`, is handed the conversation as a file and a
+    /// summary instead of resuming it (FK-6, D212): it carries context, and
+    /// it runs another agent or its parent's agent keeps no conversation file.
+    pub fn hands_over(&self, parent_agent: &str, agent: &str, copy: ForkCopy) -> Result<bool, StartError> {
+        if copy == ForkCopy::CodeOnly {
+            return Ok(false);
+        }
+        Ok(agent != parent_agent || self.agents.get(parent_agent)?.conversation_file.is_empty())
+    }
+
     /// The branch a fork titled `title` would get and the bytes its clones
     /// would copy. Blocking: it runs git.
     pub fn preview_fork(
@@ -145,7 +169,9 @@ impl Starter {
 
     /// Forks a session: records the fork, copies the parent's clones onto a
     /// new branch, copies the conversation (CodeAndContext), launches the
-    /// agent. `progress` hears `write_record`, `copy_code:<repo>` for each
+    /// agent. A fork the parent's conversation can't be resumed in (another
+    /// agent, or one that keeps no file) gets it at [`handover_file`] and
+    /// starts a fresh conversation; the host types its first message. `progress` hears `write_record`, `copy_code:<repo>` for each
     /// repository, `copy_conversation`, `launch` and `verify`. A failure
     /// before the launch leaves nothing behind; from the launch on, the
     /// records stay for revive and [`crate::recover`].
@@ -168,7 +194,19 @@ impl Starter {
             Ok::<_, StartError>((record, detail, agent))
         })
         .await??;
-        let source_conversation = if with_context {
+        let agent_name = request
+            .agent
+            .clone()
+            .filter(|agent| !agent.is_empty())
+            .unwrap_or_else(|| parent.agent.clone());
+        let handover = self.hands_over(&parent.agent, &agent_name, request.copy)?;
+        let source_conversation = if handover {
+            // A parent with no conversation file hands over none: its first
+            // message falls back to its terminal output.
+            parent_agent
+                .map(|agent| agent.launch.conversation_file)
+                .filter(|file| !file.as_os_str().is_empty())
+        } else if with_context {
             let agent = parent_agent.ok_or_else(|| StartError::NoAgent {
                 session: parent.id.clone(),
             })?;
@@ -196,7 +234,7 @@ impl Starter {
         })
         .await??;
 
-        let kind = self.agents.get(&parent.agent)?;
+        let kind = self.agents.get(&agent_name)?;
         // A context-only fork launches where its parent's clones are (D187).
         let (folder, repos) = match &branch {
             None => (parent.folder.clone(), parent_detail.repos.clone()),
@@ -215,26 +253,37 @@ impl Starter {
                 (folder, repos)
             }
         };
-        let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
-        let new_conversation = kind
-            .launch(&self.home, &folder, &conversation)
-            .conversation_file;
+        let conversation = request
+            .conversation
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().hyphenated().to_string());
+        let id = request
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple()));
+        // A handed-over conversation goes beside the clones; one the agent
+        // resumes, where the agent keeps it.
+        let new_conversation = if handover {
+            folder.join(handover_file(&id))
+        } else {
+            kind.launch(&self.home, &folder, &conversation).conversation_file
+        };
         let session = SessionRecord {
-            id: request
-                .id
-                .clone()
-                .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple())),
+            id,
             channel: channel.id.clone(),
             machine: parent.machine.clone(),
             title: request.title.clone(),
-            agent: parent.agent.clone(),
+            agent: agent_name.clone(),
             folder: folder.clone(),
             created_unix_ms: unix_ms(),
         };
         let mut detail = SessionDetail {
             session: session.id.clone(),
             repos,
-            model: parent_detail.model.clone(),
+            // Another agent starts on its own default model.
+            model: (agent_name == parent.agent)
+                .then(|| parent_detail.model.clone())
+                .flatten(),
             first_message: None,
             start: StartStep::Recorded,
             operation: request.operation.clone(),
@@ -274,7 +323,7 @@ impl Starter {
                 env,
                 progress,
                 conversation,
-                with_context,
+                with_context && !handover,
             )
             .await?;
         Ok(Started {

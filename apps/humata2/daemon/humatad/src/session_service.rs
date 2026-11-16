@@ -1527,6 +1527,7 @@ pub(crate) async fn run_resume(
             progress.fail(failure);
         }
         Ok(Revived::Resumed { .. } | Revived::Reattached | Revived::Relaunched) => {
+            move_session::restart_session_shells(&starter, &session, &env).await;
             progress.set_step("launch", pb::StepState::Done, None);
             progress.set_step("verify", pb::StepState::Done, None);
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {

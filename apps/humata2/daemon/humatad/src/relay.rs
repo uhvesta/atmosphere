@@ -104,7 +104,7 @@ const LISTED_METHODS: [(&str, &[&str]); 6] = [
     // The carry service itself refuses every caller but the host.
     (
         pb::session_carry_service_server::SERVICE_NAME,
-        &["Pack", "Unpack", "Release", "Abort"],
+        &["Pack", "Unpack", "Release", "Abort", "PreviewFork"],
     ),
 ];
 
@@ -157,6 +157,16 @@ pub(crate) fn allows(path: &str) -> bool {
         || LISTED_METHODS
             .iter()
             .any(|(listed, methods)| *listed == service && methods.contains(&method))
+}
+
+/// Calls the link process makes itself on its proven socket connection,
+/// which the host can't relay (AWAY): the daemon takes them as the host's.
+const LINK_OWN: [&str; 1] = ["/humata.v1.DaemonService/PeerUplink"];
+
+/// Whether the proven socket connection may call `path`: what the host may
+/// relay, and the link's own calls.
+pub(crate) fn proven_may_call(path: &str) -> bool {
+    allows(path) || LINK_OWN.contains(&path)
 }
 
 /// Why the relay couldn't reach the machine's daemon or prove itself to it.
@@ -638,6 +648,7 @@ mod tests {
             "/humata.v1.SessionCarryService/Unpack",
             "/humata.v1.SessionCarryService/Release",
             "/humata.v1.SessionCarryService/Abort",
+            "/humata.v1.SessionCarryService/PreviewFork",
         ] {
             assert!(allows(allowed), "{allowed}");
         }
@@ -664,6 +675,15 @@ mod tests {
         ] {
             assert!(!allows(refused), "{refused}");
         }
+    }
+
+    #[test]
+    fn the_host_cant_relay_the_links_own_uplink_but_the_link_may_call_it() {
+        let uplink = "/humata.v1.DaemonService/PeerUplink";
+        assert!(!allows(uplink));
+        assert!(proven_may_call(uplink));
+        assert!(proven_may_call("/humata.v1.SessionService/ListSessions"));
+        assert!(!proven_may_call("/humata.v1.DaemonService/WhoAmI"));
     }
 
     #[test]

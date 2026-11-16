@@ -1,24 +1,25 @@
 //! PreviewFork and ForkSession on this machine (FK-1..FK-13): the checks,
 //! the access gate and the `ForkSession` operation over `Starter::fork`.
 //!
-//! This build forks a session's code and conversation on this machine with
-//! the same agent: from now, cut before one of its turns (D181), or with
-//! the conversation only, working in its parent's clones (D185, D187). A
-//! fork on another machine or running another agent answers "not built"
-//! and says which part.
+//! This build forks a session's code and conversation on this machine:
+//! from now, cut before one of its turns (D181), or with the conversation
+//! only, working in its parent's clones (D185, D187). A fork that runs
+//! another agent is handed the conversation as a file and a summary
+//! (FK-6, D212). A fork elsewhere is in fork_remote.
 
 use std::sync::Arc;
 
 use humata2_access::{AgentId, Capability, ChannelId, MachineId, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_mirror::{MirrorError, turns_of};
-use humata2_sessions::{ForkCopy, ForkRequest, Starter};
+use humata2_sessions::{ForkCopy, ForkRequest, Starter, handover_file};
 use humata2_store::TabRecord;
 use pb::invalid_field::Problem;
 use tokio::sync::oneshot;
 use tonic::{Code, Status};
 
 use super::lineage::publish_family;
+use super::start_fresh::{self, Handover, Source};
 use super::{COLS, Loaded, ROWS, SessionSvc, Tell, advance, clean_title, start_error, turns, watch};
 use crate::channel_service::{Gated, blocking, failed};
 use crate::identity::{self, Caller};
@@ -46,6 +47,11 @@ struct Checked {
     /// The branch typed in the dialog; None: picked from the title.
     branch: Option<String>,
     before_turn: u32,
+    /// The agent the fork runs: its parent's unless the request names another.
+    agent: String,
+    /// Whether the fork is handed the conversation as a file and a summary
+    /// instead of resuming it (FK-6, D212).
+    handover: bool,
 }
 
 /// One repository a fork would have: its owner, name and the branch it is on.
@@ -64,6 +70,9 @@ impl SessionSvc {
         request: pb::ForkSessionRequest,
         approved: bool,
     ) -> Result<Gated<pb::ForkPreview>, Status> {
+        if let Some(elsewhere) = self.preview_fork_elsewhere_of(caller, &request, approved).await? {
+            return Ok(elsewhere);
+        }
         let checked = match self.check_fork(caller, &request, approved).await? {
             Gated::Ask(asked) => return Ok(Gated::Ask(asked)),
             Gated::Done(checked) => checked,
@@ -103,7 +112,13 @@ impl SessionSvc {
                 .collect();
             (planned, plan.copy_bytes)
         };
-        let text = fork_text(&checked, &planned, copy_bytes);
+        let handed = if checked.handover {
+            let (file, socket) = handover_from(&checked.parent);
+            Some(blocking(move || start_fresh::handover_source(file.as_deref(), &socket)).await?)
+        } else {
+            None
+        };
+        let text = fork_text(&checked, &planned, copy_bytes, handed);
         Ok(Gated::Done(pb::ForkPreview {
             text,
             branches: planned
@@ -118,7 +133,7 @@ impl SessionSvc {
                 })
                 .collect(),
             copy_bytes,
-            seeded_with_summary: false,
+            seeded_with_summary: checked.handover,
         }))
     }
 
@@ -147,6 +162,32 @@ impl SessionSvc {
 
         let parent = checked.parent.record.id.clone();
         let fork = format!("se_{}", uuid::Uuid::new_v4().simple());
+        // A handover's first message is written and kept before anything
+        // starts, so a restart types it if the fork is cut before it is.
+        let seed = if checked.handover {
+            let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
+            let (file, socket) = handover_from(&checked.parent);
+            let (title, agent, before_turn, handed) = (
+                checked.parent.record.title.clone(),
+                checked.parent.record.agent.clone(),
+                checked.before_turn,
+                handover_file(&fork),
+            );
+            let text = blocking(move || {
+                start_fresh::handover_seed(&Handover {
+                    title: &title,
+                    agent: &agent,
+                    file: file.as_deref(),
+                    before_turn,
+                    socket: &socket,
+                    handed: &handed,
+                })
+            })
+            .await?;
+            Some((conversation, text))
+        } else {
+            None
+        };
         let mut keys = vec!["write_record".to_owned()];
         let mut steps = vec![("write_record".to_owned(), "Saving the fork".to_owned())];
         // A context-only fork copies no code.
@@ -167,13 +208,21 @@ impl SessionSvc {
             keys.push("copy_conversation".to_owned());
             steps.push((
                 "copy_conversation".to_owned(),
-                "Copying the conversation".to_owned(),
+                if checked.handover {
+                    "Handing over the conversation"
+                } else {
+                    "Copying the conversation"
+                }
+                .to_owned(),
             ));
         }
         keys.push("launch".to_owned());
         keys.push("verify".to_owned());
         steps.push(("launch".to_owned(), "Starting the agent".to_owned()));
         steps.push(("verify".to_owned(), "Checking it started".to_owned()));
+        if seed.is_some() {
+            steps.push(("seed".to_owned(), "Telling the agent what it was handed".to_owned()));
+        }
         let target = pb::EntityRef {
             entity: Some(pb::entity_ref::Entity::Session(pb::SessionId {
                 value: parent.clone(),
@@ -191,6 +240,14 @@ impl SessionSvc {
             Started::Existing(operation) => return Ok(Gated::Done(operation)),
         };
         let operation = progress.operation();
+        if let Some((conversation, text)) = &seed
+            && let Err(error) =
+                start_fresh::keep_handover(&self.starter.store, &fork, conversation, text).await
+        {
+            let refused = status::failure(Code::Internal, error.clone());
+            progress.fail(error);
+            return Err(refused);
+        }
         let fork_request = ForkRequest {
             id: Some(fork.clone()),
             parent: parent.clone(),
@@ -199,6 +256,8 @@ impl SessionSvc {
             kind: request.kind,
             before_turn: request.before_turn,
             branch: checked.branch,
+            agent: Some(checked.agent),
+            conversation: seed.as_ref().map(|(conversation, _)| conversation.clone()),
             operation: operation.id.as_ref().map(|id| id.value.clone()),
             cols: COLS,
             rows: ROWS,
@@ -212,6 +271,7 @@ impl SessionSvc {
             fork_request,
             progress,
             keys,
+            seed,
             ready,
             by.clone(),
         ));
@@ -267,16 +327,27 @@ impl SessionSvc {
                 "fork with CODE_AND_CONTEXT or CONTEXT_ONLY, or set before_turn to 0 to fork from now",
             ));
         }
-        if request
+        let agent = request
             .agent
             .as_ref()
-            .is_some_and(|agent| !agent.value.is_empty() && agent.value != parent.record.agent)
-        {
-            return Err(not_built_part(
-                FORK_SESSION,
-                "a fork that runs another agent than its parent",
+            .map(|agent| agent.value.clone())
+            .filter(|agent| !agent.is_empty())
+            .unwrap_or_else(|| parent.record.agent.clone());
+        if agent != parent.record.agent && self.starter.agents.get(&agent).is_err() {
+            return Err(status::invalid_field(
+                "agent",
+                Problem::UnknownValue,
+                format!("this machine has no agent named {agent} to run the fork"),
+                "pick one of the agents the new-session dialog lists, or leave agent empty to run the parent's",
             ));
         }
+        let handover = self
+            .starter
+            .hands_over(&parent.record.agent, &agent, copy)
+            .map_err(|error| {
+                let (code, failure) = start_error(&error);
+                status::failure(code, failure)
+            })?;
         if request
             .machine
             .as_ref()
@@ -304,7 +375,7 @@ impl SessionSvc {
             Target::Start {
                 channel: ChannelId::new(channel.id.as_str()),
                 machine: MachineId::new(self.machine.as_str()),
-                agent: AgentId::new(parent.record.agent.as_str()),
+                agent: AgentId::new(agent.as_str()),
             },
             approved,
         )? {
@@ -349,6 +420,8 @@ impl SessionSvc {
             title,
             branch,
             before_turn: request.before_turn,
+            agent,
+            handover,
         }))
     }
 
@@ -415,9 +488,40 @@ fn turns_failed(error: &MirrorError) -> Status {
     )
 }
 
+/// Where a handover's message is made from: the parent's conversation
+/// file, when its agent keeps one, and its terminal.
+fn handover_from(parent: &Loaded) -> (Option<std::path::PathBuf>, std::path::PathBuf) {
+    match &parent.agent {
+        Some(agent) => (
+            Some(agent.launch.conversation_file.clone()).filter(|file| !file.as_os_str().is_empty()),
+            agent.launch.holder_socket.clone(),
+        ),
+        None => (None, std::path::PathBuf::new()),
+    }
+}
+
+/// What a fork's new agent is told of its parent's conversation, as the
+/// preview says it (FK-6, D212).
+fn handover_text(checked: &Checked, source: Source) -> String {
+    let (from, to) = (&checked.parent.record.agent, &checked.agent);
+    match source {
+        Source::Transcript => format!(
+            " {to} isn't {from}, so it can't resume the conversation: it is handed the transcript and a short summary, and knows what was said and done but not {from}'s exact internal state."
+        ),
+        Source::Scrollback => format!(
+            " {to} can't resume {from}'s conversation, and it can't be read, so {to} is handed the end of the terminal's output instead, not the conversation."
+        ),
+        Source::Nothing => format!(
+            " {to} can't resume {from}'s conversation, and nothing of it can be read, so {to} is told only the session's title."
+        ),
+    }
+}
+
 /// What a fork does, in the words a preview shows the user. `planned` is
-/// each repository, its owner, name and branch.
-fn fork_text(checked: &Checked, planned: &[PlannedRepo], copy_bytes: u64) -> String {
+/// each repository, its owner, name and branch; `handed`, what a handover
+/// is made from.
+fn fork_text(checked: &Checked, planned: &[PlannedRepo], copy_bytes: u64, handed: Option<Source>) -> String {
+    let handover = handed.map(|source| handover_text(checked, source)).unwrap_or_default();
     let title = &checked.parent.record.title;
     if checked.copy == ForkCopy::ContextOnly {
         let on = planned
@@ -426,18 +530,20 @@ fn fork_text(checked: &Checked, planned: &[PlannedRepo], copy_bytes: u64) -> Str
             .collect::<Vec<_>>()
             .join(", ");
         return format!(
-            "Forks \u{201c}{title}\u{201d} into a new session that works in the parent's files: its clones are the parent's, on their branches ({on}), so what it changes lands in them. It copies no code and carries on the conversation from a copy of it."
+            "Forks \u{201c}{title}\u{201d} into a new session that works in the parent's files: its clones are the parent's, on their branches ({on}), so what it changes lands in them. It copies no code and {}.{handover}",
+            if handed.is_some() { "starts a fresh conversation that is handed the old one" } else { "carries on the conversation from a copy of it" }
         );
     }
     let repos: Vec<&str> = planned.iter().map(|(_, name, _)| name.as_str()).collect();
     let branch = planned.first().map_or("", |(_, _, branch)| branch.as_str());
     let context = match (checked.copy, checked.before_turn) {
         (ForkCopy::CodeOnly, _) => "starts a fresh conversation".to_owned(),
+        _ if handed.is_some() => "starts a fresh conversation that is handed the old one".to_owned(),
         (_, 0) => "carries on the conversation from a copy of it".to_owned(),
         (_, turn) => format!("carries on the conversation up to turn {turn} from a copy of it"),
     };
     format!(
-        "Forks \u{201c}{title}\u{201d} into a new session on branch {branch} in {}. It copies the code as it is now, with committed, uncommitted and untracked files ({}), and {context}.",
+        "Forks \u{201c}{title}\u{201d} into a new session on branch {branch} in {}. It copies the code as it is now, with committed, uncommitted and untracked files ({}), and {context}.{handover}",
         repos.join(", "),
         human_bytes(copy_bytes),
     )
@@ -452,12 +558,14 @@ async fn run_fork(
     request: ForkRequest,
     progress: Progress,
     keys: Vec<String>,
+    seed: Option<(String, String)>,
     ready: oneshot::Sender<Result<(), Status>>,
     by: pb::Actor,
 ) {
     let mut ready = Some(ready);
     let operation = request.operation.clone();
     let parent = request.parent.clone();
+    let fork_id = request.id.clone();
     let mut current = "write_record".to_owned();
     progress.set_step("write_record", pb::StepState::Running, None);
     let env = |tab: &TabRecord| tokens.env(tab);
@@ -477,6 +585,21 @@ async fn run_fork(
         Ok(started) => {
             progress.set_step("verify", pb::StepState::Done, None);
             let session = started.session.id;
+            if let Some((conversation, text)) = &seed {
+                progress.set_step("seed", pb::StepState::Running, None);
+                let socket = &started.agent.launch.holder_socket;
+                match start_fresh::hand_over(&starter.store, socket, &session, conversation, text).await {
+                    Ok(()) => progress.set_step("seed", pb::StepState::Done, None),
+                    // The fork runs; its message is typed at the next
+                    // restart, or the user tells the agent themselves.
+                    Err(chain) => {
+                        crate::log::say!(
+                            "humatad2: the fork {session} started but its handover message wasn't typed: {chain}"
+                        );
+                        progress.set_step("seed", pb::StepState::Failed, Some(chain));
+                    }
+                }
+            }
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
                 value: session.clone(),
             })));
@@ -486,6 +609,11 @@ async fn run_fork(
             watch::agent(tell, session);
         }
         Err(error) => {
+            if let Some((conversation, _)) = &seed
+                && let Some(fork) = &fork_id
+            {
+                start_fresh::drop_handover(&starter.store, fork, conversation).await;
+            }
             let (code, failure) = start_error(&error);
             progress.set_step(&current, pb::StepState::Failed, Some(status::chain(&error)));
             if let Some(ready) = ready.take() {
@@ -504,7 +632,7 @@ async fn run_fork(
 }
 
 /// The size as a person reads it.
-fn human_bytes(bytes: u64) -> String {
+pub(super) fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["bytes", "KB", "MB", "GB"];
     let mut size = bytes as f64;
     let mut unit = 0;

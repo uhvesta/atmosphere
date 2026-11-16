@@ -262,6 +262,8 @@ impl Starter {
             conversation_id: conversation_id.clone(),
             agent_files,
             items: items.clone(),
+            // A fork starts with no shell tabs of its parent's.
+            tabs: Vec::new(),
         };
         folder_name(&manifest.folder)?;
         let path = stage.join(MANIFEST);

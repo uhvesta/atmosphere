@@ -67,6 +67,33 @@ impl SessionCarrySvc {
         })
     }
 
+    /// What a fork of `parent` onto another machine would get (see
+    /// [`Starter::preview_fork`]): its branch and bytes, staging nothing.
+    pub(crate) async fn preview_fork(
+        &self,
+        parent: &str,
+        title: &str,
+        typed: &str,
+    ) -> Result<pb::CarryPreviewForkResponse, Status> {
+        let (starter, parent, title) = (self.starter.clone(), parent.to_owned(), title.to_owned());
+        let typed = Some(typed.to_owned()).filter(|typed| !typed.is_empty());
+        let plan = blocking(move || starter.preview_fork(&parent, &title, typed.as_deref()))
+            .await?
+            .map_err(|error| {
+                let (code, failure) = crate::session_service::start_error(&error);
+                status::failure(code, failure)
+            })?;
+        Ok(pb::CarryPreviewForkResponse {
+            branch: plan.branch.name,
+            repos: plan
+                .repos
+                .into_iter()
+                .map(|(owner, name)| pb::RepoRef { owner, name })
+                .collect(),
+            copy_bytes: plan.copy_bytes,
+        })
+    }
+
     /// Takes in a new session (a fork) whole, as a machine with no record of
     /// it does: on the host too (see [`Starter::unpack`]).
     pub(crate) async fn unpack_new(
@@ -128,6 +155,19 @@ impl SessionCarrySvc {
     /// Puts what the session left on this machine in the trash and drops its
     /// records. What went to the trash is named in the answer.
     pub(crate) async fn release(&self, operation: &str, session: &str, channel: &str) -> Result<Vec<String>, Status> {
+        // The session's shells run on its new machine now (MV-13); here they stop before their tabs are forgotten.
+        let sockets = {
+            let (starter, session) = (self.starter.clone(), session.to_owned());
+            blocking(move || starter.shell_sockets(&session)).await?.map_err(failed)?
+        };
+        for socket in sockets.into_iter().filter(|socket| socket.exists()) {
+            if let Err(error) = humata2_holder::shutdown(&socket).await {
+                crate::log::say!(
+                    "humatad2: stopping a shell of session {session} it left: {}; that shell may still be running here, and nothing in Humata shows it any more",
+                    status::chain(&error)
+                );
+            }
+        }
         let (starter, bin, operation, session, channel, take) = (
             self.starter.clone(),
             self.bin.clone(),
@@ -294,6 +334,16 @@ fn operation_of(operation: String) -> Result<String, Status> {
 
 #[tonic::async_trait]
 impl pb::session_carry_service_server::SessionCarryService for SessionCarrySvc {
+    async fn preview_fork(
+        &self,
+        request: Request<pb::CarryPreviewForkRequest>,
+    ) -> Result<Response<pb::CarryPreviewForkResponse>, Status> {
+        require_host(&identity::caller(&request)?)?;
+        let request = request.into_inner();
+        let session = session_of(request.session)?;
+        Ok(Response::new(self.preview_fork(&session, &request.title, &request.branch).await?))
+    }
+
     async fn pack(&self, request: Request<pb::CarryPackRequest>) -> Result<Response<pb::CarryPackResponse>, Status> {
         require_host(&identity::caller(&request)?)?;
         let request = request.into_inner();

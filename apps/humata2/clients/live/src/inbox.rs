@@ -196,6 +196,30 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
     }
 }
 
+/// A repo of a new session or fork, with what its copy takes on disk when
+/// it copies anything (26.5).
+fn new_session_repo(repo: &pb::new_session_preview::Repo) -> String {
+    let name = repo.repo.as_ref().map(map::repo_text).unwrap_or_default();
+    if repo.clone_bytes == 0 {
+        name
+    } else {
+        format!("{name}: copies {}", size_text(repo.clone_bytes))
+    }
+}
+
+/// Bytes as people read them: `1.5 GB`.
+#[allow(clippy::cast_precision_loss)]
+fn size_text(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit + 1 < UNITS.len() {
+        value /= 1000.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+}
+
 fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
     use pb::request_preview::Preview as P;
     let Some(preview) = preview.and_then(|preview| preview.preview.as_ref()) else {
@@ -230,7 +254,7 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
             session
                 .repos
                 .iter()
-                .map(|each| each.repo.as_ref().map(map::repo_text).unwrap_or_default())
+                .map(new_session_repo)
                 .chain((!session.usage_note.is_empty()).then(|| session.usage_note.clone()))
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -685,6 +709,28 @@ mod tests {
             request(&wire, &BTreeMap::new(), 0).answer,
             Some(Answer::Denied { reply: None })
         );
+    }
+
+    #[test]
+    fn a_fork_card_shows_what_each_copied_repo_takes_on_disk() {
+        let repo = |name: &str, clone_bytes| pb::new_session_preview::Repo {
+            repo: Some(pb::RepoRef { owner: "acme".into(), name: name.into() }),
+            clone_bytes,
+            ..Default::default()
+        };
+        let wire = pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::NewSession(pb::NewSessionPreview {
+                repos: vec![repo("api", 1_500_000_000), repo("web", 0)],
+                ..Default::default()
+            })),
+        };
+        let Preview::Text(text) = preview(Some(&wire)) else {
+            panic!("a new session's card is text");
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].contains("api") && lines[0].contains("1.5 GB"), "{text}");
+        assert!(lines[1].contains("web") && !lines[1].contains(" B"), "a repo that copies nothing names no size: {text}");
     }
 
     #[test]

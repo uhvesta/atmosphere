@@ -6,6 +6,7 @@
 
 mod access_service;
 mod attach;
+mod away;
 mod board_service;
 mod bridge;
 mod carry;
@@ -13,6 +14,7 @@ mod carry_service;
 mod channel_service;
 mod cli_login;
 mod compression;
+mod contained;
 mod daemon;
 mod desk_service;
 mod error;

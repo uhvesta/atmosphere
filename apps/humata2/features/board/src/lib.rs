@@ -1,11 +1,13 @@
 //! Boards (BD-1–10): the global board and each channel's, with columns by
 //! status. Items move between columns, open in a drawer, gain dependencies
-//! (a cycle is refused, BD-7) and are added with a title.
+//! (a cycle is refused, BD-7) and are added with a title. A channel's board
+//! can also show one session's board, or a session and its forks (BD-5–BD-8,
+//! D216), and the session strip's Board panel lists a session's items.
 
 use std::sync::Arc;
 
 use humata2_clients::model::{
-    Agent, FieldChange, Item, ItemChange, ItemId, ItemStatus, Scope, SessionId,
+    Agent, FieldChange, Item, ItemChange, ItemId, ItemStatus, Scope, Session, SessionId,
 };
 use humata2_clients::{Clients, DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
@@ -30,6 +32,20 @@ pub enum Filter {
     DoneDay(u8),
     DoneWeek,
 }
+/// Which board a channel's page shows (BD-5–BD-8, D216).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelView {
+    /// The channel's own items, not those of its sessions.
+    #[default]
+    Channel,
+    /// The channel's items and every session's items in it.
+    WithSessions,
+    /// One session's items and those of its forks, at any depth.
+    SessionAndForks(SessionId),
+    /// One session's own items.
+    OneSession(SessionId),
+}
+
 /// Presentation retained across restarts.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,6 +54,9 @@ pub struct View {
     pub query: String,
     pub filter: Filter,
     pub global_only: bool,
+    /// The board a channel's page shows. Kept even while it names a session
+    /// that is gone, so the session coming back restores it.
+    pub channel_view: ChannelView,
 }
 
 /// What a drawer picker adds.
@@ -154,13 +173,102 @@ impl BoardState {
             .collect()
     }
 
+    /// The board a channel's page shows, as saved. It reads as
+    /// [`ChannelView::Channel`] when the saved session is gone, archived, or
+    /// of another channel, and on any page that isn't a channel's.
+    #[must_use]
+    pub fn channel_view(&self) -> ChannelView {
+        let Scope::Channel(channel) = &self.scope else {
+            return ChannelView::Channel;
+        };
+        let session = match &self.view.channel_view {
+            ChannelView::Channel | ChannelView::WithSessions => return self.view.channel_view.clone(),
+            ChannelView::SessionAndForks(id) | ChannelView::OneSession(id) => id,
+        };
+        let live = self
+            .workspace
+            .session(session)
+            .is_some_and(|s| !s.archived && &s.channel == channel);
+        if live {
+            self.view.channel_view.clone()
+        } else {
+            ChannelView::Channel
+        }
+    }
+
+    /// The boards this channel's page offers: the channel's, with its
+    /// sessions, each session that has forks with its forks, and each live
+    /// session alone. Empty on any page that isn't a channel's.
+    #[must_use]
+    pub fn channel_views(&self) -> Vec<ChannelView> {
+        let Scope::Channel(channel) = &self.scope else {
+            return Vec::new();
+        };
+        let live: Vec<&Session> = self
+            .workspace
+            .sessions
+            .iter()
+            .filter(|s| &s.channel == channel && !s.archived)
+            .collect();
+        let mut views = vec![ChannelView::Channel, ChannelView::WithSessions];
+        for session in &live {
+            let has_forks = self
+                .workspace
+                .sessions
+                .iter()
+                .any(|s| !s.archived && s.parent.as_ref() == Some(&session.id));
+            if has_forks {
+                views.push(ChannelView::SessionAndForks(session.id.clone()));
+            }
+        }
+        views.extend(live.iter().map(|s| ChannelView::OneSession(s.id.clone())));
+        views
+    }
+
+    /// `root` and every session whose parent chain reaches it, at any depth.
+    fn family(&self, root: &SessionId) -> Vec<SessionId> {
+        let mut family = vec![root.clone()];
+        let mut at = 0;
+        while at < family.len() {
+            let parent = family[at].clone();
+            at += 1;
+            for session in &self.workspace.sessions {
+                if session.parent.as_ref() == Some(&parent) && !family.contains(&session.id) {
+                    family.push(session.id.clone());
+                }
+            }
+        }
+        family
+    }
+
+    /// Whether this item is on the shown board, ignoring text and drill-down.
+    #[must_use]
+    pub fn in_scope(&self, item: &Item) -> bool {
+        match &self.scope {
+            Scope::Global => match &item.scope {
+                Scope::Session { .. } => false,
+                Scope::Global => true,
+                Scope::Channel(_) => !self.view.global_only,
+            },
+            Scope::Channel(channel) => match self.channel_view() {
+                ChannelView::Channel => item.scope == Scope::Channel(channel.clone()),
+                ChannelView::WithSessions => item.scope.channel() == Some(channel),
+                ChannelView::SessionAndForks(id) => {
+                    let family = self.family(&id);
+                    matches!(&item.scope, Scope::Session { session, .. } if family.contains(session))
+                }
+                ChannelView::OneSession(id) => {
+                    matches!(&item.scope, Scope::Session { session, .. } if *session == id)
+                }
+            },
+            Scope::Session { .. } => item.scope == self.scope,
+        }
+    }
+
     /// Whether this item belongs to the current scope and drill-down.
     #[must_use]
     pub fn matches(&self, item: &Item) -> bool {
-        let scope = match &self.scope {
-            Scope::Global => !self.view.global_only || item.scope == Scope::Global,
-            scope => &item.scope == scope,
-        };
+        let scope = self.in_scope(item);
         let query = self.view.query.trim().to_lowercase();
         let text = query.is_empty()
             || item.title.to_lowercase().contains(&query)
@@ -249,7 +357,7 @@ impl BoardState {
                         && (query.is_empty() || s.title.to_lowercase().contains(&query))
                 };
                 let channels: Vec<_> = match &item.scope {
-                    Scope::Channel(id) => vec![id],
+                    Scope::Channel(id) | Scope::Session { channel: id, .. } => vec![id],
                     Scope::Global => self.workspace.channels.iter().map(|c| &c.id).collect(),
                 };
                 let mut rows: Vec<Choice> = channels
@@ -333,6 +441,8 @@ pub enum BoardAction {
     Show(Arc<Workspace>),
     /// Show this board.
     SetScope(Scope),
+    /// Show this board of the channel's page, and close the scope menu.
+    SetChannelView(ChannelView),
     /// Change the board's representation.
     Mode(Mode),
     /// Search titles, keys and assigned sessions.
@@ -449,6 +559,13 @@ impl Reducer for Board {
                 state.drawer = None;
                 state.picker = None;
             }
+            BoardAction::SetChannelView(view) => {
+                state.view.channel_view = view;
+                state.view.filter = Filter::All;
+                state.scope_menu = false;
+                state.drawer = None;
+                state.picker = None;
+            }
             BoardAction::Open(id) => {
                 state.drawer = state
                     .workspace
@@ -556,7 +673,16 @@ impl Reducer for Board {
                 if title.is_empty() {
                     return Effect::none();
                 }
-                let scope = state.scope.clone();
+                // On one session's board, a new item goes on that board.
+                let scope = match (&state.scope, state.channel_view()) {
+                    (Scope::Channel(channel), ChannelView::OneSession(session)) => {
+                        Scope::Session {
+                            channel: channel.clone(),
+                            session,
+                        }
+                    }
+                    _ => state.scope.clone(),
+                };
                 let status = state.new_status;
                 return Effect::future(async move {
                     let result = match daemon.create_item(scope, &title).await {
@@ -602,4 +728,18 @@ fn add(
             Choice::Item(on) => daemon.add_dependency(&item, &on).await,
         })
     })
+}
+
+/// The session strip's Board panel (BD-8, D216): its channel's items with the
+/// session's own board items first.
+#[must_use]
+pub fn session_panel<'w>(workspace: &'w Workspace, session: &Session) -> Vec<&'w Item> {
+    let own = Scope::Session {
+        channel: session.channel.clone(),
+        session: session.id.clone(),
+    };
+    let channel = Scope::Channel(session.channel.clone());
+    let mut panel: Vec<&Item> = workspace.items.iter().filter(|item| item.scope == own).collect();
+    panel.extend(workspace.items.iter().filter(|item| item.scope == channel));
+    panel
 }

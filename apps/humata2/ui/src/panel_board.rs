@@ -8,12 +8,7 @@ pub(super) fn board(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool
         return col().size_full().child(panel);
     }
     let channel = state.workspace.channel(&session.channel);
-    let items: Vec<_> = state
-        .workspace
-        .items
-        .iter()
-        .filter(|item| item.scope == Scope::Channel(session.channel.clone()))
-        .collect();
+    let items = humata2_board::session_panel(&state.workspace, session);
     let statuses = {
         let mut statuses = if full {
             vec![
@@ -133,7 +128,7 @@ pub(super) fn board_item(
                     .child(secondary(look, item.id.to_string()))
                     .child(div().flex_1())
                     .children(match &item.scope {
-                        Scope::Channel(id) => state
+                        Scope::Channel(id) | Scope::Session { channel: id, .. } => state
                             .workspace
                             .channel(id)
                             .map(|channel| secondary(look, channel.name.clone())),

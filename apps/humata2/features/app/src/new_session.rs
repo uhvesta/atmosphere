@@ -1,6 +1,6 @@
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    Agent, ChannelId, ItemId, MachineId, Scope, SessionId, SessionOptions,
+    Agent, ChannelId, ItemId, MachineId, SessionId, SessionOptions,
 };
 use tca::{Effect, Reducer};
 
@@ -123,7 +123,7 @@ impl App {
         if let Some(Overlay::NewSession(sheet)) = state.overlays.last_mut() {
             sheet.title = item.title;
             sheet.item = Some(id);
-            if let Scope::Channel(channel) = item.scope {
+            if let Some(channel) = item.scope.channel().cloned() {
                 sheet.machine = state
                     .workspace
                     .channel_machines(&channel)

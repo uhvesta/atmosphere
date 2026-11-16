@@ -10,6 +10,7 @@ rust_library(
     deps = [
         "//apps/humata2/clients",
         "//apps/humata2/daemon/humatad:grpc",
+        "@crates//:http-body-util",
         "@crates//:hyper-util",
         "@crates//:prost",
         "@crates//:sha2",
